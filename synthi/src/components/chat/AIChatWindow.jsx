@@ -90,6 +90,7 @@ const AIChatWindow = ({
     const [progressStatus, setProgressStatus] = useState('');
     const [suggestionExpanded, setSuggestionExpanded] = useState(true);
     const [collapsedFiles, setCollapsedFiles] = useState({});
+    const [agentMenuOpen, setAgentMenuOpen] = useState(false);
 
     useEffect(() => {
         try {
@@ -127,6 +128,13 @@ const AIChatWindow = ({
         handleApplyFileSuggestion,
         handleRejectFileSuggestion,
         handlePreviewFileSuggestion,
+        // Agent pipeline
+        agentMode,
+        setAgentMode,
+        activePipeline,
+        cancelPipeline,
+        // Context window
+        contextWindowInfo,
     } = useAISuggestions({
         activeSession,
         chatSessions,
@@ -1086,18 +1094,58 @@ const AIChatWindow = ({
                             style={{ height: '38px', maxHeight: '120px' }}
                         />
                         <div className="flex items-center px-2 pb-2 relative">
-                            <Button
-                                variant="ghost"
-                                size="sm"
-                                disabled
-                                className="text-xs px-2.5 py-1 h-6 rounded-md bg-transparent border-none text-[#6b7280] hover:text-[#9ba1ab] transition-colors"
-                                title="Agent selection (coming soon)"
-                            >
-                                <span className="flex items-center gap-1.5">
-                                    Agent
-                                    <ChevronDown className="w-3 h-3 transition-transform duration-200 animate-bounce-subtle" />
-                                </span>
-                            </Button>
+                            <Popover open={agentMenuOpen} onOpenChange={setAgentMenuOpen}>
+                                <PopoverTrigger asChild>
+                                    <Button
+                                        variant="ghost"
+                                        size="sm"
+                                        className={`text-xs px-2.5 py-1 h-6 rounded-md bg-transparent border-none transition-colors ${agentMode === 'direct' ? 'text-[#6b7280] hover:text-[#9ba1ab]' : 'text-[#60a5fa] hover:text-[#93c5fd]'}`}
+                                        title="Agent mode"
+                                    >
+                                        <span className="flex items-center gap-1.5">
+                                            {agentMode === 'direct' ? 'Agent' : agentMode === 'auto' ? 'Auto Agent' : agentMode === 'plan' ? 'Plan Agent' : 'Research'}
+                                            <ChevronDown className={`w-3 h-3 transition-transform duration-300 ${agentMenuOpen ? 'rotate-180' : 'rotate-0'}`} />
+                                        </span>
+                                    </Button>
+                                </PopoverTrigger>
+                                <PopoverContent
+                                    className="w-64 mr-6 bg-[#14161a] border-none p-3 space-y-2"
+                                    side="top"
+                                    align="start"
+                                >
+                                    <p className="text-[10px] text-[#6b7280] uppercase tracking-wider mb-1">Agent Mode</p>
+                                    {[
+                                        { key: 'direct', label: 'Direct', desc: 'Single LLM call, no agents' },
+                                        { key: 'auto', label: 'Auto Agent', desc: 'AI decides when to use sub-agents' },
+                                        { key: 'plan', label: 'Plan & Execute', desc: 'Plan changes, then execute step-by-step' },
+                                        { key: 'research', label: 'Research', desc: 'Multi-step search and file reading' },
+                                    ].map((mode) => (
+                                        <button
+                                            key={mode.key}
+                                            onClick={() => { setAgentMode(mode.key); setAgentMenuOpen(false); }}
+                                            className={`w-full text-left px-2 py-1.5 rounded text-xs transition-colors ${agentMode === mode.key ? 'bg-[#1e293b] text-[#60a5fa]' : 'text-[#c9cdd4] hover:bg-[#1a1c22]'}`}
+                                        >
+                                            <span className="font-medium">{mode.label}</span>
+                                            <span className="block text-[10px] text-[#6b7280] mt-0.5">{mode.desc}</span>
+                                        </button>
+                                    ))}
+                                    {activePipeline && activePipeline.status !== 'completed' && activePipeline.status !== 'failed' && (
+                                        <button
+                                            onClick={() => { cancelPipeline(); setAgentMenuOpen(false); }}
+                                            className="w-full text-left px-2 py-1.5 rounded text-xs text-red-400 hover:bg-[#1a1c22] transition-colors mt-1"
+                                        >
+                                            Cancel running pipeline
+                                        </button>
+                                    )}
+                                    {contextWindowInfo && (
+                                        <div className="border-t border-[#2a2d35] pt-2 mt-2">
+                                            <p className="text-[10px] text-[#6b7280]">
+                                                Context: {Math.round(contextWindowInfo.availableTokens / 1000)}K tokens available
+                                            </p>
+                                        </div>
+                                    )}
+                                </PopoverContent>
+                            </Popover>
                             <Popover open={modelMenuOpen} onOpenChange={setModelMenuOpen}>
                                 <PopoverTrigger asChild>
                                     <Button

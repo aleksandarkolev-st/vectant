@@ -89,6 +89,66 @@ export const stripDiffMarkers = (text = '') => {
         .trimEnd();
 };
 
+/**
+ * Validate file diff blocks for common errors that indicate bad AI output.
+ * Returns validation results with error details.
+ */
+export const validateFileDiffBlocks = (blocks = []) => {
+    const errors = [];
+    const warnings = [];
+    const seenPaths = new Set();
+    
+    for (const block of blocks) {
+        const { path, contentText, diffText } = block;
+        
+        if (!path) {
+            errors.push('Found FILE block with empty or invalid path');
+            continue;
+        }
+        
+        // Check for duplicates
+        if (seenPaths.has(path)) {
+            errors.push(`Duplicate FILE block for ${path} - AI repeated the same file`);
+            continue;
+        }
+        seenPaths.add(path);
+        
+        // Check for empty content
+        const content = contentText || diffText || '';
+        if (!content || content.trim().length < 5) {
+            warnings.push(`FILE ${path} has very short or empty content`);
+        }
+        
+        // Check if content looks mismatched to file extension
+        const ext = path.split('.').pop()?.toLowerCase() || '';
+        const isJSLike = /^(js|jsx|ts|tsx|mjs)$/.test(ext);
+        const isCSSLike = /^(css|scss|sass|less)$/.test(ext);
+        const isHTMLLike = /^(html|htm)$/.test(ext);
+        
+        const hasHTML = /<html|<body|<head|<!DOCTYPE/i.test(content);
+        const hasJSImport = /^(?:import|export|const|function|class|var|let)\s/m.test(content);
+        const hasCSS = /^\s*\.[a-z]|^@media|:\s*{/m.test(content);
+        
+        // Flag mismatches
+        if (isJSLike && hasHTML && !hasJSImport) {
+            errors.push(`FILE ${path}: Detected HTML in JS file - likely wrong file or content corruption`);
+        }
+        if (isHTMLLike && hasJSImport && !hasHTML) {
+            errors.push(`FILE ${path}: Detected JS imports in HTML file - content mismatched to extension`);
+        }
+        if (isCSSLike && hasHTML) {
+            errors.push(`FILE ${path}: Detected HTML in CSS file - content mismatched`);
+        }
+    }
+    
+    return {
+        isValid: errors.length === 0,
+        errors,
+        warnings,
+        blockCount: blocks.length,
+    };
+};
+
 export const parseFileDiffBlocks = (text = '', fallbackPath = null) => {
     if (!text) return [];
     const blocks = [];

@@ -3,8 +3,10 @@ import { applyPatch } from 'diff';
 import { getFileLanguage, findFirstFile } from '@/utils/fileUtils';
 import { buildFilesPayload } from '@/utils/multiFileContext';
 import { api } from '@/services/api';
-import { computeDiffChunks, parseFileDiffBlocks, stripDiffMarkers } from '../utils/diffUtils';
+import { computeDiffChunks, parseFileDiffBlocks, stripDiffMarkers, validateFileDiffBlocks } from '../utils/diffUtils';
 import { selectFileThunk, setExternalFileContent, fetchFilesThunk } from '@/redux/workspaceSlice';
+import { useContextWindow } from './useContextWindow';
+import { useAgentPipeline, PIPELINE_MODES } from './useAgentPipeline';
 
 // AI Engine base URL for intent classification
 const AI_ENGINE_BASE = process.env.NEXT_PUBLIC_AI_ENGINE_URL || 'http://localhost:8000';
@@ -132,6 +134,15 @@ export const useAISuggestions = ({
     const fallbackPathRef = useRef(activeFile?.path || activeFile?.name || null);
     const activeFileRef = useRef(activeFile);
 
+    // ── Context Window ──────────────────────────────────────────────
+    const {
+        buildContextWindow,
+        formatForAPI,
+        getContextDebugInfo,
+        estimateTokens,
+        availableTokens,
+    } = useContextWindow({ maxTokens: 28000 });
+
     // Keep the latest onSuggest callback reference in sync.
     useEffect(() => {
         onSuggestRef.current = onSuggest;
@@ -205,6 +216,112 @@ export const useAISuggestions = ({
         return null;
     }, [flattenWorkspaceFiles]);
 
+    const normalizePathParts = (parts = []) => {
+        const output = [];
+        parts.forEach((part) => {
+            if (!part || part === '.') return;
+            if (part === '..') {
+                output.pop();
+                return;
+            }
+            output.push(part);
+        });
+        return output;
+    };
+
+    const resolveRelativePath = (basePath = '', relativePath = '') => {
+        if (!relativePath) return null;
+        const rel = relativePath.replace(/^\.\/+/, '').trim();
+        if (!rel) return null;
+        if (rel.startsWith('/') || rel.startsWith('\\')) {
+            return rel.replace(/^\/+/, '').replace(/\\/g, '/');
+        }
+        const baseParts = String(basePath || '').replace(/\\/g, '/').split('/');
+        baseParts.pop();
+        const relParts = rel.replace(/\\/g, '/').split('/');
+        const combined = normalizePathParts([...baseParts, ...relParts]);
+        return combined.join('/');
+    };
+
+    const extractReferencedPaths = useCallback((activePath, content = '') => {
+        if (!activePath || !content) return [];
+        const found = new Set();
+        const addPath = (value) => {
+            if (!value) return;
+            const cleaned = value.split('#')[0].split('?')[0].trim();
+            if (!cleaned || /^https?:/i.test(cleaned) || cleaned.startsWith('data:')) return;
+            const resolved = resolveRelativePath(activePath, cleaned);
+            const workspacePath = resolveWorkspacePath(resolved) || resolveWorkspacePath(cleaned);
+            if (workspacePath) found.add(workspacePath);
+        };
+
+        const htmlRefs = [
+            /<script[^>]*\s+src=["']([^"']+)["']/gi,
+            /<link[^>]*\s+href=["']([^"']+)["']/gi,
+            /<img[^>]*\s+src=["']([^"']+)["']/gi,
+            /<source[^>]*\s+src=["']([^"']+)["']/gi,
+        ];
+        htmlRefs.forEach((re) => {
+            let m;
+            while ((m = re.exec(content))) addPath(m[1]);
+        });
+
+        const jsRefs = [
+            /import\s+[^\n]*?from\s+["']([^"']+)["']/gi,
+            /require\(\s*["']([^"']+)["']\s*\)/gi,
+        ];
+        jsRefs.forEach((re) => {
+            let m;
+            while ((m = re.exec(content))) addPath(m[1]);
+        });
+
+        const cssRefs = [
+            /@import\s+["']([^"']+)["']/gi,
+            /url\(\s*["']?([^"')]+)["']?\s*\)/gi,
+        ];
+        cssRefs.forEach((re) => {
+            let m;
+            while ((m = re.exec(content))) addPath(m[1]);
+        });
+
+        return Array.from(found).slice(0, 4);
+    }, [resolveWorkspacePath]);
+
+    const inferSiblingPaths = useCallback((activePath) => {
+        if (!activePath) return [];
+        const normalized = String(activePath).replace(/\\/g, '/');
+        const parts = normalized.split('/');
+        const fileName = parts.pop() || '';
+        const folder = parts.join('/');
+        const ext = fileName.includes('.') ? fileName.split('.').pop().toLowerCase() : '';
+        const folderPrefix = folder ? `${folder}/` : '';
+
+        const htmlExts = new Set(['html', 'htm']);
+        const jsExts = new Set(['js', 'jsx', 'ts', 'tsx', 'mjs']);
+        const cssExts = new Set(['css', 'scss', 'sass']);
+
+        let targetExts = [];
+        if (htmlExts.has(ext)) {
+            targetExts = ['js', 'jsx', 'ts', 'tsx', 'mjs', 'css', 'scss', 'sass'];
+        } else if (jsExts.has(ext)) {
+            targetExts = ['html', 'htm', 'css', 'scss', 'sass'];
+        } else if (cssExts.has(ext)) {
+            targetExts = ['html', 'htm', 'js', 'jsx', 'ts', 'tsx', 'mjs'];
+        } else {
+            return [];
+        }
+
+        const siblings = flattenWorkspaceFiles
+            .filter((path) => path.startsWith(folderPrefix) && path !== normalized)
+            .filter((path) => {
+                const siblingExt = path.includes('.') ? path.split('.').pop().toLowerCase() : '';
+                return targetExts.includes(siblingExt);
+            })
+            .slice(0, 3);
+
+        return siblings;
+    }, [flattenWorkspaceFiles]);
+
     // Clear inline suggestion previews when a clear signal is triggered.
     useEffect(() => {
         const session = activeSession;
@@ -249,6 +366,26 @@ export const useAISuggestions = ({
         return null;
     }, [activeFile?.path, cachedFileMap, currentCode, editor, resolveWorkspacePath, workspaceSlug]);
 
+    // ── Agent Pipeline ──────────────────────────────────────────────
+    const {
+        activePipeline,
+        pipelineHistory,
+        currentMode: agentMode,
+        runPipeline,
+        cancelPipeline,
+        setCurrentMode: setAgentMode,
+        shouldUseAgents,
+        PIPELINE_MODES: MODES,
+    } = useAgentPipeline({
+        workspaceSlug,
+        activeFile,
+        currentCode,
+        getBaseContentForPath,
+        flattenWorkspaceFiles,
+        resolveWorkspacePath,
+        onProgress: null, // wired per-request in handleSendMessage
+    });
+
     // Convert AI diff/plaintext responses into structured multi-file suggestions.
     const buildMultiFileSuggestions = useCallback(async (rawText) => {
         const fallbackPath = fallbackPathRef.current;
@@ -266,7 +403,15 @@ export const useAISuggestions = ({
         const isFolderPath = (p = '') => p.endsWith('/') || p.toLowerCase().includes('[folder]');
 
         for (const block of blocks) {
-            const resolvedPath = resolveWorkspacePath(block.path) || block.path;
+            const hasFolderHint = typeof block.path === 'string' && block.path.includes('/');
+            const activeBasePath = activeFileRef.current?.path || activeFileRef.current?.name || '';
+            const relativeCandidate = !hasFolderHint
+                ? resolveRelativePath(activeBasePath, block.path)
+                : null;
+            const resolvedPath = resolveWorkspacePath(relativeCandidate)
+                || resolveWorkspacePath(block.path)
+                || relativeCandidate
+                || block.path;
             const folderFlag = isFolderPath(block.path);
             const baseContent = folderFlag ? '' : await getBaseContentForPath(resolvedPath);
             const baseIsMissing = folderFlag ? false : typeof baseContent !== 'string';
@@ -731,8 +876,7 @@ export const useAISuggestions = ({
         return attachments.map((att) => {
             const header = `FILE: ${att.name || 'attachment'} (${att.type || 'unknown'}, ${att.size || 0} bytes)`;
             if (att.kind === 'image' && att.content) {
-                const snippet = att.content.length > 4000 ? `${att.content.slice(0, 4000)}\n... [truncated data URI]` : att.content;
-                return `${header}\nImage data (base64 data URI). Extract any visible text/code from the image and use it to satisfy the request.\n\`\`\`\n${snippet}\n\`\`\``;
+                return `${header}\nImage attachment provided. Analyze the image content and identify any issues or anything requested by the user.`;
             }
             if (att.kind === 'text' && att.content) {
                 const snippet = att.content.length > 4000 ? `${att.content.slice(0, 4000)}\n... [truncated]` : att.content;
@@ -834,6 +978,48 @@ export const useAISuggestions = ({
             const { needsCodeChanges, responseMode, intent } = await classifyQueryIntent(userPrompt, contextSnippet);
             appendProgressLog(`Intent: ${intent} → ${needsCodeChanges ? 'code changes' : 'explanation'}`);
             
+            // ── Agent Pipeline ──────────────────────────────────────
+            // Run sub-agents if the prompt warrants it (complex queries, multi-file, search, etc.)
+            let agentContext = '';
+            let agentResults = [];
+            const useAgents = shouldUseAgents(userPrompt);
+            
+            if (useAgents) {
+                appendProgressLog('Running agent pipeline...');
+                onLog?.('Dispatching sub-agents');
+                try {
+                    const pipelineResult = await runPipeline(userPrompt, {
+                        referencedFilesLoaded: false,
+                    }, {
+                        mode: agentMode === PIPELINE_MODES.DIRECT ? PIPELINE_MODES.AUTO : agentMode,
+                        signal: abortController.signal,
+                        onStepStart: (step) => {
+                            appendProgressLog(`${step.agentName}: starting...`);
+                            onLog?.(`Agent: ${step.agentName}`);
+                        },
+                        onStepComplete: (result) => {
+                            const status = result.status === 'completed' ? '✓' : '✗';
+                            appendProgressLog(`${status} ${result.agentName}: ${result.status}`);
+                        },
+                        onPlanReady: (plan) => {
+                            appendProgressLog(`Plan: ${plan.steps.length} steps — ${plan.reasoning}`);
+                        },
+                    });
+                    agentContext = pipelineResult.agentContext || '';
+                    agentResults = pipelineResult.results || [];
+                    if (agentResults.length > 0) {
+                        appendProgressLog(`Agent pipeline: ${agentResults.filter(r => r.status === 'completed').length}/${agentResults.length} steps completed`);
+                    }
+                } catch (agentErr) {
+                    appendProgressLog(`Agent pipeline error: ${agentErr.message}. Continuing without agents.`);
+                    agentContext = '';
+                    agentResults = [];
+                }
+            }
+
+            // ── Context Window ──────────────────────────────────────
+            // Build a token-budgeted context window with all gathered information
+            
             // Build different prompts based on classified intent
             let requestPrompt;
             let requestMode = responseMode;
@@ -860,24 +1046,42 @@ FILE: <path>
 <full updated file content only; no diff markers, no +/-, no @@, no ---/+++>
 \`\`\`
 
-Do not include any other commentary. Do not restate the user's request or any instructions; only describe what you changed/created/deleted. Preserve all code outside the requested change. Do not add speculative comments or boilerplate. If unclear, return FILE: <path> then NO_CHANGES and a brief clarifying question.
+Do not include any other commentary. Do not restate the user's request or any instructions; only describe what you changed/created/deleted. Preserve all code outside the requested change. Do not add speculative comments or boilerplate. Do not duplicate entire documents or repeat the same file content. Do not insert HTML into JS files (or vice versa). If unclear, return FILE: <path> then NO_CHANGES and a brief clarifying question.
 
 If image attachments are present, read/ocr the images and extract any text or code they contain. Use the extracted content to fulfill the request, rewriting it as needed into the target file(s).`;
             }
             
+            const activePath = activeFile?.path || activeFile?.name || '';
+            const referencedPaths = extractReferencedPaths(activePath, code);
+            const siblingPaths = referencedPaths.length === 0 ? inferSiblingPaths(activePath) : [];
+            const relatedPaths = Array.from(new Set([...referencedPaths, ...siblingPaths]));
+            const referencedEntries = relatedPaths.length
+                ? await Promise.all(relatedPaths.map(async (path) => [path, await getBaseContentForPath(path)]))
+                : [];
+            const referencedCacheEntries = referencedEntries.filter((entry) => entry[0] && typeof entry[1] === 'string');
+            const cacheEntryMap = new Map(fileCacheEntries);
+            referencedCacheEntries.forEach(([path, content]) => {
+                if (!cacheEntryMap.has(path)) cacheEntryMap.set(path, content);
+            });
+            const mergedCacheEntries = Array.from(cacheEntryMap.entries());
+
             const filesPayloadRaw = buildFilesPayload({
                 activeFile,
                 fullDocument: code,
-                cacheEntries: fileCacheEntries,
+                cacheEntries: mergedCacheEntries,
             });
             const mentionsOtherFile = /\b[a-zA-Z0-9_-]+\.[a-zA-Z0-9]{1,5}\b/.test(userPrompt) || /other file|another file|files/i.test(userPrompt) || /delete\s+\w+/i.test(userPrompt) || /remove\s+\w+/i.test(userPrompt) || /create\s+\w+/i.test(userPrompt) || /new file/i.test(userPrompt);
+            const includeRelatedFiles = relatedPaths.length > 0;
+            const wantsFullRepo = /\b(full repo|entire repo|whole repo|entire project|all files|full context)\b/i.test(userPrompt);
             const filesPayload = mentionsOtherFile
                 ? filesPayloadRaw
-                : filesPayloadRaw.filter((f) => f.path === (activeFile?.path || activeFile?.name));
+                : includeRelatedFiles
+                    ? filesPayloadRaw
+                    : filesPayloadRaw.filter((f) => f.path === (activeFile?.path || activeFile?.name));
             // Disable fallback to active file when prompt targets other files (creates/deletes) to avoid hijacking the active file.
             fallbackPathRef.current = mentionsOtherFile ? null : (activeFile?.path || activeFile?.name || null);
-            if (filesPayload.length > 1 || mentionsOtherFile) {
-                requestPrompt = `${requestPrompt}\n\nAdditional workspace files are attached. Reference them by their path when relevant.`;
+            if (filesPayload.length > 1 || mentionsOtherFile || includeRelatedFiles) {
+                requestPrompt = `${requestPrompt}\n\nAdditional workspace files are attached. Update all related files needed to fulfill the request (HTML/CSS/JS as applicable). Reference them by their path when relevant.`;
             }
             const attachmentText = buildAttachmentText(attachments);
             if (attachmentText) {
@@ -887,6 +1091,35 @@ If image attachments are present, read/ocr the images and extract any text or co
                 requestPrompt = `${requestPrompt}\n\nStream at least three progress updates inside <progress>...</progress> as you reason (no code inside progress).`;
             }
             appendProgressLog(filesPayload.length ? `Context files: ${filesPayload.length}` : 'Context files: 0');
+
+            // ── Build Context Window ────────────────────────────────
+            // Use the context window manager to fit everything within token budget
+            const sessionMessages = activeSession?.messages?.filter(m => m.role === 'user' || m.role === 'assistant') || [];
+            const contextWindow = buildContextWindow({
+                currentMessage: userPrompt,
+                messages: sessionMessages,
+                activeFile,
+                currentCode: code,
+                referencedFiles: referencedCacheEntries,
+                relatedFiles: [],
+                codeIntelContext: null, // will be fetched server-side
+                agentResults: agentResults.filter(r => r.status === 'completed'),
+            });
+            const contextDebug = getContextDebugInfo(contextWindow);
+            appendProgressLog(`Context window: ${contextDebug.utilization} used (${contextDebug.includedEntries} entries, ${contextDebug.excludedEntries} excluded${contextDebug.hasSummary ? ', with summary' : ''})`);
+            onLog?.(`Context: ${contextDebug.utilization}`);
+            
+            // Inject agent-gathered context into the prompt
+            if (agentContext) {
+                requestPrompt = `${requestPrompt}\n\n=== AGENT-GATHERED CONTEXT ===\nThe following context was gathered by specialized sub-agents analyzing your workspace:\n${agentContext}\n=== END AGENT CONTEXT ===`;
+                appendProgressLog('Agent context injected into prompt');
+            }
+            
+            // If we have a conversation summary from context window, inject it
+            const { contextPrefix } = formatForAPI(contextWindow);
+            if (contextPrefix) {
+                requestPrompt = `${contextPrefix}\n\n${requestPrompt}`;
+            }
 
             try { if (typeof onBusy === 'function') onBusy(true); } catch (e) {}
 
@@ -900,6 +1133,16 @@ If image attachments are present, read/ocr the images and extract any text or co
 
             onLog?.('Analyzing prompt and files');
             appendProgressLog('Analyzing prompt and files');
+            const serializedAttachments = Array.isArray(attachments)
+                ? attachments.map((att) => ({
+                    name: att?.name || '',
+                    type: att?.type || '',
+                    size: att?.size || 0,
+                    kind: att?.kind || '',
+                    content: typeof att?.content === 'string' ? att.content : '',
+                }))
+                : [];
+
             const resp = await fetch('/api/chat', {
                 method: 'POST',
                 signal: abortController.signal,
@@ -910,14 +1153,20 @@ If image attachments are present, read/ocr the images and extract any text or co
                     prompt: requestPrompt,
                     mode: requestMode,
                     files: filesPayload,
+                    attachments: serializedAttachments,
                     focusPath: activeFile?.path || activeFile?.name || null,
                     model: aiModel,
                     apiKey: aiApiKey,
                     // Code intelligence integration
                     workspacePath: workspaceSlug || null,
                     useCodeIntel: true,
-                    maxContextTokens: 6000,
-                    fullRepoContext: true,
+                    maxContextTokens: Math.min(6000, Math.floor(availableTokens * 0.2)),
+                    fullRepoContext: wantsFullRepo,
+                    // Context window conversation history for multi-turn coherence
+                    conversationHistory: formatForAPI(contextWindow).conversationHistory,
+                    // Agent pipeline metadata
+                    agentMode: useAgents ? agentMode : 'direct',
+                    agentStepCount: agentResults.length,
                 }),
             });
 
@@ -1160,7 +1409,30 @@ If image attachments are present, read/ocr the images and extract any text or co
             if (needsCodeChanges) {
                 try {
                     multiFileSuggestions = await buildMultiFileSuggestions(suggestion || '');
+                    
+                    // Validate before displaying to user
+                    if (multiFileSuggestions.length > 0) {
+                        const validation = validateFileDiffBlocks(multiFileSuggestions.map((s) => ({
+                            path: s.path,
+                            contentText: s.updatedContent || '',
+                            diffText: s.diffText || '',
+                        })));
+                        
+                        if (!validation.isValid && validation.errors.length > 0) {
+                            console.warn('[Validation] Multi-file suggestions failed validation:', validation.errors);
+                            // Log to user
+                            appendProgressLog(`⚠️ Suggestion validation failed: ${validation.errors[0]}`);
+                            
+                            // Reject bad suggestions - show error instead
+                            multiFileSuggestions = [];
+                            displayedContent = `⚠️ AI response was malformed or contained contradictory changes:\n${validation.errors.slice(0, 2).join('\n')}\n\nPlease try again or provide more specific instructions.`;
+                        } else if (validation.warnings.length > 0) {
+                            // Log warnings but allow suggestions to pass
+                            validation.warnings.forEach(w => console.warn('[Validation Warning]', w));
+                        }
+                    }
                 } catch (e) {
+                    console.error('[buildMultiFileSuggestions]', e);
                     multiFileSuggestions = [];
                 }
             }
@@ -1341,7 +1613,7 @@ If image attachments are present, read/ocr the images and extract any text or co
             setIsLoading(false);
             try { if (typeof onBusy === 'function') onBusy(false); } catch(e){}
         }
-    }, [activeSession, activeFile, appendMessagesToSession, archiveCurrentSuggestion, buildMultiFileSuggestions, currentCode, fileCacheEntries, mutateSession, onBusy, onSuggest, aiApiKey, aiModel]);
+    }, [activeSession, activeFile, appendMessagesToSession, archiveCurrentSuggestion, buildMultiFileSuggestions, currentCode, fileCacheEntries, mutateSession, onBusy, onSuggest, aiApiKey, aiModel, buildContextWindow, formatForAPI, getContextDebugInfo, availableTokens, shouldUseAgents, runPipeline, agentMode]);
 
     const suggestedCode = activeSession?.suggestedCode ?? null;
     const fileSuggestions = activeSession?.fileSuggestions ?? [];
@@ -1363,5 +1635,13 @@ If image attachments are present, read/ocr the images and extract any text or co
         handleApplyFileSuggestion,
         handleRejectFileSuggestion,
         handlePreviewFileSuggestion,
+        // Agent pipeline
+        agentMode,
+        setAgentMode,
+        activePipeline,
+        pipelineHistory,
+        cancelPipeline,
+        // Context window
+        contextWindowInfo: { availableTokens, estimateTokens },
     };
 };

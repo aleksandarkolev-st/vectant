@@ -2,6 +2,18 @@ const MAX_MULTI_FILE_ENTRIES = 5;
 const MAX_ACTIVE_FILE_CONTEXT_CHARS = 12000;
 const MAX_SECONDARY_FILE_CHARS = 3600;
 
+const EXCLUDED_PATH_MARKERS = [
+    '/node_modules/',
+    '/build/',
+];
+
+const normalizePath = (value = '') => `/${String(value || '').replace(/\\/g, '/').replace(/^\/+/, '')}`;
+
+const isExcludedPath = (value = '') => {
+    const normalized = normalizePath(value);
+    return EXCLUDED_PATH_MARKERS.some((marker) => normalized.includes(marker));
+};
+
 const collapseContent = (value = '', max = MAX_SECONDARY_FILE_CHARS) => {
     if (typeof value !== 'string' || !value.trim()) return '';
     if (value.length <= max) return value;
@@ -57,7 +69,7 @@ const buildFilesPayload = ({
 
     const remainingSlots = Math.max(0, maxEntries - files.length);
     cacheEntries
-        .filter(([path]) => path && path !== activePath)
+        .filter(([path]) => path && path !== activePath && !isExcludedPath(path))
         .slice(0, remainingSlots)
         .forEach(([path, content]) => {
             const trimmed = collapseContent(content, secondaryFileMaxChars);

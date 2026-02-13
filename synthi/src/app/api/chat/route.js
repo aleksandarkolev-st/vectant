@@ -78,9 +78,79 @@ GROUNDING RULES (CRITICAL - prevents hallucination):
 11. If the context doesn't contain enough information to answer, say so clearly rather than guessing.
 12. When explaining code, quote or reference specific lines from the context to ground your answer.
 
+FORMAT RULES FOR CODE CHANGES (CRITICAL - violation = rejection):
+When providing code changes, EVERY change MUST follow this format exactly:
+
+FILE: path/to/file.js
+\`\`\`javascript
+[FULL FILE CONTENT - complete and valid, not truncated]
+\`\`\`
+
+IMPORTANT FORMAT DETAILS:
+- Each file gets EXACTLY ONE FILE: block. Never repeat the same file path.
+- Include the complete file content, NOT just the changed lines.
+- Preserve all code outside the requested changes - do not remove unrelated code.
+- Do NOT use diff markers (---, +++, @@) unless returning a unified diff format.
+- Do NOT use +/- line prefixes unless returning diff format.
+- Do NOT duplicate entire documents or paste the same file twice.
+- Do NOT mix HTML into JavaScript files or vice versa - match file extension to content.
+- Close all code fences with \`\`\` on their own line.
+
+EXAMPLES OF CORRECT FORMAT:
+✓ Single file change:
+FILE: src/App.js
+\`\`\`javascript
+import React from 'react';
+export default function App() {
+  return <div>Hello, updated UI</div>;
+}
+\`\`\`
+
+✓ Multiple files (each appears ONCE):
+FILE: src/utils/helper.js
+\`\`\`javascript
+export function add(a, b) { return a + b; }
+\`\`\`
+
+FILE: src/App.js
+\`\`\`javascript
+import { add } from './utils/helper';
+export default function App() {
+  const result = add(1, 2);
+  return <div>{result}</div>;
+}
+\`\`\`
+
+EXAMPLES OF WRONG FORMAT (WILL BE REJECTED):
+✗ Duplicate files - never repeat:
+FILE: src/App.js
+\`\`\`...content1...\`\`\`
+FILE: src/App.js
+\`\`\`...content2...\`\`\`
+
+✗ Mixing HTML in JS:
+FILE: src/App.js
+\`\`\`html
+<html><body>...</body></html>
+\`\`\`
+
+✗ Unclosed fences:
+FILE: src/App.js
+\`\`\`javascript
+const x = 1;
+(missing closing \`\`\`)
+
+✗ Truncated content:
+FILE: src/App.js
+\`\`\`javascript
+function longFile() {
+  ...rest of file omitted...
+\`\`\`
+
 You have access to code context retrieved from the user's workspace. Use this context to provide accurate, specific answers.
 
 If the context is insufficient to answer the question, say so clearly rather than guessing.`;
+
 
 /**
  * Fetch code intelligence context from the backend.
@@ -145,6 +215,104 @@ const buildTraceSummary = (trace = []) => {
     });
     const text = parts.join(' | ');
     return text.length > 380 ? `${text.slice(0, 377)}...` : text;
+};
+
+const parseDataUri = (value = '') => {
+    if (typeof value !== 'string') return null;
+    const match = value.match(/^data:([^;]+);base64,(.+)$/i);
+    if (!match) return null;
+    return { mimeType: match[1], data: match[2] };
+};
+
+const buildImageParts = (attachments = []) => {
+    if (!Array.isArray(attachments) || attachments.length === 0) return [];
+    const parts = [];
+    attachments.forEach((att) => {
+        if (!att || att.kind !== 'image' || typeof att.content !== 'string') return;
+        const parsed = parseDataUri(att.content);
+        const mimeType = parsed?.mimeType || att.type || 'image/png';
+        const data = parsed?.data || (att.content.startsWith('data:') ? '' : att.content);
+        if (!data) return;
+        parts.push({ text: `Image attachment: ${att.name || 'image'} (${mimeType})` });
+        parts.push({ inlineData: { mimeType, data } });
+    });
+    return parts;
+};
+
+/**
+ * Validate response format to catch malformed outputs BEFORE sending to client.
+ * Catches:
+ * - Duplicate FILE blocks (same file mentioned multiple times)
+ * - Empty file blocks
+ * - Missing closing code fences
+ * - HTML/JS content mixing
+ * @param {string} response - The raw model response
+ * @returns {Object} - { isValid: boolean, errors: string[], warnings: string[] }
+ */
+const validateResponseFormat = (response = '') => {
+    const errors = [];
+    const warnings = [];
+    
+    if (!response || typeof response !== 'string') {
+        return { isValid: false, errors: ['Empty or invalid response'], warnings: [] };
+    }
+    
+    // Extract all FILE: blocks
+    const fileRegex = /FILE:\s*([^\n]+)\n([\s\S]*?)(?=FILE:|$)/gi;
+    const fileBlocks = [];
+    let match;
+    const seenFiles = new Set();
+    
+    while ((match = fileRegex.exec(response)) !== null) {
+        const filePath = (match[1] || '').trim();
+        const content = match[2] || '';
+        
+        if (!filePath) {
+            errors.push('Found FILE: block with empty path');
+            continue;
+        }
+        
+        // Check for duplicates
+        if (seenFiles.has(filePath)) {
+            errors.push(`Duplicate FILE block for ${filePath} - model repeated the same file`);
+        } else {
+            seenFiles.add(filePath);
+        }
+        
+        // Check for empty content
+        if (!content || !content.trim() || content.trim() === '```') {
+            warnings.push(`FILE ${filePath} has empty or placeholder content`);
+        }
+        
+        // Check for unclosed code fences
+        const openFences = (content.match(/```/g) || []).length;
+        if (openFences % 2 !== 0) {
+            errors.push(`FILE ${filePath} has unclosed code fence (odd number of backticks)`);
+        }
+        
+        // Check for HTML/JS mixing (common problem)
+        const hasHTML = /<html|<body|<head|<!DOCTYPE/i.test(content);
+        const hasJSImport = /^import\s|^export\s|^const\s|^function\s/m.test(filePath);
+        if (hasHTML && hasJSImport) {
+            errors.push(`FILE ${filePath}: mixing HTML and JS content - likely wrong file`);
+        }
+        
+        fileBlocks.push({ filePath, content });
+    }
+    
+    // Check for HTML DOCTYPE appearing multiple times (sign of duplication)
+    const doctypeCount = (response.match(/<!DOCTYPE/gi) || []).length;
+    if (doctypeCount > 1) {
+        errors.push(`Multiple <!DOCTYPE> tags found (${doctypeCount}) - file duplication in response`);
+    }
+    
+    // Check if response looks like it's mixing multiple unrelated files (high FILE: count)
+    if (fileBlocks.length > 8) {
+        warnings.push(`Response modifies ${fileBlocks.length} files - unusually high; might be unfocused`);
+    }
+    
+    const isValid = errors.length === 0;
+    return { isValid, errors, warnings };
 };
 
 
@@ -319,7 +487,7 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 /**
  * Stream from Gemini with automatic retry on 429 rate limiting
  */
-const streamGemini = async ({ model, apiKey, userContent, conversationHistory = [], signal, maxRetries = 3 }) => {
+const streamGemini = async ({ model, apiKey, userContent, conversationHistory = [], attachments = [], signal, maxRetries = 3 }) => {
     const key = apiKey || process.env.GEMINI_API_KEY || '';
     if (!key) {
         throw new Error('Gemini API key is not configured');
@@ -347,8 +515,10 @@ const streamGemini = async ({ model, apiKey, userContent, conversationHistory = 
         }
     }
     
-    // Add current user message
-    contents.push({ role: 'user', parts: [{ text: userContent }] });
+    // Add current user message (with inline image parts if provided)
+    const imageParts = buildImageParts(attachments);
+    const userParts = [{ text: userContent }, ...imageParts];
+    contents.push({ role: 'user', parts: userParts });
 
     const requestBody = JSON.stringify({
         systemInstruction: { parts: [{ text: CODE_INTEL_SYSTEM_PROMPT }] },
@@ -409,45 +579,81 @@ const streamGemini = async ({ model, apiKey, userContent, conversationHistory = 
 };
 
 /**
- * Create a ReadableStream from Gemini SSE response
+ * Wrap a response stream with validation checks.
+ * Accumulates response chunks and validates format in real-time.
+ * If critical validation errors are detected, sends validation error instead of bad response.
  */
-const createGeminiReadableStream = (upstream) => {
-    const reader = upstream.body.getReader();
+const createValidatedStream = (upstream) => {
+    const reader = upstream.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
+    let accumulatedText = '';
+    let validationErrorSent = false;
     
     return new ReadableStream({
         async pull(controller) {
-            const { value, done } = await reader.read();
-            if (done) {
-                controller.enqueue(encoder.encode(JSON.stringify({ done: true }) + '\n'));
-                controller.close();
-                return;
-            }
-            if (!value) return;
-            buffer += decoder.decode(value, { stream: true });
-            const lines = buffer.split('\n');
-            buffer = lines.pop() || '';
-            for (const raw of lines) {
-                const line = raw.replace(/^data:\s*/, '').trim();
-                if (!line || line === '[DONE]') continue;
-                try {
-                    const parsed = JSON.parse(line);
-                    const candidate = parsed?.candidates?.[0] || {};
-                    const contentParts = candidate?.content?.parts || [];
-                    const deltaParts = candidate?.delta?.content || candidate?.delta?.parts || [];
-                    const textDelta =
-                        contentParts.map((p) => p?.text || '').join('') ||
-                        deltaParts.map((p) => (p?.parts ? p.parts.map((x) => x?.text || '').join('') : p?.text || '')).join('');
-                    if (textDelta) {
-                        controller.enqueue(encoder.encode(JSON.stringify({ delta: textDelta }) + '\n'));
+            try {
+                const { value, done } = await reader.read();
+                if (done) {
+                    // Final validation check
+                    if (!validationErrorSent) {
+                        const validation = validateResponseFormat(accumulatedText);
+                        if (!validation.isValid && validation.errors.length > 0) {
+                            // Send validation error as last message
+                            const errorMsg = `[VALIDATION ERROR] Response violated format rules:\n${validation.errors.join('\n')}`;
+                            controller.enqueue(encoder.encode(JSON.stringify({ delta: errorMsg, validationFailed: true }) + '\n'));
+                            validationErrorSent = true;
+                        }
                     }
-                    if (candidate?.finishReason) {
-                        controller.enqueue(encoder.encode(JSON.stringify({ done: true }) + '\n'));
-                    }
-                } catch (e) {
-                    // ignore malformed lines
+                    controller.enqueue(encoder.encode(JSON.stringify({ done: true }) + '\n'));
+                    controller.close();
+                    return;
                 }
+                if (!value) return;
+                buffer += decoder.decode(value, { stream: true });
+                const lines = buffer.split('\n');
+                buffer = lines.pop() || '';
+                
+                for (const raw of lines) {
+                    const line = raw.replace(/^data:\s*/, '').trim();
+                    if (!line || line === '[DONE]') continue;
+                    try {
+                        const parsed = JSON.parse(line);
+                        const candidate = parsed?.candidates?.[0] || {};
+                        const contentParts = candidate?.content?.parts || [];
+                        const deltaParts = candidate?.delta?.content || candidate?.delta?.parts || [];
+                        const textDelta =
+                            contentParts.map((p) => p?.text || '').join('') ||
+                            deltaParts.map((p) => (p?.parts ? p.parts.map((x) => x?.text || '').join('') : p?.text || '')).join('');
+                        
+                        if (textDelta) {
+                            accumulatedText += textDelta;
+                            
+                            // Check for critical errors mid-stream (stop early if found)
+                            if (!validationErrorSent && accumulatedText.length > 600) {
+                                // Every ~600 chars, do a quick check
+                                const validation = validateResponseFormat(accumulatedText);
+                                if (!validation.isValid && validation.errors.some(e => e.includes('Duplicate') || e.includes('DOCTYPE'))) {
+                                    // Critical error detected - send error and stop consuming
+                                    const errorMsg = `[VALIDATION ERROR] Critical format violation detected:\n${validation.errors.slice(0, 2).join('\n')}`;
+                                    controller.enqueue(encoder.encode(JSON.stringify({ delta: errorMsg, validationFailed: true }) + '\n'));
+                                    validationErrorSent = true;
+                                    // Don't try to further validate, just pass through
+                                }
+                            }
+                            
+                            controller.enqueue(encoder.encode(JSON.stringify({ delta: textDelta }) + '\n'));
+                        }
+                        if (candidate?.finishReason) {
+                            controller.enqueue(encoder.encode(JSON.stringify({ done: true }) + '\n'));
+                        }
+                    } catch (e) {
+                        // ignore malformed lines
+                    }
+                }
+            } catch (error) {
+                console.error('[Validated Stream] Error:', error.message);
+                controller.error(error);
             }
         },
         cancel() {
@@ -456,6 +662,13 @@ const createGeminiReadableStream = (upstream) => {
             } catch (e) {}
         },
     });
+};
+
+/**
+ * Create a ReadableStream from Gemini SSE response
+ */
+const createGeminiReadableStream = (upstream) => {
+    return createValidatedStream(upstream.body);
 };
 
 const withTimeoutSignal = (requestSignal, timeoutMs = UPSTREAM_TIMEOUT_MS) => {
@@ -493,6 +706,7 @@ export async function POST(request) {
         prompt = '',
         code = '',
         files = [],
+        attachments = [],
         lang = 'plaintext',
         focusPath = '',
         model = '',
@@ -567,7 +781,7 @@ export async function POST(request) {
                 { status: 401 }
             );
         }
-        const stream = await streamGemini({ model, apiKey: geminiKey, userContent, conversationHistory, signal });
+        const stream = await streamGemini({ model, apiKey: geminiKey, userContent, conversationHistory, attachments, signal });
 
         const traceSummary = buildTraceSummary(codeIntelContext?.trace || []);
         const sources = Array.isArray(codeIntelContext?.sources)
