@@ -567,8 +567,6 @@ for (const delay of _selfTestDelays) {
       log(`  Module._load: defineProperty getter intact ✓`);
     } else if (desc && desc.value) {
       log(`  Module._load: defineProperty REPLACED with value (${desc.value.name || 'anon'}) — reinstalling`);
-      // Someone replaced our getter/setter with a plain value
-      // Capture the current function and reinstall our trap
       _underlyingLoad = desc.value;
       try {
         Object.defineProperty(Module, '_load', {
@@ -591,13 +589,55 @@ for (const delay of _selfTestDelays) {
     // Diagnostic 2: Check require hook is still in place
     log(`  Module.prototype.require: ${Module.prototype.require.name === 'synthiRequireHook' ? 'intact ✓' : 'REPLACED (' + Module.prototype.require.name + ')'}`);
     log(`  require() hook call count: ${_requireHookCallCount}`);
+    log(`  Module._load proxy call count: ${_proxyCallCount}`);
+    log(`  Module._load reassign count: ${_loadReassignCount}`);
 
     // Diagnostic 3: Check for VS Code's ESM API factory on globalThis
     if (typeof globalThis._VSCODE_IMPORT_VSCODE_API === 'function') {
       log(`  globalThis._VSCODE_IMPORT_VSCODE_API: present (ESM interceptor active)`);
     }
 
-    // Recovery 1: Try direct require('vscode') through whatever hooks are installed
+    // Diagnostic 4: Check process IPC and environment state
+    log(`  process.connected: ${process.connected}`);
+    log(`  process.channel: ${process.channel ? 'exists' : 'none'}`);
+    log(`  VSCODE_ESM_ENTRYPOINT: ${process.env.VSCODE_ESM_ENTRYPOINT || '(unset)'}`);
+    log(`  VSCODE_NLS_CONFIG: ${process.env.VSCODE_NLS_CONFIG ? 'set (' + process.env.VSCODE_NLS_CONFIG.length + ' chars)' : '(unset)'}`);
+    log(`  VSCODE_IPC_HOOK_EXTHOST: ${process.env.VSCODE_IPC_HOOK_EXTHOST || '(unset)'}`);
+    log(`  VSCODE_EXTHOST_WILL_SEND_SOCKET: ${process.env.VSCODE_EXTHOST_WILL_SEND_SOCKET || '(unset)'}`);
+
+    // Diagnostic 5: Check the extension directory
+    const extDir = process.env.VSCODE_EXTHOST_EXTENSIONS_DIR
+      || (process.argv.find(a => a.includes('extensions-dir')) ? undefined : undefined);
+    // Scan common extension paths
+    const possibleExtDirs = [
+      '/root/.synthi/vscode-server/extensions',
+      process.env.VSCODE_EXTHOST_EXTENSIONS_DIR,
+    ].filter(Boolean);
+    for (const dir of possibleExtDirs) {
+      try {
+        const entries = require('fs').readdirSync(dir);
+        log(`  Extensions in ${dir}: ${entries.length} dirs — [${entries.slice(0, 10).join(', ')}${entries.length > 10 ? '...' : ''}]`);
+      } catch (e) {
+        log(`  Extensions dir ${dir}: ${e.message}`);
+      }
+    }
+
+    // Diagnostic 6: Check Module._cache size and notable keys
+    const cache = Module._cache || {};
+    const cacheKeys = Object.keys(cache);
+    log(`  Module._cache: ${cacheKeys.length} entries`);
+    // Log keys that look like VS Code or extension modules
+    const notableKeys = cacheKeys.filter(k =>
+      k.includes('vscode') || k.includes('extensionHost') || k.includes('extension')
+    ).slice(0, 10);
+    if (notableKeys.length) {
+      log(`  Notable cache keys: ${notableKeys.join(', ')}`);
+    }
+
+    // Diagnostic 7: Check _underlyingLoad identity
+    log(`  _underlyingLoad: ${_underlyingLoad === realOriginalLoad ? 'Node original (NOBODY hooked Module._load beyond natives blocker!)' : _underlyingLoad.name || 'anonymous'}`);
+
+    // Recovery 1: Try direct require('vscode')
     try {
       const testMod = new Module('synthi-self-test');
       testMod.filename = __filename;
@@ -608,7 +648,6 @@ for (const delay of _selfTestDelays) {
         const didWrap = _tryWrapVscodeResult(vsResult, `self-test direct require at ${delay / 1000}s`);
         if (didWrap) {
           log(`  Recovery SUCCESS: vscode API acquired via direct require`);
-          // Trigger provider list update
           bridgeSend({ type: 'providerList', treeViews: Array.from(trackedTreeProviders.keys()), webviews: Array.from(trackedWebviewProviders.keys()) });
           return;
         }
@@ -618,9 +657,6 @@ for (const delay of _selfTestDelays) {
     }
 
     // Recovery 2: Scan Module._cache for vscode-like modules
-    const cache = Module._cache || {};
-    const cacheKeys = Object.keys(cache);
-    log(`  Module._cache: ${cacheKeys.length} entries`);
     let found = false;
     for (const key of cacheKeys) {
       try {
@@ -640,6 +676,12 @@ for (const delay of _selfTestDelays) {
     }
     if (found) {
       bridgeSend({ type: 'providerList', treeViews: Array.from(trackedTreeProviders.keys()), webviews: Array.from(trackedWebviewProviders.keys()) });
+    }
+
+    // Recovery 3: At 25s, attempt to directly load extensions
+    if (delay >= 25000 && !vsCodeWrapped) {
+      log(`  Recovery 3: Attempting direct extension loading at ${delay / 1000}s`);
+      _attemptDirectExtensionLoading();
     }
   }, delay);
   timer.unref();
