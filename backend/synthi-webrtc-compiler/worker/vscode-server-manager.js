@@ -1328,16 +1328,29 @@ async function _triggerExtensionHostStartup(port, token) {
           if (!frame) break;
           recvBuf = recvBuf.slice(frame.totalLength);
 
-          // WebSocket close/ping/pong
-          if (frame.opcode === 0x08) {
+          // WebSocket control frames (RFC 6455 §5.5)
+          // These must be handled BEFORE trying to parse VS Code protocol
+          // messages, otherwise they hit parseProtocolMsg, fail to parse,
+          // and get logged as "unparseable frame" — which is misleading
+          // and can cause stream desync if the log handler has side effects.
+          if (frame.opcode === 0x08) { // Close
             process.stderr.write(`[vscode-server-manager] EH trigger: server closed WebSocket\n`);
             return;
           }
-          if (frame.opcode === 0x09) { // Ping → Pong
-            const pong = Buffer.alloc(2);
-            pong[0] = 0x8A; pong[1] = 0x80; // FIN + pong, masked, 0 length
+          if (frame.opcode === 0x09) { // Ping → must reply with Pong echoing payload
+            const pongPayload = frame.payload;
+            const pongFrame = Buffer.alloc(6 + pongPayload.length);
+            pongFrame[0] = 0x8A; // FIN + pong opcode
+            pongFrame[1] = 0x80 | pongPayload.length; // masked + length
             const mask = crypto.randomBytes(4);
-            socket.write(Buffer.concat([pong, mask]));
+            mask.copy(pongFrame, 2);
+            for (let i = 0; i < pongPayload.length; i++) {
+              pongFrame[6 + i] = pongPayload[i] ^ mask[i % 4];
+            }
+            socket.write(pongFrame);
+            continue;
+          }
+          if (frame.opcode === 0x0A) { // Pong — silently consume
             continue;
           }
 
@@ -2195,11 +2208,12 @@ function wsConnect(tunnelId, urlPath) {
             processingFrames = false;
             return;
           } else if (result.opcode === 0x09) {
-            // Ping → respond with pong
-            const pong = encodeWsFrame(0x0A, result.payload, false);
+            // Ping → respond with pong (must echo payload, must mask per RFC 6455)
+            const pong = encodeWsFrame(0x0A, result.payload, true);
             socket.write(pong);
+          } else if (result.opcode === 0x0A) {
+            // Pong — silently consume (response to our ping, if any)
           }
-          // 0x0A pong — ignore
         }
         processingFrames = false;
       };
