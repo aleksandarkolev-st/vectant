@@ -265,8 +265,35 @@ let preloadBridgePort = null;
 /** @type {Set<net.Socket>} Connected preload clients */
 const preloadClients = new Set();
 
+/** @type {Function[]} Callbacks waiting for first preload client */
+const _preloadReadyWaiters = [];
+
 /** @type {Map<string, object>} viewId → last known tree data */
 const preloadTreeCache = new Map();
+
+/**
+ * Wait for at least one preload client to connect to the bridge.
+ * Resolves immediately if a client is already connected.
+ *
+ * @param {number} timeoutMs - Maximum time to wait (default 15s)
+ * @returns {Promise<boolean>} true if a client connected, false if timed out
+ */
+function waitForPreloadClient(timeoutMs = 15000) {
+  if (preloadClients.size > 0) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      const idx = _preloadReadyWaiters.indexOf(cb);
+      if (idx !== -1) _preloadReadyWaiters.splice(idx, 1);
+      resolve(false);
+    }, timeoutMs);
+    if (timer.unref) timer.unref();
+    function cb() {
+      clearTimeout(timer);
+      resolve(true);
+    }
+    _preloadReadyWaiters.push(cb);
+  });
+}
 
 /**
  * Start the TCP bridge server for ext-host-preload.js connections.
@@ -282,8 +309,14 @@ function startPreloadBridge() {
     }
 
     const server = net.createServer((socket) => {
-      process.stderr.write(`[preload-bridge] Client connected from Extension Host\n`);
+      process.stderr.write(`[preload-bridge] Client connected from Extension Host (total: ${preloadClients.size + 1})\n`);
       preloadClients.add(socket);
+
+      // Notify anyone waiting for a preload client
+      while (_preloadReadyWaiters.length > 0) {
+        const cb = _preloadReadyWaiters.shift();
+        try { cb(); } catch (_) {}
+      }
 
       let lineBuf = '';
 
@@ -1629,6 +1662,16 @@ async function loadExtensionForUI(extensionId) {
 
   extHostLoadedExtensions.add(extensionId);
   process.stderr.write(`[preload-bridge] Tracking UI for ${extensionId}\n`);
+
+  // Wait for at least one preload client to connect before sending commands.
+  // The Extension Host may still be starting — without this gate the commands
+  // go nowhere because sendToPreloadClients iterates an empty set.
+  const ready = await waitForPreloadClient(15000);
+  if (ready) {
+    process.stderr.write(`[preload-bridge] Preload client ready — requesting data for ${extensionId}\n`);
+  } else {
+    process.stderr.write(`[preload-bridge] Preload client not connected after 15s — sending anyway\n`);
+  }
 
   // Ask preload clients to refresh — the extension may already be loaded
   // in the Extension Host and have registered providers
