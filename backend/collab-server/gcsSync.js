@@ -115,8 +115,10 @@ async function uploadRepoToGcs(repoPath, slug, options = {}) {
         return { success: false, reason: 'GCS not configured' };
     }
 
-    const { onProgress, excludePatterns = ['.git'] } = options;
-    const gcsPrefix = `${GCS_PREFIX}/${slug}/`;
+    const { onProgress, excludePatterns = ['.git'], userId } = options;
+    const gcsPrefix = userId
+        ? `${GCS_PREFIX}/${slug}/${userId}/`
+        : `${GCS_PREFIX}/${slug}/`;
     
     // Collect all files to upload
     const filesToUpload = [];
@@ -213,8 +215,10 @@ async function downloadGcsToRepo(slug, repoPath, options = {}) {
         return { success: false, reason: 'GCS not configured' };
     }
 
-    const { onProgress } = options;
-    const gcsPrefix = `${GCS_PREFIX}/${slug}/`;
+    const { onProgress, userId } = options;
+    const gcsPrefix = userId
+        ? `${GCS_PREFIX}/${slug}/${userId}/`
+        : `${GCS_PREFIX}/${slug}/`;
     
     // List all files in GCS
     const files = await listFiles(gcsPrefix);
@@ -293,12 +297,14 @@ async function downloadGcsToRepo(slug, repoPath, options = {}) {
  * Sync a single file change to GCS (for real-time sync) with retry logic.
  * Retries up to 3 times with exponential backoff on transient failures.
  */
-async function syncFileToGcs(slug, relativePath, content) {
+async function syncFileToGcs(slug, relativePath, content, userId) {
     if (!isGcsConfigured()) {
         return { success: false, reason: 'GCS not configured' };
     }
 
-    const gcsPath = `${GCS_PREFIX}/${slug}/${relativePath}`;
+    const gcsPath = userId
+        ? `${GCS_PREFIX}/${slug}/${userId}/${relativePath}`
+        : `${GCS_PREFIX}/${slug}/${relativePath}`;
     const MAX_RETRIES = 3;
     let lastError = null;
 
@@ -331,12 +337,14 @@ async function syncFileToGcs(slug, relativePath, content) {
 /**
  * Delete a file from GCS
  */
-async function deleteFileFromGcs(slug, relativePath) {
+async function deleteFileFromGcs(slug, relativePath, userId) {
     if (!isGcsConfigured()) {
         return { success: false, reason: 'GCS not configured' };
     }
 
-    const gcsPath = `${GCS_PREFIX}/${slug}/${relativePath}`;
+    const gcsPath = userId
+        ? `${GCS_PREFIX}/${slug}/${userId}/${relativePath}`
+        : `${GCS_PREFIX}/${slug}/${relativePath}`;
     const { bucket } = getStorage();
     const file = bucket.file(gcsPath);
     
@@ -358,7 +366,7 @@ async function deleteFileFromGcs(slug, relativePath) {
  * @param {string} slug
  * @param {string} repoPath - local working tree root
  */
-async function archiveGitToGcs(slug, repoPath) {
+async function archiveGitToGcs(slug, repoPath, userId) {
     if (!isGcsConfigured()) return { success: false, reason: 'GCS not configured' };
 
     const gitDir = path.join(repoPath, '.git');
@@ -369,7 +377,9 @@ async function archiveGitToGcs(slug, repoPath) {
     const { createGzip } = require('zlib');
     const tar = require('tar');
 
-    const gcsPath = `${GCS_PREFIX}/${slug}/.git-archive.tar.gz`;
+    const gcsPath = userId
+        ? `${GCS_PREFIX}/${slug}/${userId}/.git-archive.tar.gz`
+        : `${GCS_PREFIX}/${slug}/.git-archive.tar.gz`;
 
     try {
         const { bucket } = getStorage();
@@ -407,12 +417,14 @@ async function archiveGitToGcs(slug, repoPath) {
  * @param {string} repoPath - local working tree root
  * @returns {{ success: boolean }}
  */
-async function restoreGitFromGcs(slug, repoPath) {
+async function restoreGitFromGcs(slug, repoPath, userId) {
     if (!isGcsConfigured()) return { success: false, reason: 'GCS not configured' };
 
     const tar = require('tar');
 
-    const gcsPath = `${GCS_PREFIX}/${slug}/.git-archive.tar.gz`;
+    const gcsPath = userId
+        ? `${GCS_PREFIX}/${slug}/${userId}/.git-archive.tar.gz`
+        : `${GCS_PREFIX}/${slug}/.git-archive.tar.gz`;
 
     try {
         const { bucket } = getStorage();
