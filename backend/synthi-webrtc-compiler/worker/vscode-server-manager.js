@@ -455,9 +455,21 @@ function _handlePreloadMessage(msg) {
     case 'hello': {
       // Preload client connected and identified itself
       process.stderr.write(`[preload-bridge] Hello from Extension Host (pid: ${msg.pid}, ppid: ${msg.ppid})\n`);
-      // Request an initial provider list and tree data refresh
+      // Request provider list immediately, then retry with backoff.
+      // Extensions take time to activate and register providers, so the
+      // first few responses will likely be empty.  The retry schedule
+      // covers the typical 5-30s activation window.
       sendToPreloadClients({ action: 'listProviders' });
       sendToPreloadClients({ action: 'refreshAllTrees' });
+      const retryDelays = [3000, 6000, 12000, 20000, 35000];
+      for (const delay of retryDelays) {
+        const timer = setTimeout(() => {
+          process.stderr.write(`[preload-bridge] Retry provider discovery (${delay / 1000}s after hello)\n`);
+          sendToPreloadClients({ action: 'listProviders' });
+          sendToPreloadClients({ action: 'refreshAllTrees' });
+        }, delay);
+        if (timer.unref) timer.unref();
+      }
       break;
     }
 
@@ -1706,6 +1718,21 @@ async function loadExtensionForUI(extensionId) {
   // in the Extension Host and have registered providers
   sendToPreloadClients({ action: 'refreshAllTrees' });
   sendToPreloadClients({ action: 'listProviders' });
+
+  // Also schedule retries — extensions may not have activated yet when
+  // the first request fires (they need to require('vscode'), register
+  // providers, etc.)  Retry at 5s and 15s after loadExtensionForUI.
+  const retryDelays = [5000, 15000];
+  for (const delay of retryDelays) {
+    const timer = setTimeout(() => {
+      process.stderr.write(`[preload-bridge] Retry provider refresh for ${extensionId} (${delay / 1000}s)\n`);
+      sendToPreloadClients({ action: 'refreshAllTrees' });
+      sendToPreloadClients({ action: 'listProviders' });
+      // Also try resolving webview views on demand
+      sendToPreloadClients({ action: 'resolveWebviewView', viewType: `${extensionId}:*` });
+    }, delay);
+    if (timer.unref) timer.unref();
+  }
 
   return { success: true, hasUI: true };
 }
