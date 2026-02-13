@@ -687,6 +687,115 @@ for (const delay of _selfTestDelays) {
   timer.unref();
 }
 
+// ---------------------------------------------------------------------------
+// Strategy 5: globalThis API factory interception (ESM build)
+//
+// In VS Code's ESM build, the vscode API is provided to extensions via
+// global factory functions stored on globalThis:
+//   - _VSCODE_IMPORT_VSCODE_API: called by the ESM module loader when
+//     an extension does `import * as vscode from 'vscode'`
+//   - _VSCODE_API_IMPL_PROVIDER: set in extensionHostMain.ts as the
+//     backing factory for all per-extension API namespaces
+//
+// We install Object.defineProperty traps to detect the exact moment
+// VS Code sets these globals, then wrap the factory so every API
+// instance it produces passes through _tryWrapVscodeResult().
+// ---------------------------------------------------------------------------
+
+// Trap 1: _VSCODE_IMPORT_VSCODE_API (ESM import interception)
+let _esmApiFactory = undefined;
+try {
+  // Capture if already set (unlikely but safe)
+  const existing = globalThis._VSCODE_IMPORT_VSCODE_API;
+
+  Object.defineProperty(globalThis, '_VSCODE_IMPORT_VSCODE_API', {
+    get() { return _esmApiFactory; },
+    set(factory) {
+      if (typeof factory !== 'function') {
+        _esmApiFactory = factory;
+        return;
+      }
+      log('globalThis._VSCODE_IMPORT_VSCODE_API set by VS Code — wrapping factory');
+      const origFactory = factory;
+      _esmApiFactory = function wrappedEsmApiFactory(...args) {
+        const api = origFactory.apply(this, args);
+        const extId = args[0] || 'unknown';
+        const didWrap = _tryWrapVscodeResult(api, `ESM API factory (ext: ${extId})`);
+        if (didWrap) {
+          log(`SUCCESS: vscode API intercepted via ESM factory for ${extId}`);
+        }
+        return api;
+      };
+      log('ESM API factory wrapped via globalThis trap');
+    },
+    configurable: true,
+    enumerable: true,
+  });
+
+  // If it was already set before our trap, wrap it now
+  if (typeof existing === 'function') {
+    globalThis._VSCODE_IMPORT_VSCODE_API = existing; // triggers our setter
+  }
+  log('globalThis._VSCODE_IMPORT_VSCODE_API property trap installed');
+} catch (e) {
+  logError(`Failed to install ESM API factory trap: ${e.message}`);
+}
+
+// Trap 2: _VSCODE_API_IMPL_PROVIDER (extensionHostMain.ts factory)
+let _apiImplProvider = undefined;
+try {
+  const existing2 = globalThis._VSCODE_API_IMPL_PROVIDER;
+
+  Object.defineProperty(globalThis, '_VSCODE_API_IMPL_PROVIDER', {
+    get() { return _apiImplProvider; },
+    set(provider) {
+      if (typeof provider !== 'function') {
+        _apiImplProvider = provider;
+        return;
+      }
+      log('globalThis._VSCODE_API_IMPL_PROVIDER set by VS Code — wrapping');
+      const origProvider = provider;
+      _apiImplProvider = function wrappedApiImplProvider(...args) {
+        const api = origProvider.apply(this, args);
+        _tryWrapVscodeResult(api, `API IMPL provider (args: ${String(args[0]).slice(0, 60)})`);
+        return api;
+      };
+    },
+    configurable: true,
+    enumerable: true,
+  });
+
+  if (typeof existing2 === 'function') {
+    globalThis._VSCODE_API_IMPL_PROVIDER = existing2;
+  }
+  log('globalThis._VSCODE_API_IMPL_PROVIDER property trap installed');
+} catch (e) {
+  logError(`Failed to install API IMPL provider trap: ${e.message}`);
+}
+
+// Trap 3: Poll for any other globalThis._VSCODE* factories not yet known
+// (covers future VS Code versions and code-server-specific globals)
+let _globalThisCheckCount = 0;
+const _globalThisCheckInterval = setInterval(() => {
+  _globalThisCheckCount++;
+  if (vsCodeWrapped || _globalThisCheckCount > 120) { // 60s max
+    clearInterval(_globalThisCheckInterval);
+    return;
+  }
+  // Search globalThis for any vscode-related factory globals
+  for (const key of Object.getOwnPropertyNames(globalThis)) {
+    if (key.startsWith('_VSCODE') && typeof globalThis[key] === 'function' &&
+        key !== '_VSCODE_IMPORT_VSCODE_API' && key !== '_VSCODE_API_IMPL_PROVIDER') {
+      log(`Found additional globalThis factory: ${key}`);
+      try {
+        const api = globalThis[key]();
+        _tryWrapVscodeResult(api, `globalThis.${key}()`);
+      } catch (_) {}
+    }
+  }
+}, 500);
+if (_globalThisCheckInterval.unref) _globalThisCheckInterval.unref();
+
 // ============================================================================
 // State: tracked providers
 // ============================================================================
