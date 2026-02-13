@@ -1520,7 +1520,13 @@ async function _triggerExtensionHostStartup(port, token) {
       //   bytes 9-12: data length (uint32be)
       //   bytes 13+: data (JSON for Control messages)
       // For non-Control types the data may not be JSON.
-      function parseProtocolMsg(payload) {
+      //
+      // IMPORTANT: PersistentProtocol's ProtocolWriter batches multiple
+      // messages into a single write (via setTimeout(0)), which means a
+      // single WebSocket frame can contain MULTIPLE protocol messages
+      // (e.g. Resume + Ready back-to-back).  This function parses ONE
+      // message and returns how many bytes were consumed via _consumed.
+      function parseOneProtocolMsg(payload) {
         if (payload.length < 13) return null;
         const msgType = payload[0];
         const receivedId = payload.readUInt32BE(1);
@@ -1534,18 +1540,36 @@ async function _triggerExtensionHostStartup(port, token) {
           lastReceivedMsgId = receivedId;
         }
 
-        const data = payload.slice(13, 13 + dataLen);
+        const consumed = 13 + dataLen;
+        const data = payload.slice(13, consumed);
         if (msgType === ProtoMsgType.Control) {
           // Control — always JSON
-          try { return JSON.parse(data.toString('utf8')); } catch (_) { return null; }
+          try {
+            const parsed = JSON.parse(data.toString('utf8'));
+            parsed._consumed = consumed;
+            return parsed;
+          } catch (_) { return null; }
         }
-        // Non-control: try to parse as JSON anyway (some responses use type 1)
-        try {
-          const parsed = JSON.parse(data.toString('utf8'));
-          if (parsed && typeof parsed === 'object') return parsed;
-        } catch (_) {}
-        // Return a synthetic object so we can at least log the type
-        return { _protoType: msgType, _dataLen: dataLen, _raw: data.toString('utf8').slice(0, 100) };
+        // Non-control: preserve raw data buffer for Ready/Initialized detection.
+        // Also try JSON parse for diagnostic logging.
+        let jsonParsed = null;
+        if (dataLen > 1) {
+          try {
+            jsonParsed = JSON.parse(data.toString('utf8'));
+          } catch (_) {}
+        }
+        if (jsonParsed && typeof jsonParsed === 'object') {
+          jsonParsed._consumed = consumed;
+          return jsonParsed;
+        }
+        // Return a synthetic object with raw data bytes
+        return {
+          _protoType: msgType,
+          _dataLen: dataLen,
+          _raw: data.toString('utf8').slice(0, 100),
+          _rawBuf: data,
+          _consumed: consumed,
+        };
       }
 
       // ── Protocol state machine ──────────────────────────────────
@@ -1604,7 +1628,7 @@ async function _triggerExtensionHostStartup(port, token) {
 
           // WebSocket control frames (RFC 6455 §5.5)
           // These must be handled BEFORE trying to parse VS Code protocol
-          // messages, otherwise they hit parseProtocolMsg, fail to parse,
+          // messages, otherwise they hit parseOneProtocolMsg, fail to parse,
           // and get logged as "unparseable frame" — which is misleading
           // and can cause stream desync if the log handler has side effects.
           if (frame.opcode === 0x08) { // Close
@@ -1642,7 +1666,7 @@ async function _triggerExtensionHostStartup(port, token) {
             continue;
           }
 
-          const msg = parseProtocolMsg(frame.payload);
+          const msg = parseOneProtocolMsg(frame.payload);
           if (!msg) {
             process.stderr.write(`[vscode-server-manager] EH trigger: rx unparseable frame (opcode=${frame.opcode}, ${frame.payload.length}b, hex=${frame.payload.slice(0, 20).toString('hex')})\n`);
             continue;
