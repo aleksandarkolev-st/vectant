@@ -2019,6 +2019,45 @@ async fn wire_peer_channels(
                     cmd.stdout(Stdio::piped());
                     cmd.stderr(Stdio::piped());
 
+                    // Pre-spawn check: verify the binary is actually executable.
+                    // This prevents cryptic "Permission denied" errors from spawn()
+                    // when a previous install left a non-executable file on disk.
+                    let binary_name = cmd.as_std().get_program().to_string_lossy().to_string();
+                    let pre_check = if cfg!(target_os = "windows") {
+                        Command::new("wsl")
+                            .args(["test", "-x", &format!("$(which {} 2>/dev/null || echo /nonexistent)", binary_name)])
+                            .stdout(Stdio::null())
+                            .stderr(Stdio::null())
+                            .status()
+                            .await
+                    } else {
+                        Command::new("sh")
+                            .args(["-c", &format!(
+                                "BIN=$(which {} 2>/dev/null) && test -x \"$BIN\"",
+                                binary_name
+                            )])
+                            .stdout(Stdio::null())
+                            .stderr(Stdio::null())
+                            .status()
+                            .await
+                    };
+                    if !matches!(pre_check, Ok(s) if s.success()) {
+                        eprintln!("[LSP] Pre-spawn check: {} is not executable or not found — attempting chmod fix", binary_name);
+                        // Try to fix permissions on well-known install locations
+                        let fix_cmd = format!(
+                            "BIN=$(which {bin} 2>/dev/null || echo /usr/local/bin/{bin}); \
+                             test -f \"$BIN\" && chmod +x \"$BIN\" 2>/dev/null || true",
+                            bin = binary_name
+                        );
+                        if cfg!(target_os = "windows") {
+                            let _ = Command::new("wsl").args(["bash", "-lc", &fix_cmd])
+                                .status().await;
+                        } else {
+                            let _ = Command::new("bash").args(["-lc", &fix_cmd])
+                                .status().await;
+                        }
+                    }
+
                     match cmd.spawn() {
                         Ok(mut child) => {
                             let mut stdin = child.stdin.take().expect("Failed to open stdin");
