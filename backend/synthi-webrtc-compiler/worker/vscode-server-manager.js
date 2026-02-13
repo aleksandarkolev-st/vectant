@@ -1396,13 +1396,14 @@ async function _triggerExtensionHostStartup(port, token) {
 
       // VS Code PersistentProtocol control message (type = 2)
       let nextMsgId = 1;
+      let lastReceivedMsgId = 0;  // tracks last msg ID from server for ack echoing
       function makeControlMsg(jsonObj) {
         const json = JSON.stringify(jsonObj);
         const jsonBuf = Buffer.from(json, 'utf8');
         const hdr = Buffer.alloc(13);
         hdr[0] = ProtoMsgType.Control;
         hdr.writeUInt32BE(nextMsgId++, 1);
-        hdr.writeUInt32BE(0, 5); // ack
+        hdr.writeUInt32BE(lastReceivedMsgId, 5); // ack
         hdr.writeUInt32BE(jsonBuf.length, 9);
         return Buffer.concat([hdr, jsonBuf]);
       }
@@ -1414,7 +1415,7 @@ async function _triggerExtensionHostStartup(port, token) {
         const hdr = Buffer.alloc(13);
         hdr[0] = ProtoMsgType.Regular;
         hdr.writeUInt32BE(nextMsgId++, 1);
-        hdr.writeUInt32BE(0, 5); // ack
+        hdr.writeUInt32BE(lastReceivedMsgId, 5); // ack
         hdr.writeUInt32BE(dataBuf.length, 9);
         return Buffer.concat([hdr, dataBuf]);
       }
@@ -1453,8 +1454,17 @@ async function _triggerExtensionHostStartup(port, token) {
       function parseProtocolMsg(payload) {
         if (payload.length < 13) return null;
         const msgType = payload[0];
+        const receivedId = payload.readUInt32BE(1);
         const dataLen = payload.readUInt32BE(9);
         if (payload.length < 13 + dataLen) return null;
+
+        // Track the highest received message ID for ack echoing.
+        // PersistentProtocol expects each outgoing message to ack the
+        // last received message ID from the peer.
+        if (receivedId > lastReceivedMsgId) {
+          lastReceivedMsgId = receivedId;
+        }
+
         const data = payload.slice(13, 13 + dataLen);
         if (msgType === ProtoMsgType.Control) {
           // Control — always JSON
@@ -1493,7 +1503,7 @@ async function _triggerExtensionHostStartup(port, token) {
               const hdr = Buffer.alloc(13);
               hdr[0] = ProtoMsgType.KeepAlive;
               hdr.writeUInt32BE(nextMsgId++, 1);
-              hdr.writeUInt32BE(0, 5);  // ack
+              hdr.writeUInt32BE(lastReceivedMsgId, 5);  // ack last seen
               hdr.writeUInt32BE(0, 9);  // data length = 0
               sendWSFrame(hdr);
             } catch (_) {
@@ -1643,7 +1653,7 @@ async function _triggerExtensionHostStartup(port, token) {
                 const ackHdr = Buffer.alloc(13);
                 ackHdr[0] = ProtoMsgType.Ack;
                 ackHdr.writeUInt32BE(nextMsgId++, 1);
-                ackHdr.writeUInt32BE(0, 5);
+                ackHdr.writeUInt32BE(lastReceivedMsgId, 5); // ack last seen
                 ackHdr.writeUInt32BE(0, 9);
                 sendWSFrame(ackHdr);
               } catch (_) {}
