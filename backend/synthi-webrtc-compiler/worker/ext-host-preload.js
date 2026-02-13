@@ -247,10 +247,21 @@ connectBridge();
 
 // ============================================================================
 // Module Interception
+//
+// VS Code's Extension Host (code-server) re-hooks Module._load AFTER our
+// preload runs.  Their hook intercepts `require('vscode')` and returns the
+// API directly, NEVER calling through to our hook.  To counter this:
+//
+// 1. We hook Module._load initially (catches pre-VS Code boot edge cases).
+// 2. We poll every 10ms to detect when VS Code re-hooks _load.
+// 3. When detected, we re-wrap on top of VS Code's hook — so require('vscode')
+//    goes through: our new wrapper → VS Code's hook → returns API → we wrap it.
+// 4. We tag each wrapper with __synthiHook to detect our own functions.
+// 5. We also duck-type the module cache as a belt-and-suspenders fallback.
 // ============================================================================
 
 const Module = require('module');
-const originalLoad = Module._load;
+const realOriginalLoad = Module._load;  // The TRUE original before anyone hooks
 
 /** @type {boolean} Whether we've already wrapped the vscode module */
 let vsCodeWrapped = false;
@@ -259,46 +270,80 @@ let vsCodeWrapped = false;
 let realVscodeApi = null;
 
 /**
- * Intercept Module._load to wrap the `vscode` module when it's first loaded.
- * All other modules pass through untouched.
- *
- * SAFETY: All wrapping is inside try/catch. If anything fails, the original
- * module is returned unchanged — extensions work normally, just without
- * UI observation.
+ * Attempt to wrap a result that might be the vscode API.
+ * Returns true if wrapping was performed.
  */
-Module._load = function (request, parent, isMain) {
-  const result = originalLoad.apply(this, arguments);
+function _tryWrapVscodeResult(result, source) {
+  if (vsCodeWrapped || !result || typeof result !== 'object') return false;
+  // Duck-type: must have window, commands, workspace
+  if (!result.window || !result.commands || !result.workspace) return false;
 
-  // Only intercept the 'vscode' module, and only once
-  if (request === 'vscode' && !vsCodeWrapped && result && typeof result === 'object') {
-    vsCodeWrapped = true;
-    realVscodeApi = result;
-    try {
-      log('Intercepted vscode module — wrapping API surfaces');
-      log(`  vscode.window exists: ${!!result.window}`);
-      log(`  registerWebviewViewProvider exists: ${!!result.window?.registerWebviewViewProvider}`);
-      log(`  registerTreeDataProvider exists: ${!!result.window?.registerTreeDataProvider}`);
-      log(`  parent module: ${parent?.filename || 'unknown'}`);
-      wrapVSCodeAPI(result);
-    } catch (e) {
-      // CRITICAL: never crash the Extension Host
-      logError(`Failed to wrap vscode API (extensions will work, UI bridge disabled): ${e.message}`);
-      logError(e.stack || '');
+  vsCodeWrapped = true;
+  realVscodeApi = result;
+  try {
+    log(`Intercepted vscode module via ${source}`);
+    log(`  vscode.window exists: ${!!result.window}`);
+    log(`  registerWebviewViewProvider exists: ${!!result.window?.registerWebviewViewProvider}`);
+    log(`  registerTreeDataProvider exists: ${!!result.window?.registerTreeDataProvider}`);
+    wrapVSCodeAPI(result);
+  } catch (e) {
+    logError(`Failed to wrap vscode API (extensions will work, UI bridge disabled): ${e.message}`);
+    logError(e.stack || '');
+  }
+  return true;
+}
+
+/**
+ * Create a Module._load wrapper that wraps ANY underlying load function.
+ * Tagged with __synthiHook so we can detect our own functions.
+ */
+function _createLoadWrapper(underlyingLoad) {
+  function synthiModuleLoadHook(request, parent, isMain) {
+    const result = underlyingLoad.apply(this, arguments);
+    if (request === 'vscode' && !vsCodeWrapped) {
+      _tryWrapVscodeResult(result, `Module._load (underlying: ${underlyingLoad.name || 'anonymous'})`);
     }
+    return result;
+  }
+  synthiModuleLoadHook.__synthiHook = true;
+  return synthiModuleLoadHook;
+}
+
+// Initial hook (will be active until VS Code re-hooks _load)
+Module._load = _createLoadWrapper(realOriginalLoad);
+
+// ---------------------------------------------------------------------------
+// Re-hook detection: VS Code's Extension Host will do
+//   const orig = Module._load;  Module._load = function(...) { ... };
+// This replaces our hook with theirs. We poll to detect this and re-wrap.
+// ---------------------------------------------------------------------------
+let _rehookAttempts = 0;
+const MAX_REHOOK_ATTEMPTS = 300;  // 3 seconds at 10ms intervals
+
+const _rehookInterval = setInterval(() => {
+  _rehookAttempts++;
+
+  // Stop polling once we've wrapped the API or exhausted attempts
+  if (vsCodeWrapped || _rehookAttempts > MAX_REHOOK_ATTEMPTS) {
+    clearInterval(_rehookInterval);
+    if (!vsCodeWrapped) {
+      log(`Module._load re-hook detection stopped after ${_rehookAttempts} attempts — vscode API not intercepted`);
+    }
+    return;
   }
 
-  return result;
-};
+  // Check if Module._load is still our hook
+  if (!Module._load.__synthiHook) {
+    // VS Code (or something else) replaced our hook — re-wrap on top
+    const theirHook = Module._load;
+    log(`Module._load was re-hooked (by: ${theirHook.name || 'anonymous'}), re-wrapping on top`);
+    Module._load = _createLoadWrapper(theirHook);
+  }
+}, 10);
 
-// ============================================================================
-// Fallback: Also hook Module._resolveFilename
-//
-// VS Code's Extension Host may use a custom module loader that intercepts
-// require('vscode') at a higher level than Module._load.  If Module._load
-// never sees request === 'vscode', we try to detect and wrap the module
-// by also hooking _resolveFilename and monitoring the module cache.
-// ============================================================================
-
+// ---------------------------------------------------------------------------
+// Fallback: Also hook Module._resolveFilename for diagnostics
+// ---------------------------------------------------------------------------
 if (Module._resolveFilename) {
   const originalResolveFilename = Module._resolveFilename;
   Module._resolveFilename = function (request, parent, isMain, options) {
@@ -309,38 +354,31 @@ if (Module._resolveFilename) {
   };
 }
 
-// Periodic check: if Module._load never caught 'vscode', check the module
-// cache directly.  Some VS Code Extension Host versions pre-load the API
-// and add it to require.cache under a virtual path.
+// ---------------------------------------------------------------------------
+// Fallback 2: Duck-type the module cache
+// Some VS Code Extension Host versions pre-load the API and add it to
+// require.cache under a virtual path.
+// ---------------------------------------------------------------------------
 let _cacheCheckAttempts = 0;
 const _cacheCheckInterval = setInterval(() => {
   _cacheCheckAttempts++;
-  if (vsCodeWrapped || _cacheCheckAttempts > 30) {
+  if (vsCodeWrapped || _cacheCheckAttempts > 60) {
     clearInterval(_cacheCheckInterval);
     if (!vsCodeWrapped) {
-      log('Module._load never intercepted vscode after 30 attempts — wrapping may not work');
+      log('Module cache duck-typing gave up after 60 attempts');
     }
     return;
   }
 
-  // Search the module cache for the vscode API
   const cache = require.cache || {};
   for (const key of Object.keys(cache)) {
     const mod = cache[key];
     if (mod && mod.exports && typeof mod.exports === 'object' && !vsCodeWrapped) {
       const exp = mod.exports;
-      // Detect vscode API by duck-typing
       if (exp.window && exp.commands && exp.workspace &&
           typeof exp.window.registerWebviewViewProvider === 'function' &&
           typeof exp.window.registerTreeDataProvider === 'function') {
-        vsCodeWrapped = true;
-        realVscodeApi = exp;
-        log(`Found vscode API in module cache via duck-typing: ${key}`);
-        try {
-          wrapVSCodeAPI(exp);
-        } catch (e) {
-          logError(`Failed to wrap cached vscode API: ${e.message}`);
-        }
+        _tryWrapVscodeResult(exp, `module cache duck-typing (key: ${key})`);
         clearInterval(_cacheCheckInterval);
         return;
       }
