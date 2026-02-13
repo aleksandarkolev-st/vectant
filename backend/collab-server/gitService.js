@@ -978,11 +978,12 @@ class GitService {
 
     // Get structured diff with parsed hunks for better frontend display
     async getDiff(slug, filePath, options = {}) {
-        if (!this.isRepoExists(slug)) return { raw: '', hunks: [] };
-        if (!this.isRepoInitialized(slug)) return { raw: '', hunks: [] };
+        const userId = options.userId;
+        if (!this.isRepoExists(slug, userId)) return { raw: '', hunks: [] };
+        if (!this.isRepoInitialized(slug, userId)) return { raw: '', hunks: [] };
         
         try {
-            const git = this.getGit(slug);
+            const git = this.getGit(slug, userId);
             let raw;
             if (filePath) {
                 raw = await git.diff([filePath]);
@@ -1042,11 +1043,12 @@ class GitService {
     }
 
     async getLog(slug, options = {}) {
-        if (!this.isRepoExists(slug)) return { all: [], total: 0 };
-        if (!this.isRepoInitialized(slug)) return { all: [], total: 0 };
+        const userId = options.userId;
+        if (!this.isRepoExists(slug, userId)) return { all: [], total: 0 };
+        if (!this.isRepoInitialized(slug, userId)) return { all: [], total: 0 };
         
         try {
-            const git = this.getGit(slug);
+            const git = this.getGit(slug, userId);
             const { page = 1, limit = 50 } = options;
             const skip = (page - 1) * limit;
             
@@ -1080,12 +1082,12 @@ class GitService {
     }
 
     // Git blame support
-    async getBlame(slug, filePath) {
-        if (!this.isRepoExists(slug)) return [];
-        if (!this.isRepoInitialized(slug)) return [];
+    async getBlame(slug, filePath, userId) {
+        if (!this.isRepoExists(slug, userId)) return [];
+        if (!this.isRepoInitialized(slug, userId)) return [];
         
         try {
-            const git = this.getGit(slug);
+            const git = this.getGit(slug, userId);
             // Use porcelain format for easier parsing
             const blameOutput = await git.raw(['blame', '--line-porcelain', filePath]);
             return this.parseBlame(blameOutput);
@@ -1130,9 +1132,9 @@ class GitService {
     }
 
     // ===== Stash Operations =====
-    async stashList(slug) {
+    async stashList(slug, userId) {
         try {
-            const git = this.getGit(slug);
+            const git = this.getGit(slug, userId);
             const result = await git.stashList();
             return result.all || [];
         } catch (e) {
@@ -1140,60 +1142,60 @@ class GitService {
         }
     }
 
-    async stashPush(slug, message = '') {
+    async stashPush(slug, message = '', userId) {
         return this.withLock(slug, async () => {
             try {
-                const git = this.getGit(slug);
+                const git = this.getGit(slug, userId);
                 const options = message ? ['-m', message] : [];
                 await git.stash(['push', ...options]);
-                return this.getStatus(slug);
+                return this.getStatus(slug, userId);
             } catch (e) {
                 throw this.mapGitError(e, slug);
             }
-        });
+        }, userId);
     }
 
-    async stashPop(slug, index = 0) {
+    async stashPop(slug, index = 0, userId) {
         return this.withLock(slug, async () => {
             try {
-                const git = this.getGit(slug);
+                const git = this.getGit(slug, userId);
                 await git.stash(['pop', `stash@{${index}}`]);
-                return this.getStatus(slug);
+                return this.getStatus(slug, userId);
             } catch (e) {
                 throw this.mapGitError(e, slug);
             }
-        });
+        }, userId);
     }
 
-    async stashDrop(slug, index = 0) {
+    async stashDrop(slug, index = 0, userId) {
         return this.withLock(slug, async () => {
             try {
-                const git = this.getGit(slug);
+                const git = this.getGit(slug, userId);
                 await git.stash(['drop', `stash@{${index}}`]);
-                return this.stashList(slug);
+                return this.stashList(slug, userId);
             } catch (e) {
                 throw this.mapGitError(e, slug);
             }
-        });
+        }, userId);
     }
 
-    async stashApply(slug, index = 0) {
+    async stashApply(slug, index = 0, userId) {
         return this.withLock(slug, async () => {
             try {
-                const git = this.getGit(slug);
+                const git = this.getGit(slug, userId);
                 await git.stash(['apply', `stash@{${index}}`]);
-                return this.getStatus(slug);
+                return this.getStatus(slug, userId);
             } catch (e) {
                 throw this.mapGitError(e, slug);
             }
-        });
+        }, userId);
     }
 
-    async getUnpushedCommits(slug, max = 50) {
+    async getUnpushedCommits(slug, max = 50, userId) {
         try {
-            if (!this.isRepoExists(slug)) return [];
-            if (!this.isRepoInitialized(slug)) return [];
-            const git = this.getGit(slug);
+            if (!this.isRepoExists(slug, userId)) return [];
+            if (!this.isRepoInitialized(slug, userId)) return [];
+            const git = this.getGit(slug, userId);
             const branchSummary = await git.branchLocal();
             const currentBranch = branchSummary.current;
             if (!currentBranch) return [];
@@ -1257,11 +1259,11 @@ class GitService {
     }
 
     // Get commits that are in upstream but not in local (incoming/behind)
-    async getIncomingCommits(slug, max = 50) {
+    async getIncomingCommits(slug, max = 50, userId) {
         try {
-            if (!this.isRepoExists(slug)) return [];
-            if (!this.isRepoInitialized(slug)) return [];
-            const git = this.getGit(slug);
+            if (!this.isRepoExists(slug, userId)) return [];
+            if (!this.isRepoInitialized(slug, userId)) return [];
+            const git = this.getGit(slug, userId);
             const branchSummary = await git.branchLocal();
             const currentBranch = branchSummary.current;
             if (!currentBranch) return [];
