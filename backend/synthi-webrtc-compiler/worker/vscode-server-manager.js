@@ -978,6 +978,16 @@ async function startServer(slug, options = {}) {
       _patchExtensionHostForPreload(binary, preloadPath, bridgePort);
     }
 
+    // ── Ensure required extensions are installed ──
+    // Extensions MUST be on disk before the Extension Host starts,
+    // otherwise there's nothing for it to load.
+    try {
+      const extResult = await _ensureRequiredExtensions(binary);
+      process.stderr.write(`[vscode-server-manager] Extension verification: ${extResult.alreadyPresent.length} present, ${extResult.installed.length} installed, ${extResult.failed.length} failed\n`);
+    } catch (extErr) {
+      process.stderr.write(`[vscode-server-manager] Extension verification failed (non-fatal): ${extErr.message}\n`);
+    }
+
     process.stderr.write(`[vscode-server-manager] Starting: ${binary} ${args.join(' ')}\n`);
 
     serverProcess = spawn(binary, args, {
@@ -1600,6 +1610,113 @@ function listInstalledExtensions() {
   } catch (_) {
     return [];
   }
+}
+
+// ============================================================================
+// Extension Installation Verification
+//
+// Ensures required extensions are actually installed in EXTENSIONS_DIR
+// before triggering the Extension Host.  Extensions MUST be present on
+// disk for the EH to load them.  If they're missing, we auto-install
+// using `code-server --install-extension`.
+// ============================================================================
+
+/** Extensions that must be installed for the Synthi sidebar to work */
+const REQUIRED_EXTENSIONS = [
+  'GitHub.vscode-pull-request-github',
+];
+
+/**
+ * Verify all required extensions are installed and install any that are missing.
+ * Reads the extensions directory to check for existing installations and uses
+ * the code-server binary to install missing ones.
+ *
+ * @param {string} binary - Path to the code-server binary
+ * @returns {Promise<{installed: string[], alreadyPresent: string[], failed: string[]}>}
+ */
+async function _ensureRequiredExtensions(binary) {
+  const result = { installed: [], alreadyPresent: [], failed: [] };
+
+  // Ensure the extensions directory exists
+  fs.mkdirSync(EXTENSIONS_DIR, { recursive: true });
+
+  // Read currently installed extensions
+  let installedDirs = [];
+  try {
+    installedDirs = fs.readdirSync(EXTENSIONS_DIR);
+  } catch (e) {
+    process.stderr.write(`[ext-install] Cannot read extensions dir: ${e.message}\n`);
+  }
+
+  process.stderr.write(`[ext-install] Extensions directory: ${EXTENSIONS_DIR}\n`);
+  process.stderr.write(`[ext-install] Found ${installedDirs.length} extension dirs: [${installedDirs.slice(0, 15).join(', ')}]\n`);
+
+  for (const extId of REQUIRED_EXTENSIONS) {
+    // Check if extension is already installed (prefix match, case-insensitive)
+    const extIdLower = extId.toLowerCase();
+    const found = installedDirs.find(dir => dir.toLowerCase().startsWith(extIdLower));
+
+    if (found) {
+      // Verify the directory actually has a package.json with a main entry
+      const pkgPath = path.join(EXTENSIONS_DIR, found, 'package.json');
+      let hasMain = false;
+      try {
+        const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+        hasMain = !!pkg.main || !!pkg.browser;
+        if (hasMain) {
+          process.stderr.write(`[ext-install] ✓ ${extId} installed (dir: ${found}, main: ${pkg.main || pkg.browser})\n`);
+          result.alreadyPresent.push(extId);
+          continue;
+        } else {
+          process.stderr.write(`[ext-install] ⚠ ${extId} dir exists but no main entry — reinstalling\n`);
+        }
+      } catch (e) {
+        process.stderr.write(`[ext-install] ⚠ ${extId} dir exists but package.json unreadable: ${e.message} — reinstalling\n`);
+      }
+    } else {
+      process.stderr.write(`[ext-install] ✗ ${extId} NOT found in extensions dir — installing\n`);
+    }
+
+    // Install the extension
+    try {
+      process.stderr.write(`[ext-install] Installing ${extId} via code-server CLI...\n`);
+      const output = execFileSync(binary, [
+        '--install-extension', extId,
+        '--extensions-dir', EXTENSIONS_DIR,
+      ], {
+        timeout: 180000,   // 3 minutes for large extensions
+        stdio: ['ignore', 'pipe', 'pipe'],
+        env: { ...process.env, VSCODE_CLI_DISABLE_GPU: '1' },
+      });
+      process.stderr.write(`[ext-install] ✓ ${extId} installed successfully\n`);
+      const stdout = output.toString().trim();
+      if (stdout) process.stderr.write(`[ext-install]   output: ${stdout.slice(0, 300)}\n`);
+      result.installed.push(extId);
+    } catch (installErr) {
+      process.stderr.write(`[ext-install] ✗ Failed to install ${extId}: ${installErr.message}\n`);
+      if (installErr.stderr) {
+        process.stderr.write(`[ext-install]   stderr: ${installErr.stderr.toString().slice(0, 500)}\n`);
+      }
+      result.failed.push(extId);
+    }
+  }
+
+  // Final check: list what's in the extensions dir now
+  try {
+    const finalDirs = fs.readdirSync(EXTENSIONS_DIR);
+    process.stderr.write(`[ext-install] Final extensions dir: ${finalDirs.length} entries\n`);
+    for (const dir of finalDirs) {
+      try {
+        const pkg = JSON.parse(fs.readFileSync(path.join(EXTENSIONS_DIR, dir, 'package.json'), 'utf8'));
+        const hasUI = !!(pkg.contributes?.views || pkg.contributes?.viewsContainers);
+        process.stderr.write(`[ext-install]   ${dir} → main: ${pkg.main || pkg.browser || '(none)'}, UI: ${hasUI}\n`);
+      } catch (_) {
+        process.stderr.write(`[ext-install]   ${dir} → (no readable package.json)\n`);
+      }
+    }
+  } catch (_) {}
+
+  return result;
 }
 
 // ============================================================================
