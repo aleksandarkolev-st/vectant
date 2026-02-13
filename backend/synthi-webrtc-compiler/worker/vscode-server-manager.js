@@ -1012,20 +1012,46 @@ async function startServer(slug, options = {}) {
 
 /**
  * Trigger the Extension Host to start by opening a WebSocket connection to
- * code-server.  Code-server only spawns the Extension Host when a browser
- * session connects.  We simulate this by making an HTTP upgrade request.
+ * code-server and speaking the VS Code remote protocol.
  *
- * The connection is kept alive so the Extension Host stays running.
- * If it fails, it's non-fatal — extensions just won't have the preload
- * bridge active.
+ * code-server only spawns the Extension Host when a client connects via
+ * the remote protocol (handleUpgrade → auth → connectionType).  A bare
+ * WebSocket upgrade is not enough — the server waits for the client to
+ * send a Control message with { type:'auth' }, responds with
+ * { type:'sign' }, and then expects { desiredConnectionType:2 }
+ * (ExtensionHost) to actually fork the Extension Host process.
+ *
+ * We use --without-connection-token (set by code-server), so any auth
+ * token is accepted.
  *
  * @param {number} port
  * @param {string} token
  * @returns {Promise<void>}
  */
 async function _triggerExtensionHostStartup(port, token) {
-  // First, make a GET request to load the workspace page. This may
-  // trigger some initialization in code-server.
+  // ── Step 0: Read VS Code's commit hash from product.json ──────────
+  let vsCodeCommit = 'unknown';
+  try {
+    const binary = findServerBinary();
+    let resolvedBinary = binary;
+    try { resolvedBinary = fs.realpathSync(binary); } catch (_) {}
+    // code-server: <root>/lib/code-server-4.x/lib/vscode/product.json
+    const codeServerRoot = path.dirname(path.dirname(resolvedBinary));
+    const productCandidates = [
+      path.join(codeServerRoot, 'lib', 'vscode', 'product.json'),
+      path.join(codeServerRoot, 'product.json'),
+      path.join(path.dirname(codeServerRoot), 'lib', 'vscode', 'product.json'),
+    ];
+    for (const p of productCandidates) {
+      try {
+        const product = JSON.parse(fs.readFileSync(p, 'utf8'));
+        if (product.commit) { vsCodeCommit = product.commit; break; }
+      } catch (_) {}
+    }
+  } catch (_) {}
+  process.stderr.write(`[vscode-server-manager] VS Code commit for EH trigger: ${vsCodeCommit}\n`);
+
+  // ── Step 1: Load the workspace page (may bootstrap session) ────────
   await new Promise((resolve) => {
     const req = http.get(`http://127.0.0.1:${port}/`, (res) => {
       res.resume(); // Drain
@@ -1036,13 +1062,12 @@ async function _triggerExtensionHostStartup(port, token) {
     req.setTimeout(5000, () => { req.destroy(); resolve(); });
   });
 
-  // Now initiate a WebSocket connection. This is what triggers code-server
-  // to create a remote session and spawn the Extension Host.
+  // ── Step 2: WebSocket upgrade ──────────────────────────────────────
   const reconnToken = crypto.randomBytes(16).toString('hex');
   const wsPath = `/?reconnectionToken=${reconnToken}&reconnection=false&skipWebSocketFrames=false`;
   const wsKey = crypto.randomBytes(16).toString('base64');
 
-  return new Promise((resolve, reject) => {
+  return new Promise((resolve) => {
     const req = http.request({
       hostname: '127.0.0.1',
       port,
@@ -1057,49 +1082,185 @@ async function _triggerExtensionHostStartup(port, token) {
       },
     });
 
-    req.on('upgrade', (res, socket, head) => {
-      process.stderr.write(`[vscode-server-manager] WebSocket upgrade successful — Extension Host should start\n`);
+    req.on('upgrade', (_res, socket, head) => {
+      process.stderr.write(`[vscode-server-manager] WebSocket upgrade ok, sending VS Code protocol handshake\n`);
 
-      // Keep the socket alive but don't block process exit
       socket.unref();
       socket.setKeepAlive(true, 30000);
 
-      // Handle closure gracefully
+      // ── VS Code remote protocol helpers ──────────────────────────
+      // WebSocket frame encoder (client → server, MUST be masked)
+      function sendWSFrame(payload) {
+        const buf = Buffer.isBuffer(payload) ? payload : Buffer.from(payload);
+        const mask = crypto.randomBytes(4);
+        const masked = Buffer.alloc(buf.length);
+        for (let i = 0; i < buf.length; i++) masked[i] = buf[i] ^ mask[i % 4];
+
+        let hdr;
+        if (buf.length < 126) {
+          hdr = Buffer.alloc(6);
+          hdr[0] = 0x82; // FIN + binary
+          hdr[1] = 0x80 | buf.length;
+          mask.copy(hdr, 2);
+        } else if (buf.length < 65536) {
+          hdr = Buffer.alloc(8);
+          hdr[0] = 0x82;
+          hdr[1] = 0xFE;
+          hdr.writeUInt16BE(buf.length, 2);
+          mask.copy(hdr, 4);
+        } else {
+          hdr = Buffer.alloc(14);
+          hdr[0] = 0x82;
+          hdr[1] = 0xFF;
+          hdr.writeUInt32BE(0, 2);
+          hdr.writeUInt32BE(buf.length, 6);
+          mask.copy(hdr, 10);
+        }
+        socket.write(Buffer.concat([hdr, masked]));
+      }
+
+      // VS Code PersistentProtocol control message (type = 2)
+      let nextMsgId = 1;
+      function makeControlMsg(jsonObj) {
+        const json = JSON.stringify(jsonObj);
+        const jsonBuf = Buffer.from(json, 'utf8');
+        const hdr = Buffer.alloc(13);
+        hdr[0] = 2; // ProtocolMessageType.Control
+        hdr.writeUInt32BE(nextMsgId++, 1);
+        hdr.writeUInt32BE(0, 5); // ack
+        hdr.writeUInt32BE(jsonBuf.length, 9);
+        return Buffer.concat([hdr, jsonBuf]);
+      }
+
+      // WebSocket frame decoder (server → client, unmasked)
+      function tryParseWSFrame(buf) {
+        if (buf.length < 2) return null;
+        let payloadLen = buf[1] & 0x7F;
+        let offset = 2;
+        if (payloadLen === 126) {
+          if (buf.length < 4) return null;
+          payloadLen = buf.readUInt16BE(2);
+          offset = 4;
+        } else if (payloadLen === 127) {
+          if (buf.length < 10) return null;
+          payloadLen = buf.readUInt32BE(6); // lower 32 bits
+          offset = 10;
+        }
+        if (buf[1] & 0x80) offset += 4; // skip mask if present
+        if (buf.length < offset + payloadLen) return null;
+        return {
+          opcode: buf[0] & 0x0F,
+          payload: buf.slice(offset, offset + payloadLen),
+          totalLength: offset + payloadLen,
+        };
+      }
+
+      // Parse VS Code protocol message from WebSocket payload
+      function parseControlMsg(payload) {
+        if (payload.length < 13) return null;
+        const dataLen = payload.readUInt32BE(9);
+        if (payload.length < 13 + dataLen) return null;
+        try {
+          return JSON.parse(payload.slice(13, 13 + dataLen).toString('utf8'));
+        } catch (_) { return null; }
+      }
+
+      // ── Protocol state machine ──────────────────────────────────
+      let step = 'awaitSign';
+      let recvBuf = head && head.length > 0 ? Buffer.from(head) : Buffer.alloc(0);
+
+      // Step 2a: Send auth request
+      sendWSFrame(makeControlMsg({
+        type: 'auth',
+        auth: '00000000-0000-0000-0000-000000000000',
+      }));
+      process.stderr.write(`[vscode-server-manager] EH trigger: sent auth request\n`);
+
+      socket.on('data', (chunk) => {
+        recvBuf = Buffer.concat([recvBuf, chunk]);
+
+        // Process all complete frames in buffer
+        while (true) {
+          const frame = tryParseWSFrame(recvBuf);
+          if (!frame) break;
+          recvBuf = recvBuf.slice(frame.totalLength);
+
+          // WebSocket close/ping/pong
+          if (frame.opcode === 0x08) {
+            process.stderr.write(`[vscode-server-manager] EH trigger: server closed WebSocket\n`);
+            return;
+          }
+          if (frame.opcode === 0x09) { // Ping → Pong
+            const pong = Buffer.alloc(2);
+            pong[0] = 0x8A; pong[1] = 0x80; // FIN + pong, masked, 0 length
+            const mask = crypto.randomBytes(4);
+            socket.write(Buffer.concat([pong, mask]));
+            continue;
+          }
+
+          const msg = parseControlMsg(frame.payload);
+          if (!msg) {
+            process.stderr.write(`[vscode-server-manager] EH trigger: rx unparseable frame (opcode=${frame.opcode}, ${frame.payload.length}b)\n`);
+            continue;
+          }
+
+          process.stderr.write(`[vscode-server-manager] EH trigger: rx ${JSON.stringify(msg).slice(0, 200)}\n`);
+
+          if (step === 'awaitSign' && msg.type === 'sign') {
+            step = 'awaitOk';
+            // Step 2b: Send ExtensionHost connection request
+            sendWSFrame(makeControlMsg({
+              type: 'connectionType',
+              commit: vsCodeCommit,
+              signedData: msg.data || '',
+              desiredConnectionType: 2, // ConnectionType.ExtensionHost
+              args: { language: 'en' },
+            }));
+            process.stderr.write(`[vscode-server-manager] EH trigger: sent ExtensionHost connection request\n`);
+          }
+          else if (step === 'awaitOk') {
+            if (msg.type === 'ok') {
+              process.stderr.write(`[vscode-server-manager] Extension Host connection established!\n`);
+              step = 'done';
+            } else if (msg.type === 'error') {
+              process.stderr.write(`[vscode-server-manager] EH connection rejected: ${msg.reason || JSON.stringify(msg)}\n`);
+              step = 'error';
+            }
+          }
+        }
+      });
+
       socket.on('error', (err) => {
         process.stderr.write(`[vscode-server-manager] EH trigger socket error: ${err.message}\n`);
       });
       socket.on('close', () => {
-        process.stderr.write(`[vscode-server-manager] EH trigger socket closed\n`);
+        process.stderr.write(`[vscode-server-manager] EH trigger socket closed (step=${step})\n`);
       });
 
-      // Wait a moment for the Extension Host to actually spawn
+      // Timeout: resolve regardless after 8s — extensions may still start later
       setTimeout(() => {
-        process.stderr.write(`[vscode-server-manager] Extension Host should now be running\n`);
-        // Re-request provider list in case the EH started and extensions
-        // registered providers before the preload connected
-        sendToPreloadClients({ action: 'listProviders' });
-        sendToPreloadClients({ action: 'refreshAllTrees' });
+        if (step !== 'done') {
+          process.stderr.write(`[vscode-server-manager] EH trigger: protocol timeout (step=${step}), continuing\n`);
+        }
         resolve();
-      }, 3000);
+      }, 8000);
     });
 
     req.on('response', (res) => {
-      // If we get a normal HTTP response instead of upgrade, the server
-      // may not support WebSocket at this endpoint
       res.resume();
       process.stderr.write(`[vscode-server-manager] EH trigger: got HTTP ${res.statusCode} instead of upgrade\n`);
-      resolve(); // non-fatal
+      resolve();
     });
 
     req.on('error', (err) => {
       process.stderr.write(`[vscode-server-manager] EH trigger WebSocket error: ${err.message}\n`);
-      resolve(); // non-fatal
+      resolve();
     });
 
     req.setTimeout(10000, () => {
       req.destroy();
       process.stderr.write(`[vscode-server-manager] EH trigger WebSocket timeout\n`);
-      resolve(); // non-fatal
+      resolve();
     });
 
     req.end();
