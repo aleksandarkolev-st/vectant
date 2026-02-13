@@ -312,22 +312,57 @@ function _tryWrapVscodeResult(result, source) {
 /** The "real" underlying _load function (VS Code's hook or Node's original) */
 let _underlyingLoad = realOriginalLoad;
 
+/**
+ * Re-entrancy guard.  VS Code's require-interceptor captures our proxy
+ * as `originalLoad` (from our getter), then assigns its own hook (captured
+ * by our setter as `_underlyingLoad`).  For non-factory requests (anything
+ * except 'vscode'), VS Code's hook calls `originalLoad` → our proxy →
+ * `_underlyingLoad` → VS Code's hook → infinite loop.
+ *
+ * The guard detects re-entrance and delegates directly to Node's true
+ * original Module._load, breaking the cycle.
+ */
+let _proxyReentrant = false;
+let _proxyCallCount = 0;
+
 function _synthiModuleLoadProxy(request, parent, isMain) {
-  const result = _underlyingLoad.apply(this, arguments);
-  if (request === 'vscode' && !vsCodeWrapped) {
-    _tryWrapVscodeResult(result, `Module._load proxy (underlying: ${_underlyingLoad.name || 'anonymous'})`);
+  if (_proxyReentrant) {
+    // We're being called from inside VS Code's hook, which captured our
+    // proxy as its `originalLoad`.  Break the cycle → Node's true original.
+    return realOriginalLoad.apply(this, arguments);
   }
-  return result;
+
+  _proxyReentrant = true;
+  _proxyCallCount++;
+
+  // Log the first 5 calls and then periodically for diagnostics
+  if (_proxyCallCount <= 5 || _proxyCallCount % 200 === 0) {
+    log(`Module._load proxy call #${_proxyCallCount}: request="${request}"`);
+  }
+
+  try {
+    const result = _underlyingLoad.apply(this, arguments);
+    if (!vsCodeWrapped && (request === 'vscode' || request === 'vscode-nls')) {
+      if (request === 'vscode') {
+        _tryWrapVscodeResult(result, `Module._load proxy (call #${_proxyCallCount})`);
+      }
+    }
+    return result;
+  } finally {
+    _proxyReentrant = false;
+  }
 }
 _synthiModuleLoadProxy.__synthiHook = true;
 
 let _loadTrapActive = false;
+let _loadReassignCount = 0;
 try {
   Object.defineProperty(Module, '_load', {
     get() { return _synthiModuleLoadProxy; },
     set(newLoad) {
       if (newLoad && !newLoad.__synthiHook) {
-        log(`Module._load reassigned (by: ${newLoad.name || 'anonymous'}), captured via property trap`);
+        _loadReassignCount++;
+        log(`Module._load reassigned #${_loadReassignCount} (by: ${newLoad.name || 'anonymous'}), captured via property trap`);
         _underlyingLoad = newLoad;
       }
     },
@@ -338,14 +373,8 @@ try {
   log('Module._load property trap installed');
 } catch (e) {
   logError(`Module._load property trap failed: ${e.message} — falling back to direct hook`);
-  Module._load = function synthiFallbackLoadHook(request, parent, isMain) {
-    const result = realOriginalLoad.apply(this, arguments);
-    if (request === 'vscode' && !vsCodeWrapped) {
-      _tryWrapVscodeResult(result, 'Module._load fallback hook');
-    }
-    return result;
-  };
-  Module._load.__synthiHook = true;
+  // Fallback: use the same re-entrancy-guarded proxy as a direct override
+  Module._load = _synthiModuleLoadProxy;
 }
 
 // ---------------------------------------------------------------------------
@@ -356,20 +385,32 @@ try {
 // where VS Code pre-populates the cache so Module._load is never called.
 // ---------------------------------------------------------------------------
 let _underlyingResolveFilename = Module._resolveFilename;
+const _origResolveFilename = Module._resolveFilename;  // True original
+let _resolveReentrant = false;
 
 function _synthiResolveFilenameProxy(request, parent, isMain, options) {
-  const resolved = _underlyingResolveFilename.apply(this, arguments);
-  if (request === 'vscode' && !vsCodeWrapped) {
-    log(`Module._resolveFilename: 'vscode' → ${resolved} (parent: ${parent?.filename || 'unknown'})`);
-    // Try the global cache immediately
-    try {
-      const cached = Module._cache?.[resolved];
-      if (cached && cached.exports) {
-        _tryWrapVscodeResult(cached.exports, `_resolveFilename cache hit (${resolved})`);
-      }
-    } catch (_) {}
+  if (_resolveReentrant) {
+    // Same circular reference issue as Module._load — break cycle
+    return _origResolveFilename.apply(this, arguments);
   }
-  return resolved;
+
+  _resolveReentrant = true;
+  try {
+    const resolved = _underlyingResolveFilename.apply(this, arguments);
+    if (request === 'vscode' && !vsCodeWrapped) {
+      log(`Module._resolveFilename: 'vscode' → ${resolved} (parent: ${parent?.filename || 'unknown'})`);
+      // Try the global cache immediately
+      try {
+        const cached = Module._cache?.[resolved];
+        if (cached && cached.exports) {
+          _tryWrapVscodeResult(cached.exports, `_resolveFilename cache hit (${resolved})`);
+        }
+      } catch (_) {}
+    }
+    return resolved;
+  } finally {
+    _resolveReentrant = false;
+  }
 }
 
 try {
