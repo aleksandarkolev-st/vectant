@@ -1000,6 +1000,14 @@ async function startServer(slug, options = {}) {
     // Start health checks
     startHealthChecks(port);
 
+    // ── Trigger Extension Host startup ──
+    // code-server only spawns the Extension Host when a browser session
+    // connects via WebSocket. Since we use it headlessly, we initiate a
+    // WebSocket connection ourselves to force the EH to start.
+    _triggerExtensionHostStartup(port, token).catch(err => {
+      process.stderr.write(`[vscode-server-manager] EH trigger failed (non-fatal): ${err.message}\n`);
+    });
+
     process.stderr.write(`[vscode-server-manager] Server ready on port ${port}\n`);
     return { port, token, workspaceDir };
 
@@ -1008,6 +1016,102 @@ async function startServer(slug, options = {}) {
     sendEvent('serverStatus', 'error', err.message);
     throw err;
   }
+}
+
+/**
+ * Trigger the Extension Host to start by opening a WebSocket connection to
+ * code-server.  Code-server only spawns the Extension Host when a browser
+ * session connects.  We simulate this by making an HTTP upgrade request.
+ *
+ * The connection is kept alive so the Extension Host stays running.
+ * If it fails, it's non-fatal — extensions just won't have the preload
+ * bridge active.
+ *
+ * @param {number} port
+ * @param {string} token
+ * @returns {Promise<void>}
+ */
+async function _triggerExtensionHostStartup(port, token) {
+  // First, make a GET request to load the workspace page. This may
+  // trigger some initialization in code-server.
+  await new Promise((resolve) => {
+    const req = http.get(`http://127.0.0.1:${port}/`, (res) => {
+      res.resume(); // Drain
+      process.stderr.write(`[vscode-server-manager] Workspace page loaded (status: ${res.statusCode})\n`);
+      resolve();
+    });
+    req.on('error', () => resolve());
+    req.setTimeout(5000, () => { req.destroy(); resolve(); });
+  });
+
+  // Now initiate a WebSocket connection. This is what triggers code-server
+  // to create a remote session and spawn the Extension Host.
+  const reconnToken = crypto.randomBytes(16).toString('hex');
+  const wsPath = `/?reconnectionToken=${reconnToken}&reconnection=false&skipWebSocketFrames=false`;
+  const wsKey = crypto.randomBytes(16).toString('base64');
+
+  return new Promise((resolve, reject) => {
+    const req = http.request({
+      hostname: '127.0.0.1',
+      port,
+      path: wsPath,
+      method: 'GET',
+      headers: {
+        'Connection': 'Upgrade',
+        'Upgrade': 'websocket',
+        'Sec-WebSocket-Version': '13',
+        'Sec-WebSocket-Key': wsKey,
+        'Host': `127.0.0.1:${port}`,
+      },
+    });
+
+    req.on('upgrade', (res, socket, head) => {
+      process.stderr.write(`[vscode-server-manager] WebSocket upgrade successful — Extension Host should start\n`);
+
+      // Keep the socket alive but don't block process exit
+      socket.unref();
+      socket.setKeepAlive(true, 30000);
+
+      // Handle closure gracefully
+      socket.on('error', (err) => {
+        process.stderr.write(`[vscode-server-manager] EH trigger socket error: ${err.message}\n`);
+      });
+      socket.on('close', () => {
+        process.stderr.write(`[vscode-server-manager] EH trigger socket closed\n`);
+      });
+
+      // Wait a moment for the Extension Host to actually spawn
+      setTimeout(() => {
+        process.stderr.write(`[vscode-server-manager] Extension Host should now be running\n`);
+        // Re-request provider list in case the EH started and extensions
+        // registered providers before the preload connected
+        sendToPreloadClients({ action: 'listProviders' });
+        sendToPreloadClients({ action: 'refreshAllTrees' });
+        resolve();
+      }, 3000);
+    });
+
+    req.on('response', (res) => {
+      // If we get a normal HTTP response instead of upgrade, the server
+      // may not support WebSocket at this endpoint
+      res.resume();
+      process.stderr.write(`[vscode-server-manager] EH trigger: got HTTP ${res.statusCode} instead of upgrade\n`);
+      resolve(); // non-fatal
+    });
+
+    req.on('error', (err) => {
+      process.stderr.write(`[vscode-server-manager] EH trigger WebSocket error: ${err.message}\n`);
+      resolve(); // non-fatal
+    });
+
+    req.setTimeout(10000, () => {
+      req.destroy();
+      process.stderr.write(`[vscode-server-manager] EH trigger WebSocket timeout\n`);
+      resolve(); // non-fatal
+    });
+
+    req.end();
+  });
 }
 
 /**
