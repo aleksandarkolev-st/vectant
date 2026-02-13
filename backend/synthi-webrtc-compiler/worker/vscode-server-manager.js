@@ -825,17 +825,21 @@ function _patchExtensionHostForPreload(serverBinaryPath, preloadPath, bridgePort
     }
   }
 
-  // Build the injection block with the current bridge port
+  // Build the injection block with the current bridge port.
+  // code-server 4.108+ uses VS Code's ESM build, so extensionHostProcess.js
+  // runs as an ES module where `require` is not defined.  We use
+  // `createRequire` from `node:module` to get a CJS-compatible require.
+  // The `import()` call is wrapped in `new Function()` so that a CJS parser
+  // (if ever encountered) doesn't choke on the `import` keyword.
   const escapedPath = preloadPath.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
   const injection = [
     BEGIN_MARKER,
-    `try {`,
-    `  process.env.SYNTHI_EXT_BRIDGE_PORT = process.env.SYNTHI_EXT_BRIDGE_PORT || "${bridgePort}";`,
-    `  process.env.SYNTHI_EXTENSION_HOST_CONFIRMED = "true";`,
-    `  require("${escapedPath}");`,
-    `} catch (_e) {`,
-    `  process.stderr.write("[ext-host-preload] Injection failed: " + _e.message + "\\n");`,
-    `}`,
+    `process.env.SYNTHI_EXT_BRIDGE_PORT = process.env.SYNTHI_EXT_BRIDGE_PORT || "${bridgePort}";`,
+    `process.env.SYNTHI_EXTENSION_HOST_CONFIRMED = "true";`,
+    `import { createRequire as __synthiCR } from "node:module";`,
+    `const __synthiRequire = __synthiCR(import.meta.url);`,
+    `try { __synthiRequire("${escapedPath}"); }`,
+    `catch (_e) { process.stderr.write("[ext-host-preload] Injection failed: " + _e.message + "\\n"); }`,
     END_MARKER,
     '',  // blank line separator
   ].join('\n');
@@ -1188,14 +1192,31 @@ async function _triggerExtensionHostStartup(port, token) {
         };
       }
 
-      // Parse VS Code protocol message from WebSocket payload
-      function parseControlMsg(payload) {
+      // Parse VS Code protocol message from WebSocket payload.
+      // VS Code's PersistentProtocol uses a 13-byte header:
+      //   byte 0:   message type (1=Regular, 2=Control, 3=Ack, 4=Disconnect, ...)
+      //   bytes 1-4: message id (uint32be)
+      //   bytes 5-8: ack (uint32be)
+      //   bytes 9-12: data length (uint32be)
+      //   bytes 13+: data (JSON for Control messages)
+      // For non-Control types the data may not be JSON.
+      function parseProtocolMsg(payload) {
         if (payload.length < 13) return null;
+        const msgType = payload[0];
         const dataLen = payload.readUInt32BE(9);
         if (payload.length < 13 + dataLen) return null;
+        const data = payload.slice(13, 13 + dataLen);
+        if (msgType === 2) {
+          // Control — always JSON
+          try { return JSON.parse(data.toString('utf8')); } catch (_) { return null; }
+        }
+        // Non-control: try to parse as JSON anyway (some responses use type 1)
         try {
-          return JSON.parse(payload.slice(13, 13 + dataLen).toString('utf8'));
-        } catch (_) { return null; }
+          const parsed = JSON.parse(data.toString('utf8'));
+          if (parsed && typeof parsed === 'object') return parsed;
+        } catch (_) {}
+        // Return a synthetic object so we can at least log the type
+        return { _protoType: msgType, _dataLen: dataLen, _raw: data.toString('utf8').slice(0, 100) };
       }
 
       // ── Protocol state machine ──────────────────────────────────
@@ -1231,33 +1252,41 @@ async function _triggerExtensionHostStartup(port, token) {
             continue;
           }
 
-          const msg = parseControlMsg(frame.payload);
+          const msg = parseProtocolMsg(frame.payload);
           if (!msg) {
-            process.stderr.write(`[vscode-server-manager] EH trigger: rx unparseable frame (opcode=${frame.opcode}, ${frame.payload.length}b)\n`);
+            process.stderr.write(`[vscode-server-manager] EH trigger: rx unparseable frame (opcode=${frame.opcode}, ${frame.payload.length}b, hex=${frame.payload.slice(0, 20).toString('hex')})\n`);
             continue;
           }
 
-          process.stderr.write(`[vscode-server-manager] EH trigger: rx ${JSON.stringify(msg).slice(0, 200)}\n`);
+          process.stderr.write(`[vscode-server-manager] EH trigger: rx ${JSON.stringify(msg).slice(0, 300)}\n`);
 
           if (step === 'awaitSign' && msg.type === 'sign') {
             step = 'awaitOk';
             // Step 2b: Send ExtensionHost connection request
+            // signedData = msg.signedData (server signs the challenge) 
             sendWSFrame(makeControlMsg({
               type: 'connectionType',
               commit: vsCodeCommit,
-              signedData: msg.data || '',
+              signedData: msg.signedData || msg.data || '',
               desiredConnectionType: 2, // ConnectionType.ExtensionHost
               args: { language: 'en' },
             }));
             process.stderr.write(`[vscode-server-manager] EH trigger: sent ExtensionHost connection request\n`);
           }
           else if (step === 'awaitOk') {
-            if (msg.type === 'ok') {
+            // The server may respond with type='ok', or simply start
+            // sending Extension Host data.  Either way the EH is running.
+            if (msg.type === 'ok' || msg.type === 'connectionType') {
               process.stderr.write(`[vscode-server-manager] Extension Host connection established!\n`);
               step = 'done';
             } else if (msg.type === 'error') {
               process.stderr.write(`[vscode-server-manager] EH connection rejected: ${msg.reason || JSON.stringify(msg)}\n`);
               step = 'error';
+            } else {
+              // Any other message while awaiting ok likely means
+              // the Extension Host has started and is sending data.
+              process.stderr.write(`[vscode-server-manager] Extension Host appears running (got ${msg.type || msg._protoType || 'data'})\n`);
+              step = 'done';
             }
           }
         }
