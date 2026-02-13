@@ -43,22 +43,11 @@ const PREFIX_EARLY = '[ext-host-preload]';
 process.stderr.write(`${PREFIX_EARLY} Loading (PID=${process.pid}, script=${__filename})\n`);
 process.stderr.write(`${PREFIX_EARLY}   SYNTHI_EXT_BRIDGE_PORT=${process.env.SYNTHI_EXT_BRIDGE_PORT || '(unset)'}\n`);
 process.stderr.write(`${PREFIX_EARLY}   SYNTHI_EXTENSION_HOST_CONFIRMED=${process.env.SYNTHI_EXTENSION_HOST_CONFIRMED || '(unset)'}\n`);
-process.stderr.write(`${PREFIX_EARLY}   VSCODE_IPC_HOOK_EXTHOST=${process.env.VSCODE_IPC_HOOK_EXTHOST ? 'set' : '(unset)'}\n`);
-process.stderr.write(`${PREFIX_EARLY}   VSCODE_PIPE_LOGGING=${process.env.VSCODE_PIPE_LOGGING || '(unset)'}\n`);
 
-// The Extension Host sets these env vars. If they're absent, we're in the
-// wrong process (e.g. code-server's main process, a terminal, a task runner).
-// SYNTHI_EXTENSION_HOST_CONFIRMED is set by our extensionHostProcess.js patch
-// so we know for certain we're in the Extension Host (even if VS Code hasn't
-// set its own env vars yet at this point in the boot sequence).
-const isExtensionHost = !!(
-  process.env.SYNTHI_EXTENSION_HOST_CONFIRMED === 'true' ||
-  process.env.VSCODE_IPC_HOOK_EXTHOST ||
-  process.env.VSCODE_HANDLES_UNCAUGHT_ERRORS ||
-  process.env.VSCODE_NLS_CONFIG ||
-  // code-server's fork also sets this
-  process.env.VSCODE_PIPE_LOGGING === 'true'
-);
+// SYNTHI_EXTENSION_HOST_CONFIRMED is set by our extensionHostProcess.js patch,
+// right before require(). If it's present we KNOW we're in the Extension Host.
+// SYNTHI_EXT_BRIDGE_PORT tells us where to connect.
+const isExtensionHost = process.env.SYNTHI_EXTENSION_HOST_CONFIRMED === 'true';
 
 // The manager tells us where to connect
 const BRIDGE_PORT = parseInt(process.env.SYNTHI_EXT_BRIDGE_PORT || '0', 10);
