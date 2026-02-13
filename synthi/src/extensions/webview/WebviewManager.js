@@ -329,54 +329,93 @@ class WebviewInstance {
   _updateContent() {
     if (this._disposed) return;
 
-    // Create full HTML document with CSP
-    const fullHtml = `
-      <!DOCTYPE html>
-      <html>
-        <head>
-          <meta charset="UTF-8">
-          <meta http-equiv="Content-Security-Policy" content="${WEBVIEW_CSP}">
-          <meta name="viewport" content="width=device-width, initial-scale=1.0">
-          <style>
-            body {
-              margin: 0;
-              padding: 0;
-              background: var(--vscode-editor-background, #1e1e1e);
-              color: var(--vscode-editor-foreground, #d4d4d4);
-              font-family: var(--vscode-font-family, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif);
-              font-size: var(--vscode-font-size, 13px);
-            }
-          </style>
-          <script>
-            const vscode = acquireVsCodeApi();
-            window.addEventListener('message', event => {
-              const message = event.data;
-              window.dispatchEvent(new CustomEvent('vscode-message', { detail: message }));
-            });
-            
-            function acquireVsCodeApi() {
+    // If the extension provides a full HTML document (has <html> or <!DOCTYPE),
+    // use it directly. Otherwise wrap in our boilerplate.
+    const isFullDocument = /^\s*<!DOCTYPE|^\s*<html/i.test(this._html);
+
+    let fullHtml;
+    if (isFullDocument) {
+      // Full HTML document from the extension — inject our vscode API shim
+      // if it doesn't already define acquireVsCodeApi
+      const vsCodeShim = `
+        <script>
+          if (typeof acquireVsCodeApi === 'undefined') {
+            window.acquireVsCodeApi = function() {
               return {
                 postMessage: (message) => {
                   parent.postMessage({ viewId: '${this.viewId}', type: 'message', message }, '*');
                 },
                 getState: () => {
-                  try {
-                    return JSON.parse(sessionStorage.getItem('webviewState') || 'null');
-                  } catch { return null; }
+                  try { return JSON.parse(sessionStorage.getItem('webviewState') || 'null'); } catch { return null; }
                 },
                 setState: (state) => {
                   sessionStorage.setItem('webviewState', JSON.stringify(state));
                   return state;
                 }
               };
-            }
-          </script>
-        </head>
-        <body>
-          ${this._html}
-        </body>
-      </html>
-    `;
+            };
+          }
+        </script>
+      `;
+
+      // Inject the shim before </head> or at the start of <body>
+      if (this._html.includes('</head>')) {
+        fullHtml = this._html.replace('</head>', vsCodeShim + '</head>');
+      } else if (this._html.includes('<body')) {
+        fullHtml = this._html.replace(/<body([^>]*)>/, `<body$1>${vsCodeShim}`);
+      } else {
+        fullHtml = vsCodeShim + this._html;
+      }
+    } else {
+      // Fragment — wrap in our full document
+      fullHtml = `
+        <!DOCTYPE html>
+        <html>
+          <head>
+            <meta charset="UTF-8">
+            <meta http-equiv="Content-Security-Policy" content="${WEBVIEW_CSP}">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <style>
+              body {
+                margin: 0;
+                padding: 0;
+                background: var(--vscode-editor-background, #1e1e1e);
+                color: var(--vscode-editor-foreground, #d4d4d4);
+                font-family: var(--vscode-font-family, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif);
+                font-size: var(--vscode-font-size, 13px);
+              }
+            </style>
+            <script>
+              const vscode = acquireVsCodeApi();
+              window.addEventListener('message', event => {
+                const message = event.data;
+                window.dispatchEvent(new CustomEvent('vscode-message', { detail: message }));
+              });
+              
+              function acquireVsCodeApi() {
+                return {
+                  postMessage: (message) => {
+                    parent.postMessage({ viewId: '${this.viewId}', type: 'message', message }, '*');
+                  },
+                  getState: () => {
+                    try {
+                      return JSON.parse(sessionStorage.getItem('webviewState') || 'null');
+                    } catch { return null; }
+                  },
+                  setState: (state) => {
+                    sessionStorage.setItem('webviewState', JSON.stringify(state));
+                    return state;
+                  }
+                };
+              }
+            </script>
+          </head>
+          <body>
+            ${this._html}
+          </body>
+        </html>
+      `;
+    }
 
     // Use srcdoc for security
     this.iframe.srcdoc = fullHtml;

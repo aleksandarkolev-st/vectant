@@ -224,7 +224,18 @@ export async function initializeExtensionSystem(options) {
       case 'updateWebview': {
         const instance = webviews.webviews.get(payload.viewId);
         if (instance && payload.html) {
+          console.log(`[Extension] updateWebview ${payload.viewId}: ${payload.html.length} chars`);
           instance.html = payload.html;
+        } else if (!instance) {
+          console.warn(`[Extension] updateWebview: no WebviewManager instance for ${payload.viewId}`);
+          // Try to find a close match (viewType might differ from viewId)
+          for (const [id, inst] of webviews.webviews) {
+            if (id.includes(payload.viewId) || payload.viewId.includes(id)) {
+              console.log(`[Extension] updateWebview: found fuzzy match ${id} for ${payload.viewId}`);
+              inst.html = payload.html;
+              break;
+            }
+          }
         }
         onContribution?.('updateWebview', payload);
         break;
