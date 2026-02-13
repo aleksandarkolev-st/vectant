@@ -2243,7 +2243,7 @@ class GitService {
             return { path: userRepoPath, created: false };
         }
 
-        return this.withLock(`${slug}:${userId}`, async () => {
+        return this.withLock(slug, async () => {
             // Double-check after acquiring lock
             if (fs.existsSync(userRepoPath) && fs.existsSync(path.join(userRepoPath, '.git'))) {
                 return { path: userRepoPath, created: false };
@@ -2302,7 +2302,7 @@ class GitService {
                     'USER_REPO_ERROR'
                 );
             }
-        });
+        }, userId);
     }
 
     /**
