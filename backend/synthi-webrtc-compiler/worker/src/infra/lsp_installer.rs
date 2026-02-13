@@ -97,9 +97,12 @@ pub async fn ensure_lsp_installed(lang: &str, workspace: &Path) -> Result<&'stat
              rustup component add rust-src rust-analyzer 2>/dev/null || true",
             // Step 3: Fallback — if rustup isn't available, try system package or binary download.
             // Also try installing rust-src via apt for system rustc installs.
+            // Detect CPU architecture to download the correct binary.
             "command -v rust-analyzer >/dev/null 2>&1 || \
              (apt-get update -qq && apt-get install -y -qq rust-src 2>/dev/null || true; \
-              curl -L https://github.com/rust-lang/rust-analyzer/releases/latest/download/rust-analyzer-x86_64-unknown-linux-gnu.gz | \
+              ARCH=$(uname -m); \
+              case \"$ARCH\" in aarch64|arm64) RA_TARGET=aarch64-unknown-linux-gnu;; *) RA_TARGET=x86_64-unknown-linux-gnu;; esac; \
+              curl -L \"https://github.com/rust-lang/rust-analyzer/releases/latest/download/rust-analyzer-${RA_TARGET}.gz\" | \
               gunzip > /usr/local/bin/rust-analyzer && chmod +x /usr/local/bin/rust-analyzer)",
         ]),
         "python" | "py" => ("pylsp", vec![
@@ -165,9 +168,12 @@ pub async fn ensure_lsp_installed(lang: &str, workspace: &Path) -> Result<&'stat
               apt-get update -qq && apt-get install -y -qq dart 2>/dev/null && \
               ln -sf /usr/lib/dart/bin/dart /usr/local/bin/dart 2>/dev/null) || true",
             // Fallback: direct SDK download (ensure unzip is available first)
+            // Detect CPU architecture for the correct Dart SDK variant.
             "command -v dart >/dev/null 2>&1 || \
              (apt-get install -y -qq unzip 2>/dev/null || true; \
-              curl -fsSL https://storage.googleapis.com/dart-archive/channels/stable/release/latest/sdk/dartsdk-linux-x64-release.zip -o /tmp/dart-sdk.zip && \
+              ARCH=$(uname -m); \
+              case \"$ARCH\" in aarch64|arm64) DART_ARCH=arm64;; *) DART_ARCH=x64;; esac; \
+              curl -fsSL \"https://storage.googleapis.com/dart-archive/channels/stable/release/latest/sdk/dartsdk-linux-${DART_ARCH}-release.zip\" -o /tmp/dart-sdk.zip && \
               unzip -qo /tmp/dart-sdk.zip -d /opt && rm -f /tmp/dart-sdk.zip && \
               ln -sf /opt/dart-sdk/bin/dart /usr/local/bin/dart && \
               export PATH=\"/opt/dart-sdk/bin:$PATH\") || true",
@@ -208,9 +214,11 @@ pub async fn ensure_lsp_installed(lang: &str, workspace: &Path) -> Result<&'stat
             // Step 1: Try cargo install (preferred — builds from source)
             "cargo install taplo-cli --features lsp 2>/dev/null || true",
             // Step 2: If cargo failed, try downloading pre-built binary.
-            // Use a subshell with explicit error handling and chmod.
+            // Detect CPU architecture to download the correct binary.
             "command -v taplo >/dev/null 2>&1 || \
-             (curl -fsSL https://github.com/tamasfe/taplo/releases/latest/download/taplo-full-linux-x86_64.gz -o /tmp/taplo.gz && \
+             (ARCH=$(uname -m); \
+              case \"$ARCH\" in aarch64|arm64) TAPLO_ARCH=aarch64;; *) TAPLO_ARCH=x86_64;; esac; \
+              curl -fsSL \"https://github.com/tamasfe/taplo/releases/latest/download/taplo-full-linux-${TAPLO_ARCH}.gz\" -o /tmp/taplo.gz && \
               gunzip -f /tmp/taplo.gz && \
               mv /tmp/taplo /usr/local/bin/taplo && \
               chmod +x /usr/local/bin/taplo) || true",

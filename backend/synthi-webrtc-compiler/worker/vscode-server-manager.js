@@ -1610,6 +1610,114 @@ async function _triggerExtensionHostStartup(port, token) {
         });
       }
 
+      // ── RPC Response Handler ─────────────────────────────────────
+      // VS Code's Extension Host sends RPC requests (type 1-4) over
+      // the protocol socket and expects responses.  Without responses,
+      // RPCProtocol marks the connection as unresponsive after 3s, and
+      // pending Promises never resolve — blocking extension activation.
+      //
+      // VS Code RPCProtocol message types (rpcProtocol.ts):
+      //   RequestJSONArgs=1, RequestJSONArgsWithCancellation=2,
+      //   RequestMixedArgs=3, RequestMixedArgsWithCancellation=4,
+      //   Acknowledged=5, Cancel=6,
+      //   ReplyOKEmpty=7, ReplyOKVSBuffer=8, ReplyOKJSON=9,
+      //   ReplyOKJSONWithBuffers=10, ReplyErrError=11, ReplyErrEmpty=12
+      //
+      // Message format:
+      //   byte 0: MessageType (UInt8)
+      //   bytes 1-4: reqId (UInt32BE)
+      //   byte 5: rpcId (UInt8)
+      //   byte 6: method name length (UInt8)
+      //   bytes 7+: method name, then args
+      //
+      // Response: Acknowledged(5) + ReplyOKEmpty(7) for most methods.
+      // For data-returning methods ($getInitialState, $getTools, etc.)
+      // we send ReplyOKJSON(9) with appropriate default data.
+      function _handleEHRpc(dataBuf) {
+        if (!dataBuf || dataBuf.length < 5) return;
+
+        const rpcMsgType = dataBuf[0];
+        // Only handle request types (1-4)
+        if (rpcMsgType < 1 || rpcMsgType > 4) return;
+
+        const reqId = dataBuf.readUInt32BE(1);
+
+        // Parse method name for diagnostics and routing
+        let methodName = '';
+        if (dataBuf.length >= 7) {
+          const methodLen = dataBuf[6];
+          if (dataBuf.length >= 7 + methodLen) {
+            methodName = dataBuf.slice(7, 7 + methodLen).toString('utf8');
+          }
+        }
+
+        // Decode $logExtensionHostMessage for diagnostics
+        if (methodName === '$logExtensionHostMessage') {
+          try {
+            const argsOffset = 7 + dataBuf[6]; // skip past method name
+            const argsLen = dataBuf.readUInt32BE(argsOffset);
+            const argsJson = dataBuf.slice(argsOffset + 4, argsOffset + 4 + argsLen).toString('utf8');
+            const args = JSON.parse(argsJson);
+            if (args && args[0]) {
+              const entry = args[0];
+              const sev = entry.severity || 'log';
+              const text = entry.arguments || '';
+              process.stderr.write(`[vscode-server-manager] EH ${sev}: ${text}\n`);
+            }
+          } catch (_) {}
+        }
+
+        // 1. Send Acknowledged (type=5)
+        const ackRpc = Buffer.alloc(5);
+        ackRpc[0] = 5; // Acknowledged
+        ackRpc.writeUInt32BE(reqId, 1);
+
+        const ackHdr = Buffer.alloc(13);
+        ackHdr[0] = ProtoMsgType.Regular;
+        ackHdr.writeUInt32BE(nextMsgId++, 1);
+        ackHdr.writeUInt32BE(lastReceivedMsgId, 5);
+        ackHdr.writeUInt32BE(ackRpc.length, 9);
+        try { sendWSFrame(Buffer.concat([ackHdr, ackRpc])); } catch (_) {}
+
+        // 2. Send reply
+        let replyRpc;
+        if (methodName === '$getInitialState') {
+          // Return window initial state — VS Code destructures { isFocused }
+          // from the result, so null crashes with TypeError.
+          const json = Buffer.from('{"isFocused":false}', 'utf8');
+          replyRpc = Buffer.alloc(5 + 4 + json.length);
+          replyRpc[0] = 9; // ReplyOKJSON
+          replyRpc.writeUInt32BE(reqId, 1);
+          replyRpc.writeUInt32BE(json.length, 5);
+          json.copy(replyRpc, 9);
+        } else if (methodName === '$getTools') {
+          // Return empty tools array
+          const json = Buffer.from('[]', 'utf8');
+          replyRpc = Buffer.alloc(5 + 4 + json.length);
+          replyRpc[0] = 9; // ReplyOKJSON
+          replyRpc.writeUInt32BE(reqId, 1);
+          replyRpc.writeUInt32BE(json.length, 5);
+          json.copy(replyRpc, 9);
+        } else if (methodName === '$stat') {
+          // File stat — reply with error (file not found is acceptable)
+          replyRpc = Buffer.alloc(5);
+          replyRpc[0] = 12; // ReplyErrEmpty
+          replyRpc.writeUInt32BE(reqId, 1);
+        } else {
+          // Default: ReplyOKEmpty (void response)
+          replyRpc = Buffer.alloc(5);
+          replyRpc[0] = 7; // ReplyOKEmpty
+          replyRpc.writeUInt32BE(reqId, 1);
+        }
+
+        const replyHdr = Buffer.alloc(13);
+        replyHdr[0] = ProtoMsgType.Regular;
+        replyHdr.writeUInt32BE(nextMsgId++, 1);
+        replyHdr.writeUInt32BE(lastReceivedMsgId, 5);
+        replyHdr.writeUInt32BE(replyRpc.length, 9);
+        try { sendWSFrame(Buffer.concat([replyHdr, replyRpc])); } catch (_) {}
+      }
+
       // Step 2a: Send auth request
       sendWSFrame(makeControlMsg({
         type: 'auth',
@@ -1767,9 +1875,9 @@ async function _triggerExtensionHostStartup(port, token) {
                 initDataSent = false;
                 _doSendInitData('Late Ready signal');
               }
-            } else if (msg._protoType === ProtoMsgType.Regular) {
-              // Regular message from EH — extension host is initializing
-              process.stderr.write(`[vscode-server-manager] EH sent Regular message (${msg._dataLen}b) — bootstrap progressing\n`);
+            } else if (msg._protoType === ProtoMsgType.Regular && msg._rawBuf) {
+              // Regular RPC message from EH — respond to keep RPCProtocol alive
+              _handleEHRpc(msg._rawBuf);
             } else if (msg._protoType === ProtoMsgType.ReplayRequest) {
               // ReplayRequest — EH wants us to replay unacked messages.
               // With corrected message IDs this should be rare, but handle
@@ -1793,10 +1901,28 @@ async function _triggerExtensionHostStartup(port, token) {
           }
           else if (step === 'running') {
             // EH is running — handle ongoing protocol messages
-            if (msg._protoType === ProtoMsgType.ReplayRequest) {
-              process.stderr.write(`[vscode-server-manager] EH sent ReplayRequest while running\n`);
-              initDataSent = false;
-              _doSendInitData(`ReplayRequest while running`);
+            if (msg._protoType === ProtoMsgType.Regular && msg._rawBuf) {
+              // Regular RPC message from EH — must respond to prevent
+              // RPCProtocol unresponsive timeout (3s) and unblock
+              // extension activation pipeline.
+              _handleEHRpc(msg._rawBuf);
+            } else if (msg._protoType === ProtoMsgType.ReplayRequest) {
+              // ReplayRequest while running: the EH wants us to replay
+              // unacked messages. We don't buffer sent messages, so we
+              // can't replay. But we MUST NOT re-send init data — that
+              // would be parsed as a garbled RPC message by RPCProtocol,
+              // causing more errors and triggering another ReplayRequest
+              // (infinite loop).  Instead, send an Ack to acknowledge
+              // the EH's messages and tell PersistentProtocol we're alive.
+              process.stderr.write(`[vscode-server-manager] EH sent ReplayRequest while running — sending Ack (NOT re-sending init data)\n`);
+              try {
+                const ackHdr = Buffer.alloc(13);
+                ackHdr[0] = ProtoMsgType.Ack;
+                ackHdr.writeUInt32BE(nextMsgId++, 1);
+                ackHdr.writeUInt32BE(lastReceivedMsgId, 5);
+                ackHdr.writeUInt32BE(0, 9);
+                sendWSFrame(ackHdr);
+              } catch (_) {}
             } else if (msg._protoType >= ProtoMsgType.Pause && msg._protoType <= ProtoMsgType.KeepAlive) {
               try {
                 const ackHdr = Buffer.alloc(13);
@@ -1841,25 +1967,34 @@ async function _triggerExtensionHostStartup(port, token) {
           process.stderr.write(`[vscode-server-manager] EH trigger: protocol timeout 20s (step=${step}), continuing\n`);
 
           // If init data was sent but bootstrapState was never received,
-          // the EH may not have processed it.  Re-send as recovery.
+          // log the situation but do NOT re-send init data.
+          // The EH may already be in 'running' state processing RPC,
+          // and re-sending init data would corrupt the RPC stream.
           if (initDataSent && !_bootstrapStateReceived) {
-            process.stderr.write(`[vscode-server-manager] bootstrapState not received — re-sending init data as recovery\n`);
-            initDataSent = false;
-            _doSendInitData(`protocol-timeout recovery (step=${step})`);
+            process.stderr.write(`[vscode-server-manager] 20s: bootstrapState not received (step=${step}) — NOT re-sending init data\n`);
           }
         }
         resolve();
       }, 20000);
 
       // Secondary recovery: if after 60s bootstrapState still hasn't
-      // been received, make one final attempt to send init data.
-      // This handles cases where the EH takes a very long time to
-      // initialize (e.g. large extension sets, slow disk I/O).
+      // been received, log a diagnostic but do NOT re-send init data.
+      // Re-sending init data while the EH is in 'running' state causes
+      // RPCProtocol to misparse the init JSON as an RPC message, which
+      // triggers errors and ReplayRequest loops.
       const _lateRecoveryTimer = setTimeout(() => {
         if (!_bootstrapStateReceived && !socket.destroyed) {
-          process.stderr.write(`[vscode-server-manager] 60s late recovery: bootstrapState still not received, re-sending init data\n`);
-          initDataSent = false;
-          _doSendInitData(`60s late recovery`);
+          process.stderr.write(`[vscode-server-manager] 60s: bootstrapState still not received — extensions may not have activated\n`);
+          process.stderr.write(`[vscode-server-manager] 60s: NOT re-sending init data (would corrupt running RPCProtocol)\n`);
+          // Send an Ack to keep PersistentProtocol alive
+          try {
+            const ackHdr = Buffer.alloc(13);
+            ackHdr[0] = ProtoMsgType.Ack;
+            ackHdr.writeUInt32BE(nextMsgId++, 1);
+            ackHdr.writeUInt32BE(lastReceivedMsgId, 5);
+            ackHdr.writeUInt32BE(0, 9);
+            sendWSFrame(ackHdr);
+          } catch (_) {}
         }
       }, 60000);
       if (_lateRecoveryTimer.unref) _lateRecoveryTimer.unref();
@@ -1925,9 +2060,22 @@ async function _triggerExtensionHostStartup(port, token) {
  */
 async function _sendExtensionHostInitData(sendWSFrame, makeRegularMsg, port) {
   // ── Gather extension descriptions ──
+  //
+  // IMPORTANT: code-server already scans --extensions-dir and provides
+  // extensions to the Extension Host through its own initialization.
+  // If we ALSO include the same extensions in our init data, the EH
+  // logs "Extension 'xxx' is already registered" and may skip proper
+  // activation — causing require('vscode') to never be called and the
+  // preload to never intercept the API.
+  //
+  // We still scan the directory so we can LOG what's installed, but we
+  // send an EMPTY extensions list in the init data.  code-server's own
+  // extension loading handles activation, and our preload hooks into
+  // the require('vscode') calls that result from that activation.
   const extensions = [];
   const myExtensionIds = [];
 
+  // Log installed extensions for diagnostics (but don't include in init data)
   try {
     const dirs = fs.readdirSync(EXTENSIONS_DIR);
     for (const dir of dirs) {
@@ -1935,43 +2083,7 @@ async function _sendExtensionHostInitData(sendWSFrame, makeRegularMsg, port) {
       try {
         const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
         const extId = `${pkg.publisher || 'unknown'}.${pkg.name || dir}`.toLowerCase();
-        const extLocation = path.join(EXTENSIONS_DIR, dir);
-
-        const extensionDesc = {
-          identifier: { value: extId },
-          extensionLocation: { scheme: 'file', authority: '', path: extLocation, query: '', fragment: '' },
-          isBuiltin: false,
-          isUnderDevelopment: false,
-          name: pkg.name || dir,
-          publisher: pkg.publisher || 'unknown',
-          version: pkg.version || '0.0.0',
-          engines: pkg.engines || { vscode: '*' },
-          main: pkg.main || undefined,
-          browser: pkg.browser || undefined,
-          activationEvents: pkg.activationEvents || ['*'],
-          contributes: pkg.contributes || {},
-          enabledApiProposals: pkg.enabledApiProposals || [],
-          // CRITICAL: 'api' controls whether VS Code provides the 'vscode'
-          // module to this extension.  If set to 'none', the Extension Host
-          // never injects the API and require('vscode') is never called,
-          // which prevents the preload from intercepting it.
-          // Extensions with a main/browser entry point need 'vscode';
-          // theme-only extensions (no entry point) can use 'none'.
-          api: pkg.api || (pkg.main || pkg.browser ? 'vscode' : 'none'),
-          targetPlatform: 'universal',
-          isApplicationScoped: false,
-          uuid: crypto.randomUUID ? crypto.randomUUID() : crypto.randomBytes(16).toString('hex'),
-        };
-
-        extensions.push(extensionDesc);
-        myExtensionIds.push({ value: extId });
-
-        // Validate extension has an entry point
-        if (!pkg.main && !pkg.browser) {
-          process.stderr.write(`[eh-init] Extension ${extId}: no main/browser field — may be theme-only\n`);
-        }
-
-        process.stderr.write(`[eh-init] Extension: ${extId} (main: ${pkg.main || pkg.browser || 'none'})\n`);
+        process.stderr.write(`[eh-init] Extension: ${extId} (main: ${pkg.main || pkg.browser || 'none'}) — managed by code-server\n`);
       } catch (e) {
         // Skip dirs without valid package.json (e.g. extensions.json)
       }
@@ -1980,7 +2092,7 @@ async function _sendExtensionHostInitData(sendWSFrame, makeRegularMsg, port) {
     process.stderr.write(`[eh-init] Cannot read extensions dir: ${e.message}\n`);
   }
 
-  process.stderr.write(`[eh-init] Sending init data with ${extensions.length} extensions\n`);
+  process.stderr.write(`[eh-init] Sending init data with ${extensions.length} extensions (code-server manages extension loading)\n`);
 
   // ── Read product.json for version info ──
   let vsVersion = '1.88.0';
@@ -2075,10 +2187,20 @@ async function _sendExtensionHostInitData(sendWSFrame, makeRegularMsg, port) {
     },
     // CRITICAL: extensions must be nested under 'extensions', not at top level.
     // VS Code's ExtensionHostExtensions deserializer expects:
-    //   { allExtensions: IExtensionDescription[], myExtensions: ExtensionIdentifier[] }
+    //   { allExtensions, myExtensions, activationEvents }
+    // activationEvents is a map: { [extensionId: string]: string[] }
+    // SyncedActivationEventsReader's constructor calls Object.keys() on it,
+    // so it MUST be a non-null object (even if empty).
     extensions: {
       allExtensions: extensions,
       myExtensions: myExtensionIds,
+      activationEvents: (() => {
+        const map = Object.create(null);
+        for (const ext of extensions) {
+          map[ext.identifier.value.toLowerCase()] = ext.activationEvents || ['*'];
+        }
+        return map;
+      })(),
     },
     logLevel: 1, // LogLevel.Info
     // Each logger MUST have resource, id, and name
@@ -2106,6 +2228,9 @@ async function _sendExtensionHostInitData(sendWSFrame, makeRegularMsg, port) {
   }
   if (!initData.extensions?.myExtensions || !Array.isArray(initData.extensions.myExtensions)) {
     process.stderr.write(`[eh-init] WARNING: extensions.myExtensions is missing or not an array\n`);
+  }
+  if (!initData.extensions?.activationEvents || typeof initData.extensions.activationEvents !== 'object') {
+    process.stderr.write(`[eh-init] WARNING: extensions.activationEvents is missing — SyncedActivationEventsReader will crash\n`);
   }
   if (!initData.workspace?.folders || !Array.isArray(initData.workspace.folders) || initData.workspace.folders.length === 0) {
     process.stderr.write(`[eh-init] WARNING: workspace.folders is empty — VS Code may crash during init\n`);
