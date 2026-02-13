@@ -271,6 +271,41 @@ const _preloadReadyWaiters = [];
 /** @type {Map<string, object>} viewId → last known tree data */
 const preloadTreeCache = new Map();
 
+/** @type {boolean} Whether the bootstrapState message has been received from preload */
+let _bootstrapStateReceived = false;
+
+/**
+ * Trigger provider discovery with retried attempts.
+ * Called once from either bootstrapState handler or the 45s fallback timer.
+ *
+ * @param {string} trigger - reason string for logging
+ */
+function _startProviderDiscovery(trigger) {
+  const retryDelays = [500, 3000, 8000, 20000];
+  for (const delay of retryDelays) {
+    const timer = setTimeout(() => {
+      process.stderr.write(`[preload-bridge] Provider discovery (${delay / 1000}s after ${trigger})\n`);
+      sendToPreloadClients({ action: 'listProviders' });
+      sendToPreloadClients({ action: 'refreshAllTrees' });
+      // Try resolving known webview views
+      for (const extId of extHostLoadedExtensions) {
+        const result = _readExtensionManifest(extId);
+        if (result?.manifest?.contributes?.views) {
+          const views = result.manifest.contributes.views;
+          for (const container of Object.keys(views)) {
+            for (const view of views[container]) {
+              if (view.type === 'webview') {
+                sendToPreloadClients({ action: 'resolveWebviewView', viewType: view.id });
+              }
+            }
+          }
+        }
+      }
+    }, delay);
+    if (timer.unref) timer.unref();
+  }
+}
+
 /**
  * Wait for at least one preload client to connect to the bridge.
  * Resolves immediately if a client is already connected.
@@ -472,7 +507,18 @@ function _handlePreloadMessage(msg) {
       // Provider requests are deferred to the 'bootstrapState' handler
       // (below) which fires when the preload observes the first successful
       // require('vscode') call.
+      //
+      // Fallback: if bootstrapState never fires (e.g. because Module._load
+      // interception fails in ESM mode), start requesting providers after
+      // a generous timeout.
       process.stderr.write(`[preload-bridge] Waiting for bootstrapState before requesting providers\n`);
+      const _bootstrapFallbackTimer = setTimeout(() => {
+        if (!_bootstrapStateReceived) {
+          process.stderr.write(`[preload-bridge] bootstrapState never received after 45s — requesting providers as fallback\n`);
+          _startProviderDiscovery('fallback-timeout');
+        }
+      }, 45000);
+      if (_bootstrapFallbackTimer.unref) _bootstrapFallbackTimer.unref();
       break;
     }
 
@@ -486,35 +532,9 @@ function _handlePreloadMessage(msg) {
       process.stderr.write(`[preload-bridge] Bootstrap state: complete=${complete}, method=${method}, wrapped=${wrappedCount}\n`);
 
       if (complete) {
+        _bootstrapStateReceived = true;
         sendEvent('bootstrapState', true);
-
-        // NOW it's safe to request providers.  Extensions are activating
-        // and registering tree/webview providers.  We still need retries
-        // because activation is asynchronous — an extension may not have
-        // finished registering all its providers yet.
-        const retryDelays = [500, 3000, 8000, 20000];
-        for (const delay of retryDelays) {
-          const timer = setTimeout(() => {
-            process.stderr.write(`[preload-bridge] Provider discovery (${delay / 1000}s after bootstrap)\n`);
-            sendToPreloadClients({ action: 'listProviders' });
-            sendToPreloadClients({ action: 'refreshAllTrees' });
-            // Try resolving known webview views
-            for (const extId of extHostLoadedExtensions) {
-              const result = _readExtensionManifest(extId);
-              if (result?.manifest?.contributes?.views) {
-                const views = result.manifest.contributes.views;
-                for (const container of Object.keys(views)) {
-                  for (const view of views[container]) {
-                    if (view.type === 'webview') {
-                      sendToPreloadClients({ action: 'resolveWebviewView', viewType: view.id });
-                    }
-                  }
-                }
-              }
-            }
-          }, delay);
-          if (timer.unref) timer.unref();
-        }
+        _startProviderDiscovery('bootstrapState');
       }
       break;
     }
