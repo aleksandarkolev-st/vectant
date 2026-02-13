@@ -271,31 +271,51 @@ connectBridge();
 const Module = require('module');
 const realOriginalLoad = Module._load;  // The TRUE original before anyone hooks
 
-/** @type {boolean} Whether we've already wrapped the vscode module */
+/** @type {boolean} Whether we've wrapped at least one vscode API instance */
 let vsCodeWrapped = false;
 
 /** @type {object|null} Reference to the real vscode API for command execution */
 let realVscodeApi = null;
 
 /**
+ * Track which API instances have already been wrapped to prevent double-wrapping.
+ * WeakSet so we don't prevent GC of per-extension API instances.
+ */
+const _wrappedApiInstances = new WeakSet();
+let _wrappedApiCount = 0;
+
+/**
  * Attempt to wrap a result that might be the vscode API.
- * Returns true if wrapping was performed.
+ * VS Code creates separate API namespace objects per extension, so we must
+ * wrap EVERY instance — not just the first.  Each instance gets its own
+ * registerTreeDataProvider / registerWebviewViewProvider functions that
+ * delegate to shared underlying services.
+ *
+ * Returns true if wrapping was performed on this call.
  */
 function _tryWrapVscodeResult(result, source) {
-  if (vsCodeWrapped || !result || typeof result !== 'object') return false;
+  if (!result || typeof result !== 'object') return false;
   // Duck-type: must have window, commands, workspace
   if (!result.window || !result.commands || !result.workspace) return false;
+  // Already wrapped this specific instance?
+  if (_wrappedApiInstances.has(result)) return false;
 
+  _wrappedApiInstances.add(result);
+  _wrappedApiCount++;
+
+  // Keep a reference for command execution (first instance is fine)
+  if (!realVscodeApi) {
+    realVscodeApi = result;
+  }
   vsCodeWrapped = true;
-  realVscodeApi = result;
+
   try {
-    log(`Intercepted vscode module via ${source}`);
-    log(`  vscode.window exists: ${!!result.window}`);
-    log(`  registerWebviewViewProvider exists: ${!!result.window?.registerWebviewViewProvider}`);
-    log(`  registerTreeDataProvider exists: ${!!result.window?.registerTreeDataProvider}`);
+    log(`Wrapping vscode API instance #${_wrappedApiCount} via ${source}`);
+    log(`  registerWebviewViewProvider: ${typeof result.window?.registerWebviewViewProvider}`);
+    log(`  registerTreeDataProvider: ${typeof result.window?.registerTreeDataProvider}`);
     wrapVSCodeAPI(result);
   } catch (e) {
-    logError(`Failed to wrap vscode API (extensions will work, UI bridge disabled): ${e.message}`);
+    logError(`Failed to wrap vscode API instance #${_wrappedApiCount}: ${e.message}`);
     logError(e.stack || '');
   }
   return true;
