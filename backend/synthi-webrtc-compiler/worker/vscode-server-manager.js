@@ -2110,15 +2110,22 @@ async function _autoLoadUIExtensions() {
 
     const extId = `${pkg.publisher || 'unknown'}.${pkg.name || dir}`;
 
-    // Check for UI contributions (views, viewsContainers, webview views)
+    // Check for UI contributions (views, viewsContainers, webview views,
+    // custom editors, notebooks, menus)
     const contributes = pkg.contributes || {};
     const hasViews = contributes.views && Object.keys(contributes.views).length > 0;
     const hasViewsContainers = contributes.viewsContainers && Object.keys(contributes.viewsContainers).length > 0;
     const hasCommands = contributes.commands && contributes.commands.length > 0;
+    const hasCustomEditors = contributes.customEditors && contributes.customEditors.length > 0;
+    const hasNotebooks = contributes.notebooks && contributes.notebooks.length > 0;
+    const hasMenus = contributes.menus && Object.keys(contributes.menus).length > 0;
+    const hasViewsWelcome = contributes.viewsWelcome && contributes.viewsWelcome.length > 0;
 
-    if (hasViews || hasViewsContainers) {
+    const isUIExtension = hasViews || hasViewsContainers || hasCustomEditors || hasNotebooks;
+
+    if (isUIExtension) {
       uiExtCount++;
-      process.stderr.write(`[ext-scan] UI extension: ${extId} (views: ${hasViews}, containers: ${hasViewsContainers}, main: ${pkg.main || '(none)'})\n`);
+      process.stderr.write(`[ext-scan] UI extension: ${extId} (views: ${hasViews}, containers: ${hasViewsContainers}, commands: ${hasCommands}, editors: ${hasCustomEditors}, notebooks: ${hasNotebooks})\n`);
 
       // Track it without waiting for the Extension Host to load it
       if (!extHostLoadedExtensions.has(extId)) {
