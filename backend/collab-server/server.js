@@ -317,8 +317,20 @@ class ValidatingPersistence {
     // Observe changes on the text type
     targetText.observe(observer);
 
+    // Also observe at the Y.Doc level as a safety net.  In some race
+    // conditions (async bindState vs sync protocol messages) the Y.Text
+    // observer can miss the very first remote update.  The doc-level
+    // handler re-triggers the same debounced flush so there's no double-write.
+    const docLevelObserver = (update, origin) => {
+      // Only trigger for remote updates (origin is the WS connection object)
+      if (origin !== null && origin !== undefined) {
+        observer();
+      }
+    };
+    ydoc.on('update', docLevelObserver);
+
     // Store for cleanup
-    this.docObservers.set(docName, { ydoc, text: targetText, observer, flushTimer: null });
+    this.docObservers.set(docName, { ydoc, text: targetText, observer, flushTimer: null, docLevelObserver });
     
     console.log(`[Collab AutoFlush] Set up auto-flush for ${docName}`);
   }
@@ -332,6 +344,9 @@ class ValidatingPersistence {
       try {
         if (entry.text && entry.observer) {
           entry.text.unobserve(entry.observer);
+        }
+        if (entry.ydoc && entry.docLevelObserver) {
+          entry.ydoc.off('update', entry.docLevelObserver);
         }
         if (entry.flushTimer) {
           clearTimeout(entry.flushTimer);
@@ -361,7 +376,11 @@ class ValidatingPersistence {
     const actualContent = await getActualFileContent(slug, filePath);
     
     if (actualContent === null) {
-      // File doesn't exist on disk, keep persisted state
+      // File doesn't exist on disk yet — still set up auto-flush so that
+      // when the client starts typing, the content is written to disk.
+      // Without this, new files created through the Yjs editor would never
+      // be flushed (the old code returned early here, skipping _setupAutoFlush).
+      this._setupAutoFlush(docName, ydoc);
       return;
     }
 
@@ -446,6 +465,19 @@ try {
   }
 }
 const yWsDocs = (yWsUtils && yWsUtils.docs) ? yWsUtils.docs : null;
+
+// ── CRITICAL: Register our persistence with y-websocket ──────────────────────
+// y-websocket uses a module-level `persistence` variable that must be set via
+// setPersistence(). Passing `persistence` as an option to setupWSConnection()
+// does NOT work — that function only destructures { docName, gc } and silently
+// ignores any other keys.  Without this call, bindState / writeState / the
+// auto-flush observer are never invoked and Yjs edits are never written to disk.
+if (yWsUtils && typeof yWsUtils.setPersistence === 'function') {
+  yWsUtils.setPersistence(persistence);
+  console.log('[Collab] Registered ValidatingPersistence with y-websocket via setPersistence()');
+} else {
+  console.error('[Collab] WARNING: Could not register persistence with y-websocket — setPersistence not available. Auto-flush to disk will NOT work.');
+}
 
 /**
  * Invalidate all active Yjs documents for a workspace slug.
