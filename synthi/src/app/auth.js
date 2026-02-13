@@ -19,14 +19,33 @@ export const authConfig = {
   ],
 
   callbacks: {
-    async jwt({ token, account }) {
+    async jwt({ token, account, user }) {
       if (account) {
         token.accessToken = account.access_token;
+      }
+      // Persist the provider-assigned user id into the JWT so it's
+      // available in the session callback below.  `user` is only
+      // present on the initial sign-in; on subsequent requests we
+      // rely on the previously stored `token.userId`.
+      if (user?.id) {
+        token.userId = user.id;
+      }
+      if (user?.image) {
+        token.picture = user.image;
       }
       return token;
     },
     async session({ session, token }) {
       session.accessToken = token.accessToken;
+      // Propagate the stable user id and avatar into the session
+      // object so client-side code (e.g. useSession()) can access
+      // session.user.id reliably instead of falling back to email.
+      if (token.userId) {
+        session.user.id = token.userId;
+      }
+      if (token.picture) {
+        session.user.image = token.picture;
+      }
       return session;
     },
   },
