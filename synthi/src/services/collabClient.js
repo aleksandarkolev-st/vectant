@@ -560,6 +560,57 @@ class CollabClient {
     return Array.from(seen.values()).map(v => ({ clientId: v.clientId, state: v.state }));
   }
 
+  // ── Workspace-level awareness ──────────────────────────────────────────
+
+  /**
+   * Subscribe to awareness changes across ALL rooms for a given slug.
+   * The callback receives the deduplicated active-editor list (same shape
+   * as getWorkspaceActiveEditors) whenever any room's awareness changes.
+   *
+   * Returns an unsubscribe function.
+   */
+  addWorkspaceAwarenessListener(slug, cb) {
+    if (typeof cb !== 'function' || !slug) return () => {};
+    const prefix = `workspace:${slug}:`;
+
+    // Wrapped handler fires the aggregated snapshot
+    const fire = () => {
+      try { cb(this.getWorkspaceActiveEditors(slug)); }
+      catch (err) { console.warn('[Collab] workspace awareness cb failed', err?.message || err); }
+    };
+
+    // Attach to every existing room that matches the slug
+    const detachers = new Map(); // key -> off()
+
+    const attachToEntry = (entry) => {
+      if (detachers.has(entry.key)) return; // already subscribed
+      if (!entry.provider?.awareness) return;
+      const handler = () => fire();
+      entry.provider.awareness.on('change', handler);
+      detachers.set(entry.key, () => {
+        try { entry.provider.awareness.off('change', handler); } catch (_) {}
+      });
+    };
+
+    for (const [k, entry] of this.docs.entries()) {
+      if (k.startsWith(prefix)) attachToEntry(entry);
+    }
+
+    // Watch for new docs being added (ensureDoc) — poll cheaply via interval
+    const poll = setInterval(() => {
+      for (const [k, entry] of this.docs.entries()) {
+        if (k.startsWith(prefix)) attachToEntry(entry);
+      }
+    }, 2000);
+
+    // Return unsubscribe
+    return () => {
+      clearInterval(poll);
+      for (const off of detachers.values()) off();
+      detachers.clear();
+    };
+  }
+
   // Subscribe to awareness change events for a room and receive current states
   addAwarenessListener(slug, path, cb) {
     if (typeof cb !== 'function') return () => {};
@@ -733,8 +784,9 @@ class CollabClient {
       }
       const name = user.name || user.email || 'Anonymous';
       const color = user.color || this._colorForUser(String(id));
+      const image = user.image || null;
 
-      const localState = { user: { id, name, color }, isUnsaved: false };
+      const localState = { user: { id, name, color, image }, isUnsaved: false };
       entry.provider.awareness.setLocalState(localState);
     }
 

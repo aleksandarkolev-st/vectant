@@ -944,7 +944,7 @@ const EditorPanel = ({
             return;
         }
 
-        const user = (session?.data?.user) ? { id: session.data.user.id || session.data.user.email || session.data.user.name, name: session.data.user.name || session.data.user.email, email: session.data.user.email || null, isAnonymous: false } : { id: null, name: 'Anonymous', email: null, isAnonymous: true };
+        const user = (session?.data?.user) ? { id: session.data.user.id || session.data.user.email || session.data.user.name, name: session.data.user.name || session.data.user.email, email: session.data.user.email || null, image: session.data.user.image || null, isAnonymous: false } : { id: null, name: 'Anonymous', email: null, image: null, isAnonymous: true };
 
         // Attach the editor to the collaboration binding
         // IMPORTANT: Get content from file cache for THIS specific file path
