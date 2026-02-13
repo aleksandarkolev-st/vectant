@@ -37,8 +37,18 @@ const gcsSync = require('./gcsSync');
 //   ready:    Promise<void>,  // resolves once materialisation is complete
 // }
 
-/** Serialise concurrent materialise calls per-slug. */
+/** Serialise concurrent materialise calls per cache key. */
 const _materializeLocks = new Map();
+
+/**
+ * Build a composite cache key.
+ * @param {string} slug
+ * @param {string} [userId]
+ * @returns {string}
+ */
+function _cacheKey(slug, userId) {
+  return userId ? `${slug}:${userId}` : slug;
+}
 
 /**
  * Recursively remove a directory.
@@ -56,7 +66,7 @@ async function rmDir(dir) {
 /**
  * Materialise a working tree from GCS if it doesn't already exist on disk.
  */
-async function materialize(slug, repoPath) {
+async function materialize(slug, repoPath, userId) {
   // Fast path: already on disk with a .git dir
   if (fs.existsSync(path.join(repoPath, '.git'))) {
     return;
@@ -67,19 +77,20 @@ async function materialize(slug, repoPath) {
 
   // Download workspace files from GCS
   if (gcsSync.isGcsConfigured()) {
-    console.log(`[RepoCache] Materialising ${slug} from GCS → ${repoPath}`);
+    const label = userId ? `${slug}/${userId}` : slug;
+    console.log(`[RepoCache] Materialising ${label} from GCS → ${repoPath}`);
     try {
-      const res = await gcsSync.downloadGcsToRepo(slug, repoPath);
-      console.log(`[RepoCache] GCS download for ${slug}: ${res.success} files`);
+      const res = await gcsSync.downloadGcsToRepo(slug, repoPath, { userId });
+      console.log(`[RepoCache] GCS download for ${label}: ${res.success} files`);
     } catch (e) {
-      console.error(`[RepoCache] GCS materialise failed for ${slug}:`, e.message);
+      console.error(`[RepoCache] GCS materialise failed for ${label}:`, e.message);
       // Continue anyway — the repo dir exists, callers can init/clone as needed
     }
   }
 
   // If there's a .git tarball in GCS, restore it for fast re-hydration
   try {
-    await restoreGitArchive(slug, repoPath);
+    await restoreGitArchive(slug, repoPath, userId);
   } catch (_) {
     // Not critical — if missing, callers can git init / clone
   }
@@ -88,11 +99,12 @@ async function materialize(slug, repoPath) {
 /**
  * Restore a .git tarball from GCS (if available).
  */
-async function restoreGitArchive(slug, repoPath) {
+async function restoreGitArchive(slug, repoPath, userId) {
   if (!gcsSync.isGcsConfigured()) return;
-  const result = await gcsSync.restoreGitFromGcs(slug, repoPath);
+  const result = await gcsSync.restoreGitFromGcs(slug, repoPath, userId);
   if (result.success) {
-    console.log(`[RepoCache] Restored .git archive for ${slug}`);
+    const label = userId ? `${slug}/${userId}` : slug;
+    console.log(`[RepoCache] Restored .git archive for ${label}`);
   }
   // Not critical — if missing, callers can git init / clone
 }
@@ -107,15 +119,15 @@ const cache = new LRUCache({
   allowStale: false,
   noDeleteOnStaleGet: false,
   
-  dispose: (entry, slug) => {
+  dispose: (entry, key) => {
     if (!entry) return;
     // Safety: don't delete if refs > 0 or pinned
     if (entry.refs > 0 || entry.pinned) {
       // Re-insert — the eviction was premature
-      cache.set(slug, entry);
+      cache.set(key, entry);
       return;
     }
-    console.log(`[RepoCache] Evicting ${slug} from cache, removing ${entry.repoPath}`);
+    console.log(`[RepoCache] Evicting ${key} from cache, removing ${entry.repoPath}`);
     rmDir(entry.repoPath).catch(() => {});
   },
 
@@ -131,15 +143,17 @@ const cache = new LRUCache({
 // ── Public API ───────────────────────────────────────────────────────────────
 
 /**
- * Acquire a working tree for `slug`.
+ * Acquire a working tree for `slug` (optionally per-user via `userId`).
  * Materialises from GCS if not already on disk.
  * Increments the reference counter.
  *
  * @param {string} slug
+ * @param {string} [userId]
  * @returns {Promise<string>} absolute path to the working tree
  */
-async function acquire(slug) {
-  let entry = cache.get(slug);
+async function acquire(slug, userId) {
+  const key = _cacheKey(slug, userId);
+  let entry = cache.get(key);
 
   if (entry) {
     // Already in cache — wait until it's materialised, bump ref
@@ -149,35 +163,38 @@ async function acquire(slug) {
   }
 
   // Not in cache — materialise
-  const repoPath = path.join(config.REPO_CACHE_DIR, slug);
+  const repoPath = userId
+    ? path.join(config.REPO_CACHE_DIR, slug, userId)
+    : path.join(config.REPO_CACHE_DIR, slug);
 
-  // Serialise concurrent materialise calls for the same slug
-  if (_materializeLocks.has(slug)) {
-    await _materializeLocks.get(slug);
+  // Serialise concurrent materialise calls for the same key
+  if (_materializeLocks.has(key)) {
+    await _materializeLocks.get(key);
     // After the lock resolves, the entry should be in the cache
-    return acquire(slug);
+    return acquire(slug, userId);
   }
 
   let resolveLock;
   const lockPromise = new Promise((r) => { resolveLock = r; });
-  _materializeLocks.set(slug, lockPromise);
+  _materializeLocks.set(key, lockPromise);
 
-  const readyPromise = materialize(slug, repoPath);
+  const readyPromise = materialize(slug, repoPath, userId);
 
   entry = {
     slug,
+    userId: userId || null,
     repoPath,
     refs: 1,
     pinned: false,
     ready: readyPromise,
   };
 
-  cache.set(slug, entry);
+  cache.set(key, entry);
 
   try {
     await readyPromise;
   } finally {
-    _materializeLocks.delete(slug);
+    _materializeLocks.delete(key);
     resolveLock();
   }
 
@@ -189,54 +206,64 @@ async function acquire(slug) {
  * Decrements the reference counter.
  *
  * @param {string} slug
+ * @param {string} [userId]
  */
-function release(slug) {
-  const entry = cache.get(slug);
+function release(slug, userId) {
+  const key = _cacheKey(slug, userId);
+  const entry = cache.get(key);
   if (entry && entry.refs > 0) {
     entry.refs--;
   }
 }
 
 /**
- * Pin a slug so its working tree is never evicted.
+ * Pin a cache entry so its working tree is never evicted.
  * Use when a Yjs collab session is active for the workspace.
  *
  * @param {string} slug
+ * @param {string} [userId]
  */
-function pin(slug) {
-  const entry = cache.get(slug);
+function pin(slug, userId) {
+  const key = _cacheKey(slug, userId);
+  const entry = cache.get(key);
   if (entry) entry.pinned = true;
 }
 
 /**
- * Unpin a slug, allowing normal LRU eviction.
+ * Unpin a cache entry, allowing normal LRU eviction.
  *
  * @param {string} slug
+ * @param {string} [userId]
  */
-function unpin(slug) {
-  const entry = cache.get(slug);
+function unpin(slug, userId) {
+  const key = _cacheKey(slug, userId);
+  const entry = cache.get(key);
   if (entry) entry.pinned = false;
 }
 
 /**
- * Check whether a slug's working tree is currently on disk.
+ * Check whether a cache entry's working tree is currently on disk.
  *
  * @param {string} slug
+ * @param {string} [userId]
  * @returns {boolean}
  */
-function has(slug) {
-  return cache.has(slug);
+function has(slug, userId) {
+  const key = _cacheKey(slug, userId);
+  return cache.has(key);
 }
 
 /**
- * Get the on-disk path for a slug WITHOUT acquiring it.
- * Returns `null` if the slug isn't in the cache.
+ * Get the on-disk path for a cache entry WITHOUT acquiring it.
+ * Returns `null` if the entry isn't in the cache.
  *
  * @param {string} slug
+ * @param {string} [userId]
  * @returns {string|null}
  */
-function peek(slug) {
-  const entry = cache.peek(slug);
+function peek(slug, userId) {
+  const key = _cacheKey(slug, userId);
+  const entry = cache.peek(key);
   return entry ? entry.repoPath : null;
 }
 
