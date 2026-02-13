@@ -893,17 +893,29 @@ function _patchExtensionHostForPreload(serverBinaryPath, preloadPath, bridgePort
   }
 
   // Build the injection block with the current bridge port.
+  //
   // code-server 4.108+ uses VS Code's ESM build, so extensionHostProcess.js
   // runs as an ES module where `require` is not defined.  We use
   // `createRequire` from `node:module` to get a CJS-compatible require.
-  // The `import()` call is wrapped in `new Function()` so that a CJS parser
-  // (if ever encountered) doesn't choke on the `import` keyword.
+  //
+  // CRITICAL: In ESM, all `import` declarations are hoisted and evaluated
+  // BEFORE any top-level code.  This means the original file's imports
+  // (which load VS Code's entire module graph) run before our env var
+  // assignments and preload require().  We MUST set env vars before the
+  // import statement to ensure the bootstrap-fork.js patch (which checks
+  // process.argv, not env vars) can fire correctly.
+  //
+  // The env var assignments use process.env which is synchronous and
+  // available immediately.  The `import` from `node:module` is hoisted
+  // but createRequire is used in top-level code which runs after all
+  // imports.  Our preload runs as CJS require() and installs hooks
+  // before extensionHostProcess.js's own top-level code executes.
   const escapedPath = preloadPath.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
   const injection = [
     BEGIN_MARKER,
+    `import { createRequire as __synthiCR } from "node:module";`,
     `process.env.SYNTHI_EXT_BRIDGE_PORT = process.env.SYNTHI_EXT_BRIDGE_PORT || "${bridgePort}";`,
     `process.env.SYNTHI_EXTENSION_HOST_CONFIRMED = "true";`,
-    `import { createRequire as __synthiCR } from "node:module";`,
     `const __synthiRequire = __synthiCR(import.meta.url);`,
     `try { __synthiRequire("${escapedPath}"); }`,
     `catch (_e) { process.stderr.write("[ext-host-preload] Injection failed: " + _e.message + "\\n"); }`,
