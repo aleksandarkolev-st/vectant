@@ -1202,6 +1202,19 @@ async function _triggerExtensionHostStartup(port, token) {
       socket.unref();
       socket.setKeepAlive(true, 30000);
 
+      // ── VS Code PersistentProtocol message types ──────────────────
+      const ProtoMsgType = {
+        None: 0,
+        Regular: 1,
+        Control: 2,
+        Ack: 3,
+        Disconnect: 5,
+        ReplayRequest: 6,
+        Pause: 7,
+        Resume: 8,
+        KeepAlive: 9,
+      };
+
       // ── VS Code remote protocol helpers ──────────────────────────
       // WebSocket frame encoder (client → server, MUST be masked)
       function sendWSFrame(payload) {
@@ -1239,7 +1252,7 @@ async function _triggerExtensionHostStartup(port, token) {
         const json = JSON.stringify(jsonObj);
         const jsonBuf = Buffer.from(json, 'utf8');
         const hdr = Buffer.alloc(13);
-        hdr[0] = 2; // ProtocolMessageType.Control
+        hdr[0] = ProtoMsgType.Control;
         hdr.writeUInt32BE(nextMsgId++, 1);
         hdr.writeUInt32BE(0, 5); // ack
         hdr.writeUInt32BE(jsonBuf.length, 9);
@@ -1251,7 +1264,7 @@ async function _triggerExtensionHostStartup(port, token) {
       function makeRegularMsg(dataBuf) {
         if (typeof dataBuf === 'string') dataBuf = Buffer.from(dataBuf, 'utf8');
         const hdr = Buffer.alloc(13);
-        hdr[0] = 1; // ProtocolMessageType.Regular
+        hdr[0] = ProtoMsgType.Regular;
         hdr.writeUInt32BE(nextMsgId++, 1);
         hdr.writeUInt32BE(0, 5); // ack
         hdr.writeUInt32BE(dataBuf.length, 9);
@@ -1295,7 +1308,7 @@ async function _triggerExtensionHostStartup(port, token) {
         const dataLen = payload.readUInt32BE(9);
         if (payload.length < 13 + dataLen) return null;
         const data = payload.slice(13, 13 + dataLen);
-        if (msgType === 2) {
+        if (msgType === ProtoMsgType.Control) {
           // Control — always JSON
           try { return JSON.parse(data.toString('utf8')); } catch (_) { return null; }
         }
@@ -1330,7 +1343,7 @@ async function _triggerExtensionHostStartup(port, token) {
           const keepAliveProtoInterval = setInterval(() => {
             try {
               const hdr = Buffer.alloc(13);
-              hdr[0] = 9; // ProtocolMessageType.KeepAlive
+              hdr[0] = ProtoMsgType.KeepAlive;
               hdr.writeUInt32BE(nextMsgId++, 1);
               hdr.writeUInt32BE(0, 5);  // ack
               hdr.writeUInt32BE(0, 9);  // data length = 0
@@ -1451,22 +1464,22 @@ async function _triggerExtensionHostStartup(port, token) {
           else if (step === 'initSent') {
             // After init data is sent, handle protocol messages from the EH
             const trigger = msg.type || `proto:${msg._protoType}`;
-            if (msg._protoType === 1) {
+            if (msg._protoType === ProtoMsgType.Regular) {
               // Regular message from EH — extension host is initializing
               process.stderr.write(`[vscode-server-manager] EH sent Regular message (${msg._dataLen}b) — bootstrap progressing\n`);
-            } else if (msg._protoType === 6) {
+            } else if (msg._protoType === ProtoMsgType.ReplayRequest) {
               // ReplayRequest — EH wants us to replay unacked messages
               // Re-send init data if it was lost
               process.stderr.write(`[vscode-server-manager] EH sent ReplayRequest — re-sending init data\n`);
               initDataSent = false;
               _doSendInitData(`ReplayRequest from EH`);
-            } else if (msg._protoType === 3) {
+            } else if (msg._protoType === ProtoMsgType.Ack) {
               // Ack — protocol acknowledgment, no response needed
-            } else if (msg._protoType >= 7 && msg._protoType <= 9) {
+            } else if (msg._protoType >= ProtoMsgType.Pause && msg._protoType <= ProtoMsgType.KeepAlive) {
               // Pause/Resume/KeepAlive — respond with ack
               try {
                 const ackHdr = Buffer.alloc(13);
-                ackHdr[0] = 3; // ProtocolMessageType.Ack
+                ackHdr[0] = ProtoMsgType.Ack;
                 ackHdr.writeUInt32BE(nextMsgId++, 1);
                 ackHdr.writeUInt32BE(0, 5);
                 ackHdr.writeUInt32BE(0, 9);
