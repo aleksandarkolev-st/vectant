@@ -1352,23 +1352,19 @@ async function _triggerExtensionHostStartup(port, token) {
               step = 'done';
             }
 
-            // ── Step 3: Send Extension Host initialization data ──
-            // After the server accepts our connectionType=2 request, it
-            // spawns the Extension Host process and passes our raw socket
-            // to it.  The EH then reads initialization data from this
-            // socket.  Without init data, the EH waits forever and never
-            // loads extensions.
-            //
-            // We send a minimal IExtensionHostInitData that includes:
-            // - Extension descriptions from EXTENSIONS_DIR
-            // - Workspace configuration
-            // - Required environment data
+            // ── Step 3: DO NOT send custom init data ──
+            // code-server handles IExtensionHostInitData delivery natively.
+            // It reads extension manifests from EXTENSIONS_DIR, constructs
+            // the init data, and sends it over the IPC socket to the EH
+            // process.  Sending a second init payload here would corrupt
+            // the PersistentProtocol stream because:
+            //   1. Our message arrives on the WebSocket, not the IPC socket
+            //   2. The EH process has already received init data from
+            //      code-server by the time our 2s delay fires
+            //   3. A duplicate Regular message is interpreted as RPC data,
+            //      not init data, causing deserialization failures
             if (step === 'done') {
-              _sendExtensionHostInitData(sendWSFrame, makeRegularMsg, port).then(() => {
-                process.stderr.write(`[vscode-server-manager] Extension Host init data sent\n`);
-              }).catch((initErr) => {
-                process.stderr.write(`[vscode-server-manager] Failed to send EH init data: ${initErr.message}\n`);
-              });
+              process.stderr.write(`[vscode-server-manager] Extension Host connection established — code-server will send init data natively\n`);
             }
           }
         }
@@ -1432,159 +1428,21 @@ async function _triggerExtensionHostStartup(port, token) {
 }
 
 /**
- * Build and send Extension Host initialization data through the WebSocket.
+ * DISABLED — code-server handles init data delivery natively.
  *
- * After the connectionType=2 handshake, code-server's server passes our
- * raw socket to the Extension Host process.  The EH reads the first
- * Regular message from this socket as IExtensionHostInitData (JSON).
- * Without this data the EH waits forever, never loading extensions.
+ * This function previously constructed and sent a custom
+ * IExtensionHostInitData via the WebSocket.  This was wrong because:
+ *   1. code-server already sends init data over the IPC socket
+ *   2. Our message arrived on the wrong transport (WebSocket vs IPC)
+ *   3. A duplicate Regular message corrupts the PersistentProtocol stream
  *
- * We scan EXTENSIONS_DIR for installed extensions and construct a minimal
- * init data object containing:
- *   - Version/commit identifiers
- *   - Extension descriptions (from their package.json manifests)
- *   - Workspace configuration
- *   - Required environment data
+ * The full implementation is preserved in git history.
+ * Search: "Send Extension Host initialization data" in git log.
  *
- * The init data is sent as a PersistentProtocol Regular (type=1) message
- * inside a WebSocket binary frame.
- *
- * @param {Function} sendWSFrame - WebSocket frame sender
- * @param {Function} makeRegularMsg - PersistentProtocol Regular message builder
- * @param {number} port - Server port (for remote authority)
- * @returns {Promise<void>}
+ * @deprecated Do not call — left as a stub for type compatibility
  */
 async function _sendExtensionHostInitData(sendWSFrame, makeRegularMsg, port) {
-  // Small delay to let the server wire up the socket to the EH process
-  await new Promise(r => setTimeout(r, 2000));
-
-  // ── Gather extension descriptions ──
-  const allExtensions = [];
-  const myExtensions = [];
-
-  try {
-    const dirs = fs.readdirSync(EXTENSIONS_DIR);
-    for (const dir of dirs) {
-      const pkgPath = path.join(EXTENSIONS_DIR, dir, 'package.json');
-      try {
-        const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
-        const extId = `${pkg.publisher || 'unknown'}.${pkg.name || dir}`.toLowerCase();
-        const extLocation = path.join(EXTENSIONS_DIR, dir);
-
-        const extensionDesc = {
-          identifier: { value: extId },
-          extensionLocation: { scheme: 'file', authority: '', path: extLocation, query: '', fragment: '' },
-          isBuiltin: false,
-          isUnderDevelopment: false,
-          // Spread package.json fields that VS Code expects
-          name: pkg.name || dir,
-          publisher: pkg.publisher || 'unknown',
-          version: pkg.version || '0.0.0',
-          engines: pkg.engines || { vscode: '*' },
-          main: pkg.main || undefined,
-          browser: pkg.browser || undefined,
-          activationEvents: pkg.activationEvents || ['*'],
-          contributes: pkg.contributes || {},
-          enabledApiProposals: pkg.enabledApiProposals || [],
-          api: pkg.api || 'none',
-        };
-
-        allExtensions.push(extensionDesc);
-        myExtensions.push({ value: extId });
-
-        process.stderr.write(`[eh-init] Extension: ${extId} (main: ${pkg.main || pkg.browser || 'none'})\n`);
-      } catch (e) {
-        process.stderr.write(`[eh-init] Skipping ${dir}: ${e.message}\n`);
-      }
-    }
-  } catch (e) {
-    process.stderr.write(`[eh-init] Cannot read extensions dir: ${e.message}\n`);
-  }
-
-  process.stderr.write(`[eh-init] Sending init data with ${allExtensions.length} extensions\n`);
-
-  // ── Read product.json for version info ──
-  let vsVersion = '1.88.0';
-  let vsCommit = 'unknown';
-  let vsQuality = 'stable';
-  try {
-    const binary = findServerBinary();
-    let resolvedBinary = binary;
-    try { resolvedBinary = fs.realpathSync(binary); } catch (_) {}
-    const codeServerRoot = path.dirname(path.dirname(resolvedBinary));
-    const productCandidates = [
-      path.join(codeServerRoot, 'lib', 'vscode', 'product.json'),
-      path.join(codeServerRoot, 'product.json'),
-    ];
-    for (const p of productCandidates) {
-      try {
-        const product = JSON.parse(fs.readFileSync(p, 'utf8'));
-        if (product.version) vsVersion = product.version;
-        if (product.commit) vsCommit = product.commit;
-        if (product.quality) vsQuality = product.quality;
-        break;
-      } catch (_) {}
-    }
-  } catch (_) {}
-
-  // ── Construct IExtensionHostInitData ──
-  const workspaceDir = currentWorkspaceDir || '/tmp/synthi-workspaces/default';
-  const userDataDir = path.join(VSCODE_SERVER_DIR, 'user-data', currentSlug || 'default');
-  const logsDir = path.join(userDataDir, 'logs');
-
-  const initData = {
-    version: vsVersion,
-    quality: vsQuality,
-    commit: vsCommit,
-    parentPid: process.pid,
-    environment: {
-      isExtensionDevelopmentDebug: false,
-      appRoot: { scheme: 'file', authority: '', path: '/', query: '', fragment: '' },
-      appName: 'code-server',
-      appHost: 'web',
-      appLanguage: 'en',
-      extensionTelemetryLogResource: { scheme: 'file', authority: '', path: '/dev/null', query: '', fragment: '' },
-      isExtensionTelemetryLoggingOnly: true,
-      appUriScheme: 'vscode',
-      globalStorageHome: { scheme: 'file', authority: '', path: path.join(userDataDir, 'globalStorage'), query: '', fragment: '' },
-      workspaceStorageHome: { scheme: 'file', authority: '', path: path.join(userDataDir, 'workspaceStorage'), query: '', fragment: '' },
-      extensionLogDirectory: { scheme: 'file', authority: '', path: logsDir, query: '', fragment: '' },
-    },
-    workspace: {
-      id: currentSlug || 'default',
-      name: currentSlug || 'workspace',
-      configuration: null,
-      isUntitled: false,
-      transient: false,
-    },
-    remote: {
-      isRemote: true,
-      authority: `127.0.0.1:${port}`,
-      connectionData: null,
-    },
-    consoleForward: {
-      includeStack: false,
-      logNative: false,
-    },
-    allExtensions,
-    myExtensions,
-    logLevel: 1, // LogLevel.Info
-    loggers: [{ resource: { scheme: 'file', authority: '', path: path.join(logsDir, 'exthost.log'), query: '', fragment: '' } }],
-    logsLocation: { scheme: 'file', authority: '', path: logsDir, query: '', fragment: '' },
-    autoStart: true,
-    uiKind: 2, // UIKind.Web
-  };
-
-  // ── Send as PersistentProtocol Regular message ──
-  try {
-    const initJson = JSON.stringify(initData);
-    process.stderr.write(`[eh-init] Init data size: ${initJson.length} bytes\n`);
-    sendWSFrame(makeRegularMsg(initJson));
-    process.stderr.write(`[eh-init] Init data sent successfully\n`);
-  } catch (e) {
-    process.stderr.write(`[eh-init] Failed to send init data: ${e.message}\n`);
-    throw e;
-  }
+  process.stderr.write(`[eh-init] _sendExtensionHostInitData is disabled — code-server handles init data natively\n`);
 }
 
 /**
