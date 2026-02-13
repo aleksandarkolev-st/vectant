@@ -1754,12 +1754,26 @@ async function _triggerExtensionHostStartup(port, token) {
           else if (step === 'initSent') {
             // After init data is sent, handle protocol messages from the EH
             const trigger = msg.type || `proto:${msg._protoType}`;
-            if (msg._protoType === ProtoMsgType.Regular) {
+            if (msg._protoType === ProtoMsgType.Regular && msg._dataLen === 1 && msg._rawBuf) {
+              const statusByte = msg._rawBuf[0];
+              if (statusByte === 0x01) {
+                // MessageType.Initialized — the EH parsed our init data
+                // and is loading extensions!
+                process.stderr.write(`[vscode-server-manager] EH sent Initialized (0x01) — extensions are loading! ✓\n`);
+                step = 'running';
+              } else if (statusByte === 0x02) {
+                // Late Ready — EH may be re-requesting init data
+                process.stderr.write(`[vscode-server-manager] EH sent Ready (0x02) after init — re-sending init data\n`);
+                initDataSent = false;
+                _doSendInitData('Late Ready signal');
+              }
+            } else if (msg._protoType === ProtoMsgType.Regular) {
               // Regular message from EH — extension host is initializing
               process.stderr.write(`[vscode-server-manager] EH sent Regular message (${msg._dataLen}b) — bootstrap progressing\n`);
             } else if (msg._protoType === ProtoMsgType.ReplayRequest) {
-              // ReplayRequest — EH wants us to replay unacked messages
-              // Re-send init data if it was lost
+              // ReplayRequest — EH wants us to replay unacked messages.
+              // With corrected message IDs this should be rare, but handle
+              // it anyway by re-sending init data with current nextMsgId.
               process.stderr.write(`[vscode-server-manager] EH sent ReplayRequest — re-sending init data\n`);
               initDataSent = false;
               _doSendInitData(`ReplayRequest from EH`);
@@ -1772,6 +1786,23 @@ async function _triggerExtensionHostStartup(port, token) {
                 ackHdr[0] = ProtoMsgType.Ack;
                 ackHdr.writeUInt32BE(nextMsgId++, 1);
                 ackHdr.writeUInt32BE(lastReceivedMsgId, 5); // ack last seen
+                ackHdr.writeUInt32BE(0, 9);
+                sendWSFrame(ackHdr);
+              } catch (_) {}
+            }
+          }
+          else if (step === 'running') {
+            // EH is running — handle ongoing protocol messages
+            if (msg._protoType === ProtoMsgType.ReplayRequest) {
+              process.stderr.write(`[vscode-server-manager] EH sent ReplayRequest while running\n`);
+              initDataSent = false;
+              _doSendInitData(`ReplayRequest while running`);
+            } else if (msg._protoType >= ProtoMsgType.Pause && msg._protoType <= ProtoMsgType.KeepAlive) {
+              try {
+                const ackHdr = Buffer.alloc(13);
+                ackHdr[0] = ProtoMsgType.Ack;
+                ackHdr.writeUInt32BE(nextMsgId++, 1);
+                ackHdr.writeUInt32BE(lastReceivedMsgId, 5);
                 ackHdr.writeUInt32BE(0, 9);
                 sendWSFrame(ackHdr);
               } catch (_) {}
@@ -1806,13 +1837,11 @@ async function _triggerExtensionHostStartup(port, token) {
       // via IPC and uses it for ongoing protocol communication.
       // We keep responding to pings to maintain the WebSocket connection.
       setTimeout(() => {
-        if (step !== 'done' && step !== 'error') {
-          process.stderr.write(`[vscode-server-manager] EH trigger: protocol timeout (step=${step}), continuing\n`);
+        if (step !== 'done' && step !== 'error' && step !== 'running') {
+          process.stderr.write(`[vscode-server-manager] EH trigger: protocol timeout 20s (step=${step}), continuing\n`);
 
           // If init data was sent but bootstrapState was never received,
-          // the EH may not have processed it (e.g. lost in WebSocket framing,
-          // or the EH was still setting up PersistentProtocol).  Re-send init
-          // data as a recovery attempt.
+          // the EH may not have processed it.  Re-send as recovery.
           if (initDataSent && !_bootstrapStateReceived) {
             process.stderr.write(`[vscode-server-manager] bootstrapState not received — re-sending init data as recovery\n`);
             initDataSent = false;
