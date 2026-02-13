@@ -538,6 +538,113 @@ const _cacheCheckInterval = setInterval(() => {
   }
 }, 500);
 
+// ---------------------------------------------------------------------------
+// Strategy 4: Delayed self-test and recovery
+//
+// If the vscode API hasn't been intercepted after several seconds, run
+// diagnostic checks and attempt direct acquisition.  This covers edge
+// cases where all property traps were bypassed (e.g., VS Code's ESM
+// build replaces the defineProperty descriptor or an internal module
+// cache reference is used).
+// ---------------------------------------------------------------------------
+
+const _selfTestDelays = [5000, 12000, 25000];
+for (const delay of _selfTestDelays) {
+  const timer = setTimeout(() => {
+    if (vsCodeWrapped) {
+      // Already intercepted — just log status
+      if (delay === _selfTestDelays[0]) {
+        log(`Self-test at ${delay / 1000}s: API intercepted ✓ (${_wrappedApiCount} instances, ${trackedTreeProviders.size} trees, ${trackedWebviewProviders.size} webviews)`);
+      }
+      return;
+    }
+
+    log(`Self-test at ${delay / 1000}s: vscode API NOT yet intercepted — running diagnostics`);
+
+    // Diagnostic 1: Check defineProperty descriptor integrity
+    const desc = Object.getOwnPropertyDescriptor(Module, '_load');
+    if (desc && desc.get) {
+      log(`  Module._load: defineProperty getter intact ✓`);
+    } else if (desc && desc.value) {
+      log(`  Module._load: defineProperty REPLACED with value (${desc.value.name || 'anon'}) — reinstalling`);
+      // Someone replaced our getter/setter with a plain value
+      // Capture the current function and reinstall our trap
+      _underlyingLoad = desc.value;
+      try {
+        Object.defineProperty(Module, '_load', {
+          get() { return _synthiModuleLoadProxy; },
+          set(newLoad) {
+            if (newLoad && !newLoad.__synthiHook) {
+              _underlyingLoad = newLoad;
+              log(`Module._load re-captured after descriptor recovery`);
+            }
+          },
+          configurable: true,
+          enumerable: true,
+        });
+        log(`  Module._load: defineProperty re-installed`);
+      } catch (e) {
+        logError(`  Module._load: re-install failed: ${e.message}`);
+      }
+    }
+
+    // Diagnostic 2: Check require hook is still in place
+    log(`  Module.prototype.require: ${Module.prototype.require.name === 'synthiRequireHook' ? 'intact ✓' : 'REPLACED (' + Module.prototype.require.name + ')'}`);
+    log(`  require() hook call count: ${_requireHookCallCount}`);
+
+    // Diagnostic 3: Check for VS Code's ESM API factory on globalThis
+    if (typeof globalThis._VSCODE_IMPORT_VSCODE_API === 'function') {
+      log(`  globalThis._VSCODE_IMPORT_VSCODE_API: present (ESM interceptor active)`);
+    }
+
+    // Recovery 1: Try direct require('vscode') through whatever hooks are installed
+    try {
+      const testMod = new Module('synthi-self-test');
+      testMod.filename = __filename;
+      testMod.paths = Module._nodeModulePaths(require('path').dirname(__filename));
+      const vsResult = _origPrototypeRequire.call(testMod, 'vscode');
+      if (vsResult) {
+        log(`  Recovery: direct require('vscode') returned an object`);
+        const didWrap = _tryWrapVscodeResult(vsResult, `self-test direct require at ${delay / 1000}s`);
+        if (didWrap) {
+          log(`  Recovery SUCCESS: vscode API acquired via direct require`);
+          // Trigger provider list update
+          bridgeSend({ type: 'providerList', treeViews: Array.from(trackedTreeProviders.keys()), webviews: Array.from(trackedWebviewProviders.keys()) });
+          return;
+        }
+      }
+    } catch (e) {
+      log(`  Recovery: direct require('vscode') failed: ${e.message}`);
+    }
+
+    // Recovery 2: Scan Module._cache for vscode-like modules
+    const cache = Module._cache || {};
+    const cacheKeys = Object.keys(cache);
+    log(`  Module._cache: ${cacheKeys.length} entries`);
+    let found = false;
+    for (const key of cacheKeys) {
+      try {
+        const mod = cache[key];
+        if (mod?.exports && typeof mod.exports === 'object') {
+          const exp = mod.exports;
+          if (exp.window && exp.commands && exp.workspace) {
+            log(`  Recovery: found vscode-shaped module in cache: ${key}`);
+            const didWrap = _tryWrapVscodeResult(exp, `self-test cache recovery (${key})`);
+            if (didWrap) {
+              found = true;
+              log(`  Recovery SUCCESS: vscode API acquired via cache scan`);
+            }
+          }
+        }
+      } catch (_) {}
+    }
+    if (found) {
+      bridgeSend({ type: 'providerList', treeViews: Array.from(trackedTreeProviders.keys()), webviews: Array.from(trackedWebviewProviders.keys()) });
+    }
+  }, delay);
+  timer.unref();
+}
+
 // ============================================================================
 // State: tracked providers
 // ============================================================================
