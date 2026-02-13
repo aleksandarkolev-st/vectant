@@ -512,14 +512,14 @@ class GitService {
             .map(dirent => dirent.name);
     }
 
-    async getStatus(slug) {
-        if (!this.isRepoExists(slug)) return null;
-        if (!this.isRepoInitialized(slug)) {
+    async getStatus(slug, userId) {
+        if (!this.isRepoExists(slug, userId)) return null;
+        if (!this.isRepoInitialized(slug, userId)) {
             return null;
         }
         
         try {
-            const git = this.getGit(slug);
+            const git = this.getGit(slug, userId);
             const status = await git.status();
             
             // Check for merge conflicts
@@ -535,14 +535,14 @@ class GitService {
         }
     }
 
-    async getBranches(slug) {
-        if (!this.isRepoExists(slug)) return { local: [], current: '', all: [] };
-        if (!this.isRepoInitialized(slug)) {
+    async getBranches(slug, userId) {
+        if (!this.isRepoExists(slug, userId)) return { local: [], current: '', all: [] };
+        if (!this.isRepoInitialized(slug, userId)) {
             return { local: [], current: '', all: [] };
         }
         
         try {
-            const git = this.getGit(slug);
+            const git = this.getGit(slug, userId);
             const localSummary = await git.branchLocal();
             const allSummary = await git.branch(['-a']);
             return { 
@@ -555,77 +555,77 @@ class GitService {
         }
     }
 
-    async checkout(slug, branchName, create = false) {
+    async checkout(slug, branchName, create = false, userId) {
         return this.withLock(slug, async () => {
-            const git = this.getGit(slug);
+            const git = this.getGit(slug, userId);
             try {
                 if (create) {
                     await git.checkoutLocalBranch(branchName);
                 } else {
                     await git.checkout(branchName);
                 }
-                this._archiveGitAsync(slug);
-                return this.getStatus(slug);
+                this._archiveGitAsync(slug, userId);
+                return this.getStatus(slug, userId);
             } catch (e) {
                 throw this.mapGitError(e, slug);
             }
-        });
+        }, userId);
     }
 
-    async fetch(slug) {
+    async fetch(slug, userId) {
         return this.withLock(slug, async () => {
             try {
-                const git = this.getGit(slug);
+                const git = this.getGit(slug, userId);
                 await git.fetch();
-                return this.getStatus(slug);
+                return this.getStatus(slug, userId);
             } catch (e) {
                 throw this.mapGitError(e, slug);
             }
-        });
+        }, userId);
     }
 
-    async commit(slug, message) {
+    async commit(slug, message, userId) {
         return this.withLock(slug, async () => {
             try {
-                const git = this.getGit(slug);
+                const git = this.getGit(slug, userId);
                 await git.commit(message);
-                this._archiveGitAsync(slug);
-                return this.getStatus(slug);
+                this._archiveGitAsync(slug, userId);
+                return this.getStatus(slug, userId);
             } catch (e) {
                 throw this.mapGitError(e, slug);
             }
-        });
+        }, userId);
     }
 
-    async stageFile(slug, filePath) {
+    async stageFile(slug, filePath, userId) {
         return this.withLock(slug, async () => {
             try {
-                const git = this.getGit(slug);
+                const git = this.getGit(slug, userId);
                 await git.add(filePath);
-                return this.getStatus(slug);
+                return this.getStatus(slug, userId);
             } catch (e) {
                 throw this.mapGitError(e, slug);
             }
-        });
+        }, userId);
     }
 
     // Stage specific lines/hunks using patch mode
-    async stageLines(slug, filePath, patch) {
+    async stageLines(slug, filePath, patch, userId) {
         return this.withLock(slug, async () => {
             try {
-                const git = this.getGit(slug);
+                const git = this.getGit(slug, userId);
                 // Use git apply --cached to stage a specific patch
                 await git.raw(['apply', '--cached', '--unidiff-zero'], patch);
-                return this.getStatus(slug);
+                return this.getStatus(slug, userId);
             } catch (e) {
                 throw this.mapGitError(e, slug);
             }
-        });
+        }, userId);
     }
 
-    async unstageFile(slug, filePath) {
+    async unstageFile(slug, filePath, userId) {
         return this.withLock(slug, async () => {
-            const git = this.getGit(slug);
+            const git = this.getGit(slug, userId);
             try {
                 await git.reset(['HEAD', filePath]);
             } catch (e) {
@@ -636,27 +636,27 @@ class GitService {
                     throw this.mapGitError(e, slug);
                 }
             }
-            return this.getStatus(slug);
-        });
+            return this.getStatus(slug, userId);
+        }, userId);
     }
 
     // Stage all changes
-    async stageAll(slug) {
+    async stageAll(slug, userId) {
         return this.withLock(slug, async () => {
             try {
-                const git = this.getGit(slug);
+                const git = this.getGit(slug, userId);
                 await git.add('-A');
-                return this.getStatus(slug);
+                return this.getStatus(slug, userId);
             } catch (e) {
                 throw this.mapGitError(e, slug);
             }
-        });
+        }, userId);
     }
 
     // Unstage all staged changes
-    async unstageAll(slug) {
+    async unstageAll(slug, userId) {
         return this.withLock(slug, async () => {
-            const git = this.getGit(slug);
+            const git = this.getGit(slug, userId);
             try {
                 await git.reset(['HEAD']);
             } catch (e) {
@@ -670,15 +670,15 @@ class GitService {
                     throw this.mapGitError(e, slug);
                 }
             }
-            return this.getStatus(slug);
-        });
+            return this.getStatus(slug, userId);
+        }, userId);
     }
 
     // Discard all unstaged changes
-    async discardAll(slug) {
+    async discardAll(slug, userId) {
         return this.withLock(slug, async () => {
             try {
-                const git = this.getGit(slug);
+                const git = this.getGit(slug, userId);
                 const status = await git.status();
                 
                 // Checkout all modified/deleted tracked files
@@ -691,16 +691,16 @@ class GitService {
                     await git.clean('f', ['-d']);
                 }
                 
-                return this.getStatus(slug);
+                return this.getStatus(slug, userId);
             } catch (e) {
                 throw this.mapGitError(e, slug);
             }
-        });
+        }, userId);
     }
 
-    async push(slug) {
+    async push(slug, userId) {
         return this.withLock(slug, async () => {
-            const git = this.getGit(slug);
+            const git = this.getGit(slug, userId);
             // Make sure we don't trigger interactive credential prompts in the server process
             const prev = process.env.GIT_TERMINAL_PROMPT;
             process.env.GIT_TERMINAL_PROMPT = '0';
@@ -755,56 +755,56 @@ class GitService {
                     process.env.GIT_TERMINAL_PROMPT = prev;
                 }
             }
-            return this.getStatus(slug);
-        });
+            return this.getStatus(slug, userId);
+        }, userId);
     }
 
-    async addRemote(slug, name, url) {
+    async addRemote(slug, name, url, userId) {
         return this.withLock(slug, async () => {
             try {
-                const git = this.getGit(slug);
+                const git = this.getGit(slug, userId);
                 await git.addRemote(name, url);
-                return this.getStatus(slug);
+                return this.getStatus(slug, userId);
             } catch (e) {
                 throw this.mapGitError(e, slug);
             }
-        });
+        }, userId);
     }
 
-    async removeRemote(slug, name) {
+    async removeRemote(slug, name, userId) {
         return this.withLock(slug, async () => {
             try {
-                const git = this.getGit(slug);
+                const git = this.getGit(slug, userId);
                 await git.removeRemote(name);
-                return this.getStatus(slug);
+                return this.getStatus(slug, userId);
             } catch (e) {
                 throw this.mapGitError(e, slug);
             }
-        });
+        }, userId);
     }
 
-    async getRemotes(slug) {
+    async getRemotes(slug, userId) {
         try {
-            const git = this.getGit(slug);
+            const git = this.getGit(slug, userId);
             return await git.getRemotes(true);
         } catch (e) {
             throw this.mapGitError(e, slug);
         }
     }
 
-    async pull(slug) {
+    async pull(slug, userId) {
         return this.withLock(slug, async () => {
-            const git = this.getGit(slug);
+            const git = this.getGit(slug, userId);
             try {
                 const pullResult = await git.pull();
-                const status = await this.getStatus(slug);
+                const status = await this.getStatus(slug, userId);
                 
                 // Check for merge conflicts after pull (in case pull succeeded but left conflicts)
                 if (status && status.hasConflicts) {
                     throw new MergeConflictError(status.conflictedFiles);
                 }
                 
-                this._archiveGitAsync(slug);
+                this._archiveGitAsync(slug, userId);
                 
                 return {
                     ...status,
@@ -816,7 +816,7 @@ class GitService {
                 };
             } catch (e) {
                 // Archive .git even on conflict so the state is persisted
-                this._archiveGitAsync(slug);
+                this._archiveGitAsync(slug, userId);
                 if (e instanceof MergeConflictError) throw e;
                 
                 const msg = (e.message || '').toLowerCase();
@@ -858,20 +858,20 @@ class GitService {
                 
                 throw this.mapGitError(e, slug);
             }
-        });
+        }, userId);
     }
 
-    async discardChange(slug, filePath) {
+    async discardChange(slug, filePath, userId) {
         return this.withLock(slug, async () => {
             try {
-                const git = this.getGit(slug);
+                const git = this.getGit(slug, userId);
                 // Check if file is untracked
                 const status = await git.status();
                 const fileStatus = status.files.find(f => f.path === filePath);
                 
                 if (fileStatus && fileStatus.index === '?') {
                     // Untracked file, delete it
-                    const repoPath = this.getRepoPath(slug);
+                    const repoPath = this.getEffectiveRepoPath(slug, userId);
                     const fullPath = path.join(repoPath, filePath);
                     if (fs.existsSync(fullPath)) {
                         fs.unlinkSync(fullPath);
@@ -879,73 +879,73 @@ class GitService {
                 } else {
                     await git.checkout(filePath);
                 }
-                return this.getStatus(slug);
+                return this.getStatus(slug, userId);
             } catch (e) {
                 throw this.mapGitError(e, slug);
             }
-        });
+        }, userId);
     }
 
     // ===== Merge Conflict Resolution =====
     
     // Resolve conflict by accepting "ours" (current branch) version
-    async resolveConflictOurs(slug, filePath) {
+    async resolveConflictOurs(slug, filePath, userId) {
         return this.withLock(slug, async () => {
             try {
-                const git = this.getGit(slug);
+                const git = this.getGit(slug, userId);
                 await git.checkout(['--ours', filePath]);
                 await git.add(filePath);
-                return this.getStatus(slug);
+                return this.getStatus(slug, userId);
             } catch (e) {
                 throw this.mapGitError(e, slug);
             }
-        });
+        }, userId);
     }
 
     // Resolve conflict by accepting "theirs" (incoming) version
-    async resolveConflictTheirs(slug, filePath) {
+    async resolveConflictTheirs(slug, filePath, userId) {
         return this.withLock(slug, async () => {
             try {
-                const git = this.getGit(slug);
+                const git = this.getGit(slug, userId);
                 await git.checkout(['--theirs', filePath]);
                 await git.add(filePath);
-                return this.getStatus(slug);
+                return this.getStatus(slug, userId);
             } catch (e) {
                 throw this.mapGitError(e, slug);
             }
-        });
+        }, userId);
     }
 
     // Mark a conflicted file as resolved (after manual edit)
-    async markResolved(slug, filePath) {
+    async markResolved(slug, filePath, userId) {
         return this.withLock(slug, async () => {
             try {
-                const git = this.getGit(slug);
+                const git = this.getGit(slug, userId);
                 await git.add(filePath);
-                return this.getStatus(slug);
+                return this.getStatus(slug, userId);
             } catch (e) {
                 throw this.mapGitError(e, slug);
             }
-        });
+        }, userId);
     }
 
     // Abort current merge (discard all merge changes)
-    async abortMerge(slug) {
+    async abortMerge(slug, userId) {
         return this.withLock(slug, async () => {
             try {
-                const git = this.getGit(slug);
+                const git = this.getGit(slug, userId);
                 await git.merge(['--abort']);
-                return this.getStatus(slug);
+                return this.getStatus(slug, userId);
             } catch (e) {
                 throw this.mapGitError(e, slug);
             }
-        });
+        }, userId);
     }
 
     // Get the content for each version of a conflicted file
-    async getConflictVersions(slug, filePath) {
+    async getConflictVersions(slug, filePath, userId) {
         try {
-            const git = this.getGit(slug);
+            const git = this.getGit(slug, userId);
             
             // Get the three versions: base, ours, theirs
             let base = '', ours = '', theirs = '';
@@ -965,7 +965,7 @@ class GitService {
             // Get current working copy (with conflict markers)
             let current = '';
             try {
-                const repoPath = this.getRepoPath(slug);
+                const repoPath = this.getEffectiveRepoPath(slug, userId);
                 const fullPath = path.join(repoPath, filePath);
                 current = fs.readFileSync(fullPath, 'utf-8');
             } catch (e) { /* ignore */ }
