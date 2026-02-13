@@ -1633,6 +1633,241 @@ function _handleBridgeRequest(msg) {
 }
 
 // ============================================================================
+// Direct Extension Loading (Fallback)
+//
+// If the normal Extension Host initialization chain fails (EH never
+// receives init data, or NodeModuleRequireInterceptor never installs),
+// this function attempts to load extensions directly by:
+//   1. Scanning the extensions directory for installed extensions
+//   2. Finding each extension's main entry point
+//   3. Using whatever vscode API is available (from globalThis hooks,
+//      Module._cache, or a minimal shim) to make require('vscode') work
+//   4. Requiring the extension's main file
+//
+// This is a last-resort recovery — it skips VS Code's normal activation
+// events and workspace contribution resolution.  But for UI extraction
+// (tree views, webview providers) it may be sufficient.
+// ============================================================================
+
+/**
+ * Attempt to directly load extensions as a recovery mechanism.
+ * Called at 25s if no extensions have been loaded through normal channels.
+ */
+function _attemptDirectExtensionLoading() {
+  const fs = require('fs');
+  const pathMod = require('path');
+
+  const extensionDirs = [
+    '/root/.synthi/vscode-server/extensions',
+    process.env.VSCODE_EXTENSIONS_DIR,
+  ].filter(Boolean);
+
+  log('Direct extension loading: scanning extension directories...');
+
+  let extensionsFound = 0;
+  let extensionsLoaded = 0;
+
+  for (const extDir of extensionDirs) {
+    let entries;
+    try {
+      entries = fs.readdirSync(extDir);
+    } catch (e) {
+      log(`  Cannot read ${extDir}: ${e.message}`);
+      continue;
+    }
+
+    for (const entry of entries) {
+      const pkgPath = pathMod.join(extDir, entry, 'package.json');
+      let pkg;
+      try {
+        pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+      } catch (_) {
+        continue;
+      }
+
+      extensionsFound++;
+      const extId = `${pkg.publisher || 'unknown'}.${pkg.name || entry}`;
+      const mainFile = pkg.main || pkg.browser;
+
+      if (!mainFile) {
+        log(`  ${extId}: no main entry point, skipping`);
+        continue;
+      }
+
+      // Check for UI contributions
+      const hasViews = !!(pkg.contributes?.views && Object.keys(pkg.contributes.views).length > 0);
+      const hasViewsContainers = !!(pkg.contributes?.viewsContainers);
+      if (!hasViews && !hasViewsContainers) {
+        log(`  ${extId}: no UI contributions, skipping`);
+        continue;
+      }
+
+      const mainPath = pathMod.resolve(extDir, entry, mainFile);
+      if (!fs.existsSync(mainPath) && !fs.existsSync(mainPath + '.js')) {
+        log(`  ${extId}: main file not found at ${mainPath}`);
+        continue;
+      }
+
+      log(`  ${extId}: has UI contributions, main=${mainFile}`);
+
+      // Check if we have a vscode API available to provide
+      let vscodeApi = null;
+
+      // Try 1: check globalThis factories
+      if (typeof globalThis._VSCODE_IMPORT_VSCODE_API === 'function') {
+        try {
+          vscodeApi = globalThis._VSCODE_IMPORT_VSCODE_API(extId);
+          log(`    Got vscode API from globalThis._VSCODE_IMPORT_VSCODE_API`);
+        } catch (e) {
+          log(`    globalThis factory failed: ${e.message}`);
+        }
+      }
+
+      // Try 2: check Module._cache for vscode-shaped modules
+      if (!vscodeApi) {
+        const cache = Module._cache || {};
+        for (const key of Object.keys(cache)) {
+          try {
+            const exp = cache[key]?.exports;
+            if (exp && exp.window && exp.commands && exp.workspace) {
+              vscodeApi = exp;
+              log(`    Got vscode API from Module._cache: ${key}`);
+              break;
+            }
+          } catch (_) {}
+        }
+      }
+
+      // Try 3: use our realVscodeApi if we managed to intercept one
+      if (!vscodeApi && realVscodeApi) {
+        vscodeApi = realVscodeApi;
+        log(`    Using previously intercepted realVscodeApi`);
+      }
+
+      if (!vscodeApi) {
+        log(`    No vscode API available — cannot load ${extId} directly`);
+        log(`    Extension loading depends on VS Code init data arriving via WebSocket`);
+        continue;
+      }
+
+      // Ensure require('vscode') returns our API inside the extension context
+      // We do this by temporarily adding a Module._cache entry
+      try {
+        // Create a fake module for 'vscode' if not already cached
+        let vscodeKey = null;
+        const cache = Module._cache || {};
+        for (const key of Object.keys(cache)) {
+          if (key.endsWith('/vscode') || key === 'vscode') {
+            vscodeKey = key;
+            break;
+          }
+        }
+
+        if (!vscodeKey) {
+          // Add vscode to the cache so require('vscode') works
+          const fakeMod = new Module('vscode');
+          fakeMod.filename = 'vscode';
+          fakeMod.loaded = true;
+          fakeMod.exports = vscodeApi;
+          Module._cache['vscode'] = fakeMod;
+          log(`    Injected vscode API into Module._cache`);
+        }
+
+        // Wrap the API before the extension uses it
+        _tryWrapVscodeResult(vscodeApi, `direct loading for ${extId}`);
+
+        // Load the extension
+        log(`    Loading ${extId} from ${mainPath}...`);
+        const extModule = _origPrototypeRequire.call(
+          Object.assign(new Module(mainPath), {
+            filename: mainPath,
+            paths: Module._nodeModulePaths(pathMod.dirname(mainPath)),
+          }),
+          mainPath
+        );
+
+        extensionsLoaded++;
+        log(`    ✓ ${extId} loaded successfully`);
+
+        // Try to activate if there's an activate function
+        if (typeof extModule === 'object' && typeof extModule.activate === 'function') {
+          log(`    Activating ${extId}...`);
+          try {
+            // Create a minimal ExtensionContext
+            const context = {
+              subscriptions: [],
+              workspaceState: { get: () => undefined, update: () => Promise.resolve(), keys: () => [] },
+              globalState: { get: () => undefined, update: () => Promise.resolve(), keys: () => [], setKeysForSync: () => {} },
+              extensionPath: pathMod.join(extDir, entry),
+              extensionUri: { scheme: 'file', authority: '', path: pathMod.join(extDir, entry), query: '', fragment: '' },
+              storagePath: undefined,
+              globalStoragePath: undefined,
+              logPath: '/tmp',
+              extensionMode: 1, // ExtensionMode.Release
+              extension: {
+                id: extId,
+                extensionUri: { scheme: 'file', authority: '', path: pathMod.join(extDir, entry) },
+                extensionPath: pathMod.join(extDir, entry),
+                isActive: true,
+                packageJSON: pkg,
+                extensionKind: 2, // ExtensionKind.Workspace
+                exports: undefined,
+              },
+              environmentVariableCollection: {
+                replace: () => {},
+                append: () => {},
+                prepend: () => {},
+                get: () => undefined,
+                forEach: () => {},
+                delete: () => {},
+                clear: () => {},
+                persistent: true,
+                description: '',
+                [Symbol.iterator]: function* () {},
+              },
+              secrets: { get: () => Promise.resolve(undefined), store: () => Promise.resolve(), delete: () => Promise.resolve(), onDidChange: { event: () => ({ dispose() {} }) } },
+              storageUri: undefined,
+              globalStorageUri: { scheme: 'file', authority: '', path: '/tmp/synthi-global-storage' },
+              logUri: { scheme: 'file', authority: '', path: '/tmp' },
+              asAbsolutePath: (rel) => pathMod.join(extDir, entry, rel),
+            };
+
+            const result = extModule.activate(context);
+            if (result && typeof result.then === 'function') {
+              result.then(() => {
+                log(`    ✓ ${extId} activated (async)`);
+                // Check for newly registered providers
+                setTimeout(() => {
+                  bridgeSend({ type: 'providerList', treeViews: Array.from(trackedTreeProviders.keys()), webviews: Array.from(trackedWebviewProviders.keys()) });
+                }, 1000);
+              }).catch((err) => {
+                logError(`    ✗ ${extId} activation failed: ${err.message}`);
+              });
+            } else {
+              log(`    ✓ ${extId} activated (sync)`);
+            }
+          } catch (activateErr) {
+            logError(`    ✗ ${extId} activation error: ${activateErr.message}`);
+          }
+        }
+      } catch (loadErr) {
+        logError(`    ✗ Failed to load ${extId}: ${loadErr.message}`);
+        if (loadErr.stack) logError(`      ${loadErr.stack.split('\n').slice(0, 3).join('\n      ')}`);
+      }
+    }
+  }
+
+  log(`Direct extension loading complete: ${extensionsFound} found, ${extensionsLoaded} loaded`);
+
+  // Send updated provider list
+  if (extensionsLoaded > 0) {
+    setTimeout(() => {
+      bridgeSend({ type: 'providerList', treeViews: Array.from(trackedTreeProviders.keys()), webviews: Array.from(trackedWebviewProviders.keys()) });
+    }, 2000);
+  }
+}
+
+// ============================================================================
 // Cleanup
 // ============================================================================
 
