@@ -302,6 +302,47 @@ function _tryWrapVscodeResult(result, source) {
 }
 
 // ---------------------------------------------------------------------------
+// Strategy 0 (PRIMARY): Module.prototype.require hook
+//
+// The most reliable interception point.  Every CJS require() call from
+// extension code flows through Module.prototype.require.  Unlike
+// Module._load defineProperty traps, this cannot be bypassed by cached
+// function references, ESM/CJS boundary issues, or VS Code re-hooking.
+//
+// When an extension calls require('vscode'), VS Code's own interceptor
+// (NodeModuleRequireInterceptor, which hooks Module._load internally)
+// returns the real API.  Our hook on Module.prototype.require sees the
+// returned result and wraps it — after VS Code's interceptor has done
+// its work.
+// ---------------------------------------------------------------------------
+
+const _origPrototypeRequire = Module.prototype.require;
+let _requireHookCallCount = 0;
+
+Module.prototype.require = function synthiRequireHook(id) {
+  const result = _origPrototypeRequire.apply(this, arguments);
+
+  _requireHookCallCount++;
+  if (_requireHookCallCount <= 3 || _requireHookCallCount % 500 === 0) {
+    log(`require() hook #${_requireHookCallCount}: "${id}" (from: ${this?.filename ? this.filename.split('/').slice(-3).join('/') : 'unknown'})`);
+  }
+
+  if (id === 'vscode') {
+    try {
+      const didWrap = _tryWrapVscodeResult(result, `require('vscode') hook (from: ${this?.filename || 'unknown'})`);
+      if (didWrap) {
+        log(`SUCCESS: vscode API intercepted via Module.prototype.require hook (call #${_requireHookCallCount})`);
+      }
+    } catch (e) {
+      logError(`require hook failed to wrap: ${e.message}`);
+    }
+  }
+
+  return result;
+};
+log('Module.prototype.require hook installed');
+
+// ---------------------------------------------------------------------------
 // Strategy 1: Object.defineProperty trap on Module._load
 //
 // Our getter always returns our wrapper function.  Our setter captures
