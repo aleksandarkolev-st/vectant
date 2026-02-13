@@ -931,6 +931,10 @@ function _patchExtensionHostForPreload(serverBinaryPath, preloadPath, bridgePort
       // Inject at the very top of the file
       fs.writeFileSync(candidate, injection + content);
       process.stderr.write(`[vscode-server-manager] Patched extensionHostProcess.js (bridge port ${bridgePort}): ${candidate}\n`);
+
+      // Also patch bootstrap-fork.js for early ODP trap
+      _patchBootstrapFork(rootCandidates, bridgePort);
+
       return true;
     } catch (e) {
       process.stderr.write(`[vscode-server-manager] Failed to patch ${candidate}: ${e.message}\n`);
@@ -940,6 +944,118 @@ function _patchExtensionHostForPreload(serverBinaryPath, preloadPath, bridgePort
   process.stderr.write(`[vscode-server-manager] WARNING: Could not find extensionHostProcess.js to patch\n`);
   process.stderr.write(`[vscode-server-manager]   Searched roots: ${[...rootCandidates].join(', ')}\n`);
   process.stderr.write(`[vscode-server-manager]   Candidates tried: ${candidates.length}\n`);
+  return false;
+}
+
+/**
+ * Patch bootstrap-fork.js to install an early Object.defineProperty trap.
+ *
+ * bootstrap-fork.js runs BEFORE extensionHostProcess.js (it's the CJS entry
+ * point that forks child processes). VS Code's static ESM imports in
+ * extensionHostProcess.js are evaluated before our preload's top-level code.
+ * During ESM evaluation, VS Code's modules may cache Object.defineProperty.
+ *
+ * By patching bootstrap-fork.js, our ODP trap is in place before ANY ESM
+ * evaluation happens, so we intercept _VSCODE_IMPORT_VSCODE_API even when
+ * VS Code uses a cached ODP reference.
+ *
+ * CRITICAL: We use process.argv check (--type=extensionHost) instead of
+ * SYNTHI_EXTENSION_HOST_CONFIRMED because the env var is set in
+ * extensionHostProcess.js which runs AFTER bootstrap-fork.js.
+ *
+ * @param {Set<string>} rootCandidates - Server root directory candidates
+ * @param {number} bridgePort - TCP port for the preload bridge
+ */
+function _patchBootstrapFork(rootCandidates, bridgePort) {
+  const BOOTSTRAP_BEGIN = '/* SYNTHI_BOOTSTRAP_PRELOAD_BEGIN */';
+  const BOOTSTRAP_END = '/* SYNTHI_BOOTSTRAP_PRELOAD_END */';
+
+  const bootstrapCandidates = [];
+  for (const serverRoot of rootCandidates) {
+    bootstrapCandidates.push(
+      path.join(serverRoot, 'lib', 'vscode', 'out', 'bootstrap-fork.js'),
+      path.join(serverRoot, 'node_modules', 'code-server', 'lib', 'vscode', 'out', 'bootstrap-fork.js'),
+      path.join(serverRoot, 'out', 'bootstrap-fork.js'),
+    );
+  }
+
+  // Also search via find on Linux
+  if (process.platform !== 'win32') {
+    for (const serverRoot of rootCandidates) {
+      try {
+        const found = execSync(
+          `find "${serverRoot}" -name "bootstrap-fork.js" -path "*/out/*" -maxdepth 6 2>/dev/null`,
+          { encoding: 'utf8', timeout: 5000 }
+        ).trim().split('\n').filter(Boolean);
+        for (const f of found) {
+          if (!bootstrapCandidates.includes(f)) bootstrapCandidates.push(f);
+        }
+      } catch (_) {}
+    }
+  }
+
+  // Guard uses process.argv instead of env var — env var isn't set yet.
+  // bootstrap-fork.js runs for ALL forked processes (PTY host, file watcher,
+  // etc.), so we MUST check --type=extensionHost to avoid false positives.
+  const bootstrapInjection = [
+    BOOTSTRAP_BEGIN,
+    `// Early Object.defineProperty trap — installed before ANY ESM imports.`,
+    `// Uses process.argv guard (not env var — env var set after this runs).`,
+    `(function() {`,
+    `  if (!process.argv.includes('--type=extensionHost')) return;`,
+    `  process.env.SYNTHI_EXT_BRIDGE_PORT = process.env.SYNTHI_EXT_BRIDGE_PORT || "${bridgePort}";`,
+    `  const _origODP = Object.defineProperty;`,
+    `  const _PREFIX = '[ext-host-preload:bootstrap]';`,
+    `  let _odpCount = 0;`,
+    `  Object.defineProperty = function(target, prop, descriptor) {`,
+    `    if (target === globalThis && _odpCount < 50) {`,
+    `      _odpCount++;`,
+    `      process.stderr.write(_PREFIX + ' ODP: globalThis.' + String(prop) + ' type=' + typeof (descriptor && descriptor.value) + '\\n');`,
+    `    }`,
+    `    if (target === globalThis && typeof prop === 'string' && prop.includes('VSCODE') && prop.includes('IMPORT') && descriptor && typeof descriptor.value === 'function') {`,
+    `      process.stderr.write(_PREFIX + ' INTERCEPTED: globalThis.' + prop + ' — wrapping API factory\\n');`,
+    `      const origFn = descriptor.value;`,
+    `      const wrappedFn = function() {`,
+    `        const result = origFn.apply(this, arguments);`,
+    `        return result;`,
+    `      };`,
+    `      wrappedFn._synthiWrapped = true;`,
+    `      wrappedFn._origFn = origFn;`,
+    `      descriptor = Object.assign({}, descriptor, { value: wrappedFn, configurable: true });`,
+    `    }`,
+    `    return _origODP.call(this, target, prop, descriptor);`,
+    `  };`,
+    `  process.stderr.write(_PREFIX + ' Early ODP trap installed\\n');`,
+    `})();`,
+    BOOTSTRAP_END,
+    '',
+  ].join('\n');
+
+  for (const candidate of bootstrapCandidates) {
+    if (!fs.existsSync(candidate)) continue;
+
+    try {
+      let content = fs.readFileSync(candidate, 'utf8');
+
+      // Remove existing injection
+      const beginIdx = content.indexOf(BOOTSTRAP_BEGIN);
+      const endIdx = content.indexOf(BOOTSTRAP_END);
+      if (beginIdx !== -1 && endIdx !== -1) {
+        const endOfBlock = endIdx + BOOTSTRAP_END.length;
+        const afterBlock = content[endOfBlock] === '\n' ? endOfBlock + 1 : endOfBlock;
+        content = content.slice(0, beginIdx) + content.slice(afterBlock);
+        process.stderr.write(`[vscode-server-manager] Removed stale bootstrap injection from: ${candidate}\n`);
+      }
+
+      // Inject at the very top
+      fs.writeFileSync(candidate, bootstrapInjection + content);
+      process.stderr.write(`[vscode-server-manager] Patched bootstrap-fork.js: ${candidate}\n`);
+      return true;
+    } catch (e) {
+      process.stderr.write(`[vscode-server-manager] Failed to patch bootstrap-fork.js ${candidate}: ${e.message}\n`);
+    }
+  }
+
   return false;
 }
 
