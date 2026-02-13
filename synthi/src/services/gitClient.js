@@ -8,11 +8,13 @@ export const gitClient = {
             'Content-Type': 'application/json',
         };
 
-        // Attach authenticated user id for per-user repo isolation
+        // Attach authenticated user id for per-user repo isolation.
+        // Prefer provider-assigned id; fall back to email.
         try {
             const session = await getSession();
-            if (session?.user?.id) {
-                headers['x-user-id'] = session.user.id;
+            const userId = session?.user?.id || session?.user?.email;
+            if (userId) {
+                headers['x-user-id'] = userId;
             }
         } catch (_) {
             // Non-fatal — request will fall back to slug-level repo
