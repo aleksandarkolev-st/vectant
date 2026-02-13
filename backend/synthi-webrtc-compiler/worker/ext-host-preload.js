@@ -344,25 +344,29 @@ if (_ipcCheckTimer.unref) _ipcCheckTimer.unref();
 // ============================================================================
 // Module Interception
 //
-// VS Code's Extension Host (code-server 4.108+, ESM build) re-hooks
-// Module._load and Module._resolveFilename AFTER our preload runs — and
-// may do so MULTIPLE TIMES during the boot sequence.  The old polling
-// approach (check every 10ms for 3s) was too narrow: VS Code could
-// re-hook after the polling window closed, silently removing our wrapper.
+// DESIGN: We do NOT touch Module._load or Module._resolveFilename.
+// VS Code's Extension Host uses a custom NodeModuleRequireInterceptor
+// that replaces Module._load to inject the virtual 'vscode' module.
+// Any defineProperty traps, proxies, or overwrites on _load/_resolveFilename
+// break this injection chain and prevent extensions from loading.
 //
-// New approach: use Object.defineProperty to install getter/setter traps
-// on Module._load and Module._resolveFilename.  Any time VS Code
-// assigns a new function to these properties, our setter captures it
-// and our getter returns a wrapper that intercepts require('vscode').
-// This is permanent — no polling, no timing windows.
+// Instead, we use two non-invasive strategies:
 //
-// The vscode API is detected by duck-typing (must have window, commands,
-// workspace).  Once intercepted, we call wrapVSCodeAPI() to add
-// observation hooks for tree views and webview providers.
+//   1. Module.prototype.require hook — wraps the return value AFTER VS Code's
+//      interceptor has already done its work.  Extensions get the real API;
+//      we just observe it.
+//
+//   2. globalThis factory traps — In VS Code's ESM build, the API is provided
+//      via globalThis._VSCODE_IMPORT_VSCODE_API / _VSCODE_API_IMPL_PROVIDER.
+//      We intercept the factory assignment (Object.defineProperty setter) and
+//      wrap the factory to observe every API instance it produces.
+//
+// Both strategies are purely observational.  They never interfere with
+// module resolution, never call require('vscode') themselves, and never
+// inject anything into Module._cache.
 // ============================================================================
 
 const Module = require('module');
-const realOriginalLoad = Module._load;  // The TRUE original before anyone hooks
 
 /** @type {boolean} Whether we've wrapped at least one vscode API instance */
 let vsCodeWrapped = false;
@@ -404,8 +408,6 @@ function _tryWrapVscodeResult(result, source) {
 
   try {
     log(`Wrapping vscode API instance #${_wrappedApiCount} via ${source}`);
-    log(`  registerWebviewViewProvider: ${typeof result.window?.registerWebviewViewProvider}`);
-    log(`  registerTreeDataProvider: ${typeof result.window?.registerTreeDataProvider}`);
     wrapVSCodeAPI(result);
   } catch (e) {
     logError(`Failed to wrap vscode API instance #${_wrappedApiCount}: ${e.message}`);
@@ -415,18 +417,13 @@ function _tryWrapVscodeResult(result, source) {
 }
 
 // ---------------------------------------------------------------------------
-// Strategy 0 (PRIMARY): Module.prototype.require hook
+// Strategy 1 (PRIMARY): Module.prototype.require hook
 //
-// The most reliable interception point.  Every CJS require() call from
-// extension code flows through Module.prototype.require.  Unlike
-// Module._load defineProperty traps, this cannot be bypassed by cached
-// function references, ESM/CJS boundary issues, or VS Code re-hooking.
-//
-// When an extension calls require('vscode'), VS Code's own interceptor
-// (NodeModuleRequireInterceptor, which hooks Module._load internally)
-// returns the real API.  Our hook on Module.prototype.require sees the
-// returned result and wraps it — after VS Code's interceptor has done
-// its work.
+// Every CJS require() call from extension code flows through
+// Module.prototype.require.  We hook it to observe returns from
+// require('vscode') AFTER VS Code's own interceptor has resolved it.
+// We never call require('vscode') ourselves — that would fail because
+// 'vscode' is a virtual module that only VS Code's interceptor knows.
 // ---------------------------------------------------------------------------
 
 const _origPrototypeRequire = Module.prototype.require;
@@ -436,15 +433,18 @@ Module.prototype.require = function synthiRequireHook(id) {
   const result = _origPrototypeRequire.apply(this, arguments);
 
   _requireHookCallCount++;
-  if (_requireHookCallCount <= 3 || _requireHookCallCount % 500 === 0) {
-    log(`require() hook #${_requireHookCallCount}: "${id}" (from: ${this?.filename ? this.filename.split('/').slice(-3).join('/') : 'unknown'})`);
-  }
 
   if (id === 'vscode') {
     try {
-      const didWrap = _tryWrapVscodeResult(result, `require('vscode') hook (from: ${this?.filename || 'unknown'})`);
+      const didWrap = _tryWrapVscodeResult(result, `require('vscode') from ${this?.filename || 'unknown'}`);
       if (didWrap) {
-        log(`SUCCESS: vscode API intercepted via Module.prototype.require hook (call #${_requireHookCallCount})`);
+        log(`SUCCESS: vscode API intercepted via require('vscode') (call #${_requireHookCallCount})`);
+        bridgeSend({
+          type: 'bootstrapState',
+          complete: true,
+          method: 'require-hook',
+          wrappedCount: _wrappedApiCount,
+        });
       }
     } catch (e) {
       logError(`require hook failed to wrap: ${e.message}`);
@@ -453,328 +453,25 @@ Module.prototype.require = function synthiRequireHook(id) {
 
   return result;
 };
-log('Module.prototype.require hook installed');
+log('Module.prototype.require hook installed (Module._load/_resolveFilename left untouched)');
 
 // ---------------------------------------------------------------------------
-// Strategy 1: Object.defineProperty trap on Module._load
-//
-// Our getter always returns our wrapper function.  Our setter captures
-// whatever function VS Code assigns (so we delegate to it).  VS Code
-// thinks it replaced Module._load, but we're still in the call chain.
+// Diagnostic: periodic status check (observation only, no recovery attempts)
 // ---------------------------------------------------------------------------
-
-/** The "real" underlying _load function (VS Code's hook or Node's original) */
-let _underlyingLoad = realOriginalLoad;
-
-/**
- * Re-entrancy guard.  VS Code's require-interceptor captures our proxy
- * as `originalLoad` (from our getter), then assigns its own hook (captured
- * by our setter as `_underlyingLoad`).  For non-factory requests (anything
- * except 'vscode'), VS Code's hook calls `originalLoad` → our proxy →
- * `_underlyingLoad` → VS Code's hook → infinite loop.
- *
- * The guard detects re-entrance and delegates directly to Node's true
- * original Module._load, breaking the cycle.
- */
-let _proxyReentrant = false;
-let _proxyCallCount = 0;
-
-function _synthiModuleLoadProxy(request, parent, isMain) {
-  if (_proxyReentrant) {
-    // We're being called from inside VS Code's hook, which captured our
-    // proxy as its `originalLoad`.  Break the cycle → Node's true original.
-    return realOriginalLoad.apply(this, arguments);
-  }
-
-  _proxyReentrant = true;
-  _proxyCallCount++;
-
-  // Log the first 5 calls and then periodically for diagnostics
-  if (_proxyCallCount <= 5 || _proxyCallCount % 200 === 0) {
-    log(`Module._load proxy call #${_proxyCallCount}: request="${request}"`);
-  }
-
-  try {
-    const result = _underlyingLoad.apply(this, arguments);
-    if (!vsCodeWrapped && (request === 'vscode' || request === 'vscode-nls')) {
-      if (request === 'vscode') {
-        _tryWrapVscodeResult(result, `Module._load proxy (call #${_proxyCallCount})`);
-      }
-    }
-    return result;
-  } finally {
-    _proxyReentrant = false;
-  }
-}
-_synthiModuleLoadProxy.__synthiHook = true;
-
-let _loadTrapActive = false;
-let _loadReassignCount = 0;
-try {
-  Object.defineProperty(Module, '_load', {
-    get() { return _synthiModuleLoadProxy; },
-    set(newLoad) {
-      if (newLoad && !newLoad.__synthiHook) {
-        _loadReassignCount++;
-        log(`Module._load reassigned #${_loadReassignCount} (by: ${newLoad.name || 'anonymous'}), captured via property trap`);
-        _underlyingLoad = newLoad;
-      }
-    },
-    configurable: true,
-    enumerable: true,
-  });
-  _loadTrapActive = true;
-  log('Module._load property trap installed');
-} catch (e) {
-  logError(`Module._load property trap failed: ${e.message} — falling back to direct hook`);
-  // Fallback: use the same re-entrancy-guarded proxy as a direct override
-  Module._load = _synthiModuleLoadProxy;
-}
-
-// ---------------------------------------------------------------------------
-// Strategy 2: Object.defineProperty trap on Module._resolveFilename
-//
-// When 'vscode' is resolved, we immediately check Module._cache for the
-// resolved path and try to wrap the cached module.  This catches the case
-// where VS Code pre-populates the cache so Module._load is never called.
-// ---------------------------------------------------------------------------
-let _underlyingResolveFilename = Module._resolveFilename;
-const _origResolveFilename = Module._resolveFilename;  // True original
-let _resolveReentrant = false;
-
-function _synthiResolveFilenameProxy(request, parent, isMain, options) {
-  if (_resolveReentrant) {
-    // Same circular reference issue as Module._load — break cycle
-    return _origResolveFilename.apply(this, arguments);
-  }
-
-  _resolveReentrant = true;
-  try {
-    const resolved = _underlyingResolveFilename.apply(this, arguments);
-    if (request === 'vscode' && !vsCodeWrapped) {
-      log(`Module._resolveFilename: 'vscode' → ${resolved} (parent: ${parent?.filename || 'unknown'})`);
-      // Try the global cache immediately
-      try {
-        const cached = Module._cache?.[resolved];
-        if (cached && cached.exports) {
-          _tryWrapVscodeResult(cached.exports, `_resolveFilename cache hit (${resolved})`);
-        }
-      } catch (_) {}
-    }
-    return resolved;
-  } finally {
-    _resolveReentrant = false;
-  }
-}
-
-try {
-  Object.defineProperty(Module, '_resolveFilename', {
-    get() { return _synthiResolveFilenameProxy; },
-    set(newFn) {
-      if (newFn !== _synthiResolveFilenameProxy) {
-        log(`Module._resolveFilename reassigned — captured`);
-        _underlyingResolveFilename = newFn;
-      }
-    },
-    configurable: true,
-    enumerable: true,
-  });
-  log('Module._resolveFilename property trap installed');
-} catch (e) {
-  logError(`Module._resolveFilename trap failed: ${e.message}`);
-  // Fallback: simple overwrite
-  const origResolve = Module._resolveFilename;
-  Module._resolveFilename = function (request, parent, isMain, options) {
-    const resolved = origResolve.apply(this, arguments);
-    if (request === 'vscode' && !vsCodeWrapped) {
-      try {
-        const cached = Module._cache?.[resolved];
-        if (cached?.exports) _tryWrapVscodeResult(cached.exports, '_resolveFilename fallback');
-      } catch (_) {}
-    }
-    return resolved;
-  };
-}
-
-// ---------------------------------------------------------------------------
-// Strategy 3: Periodic scan of Module._cache
-//
-// Belt-and-suspenders: in case both traps are somehow bypassed, we also
-// periodically scan the global module cache for the vscode API shape.
-// Extended to 120s (240 attempts at 500ms).
-// ---------------------------------------------------------------------------
-let _cacheCheckAttempts = 0;
-const _cacheCheckInterval = setInterval(() => {
-  _cacheCheckAttempts++;
-  if (vsCodeWrapped || _cacheCheckAttempts > 240) {
-    clearInterval(_cacheCheckInterval);
-    if (!vsCodeWrapped) {
-      log(`Module._cache duck-typing gave up after ${_cacheCheckAttempts} attempts (${_cacheCheckAttempts * 500 / 1000}s)`);
-    }
-    return;
-  }
-
-  // Use Module._cache (global singleton) — require.cache might differ in ESM context
-  const cache = Module._cache || {};
-  for (const key of Object.keys(cache)) {
-    const mod = cache[key];
-    if (mod && mod.exports && typeof mod.exports === 'object' && !vsCodeWrapped) {
-      const exp = mod.exports;
-      if (exp.window && exp.commands && exp.workspace &&
-          typeof exp.window.registerWebviewViewProvider === 'function' &&
-          typeof exp.window.registerTreeDataProvider === 'function') {
-        _tryWrapVscodeResult(exp, `Module._cache duck-typing (key: ${key})`);
-        clearInterval(_cacheCheckInterval);
-        return;
-      }
-    }
-  }
-}, 500);
-
-// ---------------------------------------------------------------------------
-// Strategy 4: Delayed self-test and recovery
-//
-// If the vscode API hasn't been intercepted after several seconds, run
-// diagnostic checks and attempt direct acquisition.  This covers edge
-// cases where all property traps were bypassed (e.g., VS Code's ESM
-// build replaces the defineProperty descriptor or an internal module
-// cache reference is used).
-// ---------------------------------------------------------------------------
-
-const _selfTestDelays = [5000, 12000, 25000];
-for (const delay of _selfTestDelays) {
+const _statusCheckDelays = [10000, 30000, 60000];
+for (const delay of _statusCheckDelays) {
   const timer = setTimeout(() => {
     if (vsCodeWrapped) {
-      // Already intercepted — just log status
-      if (delay === _selfTestDelays[0]) {
-        log(`Self-test at ${delay / 1000}s: API intercepted ✓ (${_wrappedApiCount} instances, ${trackedTreeProviders.size} trees, ${trackedWebviewProviders.size} webviews)`);
-      }
-      return;
-    }
-
-    log(`Self-test at ${delay / 1000}s: vscode API NOT yet intercepted — running diagnostics`);
-
-    // Diagnostic 1: Check defineProperty descriptor integrity
-    const desc = Object.getOwnPropertyDescriptor(Module, '_load');
-    if (desc && desc.get) {
-      log(`  Module._load: defineProperty getter intact ✓`);
-    } else if (desc && desc.value) {
-      log(`  Module._load: defineProperty REPLACED with value (${desc.value.name || 'anon'}) — reinstalling`);
-      _underlyingLoad = desc.value;
-      try {
-        Object.defineProperty(Module, '_load', {
-          get() { return _synthiModuleLoadProxy; },
-          set(newLoad) {
-            if (newLoad && !newLoad.__synthiHook) {
-              _underlyingLoad = newLoad;
-              log(`Module._load re-captured after descriptor recovery`);
-            }
-          },
-          configurable: true,
-          enumerable: true,
-        });
-        log(`  Module._load: defineProperty re-installed`);
-      } catch (e) {
-        logError(`  Module._load: re-install failed: ${e.message}`);
-      }
-    }
-
-    // Diagnostic 2: Check require hook is still in place
-    log(`  Module.prototype.require: ${Module.prototype.require.name === 'synthiRequireHook' ? 'intact ✓' : 'REPLACED (' + Module.prototype.require.name + ')'}`);
-    log(`  require() hook call count: ${_requireHookCallCount}`);
-    log(`  Module._load proxy call count: ${_proxyCallCount}`);
-    log(`  Module._load reassign count: ${_loadReassignCount}`);
-
-    // Diagnostic 3: Check for VS Code's ESM API factory on globalThis
-    if (typeof globalThis._VSCODE_IMPORT_VSCODE_API === 'function') {
-      log(`  globalThis._VSCODE_IMPORT_VSCODE_API: present (ESM interceptor active)`);
-    }
-
-    // Diagnostic 4: Check process IPC and environment state
-    log(`  process.connected: ${process.connected}`);
-    log(`  process.channel: ${process.channel ? 'exists' : 'none'}`);
-    log(`  VSCODE_ESM_ENTRYPOINT: ${process.env.VSCODE_ESM_ENTRYPOINT || '(unset)'}`);
-    log(`  VSCODE_NLS_CONFIG: ${process.env.VSCODE_NLS_CONFIG ? 'set (' + process.env.VSCODE_NLS_CONFIG.length + ' chars)' : '(unset)'}`);
-    log(`  VSCODE_IPC_HOOK_EXTHOST: ${process.env.VSCODE_IPC_HOOK_EXTHOST || '(unset)'}`);
-    log(`  VSCODE_EXTHOST_WILL_SEND_SOCKET: ${process.env.VSCODE_EXTHOST_WILL_SEND_SOCKET || '(unset)'}`);
-
-    // Diagnostic 5: Check the extension directory
-    const extDir = process.env.VSCODE_EXTHOST_EXTENSIONS_DIR
-      || (process.argv.find(a => a.includes('extensions-dir')) ? undefined : undefined);
-    // Scan common extension paths
-    const possibleExtDirs = [
-      '/root/.synthi/vscode-server/extensions',
-      process.env.VSCODE_EXTHOST_EXTENSIONS_DIR,
-    ].filter(Boolean);
-    for (const dir of possibleExtDirs) {
-      try {
-        const entries = require('fs').readdirSync(dir);
-        log(`  Extensions in ${dir}: ${entries.length} dirs — [${entries.slice(0, 10).join(', ')}${entries.length > 10 ? '...' : ''}]`);
-      } catch (e) {
-        log(`  Extensions dir ${dir}: ${e.message}`);
-      }
-    }
-
-    // Diagnostic 6: Check Module._cache size and notable keys
-    const cache = Module._cache || {};
-    const cacheKeys = Object.keys(cache);
-    log(`  Module._cache: ${cacheKeys.length} entries`);
-    // Log keys that look like VS Code or extension modules
-    const notableKeys = cacheKeys.filter(k =>
-      k.includes('vscode') || k.includes('extensionHost') || k.includes('extension')
-    ).slice(0, 10);
-    if (notableKeys.length) {
-      log(`  Notable cache keys: ${notableKeys.join(', ')}`);
-    }
-
-    // Diagnostic 7: Check _underlyingLoad identity
-    log(`  _underlyingLoad: ${_underlyingLoad === realOriginalLoad ? 'Node original (NOBODY hooked Module._load beyond natives blocker!)' : _underlyingLoad.name || 'anonymous'}`);
-
-    // Recovery 1: Try direct require('vscode')
-    try {
-      const testMod = new Module('synthi-self-test');
-      testMod.filename = __filename;
-      testMod.paths = Module._nodeModulePaths(require('path').dirname(__filename));
-      const vsResult = _origPrototypeRequire.call(testMod, 'vscode');
-      if (vsResult) {
-        log(`  Recovery: direct require('vscode') returned an object`);
-        const didWrap = _tryWrapVscodeResult(vsResult, `self-test direct require at ${delay / 1000}s`);
-        if (didWrap) {
-          log(`  Recovery SUCCESS: vscode API acquired via direct require`);
-          bridgeSend({ type: 'providerList', treeViews: Array.from(trackedTreeProviders.keys()), webviews: Array.from(trackedWebviewProviders.keys()) });
-          return;
-        }
-      }
-    } catch (e) {
-      log(`  Recovery: direct require('vscode') failed: ${e.message}`);
-    }
-
-    // Recovery 2: Scan Module._cache for vscode-like modules
-    let found = false;
-    for (const key of cacheKeys) {
-      try {
-        const mod = cache[key];
-        if (mod?.exports && typeof mod.exports === 'object') {
-          const exp = mod.exports;
-          if (exp.window && exp.commands && exp.workspace) {
-            log(`  Recovery: found vscode-shaped module in cache: ${key}`);
-            const didWrap = _tryWrapVscodeResult(exp, `self-test cache recovery (${key})`);
-            if (didWrap) {
-              found = true;
-              log(`  Recovery SUCCESS: vscode API acquired via cache scan`);
-            }
-          }
-        }
-      } catch (_) {}
-    }
-    if (found) {
-      bridgeSend({ type: 'providerList', treeViews: Array.from(trackedTreeProviders.keys()), webviews: Array.from(trackedWebviewProviders.keys()) });
-    }
-
-    // Recovery 3: At 25s, attempt to directly load extensions
-    if (delay >= 25000 && !vsCodeWrapped) {
-      log(`  Recovery 3: Attempting direct extension loading at ${delay / 1000}s`);
-      _attemptDirectExtensionLoading();
+      log(`Status at ${delay / 1000}s: API intercepted ✓ (${_wrappedApiCount} instances, ${trackedTreeProviders.size} trees, ${trackedWebviewProviders.size} webviews)`);
+    } else {
+      log(`Status at ${delay / 1000}s: vscode API NOT yet intercepted`);
+      log(`  require hook calls: ${_requireHookCallCount}`);
+      log(`  process.connected: ${process.connected}`);
+      log(`  VSCODE_IPC_HOOK_EXTHOST: ${process.env.VSCODE_IPC_HOOK_EXTHOST || '(unset)'}`);
+      log(`  IPC ready sent: ${_ipcReadySent}, socket received: ${_ipcReceivedSocket}`);
+      // Log whether globalThis factories are set
+      log(`  _VSCODE_IMPORT_VSCODE_API: ${typeof globalThis._VSCODE_IMPORT_VSCODE_API}`);
+      log(`  _VSCODE_API_IMPL_PROVIDER: ${typeof globalThis._VSCODE_API_IMPL_PROVIDER}`);
     }
   }, delay);
   timer.unref();
@@ -866,28 +563,9 @@ try {
   logError(`Failed to install API IMPL provider trap: ${e.message}`);
 }
 
-// Trap 3: Poll for any other globalThis._VSCODE* factories not yet known
-// (covers future VS Code versions and code-server-specific globals)
-let _globalThisCheckCount = 0;
-const _globalThisCheckInterval = setInterval(() => {
-  _globalThisCheckCount++;
-  if (vsCodeWrapped || _globalThisCheckCount > 120) { // 60s max
-    clearInterval(_globalThisCheckInterval);
-    return;
-  }
-  // Search globalThis for any vscode-related factory globals
-  for (const key of Object.getOwnPropertyNames(globalThis)) {
-    if (key.startsWith('_VSCODE') && typeof globalThis[key] === 'function' &&
-        key !== '_VSCODE_IMPORT_VSCODE_API' && key !== '_VSCODE_API_IMPL_PROVIDER') {
-      log(`Found additional globalThis factory: ${key}`);
-      try {
-        const api = globalThis[key]();
-        _tryWrapVscodeResult(api, `globalThis.${key}()`);
-      } catch (_) {}
-    }
-  }
-}, 500);
-if (_globalThisCheckInterval.unref) _globalThisCheckInterval.unref();
+// Note: We do NOT poll globalThis for unknown _VSCODE* functions.
+// Blindly calling unknown globals can trigger side effects and break
+// VS Code's bootstrap.  The two traps above cover the known factories.
 
 // ============================================================================
 // State: tracked providers
