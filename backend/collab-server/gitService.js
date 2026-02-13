@@ -209,6 +209,38 @@ class GitService {
     }
 
     /**
+     * Get the per-user working tree path.
+     * Structure: repos/<slug>/<userId>/
+     *
+     * Every user in a workspace gets their own isolated working tree
+     * cloned from the upstream bare repo, so each has an independent
+     * git index, staging area, and working files.
+     *
+     * @param {string} slug   — Workspace slug
+     * @param {string} userId — Authenticated user identifier
+     * @returns {string} Absolute path to the user's working tree
+     */
+    getUserRepoPath(slug, userId) {
+        if (!userId) throw new GitError('userId is required for per-user repo path', 'MISSING_USER_ID');
+        // Sanitise userId to prevent directory traversal attacks
+        const safeId = String(userId).replace(/[^a-zA-Z0-9_@.\-]/g, '_');
+        return path.join(this.baseDir, slug, safeId);
+    }
+
+    /**
+     * Resolve the effective working tree path for a git operation.
+     * If userId is provided, returns the per-user path; otherwise falls
+     * back to the shared (slug-level) path for backward compatibility.
+     *
+     * @param {string} slug
+     * @param {string} [userId]
+     * @returns {string}
+     */
+    getEffectiveRepoPath(slug, userId) {
+        return userId ? this.getUserRepoPath(slug, userId) : this.getRepoPath(slug);
+    }
+
+    /**
      * Archive the .git directory to GCS for fast re-hydration.
      * Called after mutating git operations (commit, pull, checkout, clone).
      * Fire-and-forget — failures are logged but never thrown.
@@ -2153,6 +2185,153 @@ class GitService {
                 .map(e => ({
                     userId: e.name,
                     path: path.join(sessionsDir, e.name),
+                }));
+        } catch (_) {
+            return [];
+        }
+    }
+
+    // ── Per-user repo isolation ─────────────────────────────────────────────
+
+    /**
+     * Ensure a per-user working tree exists for the given user.
+     *
+     * If the workspace has an upstream bare repo (migrated structure), the
+     * user repo is created as a `git worktree add` from the bare.  Otherwise
+     * (un-migrated legacy repo), we fall back to a plain `git clone --shared`
+     * from the slug-level working tree.
+     *
+     * This is the PRIMARY entry-point for provisioning a user's isolated repo.
+     * It is idempotent — calling it multiple times for the same (slug, userId)
+     * is a fast no-op.
+     *
+     * @param {string} slug   — Workspace slug
+     * @param {string} userId — Authenticated user id
+     * @returns {Promise<{ path: string, created: boolean }>}
+     */
+    async ensureUserRepo(slug, userId) {
+        if (!userId) throw new GitError('userId is required', 'MISSING_USER_ID');
+
+        const userRepoPath = this.getUserRepoPath(slug, userId);
+
+        // Fast path: already exists and is functional
+        if (fs.existsSync(userRepoPath) && fs.existsSync(path.join(userRepoPath, '.git'))) {
+            return { path: userRepoPath, created: false };
+        }
+
+        return this.withLock(`${slug}:${userId}`, async () => {
+            // Double-check after acquiring lock
+            if (fs.existsSync(userRepoPath) && fs.existsSync(path.join(userRepoPath, '.git'))) {
+                return { path: userRepoPath, created: false };
+            }
+
+            const barePath = this.getBarePath(slug);
+            const slugRepoPath = this.getRepoPath(slug);
+
+            // Determine the clone source — prefer bare repo if available
+            let cloneSource = null;
+            if (fs.existsSync(barePath)) {
+                cloneSource = barePath;
+            } else if (fs.existsSync(path.join(slugRepoPath, '.git'))) {
+                cloneSource = slugRepoPath;
+            }
+
+            if (!cloneSource) {
+                // No upstream to clone from — init a fresh repo
+                fs.mkdirSync(userRepoPath, { recursive: true });
+                const git = simpleGit(userRepoPath);
+                await git.init();
+                console.log(`[GitService] Created fresh user repo for ${slug}/${userId}`);
+                this._ensureLocalExcludes(userRepoPath);
+                return { path: userRepoPath, created: true };
+            }
+
+            // Clone from the upstream source
+            fs.mkdirSync(path.dirname(userRepoPath), { recursive: true });
+            try {
+                const git = simpleGit();
+                // Use --no-hardlinks to ensure complete isolation between users
+                await git.clone(cloneSource, userRepoPath, ['--no-hardlinks']);
+
+                // If we cloned from the bare repo, re-set the remote to the
+                // original upstream URL (if any) rather than the local bare path.
+                const userGit = simpleGit(userRepoPath);
+                try {
+                    const bareGit = simpleGit(cloneSource);
+                    const remotes = await bareGit.getRemotes(true);
+                    const origin = remotes.find(r => r.name === 'origin');
+                    if (origin && origin.refs && origin.refs.fetch) {
+                        await userGit.remote(['set-url', 'origin', origin.refs.fetch]);
+                    }
+                } catch (_) {
+                    // Non-fatal — local clone is still functional
+                }
+
+                this._ensureLocalExcludes(userRepoPath);
+                console.log(`[GitService] Cloned user repo for ${slug}/${userId} from ${cloneSource}`);
+                return { path: userRepoPath, created: true };
+            } catch (e) {
+                // Clean up failed clone
+                try { fs.rmSync(userRepoPath, { recursive: true, force: true }); } catch (_) {}
+                throw new GitError(
+                    `Failed to create user repo for ${slug}/${userId}: ${e.message}`,
+                    'USER_REPO_ERROR'
+                );
+            }
+        });
+    }
+
+    /**
+     * Check if a per-user repo exists and is initialized.
+     */
+    isUserRepoInitialized(slug, userId) {
+        const userRepoPath = this.getUserRepoPath(slug, userId);
+        const gitDir = path.join(userRepoPath, '.git');
+        if (!fs.existsSync(gitDir)) return false;
+        try {
+            const stat = fs.statSync(gitDir);
+            return stat.isDirectory() || stat.isFile();
+        } catch (_) {
+            return false;
+        }
+    }
+
+    /**
+     * Get a simple-git instance for a user's repo.
+     */
+    getUserGit(slug, userId) {
+        const userRepoPath = this.getUserRepoPath(slug, userId);
+        if (!fs.existsSync(userRepoPath)) {
+            throw new RepoNotFoundError(`${slug}/${userId}`);
+        }
+        const gitDir = path.join(userRepoPath, '.git');
+        if (!fs.existsSync(gitDir)) {
+            throw new RepoNotInitializedError(`${slug}/${userId}`);
+        }
+        return simpleGit(userRepoPath);
+    }
+
+    /**
+     * List all user repos for a workspace slug.
+     * Returns array of { userId, path }.
+     */
+    listUserRepos(slug) {
+        const slugDir = path.join(this.baseDir, slug);
+        if (!fs.existsSync(slugDir)) return [];
+
+        try {
+            const entries = fs.readdirSync(slugDir, { withFileTypes: true });
+            return entries
+                .filter(e => {
+                    if (!e.isDirectory()) return false;
+                    // Exclude internal directories
+                    if (e.name === '_upstream.git' || e.name === 'sessions' || e.name.startsWith('.')) return false;
+                    // Must have a .git to be a valid user repo
+                    return fs.existsSync(path.join(slugDir, e.name, '.git'));
+                })
+                .map(e => ({
+                    userId: e.name,
+                    path: path.join(slugDir, e.name),
                 }));
         } catch (_) {
             return [];
