@@ -243,6 +243,7 @@ class ValidatingPersistence {
           }
 
           // ── 2. Disk write (ephemeral cache — write if working tree exists on disk) ──
+          // Write to the shared slug-level path (backward compat)
           const repoPath = gitService.getRepoPath(slug);
           if (fs.existsSync(repoPath)) {
             const fullPath = path.join(repoPath, filePath);
@@ -250,6 +251,19 @@ class ValidatingPersistence {
             await fsPromises.mkdir(dirPath, { recursive: true });
             await fsPromises.writeFile(fullPath, content, 'utf-8');
           }
+
+          // Also write to all per-user repo working trees that exist on disk
+          // so each user's git status reflects the collaborative edits.
+          try {
+            const userRepos = gitService.listUserRepos(slug);
+            for (const { path: userRepoPath } of userRepos) {
+              try {
+                const userFullPath = path.join(userRepoPath, filePath);
+                await fsPromises.mkdir(path.dirname(userFullPath), { recursive: true });
+                await fsPromises.writeFile(userFullPath, content, 'utf-8');
+              } catch (_) { /* non-fatal per user */ }
+            }
+          } catch (_) { /* non-fatal */ }
           
           // Update hash cache
           fileHashCache.set(docName, { hash: computeHash(content), timestamp: Date.now() });
