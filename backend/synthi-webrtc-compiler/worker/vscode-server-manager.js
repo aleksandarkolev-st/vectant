@@ -1513,16 +1513,30 @@ async function _triggerExtensionHostStartup(port, token) {
             return;
           }
           if (frame.opcode === 0x09) { // Ping → must reply with Pong echoing payload
+            // RFC 6455 §5.5.2: Pong MUST echo the exact payload.
+            // Control frame payloads are ≤125 bytes per spec, but handle
+            // extended length defensively.
             const pongPayload = frame.payload;
-            const pongFrame = Buffer.alloc(6 + pongPayload.length);
-            pongFrame[0] = 0x8A; // FIN + pong opcode
-            pongFrame[1] = 0x80 | pongPayload.length; // masked + length
-            const mask = crypto.randomBytes(4);
-            mask.copy(pongFrame, 2);
-            for (let i = 0; i < pongPayload.length; i++) {
-              pongFrame[6 + i] = pongPayload[i] ^ mask[i % 4];
+            const pongMask = crypto.randomBytes(4);
+            let pongHdr;
+            if (pongPayload.length < 126) {
+              pongHdr = Buffer.alloc(6);
+              pongHdr[0] = 0x8A; // FIN + pong opcode
+              pongHdr[1] = 0x80 | pongPayload.length;
+              pongMask.copy(pongHdr, 2);
+            } else {
+              // Extended length pong (unlikely but safe)
+              pongHdr = Buffer.alloc(8);
+              pongHdr[0] = 0x8A;
+              pongHdr[1] = 0x80 | 126;
+              pongHdr.writeUInt16BE(pongPayload.length, 2);
+              pongMask.copy(pongHdr, 4);
             }
-            socket.write(pongFrame);
+            const maskedPong = Buffer.alloc(pongPayload.length);
+            for (let i = 0; i < pongPayload.length; i++) {
+              maskedPong[i] = pongPayload[i] ^ pongMask[i % 4];
+            }
+            socket.write(Buffer.concat([pongHdr, maskedPong]));
             continue;
           }
           if (frame.opcode === 0x0A) { // Pong — silently consume
