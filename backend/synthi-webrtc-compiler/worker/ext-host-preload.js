@@ -622,6 +622,57 @@ try {
 // Blindly calling unknown globals can trigger side effects and break
 // VS Code's bootstrap.  The two traps above cover the known factories.
 
+// ---------------------------------------------------------------------------
+// Strategy 6: Module._cache polling fallback
+//
+// If neither the require hook nor the globalThis traps fired after 15s,
+// it likely means VS Code's bootstrap used an unanticipated code path
+// (e.g. a new ESM loader, internal extensionHostMain changes, etc.).
+//
+// As a last resort, scan Module._cache for any cached module whose
+// exports look like the vscode API (duck-type: has window, commands,
+// workspace).  This is purely observational — we never call
+// require('vscode') ourselves.
+// ---------------------------------------------------------------------------
+const _cachePollDelays = [15000, 25000, 40000];
+for (const delay of _cachePollDelays) {
+  const pollTimer = setTimeout(() => {
+    if (vsCodeWrapped) return; // already intercepted
+
+    const elapsed = ((Date.now() - _startedAt) / 1000).toFixed(1);
+    log(`Cache poll at ${elapsed}s: scanning Module._cache for vscode API...`);
+
+    const cache = require.cache || {};
+    let found = false;
+    for (const key of Object.keys(cache)) {
+      const mod = cache[key];
+      if (mod && mod.exports && typeof mod.exports === 'object') {
+        const ex = mod.exports;
+        if (ex.window && ex.commands && ex.workspace && !_wrappedApiInstances.has(ex)) {
+          log(`Cache poll: found vscode-like API in Module._cache key: ${key}`);
+          const didWrap = _tryWrapVscodeResult(ex, `Module._cache poll (key: ${key.slice(-80)})`);
+          if (didWrap) {
+            log(`SUCCESS: vscode API intercepted via Module._cache poll`);
+            bridgeSend({
+              type: 'bootstrapState',
+              complete: true,
+              method: 'cache-poll',
+              wrappedCount: _wrappedApiCount,
+            });
+            found = true;
+            break;
+          }
+        }
+      }
+    }
+
+    if (!found) {
+      log(`Cache poll at ${elapsed}s: no vscode API found in ${Object.keys(cache).length} cached modules`);
+    }
+  }, delay);
+  pollTimer.unref();
+}
+
 // ============================================================================
 // State: tracked providers
 // ============================================================================
