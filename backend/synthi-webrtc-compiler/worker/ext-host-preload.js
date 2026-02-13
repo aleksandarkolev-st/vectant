@@ -1347,6 +1347,50 @@ function _handleBridgeRequest(msg) {
 }
 
 // ============================================================================
+// Process Exit Monitoring
+// ============================================================================
+
+// Notify the bridge when the Extension Host process is about to exit.
+// Common exit reasons: OOM, unhandled exception, VS Code shutdown.
+// The manager can use this to decide whether to restart code-server.
+
+process.on('exit', (code) => {
+  const uptime = ((Date.now() - _startedAt) / 1000).toFixed(1);
+  const msg = `Extension Host exiting (code=${code}, uptime=${uptime}s, apiIntercepted=${vsCodeWrapped}, providers=${trackedTreeProviders.size}t/${trackedWebviewProviders.size}w)`;
+  process.stderr.write(`[ext-host-preload] ${msg}\n`);
+  // Best-effort notify — socket may already be closed
+  try {
+    if (bridgeSocket && !bridgeSocket.destroyed) {
+      bridgeSocket.write(JSON.stringify({
+        type: 'ehExit',
+        code,
+        uptime: parseFloat(uptime),
+        apiIntercepted: vsCodeWrapped,
+        wrappedCount: _wrappedApiCount,
+        treeProviders: trackedTreeProviders.size,
+        webviewProviders: trackedWebviewProviders.size,
+      }) + '\n');
+    }
+  } catch (_) {}
+});
+
+process.on('uncaughtException', (err) => {
+  logError(`Uncaught exception in Extension Host: ${err.message}`);
+  logError(err.stack || '');
+  try {
+    bridgeSend({ type: 'ehError', error: err.message, stack: err.stack });
+  } catch (_) {}
+});
+
+process.on('unhandledRejection', (reason) => {
+  const msg = reason instanceof Error ? reason.message : String(reason);
+  logError(`Unhandled rejection in Extension Host: ${msg}`);
+  try {
+    bridgeSend({ type: 'ehError', error: msg, rejection: true });
+  } catch (_) {}
+});
+
+// ============================================================================
 // Cleanup
 // ============================================================================
 

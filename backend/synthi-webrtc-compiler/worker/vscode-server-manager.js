@@ -557,6 +557,23 @@ function _handlePreloadMessage(msg) {
       break;
     }
 
+    case 'ehExit': {
+      // Extension Host process is exiting
+      process.stderr.write(`[preload-bridge] Extension Host exiting: code=${msg.code}, uptime=${msg.uptime}s, api=${msg.apiIntercepted}, trees=${msg.treeProviders}, webviews=${msg.webviewProviders}\n`);
+      sendEvent('ehProcessExit', msg.code, msg.uptime, msg.apiIntercepted);
+      break;
+    }
+
+    case 'ehError': {
+      // Uncaught exception or unhandled rejection in Extension Host
+      process.stderr.write(`[preload-bridge] Extension Host error: ${msg.error}${msg.rejection ? ' (unhandled rejection)' : ''}\n`);
+      if (msg.stack) {
+        process.stderr.write(`[preload-bridge]   ${msg.stack.split('\n').slice(0, 3).join('\n  ')}\n`);
+      }
+      sendEvent('ehError', msg.error, msg.rejection || false);
+      break;
+    }
+
     default:
       process.stderr.write(`[preload-bridge] Unknown message type: ${msg.type}\n`);
   }
