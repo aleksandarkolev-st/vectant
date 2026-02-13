@@ -203,10 +203,36 @@ async function fetchCodeIntelContext({ workspacePath, query, maxTokens = 6000, c
     }
 }
 
+const NODE_MODULES_PATTERN = /[\/\\]node_modules[\/\\]/;
+
+/**
+ * Filter node_modules paths from code intel context text.
+ * Removes entire chunks that reference node_modules files.
+ */
+const filterNodeModulesFromContext = (contextText = '') => {
+    if (!contextText) return '';
+    // Split on chunk boundaries (common patterns: "--- FILE:" or "## " or line-separated code blocks)
+    // Remove any section whose file path contains node_modules
+    return contextText
+        .split(/(?=^(?:---|##|FILE:|Source:)\s)/m)
+        .filter((chunk) => !NODE_MODULES_PATTERN.test(chunk))
+        .join('')
+        .trim();
+};
+
 const buildTraceSummary = (trace = []) => {
     if (!Array.isArray(trace) || trace.length === 0) return '';
-    const included = trace.filter((t) => t?.reason === 'included');
-    const top = (included.length ? included : trace).slice(0, 6);
+    // Filter out node_modules and blocked entries
+    const validTrace = trace.filter((t) => {
+        if (!t) return false;
+        const file = t.file || '';
+        if (NODE_MODULES_PATTERN.test(file)) return false;
+        if (t.reason === 'blocked_path') return false;
+        return true;
+    });
+    if (validTrace.length === 0) return '';
+    const included = validTrace.filter((t) => t?.reason === 'included');
+    const top = (included.length ? included : validTrace).slice(0, 6);
     const parts = top.map((t) => {
         const file = t?.file || 'unknown';
         const symbol = t?.symbol ? `:${t.symbol}` : '';
@@ -284,10 +310,11 @@ const validateResponseFormat = (response = '') => {
             warnings.push(`FILE ${filePath} has empty or placeholder content`);
         }
         
-        // Check for unclosed code fences
+        // Check for unclosed code fences — downgrade to warning since template
+        // literals, inline markdown, and CSS content can contain legitimate backticks
         const openFences = (content.match(/```/g) || []).length;
         if (openFences % 2 !== 0) {
-            errors.push(`FILE ${filePath} has unclosed code fence (odd number of backticks)`);
+            warnings.push(`FILE ${filePath} has unclosed code fence (odd number of backticks)`);
         }
         
         // Check for HTML/JS mixing (common problem)
@@ -321,19 +348,30 @@ const buildUserContent = ({ prompt, code, files, lang, focusPath, codeIntelConte
     
     // If code intelligence provided context, include it first with clear boundaries
     if (codeIntelContext?.context) {
-        parts.push('=== RELEVANT CODE CONTEXT (retrieved by deterministic controller) ===');
-        parts.push(codeIntelContext.context);
-        parts.push('=== END CODE CONTEXT ===');
+        // Filter out any node_modules content that leaked through
+        const filteredContext = filterNodeModulesFromContext(codeIntelContext.context);
+        if (filteredContext) {
+            parts.push('=== RELEVANT CODE CONTEXT (retrieved by deterministic controller) ===');
+            parts.push(filteredContext);
+            parts.push('=== END CODE CONTEXT ===');
+        }
         
-        // Add grounded symbols list for LLM to reference
+        // Add grounded symbols list for LLM to reference (excluding node_modules)
         if (Array.isArray(codeIntelContext.sources) && codeIntelContext.sources.length > 0) {
-            const groundedFiles = [...new Set(codeIntelContext.sources.map(s => s?.file).filter(Boolean))];
-            const groundedSymbols = [...new Set(codeIntelContext.sources.map(s => s?.symbol).filter(Boolean))];
-            parts.push(`[GROUNDED FILES: ${groundedFiles.join(', ')}]`);
+            const filteredSources = codeIntelContext.sources.filter(
+                (s) => s?.file && !NODE_MODULES_PATTERN.test(s.file)
+            );
+            const groundedFiles = [...new Set(filteredSources.map(s => s?.file).filter(Boolean))];
+            const groundedSymbols = [...new Set(filteredSources.map(s => s?.symbol).filter(Boolean))];
+            if (groundedFiles.length > 0) {
+                parts.push(`[GROUNDED FILES: ${groundedFiles.join(', ')}]`);
+            }
             if (groundedSymbols.length > 0) {
                 parts.push(`[GROUNDED SYMBOLS: ${groundedSymbols.join(', ')}]`);
             }
-            parts.push('[IMPORTANT: Only reference the above files and symbols in your response. Do not invent or assume other code exists.]');
+            if (groundedFiles.length > 0) {
+                parts.push('[IMPORTANT: Only reference the above files and symbols in your response. Do not invent or assume other code exists.]');
+            }
         }
         
         // Add sufficiency indicator so LLM knows if context is complete
@@ -599,9 +637,10 @@ const createValidatedStream = (upstream) => {
                     if (!validationErrorSent) {
                         const validation = validateResponseFormat(accumulatedText);
                         if (!validation.isValid && validation.errors.length > 0) {
-                            // Send validation error as last message
+                            // Send validation error as metadata only — never as visible delta text
                             const errorMsg = `[VALIDATION ERROR] Response violated format rules:\n${validation.errors.join('\n')}`;
-                            controller.enqueue(encoder.encode(JSON.stringify({ delta: errorMsg, validationFailed: true }) + '\n'));
+                            console.warn('[Validated Stream]', errorMsg);
+                            controller.enqueue(encoder.encode(JSON.stringify({ validationError: errorMsg, validationFailed: true }) + '\n'));
                             validationErrorSent = true;
                         }
                     }
@@ -634,9 +673,10 @@ const createValidatedStream = (upstream) => {
                                 // Every ~600 chars, do a quick check
                                 const validation = validateResponseFormat(accumulatedText);
                                 if (!validation.isValid && validation.errors.some(e => e.includes('Duplicate') || e.includes('DOCTYPE'))) {
-                                    // Critical error detected - send error and stop consuming
+                                    // Critical error detected - send as metadata, not visible text
                                     const errorMsg = `[VALIDATION ERROR] Critical format violation detected:\n${validation.errors.slice(0, 2).join('\n')}`;
-                                    controller.enqueue(encoder.encode(JSON.stringify({ delta: errorMsg, validationFailed: true }) + '\n'));
+                                    console.warn('[Validated Stream]', errorMsg);
+                                    controller.enqueue(encoder.encode(JSON.stringify({ validationError: errorMsg, validationFailed: true }) + '\n'));
                                     validationErrorSent = true;
                                     // Don't try to further validate, just pass through
                                 }
@@ -785,13 +825,16 @@ export async function POST(request) {
 
         const traceSummary = buildTraceSummary(codeIntelContext?.trace || []);
         const sources = Array.isArray(codeIntelContext?.sources)
-            ? codeIntelContext.sources.slice(0, 8).map((s) => ({
-                file: s?.file || '',
-                symbol: s?.symbol || '',
-                start_line: s?.start_line || 0,
-                end_line: s?.end_line || 0,
-                score: typeof s?.score === 'number' ? s.score : null,
-            }))
+            ? codeIntelContext.sources
+                .filter((s) => s?.file && !NODE_MODULES_PATTERN.test(s.file))
+                .slice(0, 8)
+                .map((s) => ({
+                    file: s?.file || '',
+                    symbol: s?.symbol || '',
+                    start_line: s?.start_line || 0,
+                    end_line: s?.end_line || 0,
+                    score: typeof s?.score === 'number' ? s.score : null,
+                }))
             : [];
         const sourcesHeader = sources.length ? encodeURIComponent(JSON.stringify(sources)) : '';
 

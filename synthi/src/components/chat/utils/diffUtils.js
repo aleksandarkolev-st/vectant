@@ -187,13 +187,13 @@ export const parseFileDiffBlocks = (text = '', fallbackPath = null) => {
 
 export const renderDiffChunkList = (chunks = []) => {
     if (!chunks || !Array.isArray(chunks) || chunks.length === 0) {
-        return <div className="px-3 py-2 text-[11px] text-zinc-500 font-mono">No changes detected.</div>;
+        return <div className="px-2 py-1.5 text-[10px] text-zinc-500 font-mono">No changes detected.</div>;
     }
     return chunks.map((chunk, ci) => {
         if (chunk.type === 'eq') {
             return chunk.items.map((row) => (
-                <div key={`eq-${row.lineOld}-${row.lineNew}-${ci}`} className="px-3 py-0.5 text-zinc-500 flex gap-3 font-mono text-[11px] leading-relaxed">
-                    <div className="w-8 text-right text-zinc-600 select-none flex-shrink-0">{row.lineNew}</div>
+                <div key={`eq-${row.lineOld}-${row.lineNew}-${ci}`} className="px-2 py-px text-zinc-500 flex gap-2 font-mono text-[10px] leading-snug">
+                    <div className="w-6 text-right text-zinc-600 select-none flex-shrink-0">{row.lineNew}</div>
                     <div className="flex-1 break-words whitespace-pre-wrap">{row.text || ' '}</div>
                 </div>
             ));
@@ -202,17 +202,17 @@ export const renderDiffChunkList = (chunks = []) => {
             return (
                 <div key={`elide-${ci}`}>
                     {chunk.head.map((row) => (
-                        <div key={`head-${row.lineNew}-${ci}`} className="px-3 py-0.5 text-zinc-500 flex gap-3 font-mono text-[11px] leading-relaxed">
-                            <div className="w-8 text-right text-zinc-600 select-none flex-shrink-0">{row.lineNew}</div>
+                        <div key={`head-${row.lineNew}-${ci}`} className="px-2 py-px text-zinc-500 flex gap-2 font-mono text-[10px] leading-snug">
+                            <div className="w-6 text-right text-zinc-600 select-none flex-shrink-0">{row.lineNew}</div>
                             <div className="flex-1 break-words whitespace-pre-wrap">{row.text || ' '}</div>
                         </div>
                     ))}
-                    <div className="px-3 py-1.5 text-zinc-600 text-center text-[10px] font-mono bg-zinc-900/30 border-y border-zinc-800/50">
+                    <div className="px-2 py-1 text-zinc-600 text-center text-[9px] font-mono bg-zinc-900/30 border-y border-zinc-800/50">
                         ··· {chunk.elidedCount} unchanged lines ···
                     </div>
                     {chunk.tail.map((row) => (
-                        <div key={`tail-${row.lineNew}-${ci}`} className="px-3 py-0.5 text-zinc-500 flex gap-3 font-mono text-[11px] leading-relaxed">
-                            <div className="w-8 text-right text-zinc-600 select-none flex-shrink-0">{row.lineNew}</div>
+                        <div key={`tail-${row.lineNew}-${ci}`} className="px-2 py-px text-zinc-500 flex gap-2 font-mono text-[10px] leading-snug">
+                            <div className="w-6 text-right text-zinc-600 select-none flex-shrink-0">{row.lineNew}</div>
                             <div className="flex-1 break-words whitespace-pre-wrap">{row.text || ' '}</div>
                         </div>
                     ))}
@@ -221,17 +221,17 @@ export const renderDiffChunkList = (chunks = []) => {
         }
         if (chunk.type === 'add') {
             return chunk.items.map((row) => (
-                <div key={`add-${row.lineNew}-${ci}`} className="px-3 py-0.5 flex gap-3 text-emerald-300 bg-emerald-950/40 border-l-2 border-emerald-500/60 font-mono text-[11px] leading-relaxed">
-                    <div className="w-8 text-right text-emerald-600 select-none flex-shrink-0">{row.lineNew}</div>
-                    <div className="flex-1 break-words whitespace-pre-wrap"><span className="text-emerald-500/70 select-none mr-1">+</span>{row.text || ' '}</div>
+                <div key={`add-${row.lineNew}-${ci}`} className="px-2 py-px flex gap-2 text-emerald-300 bg-emerald-950/40 border-l-2 border-emerald-500/60 font-mono text-[10px] leading-snug">
+                    <div className="w-6 text-right text-emerald-600 select-none flex-shrink-0">{row.lineNew}</div>
+                    <div className="flex-1 break-words whitespace-pre-wrap"><span className="text-emerald-500/70 select-none mr-0.5">+</span>{row.text || ' '}</div>
                 </div>
             ));
         }
         if (chunk.type === 'rem') {
             return chunk.items.map((row) => (
-                <div key={`rem-${row.lineOld}-${ci}`} className="px-3 py-0.5 flex gap-3 text-rose-300 bg-rose-950/40 border-l-2 border-rose-500/60 font-mono text-[11px] leading-relaxed">
-                    <div className="w-8 text-right text-rose-600 select-none flex-shrink-0">{row.lineOld}</div>
-                    <div className="flex-1 break-words whitespace-pre-wrap"><span className="text-rose-500/70 select-none mr-1">-</span>{row.text || ' '}</div>
+                <div key={`rem-${row.lineOld}-${ci}`} className="px-2 py-px flex gap-2 text-rose-300 bg-rose-950/40 border-l-2 border-rose-500/60 font-mono text-[10px] leading-snug">
+                    <div className="w-6 text-right text-rose-600 select-none flex-shrink-0">{row.lineOld}</div>
+                    <div className="flex-1 break-words whitespace-pre-wrap"><span className="text-rose-500/70 select-none mr-0.5">-</span>{row.text || ' '}</div>
                 </div>
             ));
         }

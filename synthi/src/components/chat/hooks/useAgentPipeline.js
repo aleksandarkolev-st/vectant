@@ -144,7 +144,7 @@ export const useAgentPipeline = ({
      * This is the "coordinator" logic.
      */
     const planAgentPipeline = useCallback(
-        async (prompt, context = {}) => {
+        async (prompt, context = {}, mode = PIPELINE_MODES.AUTO) => {
             const plan = {
                 steps: [],
                 reasoning: '',
@@ -162,8 +162,72 @@ export const useAgentPipeline = ({
                 /\b(explain|how does|what does|why|understand|describe|walk through)\b/i.test(prompt);
             const mentionsCreate =
                 /\b(create|generate|scaffold|boilerplate|new file|add a|implement|build)\b/i.test(prompt);
+            const mentionsChange =
+                /\b(update|improve|change|modify|enhance|better|redesign|rework|overhaul|add|make|style|theme|redo)\b/i.test(prompt);
 
-            // ── Build the plan ──────────────────────────────────────
+            // ── Mode-based planning ─────────────────────────────────
+            // When user explicitly selects Plan or Research mode, always
+            // generate meaningful steps regardless of keyword matching.
+
+            if (mode === PIPELINE_MODES.PLAN) {
+                // Plan mode: always read context → plan → execute
+                plan.steps.push(
+                    createAgentStep('reader', `Read the relevant files to understand current state: ${prompt}`, plan.steps.length)
+                );
+                plan.reasoning += 'Plan mode: reading workspace files for context. ';
+
+                if (mentionsSearch || mentionsExplain) {
+                    plan.steps.push(
+                        createAgentStep('searcher', `Search the codebase for relevant code: ${prompt}`, plan.steps.length)
+                    );
+                    plan.reasoning += 'Searching codebase for related patterns. ';
+                }
+
+                if (mentionsError) {
+                    plan.steps.push(
+                        createAgentStep('analyzer', `Analyze errors and issues: ${prompt}`, plan.steps.length)
+                    );
+                    plan.reasoning += 'Analyzing errors/issues. ';
+                }
+
+                plan.steps.push(
+                    createAgentStep('planner', `Plan the changes needed: ${prompt}`, plan.steps.length)
+                );
+                plan.reasoning += 'Planning changes. ';
+
+                if (!mentionsExplain) {
+                    plan.steps.push(
+                        createAgentStep('executor', `Execute the plan and generate code: ${prompt}`, plan.steps.length)
+                    );
+                    plan.reasoning += 'Generating code changes. ';
+                }
+
+                return plan;
+            }
+
+            if (mode === PIPELINE_MODES.RESEARCH) {
+                // Research mode: always search → read → analyze
+                plan.steps.push(
+                    createAgentStep('searcher', `Search the codebase for: ${prompt}`, plan.steps.length)
+                );
+                plan.reasoning += 'Research mode: searching codebase. ';
+
+                plan.steps.push(
+                    createAgentStep('reader', `Read relevant files found by search: ${prompt}`, plan.steps.length)
+                );
+                plan.reasoning += 'Reading relevant files. ';
+
+                if (mentionsError) {
+                    plan.steps.push(
+                        createAgentStep('analyzer', `Analyze discovered issues: ${prompt}`, plan.steps.length)
+                    );
+                    plan.reasoning += 'Analyzing issues. ';
+                }
+
+                return plan;
+            }
+
+            // ── AUTO mode: keyword-based planning ───────────────────
             // Phase 1: Research (gather context)
             if (mentionsSearch || mentionsExplain || mentionsMultiFile) {
                 plan.steps.push(
@@ -179,6 +243,14 @@ export const useAgentPipeline = ({
                 plan.reasoning += 'File references detected; dispatching reader. ';
             }
 
+            // For change/update/improve prompts, read files for context
+            if (mentionsChange && plan.steps.length === 0) {
+                plan.steps.push(
+                    createAgentStep('reader', `Read relevant files to understand current state: ${prompt}`, plan.steps.length)
+                );
+                plan.reasoning += 'Change/update request; reading files for context. ';
+            }
+
             if (mentionsError) {
                 plan.steps.push(
                     createAgentStep('analyzer', `Analyze errors related to: ${prompt}`, plan.steps.length)
@@ -186,18 +258,18 @@ export const useAgentPipeline = ({
                 plan.reasoning += 'Error/bug mentioned; dispatching analyzer. ';
             }
 
-            // Phase 2: Planning (for multi-file changes)
-            if (mentionsMultiFile || mentionsCreate) {
+            // Phase 2: Planning (for multi-file or creation changes)
+            if (mentionsMultiFile || mentionsCreate || (mentionsChange && !mentionsExplain)) {
                 plan.steps.push(
                     createAgentStep('planner', `Plan changes for: ${prompt}`, plan.steps.length)
                 );
-                plan.reasoning += 'Multi-file or creation task; dispatching planner. ';
+                plan.reasoning += 'Planning required changes. ';
             }
 
             // Phase 3: Execution
             if (
                 !mentionsExplain &&
-                (mentionsCreate || mentionsMultiFile || mentionsError)
+                (mentionsCreate || mentionsMultiFile || mentionsError || mentionsChange)
             ) {
                 plan.steps.push(
                     createAgentStep(
@@ -310,6 +382,42 @@ export const useAgentPipeline = ({
                                 }
                             }
                         }
+
+                        // If no explicit paths found, read the active file + siblings
+                        if (contents.length === 0) {
+                            const activePath = activeFile?.path || activeFile?.name;
+                            if (activePath && currentCode) {
+                                contents.push(
+                                    `FILE: ${activePath} (active file)\n\`\`\`\n${currentCode.slice(0, 6000)}\n\`\`\``
+                                );
+                                toolCalls.push({ tool: 'read_file', args: { path: activePath }, result: 'success' });
+                            }
+
+                            // Read sibling files in same directory
+                            if (activePath && flattenWorkspaceFiles?.length) {
+                                const activeDir = activePath.includes('/')
+                                    ? activePath.split('/').slice(0, -1).join('/')
+                                    : '';
+                                const siblings = flattenWorkspaceFiles
+                                    .filter((f) => {
+                                        if (!activeDir) return !f.includes('/') && f !== activePath;
+                                        return f.startsWith(activeDir + '/') && f !== activePath;
+                                    })
+                                    .slice(0, 4);
+                                for (const sibPath of siblings) {
+                                    if (getBaseContentForPath) {
+                                        const sibContent = await getBaseContentForPath(sibPath);
+                                        if (typeof sibContent === 'string') {
+                                            contents.push(
+                                                `FILE: ${sibPath}\n\`\`\`\n${sibContent.slice(0, 4000)}\n\`\`\``
+                                            );
+                                            toolCalls.push({ tool: 'read_file', args: { path: sibPath }, result: 'success' });
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
                         output = contents.length
                             ? contents.join('\n\n')
                             : 'No matching files found in workspace.';
@@ -321,7 +429,7 @@ export const useAgentPipeline = ({
                         const searchTerms = step.instruction
                             .replace(/^.*?:\s*/, '')
                             .split(/\s+/)
-                            .filter((t) => t.length > 2)
+                            .filter((t) => t.length > 2 && !/^(the|and|for|with|from|that|this|update|search|codebase|relevant|code)$/i.test(t))
                             .slice(0, 5);
                         const matchingFiles = (flattenWorkspaceFiles || [])
                             .filter((path) =>
@@ -337,10 +445,8 @@ export const useAgentPipeline = ({
                             result: `${matchingFiles.length} files found`,
                         });
 
-                        if (matchingFiles.length === 0) {
-                            output = 'No matching files found.';
-                        } else {
-                            const fileContents = [];
+                        const fileContents = [];
+                        if (matchingFiles.length > 0) {
                             for (const path of matchingFiles.slice(0, 3)) {
                                 if (getBaseContentForPath) {
                                     const content = await getBaseContentForPath(path);
@@ -351,7 +457,23 @@ export const useAgentPipeline = ({
                                     }
                                 }
                             }
-                            output = `Found ${matchingFiles.length} relevant files:\n${matchingFiles.join('\n')}\n\n${fileContents.join('\n\n')}`;
+                        }
+
+                        // Always include the active file as context even if search found nothing
+                        const activePath = activeFile?.path || activeFile?.name;
+                        if (activePath && currentCode && !matchingFiles.includes(activePath)) {
+                            fileContents.unshift(
+                                `FILE: ${activePath} (active file)\n\`\`\`\n${currentCode.slice(0, 4000)}\n\`\`\``
+                            );
+                        }
+
+                        if (matchingFiles.length === 0 && fileContents.length === 0) {
+                            output = 'No matching files found.';
+                        } else {
+                            const fileList = matchingFiles.length > 0
+                                ? `Found ${matchingFiles.length} relevant files:\n${matchingFiles.join('\n')}\n\n`
+                                : '';
+                            output = `${fileList}${fileContents.join('\n\n')}`;
                         }
                         break;
                     }
@@ -370,11 +492,23 @@ export const useAgentPipeline = ({
                     }
 
                     case 'planner': {
-                        // Provide workspace structure for planning
+                        // Provide workspace structure + active file for planning
                         const relevantFiles = (flattenWorkspaceFiles || [])
                             .filter((p) => !p.includes('node_modules'))
                             .slice(0, 30);
                         output = `Workspace files for planning:\n${relevantFiles.join('\n')}`;
+
+                        // Include active file content so planner can see actual code
+                        const planActivePath = activeFile?.path || activeFile?.name;
+                        if (planActivePath && currentCode) {
+                            output += `\n\nActive file (${planActivePath}):\n\`\`\`\n${currentCode.slice(0, 6000)}\n\`\`\``;
+                        }
+
+                        // Include prior agent context
+                        if (accumulatedContext) {
+                            output += `\n\nPrior agent context:\n${accumulatedContext.slice(0, 4000)}`;
+                        }
+
                         toolCalls.push({
                             tool: 'plan_changes',
                             args: {},
@@ -384,10 +518,19 @@ export const useAgentPipeline = ({
                     }
 
                     case 'executor': {
-                        // Pass through — the actual code generation happens in the synthesizer
-                        output = accumulatedContext
-                            ? `Prior context gathered:\n${accumulatedContext.slice(0, 4000)}`
-                            : 'No prior context; will generate from scratch.';
+                        // Gather all context for final code generation
+                        const execParts = [];
+                        const execActivePath = activeFile?.path || activeFile?.name;
+                        if (execActivePath && currentCode) {
+                            execParts.push(
+                                `Active file (${execActivePath}):\n\`\`\`\n${currentCode.slice(0, 6000)}\n\`\`\``
+                            );
+                        }
+                        if (accumulatedContext) {
+                            execParts.push(`Gathered context from prior agents:\n${accumulatedContext.slice(0, 6000)}`);
+                        }
+                        execParts.push(`Instruction: ${step.instruction}`);
+                        output = execParts.join('\n\n');
                         break;
                     }
 
@@ -470,7 +613,7 @@ export const useAgentPipeline = ({
             try {
                 // Phase 1: Plan
                 onProgress?.('Planning agent pipeline...');
-                const plan = await planAgentPipeline(prompt, context);
+                const plan = await planAgentPipeline(prompt, context, mode);
                 run.plan = plan;
                 run.steps = plan.steps;
                 run.status = 'executing';
@@ -603,7 +746,7 @@ export const useAgentPipeline = ({
      */
     const shouldUseAgents = useCallback((prompt = '') => {
         if (currentMode === PIPELINE_MODES.DIRECT) return false;
-        if (currentMode !== PIPELINE_MODES.AUTO) return true;
+        if (currentMode !== PIPELINE_MODES.AUTO) return true; // Plan/Research always use agents
 
         const promptLower = prompt.toLowerCase();
         const complexity =
@@ -612,7 +755,8 @@ export const useAgentPipeline = ({
             (/\b(all files|multiple|project|codebase|refactor|rename across)\b/i.test(prompt) ? 2 : 0) +
             (/\b(find|search|grep|where is|references|usage)\b/i.test(prompt) ? 1 : 0) +
             (/\b(error|bug|fix|debug|crash|failing)\b/i.test(prompt) ? 1 : 0) +
-            (/\b(create|scaffold|generate|implement .+ and)\b/i.test(prompt) ? 1 : 0);
+            (/\b(create|scaffold|generate|implement|build)\b/i.test(prompt) ? 1 : 0) +
+            (/\b(update|improve|change|modify|enhance|redesign|rework|add)\b/i.test(prompt) ? 1 : 0);
 
         return complexity >= 2;
     }, [currentMode]);

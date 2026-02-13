@@ -184,11 +184,50 @@ async function executeAgent({ agentType, instruction, context, tools, workspaceP
                     output += `\nFILE: ${path}\n\`\`\`\n${result.content}\n\`\`\`\n`;
                 }
             }
+
+            // If no files were found from regex, read the active file + list workspace
             if (!toolResults.some((r) => r.success)) {
-                // Try listing directory instead
+                // Always include the active file if available
+                if (activeFilePath && activeFileContent) {
+                    const truncContent = activeFileContent.length > 12000
+                        ? activeFileContent.slice(0, 12000) + '\n... [truncated]'
+                        : activeFileContent;
+                    output += `\nFILE: ${activeFilePath} (active file)\n\`\`\`\n${truncContent}\n\`\`\`\n`;
+                    toolResults.push({ tool: 'read_file', args: { path: activeFilePath }, success: true, size: activeFileContent.length });
+                } else if (activeFilePath) {
+                    // Try fetching active file from collab server
+                    const activeResult = await toolReadFile({ workspacePath, filePath: activeFilePath, signal });
+                    toolResults.push({ tool: 'read_file', args: { path: activeFilePath }, ...activeResult });
+                    if (activeResult.success) {
+                        output += `\nFILE: ${activeFilePath} (active file)\n\`\`\`\n${activeResult.content}\n\`\`\`\n`;
+                    }
+                }
+
+                // List workspace to find sibling/related files
                 const dirResult = await toolListDirectory({ workspacePath, signal });
                 toolResults.push({ tool: 'list_directory', ...dirResult });
-                output = `Available files:\n${dirResult.files.join('\n')}`;
+
+                // Try to read sibling files in the same directory as active file
+                if (activeFilePath) {
+                    const activeDir = activeFilePath.includes('/') ? activeFilePath.split('/').slice(0, -1).join('/') : '';
+                    const siblings = dirResult.files
+                        .filter((f) => {
+                            if (!activeDir) return !f.includes('/');
+                            return f.startsWith(activeDir + '/') && f !== activeFilePath;
+                        })
+                        .slice(0, 4);
+                    for (const sibPath of siblings) {
+                        const sibResult = await toolReadFile({ workspacePath, filePath: sibPath, signal });
+                        if (sibResult.success) {
+                            output += `\nFILE: ${sibPath}\n\`\`\`\n${sibResult.content}\n\`\`\`\n`;
+                            toolResults.push({ tool: 'read_file', args: { path: sibPath }, ...sibResult });
+                        }
+                    }
+                }
+
+                if (!output.trim()) {
+                    output = `Available files:\n${dirResult.files.join('\n')}`;
+                }
             }
             break;
         }
@@ -260,23 +299,35 @@ async function executeAgent({ agentType, instruction, context, tools, workspaceP
             const dirResult = await toolListDirectory({ workspacePath, signal });
             toolResults.push({ tool: 'list_directory', ...dirResult });
 
-            // Use LLM to create a plan
             output = `Workspace structure (${dirResult.count} files):\n${dirResult.files.slice(0, 30).join('\n')}`;
+
+            // Include active file content so the planner can see actual code
+            if (activeFilePath && activeFileContent) {
+                const planTrunc = activeFileContent.length > 8000
+                    ? activeFileContent.slice(0, 8000) + '\n... [truncated]'
+                    : activeFileContent;
+                output += `\n\nActive file (${activeFilePath}):\n\`\`\`\n${planTrunc}\n\`\`\``;
+                toolResults.push({ tool: 'read_file', args: { path: activeFilePath }, success: true });
+            }
+
             output += `\n\nPlanning instruction: ${instruction}`;
             if (context) {
-                output += `\n\nPrior context:\n${context.slice(0, 3000)}`;
+                output += `\n\nPrior context from other agents:\n${context.slice(0, 4000)}`;
             }
             break;
         }
 
         case 'executor': {
-            // The executor gathers all context and passes it through
+            // The executor gathers all prior agent context + active file for final synthesis
             output = `Execution context:\n`;
             if (activeFilePath && activeFileContent) {
-                output += `Active file: ${activeFilePath}\n`;
+                const execTrunc = activeFileContent.length > 8000
+                    ? activeFileContent.slice(0, 8000) + '\n... [truncated]'
+                    : activeFileContent;
+                output += `\nActive file (${activeFilePath}):\n\`\`\`\n${execTrunc}\n\`\`\`\n`;
             }
             if (context) {
-                output += `\nGathered context:\n${context.slice(0, 6000)}`;
+                output += `\nGathered context from prior agents:\n${context.slice(0, 8000)}`;
             }
             output += `\n\nInstruction: ${instruction}`;
             break;

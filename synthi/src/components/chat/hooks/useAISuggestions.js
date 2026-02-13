@@ -1289,6 +1289,11 @@ If image attachments are present, read/ocr the images and extract any text or co
                     } catch (e) {
                         continue;
                     }
+                    // Skip validation errors — they are metadata, not content
+                    if (parsed?.validationFailed) {
+                        console.warn('[AI Chat] Validation:', parsed.validationError || 'format issue');
+                        continue;
+                    }
                     const delta = parsed?.delta || parsed?.text || '';
                     const doneFlag = Boolean(parsed?.done);
                     if (delta) {
