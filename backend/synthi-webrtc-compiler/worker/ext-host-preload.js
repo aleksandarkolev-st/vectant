@@ -249,6 +249,99 @@ function bridgeSend(msg) {
 connectBridge();
 
 // ============================================================================
+// Process IPC Monitor
+//
+// The Extension Host communicates with code-server's main process via
+// Node.js IPC (process.send / process.on('message')).  The critical
+// sequence is:
+//   1. EH sends VSCODE_EXTHOST_IPC_READY to server     (outgoing)
+//   2. Server sends VSCODE_EXTHOST_IPC_SOCKET + handle  (incoming)
+//   3. EH wraps the received socket in PersistentProtocol
+//   4. EH reads initialization data from the protocol
+//   5. EH loads and activates extensions
+//
+// If step 2 never happens (server doesn't send socket), or step 4 stalls
+// (client never sends init data), the EH sits idle forever.  We monitor
+// IPC to diagnose exactly where the chain breaks.
+// ============================================================================
+
+let _ipcMessageCount = 0;
+let _ipcReceivedSocket = false;
+let _ipcReadySent = false;
+
+// Monitor outgoing process.send to detect when EH signals readiness
+const _origProcessSend = process.send ? process.send.bind(process) : null;
+if (_origProcessSend) {
+  process.send = function synthiProcessSendMonitor(msg, handle, options, callback) {
+    if (msg && typeof msg === 'object') {
+      if (msg.type === 'VSCODE_EXTHOST_IPC_READY') {
+        _ipcReadySent = true;
+        log('IPC OUT: Extension Host sent VSCODE_EXTHOST_IPC_READY → server should now send us the client socket');
+      } else {
+        log(`IPC OUT: type=${msg.type || JSON.stringify(msg).slice(0, 100)}`);
+      }
+    }
+    return _origProcessSend.apply(process, arguments);
+  };
+  log(`IPC: process.send interceptor installed (process.connected=${process.connected})`);
+} else {
+  log('IPC: process.send is null — IPC channel may not be available (Extension Host not spawned via fork?)');
+}
+
+// Monitor incoming messages
+process.on('message', (msg, handle) => {
+  _ipcMessageCount++;
+
+  if (msg && typeof msg === 'object') {
+    const msgType = msg.type || '(no type)';
+    const hasHandle = !!handle;
+    log(`IPC IN #${_ipcMessageCount}: type=${msgType} hasHandle=${hasHandle}`);
+
+    if (msgType === 'VSCODE_EXTHOST_IPC_SOCKET' || hasHandle) {
+      _ipcReceivedSocket = true;
+      log('IPC IN: Received client socket from server — Extension Host protocol should initialize now');
+      log(`IPC IN: Socket handle type: ${handle?.constructor?.name || typeof handle}`);
+      // Log init params if present
+      if (msg.initialDataChunk) {
+        log(`IPC IN: initialDataChunk present (${msg.initialDataChunk.length || 'N/A'} bytes)`);
+      }
+      if (msg.skipWebSocketFrames !== undefined) {
+        log(`IPC IN: skipWebSocketFrames=${msg.skipWebSocketFrames}`);
+      }
+      // Notify bridge about IPC state
+      bridgeSend({
+        type: 'ipcState',
+        readySent: _ipcReadySent,
+        socketReceived: true,
+        socketType: handle?.constructor?.name || 'unknown',
+      });
+    }
+  }
+});
+
+// Report IPC channel state
+if (process.connected) {
+  log('IPC: Channel available (process.connected=true)');
+} else {
+  log('WARNING: IPC channel NOT available (process.connected=false) — Extension Host cannot communicate with server');
+}
+
+// Diagnostic: check if IPC ready was sent within a reasonable time
+const _ipcCheckTimer = setTimeout(() => {
+  if (!_ipcReadySent) {
+    log('IPC WARNING: VSCODE_EXTHOST_IPC_READY was NOT sent after 10s — VS Code bootstrap may be stuck');
+    log(`  process.connected: ${process.connected}`);
+    log(`  VSCODE_EXTHOST_WILL_SEND_SOCKET: ${process.env.VSCODE_EXTHOST_WILL_SEND_SOCKET || '(unset)'}`);
+    log(`  VSCODE_ESM_ENTRYPOINT: ${process.env.VSCODE_ESM_ENTRYPOINT || '(unset)'}`);
+  } else if (!_ipcReceivedSocket) {
+    log('IPC WARNING: READY was sent but socket was NOT received after 10s — server may not have forwarded the client socket');
+  } else {
+    log(`IPC: OK — ready sent, socket received, ${_ipcMessageCount} messages total`);
+  }
+}, 10000);
+if (_ipcCheckTimer.unref) _ipcCheckTimer.unref();
+
+// ============================================================================
 // Module Interception
 //
 // VS Code's Extension Host (code-server 4.108+, ESM build) re-hooks
