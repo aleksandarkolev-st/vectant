@@ -7,7 +7,6 @@ import { selectActiveFile } from '@/redux/workspaceSlice';
 import { getMonacoLanguage } from '@/utils/languageMapper';
 import { useCollabStatus } from '@/hooks/useCollabStatus';
 import { useCollabSession } from '@/hooks/useCollabSession';
-import PresenceList from '@/components/collaboration/PresenceList';
 import { AlertCircle, AlertTriangle, Cpu, Zap, Loader2, Wifi, WifiOff, Radio, Users } from 'lucide-react';
 
 /**
@@ -168,10 +167,6 @@ export default function StatusBar({
             </div>
           </>
         )}
-
-        {/* Presence Avatars – Google Docs style */}
-        <div className="w-px h-4 bg-[#1a1b24]"></div>
-        <PresenceList slug={slug} maxVisible={6} />
       </div>
       
       {/* Right Section - Better grouped */}

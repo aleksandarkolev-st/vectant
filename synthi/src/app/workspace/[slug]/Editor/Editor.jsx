@@ -19,9 +19,9 @@ import {
     closeFile,
     reorderOpenFiles
 } from '@/redux/workspaceSlice';
-import { selectAutoSaveEnabled, selectAutoCompletionEnabled, toggleAutoCompletion, selectShowAnonymousPresence, selectPresenceGranularity, toggleShowAnonymousPresence, setPresenceGranularity, startCreate, setCursorPosition } from '@/redux/uiSlice';
+import { selectAutoSaveEnabled, selectAutoCompletionEnabled, toggleAutoCompletion, selectPresenceGranularity, startCreate, setCursorPosition } from '@/redux/uiSlice';
 import { fetchGitStatus, syncFileToGit, closeConflictResolver } from '@/redux/gitSlice';
-import { Circle, Save, Sparkles, EyeOff, Loader2 } from 'lucide-react'; // Added Sparkles, EyeOff
+import { Circle, Save, Sparkles, Loader2 } from 'lucide-react';
 import { getFileIcon } from '@/utils/fileIcons';
 import {
     ResizableHandle,
@@ -152,7 +152,6 @@ const EditorPanel = ({
     const showTerminal = useAppSelector(state => state.ui.showTerminal);
     const autoSaveEnabled = useAppSelector(selectAutoSaveEnabled);
     const aiAutoEnabled = useAppSelector(selectAutoCompletionEnabled);
-    const showAnonymousPresence = useAppSelector(selectShowAnonymousPresence);
     const presenceGranularity = useAppSelector(selectPresenceGranularity);
     
     // Git status for conflict detection
@@ -180,9 +179,6 @@ const EditorPanel = ({
     const session = useSession();
     const collabBindingRef = useRef(null);
     const [collabConnected, setCollabConnected] = useState(false); // Track if collab is actively bound
-    const [hoverPresence, setHoverPresence] = useState(null); // { user, clientId, rect }
-    // small timeout ref used to keep the hover card alive while moving the pointer
-    const hoverHideTimeoutRef = useRef(null);
     const [isPrivateMode, setIsPrivateMode] = useState(false);
     const [remoteUnsaved, setRemoteUnsaved] = useState(false);
     
@@ -216,22 +212,6 @@ const EditorPanel = ({
     // Animated tab indicator state - simple underline that slides
     const [tabIndicator, setTabIndicator] = useState({ left: 0, width: 0, visible: false });
     const tabRefs = useRef({});
-
-    // Precompute hover-card style so JSX stays clean and well-formed
-    const hoverCardStyle = (hoverPresence && hoverPresence.rect && typeof window !== 'undefined') ? (() => {
-        const cardW = 224; const cardH = 76;
-        // tighten the horizontal gap a bit to avoid an unreachable gap between
-        // avatar and popover (which previously made it hard to move the mouse)
-        let left = hoverPresence.rect.left + hoverPresence.rect.width + 6;
-        let top = hoverPresence.rect.top - 6;
-        // Keep popover on screen
-        if (left + cardW > window.innerWidth) {
-            left = Math.max(8, hoverPresence.rect.left - cardW - 6);
-        }
-        if (top + cardH > window.innerHeight) top = Math.max(8, window.innerHeight - cardH - 8);
-        if (top < 8) top = 8;
-        return { position: 'fixed', left, top, zIndex: 2000 };
-    })() : null;
 
     const { client: compilerClient, status: compilerStatus } = useCompiler();
     const languageClientsRef = useRef(new Map());
@@ -2106,56 +2086,6 @@ const EditorPanel = ({
 
                             {/* Status & Controls */}
                             <div className="flex items-center gap-2 pr-2">
-                                {/* Collaboration presence */}
-                                <div className="flex items-center gap-1 text-[11px] text-[#9ba2b8]">
-                                    <button 
-                                        onClick={() => setIsPrivateMode(!isPrivateMode)}
-                                        className={`flex items-center px-1.5 py-0.5 rounded-full transition-all ${isPrivateMode ? 'bg-[#ff575720] text-[#ff5757] border border-[#ff575740]' : 'hover:bg-[#1a1b24]'}`}
-                                        title={isPrivateMode ? "Enable Collaboration" : "Disable Collaboration (Private Mode)"}
-                                    >
-                                        {isPrivateMode ? <EyeOff className="w-3 h-3" /> : <div className="text-xs text-[#9ba2b8] h-5">👥</div>}
-                                        {isPrivateMode && <span className="text-[10px] font-bold ml-1">PRIVATE</span>}
-                                    </button>
-                                    
-                                    {!isPrivateMode && (
-                                    <div className="flex items-center gap-2">
-                                        {/* small presence list */}
-                                        {(() => {
-                                            // only show active editors (users with cursor) to avoid many idle/default slots
-                                            const allUsers = (presenceGranularity === 'workspace') ? collabClient.getWorkspaceActiveEditors(slug) : collabClient.getActiveEditors(slug, activeFile?.path);
-                                            const users = allUsers.filter(u => (showAnonymousPresence ? true : !(u.state?.user?.isAnonymous)));
-                                            if (!users || users.length === 0) return <span className="text-xs text-[#6b7089] px-2 py-0.5 rounded-full bg-[#1c1d26] border border-[#32334a]">Solo</span>;
-                                            return users.slice(0,6).map(u => {
-                                                const user = u.state?.user || {};
-                                                const initials = (user.name || 'U').split(' ').filter(Boolean).map(p => p[0]).slice(0,2).join('').toUpperCase();
-                                                return (
-                                                    <div key={`${u.clientId}-${user.id || 'u'}`} className="relative">
-                                                        <div
-                                                            onMouseEnter={(e) => {
-                                                                // cancel any pending hide
-                                                                if (hoverHideTimeoutRef.current) { clearTimeout(hoverHideTimeoutRef.current); hoverHideTimeoutRef.current = null; }
-                                                                const rect = e.currentTarget.getBoundingClientRect();
-                                                                // find cursor info
-                                                                const found = allUsers.find(x => x.clientId === u.clientId) || u;
-                                                                setHoverPresence({ user, clientId: u.clientId, rect, cursor: found.state?.cursor });
-                                                            }}
-                                                            onMouseLeave={() => {
-                                                                if (hoverHideTimeoutRef.current) clearTimeout(hoverHideTimeoutRef.current);
-                                                                hoverHideTimeoutRef.current = setTimeout(() => setHoverPresence(null), 140);
-                                                            }}
-                                                            className="w-6 h-6 rounded-full flex items-center justify-center text-xs text-white cursor-default shadow-sm"
-                                                            style={{ border: `2px solid ${user.color || '#327464'}`, background: user.color ? 'rgba(255,255,255,0.05)' : '#12131a' }}
-                                                        >
-                                                            <span style={{ fontSize: 10 }}>{initials}</span>
-                                                        </div>
-                                                    </div>
-                                                );
-                                            });
-                                        })()}
-                                    </div>
-                                    )}
-                                </div>
-
                                 {/* AI Status Indicator - Shows only when loading */}
                                 <div className={`transition-opacity duration-300 ${(aiCompletionState === 'loading' || aiBusy) ? 'opacity-100' : 'opacity-0'}`}>
                                     <Sparkles className="w-3.5 h-3.5 text-[#327464] animate-pulse" />
@@ -2167,33 +2097,6 @@ const EditorPanel = ({
                                 </button>
                             </div>
                         </div>
-
-                        {/* Hover card for presence */}
-                        {hoverCardStyle && hoverPresence && hoverPresence.user && (
-                            <div style={hoverCardStyle} onMouseEnter={() => { if (hoverHideTimeoutRef.current) { clearTimeout(hoverHideTimeoutRef.current); hoverHideTimeoutRef.current = null; } }} onMouseLeave={() => { if (hoverHideTimeoutRef.current) clearTimeout(hoverHideTimeoutRef.current); hoverHideTimeoutRef.current = setTimeout(() => setHoverPresence(null), 140); }}>
-                                <div className="bg-[#151515] border border-[#333] rounded-md p-2 text-sm text-gray-200 shadow-lg w-56">
-                                    <div className="flex items-center gap-2">
-                                        <div className="w-8 h-8 rounded-full flex items-center justify-center text-sm text-white" style={{ background: hoverPresence.user.color || '#555' }}>{(hoverPresence.user.name || 'Anonymous').split(' ').map(p => p[0]).slice(0,2).join('').toUpperCase()}</div>
-                                        <div className="flex flex-col">
-                                            <div className="font-semibold text-sm">{hoverPresence.user.name || 'Anonymous'}</div>
-                                            <div className="text-xs text-gray-400">{hoverPresence.user.email || (hoverPresence.user.id ? `id: ${hoverPresence.user.id}` : 'Anonymous user')}</div>
-                                        </div>
-                                        <div className="ml-auto flex items-center gap-2">
-                                            <button onClick={() => {
-                                                // jump to user's cursor line if available
-                                                if (!hoverPresence || !hoverPresence.cursor || !editorInstance) return;
-                                                const pos = hoverPresence.cursor.head || hoverPresence.cursor.anchor || null;
-                                                if (!pos) return;
-                                                try {
-                                                    editorInstance.revealPositionInCenter({ lineNumber: pos.line, column: pos.column });
-                                                    editorInstance.setSelection(new monaco.Selection(pos.line, pos.column, pos.line, pos.column));
-                                                } catch (_) {}
-                                            }} className="px-2 py-1 rounded bg-[#2b2b2b] text-xs border border-[#3a3a3a]">Jump</button>
-                                        </div>
-                                    </div>
-                                </div>
-                            </div>
-                        )}
 
                         {/* Merge Conflict Resolver — replaces editor when active */}
                         {conflictResolverFile ? (
