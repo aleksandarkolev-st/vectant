@@ -239,13 +239,18 @@ class ValidatingPersistence {
     const targetText = ydoc.getText(YTEXT_TYPE);
     if (!targetText) return;
 
-    // Create observer that flushes to disk
-    let flushTimer = null;
+    // Create observer that flushes to disk.
+    // Store the entry reference up-front so the observer closure can update
+    // `entry.flushTimer` in-place — _cleanupAutoFlush reads `entry.flushTimer`
+    // to cancel pending timers, so the two MUST share the same object.
+    const entry = { ydoc, text: targetText, observer: null, flushTimer: null, docLevelObserver: null };
+
     const observer = () => {
       // Debounce disk writes
-      if (flushTimer) clearTimeout(flushTimer);
+      if (entry.flushTimer) clearTimeout(entry.flushTimer);
       
-      flushTimer = setTimeout(async () => {
+      entry.flushTimer = setTimeout(async () => {
+        entry.flushTimer = null;
         try {
           const content = targetText.toString();
 
@@ -319,6 +324,7 @@ class ValidatingPersistence {
     };
 
     // Observe changes on the text type
+    entry.observer = observer;
     targetText.observe(observer);
 
     // Also observe at the Y.Doc level as a safety net.  In some race
@@ -331,10 +337,11 @@ class ValidatingPersistence {
         observer();
       }
     };
+    entry.docLevelObserver = docLevelObserver;
     ydoc.on('update', docLevelObserver);
 
     // Store for cleanup
-    this.docObservers.set(docName, { ydoc, text: targetText, observer, flushTimer: null, docLevelObserver });
+    this.docObservers.set(docName, entry);
     
     console.log(`[Collab AutoFlush] Set up auto-flush for ${docName}`);
   }

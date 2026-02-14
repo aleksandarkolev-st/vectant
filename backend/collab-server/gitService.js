@@ -336,6 +336,30 @@ class GitService {
 
             const patterns = ['.git-archive.tar.gz', '.synthi-migrated', '_upstream.git', 'sessions/'];
 
+            // Dynamically exclude per-user repo subdirectories from the slug-
+            // level repo.  Without this, git at the slug level tracks user
+            // repo directories as untracked content, and cloning the slug repo
+            // for a new user copies every other user's working tree.
+            try {
+                const repoDir = path.basename(repoPath);
+                const parentDir = path.dirname(repoPath);
+                // Only add user-repo exclusions for the slug-level repo
+                // (not for per-user repos which live inside the slug dir)
+                if (fs.existsSync(parentDir)) {
+                    const entries = fs.readdirSync(repoPath, { withFileTypes: true });
+                    for (const e of entries) {
+                        if (!e.isDirectory()) continue;
+                        if (e.name === '.git' || e.name === '_upstream.git' || e.name === 'sessions') continue;
+                        // If this subdirectory has its own .git, it's a user repo
+                        if (fs.existsSync(path.join(repoPath, e.name, '.git'))) {
+                            if (!patterns.includes(e.name + '/')) {
+                                patterns.push(e.name + '/');
+                            }
+                        }
+                    }
+                }
+            } catch (_) { /* non-fatal */ }
+
             // Write exclude patterns to the gitDirPath (handles normal repos)
             this._writeExcludePatterns(path.join(gitDirPath, 'info', 'exclude'), patterns);
 
@@ -620,6 +644,17 @@ class GitService {
         return this.withLock(slug, async () => {
             try {
                 const git = this.getGit(slug, userId);
+                // Check if there are staged changes before committing.
+                // Without this guard, `git commit` with nothing staged either
+                // throws a generic error or (with --allow-empty) creates an
+                // empty commit — both of which confuse the user.
+                const status = await git.status();
+                if (!status.staged || status.staged.length === 0) {
+                    throw new GitError(
+                        'Nothing to commit — stage files first.',
+                        'NOTHING_STAGED'
+                    );
+                }
                 await git.commit(message);
                 this._archiveGitAsync(slug, userId);
                 return this.getStatus(slug, userId);
@@ -2273,7 +2308,19 @@ class GitService {
             if (fs.existsSync(barePath)) {
                 cloneSource = barePath;
             } else if (fs.existsSync(path.join(slugRepoPath, '.git'))) {
-                cloneSource = slugRepoPath;
+                // The slug-level repo has .git, but we must NOT clone it when
+                // its working tree contains per-user repo subdirectories —
+                // doing so nests one user's files inside another's clone.
+                const existingUserRepos = this.listUserRepos(slug);
+                if (existingUserRepos.length > 0) {
+                    // Per-user repos exist — clone from the first user's repo
+                    // (which has the same commit history) instead of from the
+                    // contaminated slug-level working tree.
+                    cloneSource = existingUserRepos[0].path;
+                    console.log(`[GitService] Using existing user repo as clone source for ${slug}/${userId} (avoiding slug-level nesting)`);
+                } else {
+                    cloneSource = slugRepoPath;
+                }
             }
 
             if (!cloneSource) {
