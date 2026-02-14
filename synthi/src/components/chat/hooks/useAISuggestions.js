@@ -1171,6 +1171,8 @@ If image attachments are present, read/ocr the images and extract any text or co
                     // Agent pipeline metadata
                     agentMode: useAgents ? agentMode : 'direct',
                     agentStepCount: agentResults.length,
+                    // Agentic tool-calling — let server auto-detect complexity
+                    useTools: needsCodeChanges ? 'auto' : false,
                 }),
             });
 
@@ -1296,6 +1298,17 @@ If image attachments are present, read/ocr the images and extract any text or co
                     // Skip validation errors — they are metadata, not content
                     if (parsed?.validationFailed) {
                         console.warn('[AI Chat] Validation:', parsed.validationError || 'format issue');
+                        continue;
+                    }
+                    // Handle agentic tool-call events as progress indicators
+                    if (parsed?.toolCall) {
+                        const tc = parsed.toolCall;
+                        const label = tc.tool === 'read_file' ? `Reading ${tc.args?.path || 'file'}…`
+                            : tc.tool === 'search_workspace' ? `Searching for "${tc.args?.query || '…'}"…`
+                            : tc.tool === 'list_directory' ? `Listing ${tc.args?.path || 'directory'}…`
+                            : `Tool: ${tc.tool}`;
+                        appendProgressLog(label);
+                        onLog?.(label);
                         continue;
                     }
                     const delta = parsed?.delta || parsed?.text || '';

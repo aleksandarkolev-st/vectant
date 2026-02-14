@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { TOOL_DECLARATIONS, executeTool, isComplexTask } from './toolDefinitions.js';
 
 const encoder = new TextEncoder();
 const GEMINI_BASE =
@@ -541,6 +542,225 @@ const hydrateFromCollab = async ({ workspacePath, focusPath, code, files, signal
  */
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+const MAX_TOOL_ROUNDS = 6; // hard cap on tool-call round-trips
+
+/**
+ * Make a single (non-streaming) Gemini call that may include tool results.
+ * Returns the parsed response body.
+ */
+const callGeminiOnce = async ({ endpoint, systemInstruction, contents, tools, generationConfig, signal }) => {
+    const body = { systemInstruction, contents, generationConfig };
+    if (tools) body.tools = tools;
+    const res = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+        signal,
+    });
+    if (!res.ok) throw new Error(`Gemini error ${res.status}`);
+    return res.json();
+};
+
+/**
+ * Agentic streaming: Gemini with function-calling tool loop.
+ *
+ * Flow:
+ *  1. Initial Gemini call (non-streaming) with tool declarations
+ *  2. If response contains functionCall parts → execute tools, append results, loop
+ *  3. Once Gemini returns only text → stream the final text to the client
+ *
+ * We use non-streaming for tool-loop turns (they're fast, small) and then
+ * convert the final text into the same NDJSON stream format the frontend expects.
+ *
+ * @returns {ReadableStream} NDJSON stream compatible with the existing frontend
+ */
+const streamGeminiWithTools = async ({
+    model,
+    apiKey,
+    userContent,
+    conversationHistory = [],
+    attachments = [],
+    workspacePath = '',
+    signal,
+    maxRetries = 3,
+}) => {
+    const key = apiKey || process.env.GEMINI_API_KEY || '';
+    if (!key) throw new Error('Gemini API key is not configured');
+
+    const targetModel = model || DEFAULT_GEMINI_MODEL;
+    // Use non-streaming generateContent for tool rounds, streaming for final pass
+    const endpoint = `${GEMINI_BASE}/models/${encodeURIComponent(targetModel)}:generateContent?key=${key}`;
+    const streamEndpoint = `${GEMINI_BASE}/models/${encodeURIComponent(targetModel)}:streamGenerateContent?alt=sse&key=${key}`;
+
+    const systemInstruction = { parts: [{ text: CODE_INTEL_SYSTEM_PROMPT }] };
+    const generationConfig = { maxOutputTokens: 4096, temperature: 0.2 };
+    const tools = [{ functionDeclarations: TOOL_DECLARATIONS }];
+
+    // Build contents array (same as streamGemini)
+    const contents = [];
+    const recentHistory = Array.isArray(conversationHistory) ? conversationHistory.slice(-20) : [];
+    for (const msg of recentHistory) {
+        if (msg.role && msg.content) {
+            const geminiRole = msg.role === 'assistant' ? 'model' : msg.role;
+            if (geminiRole === 'user' || geminiRole === 'model') {
+                contents.push({ role: geminiRole, parts: [{ text: msg.content }] });
+            }
+        }
+    }
+    const imageParts = buildImageParts(attachments);
+    contents.push({ role: 'user', parts: [{ text: userContent }, ...imageParts] });
+
+    // Collect tool-call events for the frontend progress stream
+    const toolEvents = [];
+    let round = 0;
+
+    // ── Tool loop ────────────────────────────────────────────────────
+    while (round < MAX_TOOL_ROUNDS) {
+        let data;
+        // Retry wrapper for 429s
+        for (let attempt = 0; attempt <= maxRetries; attempt++) {
+            try {
+                data = await callGeminiOnce({ endpoint, systemInstruction, contents, tools, generationConfig, signal });
+                break;
+            } catch (e) {
+                const msg = String(e?.message || '').toLowerCase();
+                if ((msg.includes('429') || msg.includes('quota')) && attempt < maxRetries) {
+                    await sleep(500 * Math.pow(2, attempt) + Math.random() * 300);
+                    continue;
+                }
+                throw e;
+            }
+        }
+
+        const candidate = data?.candidates?.[0];
+        const parts = candidate?.content?.parts || [];
+
+        // Check for function calls
+        const fnCalls = parts.filter((p) => p.functionCall);
+        if (fnCalls.length === 0) {
+            // No tool calls — model produced final text. Stream it out.
+            const finalText = parts.map((p) => p.text || '').join('');
+            return createTextStream(finalText, toolEvents);
+        }
+
+        // Append model's function-call turn to contents
+        contents.push({ role: 'model', parts });
+
+        // Execute each tool call in parallel
+        const fnResponses = await Promise.all(
+            fnCalls.map(async (part) => {
+                const { name, args } = part.functionCall;
+                toolEvents.push({ tool: name, args, status: 'running' });
+                const result = await executeTool(name, args, workspacePath, signal);
+                toolEvents[toolEvents.length - 1].status = 'done';
+                return { functionResponse: { name, response: result } };
+            })
+        );
+
+        // Append function responses to contents so Gemini sees the results
+        contents.push({ role: 'function', parts: fnResponses });
+        round++;
+    }
+
+    // If we exhausted rounds, do a final streaming call WITHOUT tools to force text output
+    const finalBody = { systemInstruction, contents, generationConfig };
+    const finalRes = await fetch(streamEndpoint, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', accept: 'text/event-stream' },
+        body: JSON.stringify(finalBody),
+        signal,
+    });
+    if (!finalRes.ok) throw new Error(`Gemini error ${finalRes.status}`);
+    return createAgenticValidatedStream(finalRes.body, toolEvents);
+};
+
+/**
+ * Convert a plain text string into an NDJSON ReadableStream,
+ * prefixed with any tool-call events the frontend can display.
+ */
+const createTextStream = (text, toolEvents = []) => {
+    const chunks = [];
+    // Emit tool events first
+    for (const evt of toolEvents) {
+        chunks.push(JSON.stringify({ toolCall: evt }) + '\n');
+    }
+    // Chunk the text so the frontend gets incremental deltas
+    const CHUNK_SIZE = 120;
+    for (let i = 0; i < text.length; i += CHUNK_SIZE) {
+        chunks.push(JSON.stringify({ delta: text.slice(i, i + CHUNK_SIZE) }) + '\n');
+    }
+    chunks.push(JSON.stringify({ done: true }) + '\n');
+
+    let idx = 0;
+    return new ReadableStream({
+        pull(controller) {
+            if (idx < chunks.length) {
+                controller.enqueue(encoder.encode(chunks[idx++]));
+            } else {
+                controller.close();
+            }
+        },
+    });
+};
+
+/**
+ * Wrap a streaming SSE response with validation AND prepend tool events.
+ */
+const createAgenticValidatedStream = (upstreamBody, toolEvents = []) => {
+    const reader = upstreamBody.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let accumulatedText = '';
+    let headerSent = false;
+
+    return new ReadableStream({
+        async pull(controller) {
+            // First, emit tool events as header
+            if (!headerSent) {
+                for (const evt of toolEvents) {
+                    controller.enqueue(encoder.encode(JSON.stringify({ toolCall: evt }) + '\n'));
+                }
+                headerSent = true;
+            }
+            try {
+                const { value, done } = await reader.read();
+                if (done) {
+                    const validation = validateResponseFormat(accumulatedText);
+                    if (!validation.isValid && validation.errors.length > 0) {
+                        controller.enqueue(encoder.encode(JSON.stringify({ validationError: validation.errors.join('\n'), validationFailed: true }) + '\n'));
+                    }
+                    controller.enqueue(encoder.encode(JSON.stringify({ done: true }) + '\n'));
+                    controller.close();
+                    return;
+                }
+                if (!value) return;
+                buffer += decoder.decode(value, { stream: true });
+                const lines = buffer.split('\n');
+                buffer = lines.pop() || '';
+                for (const raw of lines) {
+                    const line = raw.replace(/^data:\s*/, '').trim();
+                    if (!line || line === '[DONE]') continue;
+                    try {
+                        const parsed = JSON.parse(line);
+                        const parts = parsed?.candidates?.[0]?.content?.parts || [];
+                        const textDelta = parts.map((p) => p?.text || '').join('');
+                        if (textDelta) {
+                            accumulatedText += textDelta;
+                            controller.enqueue(encoder.encode(JSON.stringify({ delta: textDelta }) + '\n'));
+                        }
+                        if (parsed?.candidates?.[0]?.finishReason) {
+                            controller.enqueue(encoder.encode(JSON.stringify({ done: true }) + '\n'));
+                        }
+                    } catch (e) { /* skip malformed */ }
+                }
+            } catch (error) {
+                controller.error(error);
+            }
+        },
+        cancel() { try { reader.cancel(); } catch (e) {} },
+    });
+};
+
 /**
  * Stream from Gemini with automatic retry on 429 rate limiting
  */
@@ -776,6 +996,8 @@ export async function POST(request) {
         maxContextTokens = 6000,
         conversationHistory = [],
         fullRepoContext = false,
+        // Agentic tool-use mode
+        useTools = 'auto', // 'auto' | true | false
     } = body || {};
 
     // TTFT optimization: Fetch code intel and hydrate from collab IN PARALLEL
@@ -840,7 +1062,27 @@ export async function POST(request) {
                 { status: 401 }
             );
         }
-        const stream = await streamGemini({ model, apiKey: geminiKey, userContent, conversationHistory, attachments, signal });
+
+        // ── Choose fast path vs. agentic path ───────────────────────
+        const shouldUseTools =
+            useTools === true ||
+            (useTools === 'auto' && workspacePath && isComplexTask(prompt, (files || []).length));
+        
+        let stream;
+        if (shouldUseTools && workspacePath) {
+            console.log('[Chat API] Using agentic tool-calling path');
+            stream = await streamGeminiWithTools({
+                model,
+                apiKey: geminiKey,
+                userContent,
+                conversationHistory,
+                attachments,
+                workspacePath,
+                signal,
+            });
+        } else {
+            stream = await streamGemini({ model, apiKey: geminiKey, userContent, conversationHistory, attachments, signal });
+        }
 
         const traceSummary = buildTraceSummary(codeIntelContext?.trace || []);
         const sources = Array.isArray(codeIntelContext?.sources)
