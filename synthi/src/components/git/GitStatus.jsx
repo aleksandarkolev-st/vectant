@@ -284,6 +284,10 @@ export function GitStatus({ slug }) {
       setMessage('');
       setCommitBody('');
       setShowCommitBody(false);
+    } else {
+      // Show a clear error when nothing was staged or commit failed
+      const errMsg = resultAction?.error?.message || 'Commit failed';
+      toast.error(errMsg);
     }
   };
 
@@ -316,7 +320,10 @@ export function GitStatus({ slug }) {
     if (!confirm(`Discard changes in ${filePath}?`)) return;
     const result = await dispatch(discardChange({ slug, filePath }));
     if (discardChange.fulfilled.match(result)) {
-      dispatch(refreshWorkspaceThunk());
+      // Don't call refreshWorkspaceThunk() — the server broadcasts
+      // 'file-reverted' + 'file-tree-changed' + 'git-status-changed'
+      // events that the client handles automatically.  Calling refresh
+      // here races with those broadcasts and can double the file content.
       toast.success(`Discarded changes in ${filePath.split('/').pop()}`);
     } else {
       toast.error(`Failed to discard ${filePath.split('/').pop()}`);
@@ -326,7 +333,6 @@ export function GitStatus({ slug }) {
     if (!confirm('Discard ALL changes? This cannot be undone!')) return;
     const result = await dispatch(discardAll(slug));
     if (discardAll.fulfilled.match(result)) {
-      dispatch(refreshWorkspaceThunk());
       toast.success('All changes discarded');
     } else {
       toast.error('Failed to discard all changes');

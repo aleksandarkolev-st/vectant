@@ -2,6 +2,7 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { use } from 'react';
 import { useSession } from 'next-auth/react';
+import { useRouter } from 'next/navigation';
 import { useAppDispatch, useAppSelector } from '@/redux/hooks';
 import { fetchFilesThunk, selectActiveFile, setSlug, selectFileThunk, selectCurrentContent, selectFileCacheEntries } from '@/redux/workspaceSlice';
 import { fetchGitStatus } from '@/redux/gitSlice';
@@ -60,7 +61,15 @@ import { cn } from '@/lib/utils';
 
 export default function EditorPage({ params }) {
     const dispatch = useAppDispatch();
-    const { data: authSession } = useSession();
+    const { data: authSession, status: authStatus } = useSession();
+    const router = useRouter();
+    
+    // ── Auth guard: redirect unauthenticated users to the home page ─────
+    useEffect(() => {
+        if (authStatus === 'unauthenticated') {
+            router.replace('/');
+        }
+    }, [authStatus, router]);
     
     // 1. Consume the slug parameter first (needed by hooks below)
     const { slug } = use(params);
@@ -1785,6 +1794,11 @@ export default function EditorPage({ params }) {
 
     if (workspaceMissing) {
         return <WorkspaceNotFoundModal slug={slug} message={workspaceMissingMessage} open={true} />;
+    }
+
+    // While auth is loading or redirect is pending, show nothing
+    if (authStatus !== 'authenticated') {
+        return null;
     }
 
     return (

@@ -36,6 +36,9 @@ export const initialWorkspaceState = {
     isLoading: false,
     status: 'idle',
     error: null,
+    // Per-file savedContent cache — preserves the "last saved" baseline
+    // across tab switches so the unsaved dot survives the auto-flush.
+    _savedContentByPath: {},
 };
 
 // --- ASYNC THUNKS (Side Effects and Persistence) ---
@@ -626,6 +629,10 @@ const workspaceSlice = createSlice({
                 // Only strip newlines, not spaces/tabs, so whitespace changes are still detected
                 const normalizeTrailing = (s) => s ? s.replace(/[\r\n]+$/, '') : '';
                 if (state.activeFile && state.activeFile.path && normalizeTrailing(state.currentContent) !== normalizeTrailing(state.savedContent)) {
+                    // Persist the per-file savedContent so switching back later
+                    // doesn't lose the unsaved baseline.
+                    if (!state._savedContentByPath) state._savedContentByPath = {};
+                    state._savedContentByPath[state.activeFile.path] = state.savedContent;
                     state.fileContentCache.set(state.activeFile.path, state.currentContent);
                 }
 
@@ -634,18 +641,34 @@ const workspaceSlice = createSlice({
                 state.currentContent = content;
                 state.diffMode = false; // Disable diff mode
 
-                // If a live Yjs document already holds edits for this file
-                // (e.g. user typed, switched tabs, then came back), use the
-                // CRDT text as both currentContent and savedContent so the
-                // isUnsaved indicator reflects the real state.  Without this,
-                // savedContent would be set to the older server response,
-                // causing a permanent false-positive "unsaved" dot.
-                const crdtBaseline = getCrdtBaselineIfNewer(state.slug, file.path, content);
-                if (crdtBaseline !== null) {
-                    state.currentContent = crdtBaseline;
-                    state.savedContent = content; // server version is the "last saved" baseline
+                // Check if this file was previously open with unsaved changes.
+                // The Yjs auto-flush writes edits to disk immediately, so the
+                // server content already matches the CRDT.  Without this
+                // check, savedContent would be set to the (already-flushed)
+                // server content, erasing the unsaved indicator.
+                const existingTab = state.openFiles.find(f => f.path === file.path);
+                const wasUnsaved = existingTab?.isUnsaved === true;
+                const previousSaved = state._savedContentByPath?.[file.path];
+
+                if (wasUnsaved && previousSaved !== undefined) {
+                    // Restore the original savedContent baseline so the
+                    // unsaved dot reappears when switching back to this tab.
+                    const crdtBaseline = getCrdtBaselineIfNewer(state.slug, file.path, content);
+                    state.currentContent = crdtBaseline ?? content;
+                    state.savedContent = previousSaved;
                 } else {
-                    state.savedContent = content;
+                    // Fresh file or already saved — use server content as baseline
+                    const crdtBaseline = getCrdtBaselineIfNewer(state.slug, file.path, content);
+                    if (crdtBaseline !== null) {
+                        state.currentContent = crdtBaseline;
+                        state.savedContent = content; // server version is the "last saved" baseline
+                    } else {
+                        state.savedContent = content;
+                    }
+                    // Clean up stale per-file savedContent
+                    if (state._savedContentByPath) {
+                        delete state._savedContentByPath[file.path];
+                    }
                 }
                 
                 // Update cache if content was newly fetched (and not from cache)
@@ -655,13 +678,12 @@ const workspaceSlice = createSlice({
 
                 // Ensure the file appears in the open tabs list
                 try {
-                    const exists = state.openFiles.find(f => f.path === file.path);
-                    const hasUnsaved = crdtBaseline !== null;
+                    const hasUnsaved = wasUnsaved || getCrdtBaselineIfNewer(state.slug, file.path, content) !== null;
                     const entry = { ...file, isUnsaved: hasUnsaved };
-                    if (!exists) state.openFiles.push(entry);
-                    else if (exists.isUnsaved !== hasUnsaved) {
-                        const idx = state.openFiles.indexOf(exists);
-                        state.openFiles[idx] = { ...exists, isUnsaved: hasUnsaved };
+                    if (!existingTab) state.openFiles.push(entry);
+                    else if (existingTab.isUnsaved !== hasUnsaved) {
+                        const idx = state.openFiles.indexOf(existingTab);
+                        state.openFiles[idx] = { ...existingTab, isUnsaved: hasUnsaved };
                     }
                 } catch (e) { /* ignore */ }
             });
@@ -673,6 +695,12 @@ const workspaceSlice = createSlice({
                     state.savedContent = action.payload;
                     if (state.activeFile && state.activeFile.path) {
                         state.fileContentCache.set(state.activeFile.path, action.payload);
+                        // Clear the per-file savedContent cache — the file
+                        // is now explicitly saved so tab-switching should use
+                        // the new baseline, not the stale one.
+                        if (state._savedContentByPath) {
+                            delete state._savedContentByPath[state.activeFile.path];
+                        }
                     }
                     // Mark active tab as saved
                     try {
