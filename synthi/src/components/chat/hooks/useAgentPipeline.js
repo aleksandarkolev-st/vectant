@@ -509,6 +509,9 @@ export const useAgentPipeline = ({
                             output += `\n\nPrior agent context:\n${accumulatedContext.slice(0, 4000)}`;
                         }
 
+                        // Remind the model it can create new files
+                        output += `\n\nIMPORTANT: If the user's request requires creating NEW files (new pages, components, modules, etc.), plan for their creation at appropriate workspace paths using FILE: blocks. You are NOT limited to modifying existing files only.`;
+
                         toolCalls.push({
                             tool: 'plan_changes',
                             args: {},
@@ -530,6 +533,7 @@ export const useAgentPipeline = ({
                             execParts.push(`Gathered context from prior agents:\n${accumulatedContext.slice(0, 6000)}`);
                         }
                         execParts.push(`Instruction: ${step.instruction}`);
+                        execParts.push(`IMPORTANT: If the instruction requires creating NEW files, output each new file as a separate FILE: block with the appropriate path. Do NOT merge new file content into existing files.`);
                         output = execParts.join('\n\n');
                         break;
                     }

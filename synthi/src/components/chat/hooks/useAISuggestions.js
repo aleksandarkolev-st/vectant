@@ -1038,7 +1038,11 @@ Stream at least two short progress updates wrapped in <progress>...</progress> a
                 // For code change requests, use the full patch prompt
                 requestPrompt = `${userPrompt}
 
-If the user asks for a new file, you may create it in the requested folder/path within the workspace. If the user asks to delete a file, you may delete it when they provide a path; return an empty content block or the literal text DELETE to mark deletion. Otherwise, prefer modifying the active file or files explicitly mentioned. Always respect the workspace tree when creating or deleting files.
+When the user asks you to CREATE NEW FILES (new pages, components, apps, etc.), you MUST create them using FILE: blocks at the appropriate paths. Do NOT fold new file content into an existing file. Each new file gets its own FILE: block.
+
+If the user asks to delete a file, return an empty content block or the literal text DELETE to mark deletion. Always respect the workspace tree when creating or deleting files.
+
+For modifications to existing files, modify only the files the user mentions or that are relevant to the change.
 
 Start with a brief (6-7 sentences) summary of the change. Stream at least three short progress updates wrapped in <progress>...</progress> as you reason (no code inside progress). Emit the summary before any FILE sections. After the summary, return one or more sections in this exact format:
 FILE: <path>
