@@ -1931,6 +1931,15 @@ async function _triggerExtensionHostStartup(port, token) {
         process.stderr.write(`[vscode-server-manager] $startExtensionHost sent — extensions should now activate!\n`);
       }
 
+      /**
+       * Send $activateByEvent to the Extension Host.
+       * Triggers activation of extensions matching the given event.
+       * ActivationKind: Normal=0, Immediate=1
+       */
+      function _sendActivateByEvent(event, kind) {
+        _sendEHRpcRequest(EXTHOST_EXTENSION_SERVICE_RPC_ID, '$activateByEvent', [event, kind || 0]);
+      }
+
       function _handleEHRpc(dataBuf) {
         if (!dataBuf || dataBuf.length < 5) return;
 
