@@ -1907,6 +1907,30 @@ async function _triggerExtensionHostStartup(port, token) {
         }
       }
 
+      /**
+       * Send $startExtensionHost to the Extension Host.
+       * This is Phase 2 of VS Code's two-phase activation model:
+       *   Phase 1: Init data → EH processes, sends Initialized(0x01)
+       *   Phase 2: $startExtensionHost(delta) → EH calls _handleEagerExtensions()
+       *            → _activateByEvent('*') → extensions load → require('vscode') fires
+       *
+       * The delta can be empty since init data already populated the registries.
+       * The critical part is that $startExtensionHost triggers _startExtensionHost()
+       * which opens _readyToRunExtensions and calls _handleEagerExtensions().
+       */
+      function _sendStartExtensionHost() {
+        const delta = {
+          versionId: 1,
+          toRemove: [],
+          toAdd: [],
+          addActivationEvents: {},
+          myToRemove: [],
+          myToAdd: [],
+        };
+        _sendEHRpcRequest(EXTHOST_EXTENSION_SERVICE_RPC_ID, '$startExtensionHost', [delta]);
+        process.stderr.write(`[vscode-server-manager] $startExtensionHost sent — extensions should now activate!\n`);
+      }
+
       function _handleEHRpc(dataBuf) {
         if (!dataBuf || dataBuf.length < 5) return;
 
