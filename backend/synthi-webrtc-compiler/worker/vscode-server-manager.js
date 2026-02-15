@@ -1413,7 +1413,7 @@ async function startServer(slug, options = {}) {
     const _startupSummaryTimer = setTimeout(() => {
       const bootstrapStatus = _bootstrapStateReceived
         ? 'received=true \u2713'
-        : 'received=false \u2717 (extensions may not have loaded — check api field in init data)';
+        : 'received=false \u2717 (extensions may not have loaded)';
       const bridgeStatus = preloadClients.size > 0
         ? `port=${preloadBridgePort || 'N/A'} clients=${preloadClients.size} \u2713`
         : `port=${preloadBridgePort || 'N/A'} clients=0 \u2717 (preload may not have connected)`;
@@ -1426,6 +1426,7 @@ async function startServer(slug, options = {}) {
         `  Bridge:     ${bridgeStatus}`,
         `  Bootstrap:  ${bootstrapStatus}`,
         `  Extensions: scanned=${extHostLoadedExtensions.size} installed=${installedExtensions.size}`,
+        `  RPC Fallback: trees=${rpcObservedTreeViews.size} webviews=${rpcObservedWebviewViews.size}`,
         `  Deferred:   ${deferredCount} webview resolutions pending`,
         `  Workspace:  ${currentWorkspaceDir || '(none)'} slug=${currentSlug || '(none)'}`,
         `${'='.repeat(60)}\n`,
