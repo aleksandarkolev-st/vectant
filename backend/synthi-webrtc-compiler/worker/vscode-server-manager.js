@@ -403,7 +403,9 @@ function _startProviderDiscovery(trigger) {
     const timer = setTimeout(() => {
       process.stderr.write(`[preload-bridge] Provider discovery (${delay / 1000}s after ${trigger})\n`);
       sendToPreloadClients({ action: 'listProviders' });
-      sendToPreloadClients({ action: 'refreshAllTrees' });
+      if (preloadRegisteredTreeViews.size > 0) {
+        sendToPreloadClients({ action: 'refreshAllTrees' });
+      }
       // Try resolving known webview views
       for (const extId of extHostLoadedExtensions) {
         const result = _readExtensionManifest(extId);
@@ -2383,7 +2385,10 @@ async function _sendExtensionHostInitData(sendWSFrame, makeRegularMsg, port) {
         };
 
         extensions.push(extensionDesc);
-        myExtensionIds.push(extIdentifier);
+        // myExtensions in init data is expected to be extension ID strings.
+        // Using identifier objects can prevent the EH from considering these
+        // as local/owned extensions, which blocks activation.
+        myExtensionIds.push(extId);
 
         if (!pkg.main && !pkg.browser) {
           process.stderr.write(`[eh-init] Extension ${extId}: no main/browser field — may be theme-only\n`);
