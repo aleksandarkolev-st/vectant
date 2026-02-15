@@ -1890,7 +1890,9 @@ async function _triggerExtensionHostStartup(port, token) {
               const entry = args[0];
               const sev = entry.severity || 'log';
               const text = entry.arguments || '';
-              process.stderr.write(`[vscode-server-manager] EH ${sev}: ${text}\n`);
+              const fromPreload = typeof text === 'string' && text.includes('[ext-host-preload]');
+              const normalizedSev = fromPreload && sev === 'error' ? 'log' : sev;
+              process.stderr.write(`[vscode-server-manager] EH ${normalizedSev}: ${text}\n`);
             }
           } catch (_) {}
         }
