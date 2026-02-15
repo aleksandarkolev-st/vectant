@@ -2334,10 +2334,9 @@ async function _sendExtensionHostInitData(sendWSFrame, makeRegularMsg, port) {
           : (pkg.extensionKind !== undefined && pkg.extensionKind !== null ? [pkg.extensionKind] : []);
         const declaredExtensionKind = rawDeclaredExtensionKind
           .map((kind) => {
-            if (kind === 1 || kind === 2 || kind === 3) return kind;
+            if (kind === 1 || kind === 2) return kind;
             if (kind === 'ui') return 1;
             if (kind === 'workspace') return 2;
-            if (kind === 'web') return 3;
             return undefined;
           })
           .filter((kind) => typeof kind === 'number');
