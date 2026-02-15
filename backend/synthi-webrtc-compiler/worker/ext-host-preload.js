@@ -696,6 +696,8 @@ for (const delay of _statusCheckDelays) {
       log(`  active import probes: ${_activeEsmProbeAttempts}`);
       log(`  process.connected: ${process.connected}`);
       log(`  VSCODE_IPC_HOOK_EXTHOST: ${process.env.VSCODE_IPC_HOOK_EXTHOST || '(unset)'}`);
+      log(`  SYNTHI_EXTENSION_HOST_CONFIRMED: ${process.env.SYNTHI_EXTENSION_HOST_CONFIRMED || '(unset)'}`);
+      log(`  SYNTHI_EXT_BRIDGE_PORT: ${process.env.SYNTHI_EXT_BRIDGE_PORT || '(unset)'}`);
       log(`  IPC ready sent: ${_ipcReadySent}, socket received: ${_ipcReceivedSocket}`);
       log(`  _VSCODE_IMPORT_VSCODE_API: ${typeof globalThis._VSCODE_IMPORT_VSCODE_API}`);
       log(`  _VSCODE_API_IMPL_PROVIDER: ${typeof globalThis._VSCODE_API_IMPL_PROVIDER}`);
