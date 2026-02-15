@@ -247,6 +247,81 @@ function sendEvent(method, ...args) {
   });
 }
 
+function _extractRpcArgsFromBuffer(dataBuf) {
+  try {
+    if (!dataBuf || dataBuf.length < 7) return null;
+    const methodLen = dataBuf[6];
+    const argsOffset = 7 + methodLen;
+    if (dataBuf.length < argsOffset + 4) return null;
+    const argsLen = dataBuf.readUInt32BE(argsOffset);
+    if (argsLen <= 0 || dataBuf.length < argsOffset + 4 + argsLen) return null;
+    const argsJson = dataBuf.slice(argsOffset + 4, argsOffset + 4 + argsLen).toString('utf8');
+    const parsed = JSON.parse(argsJson);
+    return Array.isArray(parsed) ? parsed : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+function _collectStringCandidates(value, out) {
+  if (!value) return;
+  if (typeof value === 'string') {
+    if (value.length >= 3 && value.length <= 200) out.push(value);
+    return;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) _collectStringCandidates(item, out);
+    return;
+  }
+  if (typeof value === 'object') {
+    for (const key of Object.keys(value)) {
+      _collectStringCandidates(value[key], out);
+    }
+  }
+}
+
+function _pickViewIdFromCandidates(candidates) {
+  for (const value of candidates) {
+    if (!value) continue;
+    if (value.startsWith('$') || value.startsWith('__vsc')) continue;
+    if (value.includes('://')) continue;
+    if (/^[a-z0-9_.-]+:[a-z0-9_.:-]+$/i.test(value)) return value;
+    if (/^[a-z0-9_.-]+$/i.test(value) && (value.includes('.') || value.includes('-'))) return value;
+  }
+  return null;
+}
+
+function _captureProviderFromRpc(methodName, args) {
+  if (!methodName) return;
+  const lower = methodName.toLowerCase();
+  const isTreeRegistration = lower.includes('register') && lower.includes('tree');
+  const isWebviewRegistration = lower.includes('register') && lower.includes('webview');
+  if (!isTreeRegistration && !isWebviewRegistration) return;
+
+  const candidates = [];
+  _collectStringCandidates(args, candidates);
+  const viewId = _pickViewIdFromCandidates(candidates);
+  if (!viewId) return;
+
+  if (isTreeRegistration) {
+    if (!rpcObservedTreeViews.has(viewId)) {
+      rpcObservedTreeViews.add(viewId);
+      process.stderr.write(`[rpc-fallback] Tree provider observed via EH RPC: ${viewId} (${methodName})\n`);
+      sendEvent('registerTreeView', viewId, 'rpc-fallback');
+      sendEvent('providerList', Array.from(rpcObservedTreeViews), Array.from(rpcObservedWebviewViews));
+    }
+  }
+
+  if (isWebviewRegistration) {
+    if (!rpcObservedWebviewViews.has(viewId)) {
+      rpcObservedWebviewViews.add(viewId);
+      process.stderr.write(`[rpc-fallback] Webview provider observed via EH RPC: ${viewId} (${methodName})\n`);
+      sendEvent('createWebview', viewId, viewId, viewId, { extensionId: 'rpc-fallback' });
+      sendEvent('providerList', Array.from(rpcObservedTreeViews), Array.from(rpcObservedWebviewViews));
+    }
+  }
+}
+
 // ============================================================================
 // Extension Host Preload Bridge (TCP server)
 //
@@ -270,6 +345,12 @@ const _preloadReadyWaiters = [];
 
 /** @type {Map<string, object>} viewId → last known tree data */
 const preloadTreeCache = new Map();
+
+/** @type {Set<string>} Tree views observed directly from EH RPC registrations */
+const rpcObservedTreeViews = new Set();
+
+/** @type {Set<string>} Webview view types observed directly from EH RPC registrations */
+const rpcObservedWebviewViews = new Set();
 
 /** @type {boolean} Whether the bootstrapState message has been received from preload */
 let _bootstrapStateReceived = false;
@@ -573,10 +654,12 @@ function _handlePreloadMessage(msg) {
 
     case 'providerList': {
       // Response to a listProviders request — log and forward to browser
-      const treeCount = msg.treeViews?.length || 0;
-      const webviewCount = msg.webviews?.length || 0;
+      const mergedTreeViews = Array.from(new Set([...(msg.treeViews || []), ...rpcObservedTreeViews]));
+      const mergedWebviews = Array.from(new Set([...(msg.webviews || []), ...rpcObservedWebviewViews]));
+      const treeCount = mergedTreeViews.length;
+      const webviewCount = mergedWebviews.length;
       process.stderr.write(`[preload-bridge] Provider list: ${treeCount} trees, ${webviewCount} webviews\n`);
-      sendEvent('providerList', msg.treeViews, msg.webviews);
+      sendEvent('providerList', mergedTreeViews, mergedWebviews);
       break;
     }
 
@@ -1004,8 +1087,8 @@ function _patchExtensionHostForPreload(serverBinaryPath, preloadPath, bridgePort
       fs.writeFileSync(candidate, injection + content);
       process.stderr.write(`[vscode-server-manager] Patched extensionHostProcess.js (bridge port ${bridgePort}): ${candidate}\n`);
 
-      // Also patch bootstrap-fork.js for early ODP trap
-      _patchBootstrapFork(rootCandidates, bridgePort);
+      // Also patch bootstrap-fork.js for early ODP trap + early preload load
+      _patchBootstrapFork(rootCandidates, bridgePort, preloadPath);
 
       return true;
     } catch (e) {
@@ -1037,8 +1120,9 @@ function _patchExtensionHostForPreload(serverBinaryPath, preloadPath, bridgePort
  *
  * @param {Set<string>} rootCandidates - Server root directory candidates
  * @param {number} bridgePort - TCP port for the preload bridge
+ * @param {string} preloadPath - Absolute path to ext-host-preload.js
  */
-function _patchBootstrapFork(rootCandidates, bridgePort) {
+function _patchBootstrapFork(rootCandidates, bridgePort, preloadPath) {
   const BOOTSTRAP_BEGIN = '/* SYNTHI_BOOTSTRAP_PRELOAD_BEGIN */';
   const BOOTSTRAP_END = '/* SYNTHI_BOOTSTRAP_PRELOAD_END */';
 
@@ -1069,6 +1153,7 @@ function _patchBootstrapFork(rootCandidates, bridgePort) {
   // Guard uses process.argv instead of env var — env var isn't set yet.
   // bootstrap-fork.js runs for ALL forked processes (PTY host, file watcher,
   // etc.), so we MUST check --type=extensionHost to avoid false positives.
+  const escapedPreloadPath = String(preloadPath || '').replace(/\\/g, '\\\\').replace(/"/g, '\\"');
   const bootstrapInjection = [
     BOOTSTRAP_BEGIN,
     `// Early Object.defineProperty trap — installed before ANY ESM imports.`,
@@ -1076,6 +1161,23 @@ function _patchBootstrapFork(rootCandidates, bridgePort) {
     `(function() {`,
     `  if (!process.argv.includes('--type=extensionHost')) return;`,
     `  process.env.SYNTHI_EXT_BRIDGE_PORT = process.env.SYNTHI_EXT_BRIDGE_PORT || "${bridgePort}";`,
+    `  process.env.SYNTHI_EXTENSION_HOST_CONFIRMED = process.env.SYNTHI_EXTENSION_HOST_CONFIRMED || "true";`,
+    `  const __synthiPreloadPath = "${escapedPreloadPath}";`,
+    `  if (__synthiPreloadPath) {`,
+    `    try {`,
+    `      const __synthiCR = (typeof require === 'function')`,
+    `        ? require`,
+    `        : import('node:module').then((m) => m.createRequire(process.cwd() + '/__synthi_bootstrap_require__.js'));`,
+    `      if (typeof __synthiCR === 'function') {`,
+    `        __synthiCR(__synthiPreloadPath);`,
+    `      } else if (__synthiCR && typeof __synthiCR.then === 'function') {`,
+    `        __synthiCR.then((__rq) => { try { __rq(__synthiPreloadPath); } catch (_e2) { process.stderr.write('[ext-host-preload:bootstrap] Early preload async require failed: ' + _e2.message + '\\n'); } });`,
+    `      } else {`,
+    `        process.stderr.write('[ext-host-preload:bootstrap] Early preload loader unavailable\\n');`,
+    `      }`,
+    `    }`,
+    `    catch (_e) { process.stderr.write('[ext-host-preload:bootstrap] Early preload require failed: ' + _e.message + '\\n'); }`,
+    `  }`,
     `  const _origODP = Object.defineProperty;`,
     `  const _PREFIX = '[ext-host-preload:bootstrap]';`,
     `  let _odpCount = 0;`,
@@ -1651,6 +1753,9 @@ async function _triggerExtensionHostStartup(port, token) {
           }
         }
 
+        const rpcArgs = _extractRpcArgsFromBuffer(dataBuf);
+        _captureProviderFromRpc(methodName, rpcArgs);
+
         // Decode $logExtensionHostMessage for diagnostics
         if (methodName === '$logExtensionHostMessage') {
           try {
@@ -2061,21 +2166,19 @@ async function _triggerExtensionHostStartup(port, token) {
 async function _sendExtensionHostInitData(sendWSFrame, makeRegularMsg, port) {
   // ── Gather extension descriptions ──
   //
-  // IMPORTANT: code-server already scans --extensions-dir and provides
-  // extensions to the Extension Host through its own initialization.
-  // If we ALSO include the same extensions in our init data, the EH
-  // logs "Extension 'xxx' is already registered" and may skip proper
-  // activation — causing require('vscode') to never be called and the
-  // preload to never intercept the API.
+  // The Extension Host receives its extension list ONLY from the client's
+  // init data (IExtensionHostInitData.extensions.allExtensions).
+  // code-server does NOT push extensions independently — it just relays
+  // the socket.  We MUST include installed extensions here.
   //
-  // We still scan the directory so we can LOG what's installed, but we
-  // send an EMPTY extensions list in the init data.  code-server's own
-  // extension loading handles activation, and our preload hooks into
-  // the require('vscode') calls that result from that activation.
+  // NOTE: code-server 4.108.2 may log "Extension 'xxx' is already registered"
+  // if the Extension Host Agent also scans --extensions-dir.  This is a
+  // non-fatal warning — the extension is still usable from the first
+  // registration.  The alternative (sending 0 extensions) is worse:
+  // the EH has nothing to activate and require('vscode') never fires.
   const extensions = [];
   const myExtensionIds = [];
 
-  // Log installed extensions for diagnostics (but don't include in init data)
   try {
     const dirs = fs.readdirSync(EXTENSIONS_DIR);
     for (const dir of dirs) {
@@ -2083,7 +2186,98 @@ async function _sendExtensionHostInitData(sendWSFrame, makeRegularMsg, port) {
       try {
         const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
         const extId = `${pkg.publisher || 'unknown'}.${pkg.name || dir}`.toLowerCase();
-        process.stderr.write(`[eh-init] Extension: ${extId} (main: ${pkg.main || pkg.browser || 'none'}) — managed by code-server\n`);
+        const extIdentifier = { value: extId, _lower: extId };
+        const extLocation = path.join(EXTENSIONS_DIR, dir);
+        const hasRuntimeEntry = !!(pkg.main || pkg.browser);
+        const forceNodeEntrypoint = !!pkg.main;
+        const contributes = pkg.contributes || {};
+        const hasUIContributions = !!(
+          (contributes.views && Object.keys(contributes.views).length > 0)
+          || (contributes.viewsContainers && Object.keys(contributes.viewsContainers).length > 0)
+          || (contributes.customEditors && contributes.customEditors.length > 0)
+          || (contributes.notebooks && contributes.notebooks.length > 0)
+        );
+        const declaredActivationEvents = Array.isArray(pkg.activationEvents) && pkg.activationEvents.length > 0
+          ? pkg.activationEvents
+          : ['*'];
+        const activationEvents = hasRuntimeEntry && hasUIContributions
+          ? Array.from(new Set(['*', ...declaredActivationEvents]))
+          : declaredActivationEvents;
+        const rawDeclaredExtensionKind = Array.isArray(pkg.extensionKind)
+          ? pkg.extensionKind
+          : (pkg.extensionKind !== undefined && pkg.extensionKind !== null ? [pkg.extensionKind] : []);
+        const declaredExtensionKind = rawDeclaredExtensionKind
+          .map((kind) => {
+            if (kind === 1 || kind === 2 || kind === 3) return kind;
+            if (kind === 'ui') return 1;
+            if (kind === 'workspace') return 2;
+            if (kind === 'web') return 3;
+            return undefined;
+          })
+          .filter((kind) => typeof kind === 'number');
+        const extensionKind = hasRuntimeEntry
+          ? Array.from(new Set([2, ...declaredExtensionKind]))
+          : declaredExtensionKind;
+
+        const extensionDesc = {
+          // ExtensionIdentifier serialized shape used by VS Code internals.
+          // `_lower` is required for identifier keying in ExtensionIdentifier.toKey().
+          identifier: extIdentifier,
+          id: extId,
+          // CRITICAL: $mid: 1 marks this object as a URI for VS Code's
+          // MarshalledObjectMarshaller / reviveInitData().  Without it,
+          // URI.revive() is never called and the object stays a plain POJO.
+          // Calls to .fsPath / .toString() then fail silently, stalling
+          // the EH bootstrap before extension loading begins.
+          extensionLocation: { $mid: 1, scheme: 'file', authority: '', path: extLocation, query: '', fragment: '' },
+          isBuiltin: false,
+          isUnderDevelopment: false,
+          name: pkg.name || dir,
+          publisher: pkg.publisher || 'unknown',
+          version: pkg.version || '0.0.0',
+          engines: pkg.engines || { vscode: '*' },
+          main: pkg.main || undefined,
+          // In Synthi's headless remote Extension Host path we need providers
+          // to register inside the Node EH process. If both main+browser are
+          // present, VS Code web flows may prefer browser entrypoints that
+          // won't execute in this process. Prefer Node when available.
+          browser: forceNodeEntrypoint ? undefined : (pkg.browser || undefined),
+          activationEvents,
+          extensionKind,
+          contributes: pkg.contributes || {},
+          enabledApiProposals: pkg.enabledApiProposals || [],
+          // 'api' controls whether VS Code provides the 'vscode' module.
+          // Extensions with a main/browser entry point need 'vscode';
+          // theme-only extensions (no entry point) can use 'none'.
+          api: pkg.api || (pkg.main || pkg.browser ? 'vscode' : 'none'),
+          targetPlatform: 'universal',
+          // Required by IExtensionDescription in newer VS Code builds.
+          isUserBuiltin: false,
+          isApplicationScoped: false,
+          preRelease: !!pkg.preview,
+          uuid: crypto.randomUUID ? crypto.randomUUID() : crypto.randomBytes(16).toString('hex'),
+        };
+
+        extensions.push(extensionDesc);
+        myExtensionIds.push(extIdentifier);
+
+        if (!pkg.main && !pkg.browser) {
+          process.stderr.write(`[eh-init] Extension ${extId}: no main/browser field — may be theme-only\n`);
+        }
+
+        if (forceNodeEntrypoint && pkg.browser) {
+          process.stderr.write(`[eh-init] Extension ${extId}: forcing Node entrypoint (main=${pkg.main}, browser=${pkg.browser} ignored)\n`);
+        }
+
+        if (hasRuntimeEntry && hasUIContributions && !declaredActivationEvents.includes('*')) {
+          process.stderr.write(`[eh-init] Extension ${extId}: forcing '*' activation in headless mode (declared: ${declaredActivationEvents.length})\n`);
+        }
+
+        if (hasRuntimeEntry && (!declaredExtensionKind.includes(2))) {
+          process.stderr.write(`[eh-init] Extension ${extId}: forcing extensionKind to include workspace(2) (declared: ${declaredExtensionKind.length ? declaredExtensionKind.join(',') : 'none'})\n`);
+        }
+
+        process.stderr.write(`[eh-init] Extension: ${extId} (main: ${pkg.main || pkg.browser || 'none'}, api: ${extensionDesc.api})\n`);
       } catch (e) {
         // Skip dirs without valid package.json (e.g. extensions.json)
       }
@@ -2092,7 +2286,7 @@ async function _sendExtensionHostInitData(sendWSFrame, makeRegularMsg, port) {
     process.stderr.write(`[eh-init] Cannot read extensions dir: ${e.message}\n`);
   }
 
-  process.stderr.write(`[eh-init] Sending init data with ${extensions.length} extensions (code-server manages extension loading)\n`);
+  process.stderr.write(`[eh-init] Sending init data with ${extensions.length} extensions\n`);
 
   // ── Read product.json for version info ──
   let vsVersion = '1.88.0';
@@ -2143,15 +2337,15 @@ async function _sendExtensionHostInitData(sendWSFrame, makeRegularMsg, port) {
     parentPid: process.pid,
     environment: {
       isExtensionDevelopmentDebug: false,
-      appRoot: { scheme: 'file', authority: '', path: '/', query: '', fragment: '' },
+      appRoot: { $mid: 1, scheme: 'file', authority: '', path: '/', query: '', fragment: '' },
       appName: 'code-server',
       appHost: 'web',
       appLanguage: 'en',
-      extensionTelemetryLogResource: { scheme: 'file', authority: '', path: path.join(logsDir, 'telemetry.log'), query: '', fragment: '' },
+      extensionTelemetryLogResource: { $mid: 1, scheme: 'file', authority: '', path: path.join(logsDir, 'telemetry.log'), query: '', fragment: '' },
       isExtensionTelemetryLoggingOnly: true,
       appUriScheme: 'vscode',
-      globalStorageHome: { scheme: 'file', authority: '', path: path.join(userDataDir, 'globalStorage'), query: '', fragment: '' },
-      workspaceStorageHome: { scheme: 'file', authority: '', path: path.join(userDataDir, 'workspaceStorage'), query: '', fragment: '' },
+      globalStorageHome: { $mid: 1, scheme: 'file', authority: '', path: path.join(userDataDir, 'globalStorage'), query: '', fragment: '' },
+      workspaceStorageHome: { $mid: 1, scheme: 'file', authority: '', path: path.join(userDataDir, 'workspaceStorage'), query: '', fragment: '' },
     },
     workspace: {
       id: currentSlug || 'default',
@@ -2161,7 +2355,7 @@ async function _sendExtensionHostInitData(sendWSFrame, makeRegularMsg, port) {
       transient: false,
       // folders is REQUIRED — VS Code crashes during workspace init without it
       folders: [{
-        uri: { scheme: 'file', authority: '', path: workspaceDir, query: '', fragment: '' },
+        uri: { $mid: 1, scheme: 'file', authority: '', path: workspaceDir, query: '', fragment: '' },
         name: path.basename(workspaceDir),
         index: 0,
       }],
@@ -2205,11 +2399,11 @@ async function _sendExtensionHostInitData(sendWSFrame, makeRegularMsg, port) {
     logLevel: 1, // LogLevel.Info
     // Each logger MUST have resource, id, and name
     loggers: [{
-      resource: { scheme: 'file', authority: '', path: path.join(logsDir, 'exthost.log'), query: '', fragment: '' },
+      resource: { $mid: 1, scheme: 'file', authority: '', path: path.join(logsDir, 'exthost.log'), query: '', fragment: '' },
       id: 'exthost',
       name: 'Extension Host',
     }],
-    logsLocation: { scheme: 'file', authority: '', path: logsDir, query: '', fragment: '' },
+    logsLocation: { $mid: 1, scheme: 'file', authority: '', path: logsDir, query: '', fragment: '' },
     autoStart: true,
     uiKind: 2, // UIKind.Web
   };
@@ -2733,6 +2927,29 @@ function _hasUIContributions(manifest) {
 }
 
 /**
+ * Collect contributed webview view IDs from extension manifest.
+ *
+ * @param {object} manifest
+ * @returns {string[]}
+ */
+function _getContributedWebviewViewIds(manifest) {
+  if (!manifest?.contributes?.views || typeof manifest.contributes.views !== 'object') {
+    return [];
+  }
+
+  const ids = [];
+  for (const views of Object.values(manifest.contributes.views)) {
+    if (!Array.isArray(views)) continue;
+    for (const view of views) {
+      if (view?.type === 'webview' && typeof view.id === 'string' && view.id) {
+        ids.push(view.id);
+      }
+    }
+  }
+  return ids;
+}
+
+/**
  * Read an extension's manifest from its directory in EXTENSIONS_DIR.
  * Handles the various directory structures that code-server --install-extension
  * produces (e.g. `publisher.name-version/package.json`).
@@ -2795,6 +3012,7 @@ async function loadExtensionForUI(extensionId) {
   }
 
   const { manifest } = result;
+  const webviewViewTypes = _getContributedWebviewViewIds(manifest);
 
   if (!_hasUIContributions(manifest)) {
     process.stderr.write(`[preload-bridge] ${extensionId} has no UI contributions\n`);
@@ -2818,6 +3036,9 @@ async function loadExtensionForUI(extensionId) {
   // in the Extension Host and have registered providers
   sendToPreloadClients({ action: 'refreshAllTrees' });
   sendToPreloadClients({ action: 'listProviders' });
+  for (const viewType of webviewViewTypes) {
+    sendToPreloadClients({ action: 'resolveWebviewView', viewType });
+  }
 
   // Also schedule retries — extensions may not have activated yet when
   // the first request fires (they need to require('vscode'), register
@@ -2828,8 +3049,9 @@ async function loadExtensionForUI(extensionId) {
       process.stderr.write(`[preload-bridge] Retry provider refresh for ${extensionId} (${delay / 1000}s)\n`);
       sendToPreloadClients({ action: 'refreshAllTrees' });
       sendToPreloadClients({ action: 'listProviders' });
-      // Also try resolving webview views on demand
-      sendToPreloadClients({ action: 'resolveWebviewView', viewType: `${extensionId}:*` });
+      for (const viewType of webviewViewTypes) {
+        sendToPreloadClients({ action: 'resolveWebviewView', viewType });
+      }
     }, delay);
     if (timer.unref) timer.unref();
   }

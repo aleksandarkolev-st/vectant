@@ -32,6 +32,12 @@
 
 'use strict';
 
+if (globalThis.__SYNTHI_EXTHOST_PRELOAD_LOADED) {
+  process.stderr.write('[ext-host-preload] Duplicate load detected, skipping\n');
+  return;
+}
+globalThis.__SYNTHI_EXTHOST_PRELOAD_LOADED = true;
+
 // Early prefix (before full logging is set up)
 const PREFIX_EARLY = '[ext-host-preload]';
 
@@ -47,7 +53,8 @@ process.stderr.write(`${PREFIX_EARLY}   SYNTHI_EXTENSION_HOST_CONFIRMED=${proces
 // SYNTHI_EXTENSION_HOST_CONFIRMED is set by our extensionHostProcess.js patch,
 // right before require(). If it's present we KNOW we're in the Extension Host.
 // SYNTHI_EXT_BRIDGE_PORT tells us where to connect.
-const isExtensionHost = process.env.SYNTHI_EXTENSION_HOST_CONFIRMED === 'true';
+const isExtensionHost = process.env.SYNTHI_EXTENSION_HOST_CONFIRMED === 'true'
+  || process.argv.includes('--type=extensionHost');
 
 // The manager tells us where to connect
 const BRIDGE_PORT = parseInt(process.env.SYNTHI_EXT_BRIDGE_PORT || '0', 10);
@@ -389,17 +396,16 @@ if (_ipcCheckTimer.unref) _ipcCheckTimer.unref();
 // ============================================================================
 // Module Interception
 //
-// DESIGN: We do NOT touch Module._load or Module._resolveFilename.
+// DESIGN: We never change module resolution behavior.
 // VS Code's Extension Host uses a custom NodeModuleRequireInterceptor
-// that replaces Module._load to inject the virtual 'vscode' module.
-// Any defineProperty traps, proxies, or overwrites on _load/_resolveFilename
-// break this injection chain and prevent extensions from loading.
+// that resolves the virtual 'vscode' module.  Our hooks must remain
+// pass-through observers only.
 //
-// Instead, we use two non-invasive strategies:
+// We use non-invasive strategies:
 //
-//   1. Module.prototype.require hook — wraps the return value AFTER VS Code's
-//      interceptor has already done its work.  Extensions get the real API;
-//      we just observe it.
+//   1. Module.prototype.require + Module._load observer hooks — wrap the
+//      return value AFTER VS Code's interceptor has already done its work.
+//      Extensions get the real API; we just observe it.
 //
 //   2. globalThis factory traps — In VS Code's ESM build, the API is provided
 //      via globalThis._VSCODE_IMPORT_VSCODE_API / _VSCODE_API_IMPL_PROVIDER.
@@ -407,7 +413,7 @@ if (_ipcCheckTimer.unref) _ipcCheckTimer.unref();
 //      wrap the factory to observe every API instance it produces.
 //
 // Both strategies are purely observational.  They never interfere with
-// module resolution, never call require('vscode') themselves, and never
+// module resolution, and never
 // inject anything into Module._cache.
 // ============================================================================
 
@@ -437,28 +443,93 @@ let _wrappedApiCount = 0;
  */
 function _tryWrapVscodeResult(result, source) {
   if (!result || typeof result !== 'object') return false;
-  // Duck-type: must have window, commands, workspace
-  if (!result.window || !result.commands || !result.workspace) return false;
-  // Already wrapped this specific instance?
-  if (_wrappedApiInstances.has(result)) return false;
 
-  _wrappedApiInstances.add(result);
+  // ESM namespace interop fallback:
+  // import('vscode') can yield a namespace where the real API is under
+  // `default` (CJS interop shape).
+  let candidate = result;
+  let sourceSuffix = '';
+  if ((!candidate.window || !candidate.commands || !candidate.workspace)
+    && candidate.default
+    && typeof candidate.default === 'object'
+    && candidate.default.window
+    && candidate.default.commands
+    && candidate.default.workspace) {
+    candidate = candidate.default;
+    sourceSuffix = ' (via default export)';
+  }
+
+  // Duck-type: must have window, commands, workspace
+  if (!candidate.window || !candidate.commands || !candidate.workspace) return false;
+  // Already wrapped this specific instance?
+  if (_wrappedApiInstances.has(candidate)) return false;
+
+  _wrappedApiInstances.add(candidate);
   _wrappedApiCount++;
 
   // Keep a reference for command execution (first instance is fine)
   if (!realVscodeApi) {
-    realVscodeApi = result;
+    realVscodeApi = candidate;
   }
   vsCodeWrapped = true;
 
   try {
-    log(`Wrapping vscode API instance #${_wrappedApiCount} via ${source}`);
-    wrapVSCodeAPI(result);
+    log(`Wrapping vscode API instance #${_wrappedApiCount} via ${source}${sourceSuffix}`);
+    wrapVSCodeAPI(candidate);
   } catch (e) {
     logError(`Failed to wrap vscode API instance #${_wrappedApiCount}: ${e.message}`);
     logError(e.stack || '');
   }
   return true;
+}
+
+/**
+ * Wrap a function that may return a vscode API object.
+ * Handles both sync and Promise-returning factories.
+ *
+ * @param {Function} fn
+ * @param {string} source
+ * @returns {Function}
+ */
+function _wrapPotentialApiFactory(fn, source) {
+  if (typeof fn !== 'function') return fn;
+  if (fn.__synthiApiFactoryWrapped) return fn;
+
+  function _handleResult(result, detail) {
+    try {
+      const didWrap = _tryWrapVscodeResult(result, `${source}${detail ? ` (${detail})` : ''}`);
+      if (didWrap) {
+        log(`SUCCESS: vscode API intercepted via ${source}`);
+        bridgeSend({
+          type: 'bootstrapState',
+          complete: true,
+          method: source,
+          wrappedCount: _wrappedApiCount,
+        });
+      }
+    } catch (e) {
+      logError(`${source} wrapper failed: ${e.message}`);
+    }
+    return result;
+  }
+
+  const wrapped = function wrappedApiFactory(...args) {
+    const detail = args.length > 0 ? `arg0=${String(args[0]).slice(0, 80)}` : '';
+    const result = fn.apply(this, args);
+
+    // Some internals may return thenables/futures before exposing the API.
+    if (result && typeof result.then === 'function') {
+      return result.then((resolved) => _handleResult(resolved, detail));
+    }
+    return _handleResult(result, detail);
+  };
+
+  try {
+    wrapped.__synthiApiFactoryWrapped = true;
+    wrapped.__synthiApiFactorySource = source;
+  } catch (_) {}
+
+  return wrapped;
 }
 
 // ---------------------------------------------------------------------------
@@ -472,7 +543,34 @@ function _tryWrapVscodeResult(result, source) {
 // ---------------------------------------------------------------------------
 
 const _origPrototypeRequire = Module.prototype.require;
+const _origModuleLoad = Module._load;
 let _requireHookCallCount = 0;
+let _moduleLoadHookCallCount = 0;
+
+Module._load = function synthiModuleLoadHook(request, parent, isMain) {
+  const result = _origModuleLoad.apply(this, arguments);
+
+  _moduleLoadHookCallCount++;
+
+  if (request === 'vscode') {
+    try {
+      const didWrap = _tryWrapVscodeResult(result, `Module._load('vscode') from ${parent?.filename || 'unknown'}`);
+      if (didWrap) {
+        log(`SUCCESS: vscode API intercepted via Module._load('vscode') (call #${_moduleLoadHookCallCount})`);
+        bridgeSend({
+          type: 'bootstrapState',
+          complete: true,
+          method: 'module-load-hook',
+          wrappedCount: _wrappedApiCount,
+        });
+      }
+    } catch (e) {
+      logError(`Module._load hook failed to wrap: ${e.message}`);
+    }
+  }
+
+  return result;
+};
 
 Module.prototype.require = function synthiRequireHook(id) {
   const result = _origPrototypeRequire.apply(this, arguments);
@@ -498,7 +596,83 @@ Module.prototype.require = function synthiRequireHook(id) {
 
   return result;
 };
-log('Module.prototype.require hook installed (Module._load/_resolveFilename left untouched)');
+log('Module._load and Module.prototype.require observer hooks installed');
+
+// ---------------------------------------------------------------------------
+// Strategy 1b (active fallback): probe require('vscode')
+//
+// Some VS Code/code-server ESM boot paths may never hit our passive
+// interception points. As a fallback, periodically attempt to require the
+// virtual 'vscode' module. This is wrapped in try/catch and only used for
+// observation; failures are expected early in bootstrap.
+// ---------------------------------------------------------------------------
+let _activeProbeAttempts = 0;
+const _maxActiveProbeAttempts = 30;
+let _activeEsmProbeAttempts = 0;
+const _maxActiveEsmProbeAttempts = 30;
+const _activeProbeTimer = setInterval(() => {
+  if (vsCodeWrapped) {
+    clearInterval(_activeProbeTimer);
+    return;
+  }
+
+  _activeProbeAttempts++;
+  try {
+    const api = module.require('vscode');
+    const didWrap = _tryWrapVscodeResult(api, `active probe require('vscode') attempt ${_activeProbeAttempts}`);
+    if (didWrap) {
+      log(`SUCCESS: vscode API intercepted via active require probe (attempt ${_activeProbeAttempts})`);
+      bridgeSend({
+        type: 'bootstrapState',
+        complete: true,
+        method: 'active-probe',
+        wrappedCount: _wrappedApiCount,
+      });
+      clearInterval(_activeProbeTimer);
+      return;
+    }
+  } catch (_) {
+    // Expected until VS Code's virtual module hook is fully ready.
+  }
+
+  if (_activeProbeAttempts >= _maxActiveProbeAttempts) {
+    clearInterval(_activeProbeTimer);
+    log(`Active require('vscode') probe exhausted after ${_activeProbeAttempts} attempts`);
+  }
+}, 1000);
+if (_activeProbeTimer.unref) _activeProbeTimer.unref();
+
+const _activeEsmProbeTimer = setInterval(async () => {
+  if (vsCodeWrapped) {
+    clearInterval(_activeEsmProbeTimer);
+    return;
+  }
+
+  _activeEsmProbeAttempts++;
+  try {
+    const esmApi = await import('vscode');
+    const didWrap = _tryWrapVscodeResult(esmApi, `active probe import('vscode') attempt ${_activeEsmProbeAttempts}`);
+    if (didWrap) {
+      log(`SUCCESS: vscode API intercepted via active import probe (attempt ${_activeEsmProbeAttempts})`);
+      bridgeSend({
+        type: 'bootstrapState',
+        complete: true,
+        method: 'active-esm-probe',
+        wrappedCount: _wrappedApiCount,
+      });
+      clearInterval(_activeEsmProbeTimer);
+      return;
+    }
+  } catch (_) {
+    // Expected until VS Code's ESM virtual module path is ready.
+  }
+
+  if (_activeEsmProbeAttempts >= _maxActiveEsmProbeAttempts) {
+    clearInterval(_activeEsmProbeTimer);
+    log(`Active import('vscode') probe exhausted after ${_activeEsmProbeAttempts} attempts`);
+  }
+}, 1200);
+if (_activeEsmProbeTimer.unref) _activeEsmProbeTimer.unref();
 
 // ---------------------------------------------------------------------------
 // Diagnostic: periodic status check (observation only, no recovery attempts)
@@ -518,6 +692,8 @@ for (const delay of _statusCheckDelays) {
       // Full diagnostic dump only at the final checkpoint
       log(`Status at ${elapsed}s: vscode API NOT yet intercepted — FULL DIAGNOSTIC:`);
       log(`  require hook calls: ${_requireHookCallCount}`);
+      log(`  Module._load hook calls: ${_moduleLoadHookCallCount}`);
+      log(`  active import probes: ${_activeEsmProbeAttempts}`);
       log(`  process.connected: ${process.connected}`);
       log(`  VSCODE_IPC_HOOK_EXTHOST: ${process.env.VSCODE_IPC_HOOK_EXTHOST || '(unset)'}`);
       log(`  IPC ready sent: ${_ipcReadySent}, socket received: ${_ipcReceivedSocket}`);
@@ -526,11 +702,71 @@ for (const delay of _statusCheckDelays) {
       log(`  Module._cache keys: ${Object.keys(require.cache || {}).length}`);
     } else {
       // Brief one-liner at earlier checkpoints
-      log(`Status at ${elapsed}s: API not yet intercepted (require calls: ${_requireHookCallCount}, connected: ${process.connected})`);
+      log(`Status at ${elapsed}s: API not yet intercepted (require calls: ${_requireHookCallCount}, _load calls: ${_moduleLoadHookCallCount}, active import probes: ${_activeEsmProbeAttempts}, connected: ${process.connected})`);
     }
   }, delay);
   timer.unref();
 }
+
+// ---------------------------------------------------------------------------
+// Strategy 5a: Object.defineProperty trap (ESM/global factory path)
+//
+// Newer VS Code builds often wire _VSCODE_* globals via defineProperty
+// descriptors rather than direct assignment, which bypasses property setters.
+// Hook defineProperty to wrap function descriptors/getters/setters on globalThis.
+// ---------------------------------------------------------------------------
+
+const _origObjectDefineProperty = Object.defineProperty;
+Object.defineProperty = function synthiDefinePropertyTrap(target, prop, descriptor) {
+  try {
+    if (
+      target === globalThis
+      && typeof prop === 'string'
+      && prop.includes('VSCODE')
+      && descriptor
+      && typeof descriptor === 'object'
+    ) {
+      const next = { ...descriptor };
+      const wantsFactoryWrap = (
+        prop.includes('IMPORT_VSCODE_API')
+        || prop.includes('API_IMPL_PROVIDER')
+        || prop.includes('VSCODE_API')
+      );
+
+      if (wantsFactoryWrap && typeof next.value === 'function') {
+        next.value = _wrapPotentialApiFactory(next.value, `defineProperty:${prop}:value`);
+      }
+
+      if (wantsFactoryWrap && typeof next.get === 'function') {
+        const originalGet = next.get;
+        next.get = function wrappedVscodeFactoryGetter(...args) {
+          const value = originalGet.apply(this, args);
+          if (typeof value === 'function') {
+            return _wrapPotentialApiFactory(value, `defineProperty:${prop}:getter`);
+          }
+          return value;
+        };
+      }
+
+      if (wantsFactoryWrap && typeof next.set === 'function') {
+        const originalSet = next.set;
+        next.set = function wrappedVscodeFactorySetter(value, ...args) {
+          const wrappedValue = typeof value === 'function'
+            ? _wrapPotentialApiFactory(value, `defineProperty:${prop}:setter`)
+            : value;
+          return originalSet.call(this, wrappedValue, ...args);
+        };
+      }
+
+      return _origObjectDefineProperty.call(this, target, prop, next);
+    }
+  } catch (e) {
+    logError(`defineProperty trap error for ${String(prop)}: ${e.message}`);
+  }
+
+  return _origObjectDefineProperty.call(this, target, prop, descriptor);
+};
+log('Object.defineProperty trap installed for global VSCODE factories');
 
 // ---------------------------------------------------------------------------
 // Strategy 5: globalThis API factory interception (ESM build)
@@ -561,16 +797,7 @@ try {
         return;
       }
       log('globalThis._VSCODE_IMPORT_VSCODE_API set by VS Code — wrapping factory');
-      const origFactory = factory;
-      _esmApiFactory = function wrappedEsmApiFactory(...args) {
-        const api = origFactory.apply(this, args);
-        const extId = args[0] || 'unknown';
-        const didWrap = _tryWrapVscodeResult(api, `ESM API factory (ext: ${extId})`);
-        if (didWrap) {
-          log(`SUCCESS: vscode API intercepted via ESM factory for ${extId}`);
-        }
-        return api;
-      };
+      _esmApiFactory = _wrapPotentialApiFactory(factory, '_VSCODE_IMPORT_VSCODE_API');
       log('ESM API factory wrapped via globalThis trap');
     },
     configurable: true,
@@ -599,12 +826,7 @@ try {
         return;
       }
       log('globalThis._VSCODE_API_IMPL_PROVIDER set by VS Code — wrapping');
-      const origProvider = provider;
-      _apiImplProvider = function wrappedApiImplProvider(...args) {
-        const api = origProvider.apply(this, args);
-        _tryWrapVscodeResult(api, `API IMPL provider (args: ${String(args[0]).slice(0, 60)})`);
-        return api;
-      };
+      _apiImplProvider = _wrapPotentialApiFactory(provider, '_VSCODE_API_IMPL_PROVIDER');
     },
     configurable: true,
     enumerable: true,
