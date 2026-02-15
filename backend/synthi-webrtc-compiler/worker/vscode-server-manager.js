@@ -1804,6 +1804,7 @@ async function _triggerExtensionHostStartup(port, token) {
       let initDataSent = false;
       let lastInitAllExtensions = [];
       let lastInitMyExtensions = [];
+      const pendingOutgoingRpc = new Map();
 
       // Helper: send init data + start KeepAlive loop.
       // Called exactly once from whichever path first determines the EH
@@ -1884,7 +1885,7 @@ async function _triggerExtensionHostStartup(port, token) {
        * Format: type(1) + reqId(4) + rpcId(1) + methodLen(1) + method(N) + argsLen(4) + args(M)
        * Wrapped in PersistentProtocol Regular header (13 bytes).
        */
-      function _sendEHRpcRequest(rpcId, method, args) {
+      function _sendEHRpcRequest(rpcId, method, args, meta) {
         const reqId = ++outgoingReqId;
         const methodBuf = Buffer.from(method, 'utf8');
         const argsJson = JSON.stringify(args);
@@ -1907,10 +1908,46 @@ async function _triggerExtensionHostStartup(port, token) {
         argsBuf.copy(rpcBuf, offset);
 
         try {
+          let replyTimer = null;
+          pendingOutgoingRpc.set(reqId, {
+            reqId,
+            rpcId,
+            method,
+            meta: meta || null,
+            onSuccess: meta && typeof meta.onSuccess === 'function' ? meta.onSuccess : null,
+            onError: meta && typeof meta.onError === 'function' ? meta.onError : null,
+            sentAt: Date.now(),
+            acked: false,
+            clearTimer: () => {
+              if (replyTimer) {
+                clearTimeout(replyTimer);
+                replyTimer = null;
+              }
+            },
+          });
+
+          replyTimer = setTimeout(() => {
+            const pending = pendingOutgoingRpc.get(reqId);
+            if (!pending) return;
+            process.stderr.write(`[vscode-server-manager] RPC ${pending.method} (reqId=${reqId}, rpcId=${pending.rpcId}) has no reply after 1200ms\n`);
+            pendingOutgoingRpc.delete(reqId);
+            if (pending.onError) {
+              try { pending.onError('timeout'); } catch (_) {}
+            }
+          }, 1200);
+          if (replyTimer.unref) replyTimer.unref();
+
           sendWSFrame(makeRegularMsg(rpcBuf));
           process.stderr.write(`[vscode-server-manager] Sent RPC ${method} (reqId=${reqId}, rpcId=${rpcId})\n`);
+          return reqId;
         } catch (e) {
+          const pending = pendingOutgoingRpc.get(reqId);
+          if (pending) {
+            pending.clearTimer();
+            pendingOutgoingRpc.delete(reqId);
+          }
           process.stderr.write(`[vscode-server-manager] Failed to send RPC ${method}: ${e.message}\n`);
+          return null;
         }
       }
 
