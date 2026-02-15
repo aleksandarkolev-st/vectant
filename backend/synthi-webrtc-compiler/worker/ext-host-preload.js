@@ -614,6 +614,49 @@ function _wrapPotentialApiFactory(fn, source) {
   return wrapped;
 }
 
+function _looksLikeApiFactoryName(name) {
+  if (typeof name !== 'string' || !name) return false;
+  return (
+    /vscode/i.test(name)
+    || /apifactory/i.test(name)
+    || /import.*api/i.test(name)
+    || /create.*api/i.test(name)
+  );
+}
+
+function _tryWrapApiFactoryExports(result, source) {
+  try {
+    // Function export module
+    if (typeof result === 'function' && _looksLikeApiFactoryName(result.name || '')) {
+      const wrappedFn = _wrapPotentialApiFactory(result, `${source} (function export)`);
+      if (wrappedFn !== result) {
+        log(`Wrapped internal API factory function via ${source}`);
+        return wrappedFn;
+      }
+      return result;
+    }
+
+    // Object/namespace export module
+    if (!_isObjectLike(result)) return result;
+
+    for (const key of Object.keys(result)) {
+      const value = _safeGet(result, key);
+      if (typeof value !== 'function') continue;
+      if (!_looksLikeApiFactoryName(key) && !_looksLikeApiFactoryName(value.name || '')) continue;
+
+      const wrappedFactory = _wrapPotentialApiFactory(value, `${source}.${key}`);
+      if (wrappedFactory !== value) {
+        result[key] = wrappedFactory;
+        log(`Wrapped internal API factory export: ${key} via ${source}`);
+      }
+    }
+  } catch (e) {
+    logError(`Failed to wrap internal API factory exports via ${source}: ${e.message}`);
+  }
+
+  return result;
+}
+
 // ---------------------------------------------------------------------------
 // Strategy 1 (PRIMARY): Module.prototype.require hook
 //
@@ -630,7 +673,7 @@ let _requireHookCallCount = 0;
 let _moduleLoadHookCallCount = 0;
 
 Module._load = function synthiModuleLoadHook(request, parent, isMain) {
-  const result = _origModuleLoad.apply(this, arguments);
+  let result = _origModuleLoad.apply(this, arguments);
 
   _moduleLoadHookCallCount++;
 
@@ -651,11 +694,26 @@ Module._load = function synthiModuleLoadHook(request, parent, isMain) {
     }
   }
 
+  // Fallback: newer VS Code paths may expose API factories through internal
+  // modules without ever loading the virtual 'vscode' module directly.
+  const requestText = typeof request === 'string' ? request : '';
+  if (
+    requestText
+    && (
+      requestText.includes('extHost.api.impl')
+      || requestText.includes('extHostExtensionService')
+      || requestText.includes('extensionHostProcess')
+      || requestText.includes('api/common')
+    )
+  ) {
+    result = _tryWrapApiFactoryExports(result, `Module._load(${requestText})`);
+  }
+
   return result;
 };
 
 Module.prototype.require = function synthiRequireHook(id) {
-  const result = _origPrototypeRequire.apply(this, arguments);
+  let result = _origPrototypeRequire.apply(this, arguments);
 
   _requireHookCallCount++;
 
@@ -674,6 +732,19 @@ Module.prototype.require = function synthiRequireHook(id) {
     } catch (e) {
       logError(`require hook failed to wrap: ${e.message}`);
     }
+  }
+
+  const idText = typeof id === 'string' ? id : '';
+  if (
+    idText
+    && (
+      idText.includes('extHost.api.impl')
+      || idText.includes('extHostExtensionService')
+      || idText.includes('extensionHostProcess')
+      || idText.includes('api/common')
+    )
+  ) {
+    result = _tryWrapApiFactoryExports(result, `require(${idText})`);
   }
 
   return result;
