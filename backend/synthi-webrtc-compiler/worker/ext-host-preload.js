@@ -989,6 +989,9 @@ const trackedTreeProviders = new Map();
 /** @type {Map<string, {provider: object, extensionId?: string}>} */
 const trackedWebviewProviders = new Map();
 
+/** @type {Set<string>} viewTypes already logged as missing provider */
+const _missingWebviewProviderLogged = new Set();
+
 // ============================================================================
 // Tree Data Resolution
 //
@@ -1581,9 +1584,16 @@ function _sendProviderListUpdate() {
 function _resolveWebviewViewHeadless(viewType) {
   const entry = trackedWebviewProviders.get(viewType);
   if (!entry || !entry.provider) {
-    log(`Cannot resolve webview headlessly: no provider for ${viewType}`);
+    if (!_missingWebviewProviderLogged.has(viewType)) {
+      _missingWebviewProviderLogged.add(viewType);
+      log(`Cannot resolve webview headlessly: no provider for ${viewType}`);
+    }
     return;
   }
+
+  // Provider now exists; clear missing marker so future genuine regressions
+  // can be logged again if the provider disappears.
+  _missingWebviewProviderLogged.delete(viewType);
 
   // If already resolved, re-send the HTML
   if (entry.webviewView && entry.webviewView.webview) {
