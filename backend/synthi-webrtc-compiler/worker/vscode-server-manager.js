@@ -1858,6 +1858,20 @@ async function _triggerExtensionHostStartup(port, token) {
       // Response: Acknowledged(5) + ReplyOKEmpty(7) for most methods.
       // For data-returning methods ($getInitialState, $getTools, etc.)
       // we send ReplyOKJSON(9) with appropriate default data.
+
+      // ── Outgoing RPC Request Sender ──────────────────────────────
+      // VS Code's Extension Host requires the client to send
+      // $startExtensionHost(delta) RPC after init data is processed.
+      // Without this call, extensions are registered but NEVER activated
+      // (_readyToRunExtensions barrier stays closed, _handleEagerExtensions
+      // is never called, require('vscode') never fires).
+      //
+      // RPC ID for ExtHostExtensionService = 99
+      // (77 MainContext identifiers + 22nd in ExtHostContext, from
+      // VS Code 1.108.x extHost.protocol.ts ProxyIdentifier ordering)
+      let outgoingReqId = 0;
+      const EXTHOST_EXTENSION_SERVICE_RPC_ID = 99;
+
       function _handleEHRpc(dataBuf) {
         if (!dataBuf || dataBuf.length < 5) return;
 
