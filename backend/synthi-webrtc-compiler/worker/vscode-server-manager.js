@@ -600,7 +600,7 @@ function _handlePreloadMessage(msg) {
       const _bootstrapFallbackTimer = setTimeout(() => {
         if (!_bootstrapStateReceived) {
           process.stderr.write(`[preload-bridge] WARNING: bootstrapState not received after 20s — requesting providers as fallback\n`);
-          process.stderr.write(`[preload-bridge] This may indicate the api field in init data is not set to 'vscode' for installed extensions\n`);
+          process.stderr.write(`[preload-bridge] Possible causes: vscode API interception path not reached, extension activation stalled, or init metadata mismatch\n`);
           _startProviderDiscovery('fallback-timeout');
         }
       }, 20000);
