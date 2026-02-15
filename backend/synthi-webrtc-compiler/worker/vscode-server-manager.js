@@ -1872,6 +1872,41 @@ async function _triggerExtensionHostStartup(port, token) {
       let outgoingReqId = 0;
       const EXTHOST_EXTENSION_SERVICE_RPC_ID = 99;
 
+      /**
+       * Send an RPC request to the Extension Host.
+       * Format: type(1) + reqId(4) + rpcId(1) + methodLen(1) + method(N) + argsLen(4) + args(M)
+       * Wrapped in PersistentProtocol Regular header (13 bytes).
+       */
+      function _sendEHRpcRequest(rpcId, method, args) {
+        const reqId = ++outgoingReqId;
+        const methodBuf = Buffer.from(method, 'utf8');
+        const argsJson = JSON.stringify(args);
+        const argsBuf = Buffer.from(argsJson, 'utf8');
+
+        const rpcBuf = Buffer.alloc(1 + 4 + 1 + 1 + methodBuf.length + 4 + argsBuf.length);
+        let offset = 0;
+        rpcBuf[offset] = 1; // MessageType.RequestJSONArgs
+        offset += 1;
+        rpcBuf.writeUInt32BE(reqId, offset);
+        offset += 4;
+        rpcBuf[offset] = rpcId;
+        offset += 1;
+        rpcBuf[offset] = methodBuf.length;
+        offset += 1;
+        methodBuf.copy(rpcBuf, offset);
+        offset += methodBuf.length;
+        rpcBuf.writeUInt32BE(argsBuf.length, offset);
+        offset += 4;
+        argsBuf.copy(rpcBuf, offset);
+
+        try {
+          sendWSFrame(makeRegularMsg(rpcBuf));
+          process.stderr.write(`[vscode-server-manager] Sent RPC ${method} (reqId=${reqId}, rpcId=${rpcId})\n`);
+        } catch (e) {
+          process.stderr.write(`[vscode-server-manager] Failed to send RPC ${method}: ${e.message}\n`);
+        }
+      }
+
       function _handleEHRpc(dataBuf) {
         if (!dataBuf || dataBuf.length < 5) return;
 
