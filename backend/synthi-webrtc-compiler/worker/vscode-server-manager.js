@@ -2367,6 +2367,9 @@ async function _sendExtensionHostInitData(sendWSFrame, makeRegularMsg, port) {
           targetPlatform: pkg.targetPlatform || 'undefined',
           publisherDisplayName: pkg.publisherDisplayName,
           preRelease: !!pkg.preview,
+          // Required for runtime extensions to get the 'vscode' module surface.
+          // If omitted, some EH paths expose no API and providers never register.
+          api: pkg.api || (hasRuntimeEntry ? 'vscode' : 'none'),
           ...manifestForHost,
         };
 
