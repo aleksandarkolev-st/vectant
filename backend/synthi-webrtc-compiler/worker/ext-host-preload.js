@@ -433,6 +433,93 @@ const _wrappedApiInstances = new WeakSet();
 let _wrappedApiCount = 0;
 
 /**
+ * Detect whether a value looks like the real vscode API object.
+ *
+ * Newer VS Code/code-server builds can expose slightly different shapes
+ * (e.g. missing `workspace` early, or ESM interop wrappers), so we prefer
+ * capability checks over strict property triples.
+ *
+ * @param {any} obj
+ * @returns {boolean}
+ */
+function _isObjectLike(obj) {
+  return !!obj && (typeof obj === 'object' || typeof obj === 'function');
+}
+
+function _safeGet(obj, prop) {
+  try {
+    return obj ? obj[prop] : undefined;
+  } catch (_) {
+    return undefined;
+  }
+}
+
+function _looksLikeVscodeApi(obj) {
+  if (!_isObjectLike(obj)) return false;
+
+  const windowApi = _safeGet(obj, 'window');
+  const commandsApi = _safeGet(obj, 'commands');
+  const hasWindow = _isObjectLike(windowApi);
+  const hasWorkspace = _isObjectLike(_safeGet(obj, 'workspace'));
+  const hasExtensions = _isObjectLike(_safeGet(obj, 'extensions'));
+  const hasEnv = _isObjectLike(_safeGet(obj, 'env'));
+  const hasCommands = _isObjectLike(commandsApi);
+  const hasVersion = typeof _safeGet(obj, 'version') === 'string';
+  const hasCommandExec = hasCommands && (
+    typeof _safeGet(commandsApi, 'executeCommand') === 'function'
+    || typeof _safeGet(commandsApi, 'registerCommand') === 'function'
+  );
+  const hasUiEntry = hasWindow && (
+    typeof _safeGet(windowApi, 'registerTreeDataProvider') === 'function'
+    || typeof _safeGet(windowApi, 'createTreeView') === 'function'
+    || typeof _safeGet(windowApi, 'registerWebviewViewProvider') === 'function'
+    || typeof _safeGet(windowApi, 'createWebviewPanel') === 'function'
+  );
+  const hasCoreSurface = hasWorkspace || hasExtensions || hasEnv || hasWindow || hasCommands || hasVersion;
+
+  // Accept either a fully-shaped API object OR an early/proxy namespace
+  // that still has enough surface to install wrappers.
+  return hasCoreSurface && (hasUiEntry || hasCommandExec || (hasWindow && hasCommands));
+}
+
+/**
+ * Collect possible vscode API candidates from common wrapper/interop shapes.
+ *
+ * @param {any} value
+ * @returns {Array<{ candidate: any, sourceSuffix: string }>}
+ */
+function _collectVscodeApiCandidates(value) {
+  const out = [];
+  const seen = new Set();
+
+  function add(candidate, sourceSuffix) {
+    if (!_isObjectLike(candidate)) return;
+    if (seen.has(candidate)) return;
+    seen.add(candidate);
+    out.push({ candidate, sourceSuffix });
+  }
+
+  add(value, '');
+
+  // Common namespace wrappers (ESM/CJS interop).
+  const likelyProps = ['default', 'vscode', 'api', 'exports', 'module'];
+  for (const prop of likelyProps) {
+    add(_safeGet(value, prop), ` (via ${prop})`);
+  }
+
+  // Some builds stash the API under a namespaced key; only inspect likely keys.
+  try {
+    for (const key of Object.keys(value || {})) {
+      if (key === 'default' || /vscode|api/i.test(key)) {
+        add(_safeGet(value, key), ` (via ${key})`);
+      }
+    }
+  } catch (_) {}
+
+  return out;
+}
+
+/**
  * Attempt to wrap a result that might be the vscode API.
  * VS Code creates separate API namespace objects per extension, so we must
  * wrap EVERY instance — not just the first.  Each instance gets its own
