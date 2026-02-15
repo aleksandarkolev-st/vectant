@@ -2184,6 +2184,22 @@ async function _triggerExtensionHostStartup(port, token) {
                 // EH Initialized as a fallback readiness signal.
                 _markBootstrapReadyFallback('eh-initialized');
                 step = 'running';
+
+                // ── Phase 2: Trigger extension activation ──
+                // VS Code's EH uses EagerManualStart mode: it registers
+                // extensions from init data but does NOT activate them
+                // until the client explicitly calls $startExtensionHost.
+                // Without this, _readyToRunExtensions stays closed and
+                // _handleEagerExtensions() is never invoked.
+                // Small delay to ensure EH's RPCProtocol is fully ready.
+                setTimeout(() => {
+                  _sendStartExtensionHost();
+                  // Belt-and-suspenders: also send $activateByEvent('*')
+                  // to ensure eager activation after _startExtensionHost
+                  // completes. This matches what VS Code's
+                  // ExtensionHostManager does in its constructor.
+                  setTimeout(() => _sendActivateByEvent('*', 0), 200);
+                }, 50);
               } else if (statusByte === 0x02) {
                 // Late Ready — EH may be re-requesting init data
                 process.stderr.write(`[vscode-server-manager] EH sent Ready (0x02) after init — re-sending init data\n`);
