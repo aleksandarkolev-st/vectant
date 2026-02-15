@@ -343,6 +343,9 @@ const preloadClients = new Set();
 /** @type {Function[]} Callbacks waiting for first preload client */
 const _preloadReadyWaiters = [];
 
+/** @type {boolean} Ensures auto UI extension scan runs once per manager lifecycle */
+let _autoUiScanStarted = false;
+
 /** @type {Map<string, object>} viewId → last known tree data */
 const preloadTreeCache = new Map();
 
@@ -579,9 +582,14 @@ function _handlePreloadMessage(msg) {
       // This only reads package.json files — it does NOT load or activate
       // extensions.  We need to know which extensions have views/webviews
       // so we can request data once they DO activate.
-      _autoLoadUIExtensions().catch(err => {
-        process.stderr.write(`[preload-bridge] Auto-load UI extensions failed: ${err.message}\n`);
-      });
+      if (!_autoUiScanStarted) {
+        _autoUiScanStarted = true;
+        _autoLoadUIExtensions().catch(err => {
+          process.stderr.write(`[preload-bridge] Auto-load UI extensions failed: ${err.message}\n`);
+        });
+      } else {
+        process.stderr.write(`[preload-bridge] Auto-scan already completed for this session — skipping duplicate run\n`);
+      }
 
       // DO NOT request providers here.  Extensions haven't activated yet
       // because VS Code's bootstrap hasn't finished registering the
