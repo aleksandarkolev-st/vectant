@@ -412,6 +412,73 @@ function _startProviderDiscovery(trigger) {
 }
 
 /**
+ * Mark bootstrap as ready via a fallback signal (not preload interception).
+ * Used when EH reports Initialized but ext-host-preload never emits
+ * bootstrapState due VS Code internal API path changes.
+ *
+ * @param {string} reason
+ */
+function _markBootstrapReadyFallback(reason) {
+  if (_bootstrapStateReceived) return;
+  _bootstrapStateReceived = true;
+  process.stderr.write(`[preload-bridge] Synthetic bootstrap ready via ${reason}\n`);
+  sendEvent('bootstrapState', true, `fallback:${reason}`);
+  _startProviderDiscovery(`fallback:${reason}`);
+
+  if (_deferredWebviewResolutions.length > 0) {
+    process.stderr.write(`[preload-bridge] Flushing ${_deferredWebviewResolutions.length} deferred webview resolutions (fallback)\n`);
+    const deferred = [..._deferredWebviewResolutions];
+    _deferredWebviewResolutions.length = 0;
+    for (const viewType of deferred) {
+      const delays = [1500, 4000, 9000];
+      for (const d of delays) {
+        const t = setTimeout(() => {
+          sendToPreloadClients({ action: 'resolveWebviewView', viewType });
+        }, d);
+        if (t.unref) t.unref();
+      }
+    }
+  }
+}
+
+/**
+ * Emit a merged provider list using manifest + RPC observations.
+ * This keeps the browser bridge functional even if preload bootstrap
+ * interception fails and no providerList arrives from ext-host-preload.
+ *
+ * @param {string} reason
+ */
+function _emitMergedFallbackProviders(reason) {
+  const mergedTreeViews = Array.from(new Set([
+    ...manifestKnownTreeViews,
+    ...rpcObservedTreeViews,
+  ]));
+  const mergedWebviews = Array.from(new Set([
+    ...manifestKnownWebviewViews,
+    ...rpcObservedWebviewViews,
+  ]));
+
+  const emitKey = `${mergedTreeViews.slice().sort().join(',')}|${mergedWebviews.slice().sort().join(',')}`;
+  if (emitKey === _lastFallbackProviderEmitKey) return;
+  _lastFallbackProviderEmitKey = emitKey;
+
+  process.stderr.write(`[fallback-providers] Emitting merged providers (${reason}): ${mergedTreeViews.length} trees, ${mergedWebviews.length} webviews\n`);
+
+  // Emit tree registrations so UI can render containers immediately.
+  for (const viewId of mergedTreeViews) {
+    sendEvent('registerTreeView', viewId, 'manifest-rpc-fallback');
+  }
+
+  // Emit placeholder webviews so sidebar entries aren't empty while
+  // waiting for real provider HTML.
+  for (const viewType of mergedWebviews) {
+    sendEvent('createWebview', viewType, viewType, viewType, { extensionId: 'manifest-rpc-fallback' });
+  }
+
+  sendEvent('providerList', mergedTreeViews, mergedWebviews);
+}
+
+/**
  * Wait for at least one preload client to connect to the bridge.
  * Resolves immediately if a client is already connected.
  *
@@ -2000,6 +2067,9 @@ async function _triggerExtensionHostStartup(port, token) {
                 // MessageType.Initialized — the EH parsed our init data
                 // and is loading extensions!
                 process.stderr.write(`[vscode-server-manager] EH sent Initialized (0x01) — extensions are loading! ✓\n`);
+                // If preload bootstrap interception never fires, treat
+                // EH Initialized as a fallback readiness signal.
+                _markBootstrapReadyFallback('eh-initialized');
                 step = 'running';
               } else if (statusByte === 0x02) {
                 // Late Ready — EH may be re-requesting init data
