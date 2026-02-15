@@ -1807,6 +1807,7 @@ async function _triggerExtensionHostStartup(port, token) {
       let startExtensionHostSucceeded = false;
       let startRpcInFlight = false;
       let startRpcAttemptIndex = 0;
+      let startAckObserved = false;
       const pendingOutgoingRpc = new Map();
 
       // Helper: send init data + start KeepAlive loop.
@@ -1880,7 +1881,7 @@ async function _triggerExtensionHostStartup(port, token) {
       // RPC ID for ExtHostExtensionService = 99
       // (77 MainContext identifiers + 22nd in ExtHostContext, from
       // VS Code 1.108.x extHost.protocol.ts ProxyIdentifier ordering)
-      const EXTHOST_EXTENSION_SERVICE_RPC_ID_CANDIDATES = [99, 100, 101, 98, 102, 97, 103];
+      const EXTHOST_EXTENSION_SERVICE_RPC_ID_CANDIDATES = [99, 96];
       let outgoingReqId = 0;
       const EXTHOST_EXTENSION_SERVICE_RPC_ID = 99;
 
@@ -1918,6 +1919,7 @@ async function _triggerExtensionHostStartup(port, token) {
             rpcId,
             method,
             meta: meta || null,
+            onAck: meta && typeof meta.onAck === 'function' ? meta.onAck : null,
             onSuccess: meta && typeof meta.onSuccess === 'function' ? meta.onSuccess : null,
             onError: meta && typeof meta.onError === 'function' ? meta.onError : null,
             sentAt: Date.now(),
@@ -1933,12 +1935,16 @@ async function _triggerExtensionHostStartup(port, token) {
           replyTimer = setTimeout(() => {
             const pending = pendingOutgoingRpc.get(reqId);
             if (!pending) return;
-            process.stderr.write(`[vscode-server-manager] RPC ${pending.method} (reqId=${reqId}, rpcId=${pending.rpcId}) has no reply after 1200ms\n`);
+            process.stderr.write(`[vscode-server-manager] RPC ${pending.method} (reqId=${reqId}, rpcId=${pending.rpcId}) has no reply after 5000ms\n`);
             pendingOutgoingRpc.delete(reqId);
-            if (pending.onError) {
+            if (pending.acked) {
+              if (pending.onSuccess) {
+                try { pending.onSuccess('ack-only'); } catch (_) {}
+              }
+            } else if (pending.onError) {
               try { pending.onError('timeout'); } catch (_) {}
             }
-          }, 1200);
+          }, 5000);
           if (replyTimer.unref) replyTimer.unref();
 
           sendWSFrame(makeRegularMsg(rpcBuf));
@@ -1956,22 +1962,15 @@ async function _triggerExtensionHostStartup(port, token) {
       }
 
       function _buildStartExtensionDelta() {
-        const addActivationEvents = Object.create(null);
-        for (const ext of lastInitAllExtensions) {
-          if (!ext) continue;
-          const extId = (ext.identifier && ext.identifier.value) || ext.id;
-          if (!extId) continue;
-          addActivationEvents[extId] = Array.isArray(ext.activationEvents)
-            ? ext.activationEvents
-            : [];
-        }
+        // Init data already registers extensions inside EH. Re-sending full
+        // toAdd/myToAdd here can cause "already registered" errors.
         return {
           versionId: 1,
           toRemove: [],
-          toAdd: lastInitAllExtensions,
-          addActivationEvents,
+          toAdd: [],
+          addActivationEvents: {},
           myToRemove: [],
-          myToAdd: lastInitMyExtensions,
+          myToAdd: [],
         };
       }
 
@@ -2004,6 +2003,12 @@ async function _triggerExtensionHostStartup(port, token) {
         startRpcInFlight = true;
 
         const reqId = _sendEHRpcRequest(rpcId, '$startExtensionHost', [delta], {
+          onAck: () => {
+            if (startAckObserved || startExtensionHostSucceeded) return;
+            startAckObserved = true;
+            process.stderr.write(`[vscode-server-manager] $startExtensionHost ACK observed on rpcId=${rpcId} — proceeding with activation\n`);
+            setTimeout(() => _sendActivateByEvent('*', 0, rpcId), 250);
+          },
           onSuccess: () => {
             startRpcInFlight = false;
             startExtensionHostSucceeded = true;
@@ -2012,6 +2017,7 @@ async function _triggerExtensionHostStartup(port, token) {
           },
           onError: (reason) => {
             startRpcInFlight = false;
+            startAckObserved = false;
             process.stderr.write(`[vscode-server-manager] $startExtensionHost failed on rpcId=${rpcId} (${reason}) — trying next candidate\n`);
             setTimeout(() => _tryStartExtensionHostNextRpcId(), 120);
           },
@@ -2045,6 +2051,9 @@ async function _triggerExtensionHostStartup(port, token) {
 
           if (rpcMsgType === 5) {
             pending.acked = true;
+            if (pending.onAck) {
+              try { pending.onAck(); } catch (_) {}
+            }
             return;
           }
 
