@@ -1951,6 +1951,26 @@ async function _triggerExtensionHostStartup(port, token) {
         }
       }
 
+      function _buildStartExtensionDelta() {
+        const addActivationEvents = Object.create(null);
+        for (const ext of lastInitAllExtensions) {
+          if (!ext) continue;
+          const extId = (ext.identifier && ext.identifier.value) || ext.id;
+          if (!extId) continue;
+          addActivationEvents[extId] = Array.isArray(ext.activationEvents)
+            ? ext.activationEvents
+            : [];
+        }
+        return {
+          versionId: 1,
+          toRemove: [],
+          toAdd: lastInitAllExtensions,
+          addActivationEvents,
+          myToRemove: [],
+          myToAdd: lastInitMyExtensions,
+        };
+      }
+
       /**
        * Send $startExtensionHost to the Extension Host.
        * This is Phase 2 of VS Code's two-phase activation model:
@@ -1963,14 +1983,7 @@ async function _triggerExtensionHostStartup(port, token) {
        * which opens _readyToRunExtensions and calls _handleEagerExtensions().
        */
       function _sendStartExtensionHost() {
-        const delta = {
-          versionId: 1,
-          toRemove: [],
-          toAdd: [],
-          addActivationEvents: {},
-          myToRemove: [],
-          myToAdd: [],
-        };
+        const delta = _buildStartExtensionDelta();
         _sendEHRpcRequest(EXTHOST_EXTENSION_SERVICE_RPC_ID, '$startExtensionHost', [delta]);
         process.stderr.write(`[vscode-server-manager] $startExtensionHost sent — extensions should now activate!\n`);
       }
@@ -1980,8 +1993,8 @@ async function _triggerExtensionHostStartup(port, token) {
        * Triggers activation of extensions matching the given event.
        * ActivationKind: Normal=0, Immediate=1
        */
-      function _sendActivateByEvent(event, kind) {
-        _sendEHRpcRequest(EXTHOST_EXTENSION_SERVICE_RPC_ID, '$activateByEvent', [event, kind || 0]);
+      function _sendActivateByEvent(event, kind, rpcIdOverride) {
+        _sendEHRpcRequest(rpcIdOverride || EXTHOST_EXTENSION_SERVICE_RPC_ID, '$activateByEvent', [event, kind || 0]);
       }
 
       function _handleEHRpc(dataBuf) {
