@@ -2906,15 +2906,68 @@ async function manualInstallVSIX(extensionId, vsixPath) {
  * @returns {{success: boolean}}
  */
 function uninstallExtension(extensionId) {
-  const extDir = path.join(EXTENSIONS_DIR, extensionId);
-
   try {
-    if (fs.existsSync(extDir)) {
-      fs.rmSync(extDir, { recursive: true, force: true });
+    const extIdLower = String(extensionId || '').toLowerCase();
+
+    // Best-effort CLI uninstall first (handles internal metadata/state).
+    try {
+      const binary = findServerBinary();
+      if (binary) {
+        execFileSync(binary, [
+          '--uninstall-extension', extensionId,
+          '--extensions-dir', EXTENSIONS_DIR,
+          '--force',
+        ], {
+          timeout: 60000,
+          stdio: ['ignore', 'pipe', 'pipe'],
+        });
+      }
+    } catch (cliErr) {
+      process.stderr.write(`[vscode-server-manager] CLI uninstall warning for ${extensionId}: ${cliErr.message}\n`);
     }
+
+    // Remove directories by exact id, prefix (id-version), or package id match.
+    const removedDirs = [];
+    if (fs.existsSync(EXTENSIONS_DIR)) {
+      const dirs = fs.readdirSync(EXTENSIONS_DIR);
+      for (const dir of dirs) {
+        const dirPath = path.join(EXTENSIONS_DIR, dir);
+        let isMatch = dir.toLowerCase() === extIdLower || dir.toLowerCase().startsWith(`${extIdLower}-`);
+
+        if (!isMatch) {
+          try {
+            const pkgPath = path.join(dirPath, 'package.json');
+            if (fs.existsSync(pkgPath)) {
+              const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+              const pkgId = `${pkg.publisher || 'unknown'}.${pkg.name || ''}`.toLowerCase();
+              if (pkgId === extIdLower) {
+                isMatch = true;
+              }
+            }
+          } catch (_) {}
+        }
+
+        if (isMatch) {
+          try {
+            fs.rmSync(dirPath, { recursive: true, force: true });
+            removedDirs.push(dir);
+          } catch (rmErr) {
+            process.stderr.write(`[vscode-server-manager] Failed removing extension dir ${dir}: ${rmErr.message}\n`);
+          }
+        }
+      }
+    }
+
+    if (removedDirs.length === 0) {
+      process.stderr.write(`[vscode-server-manager] uninstallExtension: no matching dirs found for ${extensionId}\n`);
+    } else {
+      process.stderr.write(`[vscode-server-manager] uninstallExtension: removed ${removedDirs.length} dirs for ${extensionId}: ${removedDirs.join(', ')}\n`);
+    }
+
     installedExtensions.delete(extensionId);
+    extHostLoadedExtensions.delete(extensionId);
     sendEvent('extensionUninstalled', extensionId);
-    return { success: true };
+    return { success: true, removedDirs };
   } catch (err) {
     return { success: false, error: err.message };
   }
