@@ -1804,6 +1804,9 @@ async function _triggerExtensionHostStartup(port, token) {
       let initDataSent = false;
       let lastInitAllExtensions = [];
       let lastInitMyExtensions = [];
+      let startExtensionHostSucceeded = false;
+      let startRpcInFlight = false;
+      let startRpcAttemptIndex = 0;
       const pendingOutgoingRpc = new Map();
 
       // Helper: send init data + start KeepAlive loop.
@@ -1877,6 +1880,7 @@ async function _triggerExtensionHostStartup(port, token) {
       // RPC ID for ExtHostExtensionService = 99
       // (77 MainContext identifiers + 22nd in ExtHostContext, from
       // VS Code 1.108.x extHost.protocol.ts ProxyIdentifier ordering)
+      const EXTHOST_EXTENSION_SERVICE_RPC_ID_CANDIDATES = [99, 100, 101, 98, 102, 97, 103];
       let outgoingReqId = 0;
       const EXTHOST_EXTENSION_SERVICE_RPC_ID = 99;
 
@@ -1986,6 +1990,37 @@ async function _triggerExtensionHostStartup(port, token) {
         const delta = _buildStartExtensionDelta();
         _sendEHRpcRequest(EXTHOST_EXTENSION_SERVICE_RPC_ID, '$startExtensionHost', [delta]);
         process.stderr.write(`[vscode-server-manager] $startExtensionHost sent — extensions should now activate!\n`);
+      }
+
+      function _tryStartExtensionHostNextRpcId() {
+        if (startExtensionHostSucceeded || startRpcInFlight) return;
+        if (startRpcAttemptIndex >= EXTHOST_EXTENSION_SERVICE_RPC_ID_CANDIDATES.length) {
+          process.stderr.write(`[vscode-server-manager] Exhausted ExtHostExtensionService rpcId candidates; startup may be incomplete\n`);
+          return;
+        }
+
+        const rpcId = EXTHOST_EXTENSION_SERVICE_RPC_ID_CANDIDATES[startRpcAttemptIndex++];
+        const delta = _buildStartExtensionDelta();
+        startRpcInFlight = true;
+
+        const reqId = _sendEHRpcRequest(rpcId, '$startExtensionHost', [delta], {
+          onSuccess: () => {
+            startRpcInFlight = false;
+            startExtensionHostSucceeded = true;
+            process.stderr.write(`[vscode-server-manager] $startExtensionHost accepted on rpcId=${rpcId}\n`);
+            setTimeout(() => _sendActivateByEvent('*', 0, rpcId), 200);
+          },
+          onError: (reason) => {
+            startRpcInFlight = false;
+            process.stderr.write(`[vscode-server-manager] $startExtensionHost failed on rpcId=${rpcId} (${reason}) — trying next candidate\n`);
+            setTimeout(() => _tryStartExtensionHostNextRpcId(), 120);
+          },
+        });
+
+        if (reqId == null) {
+          startRpcInFlight = false;
+          setTimeout(() => _tryStartExtensionHostNextRpcId(), 120);
+        }
       }
 
       /**
@@ -2280,12 +2315,7 @@ async function _triggerExtensionHostStartup(port, token) {
                 // _handleEagerExtensions() is never invoked.
                 // Small delay to ensure EH's RPCProtocol is fully ready.
                 setTimeout(() => {
-                  _sendStartExtensionHost();
-                  // Belt-and-suspenders: also send $activateByEvent('*')
-                  // to ensure eager activation after _startExtensionHost
-                  // completes. This matches what VS Code's
-                  // ExtensionHostManager does in its constructor.
-                  setTimeout(() => _sendActivateByEvent('*', 0), 200);
+                  _tryStartExtensionHostNextRpcId();
                 }, 50);
               } else if (statusByte === 0x02) {
                 // Late Ready — EH may be re-requesting init data
