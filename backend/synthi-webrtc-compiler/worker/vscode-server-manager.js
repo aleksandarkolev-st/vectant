@@ -1802,6 +1802,8 @@ async function _triggerExtensionHostStartup(port, token) {
       let recvBuf = head && head.length > 0 ? Buffer.from(head) : Buffer.alloc(0);
       let firstMsgTime = 0;  // timestamp of first protocol message after connectionType request
       let initDataSent = false;
+      let lastInitAllExtensions = [];
+      let lastInitMyExtensions = [];
 
       // Helper: send init data + start KeepAlive loop.
       // Called exactly once from whichever path first determines the EH
@@ -1810,7 +1812,12 @@ async function _triggerExtensionHostStartup(port, token) {
         if (initDataSent) return; // already sent
         initDataSent = true;
         process.stderr.write(`[vscode-server-manager] Sending init data (reason: ${reason})\n`);
-        _sendExtensionHostInitData(sendWSFrame, makeRegularMsg, port).then(() => {
+        _sendExtensionHostInitData(sendWSFrame, makeRegularMsg, port).then((initMeta) => {
+          if (initMeta && Array.isArray(initMeta.allExtensions) && Array.isArray(initMeta.myExtensionIds)) {
+            lastInitAllExtensions = initMeta.allExtensions;
+            lastInitMyExtensions = initMeta.myExtensionIds;
+            process.stderr.write(`[vscode-server-manager] Captured init extension metadata: all=${lastInitAllExtensions.length}, mine=${lastInitMyExtensions.length}\n`);
+          }
           process.stderr.write(`[vscode-server-manager] Extension Host init data sent successfully\n`);
 
           // Start protocol KeepAlive: the EH's PersistentProtocol
@@ -2650,6 +2657,10 @@ async function _sendExtensionHostInitData(sendWSFrame, makeRegularMsg, port) {
   process.stderr.write(`[eh-init] Init data size: ${initJson.length} bytes, extensions: ${extensions.length}\n`);
   sendWSFrame(makeRegularMsg(initJson));
   process.stderr.write(`[eh-init] Init data sent\n`);
+  return {
+    allExtensions: extensions,
+    myExtensionIds,
+  };
 }
 
 /**
