@@ -2346,43 +2346,28 @@ async function _sendExtensionHostInitData(sendWSFrame, makeRegularMsg, port) {
           ? Array.from(new Set([2, ...declaredExtensionKind]))
           : declaredExtensionKind;
 
-        const extensionDesc = {
-          // ExtensionIdentifier serialized shape used by VS Code internals.
-          // `_lower` is required for identifier keying in ExtensionIdentifier.toKey().
-          identifier: extIdentifier,
-          id: extId,
-          // CRITICAL: $mid: 1 marks this object as a URI for VS Code's
-          // MarshalledObjectMarshaller / reviveInitData().  Without it,
-          // URI.revive() is never called and the object stays a plain POJO.
-          // Calls to .fsPath / .toString() then fail silently, stalling
-          // the EH bootstrap before extension loading begins.
-          extensionLocation: { $mid: 1, scheme: 'file', authority: '', path: extLocation, query: '', fragment: '' },
-          isBuiltin: false,
-          isUnderDevelopment: false,
-          name: pkg.name || dir,
-          publisher: pkg.publisher || 'unknown',
-          version: pkg.version || '0.0.0',
-          engines: pkg.engines || { vscode: '*' },
+        // Mirror VS Code's toExtensionDescription shape as closely as possible,
+        // while applying Synthi-specific runtime overrides for headless EH.
+        const manifestForHost = {
+          ...pkg,
           main: pkg.main || undefined,
-          // In Synthi's headless remote Extension Host path we need providers
-          // to register inside the Node EH process. If both main+browser are
-          // present, VS Code web flows may prefer browser entrypoints that
-          // won't execute in this process. Prefer Node when available.
           browser: forceNodeEntrypoint ? undefined : (pkg.browser || undefined),
           activationEvents,
           extensionKind,
-          contributes: pkg.contributes || {},
-          enabledApiProposals: pkg.enabledApiProposals || [],
-          // 'api' controls whether VS Code provides the 'vscode' module.
-          // Extensions with a main/browser entry point need 'vscode';
-          // theme-only extensions (no entry point) can use 'none'.
-          api: pkg.api || (pkg.main || pkg.browser ? 'vscode' : 'none'),
-          targetPlatform: 'universal',
-          // Required by IExtensionDescription in newer VS Code builds.
+        };
+
+        const extensionDesc = {
+          id: extId,
+          identifier: extIdentifier,
+          isBuiltin: false,
           isUserBuiltin: false,
-          isApplicationScoped: false,
-          preRelease: !!pkg.preview,
+          isUnderDevelopment: false,
+          extensionLocation: { $mid: 1, scheme: 'file', authority: '', path: extLocation, query: '', fragment: '' },
           uuid: crypto.randomUUID ? crypto.randomUUID() : crypto.randomBytes(16).toString('hex'),
+          targetPlatform: pkg.targetPlatform || 'undefined',
+          publisherDisplayName: pkg.publisherDisplayName,
+          preRelease: !!pkg.preview,
+          ...manifestForHost,
         };
 
         extensions.push(extensionDesc);
