@@ -3080,10 +3080,20 @@ async function _ensureRequiredExtensions(binary) {
   // Final check: list what's in the extensions dir now
   try {
     const finalDirs = fs.readdirSync(EXTENSIONS_DIR);
+    // Rebuild runtime cache from disk so startup summaries and APIs
+    // reflect actual installed extensions (including pre-existing ones).
+    installedExtensions.clear();
     process.stderr.write(`[ext-install] Final extensions dir: ${finalDirs.length} entries\n`);
     for (const dir of finalDirs) {
       try {
         const pkg = JSON.parse(fs.readFileSync(path.join(EXTENSIONS_DIR, dir, 'package.json'), 'utf8'));
+        const extensionId = `${pkg.publisher || 'unknown'}.${pkg.name || dir}`;
+        installedExtensions.set(extensionId, {
+          id: extensionId,
+          version: pkg.version || '0.0.0',
+          path: path.join(EXTENSIONS_DIR, dir),
+          installedAt: new Date().toISOString(),
+        });
         const hasUI = !!(pkg.contributes?.views || pkg.contributes?.viewsContainers);
         process.stderr.write(`[ext-install]   ${dir} → main: ${pkg.main || pkg.browser || '(none)'}, UI: ${hasUI}\n`);
       } catch (_) {
