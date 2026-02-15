@@ -1203,7 +1203,7 @@ function _serializeTreeItem(treeItem, element) {
 function wrapVSCodeAPI(vscode) {
   if (!vscode.window) {
     logError('vscode.window not found — cannot wrap');
-    return;
+    return false;
   }
 
   wrapRegisterTreeDataProvider(vscode);
@@ -1212,6 +1212,7 @@ function wrapVSCodeAPI(vscode) {
   wrapCommands(vscode);
 
   log('All API wrappers installed successfully');
+  return true;
 }
 
 // ============================================================================
