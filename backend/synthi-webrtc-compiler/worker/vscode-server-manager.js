@@ -2966,10 +2966,25 @@ function uninstallExtension(extensionId) {
 function listInstalledExtensions() {
   try {
     if (!fs.existsSync(EXTENSIONS_DIR)) return [];
-    return fs.readdirSync(EXTENSIONS_DIR).filter(f => {
-      const stat = fs.statSync(path.join(EXTENSIONS_DIR, f));
-      return stat.isDirectory();
-    });
+    const ids = [];
+    for (const f of fs.readdirSync(EXTENSIONS_DIR)) {
+      const dirPath = path.join(EXTENSIONS_DIR, f);
+      const stat = fs.statSync(dirPath);
+      if (!stat.isDirectory()) continue;
+
+      try {
+        const pkgPath = path.join(dirPath, 'package.json');
+        const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+        if (pkg?.publisher && pkg?.name) {
+          ids.push(`${pkg.publisher}.${pkg.name}`);
+          continue;
+        }
+      } catch (_) {}
+
+      // Fallback for malformed entries.
+      ids.push(f);
+    }
+    return ids;
   } catch (_) {
     return [];
   }
