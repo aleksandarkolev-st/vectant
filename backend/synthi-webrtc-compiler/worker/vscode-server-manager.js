@@ -1519,6 +1519,7 @@ async function startServer(slug, options = {}) {
         `  Bridge:     ${bridgeStatus}`,
         `  Bootstrap:  ${bootstrapStatus}`,
         `  Extensions: scanned=${extHostLoadedExtensions.size} installed=${installedExtensions.size}`,
+        `  Manifest:   trees=${manifestKnownTreeViews.size} webviews=${manifestKnownWebviewViews.size}`,
         `  RPC Fallback: trees=${rpcObservedTreeViews.size} webviews=${rpcObservedWebviewViews.size}`,
         `  Deferred:   ${deferredCount} webview resolutions pending`,
         `  Workspace:  ${currentWorkspaceDir || '(none)'} slug=${currentSlug || '(none)'}`,
@@ -2717,6 +2718,7 @@ async function _autoLoadUIExtensions() {
               if (view.id) {
                 process.stderr.write(`[ext-scan]   View: ${view.id} (type: ${view.type || 'tree'}, container: ${container})\n`);
                 if (view.type === 'webview') {
+                  manifestKnownWebviewViews.add(view.id);
                   // Queue webview resolution — will be flushed after bootstrapState
                   // is received, ensuring extensions have actually activated.
                   const viewType = view.id;
@@ -2730,6 +2732,8 @@ async function _autoLoadUIExtensions() {
                     _deferredWebviewResolutions.push(viewType);
                     process.stderr.write(`[ext-scan]   Deferred webview resolution for ${viewType} (waiting for bootstrapState)\n`);
                   }
+                } else {
+                  manifestKnownTreeViews.add(view.id);
                 }
               }
             }
@@ -2740,6 +2744,19 @@ async function _autoLoadUIExtensions() {
   }
 
   process.stderr.write(`[ext-scan] Scan complete: ${dirs.length} extensions, ${uiExtCount} with UI contributions\n`);
+
+  // Always emit a static+RPC merged list so the browser can render
+  // contribution shells even when bootstrap interception never fires.
+  _emitMergedFallbackProviders('post-ext-scan');
+
+  // If bootstrap still hasn't arrived shortly after scanning, force
+  // fallback provider discovery and event emission.
+  const bootstrapGraceTimer = setTimeout(() => {
+    if (_bootstrapStateReceived) return;
+    process.stderr.write('[fallback-providers] bootstrapState still missing after ext scan grace period — using manifest/RPC fallback\n');
+    _emitMergedFallbackProviders('bootstrap-missing');
+  }, 8000);
+  if (bootstrapGraceTimer.unref) bootstrapGraceTimer.unref();
 }
 
 // ============================================================================
