@@ -364,6 +364,12 @@ const rpcObservedTreeViews = new Set();
 /** @type {Set<string>} Webview view types observed directly from EH RPC registrations */
 const rpcObservedWebviewViews = new Set();
 
+/** @type {Set<string>} Tree view IDs confirmed by ext-host-preload registration */
+const preloadRegisteredTreeViews = new Set();
+
+/** @type {Set<string>} Webview view IDs confirmed by ext-host-preload registration */
+const preloadRegisteredWebviewViews = new Set();
+
 /** @type {Set<string>} Tree view IDs discovered statically from extension manifests */
 const manifestKnownTreeViews = new Set();
 
@@ -372,6 +378,12 @@ const manifestKnownWebviewViews = new Set();
 
 /** @type {string} Dedup key to avoid repeatedly emitting identical fallback provider lists */
 let _lastFallbackProviderEmitKey = '';
+
+/** @type {Set<string>} One-time skip logs for unresolved tree refresh attempts */
+const _skippedTreeRefreshLogged = new Set();
+
+/** @type {Set<string>} One-time skip logs for unresolved webview resolve attempts */
+const _skippedWebviewResolveLogged = new Set();
 
 /** @type {boolean} Whether the bootstrapState message has been received from preload */
 let _bootstrapStateReceived = false;
@@ -400,7 +412,9 @@ function _startProviderDiscovery(trigger) {
           for (const container of Object.keys(views)) {
             for (const view of views[container]) {
               if (view.type === 'webview') {
-                sendToPreloadClients({ action: 'resolveWebviewView', viewType: view.id });
+                if (preloadRegisteredWebviewViews.has(view.id)) {
+                  sendToPreloadClients({ action: 'resolveWebviewView', viewType: view.id });
+                }
               }
             }
           }
@@ -433,7 +447,9 @@ function _markBootstrapReadyFallback(reason) {
       const delays = [1500, 4000, 9000];
       for (const d of delays) {
         const t = setTimeout(() => {
-          sendToPreloadClients({ action: 'resolveWebviewView', viewType });
+          if (preloadRegisteredWebviewViews.has(viewType)) {
+            sendToPreloadClients({ action: 'resolveWebviewView', viewType });
+          }
         }, d);
         if (t.unref) t.unref();
       }
@@ -601,6 +617,8 @@ function _handlePreloadMessage(msg) {
     case 'treeProvider': {
       // A tree data provider was registered
       process.stderr.write(`[preload-bridge] Tree provider registered: ${msg.viewId} (ext: ${msg.extensionId})\n`);
+      preloadRegisteredTreeViews.add(msg.viewId);
+      _skippedTreeRefreshLogged.delete(msg.viewId);
       sendEvent('registerTreeView', msg.viewId, msg.extensionId);
       break;
     }
@@ -616,13 +634,17 @@ function _handlePreloadMessage(msg) {
     case 'webviewProvider': {
       // A webview view provider was registered
       process.stderr.write(`[preload-bridge] Webview provider registered: ${msg.viewType} (ext: ${msg.extensionId})\n`);
+      preloadRegisteredWebviewViews.add(msg.viewType);
+      _skippedWebviewResolveLogged.delete(msg.viewType);
       sendEvent('createWebview', msg.viewType, msg.viewType, msg.viewType, { extensionId: msg.extensionId });
       // Auto-resolve: code-server is headless so the sidebar never opens,
       // meaning resolveWebviewView is never called naturally.  We trigger
       // it ourselves so the extension generates its HTML content.
       setTimeout(() => {
         process.stderr.write(`[preload-bridge] Auto-resolving webview view: ${msg.viewType}\n`);
-        sendToPreloadClients({ action: 'resolveWebviewView', viewType: msg.viewType });
+        if (preloadRegisteredWebviewViews.has(msg.viewType)) {
+          sendToPreloadClients({ action: 'resolveWebviewView', viewType: msg.viewType });
+        }
       }, 500);
       break;
     }
@@ -726,7 +748,9 @@ function _handlePreloadMessage(msg) {
             const delays = [3000, 5000, 10000];
             for (const d of delays) {
               const t = setTimeout(() => {
-                sendToPreloadClients({ action: 'resolveWebviewView', viewType });
+                if (preloadRegisteredWebviewViews.has(viewType)) {
+                  sendToPreloadClients({ action: 'resolveWebviewView', viewType });
+                }
               }, d);
               if (t.unref) t.unref();
             }
@@ -749,6 +773,8 @@ function _handlePreloadMessage(msg) {
       // Response to a listProviders request — log and forward to browser
       const mergedTreeViews = Array.from(new Set([...(msg.treeViews || []), ...rpcObservedTreeViews]));
       const mergedWebviews = Array.from(new Set([...(msg.webviews || []), ...rpcObservedWebviewViews]));
+      for (const viewId of (msg.treeViews || [])) preloadRegisteredTreeViews.add(viewId);
+      for (const viewType of (msg.webviews || [])) preloadRegisteredWebviewViews.add(viewType);
       const treeCount = mergedTreeViews.length;
       const webviewCount = mergedWebviews.length;
       process.stderr.write(`[preload-bridge] Provider list: ${treeCount} trees, ${webviewCount} webviews\n`);
@@ -2725,7 +2751,9 @@ async function _autoLoadUIExtensions() {
                   if (_bootstrapStateReceived) {
                     // Bootstrap already received — resolve after a short delay
                     const t = setTimeout(() => {
-                      sendToPreloadClients({ action: 'resolveWebviewView', viewType });
+                      if (preloadRegisteredWebviewViews.has(viewType)) {
+                        sendToPreloadClients({ action: 'resolveWebviewView', viewType });
+                      }
                     }, 3000);
                     if (t.unref) t.unref();
                   } else {
@@ -3151,7 +3179,9 @@ async function loadExtensionForUI(extensionId) {
   sendToPreloadClients({ action: 'refreshAllTrees' });
   sendToPreloadClients({ action: 'listProviders' });
   for (const viewType of webviewViewTypes) {
-    sendToPreloadClients({ action: 'resolveWebviewView', viewType });
+    if (preloadRegisteredWebviewViews.has(viewType)) {
+      sendToPreloadClients({ action: 'resolveWebviewView', viewType });
+    }
   }
 
   // Also schedule retries — extensions may not have activated yet when
@@ -3164,7 +3194,9 @@ async function loadExtensionForUI(extensionId) {
       sendToPreloadClients({ action: 'refreshAllTrees' });
       sendToPreloadClients({ action: 'listProviders' });
       for (const viewType of webviewViewTypes) {
-        sendToPreloadClients({ action: 'resolveWebviewView', viewType });
+        if (preloadRegisteredWebviewViews.has(viewType)) {
+          sendToPreloadClients({ action: 'resolveWebviewView', viewType });
+        }
       }
     }, delay);
     if (timer.unref) timer.unref();
@@ -3187,6 +3219,10 @@ function startExtHostBridge() {
 function stopExtHostBridge() {
   process.stderr.write('[preload-bridge] stopExtHostBridge() is a no-op (using preload approach)\n');
   extHostLoadedExtensions.clear();
+  preloadRegisteredTreeViews.clear();
+  preloadRegisteredWebviewViews.clear();
+  _skippedTreeRefreshLogged.clear();
+  _skippedWebviewResolveLogged.clear();
 }
 
 // ============================================================================
@@ -3861,7 +3897,14 @@ rl.on('line', async (line) => {
         // Request the preload bridge to re-resolve tree data for a specific view
         const [viewId] = args;
         if (viewId) {
-          sendToPreloadClients({ action: 'refreshTreeData', viewId });
+          if (preloadRegisteredTreeViews.has(viewId)) {
+            sendToPreloadClients({ action: 'refreshTreeData', viewId });
+          } else {
+            if (!_skippedTreeRefreshLogged.has(viewId)) {
+              _skippedTreeRefreshLogged.add(viewId);
+              process.stderr.write(`[preload-bridge] Skipping refreshTreeData for ${viewId}: provider not registered yet\n`);
+            }
+          }
         } else {
           sendToPreloadClients({ action: 'refreshAllTrees' });
         }
@@ -3919,9 +3962,17 @@ rl.on('line', async (line) => {
           sendResponse(id, null, new Error('viewType is required'));
           break;
         }
-        log(`Requesting preload to resolve webview view: ${viewType}`);
-        sendToPreloadClients({ action: 'resolveWebviewView', viewType });
-        sendResponse(id, { success: true, viewType });
+        if (preloadRegisteredWebviewViews.has(viewType)) {
+          log(`Requesting preload to resolve webview view: ${viewType}`);
+          sendToPreloadClients({ action: 'resolveWebviewView', viewType });
+          sendResponse(id, { success: true, viewType });
+        } else {
+          if (!_skippedWebviewResolveLogged.has(viewType)) {
+            _skippedWebviewResolveLogged.add(viewType);
+            process.stderr.write(`[preload-bridge] Skipping resolveWebviewView for ${viewType}: provider not registered yet\n`);
+          }
+          sendResponse(id, { success: false, skipped: true, reason: 'provider-not-registered', viewType });
+        }
         break;
       }
 
