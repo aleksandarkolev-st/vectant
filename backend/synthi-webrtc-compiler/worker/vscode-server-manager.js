@@ -1988,10 +1988,40 @@ async function _triggerExtensionHostStartup(port, token) {
         if (!dataBuf || dataBuf.length < 5) return;
 
         const rpcMsgType = dataBuf[0];
-        // Only handle request types (1-4)
-        if (rpcMsgType < 1 || rpcMsgType > 4) return;
-
         const reqId = dataBuf.readUInt32BE(1);
+
+        // Handle replies for manager-originated RPC requests.
+        if (rpcMsgType === 5 || (rpcMsgType >= 7 && rpcMsgType <= 12)) {
+          const pending = pendingOutgoingRpc.get(reqId);
+          if (!pending) return;
+
+          if (rpcMsgType === 5) {
+            pending.acked = true;
+            return;
+          }
+
+          pending.clearTimer();
+          pendingOutgoingRpc.delete(reqId);
+
+          if (rpcMsgType === 7 || rpcMsgType === 8 || rpcMsgType === 9 || rpcMsgType === 10) {
+            if (pending.onSuccess) {
+              try { pending.onSuccess(); } catch (_) {}
+            }
+          } else {
+            let errText = 'reply-error';
+            if (dataBuf.length > 5) {
+              try { errText = dataBuf.slice(5).toString('utf8').slice(0, 220); } catch (_) {}
+            }
+            process.stderr.write(`[vscode-server-manager] RPC ${pending.method} failed (reqId=${reqId}, rpcId=${pending.rpcId}, type=${rpcMsgType}): ${errText}\n`);
+            if (pending.onError) {
+              try { pending.onError(errText); } catch (_) {}
+            }
+          }
+          return;
+        }
+
+        // Only handle incoming request types (1-4)
+        if (rpcMsgType < 1 || rpcMsgType > 4) return;
 
         // Parse method name for diagnostics and routing
         let methodName = '';
