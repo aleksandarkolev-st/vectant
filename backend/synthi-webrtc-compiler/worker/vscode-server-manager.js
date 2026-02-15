@@ -2385,10 +2385,10 @@ async function _sendExtensionHostInitData(sendWSFrame, makeRegularMsg, port) {
         };
 
         extensions.push(extensionDesc);
-        // myExtensions in init data is expected to be extension ID strings.
-        // Using identifier objects can prevent the EH from considering these
-        // as local/owned extensions, which blocks activation.
-        myExtensionIds.push(extId);
+        // myExtensions in init data must be ExtensionIdentifier objects.
+        // Using plain strings can break ExtensionIdentifierSet matching,
+        // which prevents host extensions from being recognized/activated.
+        myExtensionIds.push(extIdentifier);
 
         if (!pkg.main && !pkg.browser) {
           process.stderr.write(`[eh-init] Extension ${extId}: no main/browser field — may be theme-only\n`);
