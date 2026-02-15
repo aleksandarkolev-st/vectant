@@ -529,45 +529,40 @@ function _collectVscodeApiCandidates(value) {
  * Returns true if wrapping was performed on this call.
  */
 function _tryWrapVscodeResult(result, source) {
-  if (!result || typeof result !== 'object') return false;
+  if (!_isObjectLike(result)) return false;
 
-  // ESM namespace interop fallback:
-  // import('vscode') can yield a namespace where the real API is under
-  // `default` (CJS interop shape).
-  let candidate = result;
-  let sourceSuffix = '';
-  if ((!candidate.window || !candidate.commands || !candidate.workspace)
-    && candidate.default
-    && typeof candidate.default === 'object'
-    && candidate.default.window
-    && candidate.default.commands
-    && candidate.default.workspace) {
-    candidate = candidate.default;
-    sourceSuffix = ' (via default export)';
-  }
+  const candidates = _collectVscodeApiCandidates(result);
+  for (const { candidate, sourceSuffix } of candidates) {
+    // Duck-type using capabilities (less brittle across VS Code builds)
+    if (!_looksLikeVscodeApi(candidate)) continue;
+    // Already wrapped this specific instance?
+    if (_wrappedApiInstances.has(candidate)) continue;
 
-  // Duck-type: must have window, commands, workspace
-  if (!candidate.window || !candidate.commands || !candidate.workspace) return false;
-  // Already wrapped this specific instance?
-  if (_wrappedApiInstances.has(candidate)) return false;
+    try {
+      const installed = wrapVSCodeAPI(candidate);
+      if (!installed) {
+        continue;
+      }
+    } catch (e) {
+      logError(`Failed to wrap vscode API candidate via ${source}${sourceSuffix}: ${e.message}`);
+      logError(e.stack || '');
+      continue;
+    }
 
-  _wrappedApiInstances.add(candidate);
-  _wrappedApiCount++;
+    _wrappedApiInstances.add(candidate);
+    _wrappedApiCount++;
 
-  // Keep a reference for command execution (first instance is fine)
-  if (!realVscodeApi) {
-    realVscodeApi = candidate;
-  }
-  vsCodeWrapped = true;
+    // Keep a reference for command execution (first instance is fine)
+    if (!realVscodeApi) {
+      realVscodeApi = candidate;
+    }
+    vsCodeWrapped = true;
 
-  try {
     log(`Wrapping vscode API instance #${_wrappedApiCount} via ${source}${sourceSuffix}`);
-    wrapVSCodeAPI(candidate);
-  } catch (e) {
-    logError(`Failed to wrap vscode API instance #${_wrappedApiCount}: ${e.message}`);
-    logError(e.stack || '');
+    return true;
   }
-  return true;
+
+  return false;
 }
 
 /**
@@ -941,8 +936,8 @@ try {
 // (e.g. a new ESM loader, internal extensionHostMain changes, etc.).
 //
 // As a last resort, scan Module._cache for any cached module whose
-// exports look like the vscode API (duck-type: has window, commands,
-// workspace).  This is purely observational — we never call
+// exports look like the vscode API (duck-type via capability checks).
+// This is purely observational — we never call
 // require('vscode') ourselves.
 // ---------------------------------------------------------------------------
 const _cachePollDelays = [15000, 25000, 40000];
@@ -959,7 +954,7 @@ for (const delay of _cachePollDelays) {
       const mod = cache[key];
       if (mod && mod.exports && typeof mod.exports === 'object') {
         const ex = mod.exports;
-        if (ex.window && ex.commands && ex.workspace && !_wrappedApiInstances.has(ex)) {
+        if (_looksLikeVscodeApi(ex) && !_wrappedApiInstances.has(ex)) {
           log(`Cache poll: found vscode-like API in Module._cache key: ${key}`);
           const didWrap = _tryWrapVscodeResult(ex, `Module._cache poll (key: ${key.slice(-80)})`);
           if (didWrap) {
