@@ -294,29 +294,38 @@ function _pickViewIdFromCandidates(candidates) {
 function _captureProviderFromRpc(methodName, args) {
   if (!methodName) return;
   const lower = methodName.toLowerCase();
-  const isTreeRegistration = lower.includes('register') && lower.includes('tree');
-  const isWebviewRegistration = lower.includes('register') && lower.includes('webview');
-  if (!isTreeRegistration && !isWebviewRegistration) return;
+  const isRegisterLike = lower.includes('register') || lower.includes('create');
+  const isTreeRegistration = isRegisterLike && (lower.includes('tree') || lower.includes('viewcontainer'));
+  const isWebviewRegistration = isRegisterLike && lower.includes('webview');
 
   const candidates = [];
   _collectStringCandidates(args, candidates);
-  const viewId = _pickViewIdFromCandidates(candidates);
-  if (!viewId) return;
+  const knownTreeMatch = candidates.find((value) => manifestKnownTreeViews.has(value));
+  const knownWebviewMatch = candidates.find((value) => manifestKnownWebviewViews.has(value));
 
-  if (isTreeRegistration) {
-    if (!rpcObservedTreeViews.has(viewId)) {
-      rpcObservedTreeViews.add(viewId);
-      process.stderr.write(`[rpc-fallback] Tree provider observed via EH RPC: ${viewId} (${methodName})\n`);
-      sendEvent('registerTreeView', viewId, 'rpc-fallback');
+  // Prefer explicit manifest-known IDs when present in args;
+  // otherwise fall back to generic candidate extraction.
+  const inferredTreeId = knownTreeMatch || (isTreeRegistration ? _pickViewIdFromCandidates(candidates) : null);
+  const inferredWebviewId = knownWebviewMatch || (isWebviewRegistration ? _pickViewIdFromCandidates(candidates) : null);
+
+  if (!inferredTreeId && !inferredWebviewId && !isTreeRegistration && !isWebviewRegistration) {
+    return;
+  }
+
+  if (inferredTreeId) {
+    if (!rpcObservedTreeViews.has(inferredTreeId)) {
+      rpcObservedTreeViews.add(inferredTreeId);
+      process.stderr.write(`[rpc-fallback] Tree provider observed via EH RPC: ${inferredTreeId} (${methodName})\n`);
+      sendEvent('registerTreeView', inferredTreeId, 'rpc-fallback');
       sendEvent('providerList', Array.from(rpcObservedTreeViews), Array.from(rpcObservedWebviewViews));
     }
   }
 
-  if (isWebviewRegistration) {
-    if (!rpcObservedWebviewViews.has(viewId)) {
-      rpcObservedWebviewViews.add(viewId);
-      process.stderr.write(`[rpc-fallback] Webview provider observed via EH RPC: ${viewId} (${methodName})\n`);
-      sendEvent('createWebview', viewId, viewId, viewId, { extensionId: 'rpc-fallback' });
+  if (inferredWebviewId) {
+    if (!rpcObservedWebviewViews.has(inferredWebviewId)) {
+      rpcObservedWebviewViews.add(inferredWebviewId);
+      process.stderr.write(`[rpc-fallback] Webview provider observed via EH RPC: ${inferredWebviewId} (${methodName})\n`);
+      sendEvent('createWebview', inferredWebviewId, inferredWebviewId, inferredWebviewId, { extensionId: 'rpc-fallback' });
       sendEvent('providerList', Array.from(rpcObservedTreeViews), Array.from(rpcObservedWebviewViews));
     }
   }
@@ -354,6 +363,15 @@ const rpcObservedTreeViews = new Set();
 
 /** @type {Set<string>} Webview view types observed directly from EH RPC registrations */
 const rpcObservedWebviewViews = new Set();
+
+/** @type {Set<string>} Tree view IDs discovered statically from extension manifests */
+const manifestKnownTreeViews = new Set();
+
+/** @type {Set<string>} Webview view IDs discovered statically from extension manifests */
+const manifestKnownWebviewViews = new Set();
+
+/** @type {string} Dedup key to avoid repeatedly emitting identical fallback provider lists */
+let _lastFallbackProviderEmitKey = '';
 
 /** @type {boolean} Whether the bootstrapState message has been received from preload */
 let _bootstrapStateReceived = false;
