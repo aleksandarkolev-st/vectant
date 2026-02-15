@@ -3753,7 +3753,10 @@ rl.on('line', async (line) => {
     return;
   }
 
-  const { id, method, args = [] } = msg;
+  const { id, method } = msg;
+  const args = Array.isArray(msg.args)
+    ? msg.args
+    : (msg.args === undefined || msg.args === null ? [] : [msg.args]);
 
   try {
     switch (method) {
