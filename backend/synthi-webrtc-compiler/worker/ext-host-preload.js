@@ -2164,10 +2164,18 @@ function _tokenizeCommandId(commandId) {
     .filter(Boolean);
 }
 
+function _normalizeCommandText(commandId) {
+  return String(commandId || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '');
+}
+
 function _scoreCommandAlias(queryId, candidateId) {
   if (!queryId || !candidateId) return -1;
   if (queryId === candidateId) return 1e9;
 
+  const qLower = String(queryId).toLowerCase();
+  const cLower = String(candidateId).toLowerCase();
   const qPrefix = queryId.includes('.') ? queryId.split('.')[0].toLowerCase() : '';
   const cPrefix = candidateId.includes('.') ? candidateId.split('.')[0].toLowerCase() : '';
 
@@ -2183,6 +2191,19 @@ function _scoreCommandAlias(queryId, candidateId) {
   if (qPrefix && cPrefix && qPrefix === cPrefix) score += 350;
   if (candidateId.toLowerCase().includes(queryId.toLowerCase())) score += 250;
   if (queryId.toLowerCase().includes(candidateId.toLowerCase())) score += 100;
+
+  const qNorm = _normalizeCommandText(queryId);
+  const cNorm = _normalizeCommandText(candidateId);
+  if (qNorm && cNorm) {
+    if (cNorm.includes(qNorm)) score += 220;
+    if (qNorm.includes(cNorm)) score += 120;
+  }
+
+  const querySignInLike = qLower.includes('signin') || qLower.includes('sign-in') || qLower.includes('login');
+  const candidateSignInLike = cLower.includes('signin') || cLower.includes('sign-in') || cLower.includes('login');
+  if (querySignInLike && candidateSignInLike) {
+    score += 300;
+  }
 
   // Give extra weight to auth-ish token alignment but keep generic scoring.
   const authLike = ['signin', 'login', 'auth', 'session', 'credential'];
@@ -2229,6 +2250,21 @@ function _topTrackedCandidates(commandId, limit = 5) {
 
 function _findBestKnownAlias(commandId, knownCommands) {
   if (!commandId || !Array.isArray(knownCommands) || knownCommands.length === 0) return null;
+
+  const lower = String(commandId).toLowerCase();
+
+  // Deterministic compatibility path for legacy PR sign-in command ids.
+  // Some flows request pr.signin / pr.signinNoEnterprise while the active
+  // command surface exposes github-actions.sign-in.
+  if (
+    lower.startsWith('pr.')
+    && (lower.includes('signin') || lower.includes('sign-in') || lower.includes('login'))
+  ) {
+    const exact = knownCommands.find(c => typeof c === 'string' && c.toLowerCase() === 'github-actions.sign-in');
+    if (exact) {
+      return { commandId: exact, score: 10000 };
+    }
+  }
 
   let best = null;
   let bestScore = 0;
