@@ -37,6 +37,9 @@ export class WebviewManager {
     /** @type {Set<string>} Hidden webviews */
     this.hiddenWebviews = new Set();
 
+    /** @type {Set<string>} Duplicate create warnings already emitted */
+    this.duplicateCreateLogged = new Set();
+
     // Listen for messages from webviews
     this._setupMessageListener();
   }
@@ -59,7 +62,10 @@ export class WebviewManager {
    */
   create(viewId, viewType, title, options = {}) {
     if (this.webviews.has(viewId)) {
-      console.warn(`[WebviewManager] Webview ${viewId} already exists`);
+      if (!this.duplicateCreateLogged.has(viewId)) {
+        this.duplicateCreateLogged.add(viewId);
+        console.debug(`[WebviewManager] Webview ${viewId} already exists (reusing instance)`);
+      }
       return this.webviews.get(viewId);
     }
 
