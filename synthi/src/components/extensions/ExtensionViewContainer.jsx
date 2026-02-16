@@ -470,16 +470,18 @@ export default function ExtensionViewContainer({
               // Evaluate when-clause against known context values
               if (view.when) {
                 const result = evaluateWhenClause(view.when, contextValues);
-                if (result === false) return false; // Condition definitively not met
-                if (result === true) return true;   // Condition met → show
-                // result === null → can't evaluate, fall through to heuristic
+                if (result === false) return false; // Condition definitively not met → hide
+                // result === true or null → show (null means unknown keys;
+                // default to showing the view since the extension registered it)
               }
-              // Heuristic fallback: hide views with unknown when-clauses
-              // unless they have data, welcome content, or are auth views.
-              if (view.when && !treeDataMap[view.id]?.length) {
-                if (viewsWelcome[view.id]?.length) return true;
-                if (view.id.includes('login') || view.id.includes('auth')) return true;
-                return false;
+              // Hide "empty-view" placeholders when sibling views in the
+              // same container already have tree data (the extension has
+              // found real content to show).
+              if (view.id.includes('empty-view') || view.id.includes('empty_view')) {
+                const siblingsHaveData = views.some(
+                  v => v.id !== view.id && treeDataMap[v.id]?.length > 0
+                );
+                if (siblingsHaveData) return false;
               }
               return true;
             })
