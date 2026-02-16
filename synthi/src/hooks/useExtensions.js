@@ -1101,6 +1101,25 @@ export function useExtensions({ editor = null, workspaceId = 'default' } = {}) {
       });
   }, [vscodeServerState]);
 
+  // ─── Debug helpers for auth integration validation ───────────
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+
+    window.__synthiAuth = {
+      submitCallbackUrl: async (url) => {
+        const proxy = systemRef.current?.bridge?.vscodeServerProxy;
+        if (!proxy?.isReady()) throw new Error('VS Code Server not connected');
+        return proxy.request('deliverUriCallback', [url]);
+      },
+      getLastDeviceCode: () => lastAuthDeviceCodeRef.current,
+      getLastOpenUrl: () => lastAuthOpenUrlRef.current,
+    };
+
+    return () => {
+      try { delete window.__synthiAuth; } catch (_) {}
+    };
+  }, [vscodeServerState]);
+
   // ─── Reconnect Monaco when editor becomes available ──────────
   useEffect(() => {
     if (!editor || !systemRef.current) return;
