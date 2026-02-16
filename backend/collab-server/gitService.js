@@ -406,20 +406,30 @@ class GitService {
             // But we're already inside withLock, so we check directly without re-locking.
             if (this.isLegacyRepo(slug)) {
                 console.log(`[GitService] initRepo: legacy repo detected for "${slug}", migrating…`);
-                // Perform inline migration (we already hold the lock)
-                await this._createMigrationBackup(slug);
                 try {
-                    await this._migrateToSessionStructure(slug);
-                    const valid = await this._validateMigration(slug);
-                    if (!valid) {
-                        throw new MigrationError(slug, 'Post-migration validation failed', 'validation');
+                    // Perform inline migration (we already hold the lock)
+                    await this._createMigrationBackup(slug);
+                    try {
+                        await this._migrateToSessionStructure(slug);
+                        const valid = await this._validateMigration(slug);
+                        if (!valid) {
+                            throw new MigrationError(slug, 'Post-migration validation failed', 'validation');
+                        }
+                        this._cleanupMigrationBackup(slug);
+                        console.log(`[GitService] initRepo: migration complete for "${slug}"`);
+                    } catch (e) {
+                        console.error(`[GitService] initRepo: migration failed, rolling back:`, e.message);
+                        try { await this._restoreMigrationBackup(slug); } catch (_) {}
+                        // Fall through to normal init logic — legacy repo is restored
                     }
-                    this._cleanupMigrationBackup(slug);
-                    console.log(`[GitService] initRepo: migration complete for "${slug}"`);
                 } catch (e) {
-                    console.error(`[GitService] initRepo: migration failed, rolling back:`, e.message);
-                    try { await this._restoreMigrationBackup(slug); } catch (_) {}
-                    // Fall through to normal init logic — legacy repo is restored
+                    // If the repo directory disappeared (ENOENT), skip migration
+                    // and fall through to re-init below.
+                    if (e.code === 'ENOENT' || (e.details && e.details.phase === 'backup')) {
+                        console.warn(`[GitService] initRepo: repo for "${slug}" was evicted during migration, skipping`);
+                    } else {
+                        throw e;
+                    }
                 }
             }
 
@@ -458,20 +468,29 @@ class GitService {
                 // If it's a legacy repo, migrate it instead of throwing
                 if (this.isLegacyRepo(slug)) {
                     console.log(`[GitService] cloneRepo: legacy repo exists for "${slug}", migrating instead of failing…`);
-                    await this._createMigrationBackup(slug);
                     try {
-                        await this._migrateToSessionStructure(slug);
-                        const valid = await this._validateMigration(slug);
-                        if (!valid) {
-                            throw new MigrationError(slug, 'Post-migration validation failed', 'validation');
+                        await this._createMigrationBackup(slug);
+                        try {
+                            await this._migrateToSessionStructure(slug);
+                            const valid = await this._validateMigration(slug);
+                            if (!valid) {
+                                throw new MigrationError(slug, 'Post-migration validation failed', 'validation');
+                            }
+                            this._cleanupMigrationBackup(slug);
+                            console.log(`[GitService] cloneRepo: migration complete, returning existing repo`);
+                            return { success: true, path: repoPath, migrated: true };
+                        } catch (e) {
+                            console.error(`[GitService] cloneRepo: migration failed, rolling back:`, e.message);
+                            try { await this._restoreMigrationBackup(slug); } catch (_) {}
+                            // Fall through to existing-repo error
                         }
-                        this._cleanupMigrationBackup(slug);
-                        console.log(`[GitService] cloneRepo: migration complete, returning existing repo`);
-                        return { success: true, path: repoPath, migrated: true };
                     } catch (e) {
-                        console.error(`[GitService] cloneRepo: migration failed, rolling back:`, e.message);
-                        try { await this._restoreMigrationBackup(slug); } catch (_) {}
-                        // Fall through to existing-repo error
+                        if (e.code === 'ENOENT' || (e.details && e.details.phase === 'backup')) {
+                            console.warn(`[GitService] cloneRepo: repo for "${slug}" evicted during migration, treating as empty`);
+                            // Directory gone — fall through to fresh clone below
+                        } else {
+                            throw e;
+                        }
                     }
                 }
 
@@ -1805,6 +1824,12 @@ class GitService {
         const repoPath = this.getRepoPath(slug);
         const backupPath = `${repoPath}._migration_backup`;
 
+        // Guard: if the repo was evicted from the cache between the caller's
+        // isLegacyRepo check and this point, the directory may no longer exist.
+        if (!fs.existsSync(repoPath)) {
+            throw new MigrationError(slug, `Repo directory missing (evicted?): ${repoPath}`, 'backup');
+        }
+
         // Clean up any stale backup from a previous failed migration
         if (fs.existsSync(backupPath)) {
             console.warn(`[Migration] Removing stale backup: ${backupPath}`);
@@ -1812,7 +1837,14 @@ class GitService {
         }
 
         console.log(`[Migration] Creating backup: ${repoPath} → ${backupPath}`);
-        await fs.promises.cp(repoPath, backupPath, { recursive: true });
+        try {
+            await fs.promises.cp(repoPath, backupPath, { recursive: true });
+        } catch (e) {
+            if (e.code === 'ENOENT') {
+                throw new MigrationError(slug, `Backup failed — source disappeared (ENOENT): ${repoPath}`, 'backup');
+            }
+            throw e;
+        }
         return backupPath;
     }
 
@@ -2065,8 +2097,16 @@ class GitService {
 
             console.log(`[Migration] Legacy repo detected for "${slug}", starting migration…`);
 
-            // 1. Backup
-            await this._createMigrationBackup(slug);
+            // 1. Backup (guarded against ENOENT — directory may have been evicted)
+            try {
+                await this._createMigrationBackup(slug);
+            } catch (e) {
+                if (e.code === 'ENOENT' || (e.details && e.details.phase === 'backup')) {
+                    console.warn(`[Migration] Repo for "${slug}" was evicted, skipping migration`);
+                    return { migrated: false, wasLegacy: true, evicted: true };
+                }
+                throw e;
+            }
 
             try {
                 // 2. Migrate
@@ -2137,18 +2177,28 @@ class GitService {
             // ── Lazy migration: upgrade legacy repos before creating worktrees
             if (this.isLegacyRepo(slug)) {
                 console.log(`[GitService] ensureSessionWorktree: legacy repo for "${slug}", migrating…`);
-                await this._createMigrationBackup(slug);
                 try {
-                    await this._migrateToSessionStructure(slug);
-                    const valid = await this._validateMigration(slug);
-                    if (!valid) {
-                        throw new MigrationError(slug, 'Post-migration validation failed', 'validation');
+                    await this._createMigrationBackup(slug);
+                    try {
+                        await this._migrateToSessionStructure(slug);
+                        const valid = await this._validateMigration(slug);
+                        if (!valid) {
+                            throw new MigrationError(slug, 'Post-migration validation failed', 'validation');
+                        }
+                        this._cleanupMigrationBackup(slug);
+                    } catch (e) {
+                        console.error(`[GitService] ensureSessionWorktree: migration failed, rolling back:`, e.message);
+                        try { await this._restoreMigrationBackup(slug); } catch (_) {}
+                        throw e instanceof MigrationError ? e : new MigrationError(slug, e.message, 'worktree-migration');
                     }
-                    this._cleanupMigrationBackup(slug);
                 } catch (e) {
-                    console.error(`[GitService] ensureSessionWorktree: migration failed, rolling back:`, e.message);
-                    try { await this._restoreMigrationBackup(slug); } catch (_) {}
-                    throw e instanceof MigrationError ? e : new MigrationError(slug, e.message, 'worktree-migration');
+                    // If the repo directory was evicted (ENOENT) during migration,
+                    // log and continue — the directory will be re-materialised below.
+                    if (e.code === 'ENOENT' || (e.details && e.details.phase === 'backup')) {
+                        console.warn(`[GitService] ensureSessionWorktree: repo for "${slug}" was evicted during migration, skipping migration`);
+                    } else {
+                        throw e;
+                    }
                 }
             }
 
