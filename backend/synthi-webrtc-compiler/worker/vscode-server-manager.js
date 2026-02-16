@@ -82,7 +82,7 @@ let _authSessionsLoaded = false;
 /** @type {Map<string, any[]>} provider@workspace -> AuthenticationSession[] */
 let _authSessionsByKey = new Map();
 
-/** @type {Map<string, {deviceCode: string, startedAt: number}>} */
+/** @type {Map<string, {deviceCode: string, startedAt: number, userCode?: string, verificationUri?: string, verificationUriComplete?: string}>} */
 const _pendingGithubFlows = new Map();
 
 let _extensionStorageLoaded = false;
@@ -573,13 +573,19 @@ function _toUriComponents(rawUrl) {
   }
 }
 
-function _startGithubDeviceTokenPolling(deviceCode, scopes, intervalSec = 5, trigger = 'unknown') {
+function _startGithubDeviceTokenPolling(deviceCode, scopes, intervalSec = 5, trigger = 'unknown', promptMeta = null) {
   const normalizedScopes = _normalizeScopes(scopes);
   const flowKey = `github:${normalizedScopes.join(',')}`;
   if (_pendingGithubFlows.has(flowKey)) {
     return;
   }
-  _pendingGithubFlows.set(flowKey, { deviceCode, startedAt: Date.now() });
+  const pending = { deviceCode, startedAt: Date.now() };
+  if (promptMeta && typeof promptMeta === 'object') {
+    if (promptMeta.userCode) pending.userCode = String(promptMeta.userCode);
+    if (promptMeta.verificationUri) pending.verificationUri = String(promptMeta.verificationUri);
+    if (promptMeta.verificationUriComplete) pending.verificationUriComplete = String(promptMeta.verificationUriComplete);
+  }
+  _pendingGithubFlows.set(flowKey, pending);
 
   const clientId = process.env.SYNTHI_GITHUB_OAUTH_CLIENT_ID || '01ab8ac9400c4e429b23';
   let pollIntervalMs = Math.max(3, Number(intervalSec) || 5) * 1000;
@@ -698,13 +704,29 @@ function _extractAuthRequestFromRpcArgs(rpcArgs) {
   return out;
 }
 
-async function _startGithubDeviceFlow(scopes, trigger) {
+async function _startGithubDeviceFlow(scopes, trigger, options = {}) {
   const normalizedScopes = Array.isArray(scopes)
     ? scopes.filter(s => typeof s === 'string' && s.trim().length > 0)
     : [];
   const dedupeKey = `github:${normalizedScopes.join(',')}`;
+  const forceStart = !!(options && options.forceStart);
+  const pendingFlow = _pendingGithubFlows.get(dedupeKey);
+  if (pendingFlow) {
+    process.stderr.write(`[auth-device] github device flow already pending (${trigger})\n`);
+    if (pendingFlow.userCode) {
+      emitAuthDeviceCode(pendingFlow.userCode, `github-device-flow:pending:${trigger}`, {
+        providerId: 'github',
+        scopes: normalizedScopes,
+        verificationUri: pendingFlow.verificationUri || 'https://github.com/login/device',
+        verificationUriComplete: pendingFlow.verificationUriComplete || null,
+      });
+      sendEvent('openExternal', pendingFlow.verificationUriComplete || pendingFlow.verificationUri || 'https://github.com/login/device');
+    }
+    return;
+  }
   const now = Date.now();
-  if (_lastGithubDeviceFlow.key === dedupeKey && (now - _lastGithubDeviceFlow.ts) < 15000) {
+  const dedupeWindowMs = forceStart ? 1200 : 15000;
+  if (_lastGithubDeviceFlow.key === dedupeKey && (now - _lastGithubDeviceFlow.ts) < dedupeWindowMs) {
     process.stderr.write(`[auth-device] github device flow deduped (${trigger})\n`);
     return;
   }
@@ -765,7 +787,11 @@ async function _startGithubDeviceFlow(scopes, trigger) {
     });
 
     if (deviceCode) {
-      _startGithubDeviceTokenPolling(deviceCode, normalizedScopes, payload.interval, trigger);
+      _startGithubDeviceTokenPolling(deviceCode, normalizedScopes, payload.interval, trigger, {
+        userCode,
+        verificationUri,
+        verificationUriComplete,
+      });
     }
   } catch (error) {
     process.stderr.write(`[auth-device] github device flow exception: ${error.message}\n`);
@@ -782,10 +808,25 @@ function scheduleMissingAuthDeviceCodeNotice(providerId, scopes) {
   const pid = String(providerId || 'unknown');
   const startedAt = Date.now();
   _pendingAuthDeviceCodeByProvider.set(pid, startedAt);
+  const normalizedScopes = _normalizeScopes(scopes);
+  const githubFlowKey = `github:${normalizedScopes.join(',')}`;
 
   const timer = setTimeout(() => {
     const current = _pendingAuthDeviceCodeByProvider.get(pid);
     if (!current || current !== startedAt) return;
+
+    if (pid.toLowerCase() === 'github' && _pendingGithubFlows.has(githubFlowKey)) {
+      process.stderr.write('[auth-device] suppressing missing-code notice: github flow pending\n');
+      return;
+    }
+
+    if (pid.toLowerCase() === 'github') {
+      const matched = _listAuthSessions('github').find(session => _sessionMatchesScopes(session, normalizedScopes));
+      if (matched) {
+        process.stderr.write('[auth-device] suppressing missing-code notice: github session already available\n');
+        return;
+      }
+    }
 
     _pendingAuthDeviceCodeByProvider.delete(pid);
     process.stderr.write(`[auth-device] missing code after authSessionRequest provider=${pid}\n`);
@@ -1466,7 +1507,7 @@ function _handlePreloadMessage(msg) {
       ) {
         const existing = _listAuthSessions('github').find(session => _sessionMatchesScopes(session, normalizedScopes));
         if (!existing || forceNewSession) {
-          _startGithubDeviceFlow(normalizedScopes, 'preload-authSessionRequest').catch((e) => {
+          _startGithubDeviceFlow(normalizedScopes, 'preload-authSessionRequest', { forceStart: true }).catch((e) => {
             process.stderr.write(`[auth-device] github flow launch failed in authSessionRequest: ${e.message}\n`);
           });
         }
@@ -3402,7 +3443,7 @@ async function _triggerExtensionHostStartup(port, token) {
                 fromCreateSession: true,
               });
               if (normalizedProviderId === 'github') {
-                _startGithubDeviceFlow(Array.isArray(scopes) ? scopes : [], '$createSession').catch((e) => {
+                _startGithubDeviceFlow(Array.isArray(scopes) ? scopes : [], '$createSession', { forceStart: true }).catch((e) => {
                   process.stderr.write(`[auth-device] github flow launch failed in $createSession: ${e.message}\n`);
                 });
                 deferredCreateSessionReply = true;
@@ -6053,7 +6094,7 @@ rl.on('line', async (line) => {
           && (options?.createIfNone || options?.forceNewSession)
           && !matched
         ) {
-          _startGithubDeviceFlow(normalizedScopes, 'control-authGetSession').catch((e) => {
+          _startGithubDeviceFlow(normalizedScopes, 'control-authGetSession', { forceStart: !!options?.createIfNone || !!options?.forceNewSession }).catch((e) => {
             process.stderr.write(`[auth-device] github flow launch failed in authGetSession: ${e.message}\n`);
           });
         }
