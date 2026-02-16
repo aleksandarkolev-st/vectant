@@ -691,6 +691,17 @@ function _startGithubDeviceTokenPolling(deviceCode, scopes, intervalSec = 5, tri
         _pendingGithubFlows.delete(flowKey);
         process.stderr.write(`[auth-device] github session established (${trigger}) user=${accountLabel}\n`);
         _emitAuthSessionChanged('github', [session.id], [], []);
+
+        // Notify the Extension Host preload that a session is now available
+        // so subsequent getSession calls can resolve instead of re-triggering
+        // the device flow
+        sendToPreloadClients({
+          action: 'authSessionEstablished',
+          providerId: 'github',
+          sessionId: session.id,
+          accountLabel,
+        });
+
         sendEvent('extensionMessage', {
           severity: 'info',
           message: `GitHub sign-in completed as ${accountLabel}.`,

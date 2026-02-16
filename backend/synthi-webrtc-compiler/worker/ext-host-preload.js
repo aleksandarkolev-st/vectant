@@ -1166,6 +1166,9 @@ const _lastBridgeCommand = { id: null, ts: 0 };
 /** @type {Map<string, number>} providerId -> last forced interactive auth timestamp */
 const _lastForcedInteractiveAuthAt = new Map();
 
+/** @type {Map<string, number>} providerId -> timestamp when session was confirmed available */
+const _knownAuthSessionAt = new Map();
+
 /** @type {{ key: string|null, ts: number }} duplicate executeCommand suppression */
 const _lastExecuteCommandEnvelope = { key: null, ts: 0 };
 
@@ -2626,6 +2629,28 @@ function _handleBridgeRequest(msg) {
       // Resolve a webview view on demand — delegate to the shared function
       const { viewType } = msg;
       _resolveWebviewViewHeadless(viewType);
+      break;
+    }
+
+    case 'authSessionEstablished': {
+      // Manager notifies us that an auth session was established (e.g.
+      // device flow completed). Clear forced-interactive bookkeeping so
+      // subsequent getSession calls use the cached session instead of
+      // re-triggering the device flow.
+      const { providerId, accountLabel } = msg;
+      const pid = String(providerId || '').toLowerCase();
+      log(`Auth session established from bridge: provider=${pid} account=${accountLabel || 'unknown'}`);
+      _lastForcedInteractiveAuthAt.delete(pid);
+      _knownAuthSessionAt.set(pid, Date.now());
+      // Clear stale bridge command context so auth wrapper stops
+      // promoting getSession calls to interactive
+      if (_lastBridgeCommand.id && _lastBridgeCommand.ts > 0) {
+        const ageMs = Date.now() - _lastBridgeCommand.ts;
+        if (ageMs < 30000) {
+          _lastBridgeCommand.ts = 0;
+          _lastBridgeCommand.id = null;
+        }
+      }
       break;
     }
 
