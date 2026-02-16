@@ -54,6 +54,7 @@ import { registerExtensionGrammars } from '@/extensions/loader/GrammarRegistrar'
 import { initLspRegistry, registerLspForExtension, unregisterLspForExtension } from '@/services/lspRegistry';
 import { getCompilerClient } from '@/services/compilerClient';
 import vscodeTunnelService from '@/services/vscodeTunnelService';
+import { toast } from 'sonner';
 
 /**
  * Best-effort NLS stripping for cached manifests that were persisted
@@ -129,6 +130,7 @@ export function useExtensions({ editor = null, workspaceId = 'default' } = {}) {
   // Track VS Code Server connection (Path A: real Extension Host)
   const vscodeServerConnectedRef = useRef(false);
   const connectingVSCodeServerRef = useRef(false);
+  const contextValuesRef = useRef({});
   const [vscodeServerState, setVscodeServerState] = useState('disconnected');
   const [vscodeServerWorkspaceDir, setVscodeServerWorkspaceDir] = useState(null);
 
@@ -241,6 +243,124 @@ export function useExtensions({ editor = null, workspaceId = 'default' } = {}) {
                 priority: 0,
               }));
               break;
+            case 'extensionMessage': {
+              // Show extension notification messages as toasts.
+              // Include action buttons if the extension provided them.
+              const msg = payload.message || payload;
+              const sev = payload.severity || 'info';
+              const commands = payload.commands || [];
+              const toastOpts = {
+                duration: sev === 'error' ? 8000 : sev === 'warning' ? 6000 : 4000,
+              };
+              // If there are action buttons, show the first one as a toast action
+              if (commands.length > 0) {
+                const actionBtn = commands.find(c => !c.isCloseAffordance);
+                if (actionBtn) {
+                  toastOpts.action = {
+                    label: actionBtn.title || 'Action',
+                    onClick: () => {
+                      console.log(`[useExtensions] Extension message action: ${actionBtn.title}`);
+                    },
+                  };
+                  toastOpts.duration = 10000; // longer for actionable messages
+                }
+              }
+              if (sev === 'error') {
+                toast.error(msg, toastOpts);
+              } else if (sev === 'warning') {
+                toast.warning(msg, toastOpts);
+              } else {
+                toast.info(msg, toastOpts);
+              }
+              break;
+            }
+            case 'authSessionRequest': {
+              // Extension requested authentication — show a toast
+              // directing the user to the auth flow.
+              const provider = payload.providerId || 'unknown';
+              toast.info(`Sign in to ${provider} requested by extension. Check for a browser popup.`, {
+                duration: 10000,
+                action: provider === 'github' ? {
+                  label: 'Open GitHub',
+                  onClick: () => window.open('https://github.com/login/device', '_blank'),
+                } : undefined,
+              });
+              break;
+            }
+            case 'showQuickPick': {
+              // Log quick pick for now — full UI would require a modal
+              const placeholder = payload.options?.placeHolder || 'Select an option';
+              const items = payload.items || [];
+              console.log(`[useExtensions] QuickPick: ${placeholder}`, items);
+              toast.info(placeholder, { duration: 4000 });
+              break;
+            }
+            case 'showInputBox': {
+              const prompt = payload.options?.prompt || payload.options?.placeHolder || 'Input requested';
+              console.log(`[useExtensions] InputBox: ${prompt}`);
+              toast.info(prompt, { duration: 4000 });
+              break;
+            }
+            case 'setContext': {
+              // Extension set a context value (when-clause key).
+              // Track it for future when-clause evaluation and view updates.
+              const { key, value } = payload;
+              if (key) {
+                console.log(`[useExtensions] setContext: ${key} = ${JSON.stringify(value)}`);
+                // Store context values in a ref for when-clause evaluation
+                if (!contextValuesRef.current) contextValuesRef.current = {};
+                contextValuesRef.current[key] = value;
+              }
+              break;
+            }
+            case 'clipboardWrite': {
+              // Extension wants to write text to the clipboard (e.g. device code).
+              // Use the browser Clipboard API to actually write it.
+              const text = payload.text || payload;
+              if (text && typeof navigator !== 'undefined' && navigator.clipboard) {
+                navigator.clipboard.writeText(String(text)).then(() => {
+                  toast.success(`Copied to clipboard: ${String(text).slice(0, 60)}`, { duration: 5000 });
+                }).catch(() => {
+                  toast.info(`Copy this code: ${text}`, { duration: 10000 });
+                });
+              } else if (text) {
+                toast.info(`Copy this code: ${text}`, { duration: 10000 });
+              }
+              break;
+            }
+            case 'extensionProgress': {
+              // Extension is reporting progress (loading/working indicator).
+              const { action, title, message, handle } = payload;
+              if (action === 'start' && title) {
+                toast.loading(title, { id: `progress-${handle}`, duration: 30000 });
+              } else if (action === 'report' && message) {
+                toast.loading(message, { id: `progress-${handle}`, duration: 30000 });
+              } else if (action === 'stop') {
+                toast.dismiss(`progress-${handle}`);
+              }
+              break;
+            }
+            case 'authProviderRegistered': {
+              console.log(`[useExtensions] Auth provider registered: ${payload.providerId} (${payload.label})`);
+              break;
+            }
+            case 'authSessionChanged': {
+              // Auth session changed — an extension auth state was updated.
+              // This could mean a sign-in completed or a sign-out happened.
+              const { providerId } = payload;
+              console.log(`[useExtensions] Auth session changed: ${providerId}`);
+              toast.info(`Authentication updated for ${providerId}`, { duration: 3000 });
+              // Refresh tree views since auth state often affects view content
+              if (systemRef.current?.bridge?.vscodeServerProxy?.isReady()) {
+                systemRef.current.bridge.vscodeServerProxy.request('refreshAllTrees')
+                  .catch(() => {});
+              }
+              break;
+            }
+            case 'showFileDialog': {
+              console.log(`[useExtensions] File dialog: ${payload.type}`, payload.options);
+              break;
+            }
           }
         };
       }
