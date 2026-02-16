@@ -1807,7 +1807,8 @@ async function _triggerExtensionHostStartup(port, token) {
       let startExtensionHostSucceeded = false;
       let startRpcInFlight = false;
       let startRpcAttemptIndex = 0;
-      let startAckObserved = false;
+      let lastStartRpcId = 99;
+      let lastActivationNudgeAt = 0;
       const pendingOutgoingRpc = new Map();
 
       // Helper: send init data + start KeepAlive loop.
@@ -1919,7 +1920,7 @@ async function _triggerExtensionHostStartup(port, token) {
             rpcId,
             method,
             meta: meta || null,
-            onAck: meta && typeof meta.onAck === 'function' ? meta.onAck : null,
+            ackIsSuccess: !!(meta && meta.ackIsSuccess),
             onSuccess: meta && typeof meta.onSuccess === 'function' ? meta.onSuccess : null,
             onError: meta && typeof meta.onError === 'function' ? meta.onError : null,
             sentAt: Date.now(),
@@ -1999,16 +2000,12 @@ async function _triggerExtensionHostStartup(port, token) {
         }
 
         const rpcId = EXTHOST_EXTENSION_SERVICE_RPC_ID_CANDIDATES[startRpcAttemptIndex++];
+        lastStartRpcId = rpcId;
         const delta = _buildStartExtensionDelta();
         startRpcInFlight = true;
 
         const reqId = _sendEHRpcRequest(rpcId, '$startExtensionHost', [delta], {
-          onAck: () => {
-            if (startAckObserved || startExtensionHostSucceeded) return;
-            startAckObserved = true;
-            process.stderr.write(`[vscode-server-manager] $startExtensionHost ACK observed on rpcId=${rpcId} — proceeding with activation\n`);
-            setTimeout(() => _sendActivateByEvent('*', 0, rpcId), 250);
-          },
+          ackIsSuccess: true,
           onSuccess: () => {
             startRpcInFlight = false;
             startExtensionHostSucceeded = true;
@@ -2017,7 +2014,6 @@ async function _triggerExtensionHostStartup(port, token) {
           },
           onError: (reason) => {
             startRpcInFlight = false;
-            startAckObserved = false;
             process.stderr.write(`[vscode-server-manager] $startExtensionHost failed on rpcId=${rpcId} (${reason}) — trying next candidate\n`);
             setTimeout(() => _tryStartExtensionHostNextRpcId(), 120);
           },
@@ -2029,13 +2025,40 @@ async function _triggerExtensionHostStartup(port, token) {
         }
       }
 
+      function _nudgeActivation(reason) {
+        const now = Date.now();
+        if (now - lastActivationNudgeAt < 2000) return;
+        lastActivationNudgeAt = now;
+
+        const rpcId = lastStartRpcId || EXTHOST_EXTENSION_SERVICE_RPC_ID;
+        const hasAnyProviderSignals = (
+          preloadRegisteredTreeViews.size > 0
+          || preloadRegisteredWebviewViews.size > 0
+          || rpcObservedTreeViews.size > 0
+          || rpcObservedWebviewViews.size > 0
+        );
+
+        if (!startExtensionHostSucceeded) {
+          process.stderr.write(`[vscode-server-manager] Activation nudge (${reason}): startExtensionHost not confirmed, retrying start sequence\n`);
+          _tryStartExtensionHostNextRpcId();
+          return;
+        }
+
+        if (!hasAnyProviderSignals) {
+          process.stderr.write(`[vscode-server-manager] Activation nudge (${reason}): no providers observed yet, re-sending $activateByEvent('*')\n`);
+          _sendActivateByEvent('*', 0, rpcId);
+        }
+      }
+
       /**
        * Send $activateByEvent to the Extension Host.
        * Triggers activation of extensions matching the given event.
        * ActivationKind: Normal=0, Immediate=1
        */
       function _sendActivateByEvent(event, kind, rpcIdOverride) {
-        _sendEHRpcRequest(rpcIdOverride || EXTHOST_EXTENSION_SERVICE_RPC_ID, '$activateByEvent', [event, kind || 0]);
+        _sendEHRpcRequest(rpcIdOverride || EXTHOST_EXTENSION_SERVICE_RPC_ID, '$activateByEvent', [event, kind || 0], {
+          ackIsSuccess: true,
+        });
       }
 
       function _handleEHRpc(dataBuf) {
@@ -2051,8 +2074,12 @@ async function _triggerExtensionHostStartup(port, token) {
 
           if (rpcMsgType === 5) {
             pending.acked = true;
-            if (pending.onAck) {
-              try { pending.onAck(); } catch (_) {}
+            if (pending.ackIsSuccess) {
+              pending.clearTimer();
+              pendingOutgoingRpc.delete(reqId);
+              if (pending.onSuccess) {
+                try { pending.onSuccess(); } catch (_) {}
+              }
             }
             return;
           }
@@ -2342,6 +2369,7 @@ async function _triggerExtensionHostStartup(port, token) {
               process.stderr.write(`[vscode-server-manager] EH sent ReplayRequest — re-sending init data\n`);
               initDataSent = false;
               _doSendInitData(`ReplayRequest from EH`);
+              setTimeout(() => _nudgeActivation('ReplayRequest:initSent'), 120);
             } else if (msg._protoType === ProtoMsgType.Ack) {
               // Ack — protocol acknowledgment, no response needed
             } else if (msg._protoType >= ProtoMsgType.Pause && msg._protoType <= ProtoMsgType.KeepAlive) {
@@ -2380,6 +2408,7 @@ async function _triggerExtensionHostStartup(port, token) {
                 ackHdr.writeUInt32BE(0, 9);
                 sendWSFrame(ackHdr);
               } catch (_) {}
+              setTimeout(() => _nudgeActivation('ReplayRequest:running'), 120);
             } else if (msg._protoType >= ProtoMsgType.Pause && msg._protoType <= ProtoMsgType.KeepAlive) {
               try {
                 const ackHdr = Buffer.alloc(13);
