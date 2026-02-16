@@ -799,6 +799,9 @@ const preloadRegisteredWebviewViews = new Set();
 /** @type {Set<string>} Command IDs confirmed by ext-host-preload registration */
 const preloadRegisteredCommands = new Set();
 
+/** @type {Set<string>} URI handler extension IDs confirmed by ext-host-preload registration */
+const preloadRegisteredUriHandlers = new Set();
+
 /** @type {Set<string>} Tree view IDs discovered statically from extension manifests */
 const manifestKnownTreeViews = new Set();
 
@@ -1298,6 +1301,7 @@ function _handlePreloadMessage(msg) {
 
     case 'uriHandlerRegistered': {
       const extensionId = msg.extensionId || 'unknown';
+      preloadRegisteredUriHandlers.add(String(extensionId));
       process.stderr.write(`[preload-bridge] URI handler registered: ${extensionId}\n`);
       sendEvent('uriHandlerRegistered', { extensionId });
       break;
@@ -5831,9 +5835,11 @@ rl.on('line', async (line) => {
           sendResponse(id, null, new Error('url is required'));
           break;
         }
+        const handlerCount = preloadRegisteredUriHandlers.size;
+        process.stderr.write(`[preload-bridge] URI callback handlers available: ${handlerCount}\n`);
         process.stderr.write(`[preload-bridge] Delivering URI callback: ${url}\n`);
         sendToPreloadClients({ action: 'deliverUriCallback', url });
-        sendResponse(id, { success: true, url });
+        sendResponse(id, { success: true, url, handlers: handlerCount });
         break;
       }
 
