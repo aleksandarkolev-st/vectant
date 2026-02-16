@@ -4753,7 +4753,7 @@ rl.on('line', async (line) => {
           sendResponse(id, null, new Error('viewType is required'));
           break;
         }
-        log(`Requesting preload to resolve webview view: ${viewType}`);
+        process.stderr.write(`[preload-bridge] Requesting preload to resolve webview view: ${viewType}\n`);
         sendToPreloadClients({ action: 'resolveWebviewView', viewType });
         sendResponse(id, { success: true, viewType });
         break;
