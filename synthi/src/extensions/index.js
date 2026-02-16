@@ -274,6 +274,18 @@ export async function initializeExtensionSystem(options) {
       case 'authSessionRequest':
         onContribution?.('authSessionRequest', payload);
         break;
+      case 'authDeviceCode':
+        onContribution?.('authDeviceCode', payload);
+        break;
+      case 'authDeviceCodeMissing':
+        onContribution?.('authDeviceCodeMissing', payload);
+        break;
+      case 'uriHandlerRegistered':
+        onContribution?.('uriHandlerRegistered', payload);
+        break;
+      case 'uriCallbackResult':
+        onContribution?.('uriCallbackResult', payload);
+        break;
       case 'extensionMessage':
         onContribution?.('extensionMessage', payload);
         break;

@@ -506,6 +506,16 @@ export class MainThreadBridge {
       this._emitRemoteContribution?.('authDeviceCodeMissing', data);
     });
 
+    this.vscodeServerProxy.on('uriHandlerRegistered', (data) => {
+      console.log(`[MainThreadBridge/vscode-server] uriHandlerRegistered: ${data?.extensionId || 'unknown'}`);
+      this._emitRemoteContribution?.('uriHandlerRegistered', data);
+    });
+
+    this.vscodeServerProxy.on('uriCallbackResult', (data) => {
+      console.log(`[MainThreadBridge/vscode-server] uriCallbackResult: ok=${!!data?.ok} delivered=${data?.delivered || 0}`);
+      this._emitRemoteContribution?.('uriCallbackResult', data);
+    });
+
     // Forward extension progress → UI
     this.vscodeServerProxy.on('extensionProgress', (data) => {
       this._emitRemoteContribution?.('extensionProgress', data);

@@ -134,6 +134,7 @@ export function useExtensions({ editor = null, workspaceId = 'default' } = {}) {
   const lastAuthDeviceCodeRef = useRef(null);
   const lastAuthPromptAtRef = useRef(0);
   const lastAuthProviderRef = useRef(null);
+  const lastAuthOpenUrlRef = useRef(null);
   const lastAuthCodePromptRef = useRef({ code: null, ts: 0 });
   const [vscodeServerState, setVscodeServerState] = useState('disconnected');
   const [vscodeServerWorkspaceDir, setVscodeServerWorkspaceDir] = useState(null);
@@ -169,6 +170,30 @@ export function useExtensions({ editor = null, workspaceId = 'default' } = {}) {
       return queryMatch ? queryMatch[0] : null;
     } catch (_) {
       return null;
+    }
+  }, []);
+
+  const runAuthAction = useCallback((title) => {
+    const lower = String(title || '').toLowerCase();
+    const code = lastAuthDeviceCodeRef.current;
+    const openUrl = lastAuthOpenUrlRef.current || 'https://github.com/login';
+
+    if (lower.includes('copy')) {
+      try {
+        if (code && navigator?.clipboard?.writeText) {
+          navigator.clipboard.writeText(code).catch(() => {});
+        }
+      } catch (_) {}
+      return;
+    }
+
+    if (lower.includes('open') || lower.includes('browser') || lower.includes('sign in') || lower.includes('signin') || lower.includes('login')) {
+      try { window.open(openUrl, '_blank', 'noopener,noreferrer'); } catch (_) {}
+      return;
+    }
+
+    if (lower.includes('retry')) {
+      try { window.open(openUrl, '_blank', 'noopener,noreferrer'); } catch (_) {}
     }
   }, []);
 
@@ -320,6 +345,7 @@ export function useExtensions({ editor = null, workspaceId = 'default' } = {}) {
                     label: actionBtn.title || 'Action',
                     onClick: () => {
                       console.log(`[useExtensions] Extension message action: ${actionBtn.title}`);
+                      runAuthAction(actionBtn.title || '');
                     },
                   };
                   toastOpts.duration = 10000; // longer for actionable messages
@@ -369,6 +395,9 @@ export function useExtensions({ editor = null, workspaceId = 'default' } = {}) {
             }
             case 'openExternal': {
               const url = payload?.url || payload;
+              if (url) {
+                lastAuthOpenUrlRef.current = String(url);
+              }
               const codeFromUrl = extractDeviceCode(url);
               if (codeFromUrl) {
                 lastAuthDeviceCodeRef.current = codeFromUrl;
@@ -424,6 +453,22 @@ export function useExtensions({ editor = null, workspaceId = 'default' } = {}) {
                   onClick: () => window.open('https://github.com/login', '_blank'),
                 } : undefined,
               });
+              break;
+            }
+            case 'uriHandlerRegistered': {
+              console.log(`[useExtensions] uriHandlerRegistered: ${payload?.extensionId || 'unknown'}`);
+              break;
+            }
+            case 'uriCallbackResult': {
+              const ok = !!payload?.ok;
+              const delivered = payload?.delivered || 0;
+              console.log(`[useExtensions] uriCallbackResult: ok=${ok} delivered=${delivered}`);
+              if (!ok) {
+                toast.warning('Auth callback was not delivered to extension host', {
+                  description: payload?.reason || 'No URI handler registered in extension host.',
+                  duration: 7000,
+                });
+              }
               break;
             }
             case 'showQuickPick': {
@@ -1424,6 +1469,16 @@ export function useExtensions({ editor = null, workspaceId = 'default' } = {}) {
       const system = systemRef.current;
       if (!system?.bridge?.vscodeServerProxy?.isReady()) return null;
       return system.bridge.getVSCodeServerConnectionInfo();
+    },
+    submitAuthCallbackUrl: async (url) => {
+      const system = systemRef.current;
+      if (!system?.bridge?.vscodeServerProxy?.isReady()) {
+        throw new Error('VS Code Server not connected');
+      }
+      if (!url || typeof url !== 'string') {
+        throw new Error('url is required');
+      }
+      return system.bridge.vscodeServerProxy.request('deliverUriCallback', [url]);
     },
 
     // Raw system ref (for advanced use / debug panel)

@@ -1148,6 +1148,9 @@ const trackedWebviewProviders = new Map();
 /** @type {Map<string, {callback: Function, thisArg?: any}>} */
 const trackedCommandHandlers = new Map();
 
+/** @type {Map<string, {handler: object, extensionId?: string}>} */
+const trackedUriHandlers = new Map();
+
 /** @type {Set<string>} commands already attempted for extension activation */
 const _commandActivationAttempts = new Set();
 
@@ -1441,6 +1444,7 @@ function wrapVSCodeAPI(vscode) {
   wrapEnvAsExternalUri(vscode);
   wrapClipboardWriteText(vscode);
   wrapAuthentication(vscode);
+  wrapUriHandlers(vscode);
 
   log('All API wrappers installed successfully');
   return true;
@@ -1571,6 +1575,44 @@ function wrapAuthentication(vscode) {
   }
 
   log('authentication.getSession wrapped');
+}
+
+// ============================================================================
+// Wrap: window.registerUriHandler
+// ============================================================================
+
+function wrapUriHandlers(vscode) {
+  if (!vscode.window) return;
+
+  const original = vscode.window.registerUriHandler;
+  if (typeof original !== 'function') {
+    log('window.registerUriHandler is not a function — skipping');
+    return;
+  }
+
+  const wrappedRegisterUriHandler = function wrappedRegisterUriHandler(handler) {
+    const extensionId = _inferExtensionId() || 'unknown';
+    const key = extensionId;
+    log(`registerUriHandler intercepted: ${extensionId}`);
+
+    const disposable = original.call(this, handler);
+    trackedUriHandlers.set(key, { handler, extensionId });
+    bridgeSend({ type: 'uriHandlerRegistered', extensionId });
+
+    const originalDispose = disposable?.dispose;
+    if (typeof originalDispose === 'function') {
+      disposable.dispose = function wrappedUriHandlerDispose() {
+        trackedUriHandlers.delete(key);
+        return originalDispose.call(this);
+      };
+    }
+
+    return disposable;
+  };
+
+  if (_safeAssign(vscode.window, 'registerUriHandler', wrappedRegisterUriHandler, 'window.registerUriHandler')) {
+    log('window.registerUriHandler wrapped');
+  }
 }
 
 // ============================================================================
@@ -2647,6 +2689,49 @@ function _handleBridgeRequest(msg) {
       })().catch((e) => {
         logError(`executeCommand async flow failed for ${effectiveCommandId}: ${e.message}`);
       });
+      break;
+    }
+
+    case 'deliverUriCallback': {
+      const rawUrl = String(msg?.url || '');
+      if (!rawUrl) {
+        logError('deliverUriCallback: missing url');
+        break;
+      }
+
+      if (trackedUriHandlers.size === 0) {
+        logError(`deliverUriCallback: no registered URI handlers for ${rawUrl}`);
+        bridgeSend({ type: 'uriCallbackResult', ok: false, reason: 'no-uri-handler', url: rawUrl });
+        break;
+      }
+
+      let uriArg = rawUrl;
+      try {
+        const parser = realVscodeApi?.Uri?.parse;
+        if (typeof parser === 'function') {
+          uriArg = parser.call(realVscodeApi.Uri, rawUrl);
+        }
+      } catch (e) {
+        logError(`deliverUriCallback: Uri.parse failed (${e.message}), using raw URL`);
+      }
+
+      let delivered = 0;
+      for (const [, entry] of trackedUriHandlers) {
+        const handler = entry?.handler;
+        if (!handler || typeof handler.handleUri !== 'function') continue;
+        try {
+          const result = handler.handleUri(uriArg);
+          if (result && typeof result.then === 'function') {
+            result.catch(err => logError(`URI handler rejected (${entry.extensionId || 'unknown'}): ${err.message}`));
+          }
+          delivered++;
+        } catch (e) {
+          logError(`URI handler threw (${entry.extensionId || 'unknown'}): ${e.message}`);
+        }
+      }
+
+      log(`deliverUriCallback: delivered to ${delivered} handler(s)`);
+      bridgeSend({ type: 'uriCallbackResult', ok: delivered > 0, delivered, url: rawUrl });
       break;
     }
 

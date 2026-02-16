@@ -46,6 +46,9 @@ const VSCODE_SERVER_DIR = process.env.SYNTHI_VSCODE_SERVER_DIR
 /** Where extensions are installed for the VS Code Server */
 const EXTENSIONS_DIR = path.join(VSCODE_SERVER_DIR, 'extensions');
 
+/** Persisted secret storage backing file (best-effort) */
+const SECRET_STORAGE_FILE = path.join(VSCODE_SERVER_DIR, 'secret-storage.json');
+
 /** Server binary name depends on platform */
 const IS_WIN = process.platform === 'win32';
 const SERVER_BIN_NAME = IS_WIN ? 'code-server.cmd' : 'code-server';
@@ -65,6 +68,68 @@ const HEALTH_CHECK_INTERVAL = 10000;
 
 /** Maximum restart attempts before giving up */
 const MAX_RESTART_ATTEMPTS = 3;
+
+let _secretStoreLoaded = false;
+let _secretStore = new Map();
+
+function _secretStoreKey(service, account) {
+  return `${String(service || '')}::${String(account || '')}`;
+}
+
+function _ensureSecretStoreLoaded() {
+  if (_secretStoreLoaded) return;
+  _secretStoreLoaded = true;
+  try {
+    if (!fs.existsSync(SECRET_STORAGE_FILE)) return;
+    const raw = fs.readFileSync(SECRET_STORAGE_FILE, 'utf8');
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === 'object') {
+      _secretStore = new Map(Object.entries(parsed));
+    }
+  } catch (e) {
+    process.stderr.write(`[vscode-server-manager] Secret store load failed: ${e.message}\n`);
+    _secretStore = new Map();
+  }
+}
+
+function _persistSecretStore() {
+  try {
+    fs.mkdirSync(path.dirname(SECRET_STORAGE_FILE), { recursive: true });
+    const plain = Object.fromEntries(_secretStore.entries());
+    fs.writeFileSync(SECRET_STORAGE_FILE, JSON.stringify(plain), 'utf8');
+  } catch (e) {
+    process.stderr.write(`[vscode-server-manager] Secret store persist failed: ${e.message}\n`);
+  }
+}
+
+function _secretGet(service, account) {
+  _ensureSecretStoreLoaded();
+  return _secretStore.get(_secretStoreKey(service, account)) || null;
+}
+
+function _secretSet(service, account, value) {
+  _ensureSecretStoreLoaded();
+  _secretStore.set(_secretStoreKey(service, account), String(value || ''));
+  _persistSecretStore();
+}
+
+function _secretDelete(service, account) {
+  _ensureSecretStoreLoaded();
+  _secretStore.delete(_secretStoreKey(service, account));
+  _persistSecretStore();
+}
+
+function _secretFind(service) {
+  _ensureSecretStoreLoaded();
+  const prefix = `${String(service || '')}::`;
+  const out = [];
+  for (const [key, value] of _secretStore.entries()) {
+    if (!key.startsWith(prefix)) continue;
+    const account = key.slice(prefix.length);
+    out.push({ service: String(service || ''), account, password: value });
+  }
+  return out;
+}
 
 // ============================================================================
 // Prevent EPIPE from crashing the process
@@ -279,6 +344,122 @@ function emitAuthDeviceCode(code, source, metadata = {}) {
   sendEvent('authDeviceCode', { code, source, ...metadata });
 }
 
+function _extractAuthRequestFromRpcArgs(rpcArgs) {
+  const out = {
+    providerId: '',
+    scopes: [],
+    options: {},
+  };
+
+  if (!Array.isArray(rpcArgs)) return out;
+
+  for (const arg of rpcArgs) {
+    if (!out.providerId && typeof arg === 'string') {
+      out.providerId = arg;
+      continue;
+    }
+
+    if (
+      Array.isArray(arg)
+      && arg.length > 0
+      && arg.every(entry => typeof entry === 'string')
+      && out.scopes.length === 0
+    ) {
+      out.scopes = arg;
+      continue;
+    }
+
+    if (
+      arg
+      && typeof arg === 'object'
+      && (
+        Object.prototype.hasOwnProperty.call(arg, 'createIfNone')
+        || Object.prototype.hasOwnProperty.call(arg, 'forceNewSession')
+        || Object.prototype.hasOwnProperty.call(arg, 'silent')
+      )
+    ) {
+      out.options = arg;
+    }
+  }
+
+  return out;
+}
+
+async function _startGithubDeviceFlow(scopes, trigger) {
+  const normalizedScopes = Array.isArray(scopes)
+    ? scopes.filter(s => typeof s === 'string' && s.trim().length > 0)
+    : [];
+  const dedupeKey = `github:${normalizedScopes.join(',')}`;
+  const now = Date.now();
+  if (_lastGithubDeviceFlow.key === dedupeKey && (now - _lastGithubDeviceFlow.ts) < 15000) {
+    process.stderr.write(`[auth-device] github device flow deduped (${trigger})\n`);
+    return;
+  }
+  _lastGithubDeviceFlow.key = dedupeKey;
+  _lastGithubDeviceFlow.ts = now;
+
+  const clientId = process.env.SYNTHI_GITHUB_OAUTH_CLIENT_ID || '01ab8ac9400c4e429b23';
+  const body = new URLSearchParams({
+    client_id: clientId,
+    scope: normalizedScopes.join(' '),
+  });
+
+  process.stderr.write(`[auth-device] requesting github device code (trigger=${trigger}, scopes=${JSON.stringify(normalizedScopes)})\n`);
+
+  try {
+    const response = await fetch('https://github.com/login/device/code', {
+      method: 'POST',
+      headers: {
+        Accept: 'application/json',
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+      body,
+    });
+
+    const payload = await response.json().catch(() => ({}));
+    const userCode = typeof payload.user_code === 'string' ? payload.user_code.trim().toUpperCase() : '';
+    const verificationUri = payload.verification_uri || 'https://github.com/login/device';
+    const verificationUriComplete = payload.verification_uri_complete || null;
+
+    if (!response.ok || !userCode) {
+      process.stderr.write(`[auth-device] github device flow failed: status=${response.status} body=${JSON.stringify(payload).slice(0, 300)}\n`);
+      sendEvent('authDeviceCodeMissing', {
+        providerId: 'github',
+        scopes: normalizedScopes,
+        waitedMs: 0,
+        reason: 'github-device-endpoint-failed',
+      });
+      return;
+    }
+
+    emitAuthDeviceCode(userCode, `github-device-flow:${trigger}`, {
+      providerId: 'github',
+      scopes: normalizedScopes,
+      verificationUri,
+      verificationUriComplete,
+      interval: payload.interval,
+      expiresIn: payload.expires_in,
+    });
+
+    sendEvent('clipboardWrite', userCode);
+    sendEvent('openExternal', verificationUriComplete || verificationUri);
+    sendEvent('extensionMessage', {
+      severity: 'info',
+      message: `GitHub device code: ${userCode}`,
+      modal: false,
+      commands: [],
+    });
+  } catch (error) {
+    process.stderr.write(`[auth-device] github device flow exception: ${error.message}\n`);
+    sendEvent('authDeviceCodeMissing', {
+      providerId: 'github',
+      scopes: normalizedScopes,
+      waitedMs: 0,
+      reason: 'github-device-exception',
+    });
+  }
+}
+
 function scheduleMissingAuthDeviceCodeNotice(providerId, scopes) {
   const pid = String(providerId || 'unknown');
   const startedAt = Date.now();
@@ -417,6 +598,9 @@ const _lastAuthSessionRequest = { key: null, ts: 0 };
 
 /** @type {Map<string, number>} providerId -> timestamp awaiting device code */
 const _pendingAuthDeviceCodeByProvider = new Map();
+
+/** @type {{ key: string|null, ts: number }} dedupe active github device flow requests */
+const _lastGithubDeviceFlow = { key: null, ts: 0 };
 
 /** @type {Set<string>} Tree views observed directly from EH RPC registrations */
 const rpcObservedTreeViews = new Set();
@@ -927,6 +1111,23 @@ function _handlePreloadMessage(msg) {
           emitAuthDeviceCode(deviceCode, 'preload-openExternal', { url });
         }
       }
+      break;
+    }
+
+    case 'uriHandlerRegistered': {
+      const extensionId = msg.extensionId || 'unknown';
+      process.stderr.write(`[preload-bridge] URI handler registered: ${extensionId}\n`);
+      sendEvent('uriHandlerRegistered', { extensionId });
+      break;
+    }
+
+    case 'uriCallbackResult': {
+      sendEvent('uriCallbackResult', {
+        ok: !!msg.ok,
+        delivered: msg.delivered || 0,
+        reason: msg.reason,
+        url: msg.url,
+      });
       break;
     }
 
@@ -2791,6 +2992,16 @@ async function _triggerExtensionHostStartup(port, token) {
         } else if (methodName === '$getSession' || methodName === '$getSessions') {
           // Authentication provider session request. Return null → no session.
           process.stderr.write(`[vscode-server-manager] Auth: ${methodName} ${JSON.stringify(rpcArgs).slice(0, 200)}\n`);
+          const authReq = _extractAuthRequestFromRpcArgs(rpcArgs);
+          if (
+            methodName === '$getSession'
+            && String(authReq.providerId || '').toLowerCase() === 'github'
+            && (authReq.options?.createIfNone || authReq.options?.forceNewSession)
+          ) {
+            _startGithubDeviceFlow(authReq.scopes, '$getSession').catch((e) => {
+              process.stderr.write(`[auth-device] github flow launch failed in $getSession: ${e.message}\n`);
+            });
+          }
           const json = Buffer.from('null', 'utf8');
           replyRpc = Buffer.alloc(5 + 4 + json.length);
           replyRpc[0] = 9; // ReplyOKJSON
@@ -2814,6 +3025,11 @@ async function _triggerExtensionHostStartup(port, token) {
               forceNewSession: !!(options && options.forceNewSession),
               fromCreateSession: true,
             });
+            if (String(providerId || '').toLowerCase() === 'github') {
+              _startGithubDeviceFlow(Array.isArray(scopes) ? scopes : [], '$createSession').catch((e) => {
+                process.stderr.write(`[auth-device] github flow launch failed in $createSession: ${e.message}\n`);
+              });
+            }
           } catch (_) {}
           const json = Buffer.from('null', 'utf8');
           replyRpc = Buffer.alloc(5 + 4 + json.length);
@@ -2833,9 +3049,21 @@ async function _triggerExtensionHostStartup(port, token) {
           json.copy(replyRpc, 9);
 
         } else if (methodName === '$getPassword' || methodName === '$findCredentials') {
-          // Secret storage read — return null/empty (no persisted secrets)
+          // Secret storage read (persisted locally by manager)
           process.stderr.write(`[vscode-server-manager] Credential read: ${methodName}\n`);
-          const json = Buffer.from(methodName === '$findCredentials' ? '[]' : 'null', 'utf8');
+          let payload = null;
+          try {
+            const service = rpcArgs && rpcArgs[0];
+            if (methodName === '$findCredentials') {
+              payload = _secretFind(service);
+            } else {
+              const account = rpcArgs && rpcArgs[1];
+              payload = _secretGet(service, account);
+            }
+          } catch (_) {
+            payload = methodName === '$findCredentials' ? [] : null;
+          }
+          const json = Buffer.from(JSON.stringify(payload), 'utf8');
           replyRpc = Buffer.alloc(5 + 4 + json.length);
           replyRpc[0] = 9; // ReplyOKJSON
           replyRpc.writeUInt32BE(reqId, 1);
@@ -2843,8 +3071,20 @@ async function _triggerExtensionHostStartup(port, token) {
           json.copy(replyRpc, 9);
 
         } else if (methodName === '$setPassword' || methodName === '$deletePassword') {
-          // Secret storage write/delete — acknowledge but don't persist
+          // Secret storage write/delete persisted in manager-local store
           process.stderr.write(`[vscode-server-manager] Credential write: ${methodName}\n`);
+          try {
+            const service = rpcArgs && rpcArgs[0];
+            const account = rpcArgs && rpcArgs[1];
+            if (methodName === '$setPassword') {
+              const value = rpcArgs && rpcArgs[2];
+              _secretSet(service, account, value);
+            } else {
+              _secretDelete(service, account);
+            }
+          } catch (e) {
+            process.stderr.write(`[vscode-server-manager] Credential persistence error: ${e.message}\n`);
+          }
           replyRpc = Buffer.alloc(5);
           replyRpc[0] = 7; // ReplyOKEmpty
           replyRpc.writeUInt32BE(reqId, 1);
@@ -5324,6 +5564,18 @@ rl.on('line', async (line) => {
         process.stderr.write(`[preload-bridge] Requesting preload to resolve webview view: ${viewType}\n`);
         sendToPreloadClients({ action: 'resolveWebviewView', viewType });
         sendResponse(id, { success: true, viewType });
+        break;
+      }
+
+      case 'deliverUriCallback': {
+        const [url] = args;
+        if (!url || typeof url !== 'string') {
+          sendResponse(id, null, new Error('url is required'));
+          break;
+        }
+        process.stderr.write(`[preload-bridge] Delivering URI callback: ${url}\n`);
+        sendToPreloadClients({ action: 'deliverUriCallback', url });
+        sendResponse(id, { success: true, url });
         break;
       }
 
