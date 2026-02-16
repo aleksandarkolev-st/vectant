@@ -2766,30 +2766,33 @@ async function _triggerExtensionHostStartup(port, token) {
           replyRpc.writeUInt32BE(reqId, 1);
 
         } else if (methodName === '$executeCommand') {
-          // EH asks the main thread to execute a command.
-          // Handle context-setting commands specially, forward others to preload.
+          // EH asks the MAIN THREAD to execute a command.  This happens when
+          // the extension host doesn't have the command in its local registry.
+          //
+          // IMPORTANT: Do NOT forward this back to the preload bridge!
+          // That would call vscode.commands.executeCommand() again, the EH
+          // still won't find it locally, and it'll send $executeCommand back
+          // here → infinite loop.
+          //
+          // The correct path for user-initiated commands is:
+          //   Frontend → executeExtensionCommand → preload → vscode.commands.executeCommand()
+          // That path works.  This $executeCommand RPC path is for main-thread
+          // commands (workbench actions, etc.) which we can't handle headless.
           try {
             const commandId = rpcArgs && rpcArgs[0];
             const commandArgs = rpcArgs && rpcArgs[1];
             if (commandId && typeof commandId === 'string') {
               if (commandId === 'setContext' || commandId === '_setContext') {
                 // Context value changes control when-clause view visibility.
-                // Track them and forward to the frontend.
                 const contextKey = Array.isArray(commandArgs) && commandArgs[0];
                 const contextValue = Array.isArray(commandArgs) ? commandArgs[1] : undefined;
                 if (contextKey) {
                   process.stderr.write(`[vscode-server-manager] setContext: ${contextKey} = ${JSON.stringify(contextValue)}\n`);
                   sendEvent('setContext', { key: String(contextKey), value: contextValue });
                 }
-              } else if (commandId.startsWith('_') && !commandId.startsWith('_github')) {
-                // Other internal commands — no-op
               } else {
-                process.stderr.write(`[vscode-server-manager] $executeCommand forwarding to preload: ${commandId}\n`);
-                sendToPreloadClients({
-                  action: 'executeCommand',
-                  commandId,
-                  args: Array.isArray(commandArgs) ? commandArgs : [],
-                });
+                // Log but do NOT forward to preload — avoids infinite loop
+                process.stderr.write(`[vscode-server-manager] $executeCommand (main-thread, no-op): ${commandId}\n`);
               }
             }
           } catch (_) {}
