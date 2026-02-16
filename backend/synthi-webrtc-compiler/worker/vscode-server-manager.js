@@ -413,7 +413,12 @@ function _startProviderDiscovery(trigger) {
       if (preloadRegisteredTreeViews.size > 0) {
         sendToPreloadClients({ action: 'refreshAllTrees' });
       }
-      // Try resolving known webview views
+      // Try resolving known webview views.
+      // Don't gate on preloadRegisteredWebviewViews — extensions may have
+      // registered their webview provider without the preload capturing it,
+      // or the provider list response may not include it yet.  Always ask
+      // the preload to attempt resolution; it's a no-op if the provider
+      // wasn't actually registered.
       for (const extId of extHostLoadedExtensions) {
         const result = _readExtensionManifest(extId);
         if (result?.manifest?.contributes?.views) {
@@ -421,13 +426,16 @@ function _startProviderDiscovery(trigger) {
           for (const container of Object.keys(views)) {
             for (const view of views[container]) {
               if (view.type === 'webview') {
-                if (preloadRegisteredWebviewViews.has(view.id)) {
-                  sendToPreloadClients({ action: 'resolveWebviewView', viewType: view.id });
-                }
+                sendToPreloadClients({ action: 'resolveWebviewView', viewType: view.id });
               }
             }
           }
         }
+      }
+      // Also try manifest-known webview views from manifest scanning
+      // (covers extensions not yet in extHostLoadedExtensions)
+      for (const viewType of manifestKnownWebviewViews) {
+        sendToPreloadClients({ action: 'resolveWebviewView', viewType });
       }
     }, delay);
     if (timer.unref) timer.unref();
@@ -783,20 +791,33 @@ function _handlePreloadMessage(msg) {
     }
 
     case 'providerList': {
-      // Response to a listProviders request — log and forward to browser
-      const mergedTreeViews = Array.from(new Set([...(msg.treeViews || []), ...rpcObservedTreeViews]));
-      const mergedWebviews = Array.from(new Set([...(msg.webviews || []), ...rpcObservedWebviewViews]));
+      // Response to a listProviders request — log and forward to browser.
+      // Always merge manifest-known views so webviews (which extensions may
+      // not register headlessly) still appear in the sidebar.
+      const mergedTreeViews = Array.from(new Set([
+        ...(msg.treeViews || []),
+        ...rpcObservedTreeViews,
+        ...manifestKnownTreeViews,
+      ]));
+      const mergedWebviews = Array.from(new Set([
+        ...(msg.webviews || []),
+        ...rpcObservedWebviewViews,
+        ...manifestKnownWebviewViews,
+      ]));
       for (const viewId of (msg.treeViews || [])) preloadRegisteredTreeViews.add(viewId);
       for (const viewType of (msg.webviews || [])) preloadRegisteredWebviewViews.add(viewType);
-      if (mergedTreeViews.length === 0 && mergedWebviews.length === 0
-        && (manifestKnownTreeViews.size > 0 || manifestKnownWebviewViews.size > 0)) {
-        process.stderr.write('[preload-bridge] Provider list empty from runtime; emitting manifest/RPC fallback providers\n');
-        _emitMergedFallbackProviders('providerList-empty-runtime');
-        break;
-      }
       const treeCount = mergedTreeViews.length;
       const webviewCount = mergedWebviews.length;
       process.stderr.write(`[preload-bridge] Provider list: ${treeCount} trees, ${webviewCount} webviews\n`);
+
+      // Emit registrations for any manifest-known webviews not yet seen
+      // from runtime, so the browser creates WebviewPanelEmbed slots.
+      for (const viewType of manifestKnownWebviewViews) {
+        if (!(msg.webviews || []).includes(viewType) && !rpcObservedWebviewViews.has(viewType)) {
+          sendEvent('createWebview', viewType, viewType, viewType, { extensionId: 'manifest-fallback' });
+        }
+      }
+
       sendEvent('providerList', mergedTreeViews, mergedWebviews);
       break;
     }
@@ -4655,22 +4676,17 @@ rl.on('line', async (line) => {
         // Ask the preload bridge to resolve a specific webview view on demand.
         // Code-server runs headless, so resolveWebviewView is never called
         // naturally — we trigger it ourselves so the extension generates HTML.
+        // Always forward to preload clients — even if we haven't seen a
+        // registration event, the preload may have wrapped the provider
+        // without reporting it, or the extension registered lazily.
         const [viewType] = args;
         if (!viewType) {
           sendResponse(id, null, new Error('viewType is required'));
           break;
         }
-        if (preloadRegisteredWebviewViews.has(viewType)) {
-          log(`Requesting preload to resolve webview view: ${viewType}`);
-          sendToPreloadClients({ action: 'resolveWebviewView', viewType });
-          sendResponse(id, { success: true, viewType });
-        } else {
-          if (!_skippedWebviewResolveLogged.has(viewType)) {
-            _skippedWebviewResolveLogged.add(viewType);
-            process.stderr.write(`[preload-bridge] Skipping resolveWebviewView for ${viewType}: provider not registered yet\n`);
-          }
-          sendResponse(id, { success: false, skipped: true, reason: 'provider-not-registered', viewType });
-        }
+        log(`Requesting preload to resolve webview view: ${viewType}`);
+        sendToPreloadClients({ action: 'resolveWebviewView', viewType });
+        sendResponse(id, { success: true, viewType });
         break;
       }
 
