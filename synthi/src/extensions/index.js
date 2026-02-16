@@ -203,9 +203,6 @@ export async function initializeExtensionSystem(options) {
   bridge._emitRemoteContribution = (type, payload) => {
     switch (type) {
       case 'treeData':
-        if (!onContribution) {
-          console.warn(`[Extension/index] treeData for ${payload?.viewId} DROPPED — onContribution is null`);
-        }
         onContribution?.('treeData', payload);
         break;
       case 'registerTreeView':

@@ -48,6 +48,11 @@ function TreeViewSection({ view, treeData, onRequestData, onExecuteCommand }) {
                   <Globe className="w-4 h-4" />
                   <span>Webview loading…</span>
                 </div>
+              ) : view.id.includes('login') || view.id.includes('auth') ? (
+                <div className="flex flex-col items-center gap-1.5">
+                  <Globe className="w-4 h-4" />
+                  <span>Sign in required</span>
+                </div>
               ) : (
                 'No items'
               )}
@@ -188,14 +193,6 @@ export default function ExtensionViewContainer({
   onExecuteCommand = null,
   onRequestTreeRefresh = null,
 }) {
-  // Diagnostic: log what data reaches this component
-  React.useEffect(() => {
-    const mapKeys = Object.keys(treeDataMap);
-    const viewIds = views.map(v => v.id);
-    const matched = viewIds.filter(id => treeDataMap[id] && treeDataMap[id].length > 0);
-    console.log(`[ExtViewContainer] containerId=${containerId}, views=[${viewIds.join(',')}], treeDataMapKeys=[${mapKeys.join(',')}], matched=[${matched.join(',')}]`);
-  }, [containerId, views, treeDataMap]);
-
   // Auto-request tree data refresh when the container opens with no data.
   // This handles timing races where data arrived before Redux hydration,
   // or was missed during the bootstrap window.
@@ -206,7 +203,6 @@ export default function ExtensionViewContainer({
     const hasAnyData = treeViews.some(v => treeDataMap[v.id] && treeDataMap[v.id].length > 0);
     if (treeViews.length > 0 && !hasAnyData) {
       refreshRequestedRef.current = true;
-      console.log(`[ExtViewContainer] No tree data for ${containerId}, requesting refresh`);
       onRequestTreeRefresh(containerId);
     }
   }, [containerId, views, treeDataMap, onRequestTreeRefresh]);
@@ -279,7 +275,19 @@ export default function ExtensionViewContainer({
                 <span>Running on remote extension host</span>
               </div>
             )}
-            {views.map((view) => {
+            {views
+            .filter(view => {
+              // Hide views with when-clause conditions we can't evaluate,
+              // unless they already have data (proving the condition is met).
+              // This prevents showing empty "No items" for conditional views.
+              if (view.when && !treeDataMap[view.id]?.length) {
+                // Always show login/auth views regardless of condition
+                if (view.id.includes('login') || view.id.includes('auth')) return true;
+                return false;
+              }
+              return true;
+            })
+            .map((view) => {
             // Check if there's a runtime webview panel for this view
             const webviewPanel = webviewPanels.find(p => p.viewType === view.id);
 
@@ -313,14 +321,25 @@ export default function ExtensionViewContainer({
         )}
       </div>
 
-      {/* Webview panels that don't belong to a specific view */}
+      {/* Webview panels that belong to THIS extension but not to a specific view */}
       {webviewPanels
         .filter(p => !views.find(v => v.id === p.viewType))
+        .filter(p => {
+          // Only show panels belonging to this container's extension.
+          if (!container?.extensionId) return false;
+          const cid = container.extensionId.toLowerCase();
+          if (p.extensionId?.toLowerCase() === cid) return true;
+          // Fallback: viewType often starts with a namespace prefix
+          // matching the extension name (e.g. "github.xxx" for "github.vscode-pull-request-github")
+          const vt = (p.viewType || '').toLowerCase();
+          const extPublisher = cid.split('.')[0]; // "github"
+          return vt.startsWith(extPublisher + '.') || vt.startsWith(extPublisher + ':');
+        })
         .map(panel => (
           <div key={panel.viewId} className="border-t border-[#1a1b24]">
             <div className="px-3 py-2 text-[11px] font-semibold text-[#9ba2b8] uppercase tracking-wider flex items-center gap-1.5">
               <Globe className="w-3 h-3" />
-              {panel.title}
+              {_humanizeViewType(panel.title || panel.viewType)}
             </div>
             <WebviewPanelEmbed
               viewId={panel.viewId}
@@ -330,4 +349,22 @@ export default function ExtensionViewContainer({
         ))}
     </div>
   );
+}
+
+/**
+ * Convert a raw viewType like "github:createPullRequestWebview" into
+ * a human-readable title like "Create Pull Request".
+ */
+function _humanizeViewType(raw) {
+  if (!raw || typeof raw !== 'string') return raw;
+  // Already human-readable (contains spaces)?
+  if (raw.includes(' ')) return raw;
+  // Strip namespace prefix (e.g. "github:" or "github.")
+  let name = raw.includes(':') ? raw.split(':').pop() : raw.includes('.') ? raw.split('.').pop() : raw;
+  // Remove common suffixes
+  name = name.replace(/Webview$/, '').replace(/Panel$/, '').replace(/View$/, '');
+  // CamelCase → spaced (e.g. "createPullRequest" → "Create Pull Request")
+  name = name.replace(/([a-z])([A-Z])/g, '$1 $2');
+  // Capitalize first letter
+  return name.charAt(0).toUpperCase() + name.slice(1);
 }

@@ -214,12 +214,7 @@ export function useExtensions({ editor = null, workspaceId = 'default' } = {}) {
               }
               break;
             case 'treeData':
-              console.log(`[useExtensions] treeData received: viewId=${payload.viewId}, items=${payload.data?.length ?? 'null'}`);
-              setTreeDataMap(prev => {
-                const next = { ...prev, [payload.viewId]: payload.data };
-                console.log(`[useExtensions] treeDataMap updated, keys:`, Object.keys(next).join(', '));
-                return next;
-              });
+              setTreeDataMap(prev => ({ ...prev, [payload.viewId]: payload.data }));
               break;
             case 'createWebview':
               dispatch(addWebviewPanel({
