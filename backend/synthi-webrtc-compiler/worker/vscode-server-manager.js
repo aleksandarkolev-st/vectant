@@ -1808,6 +1808,11 @@ async function _triggerExtensionHostStartup(port, token) {
       let startRpcInFlight = false;
       let startRpcAttemptIndex = 0;
       let lastStartRpcId = 99;
+      let discoveredExtHostExtensionServiceRpcId = null;
+      let discoverExtHostRpcPromise = null;
+      let workspaceInitSent = false;
+      let workspaceInitSucceeded = false;
+      let workspaceInitInFlight = false;
       let lastActivationNudgeAt = 0;
       const pendingOutgoingRpc = new Map();
 
@@ -1882,9 +1887,11 @@ async function _triggerExtensionHostStartup(port, token) {
       // RPC ID for ExtHostExtensionService = 99
       // (77 MainContext identifiers + 22nd in ExtHostContext, from
       // VS Code 1.108.x extHost.protocol.ts ProxyIdentifier ordering)
-      const EXTHOST_EXTENSION_SERVICE_RPC_ID_CANDIDATES = [99, 96];
+      const EXTHOST_EXTENSION_SERVICE_RPC_ID_CANDIDATES = [101, 100, 99, 98, 97, 96];
+      const EXTHOST_WORKSPACE_RPC_ID_CANDIDATES = [106, 105, 107, 104, 108];
       let outgoingReqId = 0;
-      const EXTHOST_EXTENSION_SERVICE_RPC_ID = 99;
+      const EXTHOST_EXTENSION_SERVICE_RPC_ID = 101;
+      const EXTHOST_WORKSPACE_RPC_ID = 106;
 
       /**
        * Send an RPC request to the Extension Host.
@@ -1893,6 +1900,7 @@ async function _triggerExtensionHostStartup(port, token) {
        */
       function _sendEHRpcRequest(rpcId, method, args, meta) {
         const reqId = ++outgoingReqId;
+        const timeoutMs = Math.max(250, Number(meta && meta.timeoutMs) || 5000);
         const methodBuf = Buffer.from(method, 'utf8');
         const argsJson = JSON.stringify(args);
         const argsBuf = Buffer.from(argsJson, 'utf8');
@@ -1937,7 +1945,7 @@ async function _triggerExtensionHostStartup(port, token) {
           replyTimer = setTimeout(() => {
             const pending = pendingOutgoingRpc.get(reqId);
             if (!pending) return;
-            process.stderr.write(`[vscode-server-manager] RPC ${pending.method} (reqId=${reqId}, rpcId=${pending.rpcId}) has no reply after 5000ms\n`);
+            process.stderr.write(`[vscode-server-manager] RPC ${pending.method} (reqId=${reqId}, rpcId=${pending.rpcId}) has no reply after ${timeoutMs}ms\n`);
             pendingOutgoingRpc.delete(reqId);
             if (pending.acked) {
               if (pending.onSuccess && !pending.ackSuccessNotified) {
@@ -1946,7 +1954,7 @@ async function _triggerExtensionHostStartup(port, token) {
             } else if (pending.onError) {
               try { pending.onError('timeout'); } catch (_) {}
             }
-          }, 5000);
+          }, timeoutMs);
           if (replyTimer.unref) replyTimer.unref();
 
           sendWSFrame(makeRegularMsg(rpcBuf));
@@ -1976,6 +1984,64 @@ async function _triggerExtensionHostStartup(port, token) {
         };
       }
 
+      function _buildExtHostWorkspaceInitPayload() {
+        const workspaceDir = currentWorkspaceDir || '/tmp/synthi-workspaces/default';
+        const workspaceName = path.basename(workspaceDir) || (currentSlug || 'workspace');
+        return {
+          id: currentSlug || 'default',
+          name: workspaceName,
+          configuration: null,
+          isUntitled: false,
+          transient: false,
+          folders: [{
+            uri: { $mid: 1, scheme: 'file', authority: '', path: workspaceDir, query: '', fragment: '' },
+            name: workspaceName,
+            index: 0,
+          }],
+        };
+      }
+
+      function _sendWorkspaceInitializeToExtHost() {
+        if (workspaceInitSucceeded || workspaceInitInFlight) return;
+        workspaceInitInFlight = true;
+
+        const payload = _buildExtHostWorkspaceInitPayload();
+        const candidates = EXTHOST_WORKSPACE_RPC_ID_CANDIDATES.slice();
+        if (!candidates.includes(EXTHOST_WORKSPACE_RPC_ID)) {
+          candidates.unshift(EXTHOST_WORKSPACE_RPC_ID);
+        }
+
+        let idx = 0;
+        const tryNext = () => {
+          if (workspaceInitSucceeded) {
+            workspaceInitInFlight = false;
+            return;
+          }
+          if (idx >= candidates.length) {
+            workspaceInitInFlight = false;
+            process.stderr.write('[vscode-server-manager] Failed to initialize ExtHost workspace (all rpcId candidates failed)\n');
+            return;
+          }
+
+          const rpcId = candidates[idx++];
+          _sendEHRpcRequest(rpcId, '$initializeWorkspace', [payload, true], {
+            ackIsSuccess: true,
+            timeoutMs: 1800,
+            onSuccess: () => {
+              workspaceInitSucceeded = true;
+              workspaceInitSent = true;
+              workspaceInitInFlight = false;
+              process.stderr.write(`[vscode-server-manager] Sent ExtHost $initializeWorkspace on rpcId=${rpcId}\n`);
+            },
+            onError: () => {
+              setTimeout(() => tryNext(), 15);
+            },
+          });
+        };
+
+        tryNext();
+      }
+
       /**
        * Send $startExtensionHost to the Extension Host.
        * This is Phase 2 of VS Code's two-phase activation model:
@@ -1995,6 +2061,27 @@ async function _triggerExtensionHostStartup(port, token) {
 
       function _tryStartExtensionHostNextRpcId() {
         if (startExtensionHostSucceeded || startRpcInFlight) return;
+        if (discoveredExtHostExtensionServiceRpcId != null) {
+          lastStartRpcId = discoveredExtHostExtensionServiceRpcId;
+          const delta = _buildStartExtensionDelta();
+          startRpcInFlight = true;
+          const rpcId = discoveredExtHostExtensionServiceRpcId;
+          const reqId = _sendEHRpcRequest(rpcId, '$startExtensionHost', [delta], {
+            ackIsSuccess: true,
+            onSuccess: () => {
+              startRpcInFlight = false;
+              startExtensionHostSucceeded = true;
+              process.stderr.write(`[vscode-server-manager] $startExtensionHost accepted on discovered rpcId=${rpcId}\n`);
+              setTimeout(() => _sendActivateByEvent('*', 0, rpcId), 200);
+            },
+            onError: (reason) => {
+              startRpcInFlight = false;
+              process.stderr.write(`[vscode-server-manager] $startExtensionHost failed on discovered rpcId=${rpcId} (${reason})\n`);
+            },
+          });
+          if (reqId == null) startRpcInFlight = false;
+          return;
+        }
         if (startRpcAttemptIndex >= EXTHOST_EXTENSION_SERVICE_RPC_ID_CANDIDATES.length) {
           process.stderr.write(`[vscode-server-manager] Exhausted ExtHostExtensionService rpcId candidates; startup may be incomplete\n`);
           return;
@@ -2057,9 +2144,63 @@ async function _triggerExtensionHostStartup(port, token) {
        * ActivationKind: Normal=0, Immediate=1
        */
       function _sendActivateByEvent(event, kind, rpcIdOverride) {
-        _sendEHRpcRequest(rpcIdOverride || EXTHOST_EXTENSION_SERVICE_RPC_ID, '$activateByEvent', [event, kind || 0], {
+        _sendEHRpcRequest(rpcIdOverride || discoveredExtHostExtensionServiceRpcId || EXTHOST_EXTENSION_SERVICE_RPC_ID, '$activateByEvent', [event, kind || 0], {
           ackIsSuccess: true,
         });
+      }
+
+      function _discoverExtHostExtensionServiceRpcId() {
+        if (discoveredExtHostExtensionServiceRpcId != null) {
+          return Promise.resolve(discoveredExtHostExtensionServiceRpcId);
+        }
+        if (discoverExtHostRpcPromise) {
+          return discoverExtHostRpcPromise;
+        }
+
+        const candidates = EXTHOST_EXTENSION_SERVICE_RPC_ID_CANDIDATES.slice();
+        if (!candidates.includes(EXTHOST_EXTENSION_SERVICE_RPC_ID)) {
+          candidates.unshift(EXTHOST_EXTENSION_SERVICE_RPC_ID);
+        }
+        for (let id = 95; id <= 105; id++) {
+          if (!candidates.includes(id)) candidates.push(id);
+        }
+
+        discoverExtHostRpcPromise = new Promise((resolve) => {
+          let idx = 0;
+          const probeValue = 1337;
+
+          const tryNext = () => {
+            if (idx >= candidates.length) {
+              process.stderr.write('[vscode-server-manager] ExtHostExtensionService rpcId probe failed; using fallback candidates\n');
+              discoverExtHostRpcPromise = null;
+              resolve(null);
+              return;
+            }
+
+            const candidate = candidates[idx++];
+            _sendEHRpcRequest(candidate, '$test_latency', [probeValue], {
+              timeoutMs: 1200,
+              onSuccess: (_kind, payload) => {
+                if (payload === probeValue) {
+                  discoveredExtHostExtensionServiceRpcId = candidate;
+                  lastStartRpcId = candidate;
+                  process.stderr.write(`[vscode-server-manager] Resolved ExtHostExtensionService rpcId=${candidate} via $test_latency\n`);
+                  discoverExtHostRpcPromise = null;
+                  resolve(candidate);
+                  return;
+                }
+                setTimeout(() => tryNext(), 10);
+              },
+              onError: () => {
+                setTimeout(() => tryNext(), 10);
+              },
+            });
+          };
+
+          tryNext();
+        });
+
+        return discoverExtHostRpcPromise;
       }
 
       function _handleEHRpc(dataBuf) {
@@ -2088,8 +2229,17 @@ async function _triggerExtensionHostStartup(port, token) {
           pendingOutgoingRpc.delete(reqId);
 
           if (rpcMsgType === 7 || rpcMsgType === 8 || rpcMsgType === 9 || rpcMsgType === 10) {
+            let payload;
+            if (rpcMsgType === 9 && dataBuf.length > 9) {
+              try {
+                const jsonLen = dataBuf.readUInt32BE(5);
+                if (jsonLen > 0 && dataBuf.length >= 9 + jsonLen) {
+                  payload = JSON.parse(dataBuf.slice(9, 9 + jsonLen).toString('utf8'));
+                }
+              } catch (_) {}
+            }
             if (pending.onSuccess) {
-              try { pending.onSuccess(); } catch (_) {}
+              try { pending.onSuccess(`reply-${rpcMsgType}`, payload); } catch (_) {}
             }
           } else {
             let errText = 'reply-error';
@@ -2351,7 +2501,12 @@ async function _triggerExtensionHostStartup(port, token) {
                 // _handleEagerExtensions() is never invoked.
                 // Small delay to ensure EH's RPCProtocol is fully ready.
                 setTimeout(() => {
-                  _tryStartExtensionHostNextRpcId();
+                  _sendWorkspaceInitializeToExtHost();
+                  setTimeout(() => {
+                    _discoverExtHostExtensionServiceRpcId().finally(() => {
+                      _tryStartExtensionHostNextRpcId();
+                    });
+                  }, workspaceInitSucceeded ? 10 : 120);
                 }, 50);
               } else if (statusByte === 0x02) {
                 // Late Ready — EH may be re-requesting init data
