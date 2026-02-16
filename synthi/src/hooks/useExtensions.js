@@ -131,6 +131,8 @@ export function useExtensions({ editor = null, workspaceId = 'default' } = {}) {
   const vscodeServerConnectedRef = useRef(false);
   const connectingVSCodeServerRef = useRef(false);
   const contextValuesRef = useRef({});
+  const lastAuthDeviceCodeRef = useRef(null);
+  const lastAuthPromptAtRef = useRef(0);
   const [vscodeServerState, setVscodeServerState] = useState('disconnected');
   const [vscodeServerWorkspaceDir, setVscodeServerWorkspaceDir] = useState(null);
 
@@ -249,6 +251,28 @@ export function useExtensions({ editor = null, workspaceId = 'default' } = {}) {
               const msg = payload.message || payload;
               const sev = payload.severity || 'info';
               const commands = payload.commands || [];
+
+              // Capture GitHub device code if present in extension messages
+              // so users can always paste it even if clipboard API is blocked.
+              const codeMatch = String(msg || '').match(/\b[A-Z0-9]{4}-[A-Z0-9]{4}\b/);
+              if (codeMatch && codeMatch[0]) {
+                const deviceCode = codeMatch[0];
+                lastAuthDeviceCodeRef.current = deviceCode;
+                toast.info(`Device code: ${deviceCode}`, {
+                  duration: 15000,
+                  action: {
+                    label: 'Copy Code',
+                    onClick: () => {
+                      try {
+                        if (navigator?.clipboard?.writeText) {
+                          navigator.clipboard.writeText(deviceCode).catch(() => {});
+                        }
+                      } catch (_) {}
+                    },
+                  },
+                });
+              }
+
               const toastOpts = {
                 duration: sev === 'error' ? 8000 : sev === 'warning' ? 6000 : 4000,
               };
@@ -278,13 +302,26 @@ export function useExtensions({ editor = null, workspaceId = 'default' } = {}) {
               // Extension requested authentication — show a toast
               // directing the user to the auth flow.
               const provider = payload.providerId || 'unknown';
-              toast.info(`Sign in to ${provider} requested by extension. Check for a browser popup.`, {
+              const now = Date.now();
+              const code = lastAuthDeviceCodeRef.current;
+              const shouldAutoOpen = provider === 'github' && (now - lastAuthPromptAtRef.current > 12000);
+              if (shouldAutoOpen) {
+                lastAuthPromptAtRef.current = now;
+                try { window.open('https://github.com/login/device', '_blank', 'noopener,noreferrer'); } catch (_) {}
+              }
+
+              toast.info(
+                code
+                  ? `Sign in to ${provider}. Enter code ${code} on GitHub device page.`
+                  : `Sign in to ${provider} requested by extension. Check for a browser popup.`,
+                {
                 duration: 10000,
                 action: provider === 'github' ? {
                   label: 'Open GitHub',
                   onClick: () => window.open('https://github.com/login/device', '_blank'),
                 } : undefined,
-              });
+                }
+              );
               break;
             }
             case 'showQuickPick': {
@@ -317,13 +354,42 @@ export function useExtensions({ editor = null, workspaceId = 'default' } = {}) {
               // Extension wants to write text to the clipboard (e.g. device code).
               // Use the browser Clipboard API to actually write it.
               const text = payload.text || payload;
+              const writeWithFallback = async (value) => {
+                if (!value) return false;
+                try {
+                  if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+                    await navigator.clipboard.writeText(String(value));
+                    return true;
+                  }
+                } catch (_) {}
+                try {
+                  const textarea = document.createElement('textarea');
+                  textarea.value = String(value);
+                  textarea.style.position = 'fixed';
+                  textarea.style.opacity = '0';
+                  document.body.appendChild(textarea);
+                  textarea.focus();
+                  textarea.select();
+                  const ok = document.execCommand('copy');
+                  document.body.removeChild(textarea);
+                  return !!ok;
+                } catch (_) {
+                  return false;
+                }
+              };
+
               if (text && typeof navigator !== 'undefined' && navigator.clipboard) {
-                navigator.clipboard.writeText(String(text)).then(() => {
-                  toast.success(`Copied to clipboard: ${String(text).slice(0, 60)}`, { duration: 5000 });
-                }).catch(() => {
-                  toast.info(`Copy this code: ${text}`, { duration: 10000 });
+                writeWithFallback(text).then((ok) => {
+                  if (ok) {
+                    lastAuthDeviceCodeRef.current = String(text);
+                    toast.success(`Copied to clipboard: ${String(text).slice(0, 60)}`, { duration: 5000 });
+                  } else {
+                    lastAuthDeviceCodeRef.current = String(text);
+                    toast.info(`Copy this code: ${text}`, { duration: 15000 });
+                  }
                 });
               } else if (text) {
+                lastAuthDeviceCodeRef.current = String(text);
                 toast.info(`Copy this code: ${text}`, { duration: 10000 });
               }
               break;
