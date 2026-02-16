@@ -1178,6 +1178,27 @@ const _knownAuthSessionAt = new Map();
  */
 const _cachedAuthSessions = new Map();
 
+/**
+ * Listeners registered via onDidChangeSessions.  We store them so we can
+ * fire a synthetic event when a session arrives from the bridge — the
+ * EH's built-in auth system never fires because no provider is registered.
+ */
+const _authSessionChangeListeners = [];
+
+/**
+ * Fire a synthetic onDidChangeSessions event so extensions (e.g. GitHub
+ * Actions) re-initialise their API clients with the freshly cached token.
+ */
+function _fireOnDidChangeSessions(providerId) {
+  const event = { provider: { id: providerId, label: providerId } };
+  log(`Firing synthetic onDidChangeSessions for ${providerId}: ${_authSessionChangeListeners.length} listener(s)`);
+  for (const fn of _authSessionChangeListeners) {
+    try { fn(event); } catch (err) {
+      log(`Error in onDidChangeSessions listener: ${err?.message || err}`);
+    }
+  }
+}
+
 function _preloadSessionMatchesScopes(session, requestedScopes) {
   const need = Array.isArray(requestedScopes)
     ? requestedScopes.filter(s => typeof s === 'string' && s.trim()).map(s => s.trim())
@@ -1661,7 +1682,8 @@ function wrapAuthentication(vscode) {
     return;
   }
 
-  // Also wrap onDidChangeSessions to track session changes
+  // Also wrap onDidChangeSessions to track session changes AND store
+  // listeners so we can fire synthetic events from the bridge.
   const originalOnDidChange = vscode.authentication.onDidChangeSessions;
   if (typeof originalOnDidChange === 'function') {
     const wrappedOnDidChange = function wrappedOnDidChangeSessions(listener, thisArg, disposables) {
@@ -1671,9 +1693,25 @@ function wrapAuthentication(vscode) {
           _lastForcedInteractiveAuthAt.delete(String(e.provider.id).toLowerCase());
         }
         bridgeSend({ type: 'authSessionChanged', providerId: e?.provider?.id || 'unknown' });
-        return listener.call(this, e);
+        return listener.call(thisArg || this, e);
       };
-      return originalOnDidChange.call(this, wrappedListener, thisArg, disposables);
+
+      // Store for synthetic firing when auth sessions arrive from the bridge
+      _authSessionChangeListeners.push(wrappedListener);
+
+      // Also subscribe to original event (fires if EH has a native auth provider)
+      let origDisposable;
+      try { origDisposable = originalOnDidChange.call(vscode.authentication, wrappedListener); } catch (_) {}
+
+      const compositeDisposable = {
+        dispose() {
+          const idx = _authSessionChangeListeners.indexOf(wrappedListener);
+          if (idx >= 0) _authSessionChangeListeners.splice(idx, 1);
+          try { origDisposable?.dispose?.(); } catch (_) {}
+        }
+      };
+      if (Array.isArray(disposables)) disposables.push(compositeDisposable);
+      return compositeDisposable;
     };
     _safeAssign(vscode.authentication, 'onDidChangeSessions', wrappedOnDidChange, 'authentication.onDidChangeSessions');
   }
@@ -2700,7 +2738,10 @@ function _handleBridgeRequest(msg) {
       _knownAuthSessionAt.set(pid, Date.now());
       if (bridgeSession && bridgeSession.accessToken) {
         _cachedAuthSessions.set(pid, bridgeSession);
-        log(`Cached auth session for ${pid}: id=${bridgeSession.id} account=${bridgeSession.account?.label || 'unknown'}`);
+        log(`Cached auth session for ${pid}: id=${bridgeSession.id} account=${bridgeSession.account?.label || 'unknown'} tokenLen=${bridgeSession.accessToken.length}`);
+        // Fire synthetic onDidChangeSessions so extensions re-initialise
+        // their API clients (Octokit etc.) with the fresh token.
+        _fireOnDidChangeSessions(pid);
       }
       // Clear stale bridge command context so auth wrapper stops
       // promoting getSession calls to interactive
