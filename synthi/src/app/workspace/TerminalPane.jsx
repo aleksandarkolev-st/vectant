@@ -61,7 +61,7 @@ const SYNTHI_THEME = {
   brightWhite: '#ffffff',
 };
 
-export default function TerminalPane({ terminalId = 'default', paneSide = 'main', workspaceSlug = '', onFsChange }) {
+export default function TerminalPane({ terminalId = 'default', paneSide = 'main', workspaceSlug = '', onFsChange, fixedSessionId = null }) {
   const containerRef = useRef(null);
   const terminalRef = useRef(null);   // { term, fitAddon, dispose() }
   const wsRef = useRef(null);
@@ -177,7 +177,8 @@ export default function TerminalPane({ terminalId = 'default', paneSide = 'main'
     function connectWS(term, fitAddon) {
       if (disposed) return;
 
-      const sid = sessionKey + '-' + Date.now().toString(36);
+      // Use the fixed session ID (from AI terminal) or generate a new one
+      const sid = fixedSessionId || (sessionKey + '-' + Date.now().toString(36));
       sessionIdRef.current = sid;
 
       const { cols, rows } = term;
@@ -321,7 +322,7 @@ export default function TerminalPane({ terminalId = 'default', paneSide = 'main'
         try { terminalRef.current.dispose(); } catch (_) {}
       }
     };
-  }, [sessionKey, workspaceSlug]); // Re-connect if terminal tab or workspace changes
+  }, [sessionKey, workspaceSlug, fixedSessionId]); // Re-connect if terminal tab or workspace changes
 
   // ─── Reconnect button handler ─────────────────────────────────────────
   const handleReconnect = useCallback(() => {

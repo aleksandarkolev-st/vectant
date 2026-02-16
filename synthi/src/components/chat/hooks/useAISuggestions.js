@@ -5,6 +5,7 @@ import { buildFilesPayload } from '@/utils/multiFileContext';
 import { api } from '@/services/api';
 import { computeDiffChunks, parseFileDiffBlocks, stripDiffMarkers, validateFileDiffBlocks, applySearchReplace } from '../utils/diffUtils';
 import { selectFileThunk, setExternalFileContent, fetchFilesThunk } from '@/redux/workspaceSlice';
+import { setShowTerminal } from '@/redux/uiSlice';
 import { useContextWindow } from './useContextWindow';
 import { useAgentPipeline, PIPELINE_MODES } from './useAgentPipeline';
 
@@ -70,6 +71,9 @@ const fallbackIntentDetection = (prompt) => {
         'run ', 'execute ', 'check version', 'check if', 'what version',
         'show me the output', 'what\'s installed', 'which version',
         'npm ls', 'npm list', 'pip list', 'pip freeze',
+        'git status', 'git log', 'git diff', 'git branch', 'git remote',
+        'check the', 'check my', 'show the status', 'show status',
+        'list files', 'list packages', 'list dependencies',
     ];
     if (RUN_KEYWORDS.some(kw => lower.includes(kw))) {
         return { intent: 'run', needsCodeChanges: false, responseMode: 'explain' };
@@ -1048,13 +1052,20 @@ export const useAISuggestions = ({
             appendProgressLog('Classifying intent...');
             const contextSnippet = code ? code.slice(0, 500) : null; // Small snippet for context
             const { needsCodeChanges, responseMode, intent } = await classifyQueryIntent(userPrompt, contextSnippet);
-            appendProgressLog(`Intent: ${intent} → ${needsCodeChanges ? 'code changes' : 'explanation'}`);
+            // Detect if the run intent also includes a follow-up task (e.g., "check git status and change file")
+            // Pure run = no file context needed; run + task = file context preserved
+            const TASK_KEYWORDS = /\b(change|modify|fix|update|edit|revert|refactor|rename|add|remove|delete|create|implement|write|replace|move|copy|merge|undo|restore)\b/i;
+            const hasFollowUpTask = intent === 'run' && TASK_KEYWORDS.test(userPrompt);
+            const isRunOnly = intent === 'run' && !hasFollowUpTask;
+            appendProgressLog(`Intent: ${intent}${hasFollowUpTask ? ' + task' : ''} → ${intent === 'run' ? (hasFollowUpTask ? 'run & code changes' : 'run command') : needsCodeChanges ? 'code changes' : 'explanation'}`);
             
             // ── Agent Pipeline ──────────────────────────────────────
             // Run sub-agents if the prompt warrants it (complex queries, multi-file, search, etc.)
+            // Skip for pure run intent — no need for agents when just executing commands
+            // Keep agents for run+task (e.g., "check git status and revert file")
             let agentContext = '';
             let agentResults = [];
-            const useAgents = shouldUseAgents(userPrompt);
+            const useAgents = !isRunOnly && shouldUseAgents(userPrompt);
             
             if (useAgents) {
                 appendProgressLog('Running agent pipeline...');
@@ -1096,7 +1107,28 @@ export const useAISuggestions = ({
             let requestPrompt;
             let requestMode = responseMode;
             
-            if (!needsCodeChanges) {
+            if (isRunOnly) {
+                // Pure run/check/execute — no file changes at all
+                requestPrompt = `${userPrompt}
+
+You MUST use the run_command tool to execute this request. Do NOT just explain what the command does — actually RUN it and show the real output.
+
+If the user asks to "check" something, "run" something, or asks about git status/version/etc., call run_command with the appropriate command immediately.
+
+After getting the result, present the output clearly to the user. Do NOT generate FILE: blocks or code changes — just show the command output.
+
+Stream at least two short progress updates wrapped in <progress>...</progress> as you reason.`;
+            } else if (hasFollowUpTask) {
+                // Run command AND then modify files based on the result
+                requestPrompt = `${userPrompt}
+
+This request involves BOTH running a command AND making code changes.
+
+1. First, use the run_command tool to execute the relevant command(s).
+2. Then, based on the output, make the requested code changes using FILE: blocks with SEARCH/REPLACE format.
+
+Stream at least three short progress updates wrapped in <progress>...</progress> as you reason.`;
+            } else if (!needsCodeChanges) {
                 // For explanation/question queries, use a simpler prompt that doesn't ask for FILE: blocks
                 requestPrompt = `${userPrompt}
 
@@ -1143,33 +1175,38 @@ Do not include any other commentary after FILE sections. Do not restate the user
 If image attachments are present, read/ocr the images and extract any text or code they contain. Use the extracted content to fulfill the request.`;
             }
             
+            // ── Skip file context for pure run/execute intents (saves tokens) ──
+            // run+task still needs context so the AI can modify files after executing
+
             const activePath = activeFile?.path || activeFile?.name || '';
-            const referencedPaths = extractReferencedPaths(activePath, code);
-            const siblingPaths = referencedPaths.length === 0 ? inferSiblingPaths(activePath) : [];
+            const referencedPaths = isRunOnly ? [] : extractReferencedPaths(activePath, code);
+            const siblingPaths = isRunOnly ? [] : (referencedPaths.length === 0 ? inferSiblingPaths(activePath) : []);
             const relatedPaths = Array.from(new Set([...referencedPaths, ...siblingPaths]));
             const referencedEntries = relatedPaths.length
                 ? await Promise.all(relatedPaths.map(async (path) => [path, await getBaseContentForPath(path)]))
                 : [];
             const referencedCacheEntries = referencedEntries.filter((entry) => entry[0] && typeof entry[1] === 'string');
-            const cacheEntryMap = new Map(fileCacheEntries);
+            const cacheEntryMap = new Map(isRunOnly ? [] : fileCacheEntries);
             referencedCacheEntries.forEach(([path, content]) => {
                 if (!cacheEntryMap.has(path)) cacheEntryMap.set(path, content);
             });
             const mergedCacheEntries = Array.from(cacheEntryMap.entries());
 
-            const filesPayloadRaw = buildFilesPayload({
+            const filesPayloadRaw = isRunOnly ? [] : buildFilesPayload({
                 activeFile,
                 fullDocument: code,
                 cacheEntries: mergedCacheEntries,
             });
-            const mentionsOtherFile = /\b[a-zA-Z0-9_-]+\.[a-zA-Z0-9]{1,5}\b/.test(userPrompt) || /other file|another file|files/i.test(userPrompt) || /delete\s+\w+/i.test(userPrompt) || /remove\s+\w+/i.test(userPrompt) || /create\s+\w+/i.test(userPrompt) || /new file/i.test(userPrompt);
+            const mentionsOtherFile = isRunOnly ? false : (/\b[a-zA-Z0-9_-]+\.[a-zA-Z0-9]{1,5}\b/.test(userPrompt) || /other file|another file|files/i.test(userPrompt) || /delete\s+\w+/i.test(userPrompt) || /remove\s+\w+/i.test(userPrompt) || /create\s+\w+/i.test(userPrompt) || /new file/i.test(userPrompt));
             const includeRelatedFiles = relatedPaths.length > 0;
-            const wantsFullRepo = /\b(full repo|entire repo|whole repo|entire project|all files|full context)\b/i.test(userPrompt);
-            const filesPayload = mentionsOtherFile
-                ? filesPayloadRaw
-                : includeRelatedFiles
+            const wantsFullRepo = isRunOnly ? false : /\b(full repo|entire repo|whole repo|entire project|all files|full context)\b/i.test(userPrompt);
+            const filesPayload = isRunOnly
+                ? []
+                : mentionsOtherFile
                     ? filesPayloadRaw
-                    : filesPayloadRaw.filter((f) => f.path === (activeFile?.path || activeFile?.name));
+                    : includeRelatedFiles
+                        ? filesPayloadRaw
+                        : filesPayloadRaw.filter((f) => f.path === (activeFile?.path || activeFile?.name));
             // Disable fallback to active file when prompt targets other files (creates/deletes) to avoid hijacking the active file.
             fallbackPathRef.current = mentionsOtherFile ? null : (activeFile?.path || activeFile?.name || null);
             if (filesPayload.length > 1 || mentionsOtherFile || includeRelatedFiles) {
@@ -1251,8 +1288,8 @@ If image attachments are present, read/ocr the images and extract any text or co
                     apiKey: aiApiKey,
                     // Code intelligence integration
                     workspacePath: workspaceSlug || null,
-                    useCodeIntel: true,
-                    maxContextTokens: Math.min(6000, Math.floor(availableTokens * 0.2)),
+                    useCodeIntel: !isRunOnly,
+                    maxContextTokens: isRunOnly ? 0 : Math.min(6000, Math.floor(availableTokens * 0.2)),
                     fullRepoContext: wantsFullRepo,
                     // Context window conversation history for multi-turn coherence
                     conversationHistory: formatForAPI(contextWindow).conversationHistory,
@@ -1399,6 +1436,17 @@ If image attachments are present, read/ocr the images and extract any text or co
                             : `Tool: ${tc.tool}`;
                         appendProgressLog(label);
                         onLog?.(label);
+
+                        // If the run_command result includes a sessionId, open the terminal
+                        if (tc.tool === 'run_command' && tc.sessionId && typeof window !== 'undefined') {
+                            // Ensure terminal panel is visible (setShowTerminal is idempotent)
+                            try { dispatch(setShowTerminal(true)); } catch (_) {}
+                            // Dispatch custom event for TerminalManager to create AI terminal tab
+                            window.dispatchEvent(new CustomEvent('ai-terminal-open', {
+                                detail: { sessionId: tc.sessionId, command: tc.args?.command || '' },
+                            }));
+                            appendProgressLog(`Terminal opened: ${tc.sessionId}`);
+                        }
                         continue;
                     }
                     const delta = parsed?.delta || parsed?.text || '';

@@ -333,6 +333,50 @@ function sanitizeResize(cols, rows) {
  *
  * @returns {{ wss: WebSocket.Server, handleUpgrade: Function }}
  */
+/**
+ * Create a headless PTY session (no WebSocket yet).
+ * Used by /exec-terminal to run a command in a real PTY that the
+ * frontend can later connect to and see.
+ *
+ * @param {string} sessionId - Pre-determined session ID
+ * @param {string} slug      - Workspace slug
+ * @param {number} cols      - Terminal columns (default 120)
+ * @param {number} rows      - Terminal rows (default 30)
+ * @returns {{ ptyProcess, shell, cwd, sessionId }}
+ */
+function createHeadlessSession(sessionId, slug, cols = 120, rows = 30) {
+  const cwd = resolveWorkspaceCwd(slug);
+  const { ptyProcess, shell } = createPtyProcess({ cwd, cols, rows });
+
+  // Buffer output so we can replay it when the frontend connects
+  const outputBuffer = [];
+  const MAX_BUFFER = 100_000; // characters
+  let bufferLen = 0;
+  let bufferingActive = true; // Flag to stop buffering when WS connects
+  const onData = (data) => {
+    if (bufferingActive && bufferLen < MAX_BUFFER) {
+      outputBuffer.push(data);
+      bufferLen += data.length;
+    }
+  };
+  ptyProcess.onData(onData);
+
+  // Store in activeSessions — the WebSocket handler will detect this
+  activeSessions.set(sessionId, {
+    pty: ptyProcess,
+    ws: null,           // No WebSocket yet — frontend will connect later
+    cwd,
+    shell,
+    unwatchFs: () => {},
+    headless: true,     // Flag so WSS handler knows to reattach
+    outputBuffer,       // Buffered output for replay
+    stopBuffering: () => { bufferingActive = false; }, // Stop buffering on WS connect
+  });
+
+  console.log(`[Terminal] Headless session ${sessionId} created | cwd=${cwd} | shell=${shell}`);
+  return { ptyProcess, shell, cwd, sessionId };
+}
+
 function createTerminalWSS() {
   const wss = new WebSocket.Server({ noServer: true });
 
@@ -349,6 +393,106 @@ function createTerminalWSS() {
     const workspaceSlug = parsedUrl.searchParams.get('workspace') || '';
     const initialCols = parseInt(parsedUrl.searchParams.get('cols'), 10) || 80;
     const initialRows = parseInt(parsedUrl.searchParams.get('rows'), 10) || 24;
+
+    // ── Check for existing headless session (AI-created terminal) ───────
+    const existingSession = requestedSessionId && activeSessions.get(requestedSessionId);
+    if (existingSession && existingSession.headless && existingSession.pty) {
+      const sessionId = requestedSessionId;
+      const { pty: ptyProcess, shell, cwd, outputBuffer, stopBuffering } = existingSession;
+
+      console.log(`[Terminal] Reattaching WS to headless session ${sessionId} | cwd=${cwd} | buffered=${outputBuffer.length} chunks`);
+
+      // Stop the headless buffer from growing now that we have a WS
+      if (stopBuffering) stopBuffering();
+
+      // Start filesystem watcher now that we have a WebSocket
+      let unwatchFs = () => {};
+      if (workspaceSlug) {
+        unwatchFs = watchWorkspace(workspaceSlug, cwd, (fsMsg) => {
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify(fsMsg));
+          }
+        });
+      }
+
+      // Update session: replace headless state with full WebSocket session
+      activeSessions.set(sessionId, { pty: ptyProcess, ws, cwd, shell, unwatchFs, headless: false });
+
+      // Send ready acknowledgement
+      ws.send(JSON.stringify({
+        type: 'ready',
+        sessionId,
+        shell: path.basename(shell),
+        cwd,
+        pid: ptyProcess.pid,
+      }));
+
+      // Replay buffered output so the user sees what already happened
+      if (outputBuffer && outputBuffer.length > 0) {
+        const replay = outputBuffer.join('');
+        ws.send(Buffer.from(replay, 'utf-8'), { binary: true });
+      }
+
+      // Attach the WS-forwarding listener for live output going forward
+      // (the old headless buffering listener is stopped via stopBuffering)
+      const onPtyData = (data) => {
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(Buffer.from(data, 'utf-8'), { binary: true });
+        }
+      };
+      ptyProcess.onData(onPtyData);
+
+      // ── PTY exit handler ──────────────────────────────────────────────
+      ptyProcess.onExit(({ exitCode, signal }) => {
+        console.log(`[Terminal] Session ${sessionId} exited (code=${exitCode}, signal=${signal})`);
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: 'exit', code: exitCode, signal }));
+          ws.close(1000, 'PTY exited');
+        }
+        activeSessions.delete(sessionId);
+      });
+
+      // ── WebSocket → PTY (input) ──────────────────────────────────────
+      ws.on('message', (rawData, isBinary) => {
+        if (isBinary) {
+          const str = Buffer.isBuffer(rawData) ? rawData.toString('utf-8') : rawData;
+          ptyProcess.write(str);
+          return;
+        }
+        const text = typeof rawData === 'string' ? rawData : rawData.toString('utf-8');
+        const msg = parseControlMessage(text);
+        if (!msg) { ptyProcess.write(text); return; }
+        switch (msg.type) {
+          case 'resize': {
+            const { cols, rows } = sanitizeResize(msg.cols, msg.rows);
+            try { ptyProcess.resize(cols, rows); } catch (_) {}
+            break;
+          }
+          case 'ping':
+            if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'pong' }));
+            break;
+          case 'input':
+            if (typeof msg.data === 'string') ptyProcess.write(msg.data);
+            break;
+        }
+      });
+
+      ws.on('close', (code) => {
+        console.log(`[Terminal] WS closed for reattached session ${sessionId} (code=${code})`);
+        try { unwatchFs(); } catch (_) {}
+        try { ptyProcess.kill(); } catch (_) {}
+        activeSessions.delete(sessionId);
+      });
+
+      ws.on('error', (err) => {
+        console.error(`[Terminal] WS error for reattached session ${sessionId}:`, err.message);
+        try { unwatchFs(); } catch (_) {}
+        try { ptyProcess.kill(); } catch (_) {}
+        activeSessions.delete(sessionId);
+      });
+
+      return; // Done — skip normal session creation below
+    }
 
     // ── Generate session ID ─────────────────────────────────────────────
     const sessionId = requestedSessionId || crypto.randomUUID();
@@ -507,6 +651,7 @@ function broadcastToAll(message) {
 
 module.exports = {
   createTerminalWSS,
+  createHeadlessSession,
   activeSessions,
   broadcastToAll,
   getDefaultShell,

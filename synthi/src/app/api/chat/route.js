@@ -186,14 +186,16 @@ You have access to the following tools to help answer the user's request. USE TH
 - read_file(path): Read the contents of a file in the workspace.
 - search_workspace(query): Search for text/symbols across the workspace.
 - list_directory(path): List files and folders in a directory.
-- run_command(command): Execute a shell command in the workspace and see its output (stdout/stderr). Use this for tasks like checking versions, running build tools, installing packages, running tests, linting, etc.
+- run_command(command): Execute a shell command in the user's live terminal (they can see it running). Use this for: checking git status, checking versions, running build tools, installing packages, running tests, linting, or any CLI task.
 
 IMPORTANT TOOL GUIDELINES:
-- When the user asks you to run a command, check a version, install something, or perform any terminal task — call run_command immediately. Do NOT tell the user to do it themselves.
+- When the user asks you to run a command, check a status, check a version, install something, or perform any terminal/git task — call run_command immediately. Do NOT tell the user to do it themselves. Do NOT suggest code changes instead.
+- When the user asks to "check" something (e.g., "check git status", "check if X is installed"), use run_command. Do NOT return code changes.
 - When you need to understand the codebase, use read_file and search_workspace to gather context before answering.
 - You CAN and SHOULD use multiple tools in sequence. Call a tool, read the result, then decide what to do next.
-- After running commands, report the actual output to the user.
+- After running commands, report the actual output clearly to the user. Do NOT invent file changes based on command output.
 - If a command fails, report the error and suggest fixes.
+- When the user's request only involves running commands (not editing code), respond with the command output only — do NOT generate FILE: blocks or code changes.
 `;
 
 
@@ -677,7 +679,12 @@ const streamGeminiWithTools = async ({
                 const { name, args } = part.functionCall;
                 toolEvents.push({ tool: name, args, status: 'running' });
                 const result = await executeTool(name, args, workspacePath, signal);
-                toolEvents[toolEvents.length - 1].status = 'done';
+                const evt = toolEvents[toolEvents.length - 1];
+                evt.status = 'done';
+                // Propagate sessionId from run_command so frontend can open terminal
+                if (name === 'run_command' && result?.sessionId) {
+                    evt.sessionId = result.sessionId;
+                }
                 return { functionResponse: { name, response: result } };
             })
         );

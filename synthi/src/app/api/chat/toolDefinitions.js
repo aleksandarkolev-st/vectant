@@ -175,26 +175,56 @@ async function execRunCommand(slug, args) {
     }
 
     try {
-        const url = `${COLLAB_BASE}/exec/${encodeURIComponent(slug)}`;
-        const res = await fetch(url, {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ command, timeout: CMD_TIMEOUT_MS }),
-            signal: AbortSignal.timeout(CMD_TIMEOUT_MS + 5000),
-        });
+        // Use /exec-terminal to run in a real PTY that the user can see
+        // Falls back to /exec if /exec-terminal is unavailable
+        const terminalUrl = `${COLLAB_BASE}/exec-terminal/${encodeURIComponent(slug)}`;
+        const execUrl = `${COLLAB_BASE}/exec/${encodeURIComponent(slug)}`;
+
+        let res;
+        let usedTerminal = false;
+        try {
+            res = await fetch(terminalUrl, {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ command, timeout: CMD_TIMEOUT_MS }),
+                signal: AbortSignal.timeout(CMD_TIMEOUT_MS + 5000),
+            });
+            usedTerminal = res.ok;
+        } catch (_) {
+            // /exec-terminal not available, fall through to /exec
+        }
+
+        if (!usedTerminal) {
+            res = await fetch(execUrl, {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ command, timeout: CMD_TIMEOUT_MS }),
+                signal: AbortSignal.timeout(CMD_TIMEOUT_MS + 5000),
+            });
+        }
+
         if (!res.ok) {
             const body = await res.text().catch(() => '');
             return { error: `Exec endpoint error (${res.status}): ${body.slice(0, 500)}` };
         }
         const data = await res.json();
-        // Truncate huge outputs
-        let output = (data.stdout || '') + (data.stderr ? `\n[stderr]\n${data.stderr}` : '');
+
+        // Build output depending on which endpoint responded
+        let output;
+        if (usedTerminal) {
+            output = data.output || '(no output)';
+        } else {
+            output = (data.stdout || '') + (data.stderr ? `\n[stderr]\n${data.stderr}` : '');
+        }
         if (output.length > MAX_CMD_OUTPUT) output = output.slice(0, MAX_CMD_OUTPUT) + '\n…[truncated]';
+
         return {
             command,
             exitCode: data.exitCode ?? null,
             output: output || '(no output)',
             timedOut: Boolean(data.timedOut),
+            // Include sessionId so the frontend can open the terminal tab
+            sessionId: data.sessionId || null,
         };
     } catch (e) {
         return { error: `Failed to execute command: ${e.message}` };
@@ -237,14 +267,22 @@ const COMPLEX_PATTERNS = [
     /\bscaffold\b/i,
     /\bmigrat(e|ion)\b/i,
     /\bintegrat(e|ion)\b/i,
+    // Terminal / command / git operations — need tool use
+    /\bgit\s+(status|log|diff|branch|remote|stash|show|checkout|pull|push|commit|add)\b/i,
+    /\bcheck\b.*\b(status|version|installed|dependencies|packages)\b/i,
+    /\b(ls|dir|pwd|cat|echo|which|where|whoami)\b/i,
+    /\bshow\b.*\b(status|output|result|log)\b/i,
+    /\bversion\b/i,
 ];
 
 /**
  * Decide whether a prompt is complex enough to warrant agentic tool use.
- * Returns true when the task likely needs file exploration / multi-file creation.
+ * Returns true when the task likely needs file exploration, multi-file creation,
+ * or command execution.
  */
 export function isComplexTask(prompt = '', fileCount = 0) {
     const score = COMPLEX_PATTERNS.reduce((n, re) => n + (re.test(prompt) ? 1 : 0), 0);
     // Two or more signals → agentic; or if the user explicitly asks for Agent mode
-    return score >= 2 || (score >= 1 && fileCount === 0);
+    // One signal with no files also qualifies (e.g., "check git status" needs tools, not file context)
+    return score >= 2 || (score >= 1 && fileCount === 0) || score >= 1;
 }
