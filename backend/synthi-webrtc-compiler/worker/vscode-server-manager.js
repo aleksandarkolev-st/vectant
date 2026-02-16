@@ -1571,12 +1571,28 @@ function _handlePreloadMessage(msg) {
       process.stderr.write(`[preload-bridge] authSessionRequest: provider=${providerId} scopes=${JSON.stringify(scopes)} createIfNone=${createIfNone}\n`);
       const normalizedProviderId = String(providerId || '').toLowerCase();
       const normalizedScopes = Array.isArray(scopes) ? scopes : [];
+
+      // Check if a matching session already exists — skip the entire
+      // device flow and frontend notification if the session is cached.
+      const existingSession = _listAuthSessions(normalizedProviderId).find(session => _sessionMatchesScopes(session, normalizedScopes));
+      if (existingSession && !forceNewSession) {
+        process.stderr.write(`[preload-bridge] authSessionRequest: session already exists for ${normalizedProviderId}, skipping device flow\n`);
+        // Notify the preload that a session is already available so it
+        // can short-circuit further authSessionRequest messages
+        sendToPreloadClients({
+          action: 'authSessionEstablished',
+          providerId: normalizedProviderId,
+          sessionId: existingSession.id,
+          accountLabel: existingSession.account?.label || 'GitHub',
+        });
+        break;
+      }
+
       if (
         normalizedProviderId === 'github'
         && (createIfNone || forceNewSession)
       ) {
-        const existing = _listAuthSessions('github').find(session => _sessionMatchesScopes(session, normalizedScopes));
-        if (!existing || forceNewSession) {
+        if (!existingSession || forceNewSession) {
           _startGithubDeviceFlow(normalizedScopes, 'preload-authSessionRequest', { forceStart: true }).catch((e) => {
             process.stderr.write(`[auth-device] github flow launch failed in authSessionRequest: ${e.message}\n`);
           });
