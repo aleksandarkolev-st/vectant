@@ -186,7 +186,31 @@ export default function ExtensionViewContainer({
   webviewManager = null,
   extensions = {},
   onExecuteCommand = null,
+  onRequestTreeRefresh = null,
 }) {
+  // Diagnostic: log what data reaches this component
+  React.useEffect(() => {
+    const mapKeys = Object.keys(treeDataMap);
+    const viewIds = views.map(v => v.id);
+    const matched = viewIds.filter(id => treeDataMap[id] && treeDataMap[id].length > 0);
+    console.log(`[ExtViewContainer] containerId=${containerId}, views=[${viewIds.join(',')}], treeDataMapKeys=[${mapKeys.join(',')}], matched=[${matched.join(',')}]`);
+  }, [containerId, views, treeDataMap]);
+
+  // Auto-request tree data refresh when the container opens with no data.
+  // This handles timing races where data arrived before Redux hydration,
+  // or was missed during the bootstrap window.
+  const refreshRequestedRef = useRef(false);
+  useEffect(() => {
+    if (!onRequestTreeRefresh || refreshRequestedRef.current) return;
+    const treeViews = views.filter(v => v.type !== 'webview');
+    const hasAnyData = treeViews.some(v => treeDataMap[v.id] && treeDataMap[v.id].length > 0);
+    if (treeViews.length > 0 && !hasAnyData) {
+      refreshRequestedRef.current = true;
+      console.log(`[ExtViewContainer] No tree data for ${containerId}, requesting refresh`);
+      onRequestTreeRefresh(containerId);
+    }
+  }, [containerId, views, treeDataMap, onRequestTreeRefresh]);
+
   // extensions may be an array (from selectExtensionList) or an object map.
   // Normalise to find the extension info by its ID.
   const extInfo = Array.isArray(extensions)

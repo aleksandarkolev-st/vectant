@@ -214,7 +214,12 @@ export function useExtensions({ editor = null, workspaceId = 'default' } = {}) {
               }
               break;
             case 'treeData':
-              setTreeDataMap(prev => ({ ...prev, [payload.viewId]: payload.data }));
+              console.log(`[useExtensions] treeData received: viewId=${payload.viewId}, items=${payload.data?.length ?? 'null'}`);
+              setTreeDataMap(prev => {
+                const next = { ...prev, [payload.viewId]: payload.data };
+                console.log(`[useExtensions] treeDataMap updated, keys:`, Object.keys(next).join(', '));
+                return next;
+              });
               break;
             case 'createWebview':
               dispatch(addWebviewPanel({
@@ -326,6 +331,42 @@ export function useExtensions({ editor = null, workspaceId = 'default' } = {}) {
           }
           if (hydrated > 0) {
             console.log(`[useExtensions] Hydrated ${hydrated} server-side extensions into Redux`);
+
+            // After hydrating extensions, request tree data for ALL contributed
+            // tree views. Use getCachedTreeData for immediate data (bypasses
+            // the event pipeline which may have timing issues), plus
+            // refreshTreeData for the latest live data.
+            setTimeout(() => {
+              const proxy = systemRef.current?.bridge?.vscodeServerProxy;
+              if (!proxy?.isReady()) return;
+
+              // Immediate: pull cached data directly from server
+              proxy.request('getCachedTreeData', []).then((allCached) => {
+                if (allCached && typeof allCached === 'object') {
+                  const updates = {};
+                  for (const [viewId, data] of Object.entries(allCached)) {
+                    if (data && Array.isArray(data) && data.length > 0) {
+                      updates[viewId] = data;
+                    }
+                  }
+                  if (Object.keys(updates).length > 0) {
+                    console.log(`[useExtensions] Post-hydration cached data: ${Object.keys(updates).length} views`);
+                    setTreeDataMap(prev => ({ ...prev, ...updates }));
+                  }
+                }
+              }).catch(() => {});
+
+              // Also trigger live refresh for latest data
+              const currentState = store.getState()?.extensions?.contributions?.views || {};
+              for (const [, viewList] of Object.entries(currentState)) {
+                for (const view of viewList) {
+                  if (view.type !== 'webview') {
+                    proxy.request('refreshTreeData', view.id).catch(() => {});
+                  }
+                }
+              }
+              console.log('[useExtensions] Post-hydration: requested tree data refresh for all views');
+            }, 1000);
           }
         }
       } catch (hydrateErr) {
@@ -992,6 +1033,44 @@ export function useExtensions({ editor = null, workspaceId = 'default' } = {}) {
     dispatch(dismissError(index));
   }, [dispatch]);
 
+  /**
+   * Request tree data refresh for a specific view or all views in a container.
+   * Uses getCachedTreeData for immediate data and refreshTreeData for fresh data.
+   */
+  const requestTreeRefresh = useCallback((viewIdOrContainerId) => {
+    const proxy = systemRef.current?.bridge?.vscodeServerProxy;
+    if (!proxy?.isReady()) return;
+
+    // First, try to get cached data immediately (bypasses event pipeline)
+    proxy.request('getCachedTreeData', []).then((allCached) => {
+      if (allCached && typeof allCached === 'object') {
+        const updates = {};
+        for (const [viewId, data] of Object.entries(allCached)) {
+          if (data && Array.isArray(data) && data.length > 0) {
+            updates[viewId] = data;
+          }
+        }
+        if (Object.keys(updates).length > 0) {
+          console.log(`[useExtensions] getCachedTreeData: ${Object.keys(updates).length} views with data`);
+          setTreeDataMap(prev => ({ ...prev, ...updates }));
+        }
+      }
+    }).catch(() => {});
+
+    // Also trigger a live refresh via the event pipeline
+    const currentState = store.getState()?.extensions?.contributions?.views || {};
+    const containerViews = currentState[viewIdOrContainerId];
+    if (containerViews) {
+      for (const view of containerViews) {
+        if (view.type !== 'webview') {
+          proxy.request('refreshTreeData', view.id).catch(() => {});
+        }
+      }
+    } else {
+      proxy.request('refreshTreeData', viewIdOrContainerId).catch(() => {});
+    }
+  }, [store]);
+
   return {
     // Status
     ready: hostStatus === 'ready',
@@ -1022,6 +1101,7 @@ export function useExtensions({ editor = null, workspaceId = 'default' } = {}) {
     restart,
     getMetrics,
     dismissError: handleDismissError,
+    requestTreeRefresh,
 
     // VS Code Server (Path A: real Extension Host)
     vscodeServerState,
