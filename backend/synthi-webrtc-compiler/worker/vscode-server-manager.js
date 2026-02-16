@@ -649,23 +649,51 @@ function _startGithubDeviceTokenPolling(deviceCode, scopes, intervalSec = 5, tri
       const payload = await response.json().catch(() => ({}));
 
       if (payload?.access_token) {
+        const accessToken = String(payload.access_token);
         const scopeText = typeof payload.scope === 'string' ? payload.scope : normalizedScopes.join(',');
+
+        // Fetch the actual GitHub user profile so extensions can reach the API
+        // and get proper account info (username, avatar, etc.)
+        let accountId = 'github';
+        let accountLabel = 'GitHub';
+        try {
+          const userResponse = await fetch('https://api.github.com/user', {
+            headers: {
+              Authorization: `Bearer ${accessToken}`,
+              Accept: 'application/json',
+              'User-Agent': 'synthi-vscode-server',
+            },
+          });
+          if (userResponse.ok) {
+            const userPayload = await userResponse.json().catch(() => ({}));
+            if (userPayload.login) {
+              accountId = String(userPayload.id || userPayload.login);
+              accountLabel = String(userPayload.login);
+              process.stderr.write(`[auth-device] github user: ${accountLabel} (id=${accountId})\n`);
+            }
+          } else {
+            process.stderr.write(`[auth-device] github user fetch failed: status=${userResponse.status}\n`);
+          }
+        } catch (userErr) {
+          process.stderr.write(`[auth-device] github user fetch error: ${userErr.message}\n`);
+        }
+
         const session = {
           id: `github-${Date.now()}`,
-          accessToken: String(payload.access_token),
+          accessToken,
           account: {
-            id: 'github',
-            label: 'GitHub',
+            id: accountId,
+            label: accountLabel,
           },
           scopes: _normalizeScopes(scopeText.split(/[\s,]+/g).filter(Boolean)),
         };
         _upsertAuthSession('github', session);
         _pendingGithubFlows.delete(flowKey);
-        process.stderr.write(`[auth-device] github session established (${trigger})\n`);
+        process.stderr.write(`[auth-device] github session established (${trigger}) user=${accountLabel}\n`);
         _emitAuthSessionChanged('github', [session.id], [], []);
         sendEvent('extensionMessage', {
           severity: 'info',
-          message: 'GitHub sign-in completed.',
+          message: `GitHub sign-in completed as ${accountLabel}.`,
           modal: false,
           commands: [],
         });
