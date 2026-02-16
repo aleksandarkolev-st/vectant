@@ -1023,23 +1023,19 @@ for (const delay of _cachePollDelays) {
     let found = false;
     for (const key of Object.keys(cache)) {
       const mod = cache[key];
-      if (mod && mod.exports && typeof mod.exports === 'object') {
-        const ex = mod.exports;
-        if (_looksLikeVscodeApi(ex) && !_wrappedApiInstances.has(ex)) {
-          log(`Cache poll: found vscode-like API in Module._cache key: ${key}`);
-          const didWrap = _tryWrapVscodeResult(ex, `Module._cache poll (key: ${key.slice(-80)})`);
-          if (didWrap) {
-            log(`SUCCESS: vscode API intercepted via Module._cache poll`);
-            bridgeSend({
-              type: 'bootstrapState',
-              complete: true,
-              method: 'cache-poll',
-              wrappedCount: _wrappedApiCount,
-            });
-            found = true;
-            break;
-          }
-        }
+      if (!mod || !Object.prototype.hasOwnProperty.call(mod, 'exports')) continue;
+      const ex = mod.exports;
+      const didWrap = _tryWrapVscodeResult(ex, `Module._cache poll (key: ${key.slice(-80)})`);
+      if (didWrap) {
+        log(`SUCCESS: vscode API intercepted via Module._cache poll`);
+        bridgeSend({
+          type: 'bootstrapState',
+          complete: true,
+          method: 'cache-poll',
+          wrappedCount: _wrappedApiCount,
+        });
+        found = true;
+        break;
       }
     }
 
@@ -1048,6 +1044,95 @@ for (const delay of _cachePollDelays) {
     }
   }, delay);
   pollTimer.unref();
+}
+
+// ---------------------------------------------------------------------------
+// Strategy 6b: passive global factory scan fallback
+//
+// Some code-server builds expose API factories on renamed global keys that
+// still contain VSCODE/API hints, but don't hit our exact traps soon enough.
+// We never call global functions here; we only wrap descriptors/functions.
+// ---------------------------------------------------------------------------
+function _looksLikeGlobalFactoryKey(name) {
+  return (
+    /VSCODE/i.test(name)
+    || /EXTHOST/i.test(name)
+    || /API_IMPL/i.test(name)
+    || /IMPORT_VSCODE_API/i.test(name)
+  );
+}
+
+function _scanAndWrapGlobalFactories(reason) {
+  if (vsCodeWrapped) return 0;
+
+  let wrapped = 0;
+  const names = Object.getOwnPropertyNames(globalThis);
+  for (const name of names) {
+    if (!_looksLikeGlobalFactoryKey(name)) continue;
+
+    let desc;
+    try {
+      desc = Object.getOwnPropertyDescriptor(globalThis, name);
+    } catch (_) {
+      continue;
+    }
+    if (!desc || !desc.configurable) continue;
+
+    const next = { ...desc };
+    let changed = false;
+
+    if (typeof next.value === 'function') {
+      const wrappedValue = _wrapPotentialApiFactory(next.value, `global-scan:${reason}:${name}:value`);
+      if (wrappedValue !== next.value) {
+        next.value = wrappedValue;
+        changed = true;
+      }
+    }
+
+    if (typeof next.get === 'function') {
+      const originalGet = next.get;
+      next.get = function wrappedGlobalFactoryGetter(...args) {
+        const value = originalGet.apply(this, args);
+        if (typeof value === 'function') {
+          return _wrapPotentialApiFactory(value, `global-scan:${reason}:${name}:getter`);
+        }
+        return value;
+      };
+      changed = true;
+    }
+
+    if (typeof next.set === 'function') {
+      const originalSet = next.set;
+      next.set = function wrappedGlobalFactorySetter(value, ...args) {
+        const maybeWrapped = typeof value === 'function'
+          ? _wrapPotentialApiFactory(value, `global-scan:${reason}:${name}:setter`)
+          : value;
+        return originalSet.call(this, maybeWrapped, ...args);
+      };
+      changed = true;
+    }
+
+    if (!changed) continue;
+
+    try {
+      _origObjectDefineProperty.call(Object, globalThis, name, next);
+      wrapped++;
+    } catch (_) {
+      // Ignore non-overridable properties
+    }
+  }
+
+  if (wrapped > 0) {
+    log(`Global factory scan (${reason}) wrapped ${wrapped} candidate descriptors`);
+  }
+  return wrapped;
+}
+
+for (const delay of [12000, 22000, 35000]) {
+  const timer = setTimeout(() => {
+    _scanAndWrapGlobalFactories(`t+${delay}ms`);
+  }, delay);
+  if (timer.unref) timer.unref();
 }
 
 // ============================================================================
