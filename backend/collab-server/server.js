@@ -222,8 +222,18 @@ class ValidatingPersistence {
   }
 
   /**
-   * Set up auto-flush observer for a Y.js document
-   * This ensures every Y.js change is eventually written to disk
+   * Set up auto-flush observer for a Y.js document.
+   *
+   * EDITOR-ONLY MODE: The observer no longer writes to disk or GCS
+   * automatically on every keystroke.  Instead it only keeps the
+   * in-memory hash cache up to date and marks the document as dirty.
+   * Actual disk/GCS writes happen on explicit save (via the 'sync'
+   * action which calls gitService.syncFile) or when the document is
+   * closed (writeState).
+   *
+   * This ensures changes stay "editor-only" — visible in the Yjs
+   * CRDT for real-time collab but NOT persisted until the user
+   * explicitly saves.
    */
   _setupAutoFlush(docName, ydoc) {
     // Only set up for workspace documents
@@ -239,86 +249,27 @@ class ValidatingPersistence {
     const targetText = ydoc.getText(YTEXT_TYPE);
     if (!targetText) return;
 
-    // Create observer that flushes to disk.
     // Store the entry reference up-front so the observer closure can update
     // `entry.flushTimer` in-place — _cleanupAutoFlush reads `entry.flushTimer`
     // to cancel pending timers, so the two MUST share the same object.
-    const entry = { ydoc, text: targetText, observer: null, flushTimer: null, docLevelObserver: null };
+    const entry = { ydoc, text: targetText, observer: null, flushTimer: null, docLevelObserver: null, dirty: false };
 
     const observer = () => {
-      // Debounce disk writes
+      // Mark as dirty so writeState / explicit-save knows content changed
+      entry.dirty = true;
+      // Update in-memory hash cache (cheap — no I/O)
       if (entry.flushTimer) clearTimeout(entry.flushTimer);
-      
-      entry.flushTimer = setTimeout(async () => {
+      entry.flushTimer = setTimeout(() => {
         entry.flushTimer = null;
         try {
           const content = targetText.toString();
-
-          // ── 1. GCS sync (durable store — always runs first) ────────────
-          if (config.GCS_SYNC_ON_FLUSH && gcsSync && typeof gcsSync.isGcsConfigured === 'function' && gcsSync.isGcsConfigured()) {
-            try {
-              await gcsSync.syncFileToGcs(slug, filePath, content);
-            } catch (e) {
-              console.warn(`[Collab AutoFlush] GCS sync failed for ${filePath}:`, e?.message || e);
-            }
-          }
-
-          // ── 2. Disk write ──────────────────────────────────────────────
-          // Write to ALL per-user repo working trees first (primary target).
-          // Per-user repos are the source of truth for each user's git status.
-          let wroteAny = false;
-          try {
-            const userRepos = gitService.listUserRepos(slug);
-            for (const { path: userRepoPath } of userRepos) {
-              try {
-                // Guard: skip if the repo directory was evicted from the cache
-                // between the listUserRepos call and the write attempt.
-                if (!fs.existsSync(userRepoPath)) continue;
-                const userFullPath = path.join(userRepoPath, filePath);
-                await fsPromises.mkdir(path.dirname(userFullPath), { recursive: true });
-                await fsPromises.writeFile(userFullPath, content, 'utf-8');
-                wroteAny = true;
-              } catch (_) { /* non-fatal per user */ }
-            }
-          } catch (_) { /* non-fatal */ }
-
-          // Fallback: write to the slug-level repo if no per-user repos exist
-          // yet (e.g. during initial hydration before any user connects).
-          if (!wroteAny) {
-            const repoPath = gitService.getRepoPath(slug);
-            if (fs.existsSync(repoPath)) {
-              const fullPath = path.join(repoPath, filePath);
-              const dirPath = path.dirname(fullPath);
-              await fsPromises.mkdir(dirPath, { recursive: true });
-              await fsPromises.writeFile(fullPath, content, 'utf-8');
-            }
-          }
-          
-          // Update hash cache
           fileHashCache.set(docName, { hash: computeHash(content), timestamp: Date.now() });
 
-          // Optional: Trigger incremental code-intel indexing
-          if (config.CODE_INTEL_AUTO_INDEX && fetchFunc && CODE_INTEL_URL) {
-            try {
-              fetchFunc(`${CODE_INTEL_URL}/code-intel/index/file`, {
-                method: 'POST',
-                headers: { 'content-type': 'application/json' },
-                body: JSON.stringify({
-                  workspace_path: slug,
-                  file_path: filePath,
-                }),
-              }).catch(() => {});
-            } catch (e) {
-              // Non-fatal
-            }
-          }
-          
-          // Notify frontends so Source Control refreshes immediately
+          // Notify frontends so Source Control can show pending changes
+          // (but do NOT write to disk — that waits for explicit save)
           broadcastGitStatusChanged(slug, filePath);
-          
-          console.log(`[Collab AutoFlush] ${filePath} -> GCS + cache (${content.length} chars)`);
         } catch (e) {
-          console.error(`[Collab AutoFlush] Failed to flush ${filePath}:`, e.message);
+          console.error(`[Collab AutoFlush] Hash update failed for ${filePath}:`, e.message);
         }
       }, this.FLUSH_DEBOUNCE_MS);
     };
@@ -367,6 +318,89 @@ class ValidatingPersistence {
       }
       this.docObservers.delete(docName);
     }
+  }
+
+  /**
+   * Explicitly flush the current CRDT content for a document to disk and
+   * GCS.  Called from the 'sync' action handler when the user saves.
+   *
+   * This replaces the old auto-flush behavior — disk/GCS writes now only
+   * happen on demand rather than on every keystroke.
+   *
+   * @param {string} docName  e.g. "workspace:slug:path/to/file.js"
+   */
+  async flushDocToDisk(docName) {
+    const parsed = parseDocName(docName);
+    if (!parsed) return;
+
+    const { slug, filePath } = parsed;
+
+    // Read content from the in-memory Yjs doc (the observer tracks it)
+    const entry = this.docObservers.get(docName);
+    let content;
+    if (entry && entry.text) {
+      content = entry.text.toString();
+    } else {
+      // Fallback: look up the Y.Doc directly
+      const ydoc = this.inner && typeof this.inner.getYDoc === 'function'
+        ? this.inner.getYDoc(docName)
+        : null;
+      if (!ydoc) return;
+      content = ydoc.getText(YTEXT_TYPE).toString();
+    }
+
+    if (content == null) return;
+
+    // ── 1. GCS sync (durable store) ──────────────────────────────────
+    if (config.GCS_SYNC_ON_FLUSH && gcsSync && typeof gcsSync.isGcsConfigured === 'function' && gcsSync.isGcsConfigured()) {
+      try {
+        await gcsSync.syncFileToGcs(slug, filePath, content);
+      } catch (e) {
+        console.warn(`[Collab Flush] GCS sync failed for ${filePath}:`, e?.message || e);
+      }
+    }
+
+    // ── 2. Disk write to per-user repos ──────────────────────────────
+    let wroteAny = false;
+    try {
+      const userRepos = gitService.listUserRepos(slug);
+      for (const { path: userRepoPath } of userRepos) {
+        try {
+          if (!fs.existsSync(userRepoPath)) continue;
+          const userFullPath = path.join(userRepoPath, filePath);
+          await fsPromises.mkdir(path.dirname(userFullPath), { recursive: true });
+          await fsPromises.writeFile(userFullPath, content, 'utf-8');
+          wroteAny = true;
+        } catch (_) { /* non-fatal per user */ }
+      }
+    } catch (_) { /* non-fatal */ }
+
+    // Fallback: slug-level repo if no per-user repos exist yet
+    if (!wroteAny) {
+      const repoPath = gitService.getRepoPath(slug);
+      if (fs.existsSync(repoPath)) {
+        const fullPath = path.join(repoPath, filePath);
+        await fsPromises.mkdir(path.dirname(fullPath), { recursive: true });
+        await fsPromises.writeFile(fullPath, content, 'utf-8');
+      }
+    }
+
+    // Update hash cache
+    fileHashCache.set(docName, { hash: computeHash(content), timestamp: Date.now() });
+
+    // Optional: code-intel indexing
+    if (config.CODE_INTEL_AUTO_INDEX && fetchFunc && CODE_INTEL_URL) {
+      try {
+        fetchFunc(`${CODE_INTEL_URL}/code-intel/index/file`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ workspace_path: slug, file_path: filePath }),
+        }).catch(() => {});
+      } catch (_) { /* non-fatal */ }
+    }
+
+    broadcastGitStatusChanged(slug, filePath);
+    console.log(`[Collab Flush] Explicit save: ${filePath} -> disk + GCS (${content.length} chars)`);
   }
 
   async bindState(docName, ydoc) {
@@ -1321,8 +1355,16 @@ const server = http.createServer(async (req, res) => {
                     result = await gitService.stashDrop(slug, data.index, userId);
                     break;
                 case 'sync':
-                    // Sync a single file
+                    // Sync a single file — explicit save action from the client.
+                    // 1. Write the content provided by the client to the git working tree.
                     await gitService.syncFile(slug, data.filePath, data.content, userId);
+                    // 2. Also flush the Yjs CRDT content to disk + GCS.
+                    //    This ensures GCS stays up-to-date and all per-user
+                    //    repos get the latest content on explicit save.
+                    {
+                      const docKey = `workspace:${slug}:${data.filePath}`;
+                      await persistence.flushDocToDisk(docKey);
+                    }
                     result = { success: true };
                     break;
                 case 'files':
