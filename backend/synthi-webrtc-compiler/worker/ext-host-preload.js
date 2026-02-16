@@ -2132,6 +2132,65 @@ function _invokeTrackedCommand(commandId, cmdArgs) {
   return true;
 }
 
+function _tokenizeCommandId(commandId) {
+  if (!commandId || typeof commandId !== 'string') return [];
+  return commandId
+    .split(/[^a-zA-Z0-9]+/)
+    .map(t => t.trim().toLowerCase())
+    .filter(Boolean);
+}
+
+function _scoreCommandAlias(queryId, candidateId) {
+  if (!queryId || !candidateId) return -1;
+  if (queryId === candidateId) return 1e9;
+
+  const qPrefix = queryId.includes('.') ? queryId.split('.')[0].toLowerCase() : '';
+  const cPrefix = candidateId.includes('.') ? candidateId.split('.')[0].toLowerCase() : '';
+
+  const qTokens = new Set(_tokenizeCommandId(queryId));
+  const cTokens = new Set(_tokenizeCommandId(candidateId));
+
+  let overlap = 0;
+  for (const token of qTokens) {
+    if (cTokens.has(token)) overlap++;
+  }
+
+  let score = overlap * 100;
+  if (qPrefix && cPrefix && qPrefix === cPrefix) score += 350;
+  if (candidateId.toLowerCase().includes(queryId.toLowerCase())) score += 250;
+  if (queryId.toLowerCase().includes(candidateId.toLowerCase())) score += 100;
+
+  // Give extra weight to auth-ish token alignment but keep generic scoring.
+  const authLike = ['signin', 'login', 'auth', 'session', 'credential'];
+  for (const token of authLike) {
+    if (qTokens.has(token) && cTokens.has(token)) score += 90;
+  }
+
+  return score;
+}
+
+function _findBestTrackedAlias(commandId) {
+  if (!commandId) return null;
+  const keys = Array.from(trackedCommandHandlers.keys());
+  if (keys.length === 0) return null;
+
+  let bestId = null;
+  let bestScore = 0;
+  for (const candidate of keys) {
+    const score = _scoreCommandAlias(commandId, candidate);
+    if (score > bestScore) {
+      bestScore = score;
+      bestId = candidate;
+    }
+  }
+
+  // Require a meaningful match threshold to avoid random aliases.
+  if (bestId && bestScore >= 200) {
+    return { commandId: bestId, score: bestScore };
+  }
+  return null;
+}
+
 function _findExtensionsContributingCommand(commandId) {
   const out = [];
   const all = realVscodeApi?.extensions?.all;
@@ -2293,6 +2352,16 @@ function _handleBridgeRequest(msg) {
         break;
       }
 
+      // 1b. Generic alias fallback: resolve to closest tracked command.
+      // Useful when welcome-content buttons reference legacy/variant IDs.
+      const alias = _findBestTrackedAlias(commandId);
+      if (alias) {
+        log(`No direct handler for ${commandId}; trying alias ${alias.commandId} (score=${alias.score})`);
+        if (_invokeTrackedCommand(alias.commandId, cmdArgs)) {
+          return;
+        }
+      }
+
       (async () => {
         // 2. Activate contributing extension(s) on demand, then retry.
         const activation = await _activateExtensionsForCommand(commandId);
@@ -2300,6 +2369,14 @@ function _handleBridgeRequest(msg) {
           log(`Activation attempt for ${commandId}: ${activation.activated}/${activation.total} extension(s)`);
           if (_invokeTrackedCommand(commandId, cmdArgs)) {
             return;
+          }
+
+          const aliasAfterActivation = _findBestTrackedAlias(commandId);
+          if (aliasAfterActivation) {
+            log(`Post-activation alias for ${commandId}: ${aliasAfterActivation.commandId} (score=${aliasAfterActivation.score})`);
+            if (_invokeTrackedCommand(aliasAfterActivation.commandId, cmdArgs)) {
+              return;
+            }
           }
 
           logError(`No tracked handler for ${commandId} after activation retry`);
