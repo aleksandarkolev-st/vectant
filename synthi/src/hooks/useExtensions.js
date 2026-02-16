@@ -412,6 +412,20 @@ export function useExtensions({ editor = null, workspaceId = 'default' } = {}) {
               }
               break;
             }
+            case 'authDeviceCodeMissing': {
+              const provider = payload?.providerId || 'unknown';
+              const waitedMs = payload?.waitedMs || 0;
+              console.warn(`[useExtensions] authDeviceCodeMissing: provider=${provider} waitedMs=${waitedMs}`);
+              toast.warning(`No device code received from ${provider}`, {
+                description: 'Auth was requested, but provider did not emit a device code. Use Open GitHub or provider sign-in UI.',
+                duration: 10000,
+                action: provider === 'github' ? {
+                  label: 'Open GitHub',
+                  onClick: () => window.open('https://github.com/login', '_blank'),
+                } : undefined,
+              });
+              break;
+            }
             case 'showQuickPick': {
               // Log quick pick for now — full UI would require a modal
               const placeholder = payload.options?.placeHolder || 'Select an option';

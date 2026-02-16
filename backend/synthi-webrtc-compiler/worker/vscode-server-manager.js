@@ -274,7 +274,31 @@ function extractDeviceCodeFromUrl(value) {
 function emitAuthDeviceCode(code, source, metadata = {}) {
   if (!code) return;
   process.stderr.write(`[auth-device] code=${code} source=${source}\n`);
+  const providerId = typeof metadata.providerId === 'string' ? metadata.providerId : 'github';
+  _pendingAuthDeviceCodeByProvider.delete(providerId);
   sendEvent('authDeviceCode', { code, source, ...metadata });
+}
+
+function scheduleMissingAuthDeviceCodeNotice(providerId, scopes) {
+  const pid = String(providerId || 'unknown');
+  const startedAt = Date.now();
+  _pendingAuthDeviceCodeByProvider.set(pid, startedAt);
+
+  const timer = setTimeout(() => {
+    const current = _pendingAuthDeviceCodeByProvider.get(pid);
+    if (!current || current !== startedAt) return;
+
+    _pendingAuthDeviceCodeByProvider.delete(pid);
+    process.stderr.write(`[auth-device] missing code after authSessionRequest provider=${pid}\n`);
+    sendEvent('authDeviceCodeMissing', {
+      providerId: pid,
+      scopes: Array.isArray(scopes) ? scopes : [],
+      waitedMs: 3000,
+      reason: 'provider-did-not-emit-device-code',
+    });
+  }, 3000);
+
+  if (timer.unref) timer.unref();
 }
 
 function _extractRpcArgsFromBuffer(dataBuf) {
@@ -390,6 +414,9 @@ const preloadTreeCache = new Map();
 
 /** @type {{ key: string|null, ts: number }} dedupe repeated auth session events */
 const _lastAuthSessionRequest = { key: null, ts: 0 };
+
+/** @type {Map<string, number>} providerId -> timestamp awaiting device code */
+const _pendingAuthDeviceCodeByProvider = new Map();
 
 /** @type {Set<string>} Tree views observed directly from EH RPC registrations */
 const rpcObservedTreeViews = new Set();
@@ -916,6 +943,7 @@ function _handlePreloadMessage(msg) {
       }
       _lastAuthSessionRequest.key = dedupeKey;
       _lastAuthSessionRequest.ts = now;
+      scheduleMissingAuthDeviceCodeNotice(providerId, scopes);
       sendEvent('authSessionRequest', { providerId, scopes, createIfNone, forceNewSession });
       break;
     }

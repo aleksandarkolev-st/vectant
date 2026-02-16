@@ -501,6 +501,11 @@ export class MainThreadBridge {
       this._emitRemoteContribution?.('authDeviceCode', data);
     });
 
+    this.vscodeServerProxy.on('authDeviceCodeMissing', (data) => {
+      console.warn(`[MainThreadBridge/vscode-server] authDeviceCodeMissing: provider=${data?.providerId || 'unknown'}`);
+      this._emitRemoteContribution?.('authDeviceCodeMissing', data);
+    });
+
     // Forward extension progress → UI
     this.vscodeServerProxy.on('extensionProgress', (data) => {
       this._emitRemoteContribution?.('extensionProgress', data);
