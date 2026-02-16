@@ -1397,6 +1397,9 @@ function wrapVSCodeAPI(vscode) {
   wrapWebviewProviders(vscode);
   wrapCommands(vscode);
   wrapEnvOpenExternal(vscode);
+  wrapEnvAsExternalUri(vscode);
+  wrapClipboardWriteText(vscode);
+  wrapAuthentication(vscode);
 
   log('All API wrappers installed successfully');
   return true;
@@ -1442,6 +1445,132 @@ function wrapEnvOpenExternal(vscode) {
   }
 
   log('env.openExternal wrapped');
+}
+
+// ============================================================================
+// Wrap: authentication.getSession
+// ============================================================================
+
+/**
+ * Wrap vscode.authentication.getSession so that when an extension requests a
+ * session with { createIfNone: true }, we forward the auth request to the
+ * browser via the bridge.  In headless code-server the main-thread stub
+ * cannot orchestrate the full OAuth flow, so we intercept it here.
+ */
+function wrapAuthentication(vscode) {
+  if (!vscode.authentication) {
+    log('vscode.authentication not found — skipping auth wrap');
+    return;
+  }
+
+  const originalGetSession = vscode.authentication.getSession;
+  if (typeof originalGetSession !== 'function') {
+    log('vscode.authentication.getSession is not a function — skipping');
+    return;
+  }
+
+  const wrappedGetSession = function wrappedGetSession(providerId, scopes, options) {
+    log(`authentication.getSession intercepted: provider=${providerId} scopes=${JSON.stringify(scopes)} options=${JSON.stringify(options)}`);
+
+    // Notify bridge of the authentication request so the frontend can
+    // potentially show UI or handle device-code flow
+    if (options && (options.createIfNone || options.forceNewSession)) {
+      log(`Authentication request requires user interaction: provider=${providerId}`);
+      bridgeSend({
+        type: 'authSessionRequest',
+        providerId,
+        scopes: scopes || [],
+        createIfNone: !!options.createIfNone,
+        forceNewSession: !!options.forceNewSession,
+      });
+    }
+
+    // Delegate to the real implementation — in code-server this will
+    // attempt the built-in auth providers (GitHub, Microsoft, etc.)
+    return originalGetSession.call(this, providerId, scopes, options);
+  };
+
+  if (!_safeAssign(vscode.authentication, 'getSession', wrappedGetSession, 'authentication.getSession')) {
+    return;
+  }
+
+  // Also wrap onDidChangeSessions to track session changes
+  const originalOnDidChange = vscode.authentication.onDidChangeSessions;
+  if (typeof originalOnDidChange === 'function') {
+    const wrappedOnDidChange = function wrappedOnDidChangeSessions(listener, thisArg, disposables) {
+      const wrappedListener = function(e) {
+        log(`onDidChangeSessions fired: provider=${e?.provider?.id || 'unknown'}`);
+        bridgeSend({ type: 'authSessionChanged', providerId: e?.provider?.id || 'unknown' });
+        return listener.call(this, e);
+      };
+      return originalOnDidChange.call(this, wrappedListener, thisArg, disposables);
+    };
+    _safeAssign(vscode.authentication, 'onDidChangeSessions', wrappedOnDidChange, 'authentication.onDidChangeSessions');
+  }
+
+  log('authentication.getSession wrapped');
+}
+
+// ============================================================================
+// Wrap: env.asExternalUri
+// ============================================================================
+
+/**
+ * Wrap vscode.env.asExternalUri so that OAuth callback URI mappings are
+ * intercepted and forwarded to the bridge.
+ */
+function wrapEnvAsExternalUri(vscode) {
+  if (!vscode.env) return;
+
+  const original = vscode.env.asExternalUri;
+  if (typeof original !== 'function') {
+    log('vscode.env.asExternalUri is not a function — skipping');
+    return;
+  }
+
+  const wrappedAsExternalUri = function wrappedAsExternalUri(target) {
+    const url = target?.toString?.() || String(target);
+    log(`env.asExternalUri intercepted: ${url}`);
+    bridgeSend({ type: 'asExternalUri', url });
+    return original.call(this, target);
+  };
+
+  if (_safeAssign(vscode.env, 'asExternalUri', wrappedAsExternalUri, 'env.asExternalUri')) {
+    log('env.asExternalUri wrapped');
+  }
+}
+
+// ============================================================================
+// Wrap: env.clipboard.writeText
+// ============================================================================
+
+/**
+ * Wrap vscode.env.clipboard.writeText so that clipboard writes (e.g. device
+ * codes for GitHub OAuth) are also forwarded through the bridge.  The RPC
+ * handler already forwards $writeText, but this ensures the API-level call
+ * is also captured.
+ */
+function wrapClipboardWriteText(vscode) {
+  if (!vscode.env || !vscode.env.clipboard) {
+    log('vscode.env.clipboard not found — skipping clipboard wrap');
+    return;
+  }
+
+  const original = vscode.env.clipboard.writeText;
+  if (typeof original !== 'function') {
+    log('vscode.env.clipboard.writeText is not a function — skipping');
+    return;
+  }
+
+  const wrappedWriteText = function wrappedWriteText(text) {
+    log(`clipboard.writeText intercepted: ${String(text).slice(0, 50)}`);
+    bridgeSend({ type: 'clipboardWrite', text: String(text) });
+    return original.call(this, text);
+  };
+
+  if (_safeAssign(vscode.env.clipboard, 'writeText', wrappedWriteText, 'clipboard.writeText')) {
+    log('clipboard.writeText wrapped');
+  }
 }
 
 // ============================================================================
