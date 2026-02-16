@@ -39,6 +39,8 @@ import {
   selectWebviewPanels,
   selectStatusBarItems,
   selectViewsWelcome,
+  setContextValue,
+  selectContextValues,
 } from '@/redux/extensionSlice';
 
 // Loader pipeline
@@ -111,6 +113,7 @@ export function useExtensions({ editor = null, workspaceId = 'default' } = {}) {
   const webviewPanels = useAppSelector(selectWebviewPanels);
   const statusBarItems = useAppSelector(selectStatusBarItems);
   const viewsWelcome = useAppSelector(selectViewsWelcome);
+  const contextValues = useAppSelector(selectContextValues);
 
   // Tree data from extensions (viewId → items[])
   const [treeDataMap, setTreeDataMap] = useState({});
@@ -506,7 +509,9 @@ export function useExtensions({ editor = null, workspaceId = 'default' } = {}) {
               const { key, value } = payload;
               if (key) {
                 console.log(`[useExtensions] setContext: ${key} = ${JSON.stringify(value)}`);
-                // Store context values in a ref for when-clause evaluation
+                // Store in Redux so view components re-render on context changes
+                dispatch(setContextValue({ key, value }));
+                // Also keep a local ref for synchronous access
                 if (!contextValuesRef.current) contextValuesRef.current = {};
                 contextValuesRef.current[key] = value;
               }
@@ -1527,6 +1532,7 @@ export function useExtensions({ editor = null, workspaceId = 'default' } = {}) {
     statusBarItems,
     treeDataMap,
     viewsWelcome,
+    contextValues,
 
     // WebviewManager instance (for rendering webview iframes)
     webviewManager: systemRef.current?.webviews || null,
