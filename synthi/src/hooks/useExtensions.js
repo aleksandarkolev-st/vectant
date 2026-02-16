@@ -138,8 +138,8 @@ export function useExtensions({ editor = null, workspaceId = 'default' } = {}) {
   const [vscodeServerState, setVscodeServerState] = useState('disconnected');
   const [vscodeServerWorkspaceDir, setVscodeServerWorkspaceDir] = useState(null);
 
-  const showDeviceCodePopup = useCallback((deviceCode, source = 'unknown') => {
-    if (!deviceCode || typeof window === 'undefined') return;
+  const reportDeviceCode = useCallback((deviceCode, source = 'unknown') => {
+    if (!deviceCode) return;
 
     const now = Date.now();
     const last = lastAuthCodePromptRef.current || { code: null, ts: 0 };
@@ -148,9 +148,28 @@ export function useExtensions({ editor = null, workspaceId = 'default' } = {}) {
     }
     lastAuthCodePromptRef.current = { code: deviceCode, ts: now };
 
+    console.log(`[useExtensions] GitHub device code (${source}): ${deviceCode}`);
+  }, []);
+
+  const extractDeviceCode = useCallback((value) => {
+    const text = String(value || '');
+    if (!text) return null;
+
+    const directMatch = text.match(/\b[A-Z0-9]{4}-[A-Z0-9]{4}\b/);
+    if (directMatch && directMatch[0]) return directMatch[0];
+
     try {
-      window.prompt(`GitHub device code (${source}) — copy this code:`, deviceCode);
-    } catch (_) {}
+      const parsed = new URL(text);
+      const candidate = parsed.searchParams.get('user_code')
+        || parsed.searchParams.get('code')
+        || parsed.searchParams.get('device_code');
+      if (!candidate) return null;
+      const normalized = String(candidate).trim().toUpperCase();
+      const queryMatch = normalized.match(/\b[A-Z0-9]{4}-[A-Z0-9]{4}\b/);
+      return queryMatch ? queryMatch[0] : null;
+    } catch (_) {
+      return null;
+    }
   }, []);
 
   // ─── Initialize the extension host worker ────────────────────
@@ -271,11 +290,10 @@ export function useExtensions({ editor = null, workspaceId = 'default' } = {}) {
 
               // Capture GitHub device code if present in extension messages
               // so users can always paste it even if clipboard API is blocked.
-              const codeMatch = String(msg || '').match(/\b[A-Z0-9]{4}-[A-Z0-9]{4}\b/);
-              if (codeMatch && codeMatch[0]) {
-                const deviceCode = codeMatch[0];
+              const deviceCode = extractDeviceCode(msg);
+              if (deviceCode) {
                 lastAuthDeviceCodeRef.current = deviceCode;
-                showDeviceCodePopup(deviceCode, 'extension message');
+                reportDeviceCode(deviceCode, 'extension message');
                 toast.info(`Device code: ${deviceCode}`, {
                   duration: 15000,
                   action: {
@@ -330,28 +348,15 @@ export function useExtensions({ editor = null, workspaceId = 'default' } = {}) {
                 lastAuthPromptAtRef.current = now;
                 lastAuthProviderRef.current = provider;
                 if (code) {
-                  showDeviceCodePopup(code, 'auth request');
+                  reportDeviceCode(code, 'auth request');
                 }
-                // Use a user-confirmed prompt to avoid popup blockers and
-                // ensure the user sees the auth request even if toasts are hidden.
-                const promptText = code
-                  ? `GitHub sign-in requested. Open device login page now?\n\nUse code: ${code}`
-                  : 'GitHub sign-in requested. Open device login page now?';
-                let shouldOpen = false;
-                try {
-                  shouldOpen = typeof window !== 'undefined' ? window.confirm(promptText) : false;
-                } catch (_) {
-                  shouldOpen = true;
-                }
-                if (shouldOpen) {
-                  try { window.open('https://github.com/login/device', '_blank', 'noopener,noreferrer'); } catch (_) {}
-                }
+                console.log(`[useExtensions] authSessionRequest: provider=${provider} code=${code || 'none'}`);
               }
 
               toast.info(
                 code
                   ? `Sign in to ${provider}. Enter code ${code} on GitHub device page.`
-                  : `Sign in to ${provider} requested by extension. Check for a browser popup.`,
+                  : `Sign in to ${provider} requested by extension.`,
                 {
                 duration: 10000,
                 action: provider === 'github' ? {
@@ -360,6 +365,30 @@ export function useExtensions({ editor = null, workspaceId = 'default' } = {}) {
                 } : undefined,
                 }
               );
+              break;
+            }
+            case 'openExternal': {
+              const url = payload?.url || payload;
+              const codeFromUrl = extractDeviceCode(url);
+              if (codeFromUrl) {
+                lastAuthDeviceCodeRef.current = codeFromUrl;
+                reportDeviceCode(codeFromUrl, 'openExternal url');
+                toast.info(`Device code: ${codeFromUrl}`, {
+                  duration: 15000,
+                  action: {
+                    label: 'Copy Code',
+                    onClick: () => {
+                      try {
+                        if (navigator?.clipboard?.writeText) {
+                          navigator.clipboard.writeText(codeFromUrl).catch(() => {});
+                        }
+                      } catch (_) {}
+                    },
+                  },
+                });
+              } else if (url) {
+                console.log(`[useExtensions] openExternal: ${url}`);
+              }
               break;
             }
             case 'showQuickPick': {
@@ -392,9 +421,9 @@ export function useExtensions({ editor = null, workspaceId = 'default' } = {}) {
               // Extension wants to write text to the clipboard (e.g. device code).
               // Use the browser Clipboard API to actually write it.
               const text = payload.text || payload;
-              const codeMatch = String(text || '').match(/\b[A-Z0-9]{4}-[A-Z0-9]{4}\b/);
-              if (codeMatch && codeMatch[0]) {
-                showDeviceCodePopup(codeMatch[0], 'clipboard write');
+              const code = extractDeviceCode(text);
+              if (code) {
+                reportDeviceCode(code, 'clipboard write');
               }
               const writeWithFallback = async (value) => {
                 if (!value) return false;
