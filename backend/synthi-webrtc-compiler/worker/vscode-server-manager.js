@@ -3172,19 +3172,28 @@ async function _triggerExtensionHostStartup(port, token) {
           json.copy(replyRpc, 9);
 
         } else if (methodName === '$getSession' || methodName === '$getSessions') {
-          // Authentication provider session request. Return null → no session.
+          // Authentication provider session request.
           process.stderr.write(`[vscode-server-manager] Auth: ${methodName} ${JSON.stringify(rpcArgs).slice(0, 200)}\n`);
           const authReq = _extractAuthRequestFromRpcArgs(rpcArgs);
+          const providerId = String(authReq.providerId || '').toLowerCase();
+          const sessions = _listAuthSessions(providerId);
+          const matchedSession = sessions.find(session => _sessionMatchesScopes(session, authReq.scopes)) || null;
+
           if (
             methodName === '$getSession'
-            && String(authReq.providerId || '').toLowerCase() === 'github'
+            && providerId === 'github'
             && (authReq.options?.createIfNone || authReq.options?.forceNewSession)
+            && !matchedSession
           ) {
             _startGithubDeviceFlow(authReq.scopes, '$getSession').catch((e) => {
               process.stderr.write(`[auth-device] github flow launch failed in $getSession: ${e.message}\n`);
             });
           }
-          const json = Buffer.from('null', 'utf8');
+
+          const payload = methodName === '$getSessions'
+            ? sessions.filter(session => _sessionMatchesScopes(session, authReq.scopes))
+            : matchedSession;
+          const json = Buffer.from(JSON.stringify(payload), 'utf8');
           replyRpc = Buffer.alloc(5 + 4 + json.length);
           replyRpc[0] = 9; // ReplyOKJSON
           replyRpc.writeUInt32BE(reqId, 1);
@@ -3193,32 +3202,57 @@ async function _triggerExtensionHostStartup(port, token) {
 
         } else if (methodName === '$createSession') {
           // Interactive authentication session creation request.
-          // We cannot create real sessions headlessly, but we can surface
-          // a strong frontend signal to initiate browser/device flow.
           try {
             const providerId = rpcArgs && rpcArgs[0];
             const scopes = rpcArgs && rpcArgs[1];
             const options = rpcArgs && rpcArgs[2];
-            process.stderr.write(`[vscode-server-manager] Auth: $createSession provider=${providerId} scopes=${JSON.stringify(scopes)}\n`);
-            sendEvent('authSessionRequest', {
-              providerId,
-              scopes: Array.isArray(scopes) ? scopes : [],
-              createIfNone: true,
-              forceNewSession: !!(options && options.forceNewSession),
-              fromCreateSession: true,
-            });
-            if (String(providerId || '').toLowerCase() === 'github') {
-              _startGithubDeviceFlow(Array.isArray(scopes) ? scopes : [], '$createSession').catch((e) => {
-                process.stderr.write(`[auth-device] github flow launch failed in $createSession: ${e.message}\n`);
+            const normalizedProviderId = String(providerId || '').toLowerCase();
+            const existing = _listAuthSessions(normalizedProviderId).find(session => _sessionMatchesScopes(session, scopes));
+
+            if (existing && !(options && options.forceNewSession)) {
+              const json = Buffer.from(JSON.stringify(existing), 'utf8');
+              replyRpc = Buffer.alloc(5 + 4 + json.length);
+              replyRpc[0] = 9; // ReplyOKJSON
+              replyRpc.writeUInt32BE(reqId, 1);
+              replyRpc.writeUInt32BE(json.length, 5);
+              json.copy(replyRpc, 9);
+            } else {
+              process.stderr.write(`[vscode-server-manager] Auth: $createSession provider=${providerId} scopes=${JSON.stringify(scopes)}\n`);
+              sendEvent('authSessionRequest', {
+                providerId,
+                scopes: Array.isArray(scopes) ? scopes : [],
+                createIfNone: true,
+                forceNewSession: !!(options && options.forceNewSession),
+                fromCreateSession: true,
               });
+              if (normalizedProviderId === 'github') {
+                _startGithubDeviceFlow(Array.isArray(scopes) ? scopes : [], '$createSession').catch((e) => {
+                  process.stderr.write(`[auth-device] github flow launch failed in $createSession: ${e.message}\n`);
+                });
+              }
             }
           } catch (_) {}
-          const json = Buffer.from('null', 'utf8');
-          replyRpc = Buffer.alloc(5 + 4 + json.length);
-          replyRpc[0] = 9; // ReplyOKJSON
+          if (!replyRpc) {
+            const json = Buffer.from('null', 'utf8');
+            replyRpc = Buffer.alloc(5 + 4 + json.length);
+            replyRpc[0] = 9; // ReplyOKJSON
+            replyRpc.writeUInt32BE(reqId, 1);
+            replyRpc.writeUInt32BE(json.length, 5);
+            json.copy(replyRpc, 9);
+          }
+
+        } else if (methodName === '$removeSession') {
+          try {
+            const providerId = String((rpcArgs && rpcArgs[0]) || '').toLowerCase();
+            const sessionId = String((rpcArgs && rpcArgs[1]) || '');
+            if (providerId && sessionId) {
+              _removeAuthSession(providerId, sessionId);
+              _emitAuthSessionChanged(providerId, [], [sessionId], []);
+            }
+          } catch (_) {}
+          replyRpc = Buffer.alloc(5);
+          replyRpc[0] = 7; // ReplyOKEmpty
           replyRpc.writeUInt32BE(reqId, 1);
-          replyRpc.writeUInt32BE(json.length, 5);
-          json.copy(replyRpc, 9);
 
         } else if (methodName === '$ensureProvider') {
           // Authentication provider presence check. Report success so EH can
