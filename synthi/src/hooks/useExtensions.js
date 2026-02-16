@@ -893,7 +893,7 @@ export function useExtensions({ editor = null, workspaceId = 'default' } = {}) {
       // If the command isn't registered locally, try the VS Code Server
       if (system.bridge?.vscodeServerProxy?.isReady()) {
         console.log(`[useExtensions] Command ${commandId} not local, routing to VS Code Server`);
-        return system.bridge.vscodeServerProxy.request('executeExtensionCommand', commandId, ...args);
+        return system.bridge.vscodeServerProxy.request('executeExtensionCommand', [commandId, ...args]);
       }
       throw localErr;
     }
