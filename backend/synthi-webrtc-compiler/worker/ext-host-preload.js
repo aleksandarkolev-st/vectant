@@ -1642,8 +1642,18 @@ function wrapAuthentication(vscode) {
       log(`Authentication request skipped (session recently established): provider=${providerId}`);
     }
 
-    // Delegate to the real implementation — in code-server this will
-    // attempt the built-in auth providers (GitHub, Microsoft, etc.)
+    // In headless code-server the Extension Host has NO built-in GitHub
+    // auth provider registered, so originalGetSession always returns
+    // null (it calls $ensureProvider but finds nothing locally).
+    // Return the cached session directly when available.
+    const cachedSession = _cachedAuthSessions.get(pid);
+    if (cachedSession && _preloadSessionMatchesScopes(cachedSession, scopes)) {
+      log(`Returning cached session for ${providerId}: id=${cachedSession.id} account=${cachedSession.account?.label || 'unknown'}`);
+      return Promise.resolve(cachedSession);
+    }
+
+    // No cached session — delegate to the real implementation as a
+    // last resort (works when a real auth provider IS registered).
     return originalGetSession.call(this, providerId, scopes, effectiveOptions);
   };
 
