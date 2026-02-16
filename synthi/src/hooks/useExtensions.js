@@ -682,16 +682,21 @@ export function useExtensions({ editor = null, workspaceId = 'default' } = {}) {
           let hydrated = 0;
           for (const { id: extId, manifest } of (detailed || [])) {
             if (!manifest) continue;
-            // Skip if already registered in Redux (e.g. from IndexedDB restore)
-            if (currentExtensions[extId]) continue;
 
             // Best-effort NLS cleanup for any remaining %key% placeholders
             // (server-side resolution handles most, this catches stragglers)
             stripUnresolvedNLS(manifest);
 
-            // Register into Redux with full manifest
-            dispatch(registerExtRedux({ id: extId, manifest }));
-            // Parse contribution points (containers, views, etc.)
+            // If already registered in Redux (e.g. from IndexedDB restore),
+            // we still need to re-parse contributions since the prior
+            // registration may not have had the full manifest (views, etc.).
+            if (!currentExtensions[extId]) {
+              // Register into Redux with full manifest
+              dispatch(registerExtRedux({ id: extId, manifest }));
+              hydrated++;
+            }
+            // Parse contribution points (containers, views, etc.) — always,
+            // so server-installed extensions have their views in the sidebar.
             if (manifest.contributes) {
               dispatch(parseContributions({ extensionId: extId, contributes: manifest.contributes }));
             }

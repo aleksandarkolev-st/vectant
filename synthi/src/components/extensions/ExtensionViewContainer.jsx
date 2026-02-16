@@ -52,17 +52,17 @@ function evaluateWhenClause(whenClause, contextValues) {
   }
 
   // Handle equality: key == value
-  if (trimmed.includes('==')) {
+  if (trimmed.includes('==') && !trimmed.includes('!=')) {
     const [key, value] = trimmed.split(/\s*==\s*/).map(s => s.trim());
     if (!(key in contextValues)) return null;
-    return String(contextValues[key]) === value.replace(/['"]|/g, '');
+    return String(contextValues[key]) === value.replace(/['"]/g, '');
   }
 
   // Handle inequality: key != value
   if (trimmed.includes('!=')) {
     const [key, value] = trimmed.split(/\s*!=\s*/).map(s => s.trim());
     if (!(key in contextValues)) return null;
-    return String(contextValues[key]) !== value.replace(/['"]|/g, '');
+    return String(contextValues[key]) !== value.replace(/['"]/g, '');
   }
 
   // Simple boolean key
@@ -465,26 +465,50 @@ export default function ExtensionViewContainer({
                 <span>Running on remote extension host</span>
               </div>
             )}
-            {views
-            .filter(view => {
-              // Evaluate when-clause against known context values
-              if (view.when) {
-                const result = evaluateWhenClause(view.when, contextValues);
-                if (result === false) return false; // Condition definitively not met → hide
-                // result === true or null → show (null means unknown keys;
-                // default to showing the view since the extension registered it)
-              }
-              // Hide "empty-view" placeholders when sibling views in the
-              // same container already have tree data (the extension has
-              // found real content to show).
-              if (view.id.includes('empty-view') || view.id.includes('empty_view')) {
-                const siblingsHaveData = views.some(
-                  v => v.id !== view.id && treeDataMap[v.id]?.length > 0
+            {(() => {
+              // Phase 1: when-clause filtering — only hide views we're CERTAIN
+              // should be hidden (result === false).  Unknown keys (null) keep
+              // the view visible.
+              const whenFiltered = views.filter(view => {
+                if (view.when) {
+                  const result = evaluateWhenClause(view.when, contextValues);
+                  if (result === false) return false;
+                }
+                return true;
+              });
+
+              // Phase 2: hide empty-view placeholders when sibling DATA views
+              // are present in the filtered list AND have tree data.
+              const postFiltered = whenFiltered.filter(view => {
+                if (view.id.includes('empty-view') || view.id.includes('empty_view')) {
+                  const siblingsHaveData = whenFiltered.some(
+                    v => v.id !== view.id
+                      && !v.id.includes('empty-view')
+                      && !v.id.includes('empty_view')
+                      && treeDataMap[v.id]?.length > 0
+                  );
+                  if (siblingsHaveData) return false;
+                }
+                return true;
+              });
+
+              // Safety net: never produce a completely blank panel.
+              // If every view was filtered out, fall back to showing all views
+              // (the most common cause is missing contextValues during startup).
+              const displayViews = postFiltered.length > 0 ? postFiltered : views;
+
+              if (postFiltered.length === 0 && views.length > 0) {
+                console.warn(
+                  `[ExtensionViewContainer] All ${views.length} view(s) filtered out for "${containerId}". ` +
+                  `Falling back to showing all views. contextValues:`,
+                  contextValues,
+                  'views:',
+                  views.map(v => ({ id: v.id, when: v.when }))
                 );
-                if (siblingsHaveData) return false;
               }
-              return true;
-            })
+
+              return displayViews;
+            })()
             .map((view) => {
             // Check if there's a runtime webview panel for this view
             const webviewPanel = webviewPanels.find(p => p.viewType === view.id);
