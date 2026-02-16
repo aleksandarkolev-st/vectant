@@ -693,6 +693,15 @@ function _handlePreloadMessage(msg) {
       break;
     }
 
+    case 'commandExecutionFailed': {
+      process.stderr.write(`[preload-bridge] Command execution failed: ${msg.commandId} (${msg.reason || 'unknown'})\n`);
+      sendEvent('commandExecutionFailed', {
+        commandId: msg.commandId,
+        reason: msg.reason || 'unknown',
+      });
+      break;
+    }
+
     case 'webviewDisposed': {
       sendEvent('disposeWebview', msg.viewType || msg.viewId);
       break;

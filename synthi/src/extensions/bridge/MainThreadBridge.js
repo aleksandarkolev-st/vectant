@@ -517,6 +517,12 @@ export class MainThreadBridge {
       this._emitRemoteContribution?.('showFileDialog', data);
     });
 
+    // Forward command execution failures → UI diagnostics
+    this.vscodeServerProxy.on('commandExecutionFailed', (data) => {
+      console.warn(`[MainThreadBridge/vscode-server] commandExecutionFailed: ${data?.commandId} (${data?.reason})`);
+      this._emitRemoteContribution?.('commandExecutionFailed', data);
+    });
+
     // When we receive a provider list, auto-resolve any webview views.
     // Code-server runs headless, so resolveWebviewView is never called
     // naturally — we explicitly trigger it for each registered provider.
