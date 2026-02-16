@@ -1585,6 +1585,7 @@ function _handlePreloadMessage(msg) {
           providerId: normalizedProviderId,
           sessionId: existingSession.id,
           accountLabel: existingSession.account?.label || 'GitHub',
+          session: existingSession,
         });
         break;
       }
