@@ -36,8 +36,11 @@ function WelcomeContent({ entries, onExecuteCommand }) {
 function WelcomeEntry({ contents, onExecuteCommand }) {
   if (!contents) return null;
 
+  // Ensure contents is a string (some manifests may have non-string values)
+  const text = typeof contents === 'string' ? contents : String(contents);
+
   // Split the contents into lines and parse each
-  const lines = contents.split('\n');
+  const lines = text.split('\n');
   const elements = [];
 
   for (let i = 0; i < lines.length; i++) {
