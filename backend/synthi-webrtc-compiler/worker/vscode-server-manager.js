@@ -370,6 +370,9 @@ const preloadRegisteredTreeViews = new Set();
 /** @type {Set<string>} Webview view IDs confirmed by ext-host-preload registration */
 const preloadRegisteredWebviewViews = new Set();
 
+/** @type {Set<string>} Command IDs confirmed by ext-host-preload registration */
+const preloadRegisteredCommands = new Set();
+
 /** @type {Set<string>} Tree view IDs discovered statically from extension manifests */
 const manifestKnownTreeViews = new Set();
 
@@ -689,6 +692,7 @@ function _handlePreloadMessage(msg) {
     case 'command': {
       // A command was registered
       process.stderr.write(`[preload-bridge] Command registered: ${msg.commandId} (ext: ${msg.extensionId})\n`);
+      if (msg.commandId) preloadRegisteredCommands.add(msg.commandId);
       sendEvent('registerCommand', msg.commandId, msg.extensionId);
       break;
     }
@@ -2592,6 +2596,39 @@ async function _triggerExtensionHostStartup(port, token) {
         } else if (methodName === '$getTools') {
           // Return empty tools array
           const json = Buffer.from('[]', 'utf8');
+          replyRpc = Buffer.alloc(5 + 4 + json.length);
+          replyRpc[0] = 9; // ReplyOKJSON
+          replyRpc.writeUInt32BE(reqId, 1);
+          replyRpc.writeUInt32BE(json.length, 5);
+          json.copy(replyRpc, 9);
+        } else if (methodName === '$getCommands') {
+          // Return command IDs known to the headless host.
+          // Some extensions query this and branch behavior based on whether
+          // a command exists; returning empty/default breaks those flows.
+          const commandSet = new Set(preloadRegisteredCommands);
+
+          // Also include manifest-declared commands from loaded extensions.
+          for (const extId of extHostLoadedExtensions) {
+            try {
+              const manifest = _readExtensionManifest(extId)?.manifest;
+              const commands = manifest?.contributes?.commands;
+              if (!Array.isArray(commands)) continue;
+              for (const entry of commands) {
+                if (typeof entry === 'string') {
+                  commandSet.add(entry);
+                } else if (entry && typeof entry.command === 'string') {
+                  commandSet.add(entry.command);
+                }
+              }
+            } catch (_) {}
+          }
+
+          // Add core internal commands we emulate explicitly.
+          commandSet.add('_setContext');
+          commandSet.add('setContext');
+
+          const payload = JSON.stringify(Array.from(commandSet));
+          const json = Buffer.from(payload, 'utf8');
           replyRpc = Buffer.alloc(5 + 4 + json.length);
           replyRpc[0] = 9; // ReplyOKJSON
           replyRpc.writeUInt32BE(reqId, 1);
