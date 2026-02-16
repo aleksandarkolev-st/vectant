@@ -487,6 +487,41 @@ class CollabClient {
     }
   }
 
+  /**
+   * Destroy ALL cached documents for a workspace slug.
+   * Used after operations that change multiple files on disk (pull,
+   * checkout, discard-all) so that stale CRDT state is never merged
+   * with fresh server content on reconnect.
+   *
+   * @param {string} slug — Workspace slug
+   */
+  destroyAllForSlug(slug) {
+    const prefix = `workspace:${slug}:`;
+    const keysToDestroy = [];
+    for (const key of this.docs.keys()) {
+      if (key.startsWith(prefix)) keysToDestroy.push(key);
+    }
+    for (const key of keysToDestroy) {
+      const entry = this.docs.get(key);
+      if (!entry) continue;
+      try {
+        entry.bindings.forEach(binding => {
+          try { binding.destroy(); } catch (_) {}
+        });
+        entry.bindings.clear();
+        try { entry.provider.destroy(); } catch (_) {}
+        try { entry.doc.destroy(); } catch (_) {}
+        this.docs.delete(key);
+      } catch (e) {
+        console.warn('[Collab] Failed to destroy document:', key, e);
+      }
+    }
+    if (keysToDestroy.length > 0) {
+      this._updateConnectionStatus();
+      console.log(`[Collab] Destroyed ${keysToDestroy.length} documents for slug ${slug}`);
+    }
+  }
+
   ensureDoc(slug, path) {
     const key = this._roomKey(slug, path);
     if (this.docs.has(key)) return this.docs.get(key);

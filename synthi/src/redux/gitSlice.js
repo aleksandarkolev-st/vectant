@@ -233,10 +233,14 @@ export const discardChange = createAsyncThunk(
     'git/discard',
     async ({ slug, filePath }, { dispatch }) => {
         await gitClient.discardChange(slug, filePath);
-        // Destroy the client-side Yjs doc so stale content isn't re-flushed
-        // to disk by the auto-flush observer. On next file selection the
-        // editor will create a fresh provider seeded from the restored file.
-        try { collabClient.destroyDocument(slug, filePath); } catch (_) {}
+        // Do NOT call collabClient.destroyDocument() here — the server
+        // closes the Yjs WebSocket connections when it invalidates the doc,
+        // and then broadcasts 'file-reverted' which Editor.jsx handles by
+        // properly tearing down the binding, destroying the document, and
+        // re-fetching clean content.  Calling destroyDocument here races
+        // with that handler: if file-reverted arrives first and re-creates
+        // the doc, this call would destroy the fresh doc, leaving the
+        // editor without a Yjs binding.
         dispatch(fetchGitStatus(slug));
     }
 );
@@ -245,12 +249,8 @@ export const discardAll = createAsyncThunk(
     'git/discardAll',
     async (slug, { dispatch, getState }) => {
         await gitClient.discardAll(slug);
-        // Tear down ALL client-side Yjs docs for this workspace to prevent
-        // stale content from being auto-flushed back to disk.
-        const openFiles = getState().workspace?.openFiles ?? [];
-        for (const f of openFiles) {
-            try { collabClient.destroyDocument(slug, f.path); } catch (_) {}
-        }
+        // Same reasoning as discardChange — let the server-side invalidation
+        // + file-reverted broadcast handle the Yjs doc lifecycle.
         dispatch(fetchGitStatus(slug));
     }
 );

@@ -977,7 +977,8 @@ const EditorPanel = ({
     }, [editorInstance, monacoInstance, activeFile, slug, session, presenceGranularity, isPrivateMode, conflictedFiles]);
 
     // ── Ghost-revert fix ─────────────────────────────────────────────────
-    // Listen for server-side 'file-reverted' events (emitted after discard).
+    // Listen for server-side 'file-reverted' events (emitted after discard,
+    // pull, checkout, or any operation that changes files on disk).
     // When the active file was reverted:
     //   1. Tear down the Yjs binding so stale dirty content can't re-flush
     //   2. Re-fetch the clean content via selectFileThunk (which reads disk)
@@ -990,8 +991,12 @@ const EditorPanel = ({
             const { slug: evSlug, filePaths } = ev.detail || {};
             if (evSlug !== slug) return;
 
-            // filePaths=[] means all files were reverted
-            const affectsActive = !filePaths || filePaths.length === 0
+            // filePaths=[] means ALL files were reverted (pull, checkout,
+            // discard-all). In that case we must destroy ALL cached Yjs docs
+            // for this slug to prevent stale CRDT state from being merged on
+            // auto-reconnect.  For single-file discard, only destroy that doc.
+            const allFiles = !filePaths || filePaths.length === 0;
+            const affectsActive = allFiles
                 || (activeFile && filePaths.includes(activeFile.path));
 
             if (!affectsActive || !activeFile) return;
@@ -1009,7 +1014,14 @@ const EditorPanel = ({
             try { collabBindingRef.current?._awarenessUnsub?.(); } catch (_) {}
             try { collabBindingRef.current?.dispose(); } catch (_) {}
             collabBindingRef.current = null;
-            try { collabClient.destroyDocument(slug, activeFile.path); } catch (_) {}
+
+            // Destroy Yjs docs — ALL for the slug if every file was affected
+            // (pull/checkout/discard-all), or just the specific file (single discard).
+            if (allFiles) {
+                try { collabClient.destroyAllForSlug(slug); } catch (_) {}
+            } else {
+                try { collabClient.destroyDocument(slug, activeFile.path); } catch (_) {}
+            }
 
             // 3. Re-select the file — this fetches clean content from the
             //    server and updates Redux (savedContent, currentContent).

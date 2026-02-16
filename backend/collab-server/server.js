@@ -535,10 +535,27 @@ async function invalidateDocsForSlug(slug, filePaths = null) {
     // 3. Clear hash cache so next bindState re-reads from disk
     fileHashCache.delete(docName);
 
-    // 4. Destroy the in-memory Y.Doc so the next connection creates a fresh one.
-    //    y-websocket will call bindState again which reads the new disk content.
+    // 4. Close all WebSocket connections for this doc BEFORE destroying it.
+    //    y-websocket's WSSharedDoc tracks connections in doc.conns (Map<ws, Set>).
+    //    If we only call wsDoc.destroy() without closing these connections,
+    //    the clients' WebsocketProviders stay connected and auto-reconnect.
+    //    On reconnect y-websocket creates a fresh doc, but the client sends
+    //    its stale CRDT state via the sync protocol — the merge of stale
+    //    client state + fresh server state causes content duplication.
+    //    By closing connections first, the client provider detects the
+    //    disconnect and reconnects cleanly — with an empty local doc that
+    //    receives fresh content from the server's new bindState.
     if (yWsDocs && yWsDocs.has(docName)) {
       const wsDoc = yWsDocs.get(docName);
+      // Close every WebSocket attached to this doc
+      if (wsDoc.conns && wsDoc.conns.size > 0) {
+        for (const conn of Array.from(wsDoc.conns.keys())) {
+          try {
+            wsDoc.conns.delete(conn);
+            conn.close(4000, 'doc-invalidated');
+          } catch (_) {}
+        }
+      }
       try { wsDoc.destroy(); } catch (_) {}
       yWsDocs.delete(docName);
     }
@@ -989,8 +1006,44 @@ const server = http.createServer(async (req, res) => {
             const sessionId = req.headers['x-session-id'] || urlObj.searchParams.get('sessionId');
             const userId    = req.headers['x-user-id']    || urlObj.searchParams.get('userId');
 
+            // ── Permission check FIRST ──────────────────────────────────
+            // Check permissions BEFORE provisioning repos to prevent
+            // unauthorized users from creating per-user repos and corrupting
+            // the workspace directory structure.  Even though the frontend
+            // redirects unauthorized users away, API calls may fire before
+            // the redirect completes, and malicious actors could hit the
+            // endpoint directly.
+            if (sessionId && userId) {
+              const permKey = require('./permissionMiddleware').GIT_ACTION_PERMISSIONS[action];
+              if (permKey && !sessionManager.checkPermission(sessionId, userId, permKey)) {
+                res.writeHead(403, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({
+                  error: 'permission_denied',
+                  message: `Action "${action}" requires "${permKey}" permission. Ask the Host for access.`,
+                  required: permKey,
+                }));
+                return;
+              }
+            } else if (action !== 'status' && action !== 'branches' && action !== 'log'
+                        && action !== 'diff' && action !== 'file-content' && action !== 'blame'
+                        && action !== 'unpushed' && action !== 'incoming'
+                        && action !== 'init' && action !== 'clone') {
+              // For mutating actions, require a userId.
+              // Read-only actions and init/clone are allowed without a session
+              // (for SSR/initial load and workspace creation).
+              if (!userId) {
+                res.writeHead(401, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({
+                  error: 'authentication_required',
+                  message: 'A valid userId is required for this action.',
+                }));
+                return;
+              }
+            }
+
         // Use hydratedSlugs so we re-hydrate once per boot even when the dir already
         // exists with partial/stale content (e.g. .code_intel artifacts).
+        // Now safe to run AFTER permission check.
         const hKey = hydrationKey(slug, userId);
         if (action !== 'clone' && !hydratedSlugs.has(hKey)) {
           try {
@@ -1006,19 +1059,6 @@ const server = http.createServer(async (req, res) => {
             }
           }
         }
-
-            if (sessionId && userId) {
-              const permKey = require('./permissionMiddleware').GIT_ACTION_PERMISSIONS[action];
-              if (permKey && !sessionManager.checkPermission(sessionId, userId, permKey)) {
-                res.writeHead(403, { 'Content-Type': 'application/json' });
-                res.end(JSON.stringify({
-                  error: 'permission_denied',
-                  message: `Action "${action}" requires "${permKey}" permission. Ask the Host for access.`,
-                  required: permKey,
-                }));
-                return;
-              }
-            }
 
             // ── Per-user repo provisioning (mandatory) ──────────────────
             // Ensure the per-user working tree exists for EVERY action (incl.
@@ -1146,6 +1186,7 @@ const server = http.createServer(async (req, res) => {
                     result = await gitService.checkout(slug, data.branch, data.create, userId);
                     // Branch switch may change any file on disk — invalidate all Yjs docs
                     await invalidateDocsForSlug(slug);
+                    broadcastFileReverted(slug, []);
                     broadcastFileTreeChanged(slug);
                     break;
                 case 'fetch':
@@ -1183,6 +1224,10 @@ const server = http.createServer(async (req, res) => {
                     result = await gitService.pull(slug, userId);
                     // Pull changes files on disk — invalidate all Yjs docs
                     await invalidateDocsForSlug(slug);
+                    // Notify clients to reset their Yjs docs — without this,
+                    // the client-side Y.Docs keep stale CRDT state and merge
+                    // it with fresh server content on reconnect (doubling).
+                    broadcastFileReverted(slug, []);
                     broadcastFileTreeChanged(slug);
                     broadcastGitStatusChanged(slug);
                     break;
@@ -1209,11 +1254,17 @@ const server = http.createServer(async (req, res) => {
                 // Merge conflict resolution
                 case 'resolve-ours':
                     result = await gitService.resolveConflictOurs(slug, data.filePath, userId);
-                    if (data.filePath) await invalidateDocsForSlug(slug, [data.filePath]);
+                    if (data.filePath) {
+                      await invalidateDocsForSlug(slug, [data.filePath]);
+                      broadcastFileReverted(slug, [data.filePath]);
+                    }
                     break;
                 case 'resolve-theirs':
                     result = await gitService.resolveConflictTheirs(slug, data.filePath, userId);
-                    if (data.filePath) await invalidateDocsForSlug(slug, [data.filePath]);
+                    if (data.filePath) {
+                      await invalidateDocsForSlug(slug, [data.filePath]);
+                      broadcastFileReverted(slug, [data.filePath]);
+                    }
                     break;
                 case 'mark-resolved':
                     result = await gitService.markResolved(slug, data.filePath, userId);
@@ -1221,6 +1272,8 @@ const server = http.createServer(async (req, res) => {
                 case 'abort-merge':
                     result = await gitService.abortMerge(slug, userId);
                     await invalidateDocsForSlug(slug);
+                    broadcastFileReverted(slug, []);
+                    broadcastFileTreeChanged(slug);
                     break;
                 case 'conflict-versions':
                     result = await gitService.getConflictVersions(slug, data.filePath, userId);
@@ -1256,6 +1309,7 @@ const server = http.createServer(async (req, res) => {
                 case 'stash-pop':
                     result = await gitService.stashPop(slug, data.index, userId);
                     await invalidateDocsForSlug(slug);
+                    broadcastFileReverted(slug, []);
                     broadcastFileTreeChanged(slug);
                     break;
                 case 'stash-apply':
