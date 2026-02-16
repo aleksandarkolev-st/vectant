@@ -393,11 +393,18 @@ const _deferredWebviewResolutions = [];
 
 /**
  * Trigger provider discovery with retried attempts.
- * Called once from either bootstrapState handler or the 45s fallback timer.
+ * Called once from either bootstrapState handler or the fallback timer.
+ * Guarded to prevent duplicate timer sets from multiple trigger sources.
  *
  * @param {string} trigger - reason string for logging
  */
+let _providerDiscoveryStarted = false;
 function _startProviderDiscovery(trigger) {
+  if (_providerDiscoveryStarted) {
+    process.stderr.write(`[preload-bridge] Provider discovery already started, skipping duplicate trigger: ${trigger}\n`);
+    return;
+  }
+  _providerDiscoveryStarted = true;
   const retryDelays = [500, 3000, 8000, 20000];
   for (const delay of retryDelays) {
     const timer = setTimeout(() => {
@@ -735,9 +742,13 @@ function _handlePreloadMessage(msg) {
       process.stderr.write(`[preload-bridge] Bootstrap state: complete=${complete}, method=${method}, wrapped=${wrappedCount}\n`);
 
       if (complete) {
+        const firstBootstrap = !_bootstrapStateReceived;
         _bootstrapStateReceived = true;
-        sendEvent('bootstrapState', true);
-        _startProviderDiscovery('bootstrapState');
+
+        if (firstBootstrap) {
+          sendEvent('bootstrapState', true);
+          _startProviderDiscovery('bootstrapState');
+        }
 
         // Flush deferred webview resolution requests now that extensions are activating.
         // Add a small delay to give providers time to register after activation.
