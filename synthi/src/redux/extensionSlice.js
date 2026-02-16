@@ -49,6 +49,10 @@ export const initialExtensionState = {
     viewsWelcome: {},
   },
 
+  /** Extension context values from setContext, keyed by context key name.
+   *  Used for when-clause evaluation in view/welcome filtering. */
+  contextValues: {},
+
   /** Recent errors: [{ extensionId, title, message, severity, suggestion, timestamp }] */
   errors: [],
 
@@ -321,6 +325,12 @@ const extensionSlice = createSlice({
         if (update.quarantineReason != null) ext.quarantineReason = update.quarantineReason;
       }
     },
+
+    /** Update a single extension context value (from setContext RPC) */
+    setContextValue(state, action) {
+      const { key, value } = action.payload;
+      if (key) state.contextValues[key] = value;
+    },
   },
 });
 
@@ -344,6 +354,7 @@ export const {
   setPanelVisible,
   togglePanel,
   syncExtensionStates,
+  setContextValue,
 } = extensionSlice.actions;
 
 // ─── Selectors ───────────────────────────────────────────────
@@ -364,6 +375,7 @@ export const selectContributedViews = (state) => state.extensions.contributions.
 export const selectWebviewPanels = (state) => state.extensions.contributions.webviewPanels;
 export const selectStatusBarItems = (state) => state.extensions.contributions.statusBarItems;
 export const selectViewsWelcome = (state) => state.extensions.contributions.viewsWelcome;
+export const selectContextValues = (state) => state.extensions.contextValues;
 export const selectActiveExtensionCount = (state) =>
   Object.values(state.extensions.extensions).filter(e => e.state === 'active').length;
 export const selectIssueExtensionCount = (state) =>
