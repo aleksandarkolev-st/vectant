@@ -2716,6 +2716,7 @@ function _handleBridgeRequest(msg) {
 
     case 'deliverUriCallback': {
       const rawUrl = String(msg?.url || '');
+      const uriComponents = msg?.uriComponents;
       if (!rawUrl) {
         logError('deliverUriCallback: missing url');
         break;
@@ -2730,9 +2731,11 @@ function _handleBridgeRequest(msg) {
 
       let uriArg = rawUrl;
       try {
-        const parser = realVscodeApi?.Uri?.parse;
-        if (typeof parser === 'function') {
-          uriArg = parser.call(realVscodeApi.Uri, rawUrl);
+        const uriApi = realVscodeApi?.Uri;
+        if (uriComponents && typeof uriApi?.from === 'function') {
+          uriArg = uriApi.from(uriComponents);
+        } else if (typeof uriApi?.parse === 'function') {
+          uriArg = uriApi.parse(rawUrl);
         }
       } catch (e) {
         logError(`deliverUriCallback: Uri.parse failed (${e.message}), using raw URL`);

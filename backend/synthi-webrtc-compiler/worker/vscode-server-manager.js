@@ -497,6 +497,21 @@ function _sessionMatchesScopes(session, requestedScopes) {
   return true;
 }
 
+function _toUriComponents(rawUrl) {
+  try {
+    const parsed = new URL(String(rawUrl || ''));
+    return {
+      scheme: parsed.protocol.replace(':', ''),
+      authority: parsed.host,
+      path: parsed.pathname || '/',
+      query: parsed.search ? parsed.search.slice(1) : '',
+      fragment: parsed.hash ? parsed.hash.slice(1) : '',
+    };
+  } catch (_) {
+    return null;
+  }
+}
+
 function _startGithubDeviceTokenPolling(deviceCode, scopes, intervalSec = 5, trigger = 'unknown') {
   const normalizedScopes = _normalizeScopes(scopes);
   const flowKey = `github:${normalizedScopes.join(',')}`;
@@ -5939,10 +5954,11 @@ rl.on('line', async (line) => {
           break;
         }
         const handlerCount = preloadRegisteredUriHandlers.size;
+        const uriComponents = _toUriComponents(url);
         process.stderr.write(`[preload-bridge] URI callback handlers available: ${handlerCount}\n`);
         process.stderr.write(`[preload-bridge] Delivering URI callback: ${url}\n`);
-        sendToPreloadClients({ action: 'deliverUriCallback', url });
-        sendResponse(id, { success: true, url, handlers: handlerCount });
+        sendToPreloadClients({ action: 'deliverUriCallback', url, uriComponents });
+        sendResponse(id, { success: true, url, uriComponents, handlers: handlerCount });
         break;
       }
 
