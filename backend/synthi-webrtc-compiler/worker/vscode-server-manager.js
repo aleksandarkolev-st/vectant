@@ -1921,6 +1921,7 @@ async function _triggerExtensionHostStartup(port, token) {
             method,
             meta: meta || null,
             ackIsSuccess: !!(meta && meta.ackIsSuccess),
+            ackSuccessNotified: false,
             onSuccess: meta && typeof meta.onSuccess === 'function' ? meta.onSuccess : null,
             onError: meta && typeof meta.onError === 'function' ? meta.onError : null,
             sentAt: Date.now(),
@@ -1939,7 +1940,7 @@ async function _triggerExtensionHostStartup(port, token) {
             process.stderr.write(`[vscode-server-manager] RPC ${pending.method} (reqId=${reqId}, rpcId=${pending.rpcId}) has no reply after 5000ms\n`);
             pendingOutgoingRpc.delete(reqId);
             if (pending.acked) {
-              if (pending.onSuccess) {
+              if (pending.onSuccess && !pending.ackSuccessNotified) {
                 try { pending.onSuccess('ack-only'); } catch (_) {}
               }
             } else if (pending.onError) {
@@ -2075,9 +2076,8 @@ async function _triggerExtensionHostStartup(port, token) {
           if (rpcMsgType === 5) {
             pending.acked = true;
             if (pending.ackIsSuccess) {
-              pending.clearTimer();
-              pendingOutgoingRpc.delete(reqId);
-              if (pending.onSuccess) {
+              if (!pending.ackSuccessNotified && pending.onSuccess) {
+                pending.ackSuccessNotified = true;
                 try { pending.onSuccess(); } catch (_) {}
               }
             }
