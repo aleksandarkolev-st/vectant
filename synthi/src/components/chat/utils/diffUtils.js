@@ -149,6 +149,74 @@ export const validateFileDiffBlocks = (blocks = []) => {
     };
 };
 
+/**
+ * Detect whether a body contains SEARCH/REPLACE blocks.
+ */
+const hasSearchReplaceBlocks = (text = '') =>
+    /<<<+\s*SEARCH/i.test(text) && />>>+\s*REPLACE/i.test(text);
+
+/**
+ * Apply SEARCH/REPLACE blocks to original content.
+ * Each block matches exact text in the original and replaces it.
+ *
+ * Format:
+ *   <<<<<<< SEARCH
+ *   exact text to find
+ *   =======
+ *   replacement text
+ *   >>>>>>> REPLACE
+ *
+ * @param {string} original - The original file content
+ * @param {string} blockText - Text containing one or more SEARCH/REPLACE blocks
+ * @returns {string|false} The updated content, or false if any search block wasn't found
+ */
+export const applySearchReplace = (original, blockText) => {
+    if (!blockText) return false;
+    // Parse all SEARCH/REPLACE pairs
+    const blockRe = /<<<+\s*SEARCH\s*\n([\s\S]*?)\n?=======\s*\n([\s\S]*?)\n?>>>+\s*REPLACE/gi;
+    let result = original || '';
+    let match;
+    let applied = 0;
+    while ((match = blockRe.exec(blockText)) !== null) {
+        const searchText = match[1];
+        const replaceText = match[2];
+        // Try exact match first
+        let idx = result.indexOf(searchText);
+        if (idx === -1) {
+            // Try trimmed-line matching (handles whitespace differences)
+            const searchLines = searchText.split('\n').map(l => l.trimEnd());
+            const resultLines = result.split('\n');
+            idx = -1;
+            for (let i = 0; i <= resultLines.length - searchLines.length; i++) {
+                let found = true;
+                for (let j = 0; j < searchLines.length; j++) {
+                    if (resultLines[i + j].trimEnd() !== searchLines[j]) {
+                        found = false;
+                        break;
+                    }
+                }
+                if (found) {
+                    // Reconstruct the exact text from the result to replace
+                    const matchedLines = resultLines.slice(i, i + searchLines.length);
+                    const exactOriginal = matchedLines.join('\n');
+                    result = result.slice(0, result.indexOf(exactOriginal)) + replaceText + result.slice(result.indexOf(exactOriginal) + exactOriginal.length);
+                    applied++;
+                    idx = 0; // mark as found
+                    break;
+                }
+            }
+            if (idx === -1) {
+                console.warn('[SEARCH/REPLACE] Could not find search text:', searchText.slice(0, 100));
+                return false;
+            }
+        } else {
+            result = result.slice(0, idx) + replaceText + result.slice(idx + searchText.length);
+            applied++;
+        }
+    }
+    return applied > 0 ? result : false;
+};
+
 export const parseFileDiffBlocks = (text = '', fallbackPath = null) => {
     if (!text) return [];
     const blocks = [];
@@ -165,21 +233,25 @@ export const parseFileDiffBlocks = (text = '', fallbackPath = null) => {
         if (!raw) continue;
         const normalized = raw.replace(/\r\n/g, '\n').trim();
         const looksLikeDiff = /^---\s+/m.test(normalized) && /^\+\+\+\s+/m.test(normalized) && /@@\s+/m.test(normalized);
+        const isSearchReplace = hasSearchReplaceBlocks(normalized);
         blocks.push({
             path,
             diffText: looksLikeDiff ? normalized : null,
-            contentText: looksLikeDiff ? null : normalized,
-            isValidDiff: looksLikeDiff || Boolean(normalized),
+            contentText: looksLikeDiff ? null : (isSearchReplace ? null : normalized),
+            searchReplaceText: isSearchReplace ? normalized : null,
+            isValidDiff: looksLikeDiff || isSearchReplace || Boolean(normalized),
         });
     }
     if (!blocks.length && fallbackPath) {
         const raw = stripFence(text).replace(/\r\n/g, '\n').trim();
         const looksLikeDiff = /^---\s+/m.test(raw) && /^\+\+\+\s+/m.test(raw) && /@@\s+/m.test(raw);
+        const isSearchReplace = hasSearchReplaceBlocks(raw);
         blocks.push({
             path: fallbackPath,
             diffText: looksLikeDiff ? raw : null,
-            contentText: looksLikeDiff ? null : raw,
-            isValidDiff: looksLikeDiff || Boolean(raw),
+            contentText: looksLikeDiff ? null : (isSearchReplace ? null : raw),
+            searchReplaceText: isSearchReplace ? raw : null,
+            isValidDiff: looksLikeDiff || isSearchReplace || Boolean(raw),
         });
     }
     return blocks;

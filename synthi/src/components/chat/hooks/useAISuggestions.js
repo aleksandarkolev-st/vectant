@@ -3,7 +3,7 @@ import { applyPatch } from 'diff';
 import { getFileLanguage, findFirstFile } from '@/utils/fileUtils';
 import { buildFilesPayload } from '@/utils/multiFileContext';
 import { api } from '@/services/api';
-import { computeDiffChunks, parseFileDiffBlocks, stripDiffMarkers, validateFileDiffBlocks } from '../utils/diffUtils';
+import { computeDiffChunks, parseFileDiffBlocks, stripDiffMarkers, validateFileDiffBlocks, applySearchReplace } from '../utils/diffUtils';
 import { selectFileThunk, setExternalFileContent, fetchFilesThunk } from '@/redux/workspaceSlice';
 import { useContextWindow } from './useContextWindow';
 import { useAgentPipeline, PIPELINE_MODES } from './useAgentPipeline';
@@ -61,9 +61,19 @@ const fallbackIntentDetection = (prompt) => {
     // Keywords that indicate explanation (NO code changes)
     const EXPLAIN_KEYWORDS = [
         'explain', 'describe', 'what does', 'what is', 'how does', 'how is',
-        'why does', 'why is', 'tell me about', 'understand', 'walk me through',
+        'why does', 'why is', 'tell me about', 'tell me what', 'understand', 'walk me through',
         'help me understand', 'clarify', 'overview', 'summary',
     ];
+
+    // Keywords that indicate running/checking something (informational, may need tools but NOT code changes)
+    const RUN_KEYWORDS = [
+        'run ', 'execute ', 'check version', 'check if', 'what version',
+        'show me the output', 'what\'s installed', 'which version',
+        'npm ls', 'npm list', 'pip list', 'pip freeze',
+    ];
+    if (RUN_KEYWORDS.some(kw => lower.includes(kw))) {
+        return { intent: 'run', needsCodeChanges: false, responseMode: 'explain' };
+    }
     
     // Check for explain keywords first
     if (EXPLAIN_KEYWORDS.some(kw => lower.includes(kw))) {
@@ -417,7 +427,7 @@ export const useAISuggestions = ({
             const baseIsMissing = folderFlag ? false : typeof baseContent !== 'string';
             const currentContent = baseIsMissing ? '' : baseContent;
 
-            if (block.contentText && !block.diffText) {
+            if (block.contentText && !block.diffText && !block.searchReplaceText) {
                 if (isDeleteInstruction(block.contentText)) {
                     hydrated.push({
                         path: block.path,
@@ -437,6 +447,49 @@ export const useAISuggestions = ({
                 if (isNoChangeText(block.contentText)) {
                     continue;
                 }
+
+                // ── SAFETY: detect partial/truncated content for existing files ──
+                // When the AI ignores SEARCH/REPLACE instructions and returns raw
+                // content for an existing file, it often returns only a fragment
+                // starting from the edit-point onwards, which would wipe out the
+                // top of the file if applied as a full replacement.
+                if (!baseIsMissing && currentContent.length > 200 && block.contentText.length > 100) {
+                    let isPartialContent = false;
+
+                    // Heuristic 1 — beginning of new content is found deep inside
+                    // the original file, meaning the AI returned a tail fragment.
+                    const newSnippet = block.contentText.trimStart().slice(0, 120);
+                    if (newSnippet.length > 20) {
+                        const posInOrig = currentContent.indexOf(newSnippet.slice(0, 80));
+                        if (posInOrig > Math.min(currentContent.length * 0.1, 500)) {
+                            isPartialContent = true;
+                            console.warn('[partial-content-guard] New content begins at position', posInOrig, 'of', currentContent.length, 'in', block.path);
+                        }
+                    }
+
+                    // Heuristic 2 — new content is dramatically shorter, suggesting
+                    // the AI truncated the top portion of the file.
+                    if (!isPartialContent) {
+                        const origLineCount = currentContent.split('\n').length;
+                        const newLineCount = block.contentText.split('\n').length;
+                        if (origLineCount > 30 && newLineCount < origLineCount * 0.4) {
+                            isPartialContent = true;
+                            console.warn('[partial-content-guard] Line count shrank from', origLineCount, 'to', newLineCount, 'in', block.path);
+                        }
+                    }
+
+                    if (isPartialContent) {
+                        hydrated.push({
+                            path: block.path,
+                            resolvedPath,
+                            diffText: null,
+                            status: 'error',
+                            error: 'AI returned a partial file fragment instead of SEARCH/REPLACE blocks, which would cause data loss. Please try again.',
+                        });
+                        continue;
+                    }
+                }
+
                 hydrated.push({
                     path: block.path,
                     resolvedPath,
@@ -446,6 +499,35 @@ export const useAISuggestions = ({
                     isNewFile: baseIsMissing && !folderFlag,
                     isFolder: folderFlag,
                     chunks: computeDiffChunks(currentContent, block.contentText),
+                    status: 'pending',
+                });
+                continue;
+            }
+
+            // ── SEARCH/REPLACE blocks ────────────────────────────
+            if (block.searchReplaceText) {
+                const applied = applySearchReplace(currentContent, block.searchReplaceText);
+                if (applied === false) {
+                    hydrated.push({
+                        path: block.path,
+                        resolvedPath,
+                        diffText: block.searchReplaceText,
+                        status: 'error',
+                        error: baseIsMissing
+                            ? 'File not found; unable to apply SEARCH/REPLACE.'
+                            : 'Failed to match SEARCH block against current file contents.',
+                    });
+                    continue;
+                }
+                hydrated.push({
+                    path: block.path,
+                    resolvedPath,
+                    diffText: null,
+                    originalContent: currentContent,
+                    updatedContent: applied,
+                    isNewFile: false,
+                    isFolder: false,
+                    chunks: computeDiffChunks(currentContent, applied),
                     status: 'pending',
                 });
                 continue;
@@ -635,18 +717,6 @@ export const useAISuggestions = ({
             if (workspaceSlug && suggestion.deleteFile) {
                 try {
                     try { if (typeof onBusy === 'function') onBusy(true); } catch (e) {}
-                    const allowedDelete = typeof window !== 'undefined'
-                        ? window.confirm(`Delete file "${targetPath}" from AI suggestion?`)
-                        : true;
-                    if (!allowedDelete) {
-                        mutateSession(sessionId, (s) => ({
-                            ...s,
-                            fileSuggestions: s.fileSuggestions.map((fs) =>
-                                fs.path === path ? { ...fs, status: 'pending' } : fs
-                            ),
-                        }));
-                        return;
-                    }
                     await api.deleteItem(workspaceSlug, targetPath);
                     const result = await dispatch(fetchFilesThunk(workspaceSlug));
                     // If the deleted file was active, pick a fallback (same folder or first file)
@@ -708,6 +778,8 @@ export const useAISuggestions = ({
                 if (workspaceSlug) {
                     const fileName = targetPath.split('/').pop() || 'file.txt';
                     await api.saveFileContent(workspaceSlug, targetPath, suggestion.updatedContent, fileName);
+                    // Resync file tree so new files / renames appear in the sidebar
+                    await dispatch(fetchFilesThunk(workspaceSlug));
                 }
             }
             mutateSession(sessionId, (s) => ({
@@ -1038,21 +1110,37 @@ Stream at least two short progress updates wrapped in <progress>...</progress> a
                 // For code change requests, use the full patch prompt
                 requestPrompt = `${userPrompt}
 
-When the user asks you to CREATE NEW FILES (new pages, components, apps, etc.), you MUST create them using FILE: blocks at the appropriate paths. Do NOT fold new file content into an existing file. Each new file gets its own FILE: block.
+When the user asks you to CREATE NEW FILES (new pages, components, apps, etc.), you MUST create them using FILE: blocks at the appropriate paths with FULL file content. Do NOT fold new file content into an existing file. Each new file gets its own FILE: block.
 
-If the user asks to delete a file, return an empty content block or the literal text DELETE to mark deletion. Always respect the workspace tree when creating or deleting files.
+When MODIFYING EXISTING FILES, you MUST use SEARCH/REPLACE blocks. This is mandatory — returning raw content without SEARCH/REPLACE markers will be REJECTED by the system and cause data loss.
+
+Format for EACH change in an existing file:
+
+FILE: path/to/existing-file.ext
+\`\`\`
+<<<<<<< SEARCH
+exact existing lines to match (include 2-3 unchanged lines above and below for anchoring)
+=======
+replacement lines (with surrounding context preserved)
+>>>>>>> REPLACE
+\`\`\`
+
+CRITICAL RULES:
+- The SEARCH section must match the file EXACTLY (same whitespace, indentation, symbols).
+- Include 2-3 unchanged lines before and after the changed lines for safe anchoring.
+- You can include MULTIPLE SEARCH/REPLACE blocks in a single FILE: block.
+- NEVER return raw file content without SEARCH/REPLACE markers for existing files.
+- NEVER return just the bottom half or a fragment of an existing file.
+
+If the user asks to delete a file, return the literal text DELETE in the code block. Always respect the workspace tree when creating or deleting files.
 
 For modifications to existing files, modify only the files the user mentions or that are relevant to the change.
 
-Start with a brief (6-7 sentences) summary of the change. Stream at least three short progress updates wrapped in <progress>...</progress> as you reason (no code inside progress). Emit the summary before any FILE sections. After the summary, return one or more sections in this exact format:
-FILE: <path>
-\`\`\`
-<full updated file content only; no diff markers, no +/-, no @@, no ---/+++>
-\`\`\`
+Start with a brief (6-7 sentences) summary of the change. Stream at least three short progress updates wrapped in <progress>...</progress> as you reason (no code inside progress). Emit the summary before any FILE sections.
 
-Do not include any other commentary. Do not restate the user's request or any instructions; only describe what you changed/created/deleted. Preserve all code outside the requested change. Do not add speculative comments or boilerplate. Do not duplicate entire documents or repeat the same file content. Do not insert HTML into JS files (or vice versa). If unclear, return FILE: <path> then NO_CHANGES and a brief clarifying question.
+Do not include any other commentary after FILE sections. Do not restate the user's request. Preserve all code outside the requested change. Do not insert HTML into JS files (or vice versa). If unclear, return FILE: <path> then NO_CHANGES and a brief clarifying question.
 
-If image attachments are present, read/ocr the images and extract any text or code they contain. Use the extracted content to fulfill the request, rewriting it as needed into the target file(s).`;
+If image attachments are present, read/ocr the images and extract any text or code they contain. Use the extracted content to fulfill the request.`;
             }
             
             const activePath = activeFile?.path || activeFile?.name || '';
@@ -1171,8 +1259,9 @@ If image attachments are present, read/ocr the images and extract any text or co
                     // Agent pipeline metadata
                     agentMode: useAgents ? agentMode : 'direct',
                     agentStepCount: agentResults.length,
-                    // Agentic tool-calling — let server auto-detect complexity
-                    useTools: needsCodeChanges ? 'auto' : false,
+                    // Agentic tool-calling — always let server auto-detect complexity
+                    // (tools like run_command are useful even for explanation queries)
+                    useTools: 'auto',
                 }),
             });
 
@@ -1306,6 +1395,7 @@ If image attachments are present, read/ocr the images and extract any text or co
                         const label = tc.tool === 'read_file' ? `Reading ${tc.args?.path || 'file'}…`
                             : tc.tool === 'search_workspace' ? `Searching for "${tc.args?.query || '…'}"…`
                             : tc.tool === 'list_directory' ? `Listing ${tc.args?.path || 'directory'}…`
+                            : tc.tool === 'run_command' ? `Running: ${(tc.args?.command || '').slice(0, 60)}${(tc.args?.command || '').length > 60 ? '…' : ''}`
                             : `Tool: ${tc.tool}`;
                         appendProgressLog(label);
                         onLog?.(label);

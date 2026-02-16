@@ -646,6 +646,84 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // ========================================================================
+  // EXEC ENDPOINT — One-shot command execution for AI tool-calling pipeline
+  // ========================================================================
+  // POST /exec/:slug  { command: string, timeout?: number }
+  if (req.url.startsWith('/exec/') && req.method === 'POST') {
+    const urlObj = new URL(req.url, `http://${req.headers.host}`);
+    const slug = urlObj.pathname.split('/')[2];
+    if (!slug) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Missing workspace slug' }));
+      return;
+    }
+
+    // Read JSON body
+    let body = '';
+    for await (const chunk of req) body += chunk;
+    let parsed;
+    try { parsed = JSON.parse(body); } catch (_) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid JSON body' }));
+      return;
+    }
+
+    const command = (parsed.command || '').trim();
+    if (!command) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Missing command' }));
+      return;
+    }
+
+    const timeoutMs = Math.min(Number(parsed.timeout) || 30000, 60000);
+    const { resolveWorkspaceCwd } = require('./terminalService');
+    const cwd = resolveWorkspaceCwd(slug);
+
+    console.log(`[Exec] slug=${slug} cwd=${cwd} cmd=${command.slice(0, 120)}`);
+
+    const { spawn } = require('child_process');
+    const isWin = require('os').platform() === 'win32';
+    const shell = isWin ? 'cmd.exe' : '/bin/bash';
+    const shellArgs = isWin ? ['/c', command] : ['-c', command];
+
+    const child = spawn(shell, shellArgs, {
+      cwd,
+      timeout: timeoutMs,
+      env: { ...process.env, TERM: 'dumb' },
+      windowsHide: true,
+    });
+
+    let stdout = '';
+    let stderr = '';
+    let timedOut = false;
+    const MAX_OUT = 50000;
+
+    child.stdout.on('data', (d) => { if (stdout.length < MAX_OUT) stdout += d.toString(); });
+    child.stderr.on('data', (d) => { if (stderr.length < MAX_OUT) stderr += d.toString(); });
+
+    const timer = setTimeout(() => {
+      timedOut = true;
+      try { child.kill('SIGTERM'); } catch (_) {}
+    }, timeoutMs);
+
+    child.on('close', (exitCode) => {
+      clearTimeout(timer);
+      console.log(`[Exec] Done: exitCode=${exitCode} timedOut=${timedOut} stdout=${stdout.length}B stderr=${stderr.length}B`);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ exitCode, stdout, stderr, timedOut }));
+    });
+
+    child.on('error', (err) => {
+      clearTimeout(timer);
+      console.error('[Exec] Spawn error:', err.message);
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: err.message }));
+    });
+
+    return;
+  }
+
   if (req.url.startsWith('/workspaces') && req.method === 'GET') {
       try {
           // Parse query params for owner

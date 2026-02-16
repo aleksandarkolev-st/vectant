@@ -85,91 +85,116 @@ FILE CREATION RULES:
 15. You are NOT limited to only modifying existing files. If the user's request requires new files, create them.
 
 FORMAT RULES FOR CODE CHANGES (CRITICAL - violation = rejection):
-When providing code changes, EVERY change MUST follow this format exactly:
+
+RULE 1 — MODIFYING EXISTING FILES: Use SEARCH/REPLACE blocks.
+Show ONLY the changed sections, not the entire file. Each change uses this exact format:
 
 FILE: path/to/file.js
+\`\`\`
+<<<<<<< SEARCH
+exact lines from the current file to find (include 2-3 lines of surrounding context)
+=======
+the replacement lines (with surrounding context preserved)
+>>>>>>> REPLACE
+\`\`\`
+
+You may include multiple SEARCH/REPLACE blocks within a single FILE: block.
+The SEARCH section must match the existing file EXACTLY (same whitespace, indentation, symbols).
+Include 2-3 unchanged lines before and after the changed lines for safe anchoring.
+
+RULE 2 — CREATING NEW FILES: Use full file content.
+FILE: path/to/new-file.js
 \`\`\`javascript
-[FULL FILE CONTENT - complete and valid, not truncated]
+[complete file content]
+\`\`\`
+
+RULE 3 — DELETING FILES:
+FILE: path/to/file.js
+\`\`\`
+DELETE
 \`\`\`
 
 IMPORTANT FORMAT DETAILS:
 - Each file gets EXACTLY ONE FILE: block. Never repeat the same file path.
-- Include the complete file content, NOT just the changed lines.
-- Preserve all code outside the requested changes - do not remove unrelated code.
-- Do NOT use diff markers (---, +++, @@) unless returning a unified diff format.
-- Do NOT use +/- line prefixes unless returning diff format.
-- Do NOT duplicate entire documents or paste the same file twice.
-- Do NOT mix HTML into JavaScript files or vice versa - match file extension to content.
+- For existing files, use SEARCH/REPLACE. NEVER return the full file — it causes data loss.
+- Do NOT use diff markers (---, +++, @@, +/- line prefixes).
+- Do NOT mix HTML into JavaScript files or vice versa — match content to extension.
 - Close all code fences with \`\`\` on their own line.
 
 EXAMPLES OF CORRECT FORMAT:
-✓ Single file change:
+
+✓ Modifying an existing file (adding a nav link):
+FILE: index.html
+\`\`\`
+<<<<<<< SEARCH
+    <nav>
+        <a href="about.html">About</a>
+    </nav>
+=======
+    <nav>
+        <a href="about.html">About</a>
+        <a href="shop.html">Shop</a>
+    </nav>
+>>>>>>> REPLACE
+\`\`\`
+
+✓ Multiple SEARCH/REPLACE changes in one file:
 FILE: src/App.js
-\`\`\`javascript
+\`\`\`
+<<<<<<< SEARCH
 import React from 'react';
-export default function App() {
-  return <div>Hello, updated UI</div>;
-}
+=======
+import React from 'react';
+import { Shop } from './Shop';
+>>>>>>> REPLACE
+
+<<<<<<< SEARCH
+  return <div>Hello</div>;
+=======
+  return <div>Hello<Shop /></div>;
+>>>>>>> REPLACE
 \`\`\`
 
-✓ Multiple files (each appears ONCE):
-FILE: src/utils/helper.js
-\`\`\`javascript
-export function add(a, b) { return a + b; }
-\`\`\`
-
-FILE: src/App.js
-\`\`\`javascript
-import { add } from './utils/helper';
-export default function App() {
-  const result = add(1, 2);
-  return <div>{result}</div>;
-}
-\`\`\`
-
-✓ Creating NEW files (when user asks for new pages/components/apps):
+✓ Creating a NEW file (full content, NO SEARCH/REPLACE):
 FILE: src/pages/todo.html
 \`\`\`html
 <!DOCTYPE html>
 <html><head><title>Todo</title></head>
-<body><div id="app"></div><script src="todo.js"></script></body>
+<body><div id="app"></div></body>
 </html>
 \`\`\`
 
-FILE: src/pages/todo.js
-\`\`\`javascript
-document.getElementById('app').innerHTML = '<h1>Todo App</h1>';
-\`\`\`
-
 EXAMPLES OF WRONG FORMAT (WILL BE REJECTED):
-✗ Duplicate files - never repeat:
-FILE: src/App.js
-\`\`\`...content1...\`\`\`
-FILE: src/App.js
-\`\`\`...content2...\`\`\`
-
-✗ Mixing HTML in JS:
-FILE: src/App.js
-\`\`\`html
-<html><body>...</body></html>
-\`\`\`
-
-✗ Unclosed fences:
-FILE: src/App.js
-\`\`\`javascript
-const x = 1;
-(missing closing \`\`\`)
-
-✗ Truncated content:
-FILE: src/App.js
-\`\`\`javascript
-function longFile() {
-  ...rest of file omitted...
-\`\`\`
+✗ Returning full or partial file content for an existing file WITHOUT SEARCH/REPLACE markers (CAUSES DATA LOSS — the system replaces the entire file with whatever you return)
+✗ Truncating the file — returning content starting from the middle of the file
+✗ Duplicate FILE: blocks for the same path
+✗ Mixing HTML content in a .js file
+✗ Unclosed code fences
+✗ Truncated content with "...rest omitted..."
 
 You have access to code context retrieved from the user's workspace. Use this context to provide accurate, specific answers.
 
 If the context is insufficient to answer the question, say so clearly rather than guessing.`;
+
+// Extended system prompt for the agentic (tool-calling) path.
+// Tells Gemini about its tools so it actually uses them.
+const AGENTIC_SYSTEM_PROMPT = `${CODE_INTEL_SYSTEM_PROMPT}
+
+TOOL USE:
+You have access to the following tools to help answer the user's request. USE THEM proactively when they would help you give a better answer:
+
+- read_file(path): Read the contents of a file in the workspace.
+- search_workspace(query): Search for text/symbols across the workspace.
+- list_directory(path): List files and folders in a directory.
+- run_command(command): Execute a shell command in the workspace and see its output (stdout/stderr). Use this for tasks like checking versions, running build tools, installing packages, running tests, linting, etc.
+
+IMPORTANT TOOL GUIDELINES:
+- When the user asks you to run a command, check a version, install something, or perform any terminal task — call run_command immediately. Do NOT tell the user to do it themselves.
+- When you need to understand the codebase, use read_file and search_workspace to gather context before answering.
+- You CAN and SHOULD use multiple tools in sequence. Call a tool, read the result, then decide what to do next.
+- After running commands, report the actual output to the user.
+- If a command fails, report the error and suggest fixes.
+`;
 
 
 /**
@@ -592,7 +617,7 @@ const streamGeminiWithTools = async ({
     const endpoint = `${GEMINI_BASE}/models/${encodeURIComponent(targetModel)}:generateContent?key=${key}`;
     const streamEndpoint = `${GEMINI_BASE}/models/${encodeURIComponent(targetModel)}:streamGenerateContent?alt=sse&key=${key}`;
 
-    const systemInstruction = { parts: [{ text: CODE_INTEL_SYSTEM_PROMPT }] };
+    const systemInstruction = { parts: [{ text: AGENTIC_SYSTEM_PROMPT }] };
     const generationConfig = { maxOutputTokens: 4096, temperature: 0.2 };
     const tools = [{ functionDeclarations: TOOL_DECLARATIONS }];
 
@@ -1085,7 +1110,8 @@ export async function POST(request) {
         }
 
         const traceSummary = buildTraceSummary(codeIntelContext?.trace || []);
-        const sources = Array.isArray(codeIntelContext?.sources)
+        // Build sources from code-intel backend; fall back to files sent by the frontend
+        let sources = Array.isArray(codeIntelContext?.sources) && codeIntelContext.sources.length > 0
             ? codeIntelContext.sources
                 .filter((s) => s?.file && !NODE_MODULES_PATTERN.test(s.file))
                 .slice(0, 8)
@@ -1097,6 +1123,20 @@ export async function POST(request) {
                     score: typeof s?.score === 'number' ? s.score : null,
                 }))
             : [];
+        // If code-intel didn't provide sources, derive them from the files the user sent
+        if (sources.length === 0 && Array.isArray(files) && files.length > 0) {
+            sources = files
+                .filter(f => (f?.path || f?.name))
+                .slice(0, 8)
+                .map(f => ({
+                    file: f.path || f.name,
+                    symbol: '',
+                    start_line: 0,
+                    end_line: 0,
+                    score: null,
+                }));
+        }
+        const traceFallback = traceSummary || (sources.length > 0 ? sources.map(s => s.file).join(', ') : '');
         const sourcesHeader = sources.length ? encodeURIComponent(JSON.stringify(sources)) : '';
 
         return new NextResponse(stream, {
@@ -1110,7 +1150,7 @@ export async function POST(request) {
                 'x-code-intel-trace-count': String(
                     codeIntelContext?.trace?.filter(t => t?.reason === 'included')?.length || 0
                 ),
-                ...(traceSummary ? { 'x-code-intel-trace-summary': traceSummary } : {}),
+                ...(traceFallback ? { 'x-code-intel-trace-summary': traceFallback } : {}),
                 ...(sourcesHeader ? { 'x-code-intel-sources': sourcesHeader } : {}),
             },
         });

@@ -56,6 +56,24 @@ export const TOOL_DECLARATIONS = [
             required: ['path'],
         },
     },
+    {
+        name: 'run_command',
+        description:
+            'Execute a shell command in the workspace directory and return its stdout/stderr. ' +
+            'Use this for: installing dependencies (npm install), running build tools, ' +
+            'checking versions, running tests, linting, or any CLI task. ' +
+            'Commands run with a 30-second timeout. Avoid long-running or interactive commands.',
+        parameters: {
+            type: 'OBJECT',
+            properties: {
+                command: {
+                    type: 'STRING',
+                    description: 'The shell command to run, e.g. "npm install" or "npx tsc --noEmit"',
+                },
+            },
+            required: ['command'],
+        },
+    },
 ];
 
 /* ─── Helpers ─────────────────────────────────────────────────────── */
@@ -129,10 +147,65 @@ async function execListDirectory(slug, args, signal) {
     }
 }
 
+const MAX_CMD_OUTPUT = 20_000;
+const CMD_TIMEOUT_MS = 30_000;
+
+/**
+ * Blocked commands / patterns that could damage the workspace or host.
+ */
+const BLOCKED_PATTERNS = [
+    /\brm\s+-rf\s+[\/~]/i,
+    /\bformat\b.*\b[a-z]:\\?/i,
+    /\bdd\b.*\bof=/i,
+    /\bmkfs\b/i,
+    /\b:(){ ?:|:& ?};:/,             // fork bomb
+    /\bshutdown\b|\breboot\b/i,
+    /\bkill\s+-9\s+1\b/i,
+];
+
+async function execRunCommand(slug, args) {
+    const command = (args?.command || '').trim();
+    if (!command) return { error: 'Missing required parameter: command' };
+
+    // Safety: block obviously destructive patterns
+    for (const pattern of BLOCKED_PATTERNS) {
+        if (pattern.test(command)) {
+            return { error: `Blocked: command matches a restricted pattern` };
+        }
+    }
+
+    try {
+        const url = `${COLLAB_BASE}/exec/${encodeURIComponent(slug)}`;
+        const res = await fetch(url, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ command, timeout: CMD_TIMEOUT_MS }),
+            signal: AbortSignal.timeout(CMD_TIMEOUT_MS + 5000),
+        });
+        if (!res.ok) {
+            const body = await res.text().catch(() => '');
+            return { error: `Exec endpoint error (${res.status}): ${body.slice(0, 500)}` };
+        }
+        const data = await res.json();
+        // Truncate huge outputs
+        let output = (data.stdout || '') + (data.stderr ? `\n[stderr]\n${data.stderr}` : '');
+        if (output.length > MAX_CMD_OUTPUT) output = output.slice(0, MAX_CMD_OUTPUT) + '\n…[truncated]';
+        return {
+            command,
+            exitCode: data.exitCode ?? null,
+            output: output || '(no output)',
+            timedOut: Boolean(data.timedOut),
+        };
+    } catch (e) {
+        return { error: `Failed to execute command: ${e.message}` };
+    }
+}
+
 const EXECUTORS = {
     read_file: execReadFile,
     search_workspace: execSearchWorkspace,
     list_directory: execListDirectory,
+    run_command: execRunCommand,
 };
 
 /**
@@ -158,6 +231,8 @@ const COMPLEX_PATTERNS = [
     /\bsearch\b.*\b(for|find|locate|where)\b/i,
     /\badd\b.*\bnew\b.*\b(file|page|route|component)/i,
     /\bbuild\b.*\b(from scratch|new)/i,
+    /\b(install|run|execute|npm|yarn|pnpm|pip|cargo|make)\b/i,
+    /\btest(s|ing)?\b.*\b(run|fix|check)/i,
     /\bset\s?up\b/i,
     /\bscaffold\b/i,
     /\bmigrat(e|ion)\b/i,
