@@ -61,8 +61,15 @@ Current implementation maps action titles heuristically (`open`, `copy`, `retry`
 ## Session Retrieval Guarantees
 
 - `$getSession` / `$getSessions` now return persisted sessions when available.
+- `$createSession` (GitHub) now waits for device-flow completion and resolves to the real session instead of returning `null` immediately.
 - `$removeSession` removes persisted sessions and emits change events.
 - GitHub device flow polls for token completion and persists resulting sessions.
+- Browser-worker `vscode.authentication.getSession(...)` now routes through the VS Code server manager (`authGetSession`) so local-worker auth consumers use the same session source.
+
+## Workspace/Repository Resolution
+
+- On server start, manager now remaps `workspaceDir` to Git top-level when the requested directory is nested under a Git repository.
+- This improves repository discovery for extensions like GitHub Actions that require a detected Git repository root.
 
 ## URI Callback Path
 
