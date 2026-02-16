@@ -2072,17 +2072,23 @@ async function _triggerExtensionHostStartup(port, token) {
       }
 
       function _buildConfigurationInitData() {
+        const emptyModel = () => ({
+          contents: Object.create(null),
+          overrides: [],
+          keys: [],
+        });
+
         return {
-          defaults: Object.create(null),
-          policy: Object.create(null),
-          application: Object.create(null),
-          user: Object.create(null),
-          userLocal: Object.create(null),
-          userRemote: Object.create(null),
-          workspace: Object.create(null),
+          defaults: emptyModel(),
+          policy: emptyModel(),
+          application: emptyModel(),
+          user: emptyModel(),
+          userLocal: emptyModel(),
+          userRemote: emptyModel(),
+          workspace: emptyModel(),
           folders: [],
-          memory: Object.create(null),
-          consolidated: Object.create(null),
+          memory: emptyModel(),
+          consolidated: emptyModel(),
           configurationScopes: [],
         };
       }
@@ -2423,6 +2429,18 @@ async function _triggerExtensionHostStartup(port, token) {
               const normalizedSev = fromPreload && sev === 'error' ? 'log' : sev;
               process.stderr.write(`[vscode-server-manager] EH ${normalizedSev}: ${text}\n`);
             }
+          } catch (_) {}
+        }
+
+        if (methodName === '$onExtensionActivationError' && rpcArgs && rpcArgs.length >= 2) {
+          try {
+            const ext = rpcArgs[0];
+            const err = rpcArgs[1];
+            const extId = (ext && (ext.value || ext._lower || ext.id)) ? (ext.value || ext._lower || ext.id) : 'unknown-extension';
+            const errMsg = (err && (err.message || err.name || err.stack))
+              ? String(err.message || err.name || err.stack).slice(0, 280)
+              : 'unknown activation error';
+            process.stderr.write(`[vscode-server-manager] Activation error from EH: ${extId} -> ${errMsg}\n`);
           } catch (_) {}
         }
 
