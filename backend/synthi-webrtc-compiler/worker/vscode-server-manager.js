@@ -148,6 +148,21 @@ function _secretFind(service) {
   return out;
 }
 
+function _providerIdFromSecretService(service) {
+  const text = String(service || '').toLowerCase();
+  if (!text) return null;
+  if (text.includes('github')) return 'github';
+  if (text.includes('microsoft') || text.includes('azure')) return 'microsoft';
+  if (text.includes('gitlab')) return 'gitlab';
+  if (text.includes('authentication.')) {
+    const parts = text.split('authentication.');
+    const tail = parts[1] || '';
+    const id = tail.split(/[.:/]/)[0];
+    return id || null;
+  }
+  return null;
+}
+
 function _authSessionStoreKey(providerId, workspaceSlug = null) {
   const provider = String(providerId || '').toLowerCase();
   const slug = String(workspaceSlug || currentSlug || 'default');
@@ -3419,6 +3434,10 @@ async function _triggerExtensionHostStartup(port, token) {
               _secretSet(service, account, value);
             } else {
               _secretDelete(service, account);
+            }
+            const providerId = _providerIdFromSecretService(service);
+            if (providerId) {
+              _emitAuthSessionChanged(providerId, [], [], ['secret-storage']);
             }
           } catch (e) {
             process.stderr.write(`[vscode-server-manager] Credential persistence error: ${e.message}\n`);
