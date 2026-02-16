@@ -840,7 +840,7 @@ for (const delay of _statusCheckDelays) {
   const timer = setTimeout(() => {
     const elapsed = ((Date.now() - _startedAt) / 1000).toFixed(1);
     if (vsCodeWrapped) {
-      log(`Status at ${elapsed}s: API intercepted ✓ (${_wrappedApiCount} instances, ${trackedTreeProviders.size} trees, ${trackedWebviewProviders.size} webviews)`);
+      log(`Status at ${elapsed}s: API intercepted ✓ (${_wrappedApiCount} instances, ${trackedTreeProviders.size} trees, ${trackedWebviewProviders.size} webviews, ${trackedCommandHandlers.size} commands)`);
     } else if (delay >= 60000) {
       // Full diagnostic dump only at the final checkpoint
       log(`Status at ${elapsed}s: vscode API NOT yet intercepted — FULL DIAGNOSTIC:`);
@@ -1363,6 +1363,8 @@ function _serializeTreeItem(treeItem, element) {
 /**
  * Safely assign a property on a potentially frozen/sealed object.
  * Falls back to Object.defineProperty when direct assignment throws.
+ * Verifies the assignment actually took effect (sloppy mode silently
+ * ignores writes to non-writable properties).
  *
  * @param {object} obj - Target object
  * @param {string} prop - Property name
@@ -1371,22 +1373,46 @@ function _serializeTreeItem(treeItem, element) {
  * @returns {boolean} true if assignment succeeded
  */
 function _safeAssign(obj, prop, value, label) {
+  // Strategy 1: Object.defineProperty (most reliable — works even on
+  // non-writable/non-configurable-in-sloppy-mode properties).
+  try {
+    Object.defineProperty(obj, prop, {
+      value,
+      writable: true,
+      configurable: true,
+      enumerable: true,
+    });
+    if (obj[prop] === value) return true;
+  } catch (_) {}
+
+  // Strategy 2: direct assignment
   try {
     obj[prop] = value;
-    return true;
-  } catch (_) {
-    try {
-      Object.defineProperty(obj, prop, {
-        value,
-        writable: true,
-        configurable: true,
-      });
-      return true;
-    } catch (e) {
-      log(`Could not assign ${label}: ${e.message}`);
-      return false;
-    }
-  }
+    // Verify it actually took effect (sloppy mode silently ignores
+    // writes to non-writable properties)
+    if (obj[prop] === value) return true;
+  } catch (_) {}
+
+  // Strategy 3: delete + re-assign (handles inherited non-writable props)
+  try {
+    delete obj[prop];
+    obj[prop] = value;
+    if (obj[prop] === value) return true;
+  } catch (_) {}
+
+  // Strategy 4: defineProperty without enumerable (some internal objects
+  // reject enumerable:true)
+  try {
+    Object.defineProperty(obj, prop, {
+      value,
+      writable: true,
+      configurable: true,
+    });
+    if (obj[prop] === value) return true;
+  } catch (_) {}
+
+  log(`Could not assign ${label} — all strategies failed`);
+  return false;
 }
 
 function wrapVSCodeAPI(vscode) {
@@ -1905,6 +1931,7 @@ function _interceptWebviewHtml(webview, viewId) {
 
 /**
  * Wrap vscode.commands.registerCommand to observe command registrations.
+ * Uses multiple strategies since vscode.commands may resist property assignment.
  *
  * @param {object} vscode
  */
@@ -1916,14 +1943,14 @@ function wrapCommands(vscode) {
 
   const original = vscode.commands.registerCommand;
 
-  const wrappedRegisterCommand = function wrappedRegisterCommand(commandId, callback, thisArg) {
+  /**
+   * The core wrapping logic: call the real registerCommand AND store handler.
+   */
+  function interceptedRegisterCommand(commandId, callback, thisArg) {
     // Call the real API
-    const disposable = original.call(this, commandId, callback, thisArg);
+    const disposable = original.call(vscode.commands, commandId, callback, thisArg);
 
     // Store the handler so we can call it directly from the bridge.
-    // vscode.commands.executeCommand() may not find locally-registered
-    // commands in the EH command service (it delegates to main thread),
-    // so we keep a direct reference to the callback.
     if (typeof callback === 'function') {
       trackedCommandHandlers.set(commandId, { callback, thisArg });
       log(`Command handler stored: ${commandId}`);
@@ -1942,12 +1969,48 @@ function wrapCommands(vscode) {
     }
 
     return disposable;
-  };
-
-  if (!_safeAssign(vscode.commands, 'registerCommand', wrappedRegisterCommand, 'commands.registerCommand')) {
-    return;
   }
-  log('commands.registerCommand wrapped');
+
+  // Strategy 1: _safeAssign (works if property is writable/configurable)
+  const assigned = _safeAssign(vscode.commands, 'registerCommand', interceptedRegisterCommand, 'commands.registerCommand');
+
+  if (assigned) {
+    log('commands.registerCommand wrapped via property assignment');
+  } else {
+    log('commands.registerCommand: property assignment failed, trying Proxy');
+  }
+
+  // Strategy 2: Replace vscode.commands with a Proxy that intercepts
+  // registerCommand calls.  This works even when the commands object
+  // uses getters or is a Proxy itself.
+  // We always install this as a safety net since Strategy 1 may have
+  // silently failed (property set appears to succeed but getter still
+  // returns the original — e.g. Proxy-backed namespace objects).
+  try {
+    const commandsTarget = vscode.commands;
+    const commandsProxy = new Proxy(commandsTarget, {
+      get(target, prop, receiver) {
+        if (prop === 'registerCommand') {
+          return interceptedRegisterCommand;
+        }
+        const val = Reflect.get(target, prop, receiver);
+        // Bind functions to preserve `this` context
+        if (typeof val === 'function') {
+          return val.bind(target);
+        }
+        return val;
+      }
+    });
+
+    // Replace vscode.commands with our proxy
+    if (_safeAssign(vscode, 'commands', commandsProxy, 'vscode.commands (proxy)')) {
+      log('vscode.commands replaced with Proxy for registerCommand interception');
+    } else {
+      log('vscode.commands Proxy replacement also failed — commands may not be tracked');
+    }
+  } catch (e) {
+    logError(`Proxy creation for vscode.commands failed: ${e.message}`);
+  }
 }
 
 // ============================================================================
