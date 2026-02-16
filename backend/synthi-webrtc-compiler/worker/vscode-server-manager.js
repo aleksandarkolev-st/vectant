@@ -699,6 +699,8 @@ function _handlePreloadMessage(msg) {
         commandId: msg.commandId,
         reason: msg.reason || 'unknown',
         trackedHandlers: msg.trackedHandlers,
+        candidates: Array.isArray(msg.candidates) ? msg.candidates : [],
+        knownCommands: Array.isArray(msg.knownCommands) ? msg.knownCommands : [],
       });
       break;
     }
