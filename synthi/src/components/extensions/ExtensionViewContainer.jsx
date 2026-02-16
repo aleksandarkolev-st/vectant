@@ -51,6 +51,23 @@ function evaluateWhenClause(whenClause, contextValues) {
     return !contextValues[key];
   }
 
+  // Handle comparison operators: >=, <=, >, <
+  const compMatch = trimmed.match(/^(.+?)\s*(>=|<=|>|<)\s*(.+)$/);
+  if (compMatch) {
+    const [, key, op, value] = compMatch;
+    const k = key.trim();
+    if (!(k in contextValues)) return null;
+    const lhs = Number(contextValues[k]);
+    const rhs = Number(value.trim().replace(/['"]/g, ''));
+    if (Number.isNaN(lhs) || Number.isNaN(rhs)) return null;
+    switch (op) {
+      case '>':  return lhs > rhs;
+      case '<':  return lhs < rhs;
+      case '>=': return lhs >= rhs;
+      case '<=': return lhs <= rhs;
+    }
+  }
+
   // Handle equality: key == value
   if (trimmed.includes('==') && !trimmed.includes('!=')) {
     const [key, value] = trimmed.split(/\s*==\s*/).map(s => s.trim());
@@ -201,11 +218,14 @@ function WelcomeEntry({ contents, onExecuteCommand }) {
 function TreeViewSection({ view, treeData, welcomeEntries, contextValues, onRequestData, onExecuteCommand }) {
   const [collapsed, setCollapsed] = useState(false);
 
-  // Filter welcome entries whose when-clause evaluates to false
+  // Filter welcome entries by when-clause.  In native VS Code, unknown
+  // context keys evaluate to falsy, so only entries that evaluate to
+  // *true* are shown.  Treating null (unknown) as false prevents
+  // contradictory welcome messages from appearing simultaneously.
   const filteredWelcome = welcomeEntries?.filter(entry => {
     if (!entry.when) return true;
     const result = evaluateWhenClause(entry.when, contextValues);
-    return result !== false; // Show if true or null (can't evaluate)
+    return result === true;
   });
 
   return (
@@ -492,18 +512,24 @@ export default function ExtensionViewContainer({
                 return true;
               });
 
-              // Safety net: never produce a completely blank panel.
-              // If every view was filtered out, fall back to showing all views
-              // (the most common cause is missing contextValues during startup).
-              const displayViews = postFiltered.length > 0 ? postFiltered : views;
+              // Safety net: if when-clause filtering removed all views, fall
+              // back to showing views ONLY if the extension actually has tree
+              // data registered (= the extension is active). Otherwise, showing
+              // all views from an unactivated extension floods the panel with
+              // contradictory welcome messages.  A blank panel is preferable.
+              const anyTreeData = views.some(v => treeDataMap[v.id]?.length > 0);
+              const displayViews = postFiltered.length > 0
+                ? postFiltered
+                : anyTreeData ? views : [];
 
               if (postFiltered.length === 0 && views.length > 0) {
                 console.warn(
                   `[ExtensionViewContainer] All ${views.length} view(s) filtered out for "${containerId}". ` +
-                  `Falling back to showing all views. contextValues:`,
-                  contextValues,
-                  'views:',
-                  views.map(v => ({ id: v.id, when: v.when }))
+                  (anyTreeData
+                    ? 'Falling back to showing all views (extension has tree data).'
+                    : 'Extension has no tree data — suppressing empty views.'),
+                  'contextValues:', contextValues,
+                  'views:', views.map(v => ({ id: v.id, when: v.when }))
                 );
               }
 
