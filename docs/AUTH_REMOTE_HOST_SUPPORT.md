@@ -72,6 +72,11 @@ Current implementation maps action titles heuristically (`open`, `copy`, `retry`
 
 - On server start, manager now remaps `workspaceDir` to Git top-level when the requested directory is nested under a Git repository.
 - This improves repository discovery for extensions like GitHub Actions that require a detected Git repository root.
+- If `workspaceDir` is not provided, manager now defaults to `collab-server/repos/<slug>` (or `SYNTHI_WORKSPACE_ROOT`/`SYNTHI_REPOS_ROOT`) before falling back to `/tmp/synthi-workspaces/<slug>`.
+
+## User-Initiated Sign-In Behavior
+
+- In preload, `authentication.getSession(...)` now forces `forceNewSession=true` for explicit sign-in/login/auth commands (e.g. `github-actions.sign-in`) to avoid stale-session reuse.
 
 ## URI Callback Path
 
