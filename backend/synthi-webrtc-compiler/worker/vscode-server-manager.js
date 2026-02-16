@@ -1461,6 +1461,15 @@ async function startServer(slug, options = {}) {
       _patchExtensionHostForPreload(binary, preloadPath, bridgePort);
     }
 
+    // ── Ensure default VS Code extensions dir exists ──
+    // Some extensions (e.g. Prisma) hardcode a scandir on the default
+    // ~/.vscode/extensions path during activation. Create it so they
+    // don't crash with ENOENT even though we use a custom --extensions-dir.
+    try {
+      const defaultExtDir = path.join(os.homedir(), '.vscode', 'extensions');
+      fs.mkdirSync(defaultExtDir, { recursive: true });
+    } catch (_) {}
+
     // ── Discover installed extensions ──
     // Scan the extensions directory to build the in-memory cache.
     // Extensions are installed by the frontend via RPC — we don't
