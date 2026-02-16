@@ -91,46 +91,24 @@ export class VisibilityManager {
 
   /**
    * Handle becoming hidden
+   * NOTE: Pausing/suspending extensions on tab hide is disabled.
+   * In an IDE, extensions must keep running (LSP, formatters, linters)
+   * even when the user switches tabs.
    */
   _onHidden() {
-    console.log('[VisibilityManager] Tab hidden - pausing extensions');
-    
-    // Pause all extensions
-    for (const extensionId of this._getRegisteredExtensions()) {
-      this.paused.add(extensionId);
-      if (this.onPause) {
-        this.onPause(extensionId);
-      }
-    }
-
-    // Start checking for suspend threshold
-    this._startSuspendCheck();
+    console.log('[VisibilityManager] Tab hidden - extensions continue running');
+    // Do NOT pause or suspend extensions — they need to stay active
+    // for LSP, file watchers, and other background tasks.
   }
 
   /**
    * Handle becoming visible
    */
   _onVisible() {
-    console.log('[VisibilityManager] Tab visible - resuming extensions');
+    console.log('[VisibilityManager] Tab visible');
     
-    // Stop suspend checking
+    // Stop suspend checking (should already be stopped, but be safe)
     this._stopSuspendCheck();
-    
-    // Resume all paused extensions
-    for (const extensionId of this.paused) {
-      if (this.onResume) {
-        this.onResume(extensionId);
-      }
-    }
-    this.paused.clear();
-    
-    // Resume visibility-suspended extensions
-    for (const extensionId of this.suspendedForVisibility) {
-      if (this.onResume) {
-        this.onResume(extensionId);
-      }
-    }
-    this.suspendedForVisibility.clear();
   }
 
   /**
@@ -163,16 +141,11 @@ export class VisibilityManager {
 
   /**
    * Suspend all extensions
+   * NOTE: Disabled — extensions must keep running in background.
    */
   _suspendAll() {
-    console.log('[VisibilityManager] Tab hidden > 30s - suspending extensions');
-    
-    for (const extensionId of this.paused) {
-      this.suspendedForVisibility.add(extensionId);
-      if (this.onSuspend) {
-        this.onSuspend(extensionId);
-      }
-    }
+    // Intentionally empty — IDE extensions should never be suspended
+    // due to tab visibility changes.
   }
 
   /**
@@ -190,13 +163,8 @@ export class VisibilityManager {
    * @param {string} extensionId
    */
   register(extensionId) {
-    // If currently hidden, immediately pause
-    if (!this.isVisible) {
-      this.paused.add(extensionId);
-      if (this.onPause) {
-        this.onPause(extensionId);
-      }
-    }
+    // Do NOT pause extensions on register even if tab is hidden.
+    // Extensions must remain active for background tasks (LSP, etc.).
   }
 
   /**

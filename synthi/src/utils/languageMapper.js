@@ -77,6 +77,13 @@ export const getMonacoLanguage = (fileName) => {
     // Svelte
     'svelte': 'svelte',
     
+    // Prisma
+    'prisma': 'prisma',
+    
+    // GraphQL
+    'graphql': 'graphql',
+    'gql': 'graphql',
+    
     // Swift
     'swift': 'swift',
     
@@ -118,9 +125,8 @@ export const getMonacoLanguage = (fileName) => {
     'conf': 'plaintext',
     'config': 'plaintext',
     
-    // Vue/Svelte
+    // Vue
     'vue': 'html',
-    'svelte': 'html',
     
     // Text
     'txt': 'plaintext',

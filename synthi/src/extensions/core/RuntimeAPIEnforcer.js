@@ -60,6 +60,10 @@ const API_REGISTRY = {
   
   'vscode.Uri.file': APISupport.STABLE,
   'vscode.Uri.parse': APISupport.STABLE,
+
+  'vscode.authentication.getSession': APISupport.STABLE,
+
+  'vscode.env.openExternal': APISupport.STABLE,
   
   'vscode.Range': APISupport.STABLE,
   'vscode.Position': APISupport.STABLE,
@@ -107,15 +111,12 @@ const API_REGISTRY = {
   
   'vscode.notebooks.createNotebookController': APISupport.NOT_IMPLEMENTED,
   
-  'vscode.authentication.getSession': APISupport.NOT_IMPLEMENTED,
   'vscode.authentication.registerAuthenticationProvider': APISupport.NOT_IMPLEMENTED,
   
   // =========================================================================
   // FORBIDDEN APIs - security risk, throw + may quarantine
   // =========================================================================
   'vscode.env.shell': APISupport.FORBIDDEN, // No shell access
-  'vscode.env.openExternal': APISupport.FORBIDDEN, // Limited, security risk
-  
   'require': APISupport.FORBIDDEN, // No CommonJS require
   'process': APISupport.FORBIDDEN, // No Node.js process
   'child_process': APISupport.FORBIDDEN, // No spawning

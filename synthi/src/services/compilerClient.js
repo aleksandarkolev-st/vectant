@@ -378,7 +378,21 @@ export class CompilerClient {
                         this._disconnectGraceTimer = null;
                         console.log('[CompilerClient] Connection recovered from transient disconnect');
                     }
+                    // Stop resending the SDP offer now that the PC is connected.
+                    // Without this, the retry fires before the answer arrives,
+                    // and webrtc-rs re-processes the duplicate offer, firing
+                    // on_data_channel again for the vscode-server DC (kills the
+                    // working VS Code Server process).
+                    if (this._offerRetryInterval) {
+                        clearInterval(this._offerRetryInterval);
+                        this._offerRetryInterval = null;
+                    }
                     this._setStatus(CompilerStatus.CONNECTED);
+
+                    // Notify the extension system that WebRTC is ready
+                    try {
+                        window.dispatchEvent(new CustomEvent('synthi:webrtc-connected'));
+                    } catch (_) {}
                 } else if (this.pc.connectionState === 'failed') {
                     // 'failed' is permanent — set DISCONNECTED immediately
                     if (this._disconnectGraceTimer) {
@@ -493,52 +507,53 @@ export class CompilerClient {
             };
 
             console.log('CompilerClient connecting to', this.url);
-            this.ws = new WebSocket(this.url);
+            const ws = new WebSocket(this.url);
+            this.ws = ws;
 
-            this.ws.onerror = (err) => {
+            ws.onerror = (err) => {
                 console.error('CompilerClient ws error', err);
                 this.readyPromise = null;
                 this._setStatus(CompilerStatus.ERROR);
                 reject(err);
             };
 
-            this.ws.onclose = () => {
+            ws.onclose = () => {
                 console.warn('CompilerClient ws closed');
-                this.readyPromise = null;
-                this.compileChannel = null;
-                this.buildLogChannel = null;
-                this.pc = null;
-                this.ws = null;
-                this.emulatorInputChannel = null;
-                this._setStatus(CompilerStatus.DISCONNECTED);
+                // Only clean up if this is still the active socket
+                if (this.ws === ws) {
+                    this.ws = null;
+
+                    // If the WebRTC PeerConnection is still connected, DON'T
+                    // tear everything down.  The signaling WS is only needed
+                    // for SDP exchange and ICE candidates — once the PC is
+                    // connected, DataChannels (LSP, vscode-server, terminal, …)
+                    // work independently.  Tearing down a healthy PC would
+                    // kill the LSP, vscode-server, etc. for no reason and trigger
+                    // an unnecessary reconnect cycle.
+                    if (this.pc && (this.pc.connectionState === 'connected' || this.pc.connectionState === 'connecting')) {
+                        console.log('[CompilerClient] Signaling WS closed but WebRTC PC still alive (' + this.pc.connectionState + '), keeping channels');
+                        return;
+                    }
+
+                    // PC is not connected — full teardown
+                    this.readyPromise = null;
+                    this.compileChannel = null;
+                    this.buildLogChannel = null;
+                    this.pc = null;
+                    this.emulatorInputChannel = null;
+                    this._setStatus(CompilerStatus.DISCONNECTED);
+                }
             };
 
-            this.ws.onmessage = async (event) => {
+            ws.onmessage = async (event) => {
+                // Ignore messages from a stale socket
+                if (this.ws !== ws) return;
                 let msg;
                 try { msg = JSON.parse(event.data); } catch (_) { return; }
                 if (msg.type === 'answer' && msg.sdp) {
-                    await this.pc.setRemoteDescription(new RTCSessionDescription({ type: msg.sdp_type || 'answer', sdp: msg.sdp }));
-                } else if (msg.type === 'offer' && msg.sdp) {
-                    // Worker-initiated renegotiation (e.g. new tracks added after initial connection)
-                    console.log('[CompilerClient] Received renegotiation offer from worker');
-                    await this.pc.setRemoteDescription(new RTCSessionDescription({ type: 'offer', sdp: msg.sdp }));
-                    const answer = await this.pc.createAnswer();
-                    await this.pc.setLocalDescription(answer);
-                    this.ws.send(JSON.stringify({ type: 'offer', sdp: answer.sdp, sdp_type: answer.type }));
-                    // Emit negotiated codecs to build log stream.
-                    try {
-                        const sdp = String(msg.sdp || '');
-                        const hasVp8 = /a=rtpmap:\\d+\\s+VP8\\//i.test(sdp);
-                        const hasH264 = /a=rtpmap:\\d+\\s+H264\\//i.test(sdp);
-                        const hasVp9 = /a=rtpmap:\\d+\\s+VP9\\//i.test(sdp);
-                        const hasAv1 = /a=rtpmap:\\d+\\s+AV1\\//i.test(sdp);
-                        const line = `[webrtc] answer: hasVp8=${hasVp8} hasH264=${hasH264} hasVp9=${hasVp9} hasAv1=${hasAv1} sdpLen=${sdp.length}`;
-                        this._emitWebrtcDiag(line);
-                    } catch (_) {
-                        // ignore
-                    }
-                    // Only set remote description if we're waiting for an answer (have-local-offer state)
-                    // This prevents "Called in wrong state: stable" errors from stale/duplicate answers
+                    // Only apply the answer if we're waiting for one (have-local-offer).
+                    // Stale / duplicate answers (e.g. from the offer-retry loop) can arrive
+                    // after the PC is already stable — silently ignore them.
                     const signalingState = this.pc?.signalingState;
                     if (signalingState === 'have-local-offer') {
                         try {
@@ -562,16 +577,54 @@ export class CompilerClient {
                             this._renegotiate(pending.reason, pending.sessionId, pending.onLog);
                         }
                     } else {
-                        console.warn(`[CompilerClient] Ignoring answer in signalingState=${signalingState} (expected have-local-offer)`);
+                        // Throttle this warning — stale answers are harmless but can flood the console
+                        if (!this._lastStaleAnswerWarn || Date.now() - this._lastStaleAnswerWarn > 5000) {
+                            console.warn(`[CompilerClient] Ignoring answer in signalingState=${signalingState} (expected have-local-offer)`);
+                            this._lastStaleAnswerWarn = Date.now();
+                            this._staleAnswerCount = 1;
+                        } else {
+                            this._staleAnswerCount = (this._staleAnswerCount || 0) + 1;
+                        }
                         this._emitWebrtcDiag(`[webrtc] ignored answer signalingState=${signalingState}`);
+                    }
+                } else if (msg.type === 'offer' && msg.sdp) {
+                    // Worker-initiated renegotiation (e.g. new tracks added after initial connection)
+                    console.log('[CompilerClient] Received renegotiation offer from worker');
+                    await this.pc.setRemoteDescription(new RTCSessionDescription({ type: 'offer', sdp: msg.sdp }));
+                    const answer = await this.pc.createAnswer();
+                    await this.pc.setLocalDescription(answer);
+                    if (ws.readyState === WebSocket.OPEN) {
+                        ws.send(JSON.stringify({ type: 'offer', sdp: answer.sdp, sdp_type: answer.type }));
+                    }
+                    // Emit negotiated codecs to build log stream.
+                    try {
+                        const sdp = String(msg.sdp || '');
+                        const hasVp8 = /a=rtpmap:\\d+\\s+VP8\\//i.test(sdp);
+                        const hasH264 = /a=rtpmap:\\d+\\s+H264\\//i.test(sdp);
+                        const hasVp9 = /a=rtpmap:\\d+\\s+VP9\\//i.test(sdp);
+                        const hasAv1 = /a=rtpmap:\\d+\\s+AV1\\//i.test(sdp);
+                        const line = `[webrtc] renegotiation: hasVp8=${hasVp8} hasH264=${hasH264} hasVp9=${hasVp9} hasAv1=${hasAv1} sdpLen=${sdp.length}`;
+                        this._emitWebrtcDiag(line);
+                    } catch (_) {
+                        // ignore
                     }
                 } else if (msg.type === 'candidate' && msg.candidate) {
                     try { await this.pc.addIceCandidate(msg.candidate); } catch (_) {}
                 }
             };
 
-            this.ws.onopen = async () => {
-                this.ws.send(JSON.stringify({ type: 'register', role: 'browser' }));
+            ws.onopen = async () => {
+                // Guard: if connect() was called again, this socket is stale
+                if (this.ws !== ws) {
+                    console.warn('[CompilerClient] onopen fired on stale socket, ignoring');
+                    try { ws.close(); } catch (_) {}
+                    return;
+                }
+                if (ws.readyState !== WebSocket.OPEN) {
+                    console.warn('[CompilerClient] onopen but readyState is not OPEN:', ws.readyState);
+                    return;
+                }
+                ws.send(JSON.stringify({ type: 'register', role: 'browser' }));
                 this.compileChannel = this.pc.createDataChannel('compile', { ordered: true });
                 // Terminal channel for stdin forwarding
                 this.terminalChannel = this.pc.createDataChannel('terminal', { ordered: true });
@@ -579,6 +632,17 @@ export class CompilerClient {
                 this.emulatorInputChannel = this.pc.createDataChannel('emulator-input', { ordered: true });
                 // File-sync channel: pushes file create/edit/delete/rename to worker disk
                 this.fileSyncChannel = this.pc.createDataChannel('file-sync', { ordered: true });
+
+                // VS Code Server Manager channel — pre-created in SDP
+                // to avoid unreliable DCEP in-band negotiation.
+                this.vscodeServerChannel = this.pc.createDataChannel(`vscode-server?slug=${this.slug || ''}`, { ordered: true });
+                this.vscodeServerChannel.binaryType = 'arraybuffer';
+                this.vscodeServerChannel._earlyMessages = [];
+                this.vscodeServerChannel.onmessage = (evt) => {
+                    if (this.vscodeServerChannel._earlyMessages) {
+                        this.vscodeServerChannel._earlyMessages.push(evt.data);
+                    }
+                };
                 
                 this.compileChannel.onclose = () => {};
 
@@ -615,7 +679,7 @@ export class CompilerClient {
                 } catch (_) {}
                 
                 const offerPayload = JSON.stringify({ type: 'offer', sdp: offer.sdp, sdp_type: offer.type });
-                this.ws.send(offerPayload);
+                ws.send(offerPayload);
 
                 // Retry sending the offer periodically until we receive an Answer.
                 // This prevents the connection from hanging if the Worker process is restarting 
@@ -623,11 +687,11 @@ export class CompilerClient {
                 if (this._offerRetryInterval) clearInterval(this._offerRetryInterval);
                 this._offerRetryInterval = setInterval(() => {
                     const isWaiting = this.pc && this.pc.signalingState === 'have-local-offer';
-                    const isOpen = this.ws && this.ws.readyState === WebSocket.OPEN;
+                    const isOpen = ws === this.ws && ws.readyState === WebSocket.OPEN;
                     
                     if (isWaiting && isOpen) {
                         console.log('[CompilerClient] Retrying offer transmission (worker might not be ready)...');
-                        this.ws.send(offerPayload);
+                        ws.send(offerPayload);
                     } else {
                         if (this._offerRetryInterval) {
                             clearInterval(this._offerRetryInterval);
@@ -800,6 +864,28 @@ export class CompilerClient {
         return channel;
     }
 
+    /**
+     * Create a DataChannel for the VS Code Server Manager.
+     * The Rust worker will spawn `node vscode-server-manager.js` and pipe
+     * newline-delimited JSON over the channel.
+     *
+     * @returns {RTCDataChannel}
+     */
+    createVSCodeServerChannel() {
+        // Return the channel that was pre-created during connect() (part of SDP).
+        if (this.vscodeServerChannel && this.vscodeServerChannel.readyState !== 'closed') {
+            return this.vscodeServerChannel;
+        }
+        // Fallback: create on-demand
+        if (!this.pc || this.pc.connectionState !== 'connected') {
+            throw new Error('CompilerClient not connected');
+        }
+        const label = `vscode-server?slug=${this.slug || ''}`;
+        this.vscodeServerChannel = this.pc.createDataChannel(label, { ordered: true });
+        this.vscodeServerChannel.binaryType = 'arraybuffer';
+        return this.vscodeServerChannel;
+    }
+
     // ── File-sync helpers ──────────────────────────────────────────
     // These methods push file mutations from the browser to the worker's disk
     // so the LSP server sees newly created/edited/renamed/deleted files.
@@ -874,6 +960,49 @@ export class CompilerClient {
         } catch (e) {
             console.warn('[CompilerClient] file-sync mkdir failed:', e.message);
         }
+    }
+
+    /**
+     * Lightweight reconnect: tears down the local PeerConnection and
+     * signaling WebSocket, then re-establishes a new connection,
+     * WITHOUT sending a "reset" to the worker.  This preserves the
+     * worker's vscode-server-manager processes so LSP/
+     * extensions survive transient network blips.
+     *
+     * Use `reconnect()` (hard reset) only when the emulator/build
+     * state needs to be cleared on the worker side.
+     */
+    async softReconnect() {
+        console.log('[CompilerClient] Soft reconnect (no worker reset)...');
+
+        if (this._disconnectGraceTimer) {
+            clearTimeout(this._disconnectGraceTimer);
+            this._disconnectGraceTimer = null;
+        }
+
+        if (this._offerRetryInterval) {
+            clearInterval(this._offerRetryInterval);
+            this._offerRetryInterval = null;
+        }
+
+        if (this.ws) { this.ws.close(); }
+        if (this.pc) { this.pc.close(); }
+
+        await new Promise(r => setTimeout(r, 500));
+
+        this.ws = null;
+        this.pc = null;
+        this.compileChannel = null;
+        this.buildLogChannel = null;
+        this.terminalChannel = null;
+        this.emulatorInputChannel = null;
+        this.lspChannel = null;
+        this.fileSyncChannel = null;
+        this.readyPromise = null;
+        this._setStatus(CompilerStatus.IDLE);
+        this.currentStreams = [];
+
+        return this.connect();
     }
 
     async reconnect() {
