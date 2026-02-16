@@ -679,6 +679,10 @@ Module._load = function synthiModuleLoadHook(request, parent, isMain) {
 
   if (request === 'vscode') {
     try {
+      // Wrap with Proxy first (handles frozen objects), then also try
+      // in-place wrapping for tree/webview providers (which need trackers)
+      result = _createVscodeApiProxy(result);
+
       const didWrap = _tryWrapVscodeResult(result, `Module._load('vscode') from ${parent?.filename || 'unknown'}`);
       if (didWrap) {
         log(`SUCCESS: vscode API intercepted via Module._load('vscode') (call #${_moduleLoadHookCallCount})`);
@@ -719,6 +723,10 @@ Module.prototype.require = function synthiRequireHook(id) {
 
   if (id === 'vscode') {
     try {
+      // Wrap with Proxy first (handles frozen objects), then also try
+      // in-place wrapping for tree/webview providers (which need trackers)
+      result = _createVscodeApiProxy(result);
+
       const didWrap = _tryWrapVscodeResult(result, `require('vscode') from ${this?.filename || 'unknown'}`);
       if (didWrap) {
         log(`SUCCESS: vscode API intercepted via require('vscode') (call #${_requireHookCallCount})`);
@@ -1150,6 +1158,153 @@ const trackedCommandHandlers = new Map();
 
 /** @type {Set<string>} viewTypes already logged as missing provider */
 const _missingWebviewProviderLogged = new Set();
+
+/**
+ * Cache of vscode API → Proxy wrappers.  We use a WeakMap so that
+ * if VS Code garbage-collects an API namespace, so does the proxy.
+ * @type {WeakMap<object, object>}
+ */
+const _vsCodeProxyCache = new WeakMap();
+
+/**
+ * Create a transparent Proxy around a frozen vscode API namespace.
+ *
+ * VS Code `Object.freeze()`s the per-extension API object, making all
+ * properties non-writable and non-configurable.  We cannot modify it
+ * in place.  Instead, we return a Proxy that intercepts property access
+ * and returns wrapped versions of the methods we care about.
+ *
+ * @param {object} original - The real (frozen) vscode API namespace
+ * @returns {object} A Proxy wrapper that behaves identically except for
+ *   our instrumentation hooks
+ */
+function _createVscodeApiProxy(original) {
+  if (!original || typeof original !== 'object') return original;
+
+  // Return cached proxy if we've already created one for this object
+  const cached = _vsCodeProxyCache.get(original);
+  if (cached) return cached;
+
+  // ── commands sub-proxy ────────────────────────────────────────────
+  const realCommands = original.commands;
+  let commandsProxy = realCommands;
+  if (realCommands) {
+    commandsProxy = new Proxy(realCommands, {
+      get(target, prop, receiver) {
+        if (prop === 'registerCommand') {
+          return function synthiRegisterCommand(commandId, callback, thisArg) {
+            // Call the real API
+            const disposable = target.registerCommand.call(target, commandId, callback, thisArg);
+
+            // Store the handler for direct invocation from the bridge
+            if (typeof callback === 'function') {
+              trackedCommandHandlers.set(commandId, { callback, thisArg });
+              log(`Command handler stored (proxy): ${commandId}`);
+            }
+
+            // Notify bridge
+            bridgeSend({ type: 'command', commandId, extensionId: _inferExtensionId() });
+
+            // Clean up on dispose
+            if (disposable && typeof disposable.dispose === 'function') {
+              const origDispose = disposable.dispose;
+              disposable.dispose = function () {
+                trackedCommandHandlers.delete(commandId);
+                return origDispose.call(this);
+              };
+            }
+            return disposable;
+          };
+        }
+        const val = Reflect.get(target, prop, receiver);
+        return typeof val === 'function' ? val.bind(target) : val;
+      }
+    });
+  }
+
+  // ── authentication sub-proxy ──────────────────────────────────────
+  const realAuth = original.authentication;
+  let authProxy = realAuth;
+  if (realAuth && typeof realAuth.getSession === 'function') {
+    authProxy = new Proxy(realAuth, {
+      get(target, prop, receiver) {
+        if (prop === 'getSession') {
+          return function synthiGetSession(providerId, scopes, options) {
+            log(`authentication.getSession intercepted (proxy): provider=${providerId} scopes=${JSON.stringify(scopes)} options=${JSON.stringify(options)}`);
+            if (options && (options.createIfNone || options.forceNewSession)) {
+              log(`Authentication request requires user interaction: provider=${providerId}`);
+              bridgeSend({
+                type: 'authSessionRequest',
+                providerId,
+                scopes: scopes || [],
+                createIfNone: !!options.createIfNone,
+                forceNewSession: !!options.forceNewSession,
+              });
+            }
+            return target.getSession.call(target, providerId, scopes, options);
+          };
+        }
+        const val = Reflect.get(target, prop, receiver);
+        return typeof val === 'function' ? val.bind(target) : val;
+      }
+    });
+  }
+
+  // ── env sub-proxy ─────────────────────────────────────────────────
+  const realEnv = original.env;
+  let envProxy = realEnv;
+  if (realEnv) {
+    // clipboard sub-sub-proxy
+    const realClipboard = realEnv.clipboard;
+    let clipboardProxy = realClipboard;
+    if (realClipboard && typeof realClipboard.writeText === 'function') {
+      clipboardProxy = new Proxy(realClipboard, {
+        get(target, prop, receiver) {
+          if (prop === 'writeText') {
+            return function synthiWriteText(text) {
+              log(`clipboard.writeText intercepted (proxy): ${String(text).slice(0, 50)}`);
+              bridgeSend({ type: 'clipboardWrite', text: String(text) });
+              return target.writeText.call(target, text);
+            };
+          }
+          const val = Reflect.get(target, prop, receiver);
+          return typeof val === 'function' ? val.bind(target) : val;
+        }
+      });
+    }
+
+    envProxy = new Proxy(realEnv, {
+      get(target, prop, receiver) {
+        if (prop === 'openExternal') {
+          return function synthiOpenExternal(uri) {
+            const url = uri?.toString?.() || String(uri);
+            log(`env.openExternal intercepted (proxy): ${url}`);
+            bridgeSend({ type: 'openExternal', url });
+            return target.openExternal.call(target, uri);
+          };
+        }
+        if (prop === 'clipboard') return clipboardProxy;
+        const val = Reflect.get(target, prop, receiver);
+        return typeof val === 'function' ? val.bind(target) : val;
+      }
+    });
+  }
+
+  // ── top-level vscode namespace proxy ──────────────────────────────
+  const proxy = new Proxy(original, {
+    get(target, prop, receiver) {
+      if (prop === 'commands') return commandsProxy;
+      if (prop === 'authentication') return authProxy;
+      if (prop === 'env') return envProxy;
+      // All other properties pass through to the real frozen object
+      const val = Reflect.get(target, prop, receiver);
+      return typeof val === 'function' ? val.bind(target) : val;
+    }
+  });
+
+  _vsCodeProxyCache.set(original, proxy);
+  return proxy;
+}
 
 // ============================================================================
 // Tree Data Resolution
