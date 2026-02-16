@@ -3305,6 +3305,13 @@ async function _autoLoadUIExtensions() {
   let uiExtCount = 0;
 
   for (const dir of dirs) {
+    // Skip plain files (e.g. extensions.json)
+    try {
+      if (!fs.statSync(path.join(EXTENSIONS_DIR, dir)).isDirectory()) continue;
+    } catch (_) {
+      continue;
+    }
+
     const pkgPath = path.join(EXTENSIONS_DIR, dir, 'package.json');
     let pkg;
     try {
@@ -3647,6 +3654,14 @@ async function _discoverInstalledExtensions() {
   installedExtensions.clear();
 
   for (const dir of dirs) {
+    // Skip plain files (e.g. extensions.json) — only process directories
+    try {
+      const stat = fs.statSync(path.join(EXTENSIONS_DIR, dir));
+      if (!stat.isDirectory()) continue;
+    } catch (_) {
+      continue;
+    }
+
     const pkgPath = path.join(EXTENSIONS_DIR, dir, 'package.json');
     try {
       const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
