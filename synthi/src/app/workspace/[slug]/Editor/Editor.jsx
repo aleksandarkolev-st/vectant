@@ -1303,12 +1303,17 @@ const EditorPanel = ({
         if (onSave) onSave();
     }, [activeFile, isUnsaved, dispatch, onSave, compilerClient, code, slug]);
 
-    // Auto-save
-    useEffect(() => {
-        if (!autoSaveEnabled || !isUnsaved || !activeFile) return;
-        const t = setTimeout(() => dispatch(saveFileContentThunk()), 500);
-        return () => clearTimeout(t);
-    }, [code, autoSaveEnabled, isUnsaved, activeFile, dispatch]);
+    // Auto-save — DISABLED: editor-only mode
+    // When autoSaveEnabled is ON, changes stay in the editor (Redux +
+    // Monaco) and are NOT persisted to disk/GCS.  The user must explicitly
+    // save with Ctrl+S to write content.
+    //
+    // The "auto-save" toggle now controls whether the unsaved dot indicator
+    // is suppressed (cosmetic only) — actual persistence always requires an
+    // explicit save action.
+    //
+    // Previously this dispatched saveFileContentThunk() on a 500ms delay,
+    // pushing every keystroke to disk.
 
     // Debounced git status refresh — the Yjs auto-flush writes edited content
     // to the git working tree within 150ms.  Refresh git status ~2s after the
