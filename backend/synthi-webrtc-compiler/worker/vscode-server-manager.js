@@ -272,6 +272,22 @@ function _extensionStorageSet(scopeArg, key, value) {
   _persistExtensionStorage();
 }
 
+function _resolveGitWorkspaceRoot(workspaceDir) {
+  const inputDir = String(workspaceDir || '').trim();
+  if (!inputDir) return workspaceDir;
+  try {
+    const gitRoot = execFileSync('git', ['-C', inputDir, 'rev-parse', '--show-toplevel'], {
+      timeout: 3000,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      encoding: 'utf8',
+    }).trim();
+    if (gitRoot && fs.existsSync(gitRoot)) {
+      return gitRoot;
+    }
+  } catch (_) {}
+  return workspaceDir;
+}
+
 // ============================================================================
 // Prevent EPIPE from crashing the process
 // ============================================================================
@@ -510,6 +526,21 @@ function _sessionMatchesScopes(session, requestedScopes) {
     if (!has.has(scope)) return false;
   }
   return true;
+}
+
+async function _waitForAuthSession(providerId, scopes, timeoutMs = 120000) {
+  const started = Date.now();
+  const normalizedProviderId = String(providerId || '').toLowerCase();
+  while ((Date.now() - started) < timeoutMs) {
+    const sessions = _listAuthSessions(normalizedProviderId);
+    const matched = sessions.find(session => _sessionMatchesScopes(session, scopes));
+    if (matched) return matched;
+    await new Promise(resolve => {
+      const timer = setTimeout(resolve, 500);
+      if (timer.unref) timer.unref();
+    });
+  }
+  return null;
 }
 
 function _toUriComponents(rawUrl) {
@@ -1412,6 +1443,19 @@ function _handlePreloadMessage(msg) {
       // interaction. Forward to the frontend so it can show appropriate UI.
       const { providerId, scopes, createIfNone, forceNewSession } = msg;
       process.stderr.write(`[preload-bridge] authSessionRequest: provider=${providerId} scopes=${JSON.stringify(scopes)} createIfNone=${createIfNone}\n`);
+      const normalizedProviderId = String(providerId || '').toLowerCase();
+      const normalizedScopes = Array.isArray(scopes) ? scopes : [];
+      if (
+        normalizedProviderId === 'github'
+        && (createIfNone || forceNewSession)
+      ) {
+        const existing = _listAuthSessions('github').find(session => _sessionMatchesScopes(session, normalizedScopes));
+        if (!existing || forceNewSession) {
+          _startGithubDeviceFlow(normalizedScopes, 'preload-authSessionRequest').catch((e) => {
+            process.stderr.write(`[auth-device] github flow launch failed in authSessionRequest: ${e.message}\n`);
+          });
+        }
+      }
       const dedupeKey = JSON.stringify({ providerId, scopes: scopes || [], createIfNone: !!createIfNone, forceNewSession: !!forceNewSession });
       const now = Date.now();
       if (_lastAuthSessionRequest.key === dedupeKey && (now - _lastAuthSessionRequest.ts) < 1500) {
@@ -2032,8 +2076,13 @@ async function startServer(slug, options = {}) {
     const token = require('crypto').randomBytes(16).toString('hex');
 
     // Workspace directory — default to /tmp/synthi-workspaces/<slug>
-    const workspaceDir = options.workspaceDir
+    let workspaceDir = options.workspaceDir
       || path.join(os.tmpdir(), 'synthi-workspaces', slug);
+    const resolvedWorkspaceDir = _resolveGitWorkspaceRoot(workspaceDir);
+    if (resolvedWorkspaceDir !== workspaceDir) {
+      process.stderr.write(`[vscode-server-manager] Workspace remapped to git root: ${workspaceDir} -> ${resolvedWorkspaceDir}\n`);
+      workspaceDir = resolvedWorkspaceDir;
+    }
     fs.mkdirSync(workspaceDir, { recursive: true });
     currentWorkspaceDir = workspaceDir;
 
@@ -3136,6 +3185,22 @@ async function _triggerExtensionHostStartup(port, token) {
         ackHdr.writeUInt32BE(ackRpc.length, 9);
         try { sendWSFrame(Buffer.concat([ackHdr, ackRpc])); } catch (_) {}
 
+        const _sendJsonReply = (requestId, payload) => {
+          const json = Buffer.from(JSON.stringify(payload), 'utf8');
+          const rpc = Buffer.alloc(5 + 4 + json.length);
+          rpc[0] = 9; // ReplyOKJSON
+          rpc.writeUInt32BE(requestId, 1);
+          rpc.writeUInt32BE(json.length, 5);
+          json.copy(rpc, 9);
+
+          const hdr = Buffer.alloc(13);
+          hdr[0] = ProtoMsgType.Regular;
+          hdr.writeUInt32BE(nextMsgId++, 1);
+          hdr.writeUInt32BE(lastReceivedMsgId, 5);
+          hdr.writeUInt32BE(rpc.length, 9);
+          try { sendWSFrame(Buffer.concat([hdr, rpc])); } catch (_) {}
+        };
+
         // 2. Send reply
         let replyRpc;
         if (methodName === '$getInitialState') {
@@ -3297,6 +3362,7 @@ async function _triggerExtensionHostStartup(port, token) {
 
         } else if (methodName === '$createSession') {
           // Interactive authentication session creation request.
+          let deferredCreateSessionReply = false;
           try {
             const providerId = rpcArgs && rpcArgs[0];
             const scopes = rpcArgs && rpcArgs[1];
@@ -3324,10 +3390,19 @@ async function _triggerExtensionHostStartup(port, token) {
                 _startGithubDeviceFlow(Array.isArray(scopes) ? scopes : [], '$createSession').catch((e) => {
                   process.stderr.write(`[auth-device] github flow launch failed in $createSession: ${e.message}\n`);
                 });
+                deferredCreateSessionReply = true;
+                replyRpc = null;
+                (async () => {
+                  const session = await _waitForAuthSession(normalizedProviderId, Array.isArray(scopes) ? scopes : [], 120000);
+                  if (!session) {
+                    process.stderr.write('[auth-session] $createSession timeout waiting for github session\n');
+                  }
+                  _sendJsonReply(reqId, session || null);
+                })();
               }
             }
           } catch (_) {}
-          if (!replyRpc) {
+          if (!replyRpc && !deferredCreateSessionReply) {
             const json = Buffer.from('null', 'utf8');
             replyRpc = Buffer.alloc(5 + 4 + json.length);
             replyRpc[0] = 9; // ReplyOKJSON
@@ -3751,12 +3826,14 @@ async function _triggerExtensionHostStartup(port, token) {
           replyRpc.writeUInt32BE(reqId, 1);
         }
 
-        const replyHdr = Buffer.alloc(13);
-        replyHdr[0] = ProtoMsgType.Regular;
-        replyHdr.writeUInt32BE(nextMsgId++, 1);
-        replyHdr.writeUInt32BE(lastReceivedMsgId, 5);
-        replyHdr.writeUInt32BE(replyRpc.length, 9);
-        try { sendWSFrame(Buffer.concat([replyHdr, replyRpc])); } catch (_) {}
+        if (replyRpc) {
+          const replyHdr = Buffer.alloc(13);
+          replyHdr[0] = ProtoMsgType.Regular;
+          replyHdr.writeUInt32BE(nextMsgId++, 1);
+          replyHdr.writeUInt32BE(lastReceivedMsgId, 5);
+          replyHdr.writeUInt32BE(replyRpc.length, 9);
+          try { sendWSFrame(Buffer.concat([replyHdr, replyRpc])); } catch (_) {}
+        }
       }
 
       // Step 2a: Send auth request
@@ -5943,6 +6020,27 @@ rl.on('line', async (line) => {
           secretEntries: _secretStore.size,
           extensionStorageEntries: _extensionStorage.size,
         });
+        break;
+      }
+
+      case 'authGetSession': {
+        const [, providerId, scopes, options] = args;
+        const normalizedProviderId = String(providerId || '').toLowerCase();
+        const normalizedScopes = Array.isArray(scopes) ? scopes : [];
+        const sessions = _listAuthSessions(normalizedProviderId);
+        const matched = sessions.find(session => _sessionMatchesScopes(session, normalizedScopes)) || null;
+
+        if (
+          normalizedProviderId === 'github'
+          && (options?.createIfNone || options?.forceNewSession)
+          && !matched
+        ) {
+          _startGithubDeviceFlow(normalizedScopes, 'control-authGetSession').catch((e) => {
+            process.stderr.write(`[auth-device] github flow launch failed in authGetSession: ${e.message}\n`);
+          });
+        }
+
+        sendResponse(id, matched);
         break;
       }
 

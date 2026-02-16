@@ -941,7 +941,19 @@ export class MainThreadBridge {
 
     // ─── Auth session ─────────────────────────────────────────────────
     proxy.onRequest(WorkerToMainMethods.AUTH_GET_SESSION, async (args) => {
-      // TODO: wire to real auth provider
+      const [extensionId, providerId, scopes, options] = args || [];
+      if (this.vscodeServerProxy && this.vscodeServerConnected) {
+        try {
+          return await this.vscodeServerProxy.request('authGetSession', [
+            extensionId,
+            providerId,
+            scopes,
+            options || {},
+          ]);
+        } catch (err) {
+          console.warn(`[MainThreadBridge] AUTH_GET_SESSION via vscode-server failed: ${err?.message || err}`);
+        }
+      }
       return null;
     });
 
