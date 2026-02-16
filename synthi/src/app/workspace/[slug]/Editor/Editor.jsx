@@ -19,8 +19,8 @@ import {
     closeFile,
     reorderOpenFiles
 } from '@/redux/workspaceSlice';
-import { selectAutoSaveEnabled, selectAutoCompletionEnabled, toggleAutoCompletion, selectPresenceGranularity, startCreate, setCursorPosition } from '@/redux/uiSlice';
-import { fetchGitStatus, syncFileToGit, closeConflictResolver } from '@/redux/gitSlice';
+import { selectAutoCompletionEnabled, toggleAutoCompletion, selectPresenceGranularity, startCreate, setCursorPosition } from '@/redux/uiSlice';
+import { fetchGitStatus, closeConflictResolver } from '@/redux/gitSlice';
 import { Circle, Save, Sparkles, Loader2 } from 'lucide-react';
 import { getFileIcon } from '@/utils/fileIcons';
 import {
@@ -150,7 +150,8 @@ const EditorPanel = ({
     const loadingFiles = useAppSelector(selectLoadingFiles);
     const rawFiles = useAppSelector(state => state.workspace.rawFiles);
     const showTerminal = useAppSelector(state => state.ui.showTerminal);
-    const autoSaveEnabled = useAppSelector(selectAutoSaveEnabled);
+    // autoSaveEnabled is no longer used — changes always stay editor-only
+    // until explicit save.  The toggle still exists in TopNav for UX purposes.
     const aiAutoEnabled = useAppSelector(selectAutoCompletionEnabled);
     const presenceGranularity = useAppSelector(selectPresenceGranularity);
     
