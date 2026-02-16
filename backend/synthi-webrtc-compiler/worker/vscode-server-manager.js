@@ -410,6 +410,117 @@ function emitAuthDeviceCode(code, source, metadata = {}) {
   sendEvent('authDeviceCode', { code, source, ...metadata });
 }
 
+function _emitAuthSessionChanged(providerId, added = [], removed = [], changed = []) {
+  sendEvent('authSessionChanged', {
+    providerId,
+    event: {
+      added,
+      removed,
+      changed,
+    },
+  });
+}
+
+function _normalizeScopes(scopes) {
+  return Array.isArray(scopes)
+    ? scopes.filter(s => typeof s === 'string' && s.trim().length > 0).map(s => s.trim()).sort()
+    : [];
+}
+
+function _sessionMatchesScopes(session, requestedScopes) {
+  const need = new Set(_normalizeScopes(requestedScopes));
+  if (need.size === 0) return true;
+  const has = new Set(_normalizeScopes(session?.scopes || []));
+  for (const scope of need) {
+    if (!has.has(scope)) return false;
+  }
+  return true;
+}
+
+function _startGithubDeviceTokenPolling(deviceCode, scopes, intervalSec = 5, trigger = 'unknown') {
+  const normalizedScopes = _normalizeScopes(scopes);
+  const flowKey = `github:${normalizedScopes.join(',')}`;
+  if (_pendingGithubFlows.has(flowKey)) {
+    return;
+  }
+  _pendingGithubFlows.set(flowKey, { deviceCode, startedAt: Date.now() });
+
+  const clientId = process.env.SYNTHI_GITHUB_OAUTH_CLIENT_ID || '01ab8ac9400c4e429b23';
+  let pollIntervalMs = Math.max(3, Number(intervalSec) || 5) * 1000;
+
+  const pollOnce = async () => {
+    const active = _pendingGithubFlows.get(flowKey);
+    if (!active) return;
+
+    const elapsed = Date.now() - active.startedAt;
+    if (elapsed > 10 * 60 * 1000) {
+      _pendingGithubFlows.delete(flowKey);
+      process.stderr.write(`[auth-device] github poll timeout (${trigger})\n`);
+      return;
+    }
+
+    try {
+      const body = new URLSearchParams({
+        client_id: clientId,
+        device_code: deviceCode,
+        grant_type: 'urn:ietf:params:oauth:grant-type:device_code',
+      });
+      const response = await fetch('https://github.com/login/oauth/access_token', {
+        method: 'POST',
+        headers: {
+          Accept: 'application/json',
+          'Content-Type': 'application/x-www-form-urlencoded',
+        },
+        body,
+      });
+      const payload = await response.json().catch(() => ({}));
+
+      if (payload?.access_token) {
+        const scopeText = typeof payload.scope === 'string' ? payload.scope : normalizedScopes.join(',');
+        const session = {
+          id: `github-${Date.now()}`,
+          accessToken: String(payload.access_token),
+          account: {
+            id: 'github',
+            label: 'GitHub',
+          },
+          scopes: _normalizeScopes(scopeText.split(/[\s,]+/g).filter(Boolean)),
+        };
+        _upsertAuthSession('github', session);
+        _pendingGithubFlows.delete(flowKey);
+        process.stderr.write(`[auth-device] github session established (${trigger})\n`);
+        _emitAuthSessionChanged('github', [session.id], [], []);
+        sendEvent('extensionMessage', {
+          severity: 'info',
+          message: 'GitHub sign-in completed.',
+          modal: false,
+          commands: [],
+        });
+        return;
+      }
+
+      const errorCode = String(payload?.error || '').toLowerCase();
+      if (errorCode === 'authorization_pending') {
+        // keep polling
+      } else if (errorCode === 'slow_down') {
+        pollIntervalMs += 5000;
+      } else {
+        _pendingGithubFlows.delete(flowKey);
+        process.stderr.write(`[auth-device] github poll terminated: ${errorCode || 'unknown_error'}\n`);
+        return;
+      }
+    } catch (e) {
+      process.stderr.write(`[auth-device] github poll error: ${e.message}\n`);
+    }
+
+    const timer = setTimeout(pollOnce, pollIntervalMs);
+    if (timer.unref) timer.unref();
+  };
+
+  const initial = setTimeout(pollOnce, pollIntervalMs);
+  if (initial.unref) initial.unref();
+}
+
 function _extractAuthRequestFromRpcArgs(rpcArgs) {
   const out = {
     providerId: '',
@@ -486,6 +597,7 @@ async function _startGithubDeviceFlow(scopes, trigger) {
     const userCode = typeof payload.user_code === 'string' ? payload.user_code.trim().toUpperCase() : '';
     const verificationUri = payload.verification_uri || 'https://github.com/login/device';
     const verificationUriComplete = payload.verification_uri_complete || null;
+    const deviceCode = typeof payload.device_code === 'string' ? payload.device_code : null;
 
     if (!response.ok || !userCode) {
       process.stderr.write(`[auth-device] github device flow failed: status=${response.status} body=${JSON.stringify(payload).slice(0, 300)}\n`);
@@ -515,6 +627,10 @@ async function _startGithubDeviceFlow(scopes, trigger) {
       modal: false,
       commands: [],
     });
+
+    if (deviceCode) {
+      _startGithubDeviceTokenPolling(deviceCode, normalizedScopes, payload.interval, trigger);
+    }
   } catch (error) {
     process.stderr.write(`[auth-device] github device flow exception: ${error.message}\n`);
     sendEvent('authDeviceCodeMissing', {
