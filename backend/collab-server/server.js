@@ -1540,6 +1540,17 @@ wss.on('connection', (ws, req) => {
     persistence,
     docName: roomName,
   });
+
+  // ── Pin the repo in the cache while this Yjs WS is alive ──────────
+  // Without this, a notification WS disconnect (network blip) would
+  // un-pin the repo, and the LRU TTL eviction could delete the working
+  // tree while the Yjs connection is still active — causing ENOENT.
+  const parsed = parseDocName(roomName);
+  if (parsed) {
+    const { slug } = parsed;
+    repoCache.pin(slug);
+    console.log(`[Collab] Pinned repo "${slug}" for Yjs WS`);
+  }
   
   // Track this connection
   if (!activeDocuments.has(roomName)) {
@@ -1561,6 +1572,18 @@ wss.on('connection', (ws, req) => {
   ws.on('close', () => {
     docInfo.clientCount--;
     console.log(`[Collab DEBUG] Connection closed for ${roomName}. Remaining clients: ${docInfo.clientCount}`);
+
+    // Unpin the repo ONLY if no other Yjs connections remain for the same slug.
+    if (parsed) {
+      const { slug } = parsed;
+      const anyActiveForSlug = [...activeDocuments.entries()].some(
+        ([key, info]) => key.startsWith(`workspace:${slug}:`) && info.clientCount > 0
+      );
+      if (!anyActiveForSlug) {
+        repoCache.unpin(slug);
+        console.log(`[Collab] Unpinned repo "${slug}" — no more Yjs clients`);
+      }
+    }
   });
   
   ws.on('error', (err) => {
