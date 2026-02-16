@@ -5905,6 +5905,27 @@ rl.on('line', async (line) => {
         break;
       }
 
+      case 'getAuthDiagnostics': {
+        _ensureAuthSessionsLoaded();
+        _ensureSecretStoreLoaded();
+        _ensureExtensionStorageLoaded();
+
+        const sessions = Object.fromEntries(_authSessionsByKey.entries());
+        const pendingFlows = Array.from(_pendingGithubFlows.keys());
+        const uriHandlers = Array.from(preloadRegisteredUriHandlers.values());
+
+        sendResponse(id, {
+          success: true,
+          workspace: currentSlug,
+          sessions,
+          pendingFlows,
+          uriHandlers,
+          secretEntries: _secretStore.size,
+          extensionStorageEntries: _extensionStorage.size,
+        });
+        break;
+      }
+
       case 'executeExtensionCommand': {
         // Execute a command registered by an extension via the preload bridge
         const [commandId, ...commandArgs] = args;

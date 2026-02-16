@@ -1569,6 +1569,13 @@ export function useExtensions({ editor = null, workspaceId = 'default' } = {}) {
       }
       return system.bridge.vscodeServerProxy.request('deliverUriCallback', [url]);
     },
+    getAuthDiagnostics: async () => {
+      const system = systemRef.current;
+      if (!system?.bridge?.vscodeServerProxy?.isReady()) {
+        throw new Error('VS Code Server not connected');
+      }
+      return system.bridge.vscodeServerProxy.request('getAuthDiagnostics', []);
+    },
 
     // Raw system ref (for advanced use / debug panel)
     _systemRef: systemRef,
