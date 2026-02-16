@@ -52,6 +52,9 @@ const SECRET_STORAGE_FILE = path.join(VSCODE_SERVER_DIR, 'secret-storage.json');
 /** Persisted auth sessions backing file */
 const AUTH_SESSIONS_FILE = path.join(VSCODE_SERVER_DIR, 'auth-sessions.json');
 
+/** Persisted extension storage/memento backing file */
+const EXTENSION_STORAGE_FILE = path.join(VSCODE_SERVER_DIR, 'extension-storage.json');
+
 /** Server binary name depends on platform */
 const IS_WIN = process.platform === 'win32';
 const SERVER_BIN_NAME = IS_WIN ? 'code-server.cmd' : 'code-server';
@@ -81,6 +84,10 @@ let _authSessionsByKey = new Map();
 
 /** @type {Map<string, {deviceCode: string, startedAt: number}>} */
 const _pendingGithubFlows = new Map();
+
+let _extensionStorageLoaded = false;
+/** @type {Map<string, any>} */
+let _extensionStorage = new Map();
 
 function _secretStoreKey(service, account) {
   return `${String(service || '')}::${String(account || '')}`;
@@ -195,6 +202,59 @@ function _removeAuthSession(providerId, sessionId) {
   const next = existing.filter(entry => entry && entry.id !== sessionId);
   _authSessionsByKey.set(key, next);
   _persistAuthSessions();
+}
+
+function _ensureExtensionStorageLoaded() {
+  if (_extensionStorageLoaded) return;
+  _extensionStorageLoaded = true;
+  try {
+    if (!fs.existsSync(EXTENSION_STORAGE_FILE)) return;
+    const raw = fs.readFileSync(EXTENSION_STORAGE_FILE, 'utf8');
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === 'object') {
+      _extensionStorage = new Map(Object.entries(parsed));
+    }
+  } catch (e) {
+    process.stderr.write(`[vscode-server-manager] Extension storage load failed: ${e.message}\n`);
+    _extensionStorage = new Map();
+  }
+}
+
+function _persistExtensionStorage() {
+  try {
+    fs.mkdirSync(path.dirname(EXTENSION_STORAGE_FILE), { recursive: true });
+    const plain = Object.fromEntries(_extensionStorage.entries());
+    fs.writeFileSync(EXTENSION_STORAGE_FILE, JSON.stringify(plain), 'utf8');
+  } catch (e) {
+    process.stderr.write(`[vscode-server-manager] Extension storage persist failed: ${e.message}\n`);
+  }
+}
+
+function _storageScopeId(scopeArg) {
+  const slug = String(currentSlug || 'default');
+  if (scopeArg === true || scopeArg === 'global' || scopeArg === 1) return `global@${slug}`;
+  if (scopeArg === false || scopeArg === 'workspace' || scopeArg === 0 || scopeArg === undefined) return `workspace@${slug}`;
+  if (typeof scopeArg === 'string') return `${scopeArg}@${slug}`;
+  if (scopeArg && typeof scopeArg === 'object') {
+    const ext = scopeArg.extensionId || scopeArg.id || scopeArg.extension || scopeArg.key;
+    if (ext) return `${String(ext)}@${slug}`;
+  }
+  return `workspace@${slug}`;
+}
+
+function _extensionStorageKey(scopeArg, key) {
+  return `${_storageScopeId(scopeArg)}::${String(key || '')}`;
+}
+
+function _extensionStorageGet(scopeArg, key) {
+  _ensureExtensionStorageLoaded();
+  return _extensionStorage.get(_extensionStorageKey(scopeArg, key));
+}
+
+function _extensionStorageSet(scopeArg, key, value) {
+  _ensureExtensionStorageLoaded();
+  _extensionStorage.set(_extensionStorageKey(scopeArg, key), value);
+  _persistExtensionStorage();
 }
 
 // ============================================================================
@@ -3256,6 +3316,49 @@ async function _triggerExtensionHostStartup(port, token) {
           } catch (_) {}
           replyRpc = Buffer.alloc(5);
           replyRpc[0] = 7; // ReplyOKEmpty
+          replyRpc.writeUInt32BE(reqId, 1);
+
+        } else if (methodName === '$initializeExtensionStorage') {
+          _ensureExtensionStorageLoaded();
+          const json = Buffer.from('{}', 'utf8');
+          replyRpc = Buffer.alloc(5 + 4 + json.length);
+          replyRpc[0] = 9;
+          replyRpc.writeUInt32BE(reqId, 1);
+          replyRpc.writeUInt32BE(json.length, 5);
+          json.copy(replyRpc, 9);
+
+        } else if (methodName === '$getValue') {
+          let value = null;
+          try {
+            const scopeArg = rpcArgs && rpcArgs[0];
+            const keyArg = rpcArgs && rpcArgs[1];
+            value = _extensionStorageGet(scopeArg, keyArg);
+            if (value === undefined) value = null;
+          } catch (_) {
+            value = null;
+          }
+          const json = Buffer.from(JSON.stringify(value), 'utf8');
+          replyRpc = Buffer.alloc(5 + 4 + json.length);
+          replyRpc[0] = 9;
+          replyRpc.writeUInt32BE(reqId, 1);
+          replyRpc.writeUInt32BE(json.length, 5);
+          json.copy(replyRpc, 9);
+
+        } else if (methodName === '$setValue') {
+          try {
+            const scopeArg = rpcArgs && rpcArgs[0];
+            const keyArg = rpcArgs && rpcArgs[1];
+            const valueArg = rpcArgs && rpcArgs[2];
+            _extensionStorageSet(scopeArg, keyArg, valueArg);
+          } catch (_) {}
+          replyRpc = Buffer.alloc(5);
+          replyRpc[0] = 7;
+          replyRpc.writeUInt32BE(reqId, 1);
+
+        } else if (methodName === '$registerExtensionStorageKeysToSync') {
+          // Not synced in Synthi yet; acknowledge so extensions continue.
+          replyRpc = Buffer.alloc(5);
+          replyRpc[0] = 7;
           replyRpc.writeUInt32BE(reqId, 1);
 
         } else if (methodName === '$ensureProvider') {
