@@ -303,6 +303,37 @@ function _isGitWorkspace(workspaceDir) {
   }
 }
 
+function _defaultWorkspaceDirForSlug(slug) {
+  const normalizedSlug = String(slug || 'default').trim() || 'default';
+  const envRoot = process.env.SYNTHI_WORKSPACE_ROOT || process.env.SYNTHI_REPOS_ROOT;
+  const candidates = [];
+
+  if (envRoot) {
+    candidates.push(path.join(envRoot, normalizedSlug));
+  }
+
+  candidates.push(path.resolve(__dirname, '..', '..', 'collab-server', 'repos', normalizedSlug));
+  candidates.push(path.join(os.tmpdir(), 'synthi-workspaces', normalizedSlug));
+
+  for (const candidate of candidates) {
+    try {
+      if (fs.existsSync(path.join(candidate, '.git'))) {
+        return candidate;
+      }
+    } catch (_) {}
+  }
+
+  for (const candidate of candidates) {
+    try {
+      if (fs.existsSync(candidate)) {
+        return candidate;
+      }
+    } catch (_) {}
+  }
+
+  return candidates[0];
+}
+
 // ============================================================================
 // Prevent EPIPE from crashing the process
 // ============================================================================
@@ -2133,7 +2164,7 @@ async function startServer(slug, options = {}) {
 
     // Workspace directory — default to /tmp/synthi-workspaces/<slug>
     let workspaceDir = options.workspaceDir
-      || path.join(os.tmpdir(), 'synthi-workspaces', slug);
+      || _defaultWorkspaceDirForSlug(slug);
     const resolvedWorkspaceDir = _resolveGitWorkspaceRoot(workspaceDir);
     if (resolvedWorkspaceDir !== workspaceDir) {
       process.stderr.write(`[vscode-server-manager] Workspace remapped to git root: ${workspaceDir} -> ${resolvedWorkspaceDir}\n`);
