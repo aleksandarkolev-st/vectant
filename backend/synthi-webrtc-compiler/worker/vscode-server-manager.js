@@ -3158,7 +3158,8 @@ async function _triggerExtensionHostStartup(port, token) {
           }
 
         } else if (methodName === '$showQuickPick') {
-          // Quick pick dialog — forward to frontend, return undefined (cancelled).
+          // Quick pick dialog — forward to frontend and provide a best-effort
+          // fallback selection so headless flows don't always cancel.
           try {
             const items = rpcArgs && rpcArgs[0];
             const opts = rpcArgs && rpcArgs[1];
@@ -3167,22 +3168,52 @@ async function _triggerExtensionHostStartup(port, token) {
               items: Array.isArray(items) ? items.slice(0, 50) : [],
               options: opts || {},
             });
+
+            if (Array.isArray(items) && items.length > 0) {
+              const picked = items.find(i => i && (i.picked || i.alwaysShow)) || items[0];
+              const handle = picked && Object.prototype.hasOwnProperty.call(picked, 'handle') ? picked.handle : undefined;
+              if (handle !== undefined) {
+                const canPickMany = !!(opts && opts.canPickMany);
+                const payload = canPickMany ? [handle] : handle;
+                const json = Buffer.from(JSON.stringify(payload), 'utf8');
+                replyRpc = Buffer.alloc(5 + 4 + json.length);
+                replyRpc[0] = 9; // ReplyOKJSON
+                replyRpc.writeUInt32BE(reqId, 1);
+                replyRpc.writeUInt32BE(json.length, 5);
+                json.copy(replyRpc, 9);
+              }
+            }
           } catch (_) {}
-          // Return undefined — user cancelled the picker
-          replyRpc = Buffer.alloc(5);
-          replyRpc[0] = 7; // ReplyOKEmpty
-          replyRpc.writeUInt32BE(reqId, 1);
+          if (!replyRpc) {
+            // Fallback: undefined (cancelled)
+            replyRpc = Buffer.alloc(5);
+            replyRpc[0] = 7; // ReplyOKEmpty
+            replyRpc.writeUInt32BE(reqId, 1);
+          }
 
         } else if (methodName === '$showInputBox') {
-          // Input box — forward to frontend, return undefined (cancelled).
+          // Input box — forward to frontend and return default value when present.
           try {
             const opts = rpcArgs && rpcArgs[0];
             process.stderr.write(`[vscode-server-manager] ShowInputBox: ${(opts && opts.prompt) || 'no prompt'}\n`);
             sendEvent('showInputBox', { options: opts || {} });
+
+            const defaultValue = opts && typeof opts.value === 'string' ? opts.value : '';
+            if (defaultValue) {
+              const json = Buffer.from(JSON.stringify(defaultValue), 'utf8');
+              replyRpc = Buffer.alloc(5 + 4 + json.length);
+              replyRpc[0] = 9; // ReplyOKJSON
+              replyRpc.writeUInt32BE(reqId, 1);
+              replyRpc.writeUInt32BE(json.length, 5);
+              json.copy(replyRpc, 9);
+            }
           } catch (_) {}
-          replyRpc = Buffer.alloc(5);
-          replyRpc[0] = 7; // ReplyOKEmpty
-          replyRpc.writeUInt32BE(reqId, 1);
+          if (!replyRpc) {
+            // Fallback: undefined (cancelled)
+            replyRpc = Buffer.alloc(5);
+            replyRpc[0] = 7; // ReplyOKEmpty
+            replyRpc.writeUInt32BE(reqId, 1);
+          }
 
         } else if (methodName === '$executeCommand') {
           // EH asks the MAIN THREAD to execute a command.  This happens when
