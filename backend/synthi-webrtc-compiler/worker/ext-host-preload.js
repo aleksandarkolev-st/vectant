@@ -1530,8 +1530,15 @@ function wrapAuthentication(vscode) {
     const recentUserCommand = ageMs >= 0 && ageMs <= 20000;
     const requestedInteractive = !!(options && (options.createIfNone || options.forceNewSession));
 
+    // If a session was recently established for this provider, skip
+    // all promotion logic — let the real getSession find the cached session.
+    const providerLower = String(providerId || '').toLowerCase();
+    const sessionKnownAt = _knownAuthSessionAt.get(providerLower) || 0;
+    const sessionAvailable = (Date.now() - sessionKnownAt) < 300000; // 5 minutes
+
     if (
-      recentUserCommand
+      !sessionAvailable
+      && recentUserCommand
       && options
       && options.createIfNone === false
       && !options.forceNewSession
@@ -1554,7 +1561,8 @@ function wrapAuthentication(vscode) {
     );
 
     if (
-      explicitSignInCommand
+      !sessionAvailable
+      && explicitSignInCommand
       && String(providerId || '').toLowerCase() === 'github'
     ) {
       effectiveOptions = {
@@ -1566,7 +1574,8 @@ function wrapAuthentication(vscode) {
     }
 
     if (
-      (!recentUserCommand)
+      !sessionAvailable
+      && (!recentUserCommand)
       && options
       && options.createIfNone === false
       && !options.forceNewSession
@@ -1584,8 +1593,18 @@ function wrapAuthentication(vscode) {
     log(`authentication.getSession intercepted: provider=${providerId} scopes=${JSON.stringify(scopes)} options=${JSON.stringify(effectiveOptions)}`);
 
     // Notify bridge of the authentication request so the frontend can
-    // potentially show UI or handle device-code flow
-    if (effectiveOptions && (effectiveOptions.createIfNone || effectiveOptions.forceNewSession || requestedInteractive)) {
+    // potentially show UI or handle device-code flow.
+    // Skip sending if a session was recently established for this provider
+    // — the RPC $getSession will find the cached session directly.
+    const pid = String(providerId || '').toLowerCase();
+    const sessionEstablishedAt = _knownAuthSessionAt.get(pid) || 0;
+    const sessionRecent = (Date.now() - sessionEstablishedAt) < 300000; // 5 minutes
+
+    if (
+      !sessionRecent
+      && effectiveOptions
+      && (effectiveOptions.createIfNone || effectiveOptions.forceNewSession || requestedInteractive)
+    ) {
       log(`Authentication request requires user interaction: provider=${providerId}`);
       bridgeSend({
         type: 'authSessionRequest',
@@ -1594,6 +1613,8 @@ function wrapAuthentication(vscode) {
         createIfNone: !!effectiveOptions.createIfNone,
         forceNewSession: !!effectiveOptions.forceNewSession,
       });
+    } else if (sessionRecent) {
+      log(`Authentication request skipped (session recently established): provider=${providerId}`);
     }
 
     // Delegate to the real implementation — in code-server this will
