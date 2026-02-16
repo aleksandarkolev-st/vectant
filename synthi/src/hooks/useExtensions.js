@@ -133,6 +133,7 @@ export function useExtensions({ editor = null, workspaceId = 'default' } = {}) {
   const contextValuesRef = useRef({});
   const lastAuthDeviceCodeRef = useRef(null);
   const lastAuthPromptAtRef = useRef(0);
+  const lastAuthProviderRef = useRef(null);
   const [vscodeServerState, setVscodeServerState] = useState('disconnected');
   const [vscodeServerWorkspaceDir, setVscodeServerWorkspaceDir] = useState(null);
 
@@ -304,10 +305,27 @@ export function useExtensions({ editor = null, workspaceId = 'default' } = {}) {
               const provider = payload.providerId || 'unknown';
               const now = Date.now();
               const code = lastAuthDeviceCodeRef.current;
-              const shouldAutoOpen = provider === 'github' && (now - lastAuthPromptAtRef.current > 12000);
+              const shouldAutoOpen = provider === 'github' && (
+                (now - lastAuthPromptAtRef.current > 15000)
+                || lastAuthProviderRef.current !== provider
+              );
               if (shouldAutoOpen) {
                 lastAuthPromptAtRef.current = now;
-                try { window.open('https://github.com/login/device', '_blank', 'noopener,noreferrer'); } catch (_) {}
+                lastAuthProviderRef.current = provider;
+                // Use a user-confirmed prompt to avoid popup blockers and
+                // ensure the user sees the auth request even if toasts are hidden.
+                const promptText = code
+                  ? `GitHub sign-in requested. Open device login page now?\n\nUse code: ${code}`
+                  : 'GitHub sign-in requested. Open device login page now?';
+                let shouldOpen = false;
+                try {
+                  shouldOpen = typeof window !== 'undefined' ? window.confirm(promptText) : false;
+                } catch (_) {
+                  shouldOpen = true;
+                }
+                if (shouldOpen) {
+                  try { window.open('https://github.com/login/device', '_blank', 'noopener,noreferrer'); } catch (_) {}
+                }
               }
 
               toast.info(
