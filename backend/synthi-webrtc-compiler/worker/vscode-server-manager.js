@@ -850,6 +850,31 @@ function _handlePreloadMessage(msg) {
       break;
     }
 
+    case 'authSessionRequest': {
+      // Extension requested an authentication session that requires user
+      // interaction. Forward to the frontend so it can show appropriate UI.
+      const { providerId, scopes, createIfNone, forceNewSession } = msg;
+      process.stderr.write(`[preload-bridge] authSessionRequest: provider=${providerId} scopes=${JSON.stringify(scopes)} createIfNone=${createIfNone}\n`);
+      sendEvent('authSessionRequest', { providerId, scopes, createIfNone, forceNewSession });
+      break;
+    }
+
+    case 'clipboardWrite': {
+      // Extension wants to write text to the clipboard via the API wrapper.
+      const text = msg.text;
+      if (text) {
+        process.stderr.write(`[preload-bridge] clipboardWrite: ${String(text).slice(0, 50)}\n`);
+        sendEvent('clipboardWrite', String(text));
+      }
+      break;
+    }
+
+    case 'asExternalUri': {
+      // Extension called env.asExternalUri — log for diagnostics.
+      process.stderr.write(`[preload-bridge] asExternalUri: ${msg.url}\n`);
+      break;
+    }
+
     default:
       process.stderr.write(`[preload-bridge] Unknown message type: ${msg.type}\n`);
   }
@@ -2492,6 +2517,13 @@ async function _triggerExtensionHostStartup(port, token) {
         const rpcArgs = _extractRpcArgsFromBuffer(dataBuf);
         _captureProviderFromRpc(methodName, rpcArgs);
 
+        // Log all RPC method names for diagnostics (skip noisy ones)
+        if (methodName && methodName !== '$logExtensionHostMessage'
+            && methodName !== '$fireCommandActivationEvent') {
+          const argsPreview = rpcArgs ? JSON.stringify(rpcArgs).slice(0, 150) : '';
+          process.stderr.write(`[vscode-server-manager] EH RPC: ${methodName} ${argsPreview}\n`);
+        }
+
         // Decode $logExtensionHostMessage for diagnostics
         if (methodName === '$logExtensionHostMessage') {
           try {
@@ -2558,6 +2590,345 @@ async function _triggerExtensionHostStartup(port, token) {
           replyRpc = Buffer.alloc(5);
           replyRpc[0] = 12; // ReplyErrEmpty
           replyRpc.writeUInt32BE(reqId, 1);
+
+        } else if (methodName === '$asExternalUri') {
+          // Extensions use env.asExternalUri to map callback URIs for OAuth.
+          // The arg is UriComponents {scheme, authority, path, query, fragment}.
+          // We echo it back as-is (no port forwarding in our headless setup).
+          try {
+            const uriComponents = rpcArgs && rpcArgs[0];
+            if (uriComponents && typeof uriComponents === 'object') {
+              process.stderr.write(`[vscode-server-manager] $asExternalUri: ${uriComponents.scheme}://${uriComponents.authority || ''}${uriComponents.path || ''}\n`);
+              // Return the same UriComponents — VS Code calls URI.from(result)
+              const json = Buffer.from(JSON.stringify(uriComponents), 'utf8');
+              replyRpc = Buffer.alloc(5 + 4 + json.length);
+              replyRpc[0] = 9; // ReplyOKJSON
+              replyRpc.writeUInt32BE(reqId, 1);
+              replyRpc.writeUInt32BE(json.length, 5);
+              json.copy(replyRpc, 9);
+            } else if (typeof uriComponents === 'string') {
+              process.stderr.write(`[vscode-server-manager] $asExternalUri (string): ${uriComponents}\n`);
+              const json = Buffer.from(JSON.stringify(uriComponents), 'utf8');
+              replyRpc = Buffer.alloc(5 + 4 + json.length);
+              replyRpc[0] = 9; // ReplyOKJSON
+              replyRpc.writeUInt32BE(reqId, 1);
+              replyRpc.writeUInt32BE(json.length, 5);
+              json.copy(replyRpc, 9);
+            } else {
+              replyRpc = Buffer.alloc(5);
+              replyRpc[0] = 7;
+              replyRpc.writeUInt32BE(reqId, 1);
+            }
+          } catch (e) {
+            process.stderr.write(`[vscode-server-manager] $asExternalUri error: ${e.message}\n`);
+            replyRpc = Buffer.alloc(5);
+            replyRpc[0] = 7;
+            replyRpc.writeUInt32BE(reqId, 1);
+          }
+
+        } else if (methodName === '$openUri') {
+          // Extension host wants to open a URI in the browser.
+          // Arg is UriComponents {scheme, authority, path, query, fragment}.
+          try {
+            const uri = rpcArgs && rpcArgs[0];
+            let uriStr;
+            if (typeof uri === 'string') {
+              uriStr = uri;
+            } else if (uri && typeof uri === 'object') {
+              // Reconstruct URL from UriComponents
+              const scheme = uri.scheme || 'https';
+              const authority = uri.authority || '';
+              const path = uri.path || '';
+              const query = uri.query ? `?${uri.query}` : '';
+              const fragment = uri.fragment ? `#${uri.fragment}` : '';
+              uriStr = `${scheme}://${authority}${path}${query}${fragment}`;
+            }
+            if (uriStr) {
+              process.stderr.write(`[vscode-server-manager] $openUri: ${uriStr}\n`);
+              sendEvent('openExternal', uriStr);
+            }
+          } catch (e) {
+            process.stderr.write(`[vscode-server-manager] $openUri error: ${e.message}\n`);
+          }
+          // Always reply success
+          const json = Buffer.from('true', 'utf8');
+          replyRpc = Buffer.alloc(5 + 4 + json.length);
+          replyRpc[0] = 9; // ReplyOKJSON
+          replyRpc.writeUInt32BE(reqId, 1);
+          replyRpc.writeUInt32BE(json.length, 5);
+          json.copy(replyRpc, 9);
+
+        } else if (methodName === '$getSession' || methodName === '$getSessions') {
+          // Authentication provider session request. Return null → no session.
+          process.stderr.write(`[vscode-server-manager] Auth: ${methodName} ${JSON.stringify(rpcArgs).slice(0, 200)}\n`);
+          const json = Buffer.from('null', 'utf8');
+          replyRpc = Buffer.alloc(5 + 4 + json.length);
+          replyRpc[0] = 9; // ReplyOKJSON
+          replyRpc.writeUInt32BE(reqId, 1);
+          replyRpc.writeUInt32BE(json.length, 5);
+          json.copy(replyRpc, 9);
+
+        } else if (methodName === '$getPassword' || methodName === '$findCredentials') {
+          // Secret storage read — return null/empty (no persisted secrets)
+          process.stderr.write(`[vscode-server-manager] Credential read: ${methodName}\n`);
+          const json = Buffer.from(methodName === '$findCredentials' ? '[]' : 'null', 'utf8');
+          replyRpc = Buffer.alloc(5 + 4 + json.length);
+          replyRpc[0] = 9; // ReplyOKJSON
+          replyRpc.writeUInt32BE(reqId, 1);
+          replyRpc.writeUInt32BE(json.length, 5);
+          json.copy(replyRpc, 9);
+
+        } else if (methodName === '$setPassword' || methodName === '$deletePassword') {
+          // Secret storage write/delete — acknowledge but don't persist
+          process.stderr.write(`[vscode-server-manager] Credential write: ${methodName}\n`);
+          replyRpc = Buffer.alloc(5);
+          replyRpc[0] = 7; // ReplyOKEmpty
+          replyRpc.writeUInt32BE(reqId, 1);
+
+        } else if (methodName === '$showMessage') {
+          // Extension wants to show a notification message.
+          // rpcArgs: [severity, message, options, commands]
+          // severity: 1=Info, 2=Warning, 3=Error
+          // commands: [{title, isCloseAffordance, handle}, ...]
+          // Return value: the handle of the selected command, or undefined.
+          //
+          // For the GitHub auth device code flow, the message has a
+          // "Copy and Continue to GitHub" button.  If we return undefined
+          // (dismissed), the auth flow aborts.  Auto-select the first
+          // non-close button so the flow continues.
+          try {
+            const severity = rpcArgs && rpcArgs[0];
+            const message = rpcArgs && rpcArgs[1];
+            const options = rpcArgs && rpcArgs[2];
+            const commands = rpcArgs && rpcArgs[3];
+            const sevLabel = severity === 3 ? 'error' : severity === 2 ? 'warning' : 'info';
+            process.stderr.write(`[vscode-server-manager] ShowMessage (${sevLabel}): ${message}\n`);
+            sendEvent('extensionMessage', {
+              severity: sevLabel,
+              message: String(message || ''),
+              modal: !!(options && options.modal),
+              commands: commands || [],
+            });
+
+            // Auto-select the first non-close action button so that
+            // auth prompts ("Copy and Continue to GitHub") proceed.
+            if (Array.isArray(commands) && commands.length > 0) {
+              const actionBtn = commands.find(c => !c.isCloseAffordance);
+              if (actionBtn && actionBtn.handle !== undefined) {
+                process.stderr.write(`[vscode-server-manager] ShowMessage: auto-selecting "${actionBtn.title}" (handle=${actionBtn.handle})\n`);
+                const json = Buffer.from(JSON.stringify(actionBtn.handle), 'utf8');
+                replyRpc = Buffer.alloc(5 + 4 + json.length);
+                replyRpc[0] = 9; // ReplyOKJSON
+                replyRpc.writeUInt32BE(reqId, 1);
+                replyRpc.writeUInt32BE(json.length, 5);
+                json.copy(replyRpc, 9);
+              } else {
+                replyRpc = Buffer.alloc(5);
+                replyRpc[0] = 7; // ReplyOKEmpty
+                replyRpc.writeUInt32BE(reqId, 1);
+              }
+            } else {
+              replyRpc = Buffer.alloc(5);
+              replyRpc[0] = 7; // ReplyOKEmpty
+              replyRpc.writeUInt32BE(reqId, 1);
+            }
+          } catch (_) {
+            replyRpc = Buffer.alloc(5);
+            replyRpc[0] = 7; // ReplyOKEmpty
+            replyRpc.writeUInt32BE(reqId, 1);
+          }
+
+        } else if (methodName === '$showQuickPick') {
+          // Quick pick dialog — forward to frontend, return undefined (cancelled).
+          try {
+            const items = rpcArgs && rpcArgs[0];
+            const opts = rpcArgs && rpcArgs[1];
+            process.stderr.write(`[vscode-server-manager] ShowQuickPick: ${(opts && opts.placeHolder) || 'no placeholder'} (${Array.isArray(items) ? items.length : '?'} items)\n`);
+            sendEvent('showQuickPick', {
+              items: Array.isArray(items) ? items.slice(0, 50) : [],
+              options: opts || {},
+            });
+          } catch (_) {}
+          // Return undefined — user cancelled the picker
+          replyRpc = Buffer.alloc(5);
+          replyRpc[0] = 7; // ReplyOKEmpty
+          replyRpc.writeUInt32BE(reqId, 1);
+
+        } else if (methodName === '$showInputBox') {
+          // Input box — forward to frontend, return undefined (cancelled).
+          try {
+            const opts = rpcArgs && rpcArgs[0];
+            process.stderr.write(`[vscode-server-manager] ShowInputBox: ${(opts && opts.prompt) || 'no prompt'}\n`);
+            sendEvent('showInputBox', { options: opts || {} });
+          } catch (_) {}
+          replyRpc = Buffer.alloc(5);
+          replyRpc[0] = 7; // ReplyOKEmpty
+          replyRpc.writeUInt32BE(reqId, 1);
+
+        } else if (methodName === '$executeCommand') {
+          // EH asks the main thread to execute a command.
+          // Handle context-setting commands specially, forward others to preload.
+          try {
+            const commandId = rpcArgs && rpcArgs[0];
+            const commandArgs = rpcArgs && rpcArgs[1];
+            if (commandId && typeof commandId === 'string') {
+              if (commandId === 'setContext' || commandId === '_setContext') {
+                // Context value changes control when-clause view visibility.
+                // Track them and forward to the frontend.
+                const contextKey = Array.isArray(commandArgs) && commandArgs[0];
+                const contextValue = Array.isArray(commandArgs) ? commandArgs[1] : undefined;
+                if (contextKey) {
+                  process.stderr.write(`[vscode-server-manager] setContext: ${contextKey} = ${JSON.stringify(contextValue)}\n`);
+                  sendEvent('setContext', { key: String(contextKey), value: contextValue });
+                }
+              } else if (commandId.startsWith('_') && !commandId.startsWith('_github')) {
+                // Other internal commands — no-op
+              } else {
+                process.stderr.write(`[vscode-server-manager] $executeCommand forwarding to preload: ${commandId}\n`);
+                sendToPreloadClients({
+                  action: 'executeCommand',
+                  commandId,
+                  args: Array.isArray(commandArgs) ? commandArgs : [],
+                });
+              }
+            }
+          } catch (_) {}
+          replyRpc = Buffer.alloc(5);
+          replyRpc[0] = 7; // ReplyOKEmpty
+          replyRpc.writeUInt32BE(reqId, 1);
+
+        } else if (methodName === '$setStatusBarEntry') {
+          // Status bar updates from extensions — forward to frontend.
+          try {
+            const entryId = rpcArgs && rpcArgs[0];
+            const text = rpcArgs && rpcArgs[3];
+            if (text) {
+              sendEvent('setStatusBar', String(text).replace(/\$\([^)]+\)/g, '').trim());
+            }
+          } catch (_) {}
+          replyRpc = Buffer.alloc(5);
+          replyRpc[0] = 7;
+          replyRpc.writeUInt32BE(reqId, 1);
+
+        } else if (methodName === '$writeText') {
+          // Clipboard write — GitHub auth device flow writes the device code
+          // to the clipboard and shows a message. Forward to the frontend
+          // so the browser can clipboard.writeText().
+          try {
+            const text = rpcArgs && rpcArgs[0];
+            if (text !== undefined) {
+              process.stderr.write(`[vscode-server-manager] $writeText: ${String(text).slice(0, 50)}\n`);
+              sendEvent('clipboardWrite', String(text));
+            }
+          } catch (_) {}
+          replyRpc = Buffer.alloc(5);
+          replyRpc[0] = 7; // ReplyOKEmpty
+          replyRpc.writeUInt32BE(reqId, 1);
+
+        } else if (methodName === '$readText') {
+          // Clipboard read — return empty string (no clipboard in headless)
+          const json = Buffer.from('""', 'utf8');
+          replyRpc = Buffer.alloc(5 + 4 + json.length);
+          replyRpc[0] = 9; // ReplyOKJSON
+          replyRpc.writeUInt32BE(reqId, 1);
+          replyRpc.writeUInt32BE(json.length, 5);
+          json.copy(replyRpc, 9);
+
+        } else if (methodName === '$showOpenDialog' || methodName === '$showSaveDialog') {
+          // File dialogs — can't show in headless. Return undefined (cancelled).
+          process.stderr.write(`[vscode-server-manager] ${methodName}: forwarding to frontend\n`);
+          sendEvent('showFileDialog', {
+            type: methodName === '$showOpenDialog' ? 'open' : 'save',
+            options: rpcArgs && rpcArgs[0],
+          });
+          replyRpc = Buffer.alloc(5);
+          replyRpc[0] = 7; // ReplyOKEmpty
+          replyRpc.writeUInt32BE(reqId, 1);
+
+        } else if (methodName === '$startProgress' || methodName === '$reportProgress' || methodName === '$stopProgress') {
+          // Progress reporting from extensions — forward to frontend.
+          try {
+            if (methodName === '$startProgress') {
+              const handle = rpcArgs && rpcArgs[0];
+              const opts = rpcArgs && rpcArgs[1];
+              process.stderr.write(`[vscode-server-manager] Progress: start ${handle} ${opts?.title || ''}\n`);
+              sendEvent('extensionProgress', {
+                action: 'start',
+                handle,
+                title: opts?.title || '',
+                cancellable: !!(opts?.cancellable),
+                location: opts?.location,
+              });
+            } else if (methodName === '$reportProgress') {
+              const handle = rpcArgs && rpcArgs[0];
+              const data = rpcArgs && rpcArgs[1];
+              sendEvent('extensionProgress', {
+                action: 'report',
+                handle,
+                message: data?.message,
+                increment: data?.increment,
+              });
+            } else {
+              const handle = rpcArgs && rpcArgs[0];
+              sendEvent('extensionProgress', { action: 'stop', handle });
+            }
+          } catch (_) {}
+          replyRpc = Buffer.alloc(5);
+          replyRpc[0] = 7; // ReplyOKEmpty
+          replyRpc.writeUInt32BE(reqId, 1);
+
+        } else if (methodName === '$registerAuthenticationProvider') {
+          // An extension registered an auth provider. Track it.
+          try {
+            const providerId = rpcArgs && rpcArgs[0];
+            const label = rpcArgs && rpcArgs[1];
+            process.stderr.write(`[vscode-server-manager] Auth provider registered: ${providerId} (${label})\n`);
+            sendEvent('authProviderRegistered', { providerId, label });
+          } catch (_) {}
+          replyRpc = Buffer.alloc(5);
+          replyRpc[0] = 7; // ReplyOKEmpty
+          replyRpc.writeUInt32BE(reqId, 1);
+
+        } else if (methodName === '$onDidChangeSessions') {
+          // Auth session changes — forward to frontend.
+          try {
+            const providerId = rpcArgs && rpcArgs[0];
+            const event = rpcArgs && rpcArgs[1];
+            process.stderr.write(`[vscode-server-manager] Session changed: ${providerId}\n`);
+            sendEvent('authSessionChanged', { providerId, event });
+          } catch (_) {}
+          replyRpc = Buffer.alloc(5);
+          replyRpc[0] = 7; // ReplyOKEmpty
+          replyRpc.writeUInt32BE(reqId, 1);
+
+        } else if (methodName === '$reveal') {
+          // Tree view reveal — ack but nothing to do in headless.
+          replyRpc = Buffer.alloc(5);
+          replyRpc[0] = 7; // ReplyOKEmpty
+          replyRpc.writeUInt32BE(reqId, 1);
+
+        } else if (methodName === '$resolveExternalUri') {
+          // URI resolution — echo back the input URI components.
+          try {
+            const uriComponents = rpcArgs && rpcArgs[0];
+            if (uriComponents && typeof uriComponents === 'object') {
+              const json = Buffer.from(JSON.stringify(uriComponents), 'utf8');
+              replyRpc = Buffer.alloc(5 + 4 + json.length);
+              replyRpc[0] = 9; // ReplyOKJSON
+              replyRpc.writeUInt32BE(reqId, 1);
+              replyRpc.writeUInt32BE(json.length, 5);
+              json.copy(replyRpc, 9);
+            } else {
+              replyRpc = Buffer.alloc(5);
+              replyRpc[0] = 7;
+              replyRpc.writeUInt32BE(reqId, 1);
+            }
+          } catch (_) {
+            replyRpc = Buffer.alloc(5);
+            replyRpc[0] = 7;
+            replyRpc.writeUInt32BE(reqId, 1);
+          }
+
         } else {
           // Default: ReplyOKEmpty (void response)
           replyRpc = Buffer.alloc(5);
