@@ -1500,9 +1500,214 @@ function wrapVSCodeAPI(vscode) {
   wrapClipboardWriteText(vscode);
   wrapAuthentication(vscode);
   wrapUriHandlers(vscode);
+  wrapExtensionsGetExtension(vscode);
 
   log('All API wrappers installed successfully');
   return true;
+}
+
+// ============================================================================
+// Wrap: extensions.getExtension (synthetic vscode.git provider)
+// ============================================================================
+
+/**
+ * The built-in vscode.git extension exists in code-server but often never
+ * reaches "initialized" state in headless mode.  Extensions like GitHub
+ * Actions call `getGitExtension()` which does:
+ *
+ *   const ext = vscode.extensions.getExtension("vscode.git");
+ *   const api = ext.exports.getAPI(1);
+ *   if (api.state !== "initialized")
+ *     await new Promise(resolve =>
+ *       api.onDidChangeState(s => { if (s === "initialized") resolve(); }));
+ *
+ * Without a working git API, `getGitHubContext()` hangs forever, preventing
+ * `activate()` from completing, and no context keys (internet-access,
+ * has-repos) or tree data providers are ever registered.
+ *
+ * This wrapper intercepts `getExtension("vscode.git")` and returns a
+ * minimal synthetic git extension populated from the workspace's actual
+ * git remote.  All other extension IDs pass through to the real API.
+ */
+function wrapExtensionsGetExtension(vscode) {
+  if (!vscode.extensions || typeof vscode.extensions.getExtension !== 'function') {
+    log('vscode.extensions.getExtension not found — skipping git wrap');
+    return;
+  }
+
+  const original = vscode.extensions.getExtension;
+
+  // Build synthetic git API lazily (once)
+  let _syntheticGitExt = undefined; // undefined = not built yet
+  function _getSyntheticGitExtension() {
+    if (_syntheticGitExt !== undefined) return _syntheticGitExt;
+
+    try {
+      const cp = require('child_process');
+      // Discover workspace dir from env (set by server-manager) or cwd
+      const cwd = process.env.SYNTHI_WORKSPACE_DIR || process.cwd();
+      log(`Synthetic git: probing workspace dir=${cwd} (env=${!!process.env.SYNTHI_WORKSPACE_DIR})`);
+
+      // Check if we're in a git worktree
+      let gitRoot;
+      try {
+        gitRoot = cp.execSync('git rev-parse --show-toplevel', {
+          cwd, encoding: 'utf8', timeout: 5000, stdio: ['pipe', 'pipe', 'pipe'],
+        }).trim();
+      } catch (_) {
+        log('Synthetic git: not in a git repo — returning null');
+        _syntheticGitExt = null;
+        return null;
+      }
+
+      // Get remote URL
+      let remoteUrl;
+      try {
+        remoteUrl = cp.execSync('git remote get-url origin', {
+          cwd: gitRoot, encoding: 'utf8', timeout: 5000, stdio: ['pipe', 'pipe', 'pipe'],
+        }).trim();
+      } catch (_) {
+        log('Synthetic git: no "origin" remote — returning null');
+        _syntheticGitExt = null;
+        return null;
+      }
+
+      // Get current branch
+      let branchName = 'main';
+      try {
+        branchName = cp.execSync('git rev-parse --abbrev-ref HEAD', {
+          cwd: gitRoot, encoding: 'utf8', timeout: 5000, stdio: ['pipe', 'pipe', 'pipe'],
+        }).trim();
+      } catch (_) { /* fallback to 'main' */ }
+
+      // Build a minimal Uri-like object for rootUri
+      const rootUri = vscode.Uri ? vscode.Uri.file(gitRoot) : { scheme: 'file', path: gitRoot, fsPath: gitRoot, toString() { return `file://${gitRoot}`; } };
+
+      // Minimal RepositoryState — enough for GitHub Actions extension
+      const repoState = {
+        HEAD: { name: branchName, type: 0 /* RefType.Head */, commit: undefined, ahead: 0, behind: 0 },
+        remotes: [{ name: 'origin', fetchUrl: remoteUrl, pushUrl: remoteUrl, isReadOnly: false }],
+        refs: [],
+        submodules: [],
+        mergeChanges: [],
+        indexChanges: [],
+        workingTreeChanges: [],
+        onDidChange: (listener) => ({ dispose() {} }), // no-op event
+      };
+
+      const repo = {
+        rootUri,
+        inputBox: { value: '' },
+        state: repoState,
+        ui: { selected: true, onDidChange: (l) => ({ dispose() {} }) },
+        status: () => Promise.resolve(),
+        getConfigs: () => Promise.resolve([]),
+        getConfig: (k) => Promise.resolve(''),
+        setConfig: (k, v) => Promise.resolve(''),
+        getGlobalConfig: (k) => Promise.resolve(''),
+        getObjectDetails: () => Promise.reject(new Error('not implemented')),
+        detectObjectType: () => Promise.reject(new Error('not implemented')),
+        buffer: () => Promise.reject(new Error('not implemented')),
+        show: () => Promise.reject(new Error('not implemented')),
+        getCommit: () => Promise.reject(new Error('not implemented')),
+        add: () => Promise.resolve(),
+        clean: () => Promise.resolve(),
+        apply: () => Promise.resolve(),
+        diff: () => Promise.resolve(''),
+        diffWithHEAD: () => Promise.resolve([]),
+        log: () => Promise.resolve([]),
+        fetch: () => Promise.resolve(),
+        pull: () => Promise.resolve(),
+        push: () => Promise.resolve(),
+      };
+
+      const gitApi = {
+        state: 'initialized',
+        onDidChangeState: (listener) => ({ dispose() {} }),
+        onDidPublish: (listener) => ({ dispose() {} }),
+        onDidOpenRepository: (listener) => ({ dispose() {} }),
+        onDidCloseRepository: (listener) => ({ dispose() {} }),
+        git: { path: 'git' },
+        repositories: [repo],
+        toGitUri: (uri, ref) => uri,
+        getRepository: (uri) => {
+          // Match if the URI path starts with or equals the repo root
+          const uriPath = uri?.fsPath || uri?.path || '';
+          if (uriPath && gitRoot && (uriPath === gitRoot || uriPath.startsWith(gitRoot + '/'))) {
+            return repo;
+          }
+          return null;
+        },
+        init: () => Promise.resolve(null),
+        openRepository: () => Promise.resolve(null),
+        registerRemoteSourcePublisher: () => ({ dispose() {} }),
+        registerRemoteSourceProvider: () => ({ dispose() {} }),
+        registerCredentialsProvider: () => ({ dispose() {} }),
+        registerPushErrorHandler: () => ({ dispose() {} }),
+      };
+
+      _syntheticGitExt = {
+        id: 'vscode.git',
+        extensionUri: rootUri,
+        extensionPath: '',
+        isActive: true,
+        packageJSON: { name: 'git', publisher: 'vscode' },
+        extensionKind: 1, // workspace
+        exports: {
+          enabled: true,
+          getAPI(version) {
+            return gitApi;
+          },
+        },
+        activate: () => Promise.resolve(_syntheticGitExt.exports),
+      };
+
+      log(`Synthetic git extension built: remote=${remoteUrl} branch=${branchName} root=${gitRoot}`);
+      return _syntheticGitExt;
+    } catch (e) {
+      logError(`Failed to build synthetic git extension: ${e.message}`);
+      _syntheticGitExt = null;
+      return null;
+    }
+  }
+
+  function wrappedGetExtension(extensionId) {
+    if (extensionId === 'vscode.git') {
+      // Try the real extension first — if it exists AND is active, use it
+      const real = original.call(vscode.extensions, extensionId);
+      if (real?.isActive && real?.exports?.getAPI) {
+        log('vscode.git: real extension is active, using it');
+        return real;
+      }
+      // Fall back to synthetic
+      const synthetic = _getSyntheticGitExtension();
+      if (synthetic) {
+        log('vscode.git: returning synthetic git extension');
+        return synthetic;
+      }
+      // Neither works — return the real one (may be undefined)
+      return real;
+    }
+    return original.call(vscode.extensions, extensionId);
+  }
+
+  if (_safeAssign(vscode.extensions, 'getExtension', wrappedGetExtension, 'extensions.getExtension')) {
+    log('extensions.getExtension wrapped (synthetic vscode.git provider)');
+  } else {
+    // Proxy fallback (same pattern as commands.registerCommand)
+    try {
+      const target = vscode.extensions;
+      vscode.extensions = new Proxy(target, {
+        get(t, prop, receiver) {
+          if (prop === 'getExtension') return wrappedGetExtension;
+          return Reflect.get(t, prop, receiver);
+        },
+      });
+      log('vscode.extensions replaced with Proxy for getExtension');
+    } catch (e) {
+      logError(`extensions.getExtension wrap failed entirely: ${e.message}`);
+    }
+  }
 }
 
 // ============================================================================

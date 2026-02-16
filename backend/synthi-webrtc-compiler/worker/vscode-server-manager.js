@@ -2314,6 +2314,9 @@ async function startServer(slug, options = {}) {
         // Tell the preload script where our TCP bridge is listening
         // (inherited by Extension Host child process via the env)
         ...(bridgePort ? { SYNTHI_EXT_BRIDGE_PORT: String(bridgePort) } : {}),
+        // Tell the preload the workspace directory so it can build
+        // the synthetic vscode.git extension from the actual repo.
+        SYNTHI_WORKSPACE_DIR: workspaceDir,
       },
     });
 
