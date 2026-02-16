@@ -449,6 +449,7 @@ export class MainThreadBridge {
     // Forward openExternal requests → open URL in browser
     this.vscodeServerProxy.on('openExternal', (url) => {
       console.log(`[MainThreadBridge/vscode-server] openExternal: ${url}`);
+      this._emitRemoteContribution?.('openExternal', { url });
       if (url && typeof window !== 'undefined') {
         window.open(url, '_blank', 'noopener,noreferrer');
       }
