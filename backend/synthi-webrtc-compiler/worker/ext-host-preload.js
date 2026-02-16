@@ -2159,6 +2159,14 @@ function _invokeTrackedCommand(commandId, cmdArgs) {
   return true;
 }
 
+function _resolveLegacyCommandId(commandId) {
+  const lower = String(commandId || '').toLowerCase();
+  if (lower === 'pr.signin' || lower === 'pr.signinnoenterprise') {
+    return 'github-actions.sign-in';
+  }
+  return commandId;
+}
+
 function _tokenizeCommandId(commandId) {
   if (!commandId || typeof commandId !== 'string') return [];
   return commandId
@@ -2505,34 +2513,38 @@ function _handleBridgeRequest(msg) {
       // command service often doesn't find locally-registered commands and
       // delegates to the main thread (which we stub), causing a no-op loop.
       const { commandId, args: cmdArgs } = msg;
-      const envelopeKey = JSON.stringify({ commandId, args: Array.isArray(cmdArgs) ? cmdArgs : [] });
+      const effectiveCommandId = _resolveLegacyCommandId(commandId);
+      if (effectiveCommandId !== commandId) {
+        log(`Legacy command remap: ${commandId} -> ${effectiveCommandId}`);
+      }
+      const envelopeKey = JSON.stringify({ commandId: effectiveCommandId, args: Array.isArray(cmdArgs) ? cmdArgs : [] });
       const now = Date.now();
       if (
         _lastExecuteCommandEnvelope.key === envelopeKey
         && (now - _lastExecuteCommandEnvelope.ts) < 1200
       ) {
-        log(`Skipping duplicate command envelope: ${commandId}`);
+        log(`Skipping duplicate command envelope: ${effectiveCommandId}`);
         break;
       }
       _lastExecuteCommandEnvelope.key = envelopeKey;
       _lastExecuteCommandEnvelope.ts = now;
 
-      log(`Bridge requested command execution: ${commandId}`);
+      log(`Bridge requested command execution: ${effectiveCommandId}`);
 
       // Mark recent user-triggered command context so auth wrapper can
       // distinguish passive background checks from explicit user actions.
-      _lastBridgeCommand.id = commandId || null;
+      _lastBridgeCommand.id = effectiveCommandId || null;
       _lastBridgeCommand.ts = Date.now();
 
-      if (_invokeTrackedCommand(commandId, cmdArgs)) {
+      if (_invokeTrackedCommand(effectiveCommandId, cmdArgs)) {
         break;
       }
 
       // 1b. Generic alias fallback: resolve to closest tracked command.
       // Useful when welcome-content buttons reference legacy/variant IDs.
-      const alias = _findBestTrackedAlias(commandId);
+      const alias = _findBestTrackedAlias(effectiveCommandId);
       if (alias) {
-        log(`No direct handler for ${commandId}; trying alias ${alias.commandId} (score=${alias.score})`);
+        log(`No direct handler for ${effectiveCommandId}; trying alias ${alias.commandId} (score=${alias.score})`);
         if (_invokeTrackedCommand(alias.commandId, cmdArgs)) {
           return;
         }
@@ -2540,25 +2552,25 @@ function _handleBridgeRequest(msg) {
 
       (async () => {
         // 2. Activate contributing extension(s) on demand, then retry.
-        const activation = await _activateExtensionsForCommand(commandId);
+        const activation = await _activateExtensionsForCommand(effectiveCommandId);
         if (activation.total > 0) {
-          log(`Activation attempt for ${commandId}: ${activation.activated}/${activation.total} extension(s)`);
-          if (_invokeTrackedCommand(commandId, cmdArgs)) {
+          log(`Activation attempt for ${effectiveCommandId}: ${activation.activated}/${activation.total} extension(s)`);
+          if (_invokeTrackedCommand(effectiveCommandId, cmdArgs)) {
             return;
           }
 
-          const aliasAfterActivation = _findBestTrackedAlias(commandId);
+          const aliasAfterActivation = _findBestTrackedAlias(effectiveCommandId);
           if (aliasAfterActivation) {
-            log(`Post-activation alias for ${commandId}: ${aliasAfterActivation.commandId} (score=${aliasAfterActivation.score})`);
+            log(`Post-activation alias for ${effectiveCommandId}: ${aliasAfterActivation.commandId} (score=${aliasAfterActivation.score})`);
             if (_invokeTrackedCommand(aliasAfterActivation.commandId, cmdArgs)) {
               return;
             }
           }
 
-          const knownCommands = await _getKnownCommandsSnapshot(commandId);
-          const knownAlias = _findBestKnownAlias(commandId, knownCommands);
+          const knownCommands = await _getKnownCommandsSnapshot(effectiveCommandId);
+          const knownAlias = _findBestKnownAlias(effectiveCommandId, knownCommands);
           if (knownAlias && realVscodeApi?.commands?.executeCommand) {
-            log(`Trying known-command alias for ${commandId}: ${knownAlias.commandId} (score=${knownAlias.score})`);
+            log(`Trying known-command alias for ${effectiveCommandId}: ${knownAlias.commandId} (score=${knownAlias.score})`);
             try {
               await realVscodeApi.commands.executeCommand(knownAlias.commandId, ...(cmdArgs || []));
               log(`Known-command alias executed: ${knownAlias.commandId}`);
@@ -2568,11 +2580,11 @@ function _handleBridgeRequest(msg) {
             }
           }
 
-          const candidates = _topTrackedCandidates(commandId, 5);
-          logError(`No tracked handler for ${commandId} after activation retry`);
+          const candidates = _topTrackedCandidates(effectiveCommandId, 5);
+          logError(`No tracked handler for ${effectiveCommandId} after activation retry`);
           bridgeSend({
             type: 'commandExecutionFailed',
-            commandId,
+            commandId: effectiveCommandId,
             reason: 'no-tracked-handler-after-activation',
             trackedHandlers: trackedCommandHandlers.size,
             candidates,
@@ -2583,41 +2595,41 @@ function _handleBridgeRequest(msg) {
 
         // 3. Fallback to vscode API for non-contributed/built-in commands.
         if (realVscodeApi?.commands?.executeCommand) {
-          const knownCommands = await _getKnownCommandsSnapshot(commandId);
-          const knownAlias = _findBestKnownAlias(commandId, knownCommands);
+          const knownCommands = await _getKnownCommandsSnapshot(effectiveCommandId);
+          const knownAlias = _findBestKnownAlias(effectiveCommandId, knownCommands);
 
-          if (knownAlias && knownAlias.commandId !== commandId) {
-            log(`No stored handler for ${commandId}; using known-command alias ${knownAlias.commandId} (score=${knownAlias.score})`);
+          if (knownAlias && knownAlias.commandId !== effectiveCommandId) {
+            log(`No stored handler for ${effectiveCommandId}; using known-command alias ${knownAlias.commandId} (score=${knownAlias.score})`);
             try {
               await realVscodeApi.commands.executeCommand(knownAlias.commandId, ...(cmdArgs || []));
-              log(`Command ${commandId} executed via known alias ${knownAlias.commandId}`);
+              log(`Command ${effectiveCommandId} executed via known alias ${knownAlias.commandId}`);
               return;
             } catch (e) {
-              logError(`Known alias execution failed for ${commandId} -> ${knownAlias.commandId}: ${e.message}`);
+              logError(`Known alias execution failed for ${effectiveCommandId} -> ${knownAlias.commandId}: ${e.message}`);
             }
           }
 
-          log(`No stored handler for ${commandId}, falling back to vscode API`);
+          log(`No stored handler for ${effectiveCommandId}, falling back to vscode API`);
           try {
-            realVscodeApi.commands.executeCommand(commandId, ...(cmdArgs || []))
-              .then(() => log(`Command ${commandId} executed via API`),
-                (err) => logError(`Command ${commandId} API call failed: ${err.message}`));
+            realVscodeApi.commands.executeCommand(effectiveCommandId, ...(cmdArgs || []))
+              .then(() => log(`Command ${effectiveCommandId} executed via API`),
+                (err) => logError(`Command ${effectiveCommandId} API call failed: ${err.message}`));
           } catch (e) {
-            logError(`Command ${commandId} API error: ${e.message}`);
+            logError(`Command ${effectiveCommandId} API error: ${e.message}`);
           }
         } else {
-          logError(`Cannot execute ${commandId}: no handler and no vscode API`);
+          logError(`Cannot execute ${effectiveCommandId}: no handler and no vscode API`);
           bridgeSend({
             type: 'commandExecutionFailed',
-            commandId,
+            commandId: effectiveCommandId,
             reason: 'no-handler-and-no-vscode-api',
             trackedHandlers: trackedCommandHandlers.size,
-            candidates: _topTrackedCandidates(commandId, 5),
+            candidates: _topTrackedCandidates(effectiveCommandId, 5),
             knownCommands: [],
           });
         }
       })().catch((e) => {
-        logError(`executeCommand async flow failed for ${commandId}: ${e.message}`);
+        logError(`executeCommand async flow failed for ${effectiveCommandId}: ${e.message}`);
       });
       break;
     }
