@@ -310,6 +310,10 @@ export function useExtensions({ editor = null, workspaceId = 'default' } = {}) {
             // Skip if already registered in Redux (e.g. from IndexedDB restore)
             if (currentExtensions[extId]) continue;
 
+            // Best-effort NLS cleanup for any remaining %key% placeholders
+            // (server-side resolution handles most, this catches stragglers)
+            stripUnresolvedNLS(manifest);
+
             // Register into Redux with full manifest
             dispatch(registerExtRedux({ id: extId, manifest }));
             // Parse contribution points (containers, views, etc.)

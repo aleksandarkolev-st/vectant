@@ -3807,7 +3807,9 @@ function _readExtensionManifest(extensionId) {
   let pkgPath = path.join(extDir, 'package.json');
   if (fs.existsSync(pkgPath)) {
     try {
-      return { manifest: JSON.parse(fs.readFileSync(pkgPath, 'utf8')), extDir };
+      const manifest = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+      _resolveManifestNLS(manifest, extDir);
+      return { manifest, extDir };
     } catch (_) {}
   }
 
@@ -3820,7 +3822,9 @@ function _readExtensionManifest(extensionId) {
         pkgPath = path.join(extDir, 'package.json');
         if (fs.existsSync(pkgPath)) {
           try {
-            return { manifest: JSON.parse(fs.readFileSync(pkgPath, 'utf8')), extDir };
+            const manifest = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+            _resolveManifestNLS(manifest, extDir);
+            return { manifest, extDir };
           } catch (_) {}
         }
       }
@@ -3828,6 +3832,71 @@ function _readExtensionManifest(extensionId) {
   } catch (_) {}
 
   return null;
+}
+
+/**
+ * Resolve NLS (National Language Support) placeholders in a manifest.
+ * VS Code extensions store localized strings in package.nls.json as a flat
+ * key-value map. The manifest uses %key% placeholders that reference these.
+ * This function replaces all %key% placeholders with their resolved values.
+ *
+ * @param {object} manifest - The parsed package.json object (mutated in place)
+ * @param {string} extDir - The extension directory path
+ */
+function _resolveManifestNLS(manifest, extDir) {
+  const nlsPath = path.join(extDir, 'package.nls.json');
+  let nlsMap;
+  try {
+    if (!fs.existsSync(nlsPath)) return;
+    nlsMap = JSON.parse(fs.readFileSync(nlsPath, 'utf8'));
+  } catch (_) {
+    return;
+  }
+  if (!nlsMap || typeof nlsMap !== 'object') return;
+
+  _resolveNLSRecursive(manifest, nlsMap);
+}
+
+/**
+ * Recursively walk an object and replace %key% string values with NLS lookups.
+ * Falls back to a humanized version of the key's last segment if the key is
+ * not found in the NLS map.
+ *
+ * @param {*} obj
+ * @param {object} nlsMap
+ */
+function _resolveNLSRecursive(obj, nlsMap) {
+  if (!obj || typeof obj !== 'object') return;
+  for (const key of Object.keys(obj)) {
+    const val = obj[key];
+    if (typeof val === 'string') {
+      const m = val.match(/^%([\w.]+)%$/);
+      if (m) {
+        const nlsKey = m[1];
+        if (nlsMap[nlsKey] !== undefined) {
+          obj[key] = nlsMap[nlsKey];
+        } else {
+          // Humanize: last dot-segment → Title Case
+          const segments = nlsKey.split('.');
+          const last = segments[segments.length - 1] || nlsKey;
+          obj[key] = last.replace(/([A-Z])/g, ' $1').replace(/^./, s => s.toUpperCase()).trim();
+        }
+      }
+    } else if (Array.isArray(val)) {
+      for (let i = 0; i < val.length; i++) {
+        if (typeof val[i] === 'string') {
+          const am = val[i].match(/^%([\w.]+)%$/);
+          if (am) {
+            obj[key][i] = nlsMap[am[1]] !== undefined ? nlsMap[am[1]] : am[1].split('.').pop();
+          }
+        } else if (typeof val[i] === 'object' && val[i]) {
+          _resolveNLSRecursive(val[i], nlsMap);
+        }
+      }
+    } else {
+      _resolveNLSRecursive(val, nlsMap);
+    }
+  }
 }
 
 /**
