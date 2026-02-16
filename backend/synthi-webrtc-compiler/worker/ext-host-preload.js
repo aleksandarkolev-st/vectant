@@ -1366,9 +1366,48 @@ function wrapVSCodeAPI(vscode) {
   wrapCreateTreeView(vscode);
   wrapWebviewProviders(vscode);
   wrapCommands(vscode);
+  wrapEnvOpenExternal(vscode);
 
   log('All API wrappers installed successfully');
   return true;
+}
+
+// ============================================================================
+// Wrap: env.openExternal
+// ============================================================================
+
+/**
+ * Wrap vscode.env.openExternal so that URLs the extension wants to open
+ * (e.g. OAuth sign-in pages) are forwarded to the browser via the bridge.
+ * In headless code-server there is no desktop browser, so the call would
+ * otherwise silently fail.
+ */
+function wrapEnvOpenExternal(vscode) {
+  if (!vscode.env) {
+    log('vscode.env not found — skipping openExternal wrap');
+    return;
+  }
+
+  const original = vscode.env.openExternal;
+  if (typeof original !== 'function') {
+    log('vscode.env.openExternal is not a function — skipping wrap');
+    return;
+  }
+
+  vscode.env.openExternal = function wrappedOpenExternal(target) {
+    // target is a vscode.Uri — extract the string representation
+    const url = target?.toString?.() || String(target);
+    log(`env.openExternal intercepted: ${url}`);
+
+    // Forward to bridge for the browser to open
+    bridgeSend({ type: 'openExternal', url });
+
+    // Still call the original so code-server's own handler can run
+    // (it may handle localhost callbacks for OAuth redirect URIs)
+    return original.call(this, target);
+  };
+
+  log('env.openExternal wrapped');
 }
 
 // ============================================================================

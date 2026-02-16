@@ -446,6 +446,14 @@ export class MainThreadBridge {
       this._emitRemoteContribution?.('setStatusBar', { text, timeout });
     });
 
+    // Forward openExternal requests → open URL in browser
+    this.vscodeServerProxy.on('openExternal', (url) => {
+      console.log(`[MainThreadBridge/vscode-server] openExternal: ${url}`);
+      if (url && typeof window !== 'undefined') {
+        window.open(url, '_blank', 'noopener,noreferrer');
+      }
+    });
+
     // When we receive a provider list, auto-resolve any webview views.
     // Code-server runs headless, so resolveWebviewView is never called
     // naturally — we explicitly trigger it for each registered provider.

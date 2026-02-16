@@ -839,6 +839,17 @@ function _handlePreloadMessage(msg) {
       break;
     }
 
+    case 'openExternal': {
+      // Extension wants to open a URL in the user's browser (e.g. OAuth sign-in).
+      // Forward it to the frontend so it can call window.open().
+      const url = msg.url;
+      if (url) {
+        process.stderr.write(`[preload-bridge] openExternal: ${url}\n`);
+        sendEvent('openExternal', url);
+      }
+      break;
+    }
+
     default:
       process.stderr.write(`[preload-bridge] Unknown message type: ${msg.type}\n`);
   }
@@ -4881,4 +4892,4 @@ rl.on('close', async () => {
 // installExtension, etc.) via stdin immediately.  The browser-side
 // VSCodeServerProxy.waitForReady() listens for this event.
 process.stderr.write('[vscode-server-manager] VS Code Server Manager started\n');
-sendEvent('workerReady');
+sendEvent('workerReady'); 
