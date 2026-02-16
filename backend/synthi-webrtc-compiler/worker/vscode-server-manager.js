@@ -700,6 +700,7 @@ function _startGithubDeviceTokenPolling(deviceCode, scopes, intervalSec = 5, tri
           providerId: 'github',
           sessionId: session.id,
           accountLabel,
+          session,
         });
 
         sendEvent('extensionMessage', {
