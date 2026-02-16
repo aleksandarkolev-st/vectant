@@ -777,6 +777,12 @@ function _handlePreloadMessage(msg) {
       const mergedWebviews = Array.from(new Set([...(msg.webviews || []), ...rpcObservedWebviewViews]));
       for (const viewId of (msg.treeViews || [])) preloadRegisteredTreeViews.add(viewId);
       for (const viewType of (msg.webviews || [])) preloadRegisteredWebviewViews.add(viewType);
+      if (mergedTreeViews.length === 0 && mergedWebviews.length === 0
+        && (manifestKnownTreeViews.size > 0 || manifestKnownWebviewViews.size > 0)) {
+        process.stderr.write('[preload-bridge] Provider list empty from runtime; emitting manifest/RPC fallback providers\n');
+        _emitMergedFallbackProviders('providerList-empty-runtime');
+        break;
+      }
       const treeCount = mergedTreeViews.length;
       const webviewCount = mergedWebviews.length;
       process.stderr.write(`[preload-bridge] Provider list: ${treeCount} trees, ${webviewCount} webviews\n`);
@@ -1444,14 +1450,15 @@ async function startServer(slug, options = {}) {
       _patchExtensionHostForPreload(binary, preloadPath, bridgePort);
     }
 
-    // ── Ensure required extensions are installed ──
-    // Extensions MUST be on disk before the Extension Host starts,
-    // otherwise there's nothing for it to load.
+    // ── Discover installed extensions ──
+    // Scan the extensions directory to build the in-memory cache.
+    // Extensions are installed by the frontend via RPC — we don't
+    // auto-install anything; we just discover what's already on disk.
     try {
-      const extResult = await _ensureRequiredExtensions(binary);
-      process.stderr.write(`[vscode-server-manager] Extension verification: ${extResult.alreadyPresent.length} present, ${extResult.installed.length} installed, ${extResult.failed.length} failed\n`);
+      const extResult = await _discoverInstalledExtensions();
+      process.stderr.write(`[vscode-server-manager] Extension discovery: ${extResult.present.length} present, ${extResult.broken.length} broken\n`);
     } catch (extErr) {
-      process.stderr.write(`[vscode-server-manager] Extension verification failed (non-fatal): ${extErr.message}\n`);
+      process.stderr.write(`[vscode-server-manager] Extension discovery failed (non-fatal): ${extErr.message}\n`);
     }
 
     process.stderr.write(`[vscode-server-manager] Starting: ${binary} ${args.join(' ')}\n`);
@@ -2015,6 +2022,8 @@ async function _triggerExtensionHostStartup(port, token) {
       function _buildExtHostWorkspaceInitPayload() {
         const workspaceDir = currentWorkspaceDir || '/tmp/synthi-workspaces/default';
         const workspaceName = path.basename(workspaceDir) || (currentSlug || 'workspace');
+        // Use vscode-remote scheme so the EH's URI transformer maps it to file:
+        const wsRemoteAuthority = `127.0.0.1:${serverPort}`;
         return {
           id: currentSlug || 'default',
           name: workspaceName,
@@ -2022,7 +2031,7 @@ async function _triggerExtensionHostStartup(port, token) {
           isUntitled: false,
           transient: false,
           folders: [{
-            uri: { $mid: 1, scheme: 'file', authority: '', path: workspaceDir, query: '', fragment: '' },
+            uri: { $mid: 1, scheme: 'vscode-remote', authority: wsRemoteAuthority, path: workspaceDir, query: '', fragment: '' },
             name: workspaceName,
             index: 0,
           }],
@@ -2177,6 +2186,14 @@ async function _triggerExtensionHostStartup(port, token) {
             },
             onError: (reason) => {
               startRpcInFlight = false;
+              const reasonText = String(reason || '').toLowerCase();
+              if (reasonText.includes('already started')) {
+                startExtensionHostSucceeded = true;
+                process.stderr.write(`[vscode-server-manager] $startExtensionHost already active on discovered rpcId=${rpcId}; continuing activation\n`);
+                setTimeout(() => _sendActivateByEvent('*', 0, rpcId), 200);
+                setTimeout(() => _sendDirectActivateForInitExtensions('post-start', rpcId), 500);
+                return;
+              }
               process.stderr.write(`[vscode-server-manager] $startExtensionHost failed on discovered rpcId=${rpcId} (${reason})\n`);
             },
           });
@@ -2204,6 +2221,14 @@ async function _triggerExtensionHostStartup(port, token) {
           },
           onError: (reason) => {
             startRpcInFlight = false;
+            const reasonText = String(reason || '').toLowerCase();
+            if (reasonText.includes('already started')) {
+              startExtensionHostSucceeded = true;
+              process.stderr.write(`[vscode-server-manager] $startExtensionHost already active on rpcId=${rpcId}; continuing activation\n`);
+              setTimeout(() => _sendActivateByEvent('*', 0, rpcId), 200);
+              setTimeout(() => _sendDirectActivateForInitExtensions('post-start', rpcId), 500);
+              return;
+            }
             process.stderr.write(`[vscode-server-manager] $startExtensionHost failed on rpcId=${rpcId} (${reason}) — trying next candidate\n`);
             setTimeout(() => _tryStartExtensionHostNextRpcId(), 120);
           },
@@ -2251,6 +2276,7 @@ async function _triggerExtensionHostStartup(port, token) {
       function _sendActivateByEvent(event, kind, rpcIdOverride) {
         _sendEHRpcRequest(rpcIdOverride || discoveredExtHostExtensionServiceRpcId || EXTHOST_EXTENSION_SERVICE_RPC_ID, '$activateByEvent', [event, kind || 0], {
           ackIsSuccess: true,
+          timeoutMs: 15000,
         });
       }
 
@@ -2272,7 +2298,7 @@ async function _triggerExtensionHostStartup(port, token) {
           rpcIdOverride || discoveredExtHostExtensionServiceRpcId || EXTHOST_EXTENSION_SERVICE_RPC_ID,
           '$activate',
           [extensionIdentifier, reason],
-          { ackIsSuccess: true }
+          { ackIsSuccess: true, timeoutMs: 15000 }
         );
       }
 
@@ -2858,6 +2884,15 @@ async function _triggerExtensionHostStartup(port, token) {
  * @returns {Promise<void>}
  */
 async function _sendExtensionHostInitData(sendWSFrame, makeRegularMsg, port) {
+  // Helper to create URIs with the correct scheme for the Extension Host.
+  // The EH's URI transformer maps incoming URIs as follows:
+  //   vscode-remote: → file:   (server-local paths sent from UI side)
+  //   file:          → vscode-local:  (treated as client-local)
+  // Since we act as the "UI side", server paths MUST use vscode-remote scheme
+  // so the transformer converts them back to file: on the agent side.
+  const remoteAuthority = `127.0.0.1:${port}`;
+  const remoteUri = (filePath) => ({ $mid: 1, scheme: 'vscode-remote', authority: remoteAuthority, path: filePath, query: '', fragment: '' });
+
   // ── Gather extension descriptions ──
   //
   // The Extension Host receives its extension list ONLY from the client's
@@ -2909,7 +2944,7 @@ async function _sendExtensionHostInitData(sendWSFrame, makeRegularMsg, port) {
           })
           .filter((kind) => typeof kind === 'number');
         const extensionKind = hasRuntimeEntry
-          ? Array.from(new Set([2, ...declaredExtensionKind]))
+          ? [2]
           : declaredExtensionKind;
 
         // Mirror VS Code's toExtensionDescription shape as closely as possible,
@@ -2928,7 +2963,7 @@ async function _sendExtensionHostInitData(sendWSFrame, makeRegularMsg, port) {
           isBuiltin: false,
           isUserBuiltin: false,
           isUnderDevelopment: false,
-          extensionLocation: { $mid: 1, scheme: 'file', authority: '', path: extLocation, query: '', fragment: '' },
+          extensionLocation: remoteUri(extLocation),
           uuid: crypto.randomUUID ? crypto.randomUUID() : crypto.randomBytes(16).toString('hex'),
           targetPlatform: pkg.targetPlatform || 'undefined',
           publisherDisplayName: pkg.publisherDisplayName,
@@ -2957,8 +2992,8 @@ async function _sendExtensionHostInitData(sendWSFrame, makeRegularMsg, port) {
           process.stderr.write(`[eh-init] Extension ${extId}: forcing '*' activation in headless mode (declared: ${declaredActivationEvents.length})\n`);
         }
 
-        if (hasRuntimeEntry && (!declaredExtensionKind.includes(2))) {
-          process.stderr.write(`[eh-init] Extension ${extId}: forcing extensionKind to include workspace(2) (declared: ${declaredExtensionKind.length ? declaredExtensionKind.join(',') : 'none'})\n`);
+        if (hasRuntimeEntry) {
+          process.stderr.write(`[eh-init] Extension ${extId}: forcing extensionKind to workspace-only(2) (declared: ${declaredExtensionKind.length ? declaredExtensionKind.join(',') : 'none'})\n`);
         }
 
         process.stderr.write(`[eh-init] Extension: ${extId} (main: ${pkg.main || pkg.browser || 'none'}, api: ${extensionDesc.api})\n`);
@@ -3021,15 +3056,15 @@ async function _sendExtensionHostInitData(sendWSFrame, makeRegularMsg, port) {
     parentPid: process.pid,
     environment: {
       isExtensionDevelopmentDebug: false,
-      appRoot: { $mid: 1, scheme: 'file', authority: '', path: '/', query: '', fragment: '' },
+      appRoot: remoteUri('/'),
       appName: 'code-server',
       appHost: 'web',
       appLanguage: 'en',
-      extensionTelemetryLogResource: { $mid: 1, scheme: 'file', authority: '', path: path.join(logsDir, 'telemetry.log'), query: '', fragment: '' },
+      extensionTelemetryLogResource: remoteUri(path.join(logsDir, 'telemetry.log')),
       isExtensionTelemetryLoggingOnly: true,
       appUriScheme: 'vscode',
-      globalStorageHome: { $mid: 1, scheme: 'file', authority: '', path: path.join(userDataDir, 'globalStorage'), query: '', fragment: '' },
-      workspaceStorageHome: { $mid: 1, scheme: 'file', authority: '', path: path.join(userDataDir, 'workspaceStorage'), query: '', fragment: '' },
+      globalStorageHome: remoteUri(path.join(userDataDir, 'globalStorage')),
+      workspaceStorageHome: remoteUri(path.join(userDataDir, 'workspaceStorage')),
     },
     workspace: {
       id: currentSlug || 'default',
@@ -3039,14 +3074,14 @@ async function _sendExtensionHostInitData(sendWSFrame, makeRegularMsg, port) {
       transient: false,
       // folders is REQUIRED — VS Code crashes during workspace init without it
       folders: [{
-        uri: { $mid: 1, scheme: 'file', authority: '', path: workspaceDir, query: '', fragment: '' },
+        uri: remoteUri(workspaceDir),
         name: path.basename(workspaceDir),
         index: 0,
       }],
     },
     remote: {
       isRemote: true,
-      authority: `127.0.0.1:${port}`,
+      authority: remoteAuthority,
       connectionData: null,
     },
     consoleForward: {
@@ -3083,11 +3118,11 @@ async function _sendExtensionHostInitData(sendWSFrame, makeRegularMsg, port) {
     logLevel: 1, // LogLevel.Info
     // Each logger MUST have resource, id, and name
     loggers: [{
-      resource: { $mid: 1, scheme: 'file', authority: '', path: path.join(logsDir, 'exthost.log'), query: '', fragment: '' },
+      resource: remoteUri(path.join(logsDir, 'exthost.log')),
       id: 'exthost',
       name: 'Extension Host',
     }],
-    logsLocation: { $mid: 1, scheme: 'file', authority: '', path: logsDir, query: '', fragment: '' },
+    logsLocation: remoteUri(logsDir),
     autoStart: true,
     uiKind: 2, // UIKind.Web
   };
@@ -3568,115 +3603,72 @@ function listInstalledExtensions() {
 //
 // Ensures required extensions are actually installed in EXTENSIONS_DIR
 // before triggering the Extension Host.  Extensions MUST be present on
-// disk for the EH to load them.  If they're missing, we auto-install
-// using `code-server --install-extension`.
+// disk for the EH to load them.
 // ============================================================================
 
-/** Extensions that must be installed for the Synthi sidebar to work */
-const REQUIRED_EXTENSIONS = [
-  'GitHub.vscode-pull-request-github',
-];
-
 /**
- * Verify all required extensions are installed and install any that are missing.
- * Reads the extensions directory to check for existing installations and uses
- * the code-server binary to install missing ones.
+ * Scan the extensions directory and build the in-memory cache of installed
+ * extensions. Unlike the previous approach, this does NOT hardcode a list of
+ * required extensions — it discovers whatever is already on disk (installed
+ * by the frontend via `installExtensionFromMarketplace` / `installVSIX`).
  *
- * @param {string} binary - Path to the code-server binary
- * @returns {Promise<{installed: string[], alreadyPresent: string[], failed: string[]}>}
+ * @returns {Promise<{present: string[], broken: string[]}>}
  */
-async function _ensureRequiredExtensions(binary) {
-  const result = { installed: [], alreadyPresent: [], failed: [] };
+async function _discoverInstalledExtensions() {
+  const result = { present: [], broken: [] };
 
   // Ensure the extensions directory exists
   fs.mkdirSync(EXTENSIONS_DIR, { recursive: true });
 
-  // Read currently installed extensions
-  let installedDirs = [];
+  let dirs = [];
   try {
-    installedDirs = fs.readdirSync(EXTENSIONS_DIR);
+    dirs = fs.readdirSync(EXTENSIONS_DIR);
   } catch (e) {
     process.stderr.write(`[ext-install] Cannot read extensions dir: ${e.message}\n`);
+    return result;
   }
 
   process.stderr.write(`[ext-install] Extensions directory: ${EXTENSIONS_DIR}\n`);
-  process.stderr.write(`[ext-install] Found ${installedDirs.length} extension dirs: [${installedDirs.slice(0, 15).join(', ')}]\n`);
+  process.stderr.write(`[ext-install] Found ${dirs.length} extension dirs: [${dirs.slice(0, 15).join(', ')}]\n`);
 
-  for (const extId of REQUIRED_EXTENSIONS) {
-    // Check if extension is already installed (prefix match, case-insensitive)
-    const extIdLower = extId.toLowerCase();
-    const found = installedDirs.find(dir => dir.toLowerCase().startsWith(extIdLower));
+  // Rebuild runtime cache from disk
+  installedExtensions.clear();
 
-    if (found) {
-      // Verify the directory actually has a package.json with a main entry
-      const pkgPath = path.join(EXTENSIONS_DIR, found, 'package.json');
-      let hasMain = false;
-      try {
-        const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
-        hasMain = !!pkg.main || !!pkg.browser;
-        if (hasMain) {
-          process.stderr.write(`[ext-install] ✓ ${extId} installed (dir: ${found}, main: ${pkg.main || pkg.browser})\n`);
-          result.alreadyPresent.push(extId);
-          continue;
-        } else {
-          process.stderr.write(`[ext-install] ⚠ ${extId} dir exists but no main entry — reinstalling\n`);
-        }
-      } catch (e) {
-        process.stderr.write(`[ext-install] ⚠ ${extId} dir exists but package.json unreadable: ${e.message} — reinstalling\n`);
-      }
-    } else {
-      process.stderr.write(`[ext-install] ✗ ${extId} NOT found in extensions dir — installing\n`);
-    }
-
-    // Install the extension
+  for (const dir of dirs) {
+    const pkgPath = path.join(EXTENSIONS_DIR, dir, 'package.json');
     try {
-      process.stderr.write(`[ext-install] Installing ${extId} via code-server CLI...\n`);
-      const output = execFileSync(binary, [
-        '--install-extension', extId,
-        '--extensions-dir', EXTENSIONS_DIR,
-      ], {
-        timeout: 180000,   // 3 minutes for large extensions
-        stdio: ['ignore', 'pipe', 'pipe'],
-        env: { ...process.env, VSCODE_CLI_DISABLE_GPU: '1' },
-      });
-      process.stderr.write(`[ext-install] ✓ ${extId} installed successfully\n`);
-      const stdout = output.toString().trim();
-      if (stdout) process.stderr.write(`[ext-install]   output: ${stdout.slice(0, 300)}\n`);
-      result.installed.push(extId);
-    } catch (installErr) {
-      process.stderr.write(`[ext-install] ✗ Failed to install ${extId}: ${installErr.message}\n`);
-      if (installErr.stderr) {
-        process.stderr.write(`[ext-install]   stderr: ${installErr.stderr.toString().slice(0, 500)}\n`);
-      }
-      result.failed.push(extId);
-    }
-  }
+      const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+      const extensionId = `${pkg.publisher || 'unknown'}.${pkg.name || dir}`;
+      const hasMain = !!(pkg.main || pkg.browser);
+      const hasUI = !!(pkg.contributes?.views || pkg.contributes?.viewsContainers);
 
-  // Final check: list what's in the extensions dir now
-  try {
-    const finalDirs = fs.readdirSync(EXTENSIONS_DIR);
-    // Rebuild runtime cache from disk so startup summaries and APIs
-    // reflect actual installed extensions (including pre-existing ones).
-    installedExtensions.clear();
-    process.stderr.write(`[ext-install] Final extensions dir: ${finalDirs.length} entries\n`);
-    for (const dir of finalDirs) {
-      try {
-        const pkg = JSON.parse(fs.readFileSync(path.join(EXTENSIONS_DIR, dir, 'package.json'), 'utf8'));
-        const extensionId = `${pkg.publisher || 'unknown'}.${pkg.name || dir}`;
+      if (hasMain) {
         installedExtensions.set(extensionId, {
           id: extensionId,
           version: pkg.version || '0.0.0',
           path: path.join(EXTENSIONS_DIR, dir),
           installedAt: new Date().toISOString(),
         });
-        const hasUI = !!(pkg.contributes?.views || pkg.contributes?.viewsContainers);
-        process.stderr.write(`[ext-install]   ${dir} → main: ${pkg.main || pkg.browser || '(none)'}, UI: ${hasUI}\n`);
-      } catch (_) {
-        process.stderr.write(`[ext-install]   ${dir} → (no readable package.json)\n`);
+        process.stderr.write(`[ext-install] ✓ ${extensionId} (dir: ${dir}, main: ${pkg.main || pkg.browser}, UI: ${hasUI})\n`);
+        result.present.push(extensionId);
+      } else {
+        // Theme-only or metadata-only extension — still track it
+        installedExtensions.set(extensionId, {
+          id: extensionId,
+          version: pkg.version || '0.0.0',
+          path: path.join(EXTENSIONS_DIR, dir),
+          installedAt: new Date().toISOString(),
+        });
+        process.stderr.write(`[ext-install]   ${dir} → no main/browser entry (theme-only), UI: ${hasUI}\n`);
+        result.present.push(extensionId);
       }
+    } catch (_) {
+      process.stderr.write(`[ext-install]   ${dir} → (no readable package.json)\n`);
+      result.broken.push(dir);
     }
-  } catch (_) {}
+  }
 
+  process.stderr.write(`[ext-install] Extension verification: ${result.present.length} present, ${result.broken.length} broken\n`);
   return result;
 }
 
