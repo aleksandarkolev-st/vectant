@@ -168,11 +168,17 @@ const extensionSlice = createSlice({
       if (Array.isArray(contributes.viewsWelcome)) {
         for (const entry of contributes.viewsWelcome) {
           if (!entry.view || !entry.contents) continue;
+          // NLS resolution may produce l10n objects {message, comment} — extract the string
+          let contents = entry.contents;
+          if (typeof contents === 'object' && contents !== null && typeof contents.message === 'string') {
+            contents = contents.message;
+          }
+          if (typeof contents !== 'string') continue; // skip non-string entries
           if (!state.contributions.viewsWelcome[entry.view]) {
             state.contributions.viewsWelcome[entry.view] = [];
           }
           state.contributions.viewsWelcome[entry.view].push({
-            contents: entry.contents,
+            contents,
             when: entry.when || null,
             group: entry.group || null,
             extensionId,

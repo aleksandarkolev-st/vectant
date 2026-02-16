@@ -3874,7 +3874,11 @@ function _resolveNLSRecursive(obj, nlsMap) {
       if (m) {
         const nlsKey = m[1];
         if (nlsMap[nlsKey] !== undefined) {
-          obj[key] = nlsMap[nlsKey];
+          // NLS values can be plain strings or l10n objects {message, comment}.
+          const resolved = nlsMap[nlsKey];
+          obj[key] = (typeof resolved === 'object' && resolved !== null && typeof resolved.message === 'string')
+            ? resolved.message
+            : resolved;
         } else {
           // Humanize: last dot-segment → Title Case
           const segments = nlsKey.split('.');
@@ -3887,7 +3891,14 @@ function _resolveNLSRecursive(obj, nlsMap) {
         if (typeof val[i] === 'string') {
           const am = val[i].match(/^%([\w.]+)%$/);
           if (am) {
-            obj[key][i] = nlsMap[am[1]] !== undefined ? nlsMap[am[1]] : am[1].split('.').pop();
+            const resolved = nlsMap[am[1]];
+            if (resolved !== undefined) {
+              obj[key][i] = (typeof resolved === 'object' && resolved !== null && typeof resolved.message === 'string')
+                ? resolved.message
+                : resolved;
+            } else {
+              obj[key][i] = am[1].split('.').pop();
+            }
           }
         } else if (typeof val[i] === 'object' && val[i]) {
           _resolveNLSRecursive(val[i], nlsMap);

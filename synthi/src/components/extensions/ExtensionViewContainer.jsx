@@ -36,8 +36,16 @@ function WelcomeContent({ entries, onExecuteCommand }) {
 function WelcomeEntry({ contents, onExecuteCommand }) {
   if (!contents) return null;
 
-  // Ensure contents is a string (some manifests may have non-string values)
-  const text = typeof contents === 'string' ? contents : String(contents);
+  // NLS bundles may resolve to l10n objects {message, comment} instead of strings.
+  // Extract the message string if so, or coerce to string as last resort.
+  let text;
+  if (typeof contents === 'string') {
+    text = contents;
+  } else if (typeof contents === 'object' && contents !== null && typeof contents.message === 'string') {
+    text = contents.message;
+  } else {
+    return null; // Skip entries we can't render
+  }
 
   // Split the contents into lines and parse each
   const lines = text.split('\n');
