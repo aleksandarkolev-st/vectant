@@ -2203,6 +2203,26 @@ function _topTrackedCandidates(commandId, limit = 5) {
     .slice(0, limit);
 }
 
+function _findBestKnownAlias(commandId, knownCommands) {
+  if (!commandId || !Array.isArray(knownCommands) || knownCommands.length === 0) return null;
+
+  let best = null;
+  let bestScore = 0;
+  for (const candidate of knownCommands) {
+    if (typeof candidate !== 'string') continue;
+    const score = _scoreCommandAlias(commandId, candidate);
+    if (score > bestScore) {
+      bestScore = score;
+      best = candidate;
+    }
+  }
+
+  if (best && bestScore >= 220) {
+    return { commandId: best, score: bestScore };
+  }
+  return null;
+}
+
 async function _getKnownCommandsSnapshot(commandId) {
   try {
     const getter = realVscodeApi?.commands?.getCommands;
@@ -2412,8 +2432,20 @@ function _handleBridgeRequest(msg) {
             }
           }
 
-          const candidates = _topTrackedCandidates(commandId, 5);
           const knownCommands = await _getKnownCommandsSnapshot(commandId);
+          const knownAlias = _findBestKnownAlias(commandId, knownCommands);
+          if (knownAlias && realVscodeApi?.commands?.executeCommand) {
+            log(`Trying known-command alias for ${commandId}: ${knownAlias.commandId} (score=${knownAlias.score})`);
+            try {
+              await realVscodeApi.commands.executeCommand(knownAlias.commandId, ...(cmdArgs || []));
+              log(`Known-command alias executed: ${knownAlias.commandId}`);
+              return;
+            } catch (e) {
+              logError(`Known-command alias failed ${knownAlias.commandId}: ${e.message}`);
+            }
+          }
+
+          const candidates = _topTrackedCandidates(commandId, 5);
           logError(`No tracked handler for ${commandId} after activation retry`);
           bridgeSend({
             type: 'commandExecutionFailed',
@@ -2428,6 +2460,20 @@ function _handleBridgeRequest(msg) {
 
         // 3. Fallback to vscode API for non-contributed/built-in commands.
         if (realVscodeApi?.commands?.executeCommand) {
+          const knownCommands = await _getKnownCommandsSnapshot(commandId);
+          const knownAlias = _findBestKnownAlias(commandId, knownCommands);
+
+          if (knownAlias && knownAlias.commandId !== commandId) {
+            log(`No stored handler for ${commandId}; using known-command alias ${knownAlias.commandId} (score=${knownAlias.score})`);
+            try {
+              await realVscodeApi.commands.executeCommand(knownAlias.commandId, ...(cmdArgs || []));
+              log(`Command ${commandId} executed via known alias ${knownAlias.commandId}`);
+              return;
+            } catch (e) {
+              logError(`Known alias execution failed for ${commandId} -> ${knownAlias.commandId}: ${e.message}`);
+            }
+          }
+
           log(`No stored handler for ${commandId}, falling back to vscode API`);
           try {
             realVscodeApi.commands.executeCommand(commandId, ...(cmdArgs || []))
