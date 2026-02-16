@@ -1169,6 +1169,31 @@ const _lastForcedInteractiveAuthAt = new Map();
 /** @type {Map<string, number>} providerId -> timestamp when session was confirmed available */
 const _knownAuthSessionAt = new Map();
 
+/**
+ * @type {Map<string, object>} providerId -> cached AuthenticationSession
+ * Populated by the manager via the bridge when a device flow completes
+ * or when the manager confirms a cached session exists. Required because
+ * headless code-server has no built-in GitHub auth provider registered in
+ * the Extension Host, so originalGetSession always returns null.
+ */
+const _cachedAuthSessions = new Map();
+
+function _preloadSessionMatchesScopes(session, requestedScopes) {
+  const need = Array.isArray(requestedScopes)
+    ? requestedScopes.filter(s => typeof s === 'string' && s.trim()).map(s => s.trim())
+    : [];
+  if (need.length === 0) return true;
+  const has = new Set(
+    Array.isArray(session?.scopes)
+      ? session.scopes.map(s => String(s).trim())
+      : []
+  );
+  for (const scope of need) {
+    if (!has.has(scope)) return false;
+  }
+  return true;
+}
+
 /** @type {{ key: string|null, ts: number }} duplicate executeCommand suppression */
 const _lastExecuteCommandEnvelope = { key: null, ts: 0 };
 
