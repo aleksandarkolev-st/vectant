@@ -1356,6 +1356,36 @@ function _serializeTreeItem(treeItem, element) {
  *
  * @param {object} vscode - The real vscode module exports
  */
+
+/**
+ * Safely assign a property on a potentially frozen/sealed object.
+ * Falls back to Object.defineProperty when direct assignment throws.
+ *
+ * @param {object} obj - Target object
+ * @param {string} prop - Property name
+ * @param {*} value - New value
+ * @param {string} label - Human-readable label for logging
+ * @returns {boolean} true if assignment succeeded
+ */
+function _safeAssign(obj, prop, value, label) {
+  try {
+    obj[prop] = value;
+    return true;
+  } catch (_) {
+    try {
+      Object.defineProperty(obj, prop, {
+        value,
+        writable: true,
+        configurable: true,
+      });
+      return true;
+    } catch (e) {
+      log(`Could not assign ${label}: ${e.message}`);
+      return false;
+    }
+  }
+}
+
 function wrapVSCodeAPI(vscode) {
   if (!vscode.window) {
     logError('vscode.window not found — cannot wrap');
@@ -1394,7 +1424,7 @@ function wrapEnvOpenExternal(vscode) {
     return;
   }
 
-  vscode.env.openExternal = function wrappedOpenExternal(target) {
+  const wrappedOpenExternal = function wrappedOpenExternal(target) {
     // target is a vscode.Uri — extract the string representation
     const url = target?.toString?.() || String(target);
     log(`env.openExternal intercepted: ${url}`);
@@ -1406,6 +1436,10 @@ function wrapEnvOpenExternal(vscode) {
     // (it may handle localhost callbacks for OAuth redirect URIs)
     return original.call(this, target);
   };
+
+  if (!_safeAssign(vscode.env, 'openExternal', wrappedOpenExternal, 'env.openExternal')) {
+    return;
+  }
 
   log('env.openExternal wrapped');
 }
@@ -1427,7 +1461,7 @@ function wrapRegisterTreeDataProvider(vscode) {
     return;
   }
 
-  vscode.window.registerTreeDataProvider = function wrappedRegisterTreeDataProvider(viewId, provider) {
+  const wrappedRegisterTreeDataProvider = function wrappedRegisterTreeDataProvider(viewId, provider) {
     log(`registerTreeDataProvider intercepted: ${viewId}`);
 
     // Call the real API — this is the genuine registration
@@ -1468,6 +1502,9 @@ function wrapRegisterTreeDataProvider(vscode) {
     return disposable;
   };
 
+  if (!_safeAssign(vscode.window, 'registerTreeDataProvider', wrappedRegisterTreeDataProvider, 'window.registerTreeDataProvider')) {
+    return;
+  }
   log('registerTreeDataProvider wrapped');
 }
 
@@ -1489,7 +1526,7 @@ function wrapCreateTreeView(vscode) {
     return;
   }
 
-  vscode.window.createTreeView = function wrappedCreateTreeView(viewId, options) {
+  const wrappedCreateTreeView = function wrappedCreateTreeView(viewId, options) {
     log(`createTreeView intercepted: ${viewId}`);
 
     // Call the real API
@@ -1534,6 +1571,9 @@ function wrapCreateTreeView(vscode) {
     return treeView;
   };
 
+  if (!_safeAssign(vscode.window, 'createTreeView', wrappedCreateTreeView, 'window.createTreeView')) {
+    return;
+  }
   log('createTreeView wrapped');
 }
 
@@ -1551,7 +1591,7 @@ function wrapWebviewProviders(vscode) {
   // ── registerWebviewViewProvider (sidebar/panel webviews) ──
   const origRegisterWVP = vscode.window.registerWebviewViewProvider;
   if (origRegisterWVP) {
-    vscode.window.registerWebviewViewProvider = function wrappedRegisterWebviewViewProvider(viewType, provider, options) {
+    const wrappedRegisterWebviewViewProvider = function wrappedRegisterWebviewViewProvider(viewType, provider, options) {
       log(`registerWebviewViewProvider intercepted: ${viewType}`);
 
       // Notify bridge immediately at registration time (not deferred to
@@ -1600,13 +1640,15 @@ function wrapWebviewProviders(vscode) {
 
       return disposable;
     };
-    log('registerWebviewViewProvider wrapped');
+    if (_safeAssign(vscode.window, 'registerWebviewViewProvider', wrappedRegisterWebviewViewProvider, 'window.registerWebviewViewProvider')) {
+      log('registerWebviewViewProvider wrapped');
+    }
   }
 
   // ── createWebviewPanel (editor/floating webview panels) ──
   const origCreateWP = vscode.window.createWebviewPanel;
   if (origCreateWP) {
-    vscode.window.createWebviewPanel = function wrappedCreateWebviewPanel(viewType, title, showOptions, options) {
+    const wrappedCreateWebviewPanel = function wrappedCreateWebviewPanel(viewType, title, showOptions, options) {
       log(`createWebviewPanel intercepted: ${viewType} "${title}"`);
 
       // Call the real API
@@ -1628,7 +1670,9 @@ function wrapWebviewProviders(vscode) {
 
       return panel;
     };
-    log('createWebviewPanel wrapped');
+    if (_safeAssign(vscode.window, 'createWebviewPanel', wrappedCreateWebviewPanel, 'window.createWebviewPanel')) {
+      log('createWebviewPanel wrapped');
+    }
   }
 }
 
@@ -1740,7 +1784,7 @@ function wrapCommands(vscode) {
 
   const original = vscode.commands.registerCommand;
 
-  vscode.commands.registerCommand = function wrappedRegisterCommand(commandId, callback, thisArg) {
+  const wrappedRegisterCommand = function wrappedRegisterCommand(commandId, callback, thisArg) {
     // Call the real API
     const disposable = original.call(this, commandId, callback, thisArg);
 
@@ -1750,6 +1794,9 @@ function wrapCommands(vscode) {
     return disposable;
   };
 
+  if (!_safeAssign(vscode.commands, 'registerCommand', wrappedRegisterCommand, 'commands.registerCommand')) {
+    return;
+  }
   log('commands.registerCommand wrapped');
 }
 
