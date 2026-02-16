@@ -2733,6 +2733,10 @@ async function _triggerExtensionHostStartup(port, token) {
             if (uriStr) {
               process.stderr.write(`[vscode-server-manager] $openUri: ${uriStr}\n`);
               sendEvent('openExternal', uriStr);
+              const deviceCode = extractDeviceCodeFromText(uriStr) || extractDeviceCodeFromUrl(uriStr);
+              if (deviceCode) {
+                emitAuthDeviceCode(deviceCode, '$openUri', { url: uriStr });
+              }
             }
           } catch (e) {
             process.stderr.write(`[vscode-server-manager] $openUri error: ${e.message}\n`);
@@ -2748,6 +2752,30 @@ async function _triggerExtensionHostStartup(port, token) {
         } else if (methodName === '$getSession' || methodName === '$getSessions') {
           // Authentication provider session request. Return null → no session.
           process.stderr.write(`[vscode-server-manager] Auth: ${methodName} ${JSON.stringify(rpcArgs).slice(0, 200)}\n`);
+          const json = Buffer.from('null', 'utf8');
+          replyRpc = Buffer.alloc(5 + 4 + json.length);
+          replyRpc[0] = 9; // ReplyOKJSON
+          replyRpc.writeUInt32BE(reqId, 1);
+          replyRpc.writeUInt32BE(json.length, 5);
+          json.copy(replyRpc, 9);
+
+        } else if (methodName === '$createSession') {
+          // Interactive authentication session creation request.
+          // We cannot create real sessions headlessly, but we can surface
+          // a strong frontend signal to initiate browser/device flow.
+          try {
+            const providerId = rpcArgs && rpcArgs[0];
+            const scopes = rpcArgs && rpcArgs[1];
+            const options = rpcArgs && rpcArgs[2];
+            process.stderr.write(`[vscode-server-manager] Auth: $createSession provider=${providerId} scopes=${JSON.stringify(scopes)}\n`);
+            sendEvent('authSessionRequest', {
+              providerId,
+              scopes: Array.isArray(scopes) ? scopes : [],
+              createIfNone: true,
+              forceNewSession: !!(options && options.forceNewSession),
+              fromCreateSession: true,
+            });
+          } catch (_) {}
           const json = Buffer.from('null', 'utf8');
           replyRpc = Buffer.alloc(5 + 4 + json.length);
           replyRpc[0] = 9; // ReplyOKJSON
@@ -2806,6 +2834,10 @@ async function _triggerExtensionHostStartup(port, token) {
               modal: !!(options && options.modal),
               commands: commands || [],
             });
+            const deviceCode = extractDeviceCodeFromText(message);
+            if (deviceCode) {
+              emitAuthDeviceCode(deviceCode, '$showMessage', { message: String(message || '') });
+            }
 
             // Auto-select the first non-close action button so that
             // auth prompts ("Copy and Continue to GitHub") proceed.
@@ -2919,6 +2951,10 @@ async function _triggerExtensionHostStartup(port, token) {
             if (text !== undefined) {
               process.stderr.write(`[vscode-server-manager] $writeText: ${String(text).slice(0, 50)}\n`);
               sendEvent('clipboardWrite', String(text));
+              const deviceCode = extractDeviceCodeFromText(text);
+              if (deviceCode) {
+                emitAuthDeviceCode(deviceCode, '$writeText');
+              }
             }
           } catch (_) {}
           replyRpc = Buffer.alloc(5);
