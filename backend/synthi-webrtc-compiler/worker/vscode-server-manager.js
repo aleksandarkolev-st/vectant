@@ -3426,6 +3426,7 @@ async function _triggerExtensionHostStartup(port, token) {
           const matchedSession = sessions.find(session => _sessionMatchesScopes(session, authReq.scopes)) || null;
           process.stderr.write(`[auth-session] ${methodName} provider=${providerId || 'unknown'} scopes=${JSON.stringify(authReq.scopes || [])} matched=${matchedSession ? 'yes' : 'no'} total=${sessions.length}\n`);
 
+          let deferredGetSessionReply = false;
           if (
             methodName === '$getSession'
             && providerId === 'github'
@@ -3435,17 +3436,32 @@ async function _triggerExtensionHostStartup(port, token) {
             _startGithubDeviceFlow(authReq.scopes, '$getSession').catch((e) => {
               process.stderr.write(`[auth-device] github flow launch failed in $getSession: ${e.message}\n`);
             });
+            // Defer reply — wait for the device flow to produce a session
+            // instead of returning null immediately
+            deferredGetSessionReply = true;
+            replyRpc = null;
+            (async () => {
+              const session = await _waitForAuthSession(providerId, Array.isArray(authReq.scopes) ? authReq.scopes : [], 120000);
+              if (session) {
+                process.stderr.write(`[auth-session] $getSession deferred reply: session found for ${providerId}\n`);
+              } else {
+                process.stderr.write(`[auth-session] $getSession deferred reply: timeout waiting for ${providerId} session\n`);
+              }
+              _sendJsonReply(reqId, session || null);
+            })();
           }
 
-          const payload = methodName === '$getSessions'
-            ? sessions.filter(session => _sessionMatchesScopes(session, authReq.scopes))
-            : matchedSession;
-          const json = Buffer.from(JSON.stringify(payload), 'utf8');
-          replyRpc = Buffer.alloc(5 + 4 + json.length);
-          replyRpc[0] = 9; // ReplyOKJSON
-          replyRpc.writeUInt32BE(reqId, 1);
-          replyRpc.writeUInt32BE(json.length, 5);
-          json.copy(replyRpc, 9);
+          if (!deferredGetSessionReply) {
+            const payload = methodName === '$getSessions'
+              ? sessions.filter(session => _sessionMatchesScopes(session, authReq.scopes))
+              : matchedSession;
+            const json = Buffer.from(JSON.stringify(payload), 'utf8');
+            replyRpc = Buffer.alloc(5 + 4 + json.length);
+            replyRpc[0] = 9; // ReplyOKJSON
+            replyRpc.writeUInt32BE(reqId, 1);
+            replyRpc.writeUInt32BE(json.length, 5);
+            json.copy(replyRpc, 9);
+          }
 
         } else if (methodName === '$createSession') {
           // Interactive authentication session creation request.
