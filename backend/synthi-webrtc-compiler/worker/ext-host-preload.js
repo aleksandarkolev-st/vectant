@@ -2680,14 +2680,18 @@ function _handleBridgeRequest(msg) {
 
     case 'authSessionEstablished': {
       // Manager notifies us that an auth session was established (e.g.
-      // device flow completed). Clear forced-interactive bookkeeping so
-      // subsequent getSession calls use the cached session instead of
-      // re-triggering the device flow.
-      const { providerId, accountLabel } = msg;
+      // device flow completed). Cache the full session so wrappedGetSession
+      // can return it directly — the EH has no built-in GitHub auth
+      // provider, so originalGetSession always returns null.
+      const { providerId, accountLabel, session: bridgeSession } = msg;
       const pid = String(providerId || '').toLowerCase();
-      log(`Auth session established from bridge: provider=${pid} account=${accountLabel || 'unknown'}`);
+      log(`Auth session established from bridge: provider=${pid} account=${accountLabel || 'unknown'} hasSession=${!!bridgeSession}`);
       _lastForcedInteractiveAuthAt.delete(pid);
       _knownAuthSessionAt.set(pid, Date.now());
+      if (bridgeSession && bridgeSession.accessToken) {
+        _cachedAuthSessions.set(pid, bridgeSession);
+        log(`Cached auth session for ${pid}: id=${bridgeSession.id} account=${bridgeSession.account?.label || 'unknown'}`);
+      }
       // Clear stale bridge command context so auth wrapper stops
       // promoting getSession calls to interactive
       if (_lastBridgeCommand.id && _lastBridgeCommand.ts > 0) {
