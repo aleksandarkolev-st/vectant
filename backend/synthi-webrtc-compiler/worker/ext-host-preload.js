@@ -679,10 +679,6 @@ Module._load = function synthiModuleLoadHook(request, parent, isMain) {
 
   if (request === 'vscode') {
     try {
-      // Wrap with Proxy first (handles frozen objects), then also try
-      // in-place wrapping for tree/webview providers (which need trackers)
-      result = _createVscodeApiProxy(result);
-
       const didWrap = _tryWrapVscodeResult(result, `Module._load('vscode') from ${parent?.filename || 'unknown'}`);
       if (didWrap) {
         log(`SUCCESS: vscode API intercepted via Module._load('vscode') (call #${_moduleLoadHookCallCount})`);
@@ -723,10 +719,6 @@ Module.prototype.require = function synthiRequireHook(id) {
 
   if (id === 'vscode') {
     try {
-      // Wrap with Proxy first (handles frozen objects), then also try
-      // in-place wrapping for tree/webview providers (which need trackers)
-      result = _createVscodeApiProxy(result);
-
       const didWrap = _tryWrapVscodeResult(result, `require('vscode') from ${this?.filename || 'unknown'}`);
       if (didWrap) {
         log(`SUCCESS: vscode API intercepted via require('vscode') (call #${_requireHookCallCount})`);
@@ -1156,155 +1148,11 @@ const trackedWebviewProviders = new Map();
 /** @type {Map<string, {callback: Function, thisArg?: any}>} */
 const trackedCommandHandlers = new Map();
 
+/** @type {Set<string>} commands already attempted for extension activation */
+const _commandActivationAttempts = new Set();
+
 /** @type {Set<string>} viewTypes already logged as missing provider */
 const _missingWebviewProviderLogged = new Set();
-
-/**
- * Cache of vscode API → Proxy wrappers.  We use a WeakMap so that
- * if VS Code garbage-collects an API namespace, so does the proxy.
- * @type {WeakMap<object, object>}
- */
-const _vsCodeProxyCache = new WeakMap();
-
-/**
- * Create a transparent Proxy around a frozen vscode API namespace.
- *
- * VS Code `Object.freeze()`s the per-extension API object, making all
- * properties non-writable and non-configurable.  We cannot modify it
- * in place.  Instead, we return a Proxy that intercepts property access
- * and returns wrapped versions of the methods we care about.
- *
- * @param {object} original - The real (frozen) vscode API namespace
- * @returns {object} A Proxy wrapper that behaves identically except for
- *   our instrumentation hooks
- */
-function _createVscodeApiProxy(original) {
-  if (!original || typeof original !== 'object') return original;
-
-  // Return cached proxy if we've already created one for this object
-  const cached = _vsCodeProxyCache.get(original);
-  if (cached) return cached;
-
-  // ── commands sub-proxy ────────────────────────────────────────────
-  const realCommands = original.commands;
-  let commandsProxy = realCommands;
-  if (realCommands) {
-    commandsProxy = new Proxy(realCommands, {
-      get(target, prop, receiver) {
-        if (prop === 'registerCommand') {
-          return function synthiRegisterCommand(commandId, callback, thisArg) {
-            // Call the real API
-            const disposable = target.registerCommand.call(target, commandId, callback, thisArg);
-
-            // Store the handler for direct invocation from the bridge
-            if (typeof callback === 'function') {
-              trackedCommandHandlers.set(commandId, { callback, thisArg });
-              log(`Command handler stored (proxy): ${commandId}`);
-            }
-
-            // Notify bridge
-            bridgeSend({ type: 'command', commandId, extensionId: _inferExtensionId() });
-
-            // Clean up on dispose
-            if (disposable && typeof disposable.dispose === 'function') {
-              const origDispose = disposable.dispose;
-              disposable.dispose = function () {
-                trackedCommandHandlers.delete(commandId);
-                return origDispose.call(this);
-              };
-            }
-            return disposable;
-          };
-        }
-        const val = Reflect.get(target, prop, receiver);
-        return typeof val === 'function' ? val.bind(target) : val;
-      }
-    });
-  }
-
-  // ── authentication sub-proxy ──────────────────────────────────────
-  const realAuth = original.authentication;
-  let authProxy = realAuth;
-  if (realAuth && typeof realAuth.getSession === 'function') {
-    authProxy = new Proxy(realAuth, {
-      get(target, prop, receiver) {
-        if (prop === 'getSession') {
-          return function synthiGetSession(providerId, scopes, options) {
-            log(`authentication.getSession intercepted (proxy): provider=${providerId} scopes=${JSON.stringify(scopes)} options=${JSON.stringify(options)}`);
-            if (options && (options.createIfNone || options.forceNewSession)) {
-              log(`Authentication request requires user interaction: provider=${providerId}`);
-              bridgeSend({
-                type: 'authSessionRequest',
-                providerId,
-                scopes: scopes || [],
-                createIfNone: !!options.createIfNone,
-                forceNewSession: !!options.forceNewSession,
-              });
-            }
-            return target.getSession.call(target, providerId, scopes, options);
-          };
-        }
-        const val = Reflect.get(target, prop, receiver);
-        return typeof val === 'function' ? val.bind(target) : val;
-      }
-    });
-  }
-
-  // ── env sub-proxy ─────────────────────────────────────────────────
-  const realEnv = original.env;
-  let envProxy = realEnv;
-  if (realEnv) {
-    // clipboard sub-sub-proxy
-    const realClipboard = realEnv.clipboard;
-    let clipboardProxy = realClipboard;
-    if (realClipboard && typeof realClipboard.writeText === 'function') {
-      clipboardProxy = new Proxy(realClipboard, {
-        get(target, prop, receiver) {
-          if (prop === 'writeText') {
-            return function synthiWriteText(text) {
-              log(`clipboard.writeText intercepted (proxy): ${String(text).slice(0, 50)}`);
-              bridgeSend({ type: 'clipboardWrite', text: String(text) });
-              return target.writeText.call(target, text);
-            };
-          }
-          const val = Reflect.get(target, prop, receiver);
-          return typeof val === 'function' ? val.bind(target) : val;
-        }
-      });
-    }
-
-    envProxy = new Proxy(realEnv, {
-      get(target, prop, receiver) {
-        if (prop === 'openExternal') {
-          return function synthiOpenExternal(uri) {
-            const url = uri?.toString?.() || String(uri);
-            log(`env.openExternal intercepted (proxy): ${url}`);
-            bridgeSend({ type: 'openExternal', url });
-            return target.openExternal.call(target, uri);
-          };
-        }
-        if (prop === 'clipboard') return clipboardProxy;
-        const val = Reflect.get(target, prop, receiver);
-        return typeof val === 'function' ? val.bind(target) : val;
-      }
-    });
-  }
-
-  // ── top-level vscode namespace proxy ──────────────────────────────
-  const proxy = new Proxy(original, {
-    get(target, prop, receiver) {
-      if (prop === 'commands') return commandsProxy;
-      if (prop === 'authentication') return authProxy;
-      if (prop === 'env') return envProxy;
-      // All other properties pass through to the real frozen object
-      const val = Reflect.get(target, prop, receiver);
-      return typeof val === 'function' ? val.bind(target) : val;
-    }
-  });
-
-  _vsCodeProxyCache.set(original, proxy);
-  return proxy;
-}
 
 // ============================================================================
 // Tree Data Resolution
@@ -2259,6 +2107,79 @@ function _resolveWebviewViewHeadless(viewType) {
   }
 }
 
+function _invokeTrackedCommand(commandId, cmdArgs) {
+  const tracked = trackedCommandHandlers.get(commandId);
+  if (!tracked) return false;
+
+  log(`Calling stored handler directly for: ${commandId}`);
+  try {
+    const result = tracked.callback.apply(tracked.thisArg, cmdArgs || []);
+    if (result && typeof result.then === 'function') {
+      result.then(
+        () => log(`Command ${commandId} completed successfully`),
+        (err) => logError(`Command ${commandId} rejected: ${err.message}`)
+      );
+    } else {
+      log(`Command ${commandId} executed (sync)`);
+    }
+  } catch (e) {
+    logError(`Command ${commandId} handler threw: ${e.message}`);
+  }
+
+  return true;
+}
+
+function _findExtensionsContributingCommand(commandId) {
+  const out = [];
+  const all = realVscodeApi?.extensions?.all;
+  if (!Array.isArray(all) || !commandId) return out;
+
+  for (const ext of all) {
+    try {
+      const commands = ext?.packageJSON?.contributes?.commands;
+      if (!Array.isArray(commands)) continue;
+
+      const matched = commands.some((entry) => {
+        if (typeof entry === 'string') return entry === commandId;
+        return entry && entry.command === commandId;
+      });
+
+      if (matched) out.push(ext);
+    } catch (_) {}
+  }
+
+  return out;
+}
+
+async function _activateExtensionsForCommand(commandId) {
+  if (!commandId) return { activated: 0, total: 0 };
+
+  if (_commandActivationAttempts.has(commandId)) {
+    return { activated: 0, total: 0 };
+  }
+  _commandActivationAttempts.add(commandId);
+
+  const targets = _findExtensionsContributingCommand(commandId);
+  if (targets.length === 0) {
+    return { activated: 0, total: 0 };
+  }
+
+  let activated = 0;
+  for (const ext of targets) {
+    try {
+      if (!ext.isActive) {
+        log(`Activating extension for command ${commandId}: ${ext.id}`);
+        await ext.activate();
+      }
+      activated++;
+    } catch (e) {
+      logError(`Extension activation failed for ${ext?.id || 'unknown'} (${commandId}): ${e.message}`);
+    }
+  }
+
+  return { activated, total: targets.length };
+}
+
 // ============================================================================
 // Bridge Request Handler (incoming from vscode-server-manager)
 // ============================================================================
@@ -2325,40 +2246,49 @@ function _handleBridgeRequest(msg) {
       const { commandId, args: cmdArgs } = msg;
       log(`Bridge requested command execution: ${commandId}`);
 
-      // 1. Try direct handler invocation (most reliable path)
-      const tracked = trackedCommandHandlers.get(commandId);
-      if (tracked) {
-        log(`Calling stored handler directly for: ${commandId}`);
-        try {
-          const result = tracked.callback.apply(tracked.thisArg, cmdArgs || []);
-          // Handle async handlers (Promises)
-          if (result && typeof result.then === 'function') {
-            result.then(
-              () => log(`Command ${commandId} completed successfully`),
-              (err) => logError(`Command ${commandId} rejected: ${err.message}`)
-            );
-          } else {
-            log(`Command ${commandId} executed (sync)`);
-          }
-        } catch (e) {
-          logError(`Command ${commandId} handler threw: ${e.message}`);
-        }
+      if (_invokeTrackedCommand(commandId, cmdArgs)) {
         break;
       }
 
-      // 2. Fallback to vscode API (for built-in commands)
-      if (realVscodeApi?.commands?.executeCommand) {
-        log(`No stored handler for ${commandId}, falling back to vscode API`);
-        try {
-          realVscodeApi.commands.executeCommand(commandId, ...(cmdArgs || []))
-            .then(() => log(`Command ${commandId} executed via API`),
-              (err) => logError(`Command ${commandId} API call failed: ${err.message}`));
-        } catch (e) {
-          logError(`Command ${commandId} API error: ${e.message}`);
+      (async () => {
+        // 2. Activate contributing extension(s) on demand, then retry.
+        const activation = await _activateExtensionsForCommand(commandId);
+        if (activation.total > 0) {
+          log(`Activation attempt for ${commandId}: ${activation.activated}/${activation.total} extension(s)`);
+          if (_invokeTrackedCommand(commandId, cmdArgs)) {
+            return;
+          }
+
+          logError(`No tracked handler for ${commandId} after activation retry`);
+          bridgeSend({
+            type: 'commandExecutionFailed',
+            commandId,
+            reason: 'no-tracked-handler-after-activation',
+          });
+          return;
         }
-      } else {
-        logError(`Cannot execute ${commandId}: no handler and no vscode API`);
-      }
+
+        // 3. Fallback to vscode API for non-contributed/built-in commands.
+        if (realVscodeApi?.commands?.executeCommand) {
+          log(`No stored handler for ${commandId}, falling back to vscode API`);
+          try {
+            realVscodeApi.commands.executeCommand(commandId, ...(cmdArgs || []))
+              .then(() => log(`Command ${commandId} executed via API`),
+                (err) => logError(`Command ${commandId} API call failed: ${err.message}`));
+          } catch (e) {
+            logError(`Command ${commandId} API error: ${e.message}`);
+          }
+        } else {
+          logError(`Cannot execute ${commandId}: no handler and no vscode API`);
+          bridgeSend({
+            type: 'commandExecutionFailed',
+            commandId,
+            reason: 'no-handler-and-no-vscode-api',
+          });
+        }
+      })().catch((e) => {
+        logError(`executeCommand async flow failed for ${commandId}: ${e.message}`);
+      });
       break;
     }
 
