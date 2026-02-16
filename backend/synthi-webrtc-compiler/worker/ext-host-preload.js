@@ -1542,6 +1542,26 @@ function wrapAuthentication(vscode) {
       log(`authentication.getSession promoted to interactive: provider=${providerId} command=${_lastBridgeCommand.id || 'unknown'} ageMs=${ageMs}`);
     }
 
+    const commandId = String(_lastBridgeCommand.id || '').toLowerCase();
+    const explicitSignInCommand = recentUserCommand && (
+      commandId.includes('sign-in')
+      || commandId.includes('signin')
+      || commandId.includes('login')
+      || commandId.includes('auth')
+    );
+
+    if (
+      explicitSignInCommand
+      && String(providerId || '').toLowerCase() === 'github'
+    ) {
+      effectiveOptions = {
+        ...(effectiveOptions || options || {}),
+        createIfNone: true,
+        forceNewSession: true,
+      };
+      log(`authentication.getSession forced new github session for explicit sign-in command=${_lastBridgeCommand.id || 'unknown'} ageMs=${ageMs}`);
+    }
+
     if (
       (!recentUserCommand)
       && options
