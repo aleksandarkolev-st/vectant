@@ -1163,6 +1163,9 @@ let _broadCommandActivationAttempted = false;
 /** @type {{ id: string|null, ts: number }} recent user-triggered bridge command context */
 const _lastBridgeCommand = { id: null, ts: 0 };
 
+/** @type {Map<string, number>} providerId -> last forced interactive auth timestamp */
+const _lastForcedInteractiveAuthAt = new Map();
+
 /** @type {{ key: string|null, ts: number }} duplicate executeCommand suppression */
 const _lastExecuteCommandEnvelope = { key: null, ts: 0 };
 
@@ -1539,6 +1542,22 @@ function wrapAuthentication(vscode) {
       log(`authentication.getSession promoted to interactive: provider=${providerId} command=${_lastBridgeCommand.id || 'unknown'} ageMs=${ageMs}`);
     }
 
+    if (
+      (!recentUserCommand)
+      && options
+      && options.createIfNone === false
+      && !options.forceNewSession
+      && String(providerId || '').toLowerCase() === 'github'
+    ) {
+      const now = Date.now();
+      const lastForced = _lastForcedInteractiveAuthAt.get('github') || 0;
+      if (now - lastForced > 120000) {
+        effectiveOptions = { ...options, createIfNone: true };
+        _lastForcedInteractiveAuthAt.set('github', now);
+        log(`authentication.getSession force-promoted (cooldown) for github`);
+      }
+    }
+
     log(`authentication.getSession intercepted: provider=${providerId} scopes=${JSON.stringify(scopes)} options=${JSON.stringify(effectiveOptions)}`);
 
     // Notify bridge of the authentication request so the frontend can
@@ -1569,6 +1588,9 @@ function wrapAuthentication(vscode) {
     const wrappedOnDidChange = function wrappedOnDidChangeSessions(listener, thisArg, disposables) {
       const wrappedListener = function(e) {
         log(`onDidChangeSessions fired: provider=${e?.provider?.id || 'unknown'}`);
+        if (e?.provider?.id) {
+          _lastForcedInteractiveAuthAt.delete(String(e.provider.id).toLowerCase());
+        }
         bridgeSend({ type: 'authSessionChanged', providerId: e?.provider?.id || 'unknown' });
         return listener.call(this, e);
       };

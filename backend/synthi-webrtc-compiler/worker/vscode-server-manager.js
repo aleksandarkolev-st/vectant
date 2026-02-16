@@ -3272,6 +3272,7 @@ async function _triggerExtensionHostStartup(port, token) {
           const providerId = String(authReq.providerId || '').toLowerCase();
           const sessions = _listAuthSessions(providerId);
           const matchedSession = sessions.find(session => _sessionMatchesScopes(session, authReq.scopes)) || null;
+          process.stderr.write(`[auth-session] ${methodName} provider=${providerId || 'unknown'} scopes=${JSON.stringify(authReq.scopes || [])} matched=${matchedSession ? 'yes' : 'no'} total=${sessions.length}\n`);
 
           if (
             methodName === '$getSession'
