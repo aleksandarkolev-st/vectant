@@ -13,6 +13,63 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { ChevronRight, ChevronDown, Box, Loader2, AlertTriangle, Globe, Server } from 'lucide-react';
 
+// ─── When-clause evaluator ───────────────────────────────────
+/**
+ * Evaluates a VS Code when-clause expression against a map of context values.
+ * Returns true, false, or null (can't determine — unknown context keys).
+ * Supports: boolean keys, negation (!key), ==, !=, && and ||.
+ */
+function evaluateWhenClause(whenClause, contextValues) {
+  if (!whenClause || typeof whenClause !== 'string') return null;
+  if (!contextValues || typeof contextValues !== 'object') return null;
+
+  const trimmed = whenClause.trim();
+  if (!trimmed) return null;
+
+  // Handle && (AND)
+  if (trimmed.includes('&&')) {
+    const parts = trimmed.split(/\s*&&\s*/);
+    const results = parts.map(p => evaluateWhenClause(p, contextValues));
+    if (results.includes(false)) return false;
+    if (results.includes(null)) return null;
+    return true;
+  }
+
+  // Handle || (OR)
+  if (trimmed.includes('||')) {
+    const parts = trimmed.split(/\s*\|\|\s*/);
+    const results = parts.map(p => evaluateWhenClause(p, contextValues));
+    if (results.includes(true)) return true;
+    if (results.includes(null)) return null;
+    return false;
+  }
+
+  // Handle negation: !key
+  if (trimmed.startsWith('!')) {
+    const key = trimmed.slice(1).trim();
+    if (!(key in contextValues)) return null;
+    return !contextValues[key];
+  }
+
+  // Handle equality: key == value
+  if (trimmed.includes('==')) {
+    const [key, value] = trimmed.split(/\s*==\s*/).map(s => s.trim());
+    if (!(key in contextValues)) return null;
+    return String(contextValues[key]) === value.replace(/['"]|/g, '');
+  }
+
+  // Handle inequality: key != value
+  if (trimmed.includes('!=')) {
+    const [key, value] = trimmed.split(/\s*!=\s*/).map(s => s.trim());
+    if (!(key in contextValues)) return null;
+    return String(contextValues[key]) !== value.replace(/['"]|/g, '');
+  }
+
+  // Simple boolean key
+  if (!(trimmed in contextValues)) return null;
+  return !!contextValues[trimmed];
+}
+
 // ─── Welcome content renderer (from contributes.viewsWelcome) ───
 /**
  * Parses and renders viewsWelcome markdown-style content from extension manifests.
@@ -141,8 +198,15 @@ function WelcomeEntry({ contents, onExecuteCommand }) {
 }
 
 // ─── Tree view section ───────────────────────────────────────
-function TreeViewSection({ view, treeData, welcomeEntries, onRequestData, onExecuteCommand }) {
+function TreeViewSection({ view, treeData, welcomeEntries, contextValues, onRequestData, onExecuteCommand }) {
   const [collapsed, setCollapsed] = useState(false);
+
+  // Filter welcome entries whose when-clause evaluates to false
+  const filteredWelcome = welcomeEntries?.filter(entry => {
+    if (!entry.when) return true;
+    const result = evaluateWhenClause(entry.when, contextValues);
+    return result !== false; // Show if true or null (can't evaluate)
+  });
 
   return (
     <div className="border-b border-[#1a1b24] last:border-b-0">
@@ -168,8 +232,8 @@ function TreeViewSection({ view, treeData, welcomeEntries, onRequestData, onExec
                 <TreeItem key={item.id || i} item={item} depth={0} onExecuteCommand={onExecuteCommand} />
               ))}
             </div>
-          ) : welcomeEntries && welcomeEntries.length > 0 ? (
-            <WelcomeContent entries={welcomeEntries} onExecuteCommand={onExecuteCommand} />
+          ) : filteredWelcome && filteredWelcome.length > 0 ? (
+            <WelcomeContent entries={filteredWelcome} onExecuteCommand={onExecuteCommand} />
           ) : (
             <div className="text-[11px] text-[#4a5060] italic py-3 text-center">
               {view.type === 'webview' ? (
@@ -317,6 +381,7 @@ export default function ExtensionViewContainer({
   onExecuteCommand = null,
   onRequestTreeRefresh = null,
   viewsWelcome = {},
+  contextValues = {},
 }) {
   // Auto-request tree data refresh when the container opens with no data.
   // This handles timing races where data arrived before Redux hydration,
@@ -402,12 +467,17 @@ export default function ExtensionViewContainer({
             )}
             {views
             .filter(view => {
-              // Hide views with when-clause conditions we can't evaluate,
+              // Evaluate when-clause against known context values
+              if (view.when) {
+                const result = evaluateWhenClause(view.when, contextValues);
+                if (result === false) return false; // Condition definitively not met
+                if (result === true) return true;   // Condition met → show
+                // result === null → can't evaluate, fall through to heuristic
+              }
+              // Heuristic fallback: hide views with unknown when-clauses
               // unless they have data, welcome content, or are auth views.
               if (view.when && !treeDataMap[view.id]?.length) {
-                // Show if this view has welcome content defined in the manifest
                 if (viewsWelcome[view.id]?.length) return true;
-                // Always show login/auth views regardless of condition
                 if (view.id.includes('login') || view.id.includes('auth')) return true;
                 return false;
               }
@@ -440,6 +510,7 @@ export default function ExtensionViewContainer({
                 view={view}
                 treeData={treeDataMap[view.id]}
                 welcomeEntries={viewsWelcome[view.id]}
+                contextValues={contextValues}
                 onExecuteCommand={onExecuteCommand}
               />
             );
