@@ -133,6 +133,8 @@ export function useExtensions({ editor = null, workspaceId = 'default' } = {}) {
   // Track VS Code Server connection (Path A: real Extension Host)
   const vscodeServerConnectedRef = useRef(false);
   const connectingVSCodeServerRef = useRef(false);
+  const vscodeServerSlugRef = useRef(null);
+  const lastWorkspaceIdRef = useRef(workspaceId);
   const contextValuesRef = useRef({});
   const lastAuthDeviceCodeRef = useRef(null);
   const lastAuthPromptAtRef = useRef(0);
@@ -253,6 +255,7 @@ export function useExtensions({ editor = null, workspaceId = 'default' } = {}) {
           console.warn('[useExtensions] VS Code Server disconnected, resetting flag');
           vscodeServerConnectedRef.current = false;
           connectingVSCodeServerRef.current = false;
+          vscodeServerSlugRef.current = null;
           setVscodeServerState('disconnected');
         };
 
@@ -635,37 +638,47 @@ export function useExtensions({ editor = null, workspaceId = 'default' } = {}) {
 
   // ─── Connect VS Code Server (Path A: real Extension Host) ────
   const connectVSCodeServer = useCallback(async () => {
-    if (vscodeServerConnectedRef.current || connectingVSCodeServerRef.current) return;
+    if (connectingVSCodeServerRef.current) return;
     if (!systemRef.current?.bridge) return;
+
+    const client = getCompilerClient();
+    const desiredSlug = client?.slug || workspaceId || 'default';
+
+    if (vscodeServerConnectedRef.current && vscodeServerSlugRef.current === desiredSlug) {
+      return;
+    }
 
     connectingVSCodeServerRef.current = true;
     setVscodeServerState('connecting');
 
     try {
-      const client = getCompilerClient();
       if (!client?.pc || client.pc.connectionState !== 'connected') {
         console.warn('[useExtensions] connectVSCodeServer: WebRTC not connected yet');
         return;
       }
 
-      // Use the pre-created DataChannel for the VS Code Server Manager
-      // (created in SDP alongside ext-host to avoid DCEP issues)
-      const channel = client.createVSCodeServerChannel();
+      if (!vscodeServerConnectedRef.current) {
+        // Use the pre-created DataChannel for the VS Code Server Manager
+        // (created in SDP alongside ext-host to avoid DCEP issues)
+        const channel = client.createVSCodeServerChannel();
 
-      console.log('[useExtensions] connectVSCodeServer: DataChannel obtained, label:', channel.label);
+        console.log('[useExtensions] connectVSCodeServer: DataChannel obtained, label:', channel.label);
 
-      await systemRef.current.bridge.connectVSCodeServer(channel);
+        await systemRef.current.bridge.connectVSCodeServer(channel);
+      } else {
+        console.log('[useExtensions] connectVSCodeServer: switching server workspace to slug:', desiredSlug);
+      }
 
       // Start the VS Code Server for this workspace
-      const slug = client.slug || workspaceId || 'default';
-      console.log('[useExtensions] connectVSCodeServer: starting server for slug:', slug);
-      const serverInfo = await systemRef.current.bridge.startVSCodeServer(slug);
+      console.log('[useExtensions] connectVSCodeServer: starting server for slug:', desiredSlug);
+      const serverInfo = await systemRef.current.bridge.startVSCodeServer(desiredSlug);
       console.log('[useExtensions] ✓ VS Code Server started:', serverInfo);
       // Track the workspace directory from the server response
       if (serverInfo?.workspaceDir) {
         setVscodeServerWorkspaceDir(serverInfo.workspaceDir);
       }
       vscodeServerConnectedRef.current = true;
+      vscodeServerSlugRef.current = desiredSlug;
       setVscodeServerState('running');
 
       // ── Hydrate Redux with server-side extensions ──────────────
@@ -768,7 +781,7 @@ export function useExtensions({ editor = null, workspaceId = 'default' } = {}) {
     } finally {
       connectingVSCodeServerRef.current = false;
     }
-  }, [dispatch, store]);
+  }, [workspaceId, dispatch, store]);
 
   /**
    * Install any pending-remote Node-only extensions into the VS Code Server.
@@ -824,6 +837,35 @@ export function useExtensions({ editor = null, workspaceId = 'default' } = {}) {
       console.log('[useExtensions] _installPendingExtensionsOnServer: no pending extensions found');
     }
   }, [dispatch]);
+
+  // ─── Workspace switch handling for VS Code Server ─────────────
+  // This hook can stay mounted while slug changes. Ensure the remote
+  // VS Code server follows the new slug so indexing/providers map to
+  // the active workspace.
+  useEffect(() => {
+    if (lastWorkspaceIdRef.current === workspaceId) return;
+
+    console.log(`[useExtensions] Workspace changed: ${lastWorkspaceIdRef.current} -> ${workspaceId}`);
+    lastWorkspaceIdRef.current = workspaceId;
+
+    const client = getCompilerClient();
+    if (client) {
+      client.setSlug(workspaceId);
+    }
+
+    vscodeServerConnectedRef.current = false;
+    connectingVSCodeServerRef.current = false;
+    vscodeServerSlugRef.current = null;
+    setVscodeServerWorkspaceDir(null);
+    setTreeDataMap({});
+    setVscodeServerState('disconnected');
+
+    if (systemRef.current?.bridge) {
+      connectVSCodeServer().catch((err) => {
+        console.warn('[useExtensions] Workspace switch VS Code Server reconnect failed:', err?.message || err);
+      });
+    }
+  }, [workspaceId, connectVSCodeServer]);
 
   // ─── Restore persisted extensions from IndexedDB ─────────────
   const restorePersistedExtensions = useCallback(async () => {
@@ -1012,6 +1054,7 @@ export function useExtensions({ editor = null, workspaceId = 'default' } = {}) {
       disposedRef.current = true;
       vscodeServerConnectedRef.current = false;
       connectingVSCodeServerRef.current = false;
+      vscodeServerSlugRef.current = null;
       clearInterval(retryInterval);
       if (typeof window !== 'undefined') {
         window.removeEventListener('synthi:webrtc-connected', handleWebRTCConnect);

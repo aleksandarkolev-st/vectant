@@ -1539,6 +1539,31 @@ function wrapExtensionsGetExtension(vscode) {
 
   // Build synthetic git API lazily (once)
   let _syntheticGitExt = undefined; // undefined = not built yet
+
+  function _createEmitter() {
+    const listeners = new Set();
+    return {
+      event(listener) {
+        if (typeof listener === 'function') {
+          listeners.add(listener);
+        }
+        return {
+          dispose() {
+            try { listeners.delete(listener); } catch (_) {}
+          },
+        };
+      },
+      fire(value) {
+        for (const listener of Array.from(listeners)) {
+          try { listener(value); } catch (_) {}
+        }
+      },
+      size() {
+        return listeners.size;
+      },
+    };
+  }
+
   function _getSyntheticGitExtension() {
     if (_syntheticGitExt !== undefined) return _syntheticGitExt;
 
@@ -1584,6 +1609,12 @@ function wrapExtensionsGetExtension(vscode) {
       const rootUri = vscode.Uri ? vscode.Uri.file(gitRoot) : { scheme: 'file', path: gitRoot, fsPath: gitRoot, toString() { return `file://${gitRoot}`; } };
 
       // Minimal RepositoryState — enough for GitHub Actions extension
+      const repoStateChangeEmitter = _createEmitter();
+      const gitStateChangeEmitter = _createEmitter();
+      const openRepoEmitter = _createEmitter();
+      const closeRepoEmitter = _createEmitter();
+      const publishEmitter = _createEmitter();
+
       const repoState = {
         HEAD: { name: branchName, type: 0 /* RefType.Head */, commit: undefined, ahead: 0, behind: 0 },
         remotes: [{ name: 'origin', fetchUrl: remoteUrl, pushUrl: remoteUrl, isReadOnly: false }],
@@ -1592,14 +1623,14 @@ function wrapExtensionsGetExtension(vscode) {
         mergeChanges: [],
         indexChanges: [],
         workingTreeChanges: [],
-        onDidChange: (listener) => ({ dispose() {} }), // no-op event
+        onDidChange: repoStateChangeEmitter.event,
       };
 
       const repo = {
         rootUri,
         inputBox: { value: '' },
         state: repoState,
-        ui: { selected: true, onDidChange: (l) => ({ dispose() {} }) },
+        ui: { selected: true, onDidChange: repoStateChangeEmitter.event },
         status: () => Promise.resolve(),
         getConfigs: () => Promise.resolve([]),
         getConfig: (k) => Promise.resolve(''),
@@ -1623,10 +1654,10 @@ function wrapExtensionsGetExtension(vscode) {
 
       const gitApi = {
         state: 'initialized',
-        onDidChangeState: (listener) => ({ dispose() {} }),
-        onDidPublish: (listener) => ({ dispose() {} }),
-        onDidOpenRepository: (listener) => ({ dispose() {} }),
-        onDidCloseRepository: (listener) => ({ dispose() {} }),
+        onDidChangeState: gitStateChangeEmitter.event,
+        onDidPublish: publishEmitter.event,
+        onDidOpenRepository: openRepoEmitter.event,
+        onDidCloseRepository: closeRepoEmitter.event,
         git: { path: 'git' },
         repositories: [repo],
         toGitUri: (uri, ref) => uri,
@@ -1661,6 +1692,22 @@ function wrapExtensionsGetExtension(vscode) {
         },
         activate: () => Promise.resolve(_syntheticGitExt.exports),
       };
+
+      // Emit initial lifecycle events after activation tick so consumers
+      // waiting on repository discovery/state changes can hydrate models.
+      const emitInitialEvents = () => {
+        try {
+          gitStateChangeEmitter.fire('initialized');
+          openRepoEmitter.fire(repo);
+          repoStateChangeEmitter.fire(undefined);
+          publishEmitter.fire(undefined);
+          log(`Synthetic git: emitted initial events (openRepo listeners=${openRepoEmitter.size()}, state listeners=${gitStateChangeEmitter.size()})`);
+        } catch (_) {}
+      };
+
+      setTimeout(emitInitialEvents, 0);
+      setTimeout(emitInitialEvents, 300);
+      setTimeout(emitInitialEvents, 1200);
 
       log(`Synthetic git extension built: remote=${remoteUrl} branch=${branchName} root=${gitRoot}`);
       return _syntheticGitExt;
