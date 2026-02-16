@@ -271,6 +271,36 @@ export async function initializeExtensionSystem(options) {
         onContribution?.('providerList', payload);
         break;
       }
+      case 'authSessionRequest':
+        onContribution?.('authSessionRequest', payload);
+        break;
+      case 'extensionMessage':
+        onContribution?.('extensionMessage', payload);
+        break;
+      case 'showQuickPick':
+        onContribution?.('showQuickPick', payload);
+        break;
+      case 'showInputBox':
+        onContribution?.('showInputBox', payload);
+        break;
+      case 'setContext':
+        onContribution?.('setContext', payload);
+        break;
+      case 'clipboardWrite':
+        onContribution?.('clipboardWrite', payload);
+        break;
+      case 'extensionProgress':
+        onContribution?.('extensionProgress', payload);
+        break;
+      case 'authProviderRegistered':
+        onContribution?.('authProviderRegistered', payload);
+        break;
+      case 'authSessionChanged':
+        onContribution?.('authSessionChanged', payload);
+        break;
+      case 'showFileDialog':
+        onContribution?.('showFileDialog', payload);
+        break;
       default:
         onContribution?.(type, payload);
     }
