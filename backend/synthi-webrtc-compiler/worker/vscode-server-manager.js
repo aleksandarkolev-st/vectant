@@ -288,6 +288,21 @@ function _resolveGitWorkspaceRoot(workspaceDir) {
   return workspaceDir;
 }
 
+function _isGitWorkspace(workspaceDir) {
+  const inputDir = String(workspaceDir || '').trim();
+  if (!inputDir) return false;
+  try {
+    const output = execFileSync('git', ['-C', inputDir, 'rev-parse', '--is-inside-work-tree'], {
+      timeout: 2000,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      encoding: 'utf8',
+    }).trim().toLowerCase();
+    return output === 'true';
+  } catch (_) {
+    return false;
+  }
+}
+
 // ============================================================================
 // Prevent EPIPE from crashing the process
 // ============================================================================
@@ -6014,6 +6029,9 @@ rl.on('line', async (line) => {
         sendResponse(id, {
           success: true,
           workspace: currentSlug,
+          workspaceDir: currentWorkspaceDir,
+          gitWorkspace: _isGitWorkspace(currentWorkspaceDir),
+          gitRoot: _resolveGitWorkspaceRoot(currentWorkspaceDir),
           sessions,
           pendingFlows,
           uriHandlers,
