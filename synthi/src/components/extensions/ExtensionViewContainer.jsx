@@ -486,52 +486,14 @@ export default function ExtensionViewContainer({
               </div>
             )}
             {(() => {
-              // Phase 1: when-clause filtering — only hide views we're CERTAIN
-              // should be hidden (result === false).  Unknown keys (null) keep
-              // the view visible.
-              const whenFiltered = views.filter(view => {
-                if (view.when) {
-                  const result = evaluateWhenClause(view.when, contextValues);
-                  if (result === false) return false;
-                }
-                return true;
+              // Universal when-clause filtering: a view with a `when` clause
+              // is shown only when the clause evaluates to true.  Unknown
+              // context keys (null) → hidden, matching native VS Code
+              // behavior.  Views without a `when` clause always show.
+              const displayViews = views.filter(view => {
+                if (!view.when) return true;
+                return evaluateWhenClause(view.when, contextValues) === true;
               });
-
-              // Phase 2: hide empty-view placeholders when sibling DATA views
-              // are present in the filtered list AND have tree data.
-              const postFiltered = whenFiltered.filter(view => {
-                if (view.id.includes('empty-view') || view.id.includes('empty_view')) {
-                  const siblingsHaveData = whenFiltered.some(
-                    v => v.id !== view.id
-                      && !v.id.includes('empty-view')
-                      && !v.id.includes('empty_view')
-                      && treeDataMap[v.id]?.length > 0
-                  );
-                  if (siblingsHaveData) return false;
-                }
-                return true;
-              });
-
-              // Safety net: if when-clause filtering removed all views, fall
-              // back to showing views ONLY if the extension actually has tree
-              // data registered (= the extension is active). Otherwise, showing
-              // all views from an unactivated extension floods the panel with
-              // contradictory welcome messages.  A blank panel is preferable.
-              const anyTreeData = views.some(v => treeDataMap[v.id]?.length > 0);
-              const displayViews = postFiltered.length > 0
-                ? postFiltered
-                : anyTreeData ? views : [];
-
-              if (postFiltered.length === 0 && views.length > 0) {
-                console.warn(
-                  `[ExtensionViewContainer] All ${views.length} view(s) filtered out for "${containerId}". ` +
-                  (anyTreeData
-                    ? 'Falling back to showing all views (extension has tree data).'
-                    : 'Extension has no tree data — suppressing empty views.'),
-                  'contextValues:', contextValues,
-                  'views:', views.map(v => ({ id: v.id, when: v.when }))
-                );
-              }
 
               return displayViews;
             })()
