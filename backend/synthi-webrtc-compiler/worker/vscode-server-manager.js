@@ -1814,6 +1814,7 @@ async function _triggerExtensionHostStartup(port, token) {
       let workspaceInitSucceeded = false;
       let workspaceInitInFlight = false;
       let lastActivationNudgeAt = 0;
+      let lastDirectActivateAt = 0;
       const pendingOutgoingRpc = new Map();
 
       // Helper: send init data + start KeepAlive loop.
@@ -2096,6 +2097,7 @@ async function _triggerExtensionHostStartup(port, token) {
               startExtensionHostSucceeded = true;
               process.stderr.write(`[vscode-server-manager] $startExtensionHost accepted on discovered rpcId=${rpcId}\n`);
               setTimeout(() => _sendActivateByEvent('*', 0, rpcId), 200);
+              setTimeout(() => _sendDirectActivateForInitExtensions('post-start', rpcId), 500);
             },
             onError: (reason) => {
               startRpcInFlight = false;
@@ -2122,6 +2124,7 @@ async function _triggerExtensionHostStartup(port, token) {
             startExtensionHostSucceeded = true;
             process.stderr.write(`[vscode-server-manager] $startExtensionHost accepted on rpcId=${rpcId}\n`);
             setTimeout(() => _sendActivateByEvent('*', 0, rpcId), 200);
+            setTimeout(() => _sendDirectActivateForInitExtensions('post-start', rpcId), 500);
           },
           onError: (reason) => {
             startRpcInFlight = false;
@@ -2158,6 +2161,7 @@ async function _triggerExtensionHostStartup(port, token) {
         if (!hasAnyProviderSignals) {
           process.stderr.write(`[vscode-server-manager] Activation nudge (${reason}): no providers observed yet, re-sending $activateByEvent('*')\n`);
           _sendActivateByEvent('*', 0, rpcId);
+          _sendDirectActivateForInitExtensions(`nudge:${reason}`, rpcId);
         }
       }
 
@@ -2170,6 +2174,44 @@ async function _triggerExtensionHostStartup(port, token) {
         _sendEHRpcRequest(rpcIdOverride || discoveredExtHostExtensionServiceRpcId || EXTHOST_EXTENSION_SERVICE_RPC_ID, '$activateByEvent', [event, kind || 0], {
           ackIsSuccess: true,
         });
+      }
+
+      function _sendActivateById(extensionId, rpcIdOverride) {
+        if (!extensionId) return;
+        const normalizedId = typeof extensionId === 'string'
+          ? extensionId.toLowerCase()
+          : String(extensionId.value || '').toLowerCase();
+        if (!normalizedId) return;
+
+        const extensionIdentifier = { value: normalizedId, _lower: normalizedId };
+        const reason = {
+          startup: true,
+          extensionId: extensionIdentifier,
+          activationEvent: '*',
+        };
+
+        _sendEHRpcRequest(
+          rpcIdOverride || discoveredExtHostExtensionServiceRpcId || EXTHOST_EXTENSION_SERVICE_RPC_ID,
+          '$activate',
+          [extensionIdentifier, reason],
+          { ackIsSuccess: true }
+        );
+      }
+
+      function _sendDirectActivateForInitExtensions(reason, rpcIdOverride) {
+        const now = Date.now();
+        if (now - lastDirectActivateAt < 8000) return;
+        lastDirectActivateAt = now;
+
+        if (!Array.isArray(lastInitMyExtensions) || lastInitMyExtensions.length === 0) {
+          return;
+        }
+
+        process.stderr.write(`[vscode-server-manager] Direct activation fallback (${reason}): activating ${lastInitMyExtensions.length} extension(s) by id\n`);
+        for (const ext of lastInitMyExtensions) {
+          const extId = typeof ext === 'string' ? ext : ext?.value;
+          _sendActivateById(extId, rpcIdOverride);
+        }
       }
 
       function _discoverExtHostExtensionServiceRpcId() {
