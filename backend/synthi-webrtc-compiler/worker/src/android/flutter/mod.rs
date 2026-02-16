@@ -7,6 +7,7 @@
 
 mod android_scaffold;
 pub mod build;
+pub mod const_fixer;
 pub mod detection;
 mod diagnostics;
 mod flutter_runner;
@@ -22,4 +23,5 @@ pub use build::{
     build_flutter_apk, clean_flutter, BuildVariant, FlutterBuildConfig, FlutterBuildResult,
 };
 pub use detection::{detect_flutter_project, FlutterProjectInfo};
+pub use const_fixer::fix_const_errors;
 pub use sdk_health::check_flutter_sdk;

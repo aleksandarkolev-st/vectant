@@ -1,6 +1,6 @@
 // src/app/Editor.jsx
 'use client';
-import { useCallback, useEffect, useState, useRef } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useState, useRef } from 'react';
 import Editor, { DiffEditor, loader } from '@monaco-editor/react';
 import { getMonacoLanguage } from '@/utils/languageMapper';
 import dynamic from 'next/dynamic';
@@ -278,6 +278,7 @@ const EditorPanel = ({
 
     // Animated tab indicator state - simple underline that slides
     const [tabIndicator, setTabIndicator] = useState({ left: 0, width: 0, visible: false });
+    const [hoveredTabPath, setHoveredTabPath] = useState(null);
     const tabRefs = useRef({});
 
     // Precompute hover-card style so JSX stays clean and well-formed
@@ -2984,45 +2985,46 @@ const EditorPanel = ({
     } = useCustomScrollbar([openFiles]);
 
     // --- Animated Tab Indicator Logic ---
-    useEffect(() => {
-        if (!activeFile || !tabsContainerRef.current) {
-            setTabIndicator(prev => ({ ...prev, visible: false }));
+    // Use useLayoutEffect for synchronous DOM measurement before paint (no flicker)
+    const updateIndicatorRef = useRef(null);
+    updateIndicatorRef.current = () => {
+        const container = tabsContainerRef.current;
+        const activePath = activeFile?.path || null;
+        const targetPath = hoveredTabPath && hoveredTabPath !== activePath ? hoveredTabPath : activePath;
+        if (!targetPath || !container) {
+            setTabIndicator(prev => prev.visible ? { ...prev, visible: false } : prev);
             return;
         }
+        const targetTabEl = tabRefs.current[targetPath] || tabRefs.current[activePath];
+        if (targetTabEl) {
+            const containerRect = container.getBoundingClientRect();
+            const tabRect = targetTabEl.getBoundingClientRect();
+            const newLeft = tabRect.left - containerRect.left + container.scrollLeft;
+            const newWidth = tabRect.width;
+            setTabIndicator(prev => {
+                if (prev.left === newLeft && prev.width === newWidth && prev.visible) return prev;
+                return { left: newLeft, width: newWidth, visible: true };
+            });
+        }
+    };
 
-        const updateIndicator = () => {
-            const activeTabEl = tabRefs.current[activeFile.path];
-            const container = tabsContainerRef.current;
-            
-            if (activeTabEl && container) {
-                const containerRect = container.getBoundingClientRect();
-                const tabRect = activeTabEl.getBoundingClientRect();
-                
-                setTabIndicator({
-                    left: tabRect.left - containerRect.left + container.scrollLeft,
-                    width: tabRect.width,
-                    visible: true
-                });
-            }
-        };
+    useLayoutEffect(() => {
+        updateIndicatorRef.current();
+    }, [activeFile, openFiles, hoveredTabPath]);
 
-        // Small delay to ensure DOM is ready after tab switch
-        const timeoutId = setTimeout(updateIndicator, 10);
-
-        // Also update on scroll
+    // Scroll & resize listeners for the tab indicator (stable, set up once)
+    useEffect(() => {
         const container = tabsContainerRef.current;
-        container?.addEventListener('scroll', updateIndicator);
-        
-        // Update on resize
-        const resizeObserver = new ResizeObserver(updateIndicator);
-        if (container) resizeObserver.observe(container);
-
+        if (!container) return;
+        const onScroll = () => updateIndicatorRef.current();
+        container.addEventListener('scroll', onScroll, { passive: true });
+        const resizeObserver = new ResizeObserver(() => updateIndicatorRef.current());
+        resizeObserver.observe(container);
         return () => {
-            clearTimeout(timeoutId);
-            container?.removeEventListener('scroll', updateIndicator);
+            container.removeEventListener('scroll', onScroll);
             resizeObserver.disconnect();
         };
-    }, [activeFile, openFiles]);
+    }, []);
 
     // --- Render ---
 
@@ -3051,11 +3053,10 @@ const EditorPanel = ({
                                                 width: tabIndicator.width,
                                                 opacity: tabIndicator.visible ? 1 : 0,
                                                 background: 'linear-gradient(90deg, #3a8574, #4aba9a, #3a8574)',
-                                                backgroundSize: '200% 100%',
-                                                animation: 'tab-underline-shimmer 2s ease-in-out infinite',
-                                                boxShadow: '0 0 10px rgba(58, 133, 116, 0.6), 0 0 3px rgba(74, 186, 154, 0.9)',
-                                                transition: 'left 0.25s cubic-bezier(0.4, 0, 0.2, 1), width 0.25s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.15s ease',
+                                                boxShadow: '0 0 8px rgba(58, 133, 116, 0.5)',
+                                                transition: 'left 0.15s cubic-bezier(0.4, 0, 0.2, 1), width 0.15s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.1s ease',
                                                 borderRadius: '2px 2px 0 0',
+                                                willChange: 'left, width',
                                             }}
                                         />
                                         {openFiles && openFiles.length > 0 ? openFiles.map((file, idx) => {
@@ -3093,6 +3094,10 @@ const EditorPanel = ({
                                                         }
                                                     }}
                                                     onClick={() => dispatch(selectFileThunk(file))}
+                                                    onMouseEnter={() => setHoveredTabPath(file.path)}
+                                                    onMouseLeave={() => {
+                                                        setHoveredTabPath(prev => (prev === file.path ? null : prev));
+                                                    }}
                                                     onContextMenu={(e) => {
                                                         e.preventDefault();
                                                         setTabContext({ visible: true, x: e.clientX, y: e.clientY, file, index: idx });
@@ -3474,7 +3479,7 @@ const EditorPanel = ({
                     <>
                         <ResizableHandle className="bg-[#1a1a1e] h-px hover:bg-[#327464]" />
                         <ResizablePanel defaultSize={30} minSize={15}>
-                            <TerminalManagerDyn visible={true} onCloseAll={onToggleTerminal} />
+                            <TerminalManagerDyn visible={true} onCloseAll={onToggleTerminal} workspaceSlug={slug} />
                         </ResizablePanel>
                     </>
                 )}

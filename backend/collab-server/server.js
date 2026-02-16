@@ -56,6 +56,8 @@ const fs = require('fs').promises;
 const path = require('path');
 const crypto = require('crypto');
 const gcsSync = require('./gcsSync');
+const { createTerminalWSS, activeSessions: terminalSessions, broadcastToAll: terminalBroadcast } = require('./terminalService');
+const proxyService = require('./proxyService');
 let fetchFunc = null;
 if (typeof fetch === 'function') {
   fetchFunc = fetch;
@@ -229,9 +231,57 @@ class ValidatingPersistence {
       
       flushTimer = setTimeout(async () => {
         try {
-          const content = targetText.toString();
+          let content = targetText.toString();
           const repoPath = path.join(__dirname, 'repos', slug);
           const fullPath = path.join(repoPath, filePath);
+          
+          // ── CRDT Duplicate Detection ──────────────────────────────────
+          // When both server (bindState) and client independently insert
+          // the same content into an empty Y.Text, the CRDT merge produces
+          // duplicated text. Detect this before writing to disk.
+          const cached = fileHashCache.get(docName);
+          if (content.length > 0 && content.length % 2 === 0) {
+            const half = content.length / 2;
+            const firstHalf = content.substring(0, half);
+            const secondHalf = content.substring(half);
+            if (firstHalf === secondHalf) {
+              // Content is exactly doubled — check against disk to confirm
+              // this is a CRDT merge artifact and not intentional.
+              try {
+                const diskContent = await getActualFileContent(slug, filePath);
+                if (diskContent !== null && (firstHalf === diskContent || secondHalf === diskContent)) {
+                  console.warn(`[Collab AutoFlush] CRDT duplicate detected for ${filePath} (${content.length} chars → ${firstHalf.length}). Fixing Y.Doc...`);
+                  ydoc.transact(() => {
+                    targetText.delete(0, targetText.length);
+                    targetText.insert(0, diskContent);
+                  }, 'autoflush-dedup');
+                  // Observer will re-fire with corrected content; skip this write
+                  return;
+                }
+              } catch (_) { /* ignore read errors, proceed with write */ }
+            }
+          }
+          // Also detect content that is N× repeated (from recursive doubling
+          // across multiple reconnect cycles: 2× → 4× → 8× …)
+          if (content.length > 0 && cached) {
+            try {
+              const diskContent = await getActualFileContent(slug, filePath);
+              if (diskContent && diskContent.length > 0
+                  && content.length > diskContent.length
+                  && content.length % diskContent.length === 0) {
+                const repeats = content.length / diskContent.length;
+                if (repeats >= 2 && content === diskContent.repeat(repeats)) {
+                  console.warn(`[Collab AutoFlush] CRDT ${repeats}× duplicate detected for ${filePath}. Fixing Y.Doc...`);
+                  ydoc.transact(() => {
+                    targetText.delete(0, targetText.length);
+                    targetText.insert(0, diskContent);
+                  }, 'autoflush-dedup');
+                  return;
+                }
+              }
+            } catch (_) {}
+          }
+          // ─────────────────────────────────────────────────────────────────
           
           // Ensure directory exists
           const dirPath = path.dirname(fullPath);
@@ -350,7 +400,7 @@ class ValidatingPersistence {
           ydoc.transact(() => {
             text.delete(0, text.length);
             text.insert(0, actualContent);
-          });
+          }, 'bindState-reset');
           break;
         }
       }
@@ -360,6 +410,37 @@ class ValidatingPersistence {
     } else {
       fileHashCache.set(docName, { hash: actualHash, timestamp: Date.now() });
     }
+
+    // ── Post-reset duplicate guard ─────────────────────────────────────
+    // Because y-websocket fires bindState *without* awaiting it, a client
+    // may have already synced its own content into the Y.Doc while we were
+    // performing async I/O above.  If the Y.Doc content is now the file
+    // content repeated (CRDT merge of two independent inserts), fix it.
+    const postContent = getYDocContent(ydoc);
+    if (postContent.length > 0 && actualContent && actualContent.length > 0
+        && postContent.length > actualContent.length
+        && postContent !== actualContent) {
+      // Check if it's an exact N× repetition of the correct content
+      if (postContent.length % actualContent.length === 0) {
+        const repeats = postContent.length / actualContent.length;
+        if (repeats >= 2 && postContent === actualContent.repeat(repeats)) {
+          console.warn(`[Collab] CRDT duplicate detected after bindState for ${filePath} (${repeats}× repeat). Fixing...`);
+          const textTypes2 = ['monaco', 'content', 'text', 'codemirror'];
+          for (const name of textTypes2) {
+            const text = ydoc.getText(name);
+            if (text && text.length > 0) {
+              ydoc.transact(() => {
+                text.delete(0, text.length);
+                text.insert(0, actualContent);
+              }, 'bindState-dedup');
+              break;
+            }
+          }
+          fileHashCache.set(docName, { hash: actualHash, timestamp: Date.now() });
+        }
+      }
+    }
+    // ───────────────────────────────────────────────────────────────────
     
     // Set up auto-flush so all future Y.js changes are written to disk
     // This is critical for Container-First architecture
@@ -394,6 +475,17 @@ class ValidatingPersistence {
 
 // Wrap the base persistence with validation
 const persistence = new ValidatingPersistence(basePersistence);
+
+// CRITICAL: y-websocket uses a module-level persistence variable, NOT the
+// options passed to setupWSConnection. We must call setPersistence() so
+// that getYDoc() → bindState() → auto-flush actually fires.
+try {
+  const { setPersistence } = require('y-websocket/bin/utils');
+  setPersistence(persistence);
+  console.log('[Collab] Persistence registered via setPersistence()');
+} catch (e) {
+  console.warn('[Collab] Could not call setPersistence:', e.message);
+}
 
 const gitService = require('./gitService');
 const workspaceManager = require('./workspaceManager');
@@ -430,7 +522,22 @@ const server = http.createServer(async (req, res) => {
     res.end();
     return;
   }
-  
+
+  // ========================================================================
+  // REVERSE PROXY — /port/<N>/... → http://127.0.0.1:<N>/...
+  // Enables in-IDE preview of running dev servers (Next.js, Vite, etc.)
+  // ========================================================================
+  if (req.url.startsWith('/port/')) {
+    proxyService.proxyHttpRequest(req, res);
+    return;
+  }
+
+  // GET /ports — list active dev-server ports
+  if (req.url === '/ports' && req.method === 'GET') {
+    proxyService.handlePortsStatus(req, res);
+    return;
+  }
+
   // Debug endpoint to check collab server state
   if (req.url === '/debug/status' && req.method === 'GET') {
     const status = {
@@ -944,11 +1051,30 @@ wss.on('connection', (ws, req) => {
   });
 });
 
+// ─── Terminal PTY WebSocket Server ──────────────────────────────────────────
+const terminalWSS = createTerminalWSS();
+
 server.on('upgrade', (request, socket, head) => {
-  const roomName = request.url ? request.url.slice(1).split('?')[0] : 'unknown';
+  const pathname = (request.url || '').split('?')[0];
+
+  // Route /terminal upgrades to the PTY terminal service
+  if (pathname === '/terminal') {
+    console.log(`[Terminal] Upgrade request for PTY terminal`);
+    terminalWSS.handleUpgrade(request, socket, head);
+    return;
+  }
+
+  // Route /port/<N>/... WS upgrades to the reverse proxy (HMR, hot-reload)
+  if (pathname.startsWith('/port/')) {
+    const handled = proxyService.proxyWsUpgrade(request, socket, head);
+    if (handled) return;
+    // If the port isn't active, fall through (socket already destroyed by proxyWsUpgrade)
+    return;
+  }
+
+  // Everything else → Yjs room (collab)
+  const roomName = pathname.slice(1) || 'unknown';
   console.log(`[Collab DEBUG] Upgrade request for room: ${roomName}`);
-  
-  // We accept all WebSocket connections at any path (room name encoded in path)
   wss.handleUpgrade(request, socket, head, (ws) => {
     wss.emit('connection', ws, request);
   });
@@ -957,4 +1083,12 @@ server.on('upgrade', (request, socket, head) => {
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`Collaboration server (y-websocket) listening on port ${PORT}`);
   console.log(`[Collab DEBUG] Server started with persistence: ${LeveldbPersistence ? 'LevelDB' : 'In-Memory'}`);
+
+  // Start the port scanner so /port/<N> proxy routes work
+  proxyService.startScanner(Number(PORT));
+
+  // Notify terminal clients when dev-server ports open/close
+  proxyService.onPortsChanged((ports) => {
+    terminalBroadcast({ type: 'ports', ports });
+  });
 });

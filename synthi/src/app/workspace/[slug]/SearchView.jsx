@@ -4,9 +4,36 @@ import { useEffect, useRef, useState } from "react";
 import { useAppDispatch, useAppSelector } from "@/redux/hooks";
 import { selectFileThunk } from "@/redux/workspaceSlice";
 import { api } from "@/services/api";
-import { PanelLeftClose, PanelRightClose, ChevronDown, ChevronRight } from "lucide-react";
+import { PanelLeftClose, PanelRightClose, ChevronDown, ChevronRight, Search } from "lucide-react";
 import { selectTreeOnRight } from "@/redux/uiSlice";
 import { perfMeasureToConsole } from "@/services/perfMarkers";
+
+const Section = ({ children, className = "" }) => (
+  <div className={`mx-2 mb-2 rounded-lg bg-white/[0.02] border border-white/[0.04] ${className}`}>
+    {children}
+  </div>
+);
+
+const SectionHead = ({ label, count, actions }) => (
+  <div className="flex items-center gap-2 px-3 py-2">
+    <span className="text-[11px] font-medium text-[#d4d4d8]">{label}</span>
+    {count != null && count > 0 && (
+      <span className="text-[10px] text-[#71717a] bg-white/[0.04] rounded-full px-1.5 py-0.5 min-w-[18px] text-center font-medium">{count}</span>
+    )}
+    {actions && <div className="ml-auto flex items-center gap-1">{actions}</div>}
+  </div>
+);
+
+const IconBtn = ({ onClick, disabled, title, children, className = "" }) => (
+  <button
+    onClick={onClick}
+    disabled={disabled}
+    title={title}
+    className={`p-1.5 rounded-lg transition-all disabled:opacity-40 ${className}`}
+  >
+    {children}
+  </button>
+);
 
 export default function SearchView({ slug, onToggleOrientation }) {
   const dispatch = useAppDispatch();
@@ -46,12 +73,8 @@ export default function SearchView({ slug, onToggleOrientation }) {
 
           if (controller.signal.aborted) return;
 
-          // Auto-expand first few files for convenience
-          const nextExpanded = new Set();
-          for (const r of nextResults.slice(0, 3)) nextExpanded.add(r.file.path);
-
           setResults(nextResults);
-          setExpanded(nextExpanded);
+          setExpanded(new Set());
           if (t0) perfMeasureToConsole('search_response_time', t0, { status: resp?.status });
         } catch (e) {
           if (!controller.signal.aborted) {
@@ -80,90 +103,128 @@ export default function SearchView({ slug, onToggleOrientation }) {
     dispatch(selectFileThunk(file));
   };
 
+  const escapeRegExp = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+  const renderHighlightedPreview = (preview, term) => {
+    if (!term || !preview) return preview;
+    const safe = escapeRegExp(term.trim());
+    if (!safe) return preview;
+    const regex = new RegExp(`(${safe})`, "gi");
+    const parts = preview.split(regex);
+    return parts.map((part, index) => {
+      if (part.toLowerCase() === term.toLowerCase()) {
+        return (
+          <mark
+            key={`hl-${index}`}
+            className="bg-teal-500/20 text-teal-200 rounded-sm px-0.5"
+          >
+            {part}
+          </mark>
+        );
+      }
+      return <span key={`txt-${index}`}>{part}</span>;
+    });
+  };
+
   return (
-    <div className="w-full h-full select-none bg-[#232323] text-gray-100 flex flex-col border-r border-[#343434]">
-      {/* Header */}
-      <div
-        className={`px-3 py-2 flex items-center ${isRightSide ? "flex-row-reverse" : ""} justify-between border-b border-[#343434] sticky top-0 bg-[#1e1e1e] z-10`}
-      >
-        <div className="flex items-center gap-2">
-          <span className="text-sm font-semibold tracking-wide uppercase text-gray-300">Search</span>
-        </div>
-        <button
-          onClick={onToggleOrientation}
-          className={`p-1.5 rounded border border-[#3a3a3a] bg-[#262626] hover:bg-[#2f2f2f] transition ${isRightSide ? "mr-auto" : "ml-auto"}`}
-          title={isRightSide ? "Move to left" : "Move to right"}
-        >
-          {isRightSide ? (
-            <PanelLeftClose className="w-4 h-4 text-gray-300" />
-          ) : (
-            <PanelRightClose className="w-4 h-4 text-gray-300" />
-          )}
-        </button>
-      </div>
-
-      {/* Search box */}
-      <div className="px-3 py-2 border-b border-[#343434] bg-[#1e1e1e]">
-        <input
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          placeholder="Search in files"
-          className="w-full h-8 rounded border border-[#3a3a3a] bg-[#262626] px-2 text-sm text-gray-100 placeholder:text-gray-500 outline-none focus:border-[#4a4a4a]"
-        />
-        <div className="mt-2 text-xs text-gray-400">
-          {isSearching ? "Searching…" : query.trim() ? `${results.length} file(s) with matches` : ""}
+    <div className="flex flex-col h-full w-full overflow-hidden select-none">
+      {/* Header strip with gradient accent */}
+      <div className="flex-shrink-0">
+        <div className="h-[2px]" style={{ background: "linear-gradient(90deg, #14b8a6, #22c55e, #38bdf8, transparent)" }} />
+        <div className={`flex items-center gap-2 px-3 py-2 ${isRightSide ? "flex-row-reverse" : ""}`}>
+          <Search size={14} className="text-teal-400 flex-shrink-0" />
+          <span className="text-sm font-semibold text-[#e4e4e7]">Search</span>
+          <div className="ml-auto flex items-center gap-0.5">
+            <IconBtn
+              onClick={onToggleOrientation}
+              title={isRightSide ? "Move to left" : "Move to right"}
+              className="text-[#71717a] hover:text-[#d4d4d8] hover:bg-white/[0.06]"
+            >
+              {isRightSide ? (
+                <PanelLeftClose className="w-3.5 h-3.5" strokeWidth={1.5} />
+              ) : (
+                <PanelRightClose className="w-3.5 h-3.5" strokeWidth={1.5} />
+              )}
+            </IconBtn>
+          </div>
         </div>
       </div>
 
-      {/* Results */}
-      <div className="flex-1 overflow-y-auto">
+      {/* Scrollable content */}
+      <div className="flex-1 overflow-y-auto py-1">
+        <Section>
+          <div className="px-3 py-2">
+            <div className="relative">
+              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-[#71717a]" />
+              <input
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder="Search in files"
+                className="w-full h-8 rounded-lg border border-white/[0.06] bg-white/[0.03] pl-8 pr-2 text-[12px] text-[#e4e4e7] placeholder:text-[#52525b] outline-none focus:border-teal-500/50 transition-colors"
+              />
+            </div>
+            <div className="mt-2 text-[11px] text-[#71717a]">
+              {isSearching ? "Searching..." : query.trim() ? `${results.length} file(s) with matches` : ""}
+            </div>
+          </div>
+        </Section>
+
         {query.trim() && !isSearching && results.length === 0 && (
-          <div className="px-3 py-2 text-sm text-gray-400">No results.</div>
+          <Section>
+            <div className="px-3 py-2 text-[11px] text-[#71717a]">No results.</div>
+          </Section>
         )}
 
-        {results.map((r) => {
-          const filePath = r.file.path;
-          const isOpen = expanded.has(filePath);
+        {results.length > 0 && (
+          <Section className="pb-1">
+            <SectionHead label="Results" count={results.length} />
+            <div className="pb-1">
+              {results.map((r) => {
+                const filePath = r.file.path;
+                const isOpen = expanded.has(filePath);
 
-          return (
-            <div key={filePath} className="border-b border-[#2b2b2b]">
-              <button
-                type="button"
-                onClick={() => toggleExpanded(filePath)}
-                className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-[#2a2d2e]"
-                title={filePath}
-              >
-                {isOpen ? (
-                  <ChevronDown className="w-4 h-4 text-gray-400" />
-                ) : (
-                  <ChevronRight className="w-4 h-4 text-gray-400" />
-                )}
-                <div className="flex-1 min-w-0">
-                  <div className="text-sm text-gray-100 truncate">{r.file.name}</div>
-                  <div className="text-[11px] text-gray-500 truncate">{filePath}</div>
-                </div>
-                <div className="text-xs text-gray-300">{r.matchCount}</div>
-              </button>
-
-              {isOpen && (
-                <div className="pb-2">
-                  {r.matches.map((m) => (
+                return (
+                  <div key={filePath} className="border-t border-white/[0.04]">
                     <button
-                      key={`${filePath}:${m.lineNumber}`}
                       type="button"
-                      className="w-full px-8 py-1.5 text-left text-xs text-gray-200 hover:bg-[#2a2d2e]"
-                      onClick={() => openFile(r.file)}
-                      title={`Line ${m.lineNumber}`}
+                      onClick={() => toggleExpanded(filePath)}
+                      className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-white/[0.02] transition-colors"
+                      title={filePath}
                     >
-                      <span className="inline-block w-14 text-gray-500">{m.lineNumber}</span>
-                      <span className="font-mono text-gray-200">{m.preview}</span>
+                      {isOpen ? (
+                        <ChevronDown className="w-4 h-4 text-[#71717a]" />
+                      ) : (
+                        <ChevronRight className="w-4 h-4 text-[#71717a]" />
+                      )}
+                      <div className="flex-1 min-w-0">
+                        <div className="text-[12px] text-[#e4e4e7] truncate">{r.file.name}</div>
+                        <div className="text-[10px] text-[#71717a] truncate">{filePath}</div>
+                      </div>
+                      <div className="text-[10px] text-[#a1a1aa] bg-white/[0.04] rounded-full px-2 py-0.5">{r.matchCount}</div>
                     </button>
-                  ))}
-                </div>
-              )}
+
+                    {isOpen && (
+                      <div className="pb-2">
+                        {r.matches.map((m) => (
+                          <button
+                            key={`${filePath}:${m.lineNumber}`}
+                            type="button"
+                            className="w-full px-8 py-1.5 text-left text-[11px] text-[#e4e4e7] hover:bg-white/[0.02] transition-colors"
+                            onClick={() => openFile(r.file)}
+                            title={`Line ${m.lineNumber}`}
+                          >
+                            <span className="inline-block w-14 text-[#71717a]">{m.lineNumber}</span>
+                            <span className="font-mono text-[#d4d4d8]">{renderHighlightedPreview(m.preview, query)}</span>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
             </div>
-          );
-        })}
+          </Section>
+        )}
       </div>
     </div>
   );

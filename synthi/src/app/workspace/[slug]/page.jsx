@@ -44,6 +44,7 @@ import { DraggableVideoWidget } from '@/components/DraggableVideoWidget';
 import { useHMR } from '@/hooks/useHMR';
 import ErrorOverlay from '@/components/ErrorOverlay';
 import { GitStatus } from '@/components/git/GitStatus';
+import { GitSummaryPanel } from '@/components/git/GitSummaryPanel';
 import ActivityBar from '../ActivityBar.jsx';
 import SearchView from './SearchView.jsx';
 import FloatingEmulatorWindow from '@/components/emulator/FloatingEmulatorWindow';
@@ -102,7 +103,6 @@ export default function EditorPage({ params }) {
         vscodeTunnelService: extensionTunnelService,
         requestTreeRefresh,
         viewsWelcome: extensionViewsWelcome,
-        contextValues: extensionContextValues,
     } = useExtensions({ editor, workspaceId: slug });
     
     // Code Intelligence - auto-index workspace for AI context retrieval
@@ -1725,54 +1725,55 @@ export default function EditorPage({ params }) {
                     onSelect={(id) => setSidebarView(id === sidebarView ? 'explorer' : id)}
                     extensionContainers={contributedContainers}
                 />
-                <div className="flex-1 min-w-0">
-                    <ResizablePanelGroup direction="vertical">
-                        <ResizablePanel defaultSize={65} minSize={20}>
-                            {sidebarView === 'search' ? (
-                                <SearchView slug={slug} onToggleOrientation={toggleTreeOrientation} />
-                            ) : sidebarView === 'extensions' ? (
-                                <ExtensionSidebar
-                                    extensions={installedExtensions}
-                                    errors={extensionErrors}
-                                    ready={extensionsReady}
-                                    hostStatus={extensionHostStatus}
-                                    vscodeServerState={vscodeServerState}
-                                    onInstall={installExtension}
-                                    onEnable={enableExtension}
-                                    onDisable={disableExtension}
-                                    onUninstall={uninstallExtension}
-                                    onRestart={restartExtension}
-                                    onDismissError={dismissExtensionError}
-                                    onExecuteCommand={executeExtensionCommand}
-                                />
-                            ) : sidebarView.startsWith('ext:') ? (() => {
-                                const containerId = sidebarView.replace('ext:', '');
-                                const container = contributedContainers.find(c => c.id === containerId);
+                <div className="flex-1 min-w-0 overflow-hidden flex flex-col">
+                    {sidebarView === 'scm' ? (
+                        <GitStatus slug={slug} />
+                    ) : sidebarView === 'search' ? (
+                        <SearchView slug={slug} onToggleOrientation={toggleTreeOrientation} />
+                    ) : sidebarView === 'extensions' ? (
+                        <ExtensionSidebar
+                            extensions={installedExtensions}
+                            errors={extensionErrors}
+                            ready={extensionsReady}
+                            hostStatus={extensionHostStatus}
+                            vscodeServerState={vscodeServerState}
+                            onInstall={installExtension}
+                            onEnable={enableExtension}
+                            onDisable={disableExtension}
+                            onUninstall={uninstallExtension}
+                            onRestart={restartExtension}
+                            onDismissError={dismissExtensionError}
+                            onExecuteCommand={executeExtensionCommand}
+                        />
+                    ) : sidebarView.startsWith('ext:') ? (() => {
+                        const containerId = sidebarView.replace('ext:', '');
+                        const container = contributedContainers.find(c => c.id === containerId);
 
-                                return (
-                                    <ExtensionViewContainer
-                                        containerId={containerId}
-                                        container={container}
-                                        views={contributedViews[containerId] || []}
-                                        treeDataMap={extensionTreeDataMap}
-                                        webviewPanels={extensionWebviewPanels}
-                                        webviewManager={extensionWebviewManager}
-                                        extensions={installedExtensions}
-                                        onExecuteCommand={executeExtensionCommand}
-                                        onRequestTreeRefresh={requestTreeRefresh}
-                                        viewsWelcome={extensionViewsWelcome}
-                                        contextValues={extensionContextValues}
-                                    />
-                                );
-                            })() : (
+                        return (
+                            <ExtensionViewContainer
+                                containerId={containerId}
+                                container={container}
+                                views={contributedViews[containerId] || []}
+                                treeDataMap={extensionTreeDataMap}
+                                webviewPanels={extensionWebviewPanels}
+                                webviewManager={extensionWebviewManager}
+                                extensions={installedExtensions}
+                                onExecuteCommand={executeExtensionCommand}
+                                onRequestTreeRefresh={requestTreeRefresh}
+                                viewsWelcome={extensionViewsWelcome}
+                            />
+                        );
+                    })() : (
+                        <ResizablePanelGroup direction="vertical">
+                            <ResizablePanel defaultSize={65} minSize={20}>
+                                <>
+                                    <div className="flex-1 min-h-0 overflow-hidden">
+
                                 <FileTreeView onToggleOrientation={toggleTreeOrientation} />
-                            )}
-                        </ResizablePanel>
-                        <ResizableHandle />
-                        <ResizablePanel defaultSize={7} minSize={7}>
-                            <GitStatus slug={slug} />
-                        </ResizablePanel>
-                    </ResizablePanelGroup>
+                            </div>
+                            <GitSummaryPanel onOpenScm={() => setSidebarView('scm')} />
+                        </>
+                    )}
                 </div>
             </div>
         </ResizablePanel>

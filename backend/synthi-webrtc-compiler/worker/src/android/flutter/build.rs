@@ -10,8 +10,9 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
+use super::const_fixer::fix_const_errors;
 use super::detection::{detect_flutter_project, FlutterProjectInfo};
-use super::flutter_runner::{check_pub_outdated, run_flutter_build_apk, run_pub_get, run_flutter_clean};
+use super::flutter_runner::{run_flutter_build_apk, run_pub_get, run_flutter_clean};
 use super::LogCallback;
 use crate::android::routing::Diagnostic;
 
@@ -92,6 +93,31 @@ pub async fn build_flutter_apk(
         }
     }
 
+    // Pre-build: Auto-fix common Dart const expression errors.
+    // AI-generated code frequently wraps widget trees in `const` even when
+    // children contain non-constant expressions (lambdas, callbacks, etc.).
+    // Fixing this BEFORE the build avoids a full Gradle round-trip failure.
+    match fix_const_errors(&config.project_root).await {
+        Ok(fix_result) if fix_result.fixes_applied > 0 => {
+            if let Some(ref cb) = log_callback {
+                cb(format!(
+                    "[const-fixer] Auto-fixed {} const error(s) in {} file(s)",
+                    fix_result.fixes_applied, fix_result.files_fixed
+                ));
+                for detail in &fix_result.details {
+                    cb(format!("[const-fixer] {}", detail));
+                }
+            }
+        }
+        Err(e) => {
+            // Non-fatal: log and continue, the build will surface the real error.
+            if let Some(ref cb) = log_callback {
+                cb(format!("[const-fixer] Warning: auto-fix scan failed: {}", e));
+            }
+        }
+        _ => {} // No fixes needed
+    }
+
     // Clean if requested
     if config.clean_first {
         if let Some(ref cb) = log_callback {
@@ -100,29 +126,26 @@ pub async fn build_flutter_apk(
         run_flutter_clean(&config.project_root, log_callback.as_ref()).await?;
     }
 
-    // Run pub get if needed
+    // ALWAYS run pub get — never skip based on timestamp comparison.
+    // In a reconciliation-based workspace the lock file timestamp is
+    // unreliable ("zombie cache" problem). `flutter pub get` is fast
+    // when deps are already resolved, but catches stale/corrupt state.
     if !config.skip_pub_get {
-        let pub_up_to_date = check_pub_outdated(&config.project_root).await.unwrap_or(false);
-        
-        if !pub_up_to_date {
-            if let Some(ref cb) = log_callback {
-                cb("Running flutter pub get...".to_string());
-            }
-            
-            let pub_result = run_pub_get(&config.project_root, log_callback.as_ref(), Some(300)).await?;
-            
-            if !pub_result.success {
-                return Ok(FlutterBuildResult {
-                    success: false,
-                    apk_path: None,
-                    app_id: project_info.app_id.clone(),
-                    build_duration_ms: start.elapsed().as_millis() as u64,
-                    diagnostics: pub_result.diagnostics,
-                    project_info: Some(project_info),
-                });
-            }
-        } else if let Some(ref cb) = log_callback {
-            cb("Dependencies are up to date, skipping pub get".to_string());
+        if let Some(ref cb) = log_callback {
+            cb("Running flutter pub get...".to_string());
+        }
+
+        let pub_result = run_pub_get(&config.project_root, log_callback.as_ref(), Some(300)).await?;
+
+        if !pub_result.success {
+            return Ok(FlutterBuildResult {
+                success: false,
+                apk_path: None,
+                app_id: project_info.app_id.clone(),
+                build_duration_ms: start.elapsed().as_millis() as u64,
+                diagnostics: pub_result.diagnostics,
+                project_info: Some(project_info),
+            });
         }
     }
 

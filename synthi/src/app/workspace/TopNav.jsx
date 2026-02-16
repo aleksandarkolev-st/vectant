@@ -93,7 +93,7 @@ export default function TopNav({
         />
         {/* Search Results Dropdown */}
         {searchOpen && searchText && (
-          <div className="w-full mt-1 bg-[#0d0e14] border border-[#1c1d26] rounded-lg shadow-lg z-[100] max-h-60 overflow-y-auto">
+          <div className="absolute left-0 right-0 top-full mt-1 bg-[#0d0e14] border border-[#1c1d26] rounded-lg shadow-lg z-[100] max-h-60 overflow-y-auto">
             {searchResults.length > 0 ? (
               searchResults.map((file) => (
                 <div
