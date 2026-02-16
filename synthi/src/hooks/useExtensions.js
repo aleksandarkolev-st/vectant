@@ -391,6 +391,27 @@ export function useExtensions({ editor = null, workspaceId = 'default' } = {}) {
               }
               break;
             }
+            case 'authDeviceCode': {
+              const code = payload?.code;
+              if (code) {
+                lastAuthDeviceCodeRef.current = code;
+                reportDeviceCode(code, payload?.source || 'authDeviceCode');
+                toast.info(`Device code: ${code}`, {
+                  duration: 15000,
+                  action: {
+                    label: 'Copy Code',
+                    onClick: () => {
+                      try {
+                        if (navigator?.clipboard?.writeText) {
+                          navigator.clipboard.writeText(code).catch(() => {});
+                        }
+                      } catch (_) {}
+                    },
+                  },
+                });
+              }
+              break;
+            }
             case 'showQuickPick': {
               // Log quick pick for now — full UI would require a modal
               const placeholder = payload.options?.placeHolder || 'Select an option';

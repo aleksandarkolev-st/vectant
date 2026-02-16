@@ -388,6 +388,9 @@ let _autoUiScanStarted = false;
 /** @type {Map<string, object>} viewId → last known tree data */
 const preloadTreeCache = new Map();
 
+/** @type {{ key: string|null, ts: number }} dedupe repeated auth session events */
+const _lastAuthSessionRequest = { key: null, ts: 0 };
+
 /** @type {Set<string>} Tree views observed directly from EH RPC registrations */
 const rpcObservedTreeViews = new Set();
 
@@ -905,6 +908,14 @@ function _handlePreloadMessage(msg) {
       // interaction. Forward to the frontend so it can show appropriate UI.
       const { providerId, scopes, createIfNone, forceNewSession } = msg;
       process.stderr.write(`[preload-bridge] authSessionRequest: provider=${providerId} scopes=${JSON.stringify(scopes)} createIfNone=${createIfNone}\n`);
+      const dedupeKey = JSON.stringify({ providerId, scopes: scopes || [], createIfNone: !!createIfNone, forceNewSession: !!forceNewSession });
+      const now = Date.now();
+      if (_lastAuthSessionRequest.key === dedupeKey && (now - _lastAuthSessionRequest.ts) < 1500) {
+        process.stderr.write('[preload-bridge] authSessionRequest deduped\n');
+        break;
+      }
+      _lastAuthSessionRequest.key = dedupeKey;
+      _lastAuthSessionRequest.ts = now;
       sendEvent('authSessionRequest', { providerId, scopes, createIfNone, forceNewSession });
       break;
     }

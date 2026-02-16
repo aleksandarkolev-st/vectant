@@ -495,6 +495,12 @@ export class MainThreadBridge {
       this._emitRemoteContribution?.('clipboardWrite', { text });
     });
 
+    // Forward explicit auth device codes when backend can extract them
+    this.vscodeServerProxy.on('authDeviceCode', (data) => {
+      console.log(`[MainThreadBridge/vscode-server] authDeviceCode: ${data?.code || 'unknown'}`);
+      this._emitRemoteContribution?.('authDeviceCode', data);
+    });
+
     // Forward extension progress → UI
     this.vscodeServerProxy.on('extensionProgress', (data) => {
       this._emitRemoteContribution?.('extensionProgress', data);
