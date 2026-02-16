@@ -1157,6 +1157,9 @@ let _broadCommandActivationAttempted = false;
 /** @type {{ id: string|null, ts: number }} recent user-triggered bridge command context */
 const _lastBridgeCommand = { id: null, ts: 0 };
 
+/** @type {{ key: string|null, ts: number }} duplicate executeCommand suppression */
+const _lastExecuteCommandEnvelope = { key: null, ts: 0 };
+
 /** @type {Set<string>} viewTypes already logged as missing provider */
 const _missingWebviewProviderLogged = new Set();
 
@@ -2468,6 +2471,18 @@ function _handleBridgeRequest(msg) {
       // command service often doesn't find locally-registered commands and
       // delegates to the main thread (which we stub), causing a no-op loop.
       const { commandId, args: cmdArgs } = msg;
+      const envelopeKey = JSON.stringify({ commandId, args: Array.isArray(cmdArgs) ? cmdArgs : [] });
+      const now = Date.now();
+      if (
+        _lastExecuteCommandEnvelope.key === envelopeKey
+        && (now - _lastExecuteCommandEnvelope.ts) < 1200
+      ) {
+        log(`Skipping duplicate command envelope: ${commandId}`);
+        break;
+      }
+      _lastExecuteCommandEnvelope.key = envelopeKey;
+      _lastExecuteCommandEnvelope.ts = now;
+
       log(`Bridge requested command execution: ${commandId}`);
 
       // Mark recent user-triggered command context so auth wrapper can
