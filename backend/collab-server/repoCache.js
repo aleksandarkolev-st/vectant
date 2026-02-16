@@ -33,7 +33,7 @@ const gcsSync = require('./gcsSync');
 //   slug:     string,
 //   repoPath: string,        // absolute path on disk
 //   refs:     number,         // reference counter (> 0 → in use, cannot evict)
-//   pinned:   boolean,        // true → never evict (active collab session)
+//   pinCount: number,         // pin reference counter (> 0 → pinned, cannot evict)
 //   ready:    Promise<void>,  // resolves once materialisation is complete
 // }
 
@@ -150,12 +150,9 @@ const cache = new LRUCache({
   
   dispose: (entry, key) => {
     if (!entry) return;
-    // Safety: don't delete if refs > 0 or pinned.
-    // Instead of re-inserting into the LRU (which can cause recursive
-    // eviction or get silently dropped), stash in a side-map and
-    // re-insert on the next `acquire` / `get`.
-    if (entry.refs > 0 || entry.pinned) {
-      console.log(`[RepoCache] Refusing to evict in-use entry ${key} (refs=${entry.refs}, pinned=${entry.pinned})`);
+    // Safety: don't delete if refs > 0 or pinned (pinCount > 0).
+    if (entry.refs > 0 || entry.pinCount > 0) {
+      console.log(`[RepoCache] Refusing to evict in-use entry ${key} (refs=${entry.refs}, pinCount=${entry.pinCount})`);
       _safeEntries.set(key, entry);
       return;
     }
@@ -246,7 +243,7 @@ async function acquire(slug, userId) {
     userId: userId || null,
     repoPath,
     refs: 1,
-    pinned: false,
+    pinCount: 0,
     ready: readyPromise,
   };
 
@@ -279,7 +276,9 @@ function release(slug, userId) {
 
 /**
  * Pin a cache entry so its working tree is never evicted.
- * Use when a Yjs collab session is active for the workspace.
+ * Uses reference counting — each call to pin() must be balanced by
+ * a corresponding unpin().  The entry stays pinned as long as
+ * pinCount > 0.
  *
  * @param {string} slug
  * @param {string} [userId]
@@ -287,11 +286,14 @@ function release(slug, userId) {
 function pin(slug, userId) {
   const key = _cacheKey(slug, userId);
   const entry = cache.get(key) || _safeEntries.get(key);
-  if (entry) entry.pinned = true;
+  if (entry) {
+    entry.pinCount = (entry.pinCount || 0) + 1;
+  }
 }
 
 /**
- * Unpin a cache entry, allowing normal LRU eviction.
+ * Unpin a cache entry, decrementing the pin reference count.
+ * Eviction is only allowed once pinCount reaches 0.
  *
  * @param {string} slug
  * @param {string} [userId]
@@ -299,7 +301,9 @@ function pin(slug, userId) {
 function unpin(slug, userId) {
   const key = _cacheKey(slug, userId);
   const entry = cache.get(key) || _safeEntries.get(key);
-  if (entry) entry.pinned = false;
+  if (entry && entry.pinCount > 0) {
+    entry.pinCount--;
+  }
 }
 
 /**
