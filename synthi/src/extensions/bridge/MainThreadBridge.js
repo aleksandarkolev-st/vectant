@@ -454,6 +454,69 @@ export class MainThreadBridge {
       }
     });
 
+    // Forward authentication session requests to the browser.
+    // When an extension requests a session with createIfNone/forceNewSession,
+    // the headless extension host can't show login UI.  We emit an event
+    // so the frontend can display an auth prompt or redirect.
+    this.vscodeServerProxy.on('authSessionRequest', (data) => {
+      console.log(`[MainThreadBridge/vscode-server] authSessionRequest:`, data);
+      this._emitRemoteContribution?.('authSessionRequest', data);
+    });
+
+    // Forward extension notification messages → toast in browser
+    this.vscodeServerProxy.on('extensionMessage', (data) => {
+      console.log(`[MainThreadBridge/vscode-server] extensionMessage:`, data);
+      this._emitRemoteContribution?.('extensionMessage', data);
+    });
+
+    // Forward quick pick requests → frontend UI
+    this.vscodeServerProxy.on('showQuickPick', (data) => {
+      console.log(`[MainThreadBridge/vscode-server] showQuickPick:`, data);
+      this._emitRemoteContribution?.('showQuickPick', data);
+    });
+
+    // Forward input box requests → frontend UI
+    this.vscodeServerProxy.on('showInputBox', (data) => {
+      console.log(`[MainThreadBridge/vscode-server] showInputBox:`, data);
+      this._emitRemoteContribution?.('showInputBox', data);
+    });
+
+    // Forward context value changes (setContext) → UI
+    // These control when-clause evaluation for view visibility.
+    this.vscodeServerProxy.on('setContext', (data) => {
+      console.log(`[MainThreadBridge/vscode-server] setContext: ${data?.key} = ${JSON.stringify(data?.value)}`);
+      this._emitRemoteContribution?.('setContext', data);
+    });
+
+    // Forward clipboard writes → browser clipboard
+    this.vscodeServerProxy.on('clipboardWrite', (text) => {
+      console.log(`[MainThreadBridge/vscode-server] clipboardWrite: ${String(text).slice(0, 50)}`);
+      this._emitRemoteContribution?.('clipboardWrite', { text });
+    });
+
+    // Forward extension progress → UI
+    this.vscodeServerProxy.on('extensionProgress', (data) => {
+      this._emitRemoteContribution?.('extensionProgress', data);
+    });
+
+    // Forward auth provider registration → UI
+    this.vscodeServerProxy.on('authProviderRegistered', (data) => {
+      console.log(`[MainThreadBridge/vscode-server] authProviderRegistered: ${data?.providerId}`);
+      this._emitRemoteContribution?.('authProviderRegistered', data);
+    });
+
+    // Forward auth session changes → UI
+    this.vscodeServerProxy.on('authSessionChanged', (data) => {
+      console.log(`[MainThreadBridge/vscode-server] authSessionChanged: ${data?.providerId}`);
+      this._emitRemoteContribution?.('authSessionChanged', data);
+    });
+
+    // Forward file dialog requests → UI
+    this.vscodeServerProxy.on('showFileDialog', (data) => {
+      console.log(`[MainThreadBridge/vscode-server] showFileDialog: ${data?.type}`);
+      this._emitRemoteContribution?.('showFileDialog', data);
+    });
+
     // When we receive a provider list, auto-resolve any webview views.
     // Code-server runs headless, so resolveWebviewView is never called
     // naturally — we explicitly trigger it for each registered provider.
