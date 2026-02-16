@@ -720,6 +720,16 @@ export class VSCodeServerProxy {
   }
 
   /**
+   * List extensions with their full manifests.
+   * Used to hydrate Redux for server-side extensions that bypassed
+   * the marketplace install flow.
+   * @returns {Promise<Array<{id: string, manifest: object|null}>>}
+   */
+  async listExtensionsDetailed() {
+    return this.request('listExtensionsDetailed', [], 30000);
+  }
+
+  /**
    * Load an already-installed extension into the Extension Host Bridge
    * for live UI event forwarding (tree data, webview HTML).
    *

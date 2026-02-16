@@ -1,6 +1,7 @@
 // src/redux/hooks.js
-import { useDispatch, useSelector } from 'react-redux';
+import { useDispatch, useSelector, useStore } from 'react-redux';
 
 
 export const useAppDispatch = useDispatch;
 export const useAppSelector = useSelector;
+export const useAppStore = useStore;

@@ -15,7 +15,7 @@
  */
 
 import { useEffect, useRef, useCallback, useState } from 'react';
-import { useAppDispatch, useAppSelector } from '@/redux/hooks';
+import { useAppDispatch, useAppSelector, useAppStore } from '@/redux/hooks';
 import {
   setHostStatus,
   setHostError,
@@ -99,6 +99,7 @@ const DEFAULT_WORKER_URL = '/extension-host-worker-hardened.js';
 
 export function useExtensions({ editor = null, workspaceId = 'default' } = {}) {
   const dispatch = useAppDispatch();
+  const store = useAppStore();
   const hostStatus = useAppSelector(selectHostStatus);
   const extensions = useAppSelector(selectExtensionList);
   const errors = useAppSelector(selectExtensionErrors);
@@ -292,6 +293,41 @@ export function useExtensions({ editor = null, workspaceId = 'default' } = {}) {
       vscodeServerConnectedRef.current = true;
       setVscodeServerState('running');
 
+      // ── Hydrate Redux with server-side extensions ──────────────
+      // Extensions pre-installed on the VS Code Server (e.g. via CLI) never
+      // went through the frontend install flow, so they have no Redux entry.
+      // Without a Redux entry, ExtensionViewContainer's `isActive` guard
+      // blocks rendering. Fetch all manifests from the server and register
+      // any missing extensions so their containers/views appear in the sidebar.
+      try {
+        const proxy = systemRef.current?.bridge?.vscodeServerProxy;
+        if (proxy) {
+          const detailed = await proxy.listExtensionsDetailed();
+          const currentExtensions = store.getState()?.extensions?.extensions || {};
+          let hydrated = 0;
+          for (const { id: extId, manifest } of (detailed || [])) {
+            if (!manifest) continue;
+            // Skip if already registered in Redux (e.g. from IndexedDB restore)
+            if (currentExtensions[extId]) continue;
+
+            // Register into Redux with full manifest
+            dispatch(registerExtRedux({ id: extId, manifest }));
+            // Parse contribution points (containers, views, etc.)
+            if (manifest.contributes) {
+              dispatch(parseContributions({ extensionId: extId, contributes: manifest.contributes }));
+            }
+            // Mark as active + remote since it's running on the server
+            dispatch(setExtensionState({ id: extId, extensionState: 'active', remote: true }));
+            hydrated++;
+          }
+          if (hydrated > 0) {
+            console.log(`[useExtensions] Hydrated ${hydrated} server-side extensions into Redux`);
+          }
+        }
+      } catch (hydrateErr) {
+        console.warn('[useExtensions] Server extension hydration failed (non-fatal):', hydrateErr.message);
+      }
+
       // Attach the HTTP tunnel service so code-server UI can be embedded
       if (systemRef.current?.bridge?.vscodeServerProxy) {
         vscodeTunnelService.attach(systemRef.current.bridge.vscodeServerProxy);
@@ -312,7 +348,7 @@ export function useExtensions({ editor = null, workspaceId = 'default' } = {}) {
     } finally {
       connectingVSCodeServerRef.current = false;
     }
-  }, []);
+  }, [dispatch, store]);
 
   /**
    * Install any pending-remote Node-only extensions into the VS Code Server.

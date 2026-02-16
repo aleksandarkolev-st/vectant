@@ -4519,6 +4519,23 @@ rl.on('line', async (line) => {
         break;
       }
 
+      case 'listExtensionsDetailed': {
+        // Return full manifests so the frontend can hydrate Redux for
+        // server-only extensions that bypassed the marketplace install flow.
+        const ids = listInstalledExtensions();
+        const detailed = [];
+        for (const extId of ids) {
+          const result = _readExtensionManifest(extId);
+          if (result?.manifest) {
+            detailed.push({ id: extId, manifest: result.manifest });
+          } else {
+            detailed.push({ id: extId, manifest: null });
+          }
+        }
+        sendResponse(id, detailed);
+        break;
+      }
+
       case 'installExtensionFromMarketplace': {
         // Install via CLI: code-server --install-extension <id>
         const [extensionId] = args;
