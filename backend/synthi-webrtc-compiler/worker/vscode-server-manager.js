@@ -694,10 +694,11 @@ function _handlePreloadMessage(msg) {
     }
 
     case 'commandExecutionFailed': {
-      process.stderr.write(`[preload-bridge] Command execution failed: ${msg.commandId} (${msg.reason || 'unknown'})\n`);
+      process.stderr.write(`[preload-bridge] Command execution failed: ${msg.commandId} (${msg.reason || 'unknown'}, tracked=${msg.trackedHandlers ?? 'n/a'})\n`);
       sendEvent('commandExecutionFailed', {
         commandId: msg.commandId,
         reason: msg.reason || 'unknown',
+        trackedHandlers: msg.trackedHandlers,
       });
       break;
     }

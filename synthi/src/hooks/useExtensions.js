@@ -364,9 +364,10 @@ export function useExtensions({ editor = null, workspaceId = 'default' } = {}) {
             case 'commandExecutionFailed': {
               const commandId = payload?.commandId || 'unknown';
               const reason = payload?.reason || 'unknown';
+              const tracked = payload?.trackedHandlers;
               console.warn(`[useExtensions] commandExecutionFailed: ${commandId} (${reason})`);
               toast.error(`Command failed: ${commandId}`, {
-                description: reason,
+                description: tracked !== undefined ? `${reason} (tracked handlers: ${tracked})` : reason,
                 duration: 7000,
               });
               break;
