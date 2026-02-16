@@ -38,6 +38,7 @@ import {
   selectContributedViews,
   selectWebviewPanels,
   selectStatusBarItems,
+  selectViewsWelcome,
 } from '@/redux/extensionSlice';
 
 // Loader pipeline
@@ -108,6 +109,7 @@ export function useExtensions({ editor = null, workspaceId = 'default' } = {}) {
   const contributedViews = useAppSelector(selectContributedViews);
   const webviewPanels = useAppSelector(selectWebviewPanels);
   const statusBarItems = useAppSelector(selectStatusBarItems);
+  const viewsWelcome = useAppSelector(selectViewsWelcome);
 
   // Tree data from extensions (viewId → items[])
   const [treeDataMap, setTreeDataMap] = useState({});
@@ -1082,6 +1084,7 @@ export function useExtensions({ editor = null, workspaceId = 'default' } = {}) {
     webviewPanels,
     statusBarItems,
     treeDataMap,
+    viewsWelcome,
 
     // WebviewManager instance (for rendering webview iframes)
     webviewManager: systemRef.current?.webviews || null,

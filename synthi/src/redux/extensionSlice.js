@@ -44,6 +44,9 @@ export const initialExtensionState = {
     webviewPanels: [],
     /** Status bar items set by extensions [{ text, extensionId, priority }] */
     statusBarItems: [],
+    /** Welcome content from contributes.viewsWelcome, keyed by view id
+     *  { viewId: [{ contents, when, group, extensionId }] } */
+    viewsWelcome: {},
   },
 
   /** Recent errors: [{ extensionId, title, message, severity, suggestion, timestamp }] */
@@ -158,6 +161,22 @@ const extensionSlice = createSlice({
               });
             }
           }
+        }
+      }
+
+      // viewsWelcome → welcome content shown in views when empty
+      if (Array.isArray(contributes.viewsWelcome)) {
+        for (const entry of contributes.viewsWelcome) {
+          if (!entry.view || !entry.contents) continue;
+          if (!state.contributions.viewsWelcome[entry.view]) {
+            state.contributions.viewsWelcome[entry.view] = [];
+          }
+          state.contributions.viewsWelcome[entry.view].push({
+            contents: entry.contents,
+            when: entry.when || null,
+            group: entry.group || null,
+            extensionId,
+          });
         }
       }
     },
@@ -338,6 +357,7 @@ export const selectContributedContainers = (state) => state.extensions.contribut
 export const selectContributedViews = (state) => state.extensions.contributions.views;
 export const selectWebviewPanels = (state) => state.extensions.contributions.webviewPanels;
 export const selectStatusBarItems = (state) => state.extensions.contributions.statusBarItems;
+export const selectViewsWelcome = (state) => state.extensions.contributions.viewsWelcome;
 export const selectActiveExtensionCount = (state) =>
   Object.values(state.extensions.extensions).filter(e => e.state === 'active').length;
 export const selectIssueExtensionCount = (state) =>

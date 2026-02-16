@@ -13,8 +13,124 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { ChevronRight, ChevronDown, Box, Loader2, AlertTriangle, Globe, Server } from 'lucide-react';
 
-// ─── Tree view placeholder (until extension provides data) ───
-function TreeViewSection({ view, treeData, onRequestData, onExecuteCommand }) {
+// ─── Welcome content renderer (from contributes.viewsWelcome) ───
+/**
+ * Parses and renders viewsWelcome markdown-style content from extension manifests.
+ * Supports:
+ *   - [text](command:commandId)  → rendered as a button that executes the command
+ *   - [text](https://url)       → rendered as a hyperlink
+ *   - Plain text                 → rendered as a paragraph
+ */
+function WelcomeContent({ entries, onExecuteCommand }) {
+  if (!entries || entries.length === 0) return null;
+
+  return (
+    <div className="py-2 space-y-3">
+      {entries.map((entry, idx) => (
+        <WelcomeEntry key={idx} contents={entry.contents} onExecuteCommand={onExecuteCommand} />
+      ))}
+    </div>
+  );
+}
+
+function WelcomeEntry({ contents, onExecuteCommand }) {
+  if (!contents) return null;
+
+  // Split the contents into lines and parse each
+  const lines = contents.split('\n');
+  const elements = [];
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim();
+    if (!line) continue;
+
+    // Parse markdown-style links: [text](target)
+    const parts = [];
+    let lastIndex = 0;
+    const linkRe = /\[([^\]]+)\]\(([^)]+)\)/g;
+    let match;
+
+    while ((match = linkRe.exec(line)) !== null) {
+      // Text before the link
+      if (match.index > lastIndex) {
+        parts.push({ type: 'text', value: line.slice(lastIndex, match.index) });
+      }
+
+      const linkText = match[1];
+      const linkTarget = match[2];
+
+      if (linkTarget.startsWith('command:')) {
+        parts.push({ type: 'command', text: linkText, commandId: linkTarget.replace('command:', '') });
+      } else if (linkTarget.startsWith('http://') || linkTarget.startsWith('https://')) {
+        parts.push({ type: 'link', text: linkText, url: linkTarget });
+      } else {
+        parts.push({ type: 'text', value: `${linkText}` });
+      }
+
+      lastIndex = match.index + match[0].length;
+    }
+
+    // Remaining text after last link
+    if (lastIndex < line.length) {
+      parts.push({ type: 'text', value: line.slice(lastIndex) });
+    }
+
+    // If the entire line is a single command link, render it as a button
+    const commandParts = parts.filter(p => p.type === 'command');
+    const isButtonLine = commandParts.length === 1 && parts.every(p => p.type === 'command' || (p.type === 'text' && !p.value.trim()));
+
+    if (isButtonLine) {
+      const cmd = commandParts[0];
+      elements.push(
+        <button
+          key={i}
+          onClick={() => onExecuteCommand?.(cmd.commandId)}
+          className="w-full px-3 py-1.5 text-[12px] font-medium text-white bg-[#4aba9a]/20 hover:bg-[#4aba9a]/30 border border-[#4aba9a]/40 rounded transition-colors text-center"
+        >
+          {cmd.text}
+        </button>
+      );
+    } else {
+      // Render as inline content (mixed text + links)
+      elements.push(
+        <p key={i} className="text-[11px] text-[#9ba2b8] leading-relaxed">
+          {parts.map((part, j) => {
+            if (part.type === 'command') {
+              return (
+                <button
+                  key={j}
+                  onClick={() => onExecuteCommand?.(part.commandId)}
+                  className="text-[#4aba9a] hover:underline cursor-pointer inline"
+                >
+                  {part.text}
+                </button>
+              );
+            }
+            if (part.type === 'link') {
+              return (
+                <a
+                  key={j}
+                  href={part.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-[#4aba9a] hover:underline"
+                >
+                  {part.text}
+                </a>
+              );
+            }
+            return <span key={j}>{part.value}</span>;
+          })}
+        </p>
+      );
+    }
+  }
+
+  return <div className="space-y-2">{elements}</div>;
+}
+
+// ─── Tree view section ───────────────────────────────────────
+function TreeViewSection({ view, treeData, welcomeEntries, onRequestData, onExecuteCommand }) {
   const [collapsed, setCollapsed] = useState(false);
 
   return (
@@ -41,17 +157,14 @@ function TreeViewSection({ view, treeData, onRequestData, onExecuteCommand }) {
                 <TreeItem key={item.id || i} item={item} depth={0} onExecuteCommand={onExecuteCommand} />
               ))}
             </div>
+          ) : welcomeEntries && welcomeEntries.length > 0 ? (
+            <WelcomeContent entries={welcomeEntries} onExecuteCommand={onExecuteCommand} />
           ) : (
             <div className="text-[11px] text-[#4a5060] italic py-3 text-center">
               {view.type === 'webview' ? (
                 <div className="flex flex-col items-center gap-1.5">
                   <Globe className="w-4 h-4" />
                   <span>Webview loading…</span>
-                </div>
-              ) : view.id.includes('login') || view.id.includes('auth') ? (
-                <div className="flex flex-col items-center gap-1.5">
-                  <Globe className="w-4 h-4" />
-                  <span>Sign in required</span>
                 </div>
               ) : (
                 'No items'
@@ -192,6 +305,7 @@ export default function ExtensionViewContainer({
   extensions = {},
   onExecuteCommand = null,
   onRequestTreeRefresh = null,
+  viewsWelcome = {},
 }) {
   // Auto-request tree data refresh when the container opens with no data.
   // This handles timing races where data arrived before Redux hydration,
@@ -278,9 +392,10 @@ export default function ExtensionViewContainer({
             {views
             .filter(view => {
               // Hide views with when-clause conditions we can't evaluate,
-              // unless they already have data (proving the condition is met).
-              // This prevents showing empty "No items" for conditional views.
+              // unless they have data, welcome content, or are auth views.
               if (view.when && !treeDataMap[view.id]?.length) {
+                // Show if this view has welcome content defined in the manifest
+                if (viewsWelcome[view.id]?.length) return true;
                 // Always show login/auth views regardless of condition
                 if (view.id.includes('login') || view.id.includes('auth')) return true;
                 return false;
@@ -313,6 +428,7 @@ export default function ExtensionViewContainer({
                 key={view.id}
                 view={view}
                 treeData={treeDataMap[view.id]}
+                welcomeEntries={viewsWelcome[view.id]}
                 onExecuteCommand={onExecuteCommand}
               />
             );
@@ -325,15 +441,14 @@ export default function ExtensionViewContainer({
       {webviewPanels
         .filter(p => !views.find(v => v.id === p.viewType))
         .filter(p => {
-          // Only show panels belonging to this container's extension.
+          // Exclude synthetic placeholder panels created from manifest scanning.
+          // These never receive actual HTML content because the extension didn't
+          // register a webview view provider in headless mode.
+          const syntheticIds = ['manifest-rpc-fallback', 'manifest-fallback', 'rpc-fallback'];
+          if (syntheticIds.includes(p.extensionId)) return false;
+          // Only show panels with an extensionId that exactly matches this container's extension.
           if (!container?.extensionId) return false;
-          const cid = container.extensionId.toLowerCase();
-          if (p.extensionId?.toLowerCase() === cid) return true;
-          // Fallback: viewType often starts with a namespace prefix
-          // matching the extension name (e.g. "github.xxx" for "github.vscode-pull-request-github")
-          const vt = (p.viewType || '').toLowerCase();
-          const extPublisher = cid.split('.')[0]; // "github"
-          return vt.startsWith(extPublisher + '.') || vt.startsWith(extPublisher + ':');
+          return p.extensionId?.toLowerCase() === container.extensionId.toLowerCase();
         })
         .map(panel => (
           <div key={panel.viewId} className="border-t border-[#1a1b24]">
