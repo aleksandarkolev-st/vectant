@@ -2173,6 +2173,21 @@ function _normalizeCommandText(commandId) {
     .replace(/[^a-z0-9]+/g, '');
 }
 
+function _commandPrefix(commandId) {
+  const value = String(commandId || '').toLowerCase();
+  return value.includes('.') ? value.split('.')[0] : value;
+}
+
+function _tokenOverlapCount(a, b) {
+  const aTokens = new Set(_tokenizeCommandId(a));
+  const bTokens = new Set(_tokenizeCommandId(b));
+  let overlap = 0;
+  for (const token of aTokens) {
+    if (bTokens.has(token)) overlap++;
+  }
+  return overlap;
+}
+
 function _scoreCommandAlias(queryId, candidateId) {
   if (!queryId || !candidateId) return -1;
   if (queryId === candidateId) return 1e9;
@@ -2231,10 +2246,20 @@ function _findBestTrackedAlias(commandId) {
   const keys = Array.from(trackedCommandHandlers.keys());
   if (keys.length === 0) return null;
 
+  const queryPrefix = _commandPrefix(commandId);
+
   let bestId = null;
   let bestScore = 0;
   for (const candidate of keys) {
     const score = _scoreCommandAlias(commandId, candidate);
+    const candidatePrefix = _commandPrefix(candidate);
+
+    // Keep short-prefix commands inside their family to avoid collisions
+    // like pr.* mistakenly aliasing to prisma.*.
+    if (queryPrefix && queryPrefix.length <= 3 && candidatePrefix && candidatePrefix !== queryPrefix) {
+      continue;
+    }
+
     if (score > bestScore) {
       bestScore = score;
       bestId = candidate;
@@ -2280,8 +2305,15 @@ function _findBestKnownAlias(commandId, knownCommands) {
 
   let best = null;
   let bestScore = 0;
+  const queryPrefix = _commandPrefix(commandId);
   for (const candidate of knownCommands) {
     if (typeof candidate !== 'string') continue;
+    const candidatePrefix = _commandPrefix(candidate);
+
+    if (queryPrefix && queryPrefix.length <= 3 && candidatePrefix && candidatePrefix !== queryPrefix) {
+      continue;
+    }
+
     const score = _scoreCommandAlias(commandId, candidate);
     if (score > bestScore) {
       bestScore = score;
@@ -2302,15 +2334,17 @@ async function _getKnownCommandsSnapshot(commandId) {
     const all = await getter.call(realVscodeApi.commands, true);
     if (!Array.isArray(all)) return [];
 
-    const lower = String(commandId || '').toLowerCase();
-    const prefix = lower.includes('.') ? lower.split('.')[0] : lower;
+    const queryPrefix = _commandPrefix(commandId);
     return all
       .filter(id => typeof id === 'string')
       .filter(id => {
-        const lid = id.toLowerCase();
-        return lid.includes(prefix) || lid.includes('signin') || lid.includes('auth');
+        const candidatePrefix = _commandPrefix(id);
+        if (queryPrefix && candidatePrefix && candidatePrefix === queryPrefix) {
+          return true;
+        }
+        return _tokenOverlapCount(commandId, id) > 0;
       })
-      .slice(0, 30);
+      .slice(0, 120);
   } catch (_) {
     return [];
   }
