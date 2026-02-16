@@ -49,6 +49,9 @@ const EXTENSIONS_DIR = path.join(VSCODE_SERVER_DIR, 'extensions');
 /** Persisted secret storage backing file (best-effort) */
 const SECRET_STORAGE_FILE = path.join(VSCODE_SERVER_DIR, 'secret-storage.json');
 
+/** Persisted auth sessions backing file */
+const AUTH_SESSIONS_FILE = path.join(VSCODE_SERVER_DIR, 'auth-sessions.json');
+
 /** Server binary name depends on platform */
 const IS_WIN = process.platform === 'win32';
 const SERVER_BIN_NAME = IS_WIN ? 'code-server.cmd' : 'code-server';
@@ -71,6 +74,13 @@ const MAX_RESTART_ATTEMPTS = 3;
 
 let _secretStoreLoaded = false;
 let _secretStore = new Map();
+
+let _authSessionsLoaded = false;
+/** @type {Map<string, any[]>} provider@workspace -> AuthenticationSession[] */
+let _authSessionsByKey = new Map();
+
+/** @type {Map<string, {deviceCode: string, startedAt: number}>} */
+const _pendingGithubFlows = new Map();
 
 function _secretStoreKey(service, account) {
   return `${String(service || '')}::${String(account || '')}`;
@@ -129,6 +139,62 @@ function _secretFind(service) {
     out.push({ service: String(service || ''), account, password: value });
   }
   return out;
+}
+
+function _authSessionStoreKey(providerId, workspaceSlug = null) {
+  const provider = String(providerId || '').toLowerCase();
+  const slug = String(workspaceSlug || currentSlug || 'default');
+  return `${provider}@${slug}`;
+}
+
+function _ensureAuthSessionsLoaded() {
+  if (_authSessionsLoaded) return;
+  _authSessionsLoaded = true;
+  try {
+    if (!fs.existsSync(AUTH_SESSIONS_FILE)) return;
+    const raw = fs.readFileSync(AUTH_SESSIONS_FILE, 'utf8');
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === 'object') {
+      _authSessionsByKey = new Map(Object.entries(parsed).map(([key, value]) => [key, Array.isArray(value) ? value : []]));
+    }
+  } catch (e) {
+    process.stderr.write(`[vscode-server-manager] Auth session store load failed: ${e.message}\n`);
+    _authSessionsByKey = new Map();
+  }
+}
+
+function _persistAuthSessions() {
+  try {
+    fs.mkdirSync(path.dirname(AUTH_SESSIONS_FILE), { recursive: true });
+    const plain = Object.fromEntries(_authSessionsByKey.entries());
+    fs.writeFileSync(AUTH_SESSIONS_FILE, JSON.stringify(plain), 'utf8');
+  } catch (e) {
+    process.stderr.write(`[vscode-server-manager] Auth session store persist failed: ${e.message}\n`);
+  }
+}
+
+function _listAuthSessions(providerId) {
+  _ensureAuthSessionsLoaded();
+  return _authSessionsByKey.get(_authSessionStoreKey(providerId)) || [];
+}
+
+function _upsertAuthSession(providerId, session) {
+  _ensureAuthSessionsLoaded();
+  const key = _authSessionStoreKey(providerId);
+  const existing = _authSessionsByKey.get(key) || [];
+  const filtered = existing.filter(entry => entry && entry.id !== session.id);
+  filtered.push(session);
+  _authSessionsByKey.set(key, filtered);
+  _persistAuthSessions();
+}
+
+function _removeAuthSession(providerId, sessionId) {
+  _ensureAuthSessionsLoaded();
+  const key = _authSessionStoreKey(providerId);
+  const existing = _authSessionsByKey.get(key) || [];
+  const next = existing.filter(entry => entry && entry.id !== sessionId);
+  _authSessionsByKey.set(key, next);
+  _persistAuthSessions();
 }
 
 // ============================================================================
