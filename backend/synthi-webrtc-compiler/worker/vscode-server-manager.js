@@ -1813,6 +1813,9 @@ async function _triggerExtensionHostStartup(port, token) {
       let workspaceInitSent = false;
       let workspaceInitSucceeded = false;
       let workspaceInitInFlight = false;
+      let configurationInitSent = false;
+      let configurationInitSucceeded = false;
+      let configurationInitInFlight = false;
       let lastActivationNudgeAt = 0;
       let lastDirectActivateAt = 0;
       const pendingOutgoingRpc = new Map();
@@ -1890,9 +1893,11 @@ async function _triggerExtensionHostStartup(port, token) {
       // VS Code 1.108.x extHost.protocol.ts ProxyIdentifier ordering)
       const EXTHOST_EXTENSION_SERVICE_RPC_ID_CANDIDATES = [101, 100, 99, 98, 97, 96];
       const EXTHOST_WORKSPACE_RPC_ID_CANDIDATES = [106, 105, 107, 104, 108];
+      const EXTHOST_CONFIGURATION_RPC_ID_CANDIDATES = [80, 79, 81, 82, 78, 83];
       let outgoingReqId = 0;
       const EXTHOST_EXTENSION_SERVICE_RPC_ID = 101;
       const EXTHOST_WORKSPACE_RPC_ID = 106;
+      const EXTHOST_CONFIGURATION_RPC_ID = 80;
 
       /**
        * Send an RPC request to the Extension Host.
@@ -2066,6 +2071,71 @@ async function _triggerExtensionHostStartup(port, token) {
         tryNext();
       }
 
+      function _buildConfigurationInitData() {
+        return {
+          defaults: Object.create(null),
+          policy: Object.create(null),
+          application: Object.create(null),
+          user: Object.create(null),
+          userLocal: Object.create(null),
+          userRemote: Object.create(null),
+          workspace: Object.create(null),
+          folders: [],
+          memory: Object.create(null),
+          consolidated: Object.create(null),
+          configurationScopes: [],
+        };
+      }
+
+      function _sendConfigurationInitializeToExtHost() {
+        if (configurationInitSucceeded || configurationInitInFlight) return;
+        configurationInitInFlight = true;
+
+        const payload = _buildConfigurationInitData();
+        const candidates = EXTHOST_CONFIGURATION_RPC_ID_CANDIDATES.slice();
+        if (!candidates.includes(EXTHOST_CONFIGURATION_RPC_ID)) {
+          candidates.unshift(EXTHOST_CONFIGURATION_RPC_ID);
+        }
+
+        let idx = 0;
+        const tryNext = () => {
+          if (configurationInitSucceeded) {
+            configurationInitInFlight = false;
+            return;
+          }
+          if (idx >= candidates.length) {
+            configurationInitInFlight = false;
+            process.stderr.write('[vscode-server-manager] Failed to initialize ExtHost configuration (all rpcId candidates failed)\n');
+            return;
+          }
+
+          const rpcId = candidates[idx++];
+          _sendEHRpcRequest(rpcId, '$initializeConfiguration', [payload], {
+            ackIsSuccess: true,
+            timeoutMs: 2200,
+            onSuccess: () => {
+              if (configurationInitSucceeded) return;
+              configurationInitSucceeded = true;
+              configurationInitSent = true;
+              configurationInitInFlight = false;
+              process.stderr.write(`[vscode-server-manager] Sent ExtHost $initializeConfiguration on rpcId=${rpcId}\n`);
+            },
+            onError: (reason) => {
+              if (typeof reason === 'string' && reason.includes('Unknown method')) {
+                setTimeout(() => tryNext(), 20);
+                return;
+              }
+              configurationInitSucceeded = true;
+              configurationInitSent = true;
+              configurationInitInFlight = false;
+              process.stderr.write(`[vscode-server-manager] ExtHost $initializeConfiguration reached rpcId=${rpcId} (non-fatal error: ${reason || 'unknown'})\n`);
+            },
+          });
+        };
+
+        tryNext();
+      }
+
       /**
        * Send $startExtensionHost to the Extension Host.
        * This is Phase 2 of VS Code's two-phase activation model:
@@ -2154,6 +2224,8 @@ async function _triggerExtensionHostStartup(port, token) {
 
         if (!startExtensionHostSucceeded) {
           process.stderr.write(`[vscode-server-manager] Activation nudge (${reason}): startExtensionHost not confirmed, retrying start sequence\n`);
+          _sendWorkspaceInitializeToExtHost();
+          _sendConfigurationInitializeToExtHost();
           _tryStartExtensionHostNextRpcId();
           return;
         }
@@ -2569,11 +2641,12 @@ async function _triggerExtensionHostStartup(port, token) {
                 // Small delay to ensure EH's RPCProtocol is fully ready.
                 setTimeout(() => {
                   _sendWorkspaceInitializeToExtHost();
+                  _sendConfigurationInitializeToExtHost();
                   setTimeout(() => {
                     _discoverExtHostExtensionServiceRpcId().finally(() => {
                       _tryStartExtensionHostNextRpcId();
                     });
-                  }, workspaceInitSucceeded ? 10 : 120);
+                  }, (workspaceInitSucceeded && configurationInitSucceeded) ? 10 : 140);
                 }, 50);
               } else if (statusByte === 0x02) {
                 // Late Ready — EH may be re-requesting init data
