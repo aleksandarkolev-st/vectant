@@ -1930,6 +1930,7 @@ async function _triggerExtensionHostStartup(port, token) {
             meta: meta || null,
             ackIsSuccess: !!(meta && meta.ackIsSuccess),
             ackSuccessNotified: false,
+            waitingLateReplyWindow: false,
             onSuccess: meta && typeof meta.onSuccess === 'function' ? meta.onSuccess : null,
             onError: meta && typeof meta.onError === 'function' ? meta.onError : null,
             sentAt: Date.now(),
@@ -1945,6 +1946,27 @@ async function _triggerExtensionHostStartup(port, token) {
           replyTimer = setTimeout(() => {
             const pending = pendingOutgoingRpc.get(reqId);
             if (!pending) return;
+
+            if (pending.acked && pending.ackIsSuccess) {
+              if (!pending.waitingLateReplyWindow) {
+                pending.waitingLateReplyWindow = true;
+                process.stderr.write(`[vscode-server-manager] RPC ${pending.method} (reqId=${reqId}, rpcId=${pending.rpcId}) acknowledged; waiting 15s for late reply\n`);
+                replyTimer = setTimeout(() => {
+                  const latePending = pendingOutgoingRpc.get(reqId);
+                  if (!latePending) return;
+                  latePending.clearTimer();
+                  pendingOutgoingRpc.delete(reqId);
+                  process.stderr.write(`[vscode-server-manager] RPC ${latePending.method} (reqId=${reqId}, rpcId=${latePending.rpcId}) completed with ACK-only semantics\n`);
+                }, 15000);
+                if (replyTimer.unref) replyTimer.unref();
+                return;
+              }
+
+              pendingOutgoingRpc.delete(reqId);
+              process.stderr.write(`[vscode-server-manager] RPC ${pending.method} (reqId=${reqId}, rpcId=${pending.rpcId}) finalized with ACK-only semantics\n`);
+              return;
+            }
+
             process.stderr.write(`[vscode-server-manager] RPC ${pending.method} (reqId=${reqId}, rpcId=${pending.rpcId}) has no reply after ${timeoutMs}ms\n`);
             pendingOutgoingRpc.delete(reqId);
             if (pending.acked) {
@@ -2028,6 +2050,7 @@ async function _triggerExtensionHostStartup(port, token) {
             ackIsSuccess: true,
             timeoutMs: 1800,
             onSuccess: () => {
+              if (workspaceInitSucceeded) return;
               workspaceInitSucceeded = true;
               workspaceInitSent = true;
               workspaceInitInFlight = false;
@@ -2219,7 +2242,7 @@ async function _triggerExtensionHostStartup(port, token) {
             if (pending.ackIsSuccess) {
               if (!pending.ackSuccessNotified && pending.onSuccess) {
                 pending.ackSuccessNotified = true;
-                try { pending.onSuccess(); } catch (_) {}
+                try { pending.onSuccess('ack'); } catch (_) {}
               }
             }
             return;
@@ -2239,7 +2262,9 @@ async function _triggerExtensionHostStartup(port, token) {
               } catch (_) {}
             }
             if (pending.onSuccess) {
-              try { pending.onSuccess(`reply-${rpcMsgType}`, payload); } catch (_) {}
+              if (!pending.ackIsSuccess || !pending.ackSuccessNotified) {
+                try { pending.onSuccess(`reply-${rpcMsgType}`, payload); } catch (_) {}
+              }
             }
           } else {
             let errText = 'reply-error';
