@@ -1154,6 +1154,9 @@ const _commandActivationAttempts = new Set();
 /** @type {boolean} one-time broad activation attempt completed */
 let _broadCommandActivationAttempted = false;
 
+/** @type {{ id: string|null, ts: number }} recent user-triggered bridge command context */
+const _lastBridgeCommand = { id: null, ts: 0 };
+
 /** @type {Set<string>} viewTypes already logged as missing provider */
 const _missingWebviewProviderLogged = new Set();
 
@@ -1505,24 +1508,45 @@ function wrapAuthentication(vscode) {
   }
 
   const wrappedGetSession = function wrappedGetSession(providerId, scopes, options) {
-    log(`authentication.getSession intercepted: provider=${providerId} scopes=${JSON.stringify(scopes)} options=${JSON.stringify(options)}`);
+    let effectiveOptions = options;
+
+    const ageMs = Date.now() - (_lastBridgeCommand.ts || 0);
+    const recentUserCommand = ageMs >= 0 && ageMs <= 20000;
+    const requestedInteractive = !!(options && (options.createIfNone || options.forceNewSession));
+
+    if (
+      recentUserCommand
+      && options
+      && options.createIfNone === false
+      && !options.forceNewSession
+      && typeof providerId === 'string'
+      && providerId.length > 0
+    ) {
+      // In headless mode, command handlers often do a passive session check
+      // first (createIfNone:false). For user-initiated command flows that
+      // should sign in, promote this to interactive session creation.
+      effectiveOptions = { ...options, createIfNone: true };
+      log(`authentication.getSession promoted to interactive: provider=${providerId} command=${_lastBridgeCommand.id || 'unknown'} ageMs=${ageMs}`);
+    }
+
+    log(`authentication.getSession intercepted: provider=${providerId} scopes=${JSON.stringify(scopes)} options=${JSON.stringify(effectiveOptions)}`);
 
     // Notify bridge of the authentication request so the frontend can
     // potentially show UI or handle device-code flow
-    if (options && (options.createIfNone || options.forceNewSession)) {
+    if (effectiveOptions && (effectiveOptions.createIfNone || effectiveOptions.forceNewSession || requestedInteractive)) {
       log(`Authentication request requires user interaction: provider=${providerId}`);
       bridgeSend({
         type: 'authSessionRequest',
         providerId,
         scopes: scopes || [],
-        createIfNone: !!options.createIfNone,
-        forceNewSession: !!options.forceNewSession,
+        createIfNone: !!effectiveOptions.createIfNone,
+        forceNewSession: !!effectiveOptions.forceNewSession,
       });
     }
 
     // Delegate to the real implementation — in code-server this will
     // attempt the built-in auth providers (GitHub, Microsoft, etc.)
-    return originalGetSession.call(this, providerId, scopes, options);
+    return originalGetSession.call(this, providerId, scopes, effectiveOptions);
   };
 
   if (!_safeAssign(vscode.authentication, 'getSession', wrappedGetSession, 'authentication.getSession')) {
@@ -2400,6 +2424,11 @@ function _handleBridgeRequest(msg) {
       // delegates to the main thread (which we stub), causing a no-op loop.
       const { commandId, args: cmdArgs } = msg;
       log(`Bridge requested command execution: ${commandId}`);
+
+      // Mark recent user-triggered command context so auth wrapper can
+      // distinguish passive background checks from explicit user actions.
+      _lastBridgeCommand.id = commandId || null;
+      _lastBridgeCommand.ts = Date.now();
 
       if (_invokeTrackedCommand(commandId, cmdArgs)) {
         break;
