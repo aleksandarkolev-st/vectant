@@ -247,6 +247,36 @@ function sendEvent(method, ...args) {
   });
 }
 
+function extractDeviceCodeFromText(value) {
+  const text = String(value || '');
+  if (!text) return null;
+  const directMatch = text.match(/\b[A-Z0-9]{4}-[A-Z0-9]{4}\b/);
+  return directMatch ? directMatch[0] : null;
+}
+
+function extractDeviceCodeFromUrl(value) {
+  const text = String(value || '');
+  if (!text) return null;
+  try {
+    const parsed = new URL(text);
+    const candidate = parsed.searchParams.get('user_code')
+      || parsed.searchParams.get('code')
+      || parsed.searchParams.get('device_code');
+    if (!candidate) return null;
+    const normalized = String(candidate).trim().toUpperCase();
+    const queryMatch = normalized.match(/\b[A-Z0-9]{4}-[A-Z0-9]{4}\b/);
+    return queryMatch ? queryMatch[0] : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+function emitAuthDeviceCode(code, source, metadata = {}) {
+  if (!code) return;
+  process.stderr.write(`[auth-device] code=${code} source=${source}\n`);
+  sendEvent('authDeviceCode', { code, source, ...metadata });
+}
+
 function _extractRpcArgsFromBuffer(dataBuf) {
   try {
     if (!dataBuf || dataBuf.length < 7) return null;
@@ -862,6 +892,10 @@ function _handlePreloadMessage(msg) {
       if (url) {
         process.stderr.write(`[preload-bridge] openExternal: ${url}\n`);
         sendEvent('openExternal', url);
+        const deviceCode = extractDeviceCodeFromText(url) || extractDeviceCodeFromUrl(url);
+        if (deviceCode) {
+          emitAuthDeviceCode(deviceCode, 'preload-openExternal', { url });
+        }
       }
       break;
     }
@@ -881,6 +915,10 @@ function _handlePreloadMessage(msg) {
       if (text) {
         process.stderr.write(`[preload-bridge] clipboardWrite: ${String(text).slice(0, 50)}\n`);
         sendEvent('clipboardWrite', String(text));
+        const deviceCode = extractDeviceCodeFromText(text);
+        if (deviceCode) {
+          emitAuthDeviceCode(deviceCode, 'preload-clipboardWrite');
+        }
       }
       break;
     }
