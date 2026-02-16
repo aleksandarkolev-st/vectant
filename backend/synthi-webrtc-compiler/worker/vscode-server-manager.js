@@ -2717,6 +2717,16 @@ async function _triggerExtensionHostStartup(port, token) {
           replyRpc.writeUInt32BE(json.length, 5);
           json.copy(replyRpc, 9);
 
+        } else if (methodName === '$ensureProvider') {
+          // Authentication provider presence check. Report success so EH can
+          // proceed to interactive auth flow instead of bailing out early.
+          const json = Buffer.from('true', 'utf8');
+          replyRpc = Buffer.alloc(5 + 4 + json.length);
+          replyRpc[0] = 9; // ReplyOKJSON
+          replyRpc.writeUInt32BE(reqId, 1);
+          replyRpc.writeUInt32BE(json.length, 5);
+          json.copy(replyRpc, 9);
+
         } else if (methodName === '$getPassword' || methodName === '$findCredentials') {
           // Secret storage read — return null/empty (no persisted secrets)
           process.stderr.write(`[vscode-server-manager] Credential read: ${methodName}\n`);
