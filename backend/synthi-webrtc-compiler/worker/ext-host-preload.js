@@ -2191,6 +2191,39 @@ function _findBestTrackedAlias(commandId) {
   return null;
 }
 
+function _topTrackedCandidates(commandId, limit = 5) {
+  const keys = Array.from(trackedCommandHandlers.keys());
+  return keys
+    .map((candidate) => ({
+      commandId: candidate,
+      score: _scoreCommandAlias(commandId, candidate),
+    }))
+    .filter(entry => entry.score > 0)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, limit);
+}
+
+async function _getKnownCommandsSnapshot(commandId) {
+  try {
+    const getter = realVscodeApi?.commands?.getCommands;
+    if (typeof getter !== 'function') return [];
+    const all = await getter.call(realVscodeApi.commands, true);
+    if (!Array.isArray(all)) return [];
+
+    const lower = String(commandId || '').toLowerCase();
+    const prefix = lower.includes('.') ? lower.split('.')[0] : lower;
+    return all
+      .filter(id => typeof id === 'string')
+      .filter(id => {
+        const lid = id.toLowerCase();
+        return lid.includes(prefix) || lid.includes('signin') || lid.includes('auth');
+      })
+      .slice(0, 30);
+  } catch (_) {
+    return [];
+  }
+}
+
 function _findExtensionsContributingCommand(commandId) {
   const out = [];
   const all = realVscodeApi?.extensions?.all;
@@ -2379,12 +2412,16 @@ function _handleBridgeRequest(msg) {
             }
           }
 
+          const candidates = _topTrackedCandidates(commandId, 5);
+          const knownCommands = await _getKnownCommandsSnapshot(commandId);
           logError(`No tracked handler for ${commandId} after activation retry`);
           bridgeSend({
             type: 'commandExecutionFailed',
             commandId,
             reason: 'no-tracked-handler-after-activation',
             trackedHandlers: trackedCommandHandlers.size,
+            candidates,
+            knownCommands,
           });
           return;
         }
@@ -2406,6 +2443,8 @@ function _handleBridgeRequest(msg) {
             commandId,
             reason: 'no-handler-and-no-vscode-api',
             trackedHandlers: trackedCommandHandlers.size,
+            candidates: _topTrackedCandidates(commandId, 5),
+            knownCommands: [],
           });
         }
       })().catch((e) => {
