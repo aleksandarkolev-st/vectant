@@ -172,6 +172,12 @@ export class MainThreadBridge {
       this.onExtensionStateChanged?.(extensionId, 'active');
     });
 
+    this.vscodeServerProxy.on('extensionUninstalled', (extensionId) => {
+      console.log(`[MainThreadBridge/vscode-server] Extension uninstalled: ${extensionId}`);
+      this.vscodeServerExtensions.delete(extensionId);
+      this.onExtensionStateChanged?.(extensionId, 'uninstalled');
+    });
+
     this.vscodeServerProxy.on('extensionInstallFailed', (extensionId, error) => {
       console.error(`[MainThreadBridge/vscode-server] Extension install failed: ${extensionId}:`, error);
       this.onExtensionStateChanged?.(extensionId, 'crashed', `Server install failed: ${error}`);
