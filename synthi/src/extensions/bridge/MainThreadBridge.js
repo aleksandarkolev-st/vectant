@@ -102,6 +102,18 @@ export class MainThreadBridge {
 
     /** @type {Function|null} Callback when server disconnects */
     this.onVSCodeServerDisconnected = null;
+
+    /** @type {{treeViews: string[], webviews: string[]}} */
+    this._remoteProviderSnapshot = { treeViews: [], webviews: [] };
+
+    /** @type {ReturnType<typeof setTimeout>|null} */
+    this._remoteRefreshTimer = null;
+
+    /** @type {number} */
+    this._remoteLastRefreshAt = 0;
+
+    /** @type {Map<string, number>} */
+    this._emptyTreeRefreshCooldown = new Map();
   }
 
   /**
@@ -411,6 +423,44 @@ export class MainThreadBridge {
   _setupRemoteEventHandlers() {
     if (!this.vscodeServerProxy) return;
 
+    const queueUniversalRefresh = (reason, delayMs = 350) => {
+      const proxy = this.vscodeServerProxy;
+      if (!proxy?.isReady()) return;
+
+      if (this._remoteRefreshTimer) {
+        clearTimeout(this._remoteRefreshTimer);
+      }
+
+      this._remoteRefreshTimer = setTimeout(async () => {
+        const liveProxy = this.vscodeServerProxy;
+        if (!liveProxy?.isReady()) return;
+
+        // Guard against tight loops from rapid context churn.
+        const now = Date.now();
+        if (now - this._remoteLastRefreshAt < 250) {
+          return;
+        }
+        this._remoteLastRefreshAt = now;
+
+        try {
+          await liveProxy.request('refreshAllTrees');
+        } catch (err) {
+          console.warn(`[MainThreadBridge] refreshAllTrees failed (${reason}):`, err.message);
+        }
+
+        // Refresh individual trees as a secondary fallback (some providers
+        // react better to explicit per-view refresh requests).
+        for (const viewId of this._remoteProviderSnapshot.treeViews || []) {
+          liveProxy.request('refreshTreeData', [viewId]).catch(() => {});
+        }
+
+        // Always try resolving all registered webviews.
+        for (const viewType of this._remoteProviderSnapshot.webviews || []) {
+          liveProxy.request('resolveWebviewView', [viewType]).catch(() => {});
+        }
+      }, Math.max(0, delayMs));
+    };
+
     // Forward tree view registration from VS Code Server → UI
     this.vscodeServerProxy.on('registerTreeView', (viewId, extensionId) => {
       console.log(`[MainThreadBridge/vscode-server] registerTreeView: ${viewId} (ext: ${extensionId})`);
@@ -421,6 +471,17 @@ export class MainThreadBridge {
     this.vscodeServerProxy.on('treeData', (viewId, data) => {
       console.log(`[MainThreadBridge/vscode-server] treeData for ${viewId} (${data?.length || 0} items)`);
       this._emitRemoteContribution?.('treeData', { viewId, data });
+
+      // Universal fallback: when a provider repeatedly returns empty, ask
+      // all providers to refresh after a short cooldown.
+      if (Array.isArray(data) && data.length === 0) {
+        const now = Date.now();
+        const last = this._emptyTreeRefreshCooldown.get(viewId) || 0;
+        if (now - last > 2000) {
+          this._emptyTreeRefreshCooldown.set(viewId, now);
+          queueUniversalRefresh(`empty-tree:${viewId}`, 900);
+        }
+      }
     });
 
     // Forward webview creation from VS Code Server → UI
@@ -492,6 +553,7 @@ export class MainThreadBridge {
     this.vscodeServerProxy.on('setContext', (data) => {
       console.log(`[MainThreadBridge/vscode-server] setContext: ${data?.key} = ${JSON.stringify(data?.value)}`);
       this._emitRemoteContribution?.('setContext', data);
+      queueUniversalRefresh(`setContext:${data?.key || 'unknown'}`, 250);
     });
 
     // Forward clipboard writes → browser clipboard
@@ -536,6 +598,7 @@ export class MainThreadBridge {
     this.vscodeServerProxy.on('authSessionChanged', (data) => {
       console.log(`[MainThreadBridge/vscode-server] authSessionChanged: ${data?.providerId}`);
       this._emitRemoteContribution?.('authSessionChanged', data);
+      queueUniversalRefresh(`authSessionChanged:${data?.providerId || 'unknown'}`, 250);
     });
 
     // Forward file dialog requests → UI
@@ -555,14 +618,18 @@ export class MainThreadBridge {
     // naturally — we explicitly trigger it for each registered provider.
     this.vscodeServerProxy.on('providerList', (treeViews, webviews) => {
       console.log(`[MainThreadBridge/vscode-server] providerList: ${treeViews?.length || 0} trees, ${webviews?.length || 0} webviews`);
+      this._remoteProviderSnapshot = {
+        treeViews: Array.isArray(treeViews) ? treeViews : [],
+        webviews: Array.isArray(webviews) ? webviews : [],
+      };
+
       if (webviews && webviews.length > 0) {
         for (const viewType of webviews) {
           console.log(`[MainThreadBridge/vscode-server] Auto-resolving webview view: ${viewType}`);
-          this.vscodeServerProxy.request('resolveWebviewView', [viewType]).catch(err => {
-            console.warn(`[MainThreadBridge] resolveWebviewView failed for ${viewType}:`, err.message);
-          });
         }
       }
+
+      queueUniversalRefresh('providerList', 150);
     });
 
     console.log('[MainThreadBridge] VS Code Server event handlers wired');
