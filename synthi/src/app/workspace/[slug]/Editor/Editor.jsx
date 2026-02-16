@@ -1334,32 +1334,16 @@ const EditorPanel = ({
         };
     }, [code, slug, activeFile, dispatch]);
 
-    // ── Direct disk-write fallback ──────────────────────────────────────────
-    // The Yjs auto-flush writes content to disk via WebSocket, but if the WS
-    // connection is down (server restart, network blip) the content never
-    // reaches the git working tree and Source Control stays stale.
-    // This effect writes content via HTTP (syncFileToGit) on a 1.5s debounce
-    // as a belt-and-suspenders guarantee.  The server's syncFile endpoint is
-    // idempotent — writing the same content twice is a no-op at the git level.
-    const diskSyncTimerRef = useRef(null);
-    useEffect(() => {
-        if (!slug || !activeFile?.path || !isUnsaved) return;
-        if (diskSyncTimerRef.current) clearTimeout(diskSyncTimerRef.current);
-        diskSyncTimerRef.current = setTimeout(() => {
-            diskSyncTimerRef.current = null;
-            dispatch(syncFileToGit({
-                slug,
-                filePath: activeFile.path,
-                content: latestCodeRef.current ?? code,
-            }));
-        }, 1500);
-        return () => {
-            if (diskSyncTimerRef.current) {
-                clearTimeout(diskSyncTimerRef.current);
-                diskSyncTimerRef.current = null;
-            }
-        };
-    }, [code, slug, activeFile, isUnsaved, dispatch]);
+    // ── Direct disk-write fallback (REMOVED) ───────────────────────────────
+    // Previously, this effect wrote content via HTTP (syncFileToGit) on a 1.5s
+    // debounce on EVERY keystroke, regardless of the autosave setting.  This
+    // meant changes were persisted to disk/GCS even when the user expected
+    // "editor-only" (unsaved) behavior.
+    //
+    // Content is now ONLY written to disk on explicit save (Ctrl+S / the save
+    // button) via handleSave → saveFileContentThunk.  The Yjs auto-flush still
+    // keeps the CRDT document in memory for real-time collab, but disk/GCS
+    // persistence is controlled separately (see server-side _setupAutoFlush).
 
     // Key bindings (Ctrl+S, Alt+F)
     useEffect(() => {
