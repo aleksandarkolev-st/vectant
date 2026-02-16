@@ -3113,6 +3113,17 @@ async function _triggerExtensionHostStartup(port, token) {
               modal: !!(options && options.modal),
               commands: commands || [],
             });
+            if (Array.isArray(commands) && commands.length > 0) {
+              sendEvent('authPrompt', {
+                severity: sevLabel,
+                message: String(message || ''),
+                modal: !!(options && options.modal),
+                actions: commands.map(c => ({
+                  title: c?.title || '',
+                  isCloseAffordance: !!c?.isCloseAffordance,
+                })),
+              });
+            }
             const deviceCode = extractDeviceCodeFromText(message);
             if (deviceCode) {
               emitAuthDeviceCode(deviceCode, '$showMessage', { message: String(message || '') });

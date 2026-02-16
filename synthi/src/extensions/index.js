@@ -289,6 +289,9 @@ export async function initializeExtensionSystem(options) {
       case 'extensionMessage':
         onContribution?.('extensionMessage', payload);
         break;
+      case 'authPrompt':
+        onContribution?.('authPrompt', payload);
+        break;
       case 'showQuickPick':
         onContribution?.('showQuickPick', payload);
         break;

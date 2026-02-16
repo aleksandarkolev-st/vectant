@@ -470,6 +470,11 @@ export class MainThreadBridge {
       this._emitRemoteContribution?.('extensionMessage', data);
     });
 
+    this.vscodeServerProxy.on('authPrompt', (data) => {
+      console.log(`[MainThreadBridge/vscode-server] authPrompt:`, data);
+      this._emitRemoteContribution?.('authPrompt', data);
+    });
+
     // Forward quick pick requests → frontend UI
     this.vscodeServerProxy.on('showQuickPick', (data) => {
       console.log(`[MainThreadBridge/vscode-server] showQuickPick:`, data);

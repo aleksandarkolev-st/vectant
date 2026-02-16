@@ -455,6 +455,19 @@ export function useExtensions({ editor = null, workspaceId = 'default' } = {}) {
               });
               break;
             }
+            case 'authPrompt': {
+              const actions = Array.isArray(payload?.actions) ? payload.actions : [];
+              const first = actions.find(a => !a?.isCloseAffordance);
+              const message = payload?.message || 'Authentication action required';
+              toast.info(message, {
+                duration: 12000,
+                action: first ? {
+                  label: first.title || 'Open',
+                  onClick: () => runAuthAction(first.title || ''),
+                } : undefined,
+              });
+              break;
+            }
             case 'uriHandlerRegistered': {
               console.log(`[useExtensions] uriHandlerRegistered: ${payload?.extensionId || 'unknown'}`);
               break;
