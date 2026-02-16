@@ -57,6 +57,8 @@ Current implementation maps action titles heuristically (`open`, `copy`, `retry`
 
 - If provider emits no code and no callback URL, manager emits `authDeviceCodeMissing` to avoid silent failures.
 - Duplicate auth-session prompts are deduped at preload-bridge level.
+- Interactive GitHub sign-in triggers (`authSessionRequest` / `$createSession`) now bypass passive-flow cooldown and can re-emit pending device codes.
+- `authDeviceCodeMissing` is suppressed while a matching GitHub flow is already pending or a matching session already exists.
 
 ## Session Retrieval Guarantees
 
