@@ -433,6 +433,9 @@ function createTerminalWSS() {
         ws.send(Buffer.from(replay, 'utf-8'), { binary: true });
       }
 
+      // Signal the frontend that the replay is complete
+      ws.send(JSON.stringify({ type: 'replay-done' }));
+
       // Attach the WS-forwarding listener for live output going forward
       // (the old headless buffering listener is stopped via stopBuffering)
       const onPtyData = (data) => {

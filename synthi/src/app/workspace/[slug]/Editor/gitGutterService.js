@@ -50,10 +50,10 @@ function ensureGitGutterStyles() {
             border-radius: 0 !important;
         }
         .${CLASS_ADDED} {
-            background: #a8e6cf !important;
+            background: #3def3a !important;
         }
         .${CLASS_MODIFIED} {
-            background: #88c0fc !important;
+            background: #1871d0 !important;
         }
         .${CLASS_DELETED} {
             background: #ff6b6b !important;

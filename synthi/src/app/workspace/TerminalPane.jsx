@@ -237,6 +237,14 @@ export default function TerminalPane({ terminalId = 'default', paneSide = 'main'
                 term.write(`\r\n\x1b[90m[Process exited with code ${msg.code}]\x1b[0m\r\n`);
                 setState('closed');
                 break;
+              case 'replay-done':
+                // AI terminal: scroll to top so the user sees the command + full output
+                if (fixedSessionId) {
+                  requestAnimationFrame(() => {
+                    try { term.scrollToTop(); } catch (_) {}
+                  });
+                }
+                break;
               case 'error':
                 term.write(`\r\n\x1b[31m[Error: ${msg.message}]\x1b[0m\r\n`);
                 break;

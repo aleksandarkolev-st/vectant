@@ -69,7 +69,7 @@ export function ensurePeekStyles() {
 }
 .git-peek-badge-modified {
     background: rgba(136, 192, 252, 0.10);
-    color: #88c0fc;
+    color: #1871d0;
 }
 .git-peek-badge-deleted {
     background: rgba(255, 107, 107, 0.10);
@@ -77,7 +77,7 @@ export function ensurePeekStyles() {
 }
 .git-peek-badge-added {
     background: rgba(74, 222, 128, 0.10);
-    color: #4ade80;
+    color: #3def3a;
 }
 .git-peek-actions {
     display: flex;
