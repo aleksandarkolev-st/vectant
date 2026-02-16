@@ -2189,6 +2189,15 @@ function _scoreCommandAlias(queryId, candidateId) {
 
   let score = overlap * 100;
   if (qPrefix && cPrefix && qPrefix === cPrefix) score += 350;
+  if (qPrefix && cPrefix && qPrefix !== cPrefix) {
+    // Prefer same-prefix command families and avoid cross-extension jumps.
+    score -= 140;
+
+    // Explicitly block common false-positive: pr.* -> prisma.*
+    if ((qPrefix === 'pr' && cPrefix === 'prisma') || (qPrefix === 'prisma' && cPrefix === 'pr')) {
+      score -= 500;
+    }
+  }
   if (candidateId.toLowerCase().includes(queryId.toLowerCase())) score += 250;
   if (queryId.toLowerCase().includes(candidateId.toLowerCase())) score += 100;
 
