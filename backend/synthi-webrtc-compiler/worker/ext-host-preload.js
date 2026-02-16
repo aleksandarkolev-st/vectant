@@ -1145,6 +1145,9 @@ const trackedTreeProviders = new Map();
 /** @type {Map<string, {provider: object, extensionId?: string}>} */
 const trackedWebviewProviders = new Map();
 
+/** @type {Map<string, {callback: Function, thisArg?: any}>} */
+const trackedCommandHandlers = new Map();
+
 /** @type {Set<string>} viewTypes already logged as missing provider */
 const _missingWebviewProviderLogged = new Set();
 
@@ -1917,8 +1920,26 @@ function wrapCommands(vscode) {
     // Call the real API
     const disposable = original.call(this, commandId, callback, thisArg);
 
+    // Store the handler so we can call it directly from the bridge.
+    // vscode.commands.executeCommand() may not find locally-registered
+    // commands in the EH command service (it delegates to main thread),
+    // so we keep a direct reference to the callback.
+    if (typeof callback === 'function') {
+      trackedCommandHandlers.set(commandId, { callback, thisArg });
+      log(`Command handler stored: ${commandId}`);
+    }
+
     // Notify bridge of command registration
     bridgeSend({ type: 'command', commandId, extensionId: _inferExtensionId() });
+
+    // Clean up on dispose
+    const origDispose = disposable?.dispose;
+    if (origDispose) {
+      disposable.dispose = function() {
+        trackedCommandHandlers.delete(commandId);
+        return origDispose.call(this);
+      };
+    }
 
     return disposable;
   };
@@ -2079,22 +2100,46 @@ function _handleBridgeRequest(msg) {
     }
 
     case 'executeCommand': {
-      // Execute a command via the real vscode.commands.executeCommand API
+      // Execute a command by directly calling its stored handler.
+      // We can't rely on vscode.commands.executeCommand() because the EH
+      // command service often doesn't find locally-registered commands and
+      // delegates to the main thread (which we stub), causing a no-op loop.
       const { commandId, args: cmdArgs } = msg;
-      if (!realVscodeApi?.commands?.executeCommand) {
-        logError('Cannot execute command: vscode API not available yet');
+      log(`Bridge requested command execution: ${commandId}`);
+
+      // 1. Try direct handler invocation (most reliable path)
+      const tracked = trackedCommandHandlers.get(commandId);
+      if (tracked) {
+        log(`Calling stored handler directly for: ${commandId}`);
+        try {
+          const result = tracked.callback.apply(tracked.thisArg, cmdArgs || []);
+          // Handle async handlers (Promises)
+          if (result && typeof result.then === 'function') {
+            result.then(
+              () => log(`Command ${commandId} completed successfully`),
+              (err) => logError(`Command ${commandId} rejected: ${err.message}`)
+            );
+          } else {
+            log(`Command ${commandId} executed (sync)`);
+          }
+        } catch (e) {
+          logError(`Command ${commandId} handler threw: ${e.message}`);
+        }
         break;
       }
-      log(`Bridge requested command execution: ${commandId}`);
-      try {
-        realVscodeApi.commands.executeCommand(commandId, ...(cmdArgs || []))
-          .then(() => {
-            log(`Command ${commandId} executed successfully`);
-          }, (err) => {
-            logError(`Command ${commandId} failed: ${err.message}`);
-          });
-      } catch (e) {
-        logError(`Command ${commandId} execution error: ${e.message}`);
+
+      // 2. Fallback to vscode API (for built-in commands)
+      if (realVscodeApi?.commands?.executeCommand) {
+        log(`No stored handler for ${commandId}, falling back to vscode API`);
+        try {
+          realVscodeApi.commands.executeCommand(commandId, ...(cmdArgs || []))
+            .then(() => log(`Command ${commandId} executed via API`),
+              (err) => logError(`Command ${commandId} API call failed: ${err.message}`));
+        } catch (e) {
+          logError(`Command ${commandId} API error: ${e.message}`);
+        }
+      } else {
+        logError(`Cannot execute ${commandId}: no handler and no vscode API`);
       }
       break;
     }
