@@ -136,6 +136,8 @@ export function useExtensions({ editor = null, workspaceId = 'default' } = {}) {
   const lastAuthProviderRef = useRef(null);
   const lastAuthOpenUrlRef = useRef(null);
   const lastAuthCodePromptRef = useRef({ code: null, ts: 0 });
+  const pendingAuthCallbackUrlRef = useRef(null);
+  const authCallbackDeliveredRef = useRef(false);
   const [vscodeServerState, setVscodeServerState] = useState('disconnected');
   const [vscodeServerWorkspaceDir, setVscodeServerWorkspaceDir] = useState(null);
 
@@ -1043,6 +1045,61 @@ export function useExtensions({ editor = null, workspaceId = 'default' } = {}) {
 
     return () => clearTimeout(timer);
   }, [vscodeServerState, connectVSCodeServer]);
+
+  // ─── OAuth URI callback intake (provider-agnostic) ────────────
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+
+    const captureFromLocation = () => {
+      try {
+        const href = window.location.href;
+        const url = new URL(href);
+        const fromQuery = url.searchParams.get('vscodeUri')
+          || url.searchParams.get('auth_callback')
+          || url.searchParams.get('callbackUrl');
+        const fromHash = url.hash && url.hash.startsWith('#vscodeUri=')
+          ? decodeURIComponent(url.hash.slice('#vscodeUri='.length))
+          : null;
+        const candidate = fromQuery || fromHash;
+        if (candidate && typeof candidate === 'string') {
+          pendingAuthCallbackUrlRef.current = candidate;
+          authCallbackDeliveredRef.current = false;
+          console.log(`[useExtensions] Captured auth callback URL: ${candidate}`);
+        }
+      } catch (_) {}
+    };
+
+    const onCallbackEvent = (event) => {
+      const value = event?.detail?.url;
+      if (value && typeof value === 'string') {
+        pendingAuthCallbackUrlRef.current = value;
+        authCallbackDeliveredRef.current = false;
+        console.log(`[useExtensions] Received auth callback URL event: ${value}`);
+      }
+    };
+
+    captureFromLocation();
+    window.addEventListener('synthi:auth-callback-url', onCallbackEvent);
+    return () => window.removeEventListener('synthi:auth-callback-url', onCallbackEvent);
+  }, []);
+
+  useEffect(() => {
+    const url = pendingAuthCallbackUrlRef.current;
+    if (!url || authCallbackDeliveredRef.current) return;
+
+    const proxy = systemRef.current?.bridge?.vscodeServerProxy;
+    if (!proxy?.isReady()) return;
+
+    authCallbackDeliveredRef.current = true;
+    proxy.request('deliverUriCallback', [url])
+      .then(() => {
+        console.log(`[useExtensions] Delivered auth callback URL to extension host`);
+      })
+      .catch((err) => {
+        authCallbackDeliveredRef.current = false;
+        console.warn(`[useExtensions] Failed to deliver auth callback URL: ${err.message}`);
+      });
+  }, [vscodeServerState]);
 
   // ─── Reconnect Monaco when editor becomes available ──────────
   useEffect(() => {
