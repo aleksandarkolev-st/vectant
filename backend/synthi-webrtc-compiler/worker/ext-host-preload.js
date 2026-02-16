@@ -1151,6 +1151,9 @@ const trackedCommandHandlers = new Map();
 /** @type {Map<string, {handler: object, extensionId?: string}>} */
 const trackedUriHandlers = new Map();
 
+/** @type {Array<string>} pending URI callback URLs received before handler registration */
+const pendingUriCallbacks = [];
+
 /** @type {Set<string>} commands already attempted for extension activation */
 const _commandActivationAttempts = new Set();
 
@@ -1598,6 +1601,25 @@ function wrapUriHandlers(vscode) {
     const disposable = original.call(this, handler);
     trackedUriHandlers.set(key, { handler, extensionId });
     bridgeSend({ type: 'uriHandlerRegistered', extensionId });
+
+    if (pendingUriCallbacks.length > 0 && typeof handler?.handleUri === 'function') {
+      const queued = pendingUriCallbacks.splice(0, pendingUriCallbacks.length);
+      for (const rawUrl of queued) {
+        try {
+          const uri = typeof realVscodeApi?.Uri?.parse === 'function'
+            ? realVscodeApi.Uri.parse(rawUrl)
+            : rawUrl;
+          const result = handler.handleUri(uri);
+          if (result && typeof result.then === 'function') {
+            result.catch(err => logError(`Queued URI callback rejected (${extensionId}): ${err.message}`));
+          }
+          bridgeSend({ type: 'uriCallbackResult', ok: true, delivered: 1, queued: true, url: rawUrl });
+        } catch (e) {
+          logError(`Queued URI callback failed (${extensionId}): ${e.message}`);
+          bridgeSend({ type: 'uriCallbackResult', ok: false, reason: 'queued-uri-handler-failed', url: rawUrl });
+        }
+      }
+    }
 
     const originalDispose = disposable?.dispose;
     if (typeof originalDispose === 'function') {
@@ -2700,8 +2722,9 @@ function _handleBridgeRequest(msg) {
       }
 
       if (trackedUriHandlers.size === 0) {
-        logError(`deliverUriCallback: no registered URI handlers for ${rawUrl}`);
-        bridgeSend({ type: 'uriCallbackResult', ok: false, reason: 'no-uri-handler', url: rawUrl });
+        pendingUriCallbacks.push(rawUrl);
+        log(`deliverUriCallback: queued (no handlers yet) ${rawUrl}`);
+        bridgeSend({ type: 'uriCallbackResult', ok: false, queued: true, reason: 'queued-no-uri-handler', url: rawUrl });
         break;
       }
 
