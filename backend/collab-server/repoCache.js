@@ -64,6 +64,31 @@ async function rmDir(dir) {
 }
 
 /**
+ * Check whether a slug-level directory contains per-user repo subdirectories.
+ * This is used by the dispose callback to avoid deleting repos/<slug>/ when
+ * per-user repos (repos/<slug>/<userId>/) exist inside — deleting the parent
+ * would wipe out ALL users' working trees.
+ *
+ * @param {string} dir — Absolute path to the slug-level directory
+ * @returns {boolean}
+ */
+function _hasPerUserRepos(dir) {
+  try {
+    if (!fs.existsSync(dir)) return false;
+    const entries = fs.readdirSync(dir, { withFileTypes: true });
+    return entries.some(e => {
+      if (!e.isDirectory()) return false;
+      // Skip internal dirs
+      if (e.name === '_upstream.git' || e.name === 'sessions' || e.name.startsWith('.')) return false;
+      // A valid per-user repo has a .git inside
+      return fs.existsSync(path.join(dir, e.name, '.git'));
+    });
+  } catch (_) {
+    return false;
+  }
+}
+
+/**
  * Materialise a working tree from GCS if it doesn't already exist on disk.
  */
 async function materialize(slug, repoPath, userId) {
@@ -133,6 +158,28 @@ const cache = new LRUCache({
       console.log(`[RepoCache] Refusing to evict in-use entry ${key} (refs=${entry.refs}, pinned=${entry.pinned})`);
       _safeEntries.set(key, entry);
       return;
+    }
+    // Safety: for slug-level entries (key has no ':'), never delete the
+    // directory if it contains per-user repos — doing so would wipe out
+    // ALL users' working trees for this workspace.
+    if (!key.includes(':') && _hasPerUserRepos(entry.repoPath)) {
+      console.log(`[RepoCache] Refusing to evict slug-level entry ${key} — per-user repos exist inside ${entry.repoPath}`);
+      _safeEntries.set(key, entry);
+      return;
+    }
+    // Also check if any per-user entries in the cache or _safeEntries
+    // reference paths inside this slug directory (belt-and-suspenders).
+    const isSlugLevel = !key.includes(':');
+    if (isSlugLevel) {
+      const slug = key;
+      const hasActivePerUser = [...cache.keys(), ..._safeEntries.keys()].some(
+        k => k !== key && k.startsWith(slug + ':')
+      );
+      if (hasActivePerUser) {
+        console.log(`[RepoCache] Refusing to evict slug-level entry ${key} — per-user cache entries exist`);
+        _safeEntries.set(key, entry);
+        return;
+      }
     }
     console.log(`[RepoCache] Evicting ${key} from cache, removing ${entry.repoPath}`);
     rmDir(entry.repoPath).catch(() => {});
