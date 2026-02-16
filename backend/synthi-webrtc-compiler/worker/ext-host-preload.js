@@ -2159,12 +2159,16 @@ function _invokeTrackedCommand(commandId, cmdArgs) {
   return true;
 }
 
-function _resolveLegacyCommandId(commandId) {
-  const lower = String(commandId || '').toLowerCase();
-  if (lower === 'pr.signin' || lower === 'pr.signinnoenterprise') {
-    return 'github-actions.sign-in';
-  }
-  return commandId;
+function _generateCommandVariants(commandId) {
+  const value = String(commandId || '');
+  if (!value) return [];
+
+  const variants = new Set([value]);
+  variants.add(value.replace(/NoEnterprise$/i, ''));
+  variants.add(value.replace(/\.sign-?in$/i, '.login'));
+  variants.add(value.replace(/\.login$/i, '.signin'));
+
+  return Array.from(variants).filter(Boolean);
 }
 
 function _tokenizeCommandId(commandId) {
@@ -2179,6 +2183,15 @@ function _normalizeCommandText(commandId) {
   return String(commandId || '')
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '');
+}
+
+function _isAuthLikeCommand(commandId) {
+  const lower = String(commandId || '').toLowerCase();
+  return lower.includes('signin')
+    || lower.includes('sign-in')
+    || lower.includes('login')
+    || lower.includes('auth')
+    || lower.includes('session');
 }
 
 function _commandPrefix(commandId) {
@@ -2255,6 +2268,7 @@ function _findBestTrackedAlias(commandId) {
   if (keys.length === 0) return null;
 
   const queryPrefix = _commandPrefix(commandId);
+  const queryAuthLike = _isAuthLikeCommand(commandId);
 
   let bestId = null;
   let bestScore = 0;
@@ -2264,7 +2278,13 @@ function _findBestTrackedAlias(commandId) {
 
     // Keep short-prefix commands inside their family to avoid collisions
     // like pr.* mistakenly aliasing to prisma.*.
-    if (queryPrefix && queryPrefix.length <= 3 && candidatePrefix && candidatePrefix !== queryPrefix) {
+    if (
+      queryPrefix
+      && queryPrefix.length <= 3
+      && candidatePrefix
+      && candidatePrefix !== queryPrefix
+      && !queryAuthLike
+    ) {
       continue;
     }
 
@@ -2296,29 +2316,21 @@ function _topTrackedCandidates(commandId, limit = 5) {
 function _findBestKnownAlias(commandId, knownCommands) {
   if (!commandId || !Array.isArray(knownCommands) || knownCommands.length === 0) return null;
 
-  const lower = String(commandId).toLowerCase();
-
-  // Deterministic compatibility path for legacy PR sign-in command ids.
-  // Some flows request pr.signin / pr.signinNoEnterprise while the active
-  // command surface exposes github-actions.sign-in.
-  if (
-    lower.startsWith('pr.')
-    && (lower.includes('signin') || lower.includes('sign-in') || lower.includes('login'))
-  ) {
-    const exact = knownCommands.find(c => typeof c === 'string' && c.toLowerCase() === 'github-actions.sign-in');
-    if (exact) {
-      return { commandId: exact, score: 10000 };
-    }
-  }
-
   let best = null;
   let bestScore = 0;
   const queryPrefix = _commandPrefix(commandId);
+  const queryAuthLike = _isAuthLikeCommand(commandId);
   for (const candidate of knownCommands) {
     if (typeof candidate !== 'string') continue;
     const candidatePrefix = _commandPrefix(candidate);
 
-    if (queryPrefix && queryPrefix.length <= 3 && candidatePrefix && candidatePrefix !== queryPrefix) {
+    if (
+      queryPrefix
+      && queryPrefix.length <= 3
+      && candidatePrefix
+      && candidatePrefix !== queryPrefix
+      && !queryAuthLike
+    ) {
       continue;
     }
 
@@ -2343,11 +2355,15 @@ async function _getKnownCommandsSnapshot(commandId) {
     if (!Array.isArray(all)) return [];
 
     const queryPrefix = _commandPrefix(commandId);
+    const queryAuthLike = _isAuthLikeCommand(commandId);
     return all
       .filter(id => typeof id === 'string')
       .filter(id => {
         const candidatePrefix = _commandPrefix(id);
         if (queryPrefix && candidatePrefix && candidatePrefix === queryPrefix) {
+          return true;
+        }
+        if (queryAuthLike && _isAuthLikeCommand(id)) {
           return true;
         }
         return _tokenOverlapCount(commandId, id) > 0;
@@ -2513,10 +2529,8 @@ function _handleBridgeRequest(msg) {
       // command service often doesn't find locally-registered commands and
       // delegates to the main thread (which we stub), causing a no-op loop.
       const { commandId, args: cmdArgs } = msg;
-      const effectiveCommandId = _resolveLegacyCommandId(commandId);
-      if (effectiveCommandId !== commandId) {
-        log(`Legacy command remap: ${commandId} -> ${effectiveCommandId}`);
-      }
+      const variants = _generateCommandVariants(commandId);
+      const effectiveCommandId = variants[0] || commandId;
       const envelopeKey = JSON.stringify({ commandId: effectiveCommandId, args: Array.isArray(cmdArgs) ? cmdArgs : [] });
       const now = Date.now();
       if (
@@ -2536,8 +2550,10 @@ function _handleBridgeRequest(msg) {
       _lastBridgeCommand.id = effectiveCommandId || null;
       _lastBridgeCommand.ts = Date.now();
 
-      if (_invokeTrackedCommand(effectiveCommandId, cmdArgs)) {
-        break;
+      for (const variant of variants) {
+        if (_invokeTrackedCommand(variant, cmdArgs)) {
+          return;
+        }
       }
 
       // 1b. Generic alias fallback: resolve to closest tracked command.

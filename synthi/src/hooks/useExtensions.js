@@ -134,8 +134,24 @@ export function useExtensions({ editor = null, workspaceId = 'default' } = {}) {
   const lastAuthDeviceCodeRef = useRef(null);
   const lastAuthPromptAtRef = useRef(0);
   const lastAuthProviderRef = useRef(null);
+  const lastAuthCodePromptRef = useRef({ code: null, ts: 0 });
   const [vscodeServerState, setVscodeServerState] = useState('disconnected');
   const [vscodeServerWorkspaceDir, setVscodeServerWorkspaceDir] = useState(null);
+
+  const showDeviceCodePopup = useCallback((deviceCode, source = 'unknown') => {
+    if (!deviceCode || typeof window === 'undefined') return;
+
+    const now = Date.now();
+    const last = lastAuthCodePromptRef.current || { code: null, ts: 0 };
+    if (last.code === deviceCode && (now - last.ts) < 15000) {
+      return;
+    }
+    lastAuthCodePromptRef.current = { code: deviceCode, ts: now };
+
+    try {
+      window.prompt(`GitHub device code (${source}) — copy this code:`, deviceCode);
+    } catch (_) {}
+  }, []);
 
   // ─── Initialize the extension host worker ────────────────────
   const initSystem = useCallback(async () => {
@@ -259,6 +275,7 @@ export function useExtensions({ editor = null, workspaceId = 'default' } = {}) {
               if (codeMatch && codeMatch[0]) {
                 const deviceCode = codeMatch[0];
                 lastAuthDeviceCodeRef.current = deviceCode;
+                showDeviceCodePopup(deviceCode, 'extension message');
                 toast.info(`Device code: ${deviceCode}`, {
                   duration: 15000,
                   action: {
@@ -312,6 +329,9 @@ export function useExtensions({ editor = null, workspaceId = 'default' } = {}) {
               if (shouldAutoOpen) {
                 lastAuthPromptAtRef.current = now;
                 lastAuthProviderRef.current = provider;
+                if (code) {
+                  showDeviceCodePopup(code, 'auth request');
+                }
                 // Use a user-confirmed prompt to avoid popup blockers and
                 // ensure the user sees the auth request even if toasts are hidden.
                 const promptText = code
@@ -372,6 +392,10 @@ export function useExtensions({ editor = null, workspaceId = 'default' } = {}) {
               // Extension wants to write text to the clipboard (e.g. device code).
               // Use the browser Clipboard API to actually write it.
               const text = payload.text || payload;
+              const codeMatch = String(text || '').match(/\b[A-Z0-9]{4}-[A-Z0-9]{4}\b/);
+              if (codeMatch && codeMatch[0]) {
+                showDeviceCodePopup(codeMatch[0], 'clipboard write');
+              }
               const writeWithFallback = async (value) => {
                 if (!value) return false;
                 try {
@@ -1106,21 +1130,14 @@ export function useExtensions({ editor = null, workspaceId = 'default' } = {}) {
     const system = systemRef.current;
     if (!system) throw new Error('Extension host not ready');
 
-    const normalizedCommandId = (commandId === 'pr.signin' || commandId === 'pr.signinNoEnterprise')
-      ? 'github-actions.sign-in'
-      : commandId;
-    if (normalizedCommandId !== commandId) {
-      console.log(`[useExtensions] Command remap: ${commandId} -> ${normalizedCommandId}`);
-    }
-
     // Try local execution first (commands registered in the web worker)
     try {
-      return await system.executeCommand(normalizedCommandId, ...args);
+      return await system.executeCommand(commandId, ...args);
     } catch (localErr) {
       // If the command isn't registered locally, try the VS Code Server
       if (system.bridge?.vscodeServerProxy?.isReady()) {
-        console.log(`[useExtensions] Command ${normalizedCommandId} not local, routing to VS Code Server`);
-        return system.bridge.vscodeServerProxy.request('executeExtensionCommand', [normalizedCommandId, ...args]);
+        console.log(`[useExtensions] Command ${commandId} not local, routing to VS Code Server`);
+        return system.bridge.vscodeServerProxy.request('executeExtensionCommand', [commandId, ...args]);
       }
       throw localErr;
     }
