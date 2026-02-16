@@ -361,6 +361,16 @@ export function useExtensions({ editor = null, workspaceId = 'default' } = {}) {
               console.log(`[useExtensions] File dialog: ${payload.type}`, payload.options);
               break;
             }
+            case 'commandExecutionFailed': {
+              const commandId = payload?.commandId || 'unknown';
+              const reason = payload?.reason || 'unknown';
+              console.warn(`[useExtensions] commandExecutionFailed: ${commandId} (${reason})`);
+              toast.error(`Command failed: ${commandId}`, {
+                description: reason,
+                duration: 7000,
+              });
+              break;
+            }
           }
         };
       }

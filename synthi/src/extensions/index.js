@@ -301,6 +301,9 @@ export async function initializeExtensionSystem(options) {
       case 'showFileDialog':
         onContribution?.('showFileDialog', payload);
         break;
+      case 'commandExecutionFailed':
+        onContribution?.('commandExecutionFailed', payload);
+        break;
       default:
         onContribution?.(type, payload);
     }
