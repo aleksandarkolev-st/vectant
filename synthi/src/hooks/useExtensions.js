@@ -865,16 +865,54 @@ export function useExtensions({ editor = null, workspaceId = 'default' } = {}) {
 
   /**
    * Uninstall an extension completely.
+   * Removes from: browser worker, server disk, IndexedDB, LSP registry, Redux.
    */
   const uninstall = useCallback(async (extensionId) => {
     const system = systemRef.current;
+
+    // 1. Deactivate in the browser extension host worker
     if (system) {
       try { await system.bridge?.deactivateExtension(extensionId); } catch (_) {}
     }
-    await dbRemove(extensionId);
-    // Unregister LSP mappings so the Editor stops trying to connect
+
+    // 2. Remove from VS Code Server disk (if connected)
+    if (system?.bridge?.vscodeServerProxy?.isReady()) {
+      try {
+        const result = await system.bridge.vscodeServerProxy.uninstallExtension(extensionId);
+        if (result?.success) {
+          console.log(`[useExtensions] ✓ Uninstalled ${extensionId} from server (dirs: ${result.removedDirs?.join(', ') || 'none'})`);
+        } else {
+          console.warn(`[useExtensions] Server uninstall returned failure for ${extensionId}:`, result?.error);
+        }
+      } catch (err) {
+        console.warn(`[useExtensions] Server uninstall RPC failed for ${extensionId}:`, err.message);
+      }
+    }
+
+    // 3. Remove from IndexedDB persistence
+    try {
+      await dbRemove(extensionId);
+    } catch (err) {
+      console.warn(`[useExtensions] IndexedDB removal failed for ${extensionId}:`, err.message);
+    }
+
+    // 4. Unregister LSP mappings so the Editor stops trying to connect
     try { unregisterLspForExtension(extensionId); } catch (_) {}
+
+    // 5. Remove from Redux store (cleans up UI contributions)
     dispatch(removeExtRedux(extensionId));
+
+    // 6. Clean up tree data cache for any views this extension owned
+    setTreeDataMap(prev => {
+      const next = { ...prev };
+      for (const viewId of Object.keys(next)) {
+        // Views are typically namespaced by extension id
+        if (viewId.toLowerCase().includes(extensionId.toLowerCase().split('.')[1] || '')) {
+          delete next[viewId];
+        }
+      }
+      return next;
+    });
   }, [dispatch]);
 
   /**

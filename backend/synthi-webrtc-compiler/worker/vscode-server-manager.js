@@ -3497,13 +3497,16 @@ async function manualInstallVSIX(extensionId, vsixPath) {
 /**
  * Uninstall an extension from the server.
  * @param {string} extensionId
- * @returns {{success: boolean}}
+ * @returns {{success: boolean, removedDirs?: string[], error?: string}}
  */
 function uninstallExtension(extensionId) {
   try {
     const extIdLower = String(extensionId || '').toLowerCase();
+    process.stderr.write(`[vscode-server-manager] uninstallExtension: ${extensionId}\n`);
 
     // Best-effort CLI uninstall first (handles internal metadata/state).
+    // Note: code-server may only mark the extension as obsolete rather than
+    // deleting the directory, so we always do manual cleanup afterwards.
     try {
       const binary = findServerBinary();
       if (binary) {
@@ -3558,8 +3561,17 @@ function uninstallExtension(extensionId) {
       process.stderr.write(`[vscode-server-manager] uninstallExtension: removed ${removedDirs.length} dirs for ${extensionId}: ${removedDirs.join(', ')}\n`);
     }
 
-    installedExtensions.delete(extensionId);
-    extHostLoadedExtensions.delete(extensionId);
+    // Clean up in-memory tracking (case-insensitive match)
+    for (const key of installedExtensions.keys()) {
+      if (key.toLowerCase() === extIdLower) {
+        installedExtensions.delete(key);
+      }
+    }
+    for (const key of extHostLoadedExtensions) {
+      if (key.toLowerCase() === extIdLower) {
+        extHostLoadedExtensions.delete(key);
+      }
+    }
     sendEvent('extensionUninstalled', extensionId);
     return { success: true, removedDirs };
   } catch (err) {
