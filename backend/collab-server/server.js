@@ -475,6 +475,20 @@ class ValidatingPersistence {
     
     // Update hash cache when writing
     fileHashCache.set(docName, { hash: computeHash(content), timestamp: Date.now() });
+
+    // Safety net: when the Y.Doc is being closed (all clients disconnected),
+    // check if the observer marked it dirty (changes occurred but were never
+    // explicitly saved).  If so, flush to disk/GCS to avoid data loss.
+    const entry = this.docObservers.get(docName);
+    if (entry && entry.dirty) {
+      console.log(`[Collab writeState] Doc "${docName}" has unsaved changes — flushing to disk before close`);
+      try {
+        await this.flushDocToDisk(docName);
+        entry.dirty = false;
+      } catch (e) {
+        console.error(`[Collab writeState] Flush failed for "${docName}":`, e.message);
+      }
+    }
   }
 
   async clearDocument(docName) {
