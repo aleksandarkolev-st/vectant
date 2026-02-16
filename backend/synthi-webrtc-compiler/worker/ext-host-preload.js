@@ -1151,6 +1151,9 @@ const trackedCommandHandlers = new Map();
 /** @type {Set<string>} commands already attempted for extension activation */
 const _commandActivationAttempts = new Set();
 
+/** @type {boolean} one-time broad activation attempt completed */
+let _broadCommandActivationAttempted = false;
+
 /** @type {Set<string>} viewTypes already logged as missing provider */
 const _missingWebviewProviderLogged = new Set();
 
@@ -2151,6 +2154,28 @@ function _findExtensionsContributingCommand(commandId) {
   return out;
 }
 
+function _findExtensionsByCommandPrefix(commandId) {
+  const out = [];
+  const all = realVscodeApi?.extensions?.all;
+  if (!Array.isArray(all) || !commandId || typeof commandId !== 'string') return out;
+
+  const prefix = commandId.includes('.') ? commandId.split('.')[0] : commandId;
+  const lowered = prefix.toLowerCase();
+
+  for (const ext of all) {
+    try {
+      const id = String(ext?.id || '').toLowerCase();
+      const name = String(ext?.packageJSON?.name || '').toLowerCase();
+      const publisher = String(ext?.packageJSON?.publisher || '').toLowerCase();
+      if (id.includes(lowered) || name.includes(lowered) || publisher.includes(lowered)) {
+        out.push(ext);
+      }
+    } catch (_) {}
+  }
+
+  return out;
+}
+
 async function _activateExtensionsForCommand(commandId) {
   if (!commandId) return { activated: 0, total: 0 };
 
@@ -2159,7 +2184,25 @@ async function _activateExtensionsForCommand(commandId) {
   }
   _commandActivationAttempts.add(commandId);
 
-  const targets = _findExtensionsContributingCommand(commandId);
+  let targets = _findExtensionsContributingCommand(commandId);
+
+  // Fallback 1: heuristic prefix matching (e.g. pr.* → GitHub PR extension)
+  if (targets.length === 0) {
+    targets = _findExtensionsByCommandPrefix(commandId);
+  }
+
+  // Fallback 2: one-time broad activation of all inactive extensions.
+  // Some commands are registered dynamically and not declared in manifests.
+  if (targets.length === 0 && !_broadCommandActivationAttempted) {
+    _broadCommandActivationAttempted = true;
+    const all = Array.isArray(realVscodeApi?.extensions?.all) ? realVscodeApi.extensions.all : [];
+    const inactive = all.filter(ext => ext && !ext.isActive);
+    if (inactive.length > 0) {
+      log(`No manifest/prefix match for ${commandId}; broad activation of ${inactive.length} inactive extension(s)`);
+      targets = inactive;
+    }
+  }
+
   if (targets.length === 0) {
     return { activated: 0, total: 0 };
   }
@@ -2264,6 +2307,7 @@ function _handleBridgeRequest(msg) {
             type: 'commandExecutionFailed',
             commandId,
             reason: 'no-tracked-handler-after-activation',
+            trackedHandlers: trackedCommandHandlers.size,
           });
           return;
         }
@@ -2284,6 +2328,7 @@ function _handleBridgeRequest(msg) {
             type: 'commandExecutionFailed',
             commandId,
             reason: 'no-handler-and-no-vscode-api',
+            trackedHandlers: trackedCommandHandlers.size,
           });
         }
       })().catch((e) => {
