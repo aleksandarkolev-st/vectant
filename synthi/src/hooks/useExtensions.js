@@ -1106,14 +1106,21 @@ export function useExtensions({ editor = null, workspaceId = 'default' } = {}) {
     const system = systemRef.current;
     if (!system) throw new Error('Extension host not ready');
 
+    const normalizedCommandId = (commandId === 'pr.signin' || commandId === 'pr.signinNoEnterprise')
+      ? 'github-actions.sign-in'
+      : commandId;
+    if (normalizedCommandId !== commandId) {
+      console.log(`[useExtensions] Command remap: ${commandId} -> ${normalizedCommandId}`);
+    }
+
     // Try local execution first (commands registered in the web worker)
     try {
-      return await system.executeCommand(commandId, ...args);
+      return await system.executeCommand(normalizedCommandId, ...args);
     } catch (localErr) {
       // If the command isn't registered locally, try the VS Code Server
       if (system.bridge?.vscodeServerProxy?.isReady()) {
-        console.log(`[useExtensions] Command ${commandId} not local, routing to VS Code Server`);
-        return system.bridge.vscodeServerProxy.request('executeExtensionCommand', [commandId, ...args]);
+        console.log(`[useExtensions] Command ${normalizedCommandId} not local, routing to VS Code Server`);
+        return system.bridge.vscodeServerProxy.request('executeExtensionCommand', [normalizedCommandId, ...args]);
       }
       throw localErr;
     }
