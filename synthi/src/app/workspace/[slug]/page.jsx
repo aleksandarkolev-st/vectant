@@ -55,6 +55,9 @@ import { ProblemsPanel } from '@/components/analysis';
 import { DockablePanel, DockablePanelProvider, PANEL_STATE, DOCK_POSITION } from '@/components/docking';
 import { AlertCircle } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { useExtensions } from '@/hooks/useExtensions';
+import ExtensionSidebar from '@/components/extensions/ExtensionSidebar';
+import ExtensionViewContainer from '@/components/extensions/ExtensionViewContainer';
 
 export default function EditorPage({ params }) {
     const dispatch = useAppDispatch();
@@ -75,6 +78,32 @@ export default function EditorPage({ params }) {
     const { analyzeCode, analyzeProactive, analyzeContainer, analyzeUnified, lastResult, isAnalyzing: isAnalyzingGateway, connectionMeta } = useAnalyzerGateway();
     const { client, compile, mediaStream, cancelMobileJob, isCompiling, status: compilerStatus } = useCompiler();
     useHMR();
+
+    // ─── Extension system ──────────────────────────────────
+    const {
+        ready: extensionsReady,
+        hostStatus: extensionHostStatus,
+        extensions: installedExtensions,
+        errors: extensionErrors,
+        install: installExtension,
+        enable: enableExtension,
+        disable: disableExtension,
+        uninstall: uninstallExtension,
+        restart: restartExtension,
+        executeCommand: executeExtensionCommand,
+        dismissError: dismissExtensionError,
+        contributedContainers,
+        contributedViews,
+        webviewPanels: extensionWebviewPanels,
+        treeDataMap: extensionTreeDataMap,
+        webviewManager: extensionWebviewManager,
+        statusBarItems: extensionStatusBarItems,
+        vscodeServerState,
+        vscodeServerWorkspaceDir,
+        vscodeTunnelService: extensionTunnelService,
+        requestTreeRefresh,
+        viewsWelcome: extensionViewsWelcome,
+    } = useExtensions({ editor, workspaceId: slug });
     
     // Code Intelligence - auto-index workspace for AI context retrieval
     const { 
@@ -1635,7 +1664,7 @@ export default function EditorPage({ params }) {
         }
     }, [activeFile, currentContent, rawFiles, slug, compile]);
 
-    const handleEditorMount = (editorInstance) => {
+    const handleEditorMount = useCallback((editorInstance) => {
         setEditor(editorInstance);
         // Wait until file is loaded, then capture snapshot
         if (activeFile && !hasInitialSnapshot) {
@@ -1643,7 +1672,7 @@ export default function EditorPage({ params }) {
             setInitialContent(currentValue);
             setHasInitialSnapshot(true);
         }
-    };
+    }, [activeFile, hasInitialSnapshot]);
 
     const handleToggleChat = useCallback(() => {
         setChatVisible((v) => !v);
@@ -1693,16 +1722,53 @@ export default function EditorPage({ params }) {
             <div className="flex h-full min-w-0">
                 <ActivityBar
                     active={sidebarView}
-                    onSelect={(id) => setSidebarView(id)}
+                    onSelect={(id) => setSidebarView(id === sidebarView ? 'explorer' : id)}
+                    extensionContainers={contributedContainers}
                 />
                 <div className="flex-1 min-w-0 overflow-hidden flex flex-col">
                     {sidebarView === 'scm' ? (
                         <GitStatus slug={slug} />
                     ) : sidebarView === 'search' ? (
                         <SearchView slug={slug} onToggleOrientation={toggleTreeOrientation} />
-                    ) : (
-                        <>
-                            <div className="flex-1 min-h-0 overflow-hidden">
+                    ) : sidebarView === 'extensions' ? (
+                        <ExtensionSidebar
+                            extensions={installedExtensions}
+                            errors={extensionErrors}
+                            ready={extensionsReady}
+                            hostStatus={extensionHostStatus}
+                            vscodeServerState={vscodeServerState}
+                            onInstall={installExtension}
+                            onEnable={enableExtension}
+                            onDisable={disableExtension}
+                            onUninstall={uninstallExtension}
+                            onRestart={restartExtension}
+                            onDismissError={dismissExtensionError}
+                            onExecuteCommand={executeExtensionCommand}
+                        />
+                    ) : sidebarView.startsWith('ext:') ? (() => {
+                        const containerId = sidebarView.replace('ext:', '');
+                        const container = contributedContainers.find(c => c.id === containerId);
+
+                        return (
+                            <ExtensionViewContainer
+                                containerId={containerId}
+                                container={container}
+                                views={contributedViews[containerId] || []}
+                                treeDataMap={extensionTreeDataMap}
+                                webviewPanels={extensionWebviewPanels}
+                                webviewManager={extensionWebviewManager}
+                                extensions={installedExtensions}
+                                onExecuteCommand={executeExtensionCommand}
+                                onRequestTreeRefresh={requestTreeRefresh}
+                                viewsWelcome={extensionViewsWelcome}
+                            />
+                        );
+                    })() : (
+                        <ResizablePanelGroup direction="vertical">
+                            <ResizablePanel defaultSize={65} minSize={20}>
+                                <>
+                                    <div className="flex-1 min-h-0 overflow-hidden">
+
                                 <FileTreeView onToggleOrientation={toggleTreeOrientation} />
                             </div>
                             <GitSummaryPanel onOpenScm={() => setSidebarView('scm')} />
@@ -1742,9 +1808,15 @@ export default function EditorPage({ params }) {
                 // Cancel the running mobile job on the worker
                 if (emulatorSessionId) {
                     cancelMobileJob(emulatorSessionId);
-                }
-                if (client?.reconnect) {
-                    client.reconnect();
+                    // Only hard-reset when an emulator was actually running;
+                    // this clears GStreamer/runner state on the worker.
+                    if (client?.reconnect) {
+                        client.reconnect();
+                    }
+                } else if (client?.softReconnect) {
+                    // No emulator session — soft reconnect preserves
+                    // vscode-server-manager and LSP processes.
+                    client.softReconnect();
                 }
                 dispatch(setEmulatorPreviewVisible(false));
                 setEmulatorSessionId(null);
@@ -1956,6 +2028,8 @@ export default function EditorPage({ params }) {
             diagnosticSummary={diagnosticSummary}
             isAnalyzing={isAnalyzingProactive || isWorkspaceAnalyzing}
             onProblemsClick={() => setShowProblemsPanel(prev => !prev)}
+            extensionStatusBarItems={extensionStatusBarItems}
+            vscodeServerState={vscodeServerState}
         />
 
         {/* Error Overlay */}

@@ -208,7 +208,14 @@ export class ExtensionManager {
       return;
     }
 
-    // Check generation
+    // Sync generation with worker on workerReady event (worker always starts at generation 0)
+    if (data.type === 'event' && data.method === 'workerReady') {
+      if (typeof data.generation === 'number') {
+        this.workerGeneration = data.generation;
+      }
+    }
+
+    // Check generation (after potential sync from workerReady above)
     if (typeof data.generation === 'number' && data.generation !== this.workerGeneration) {
       this._log('Dropping stale message from old worker generation', null, 'debug');
       return;

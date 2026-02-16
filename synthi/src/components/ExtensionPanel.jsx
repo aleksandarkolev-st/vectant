@@ -12,7 +12,7 @@
  */
 
 import React, { useState, useEffect, useCallback } from 'react';
-import { ExtensionState, getStateDescription } from '../core/ExtensionState.js';
+import { ExtensionState, getStateDescription } from '../extensions/core/ExtensionState.js';
 
 /**
  * Status badge colors
