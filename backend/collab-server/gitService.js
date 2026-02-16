@@ -2391,6 +2391,17 @@ class GitService {
             // Clone from the upstream source
             fs.mkdirSync(path.dirname(userRepoPath), { recursive: true });
             try {
+                // Guard: verify clone source still exists (may have been evicted)
+                if (!fs.existsSync(cloneSource)) {
+                    console.warn(`[GitService] Clone source ${cloneSource} disappeared, falling back to fresh init for ${slug}/${userId}`);
+                    fs.mkdirSync(userRepoPath, { recursive: true });
+                    const git = simpleGit(userRepoPath);
+                    await git.init();
+                    await git.commit('Initial commit', { '--allow-empty': null });
+                    this._ensureLocalExcludes(userRepoPath);
+                    return { path: userRepoPath, created: true };
+                }
+
                 const git = simpleGit();
                 // Use --no-hardlinks to ensure complete isolation between users
                 await git.clone(cloneSource, userRepoPath, ['--no-hardlinks']);
