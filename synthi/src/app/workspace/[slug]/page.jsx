@@ -102,6 +102,7 @@ export default function EditorPage({ params }) {
         vscodeTunnelService: extensionTunnelService,
         requestTreeRefresh,
         viewsWelcome: extensionViewsWelcome,
+        contextValues: extensionContextValues,
     } = useExtensions({ editor, workspaceId: slug });
     
     // Code Intelligence - auto-index workspace for AI context retrieval
@@ -1760,6 +1761,7 @@ export default function EditorPage({ params }) {
                                         onExecuteCommand={executeExtensionCommand}
                                         onRequestTreeRefresh={requestTreeRefresh}
                                         viewsWelcome={extensionViewsWelcome}
+                                        contextValues={extensionContextValues}
                                     />
                                 );
                             })() : (
