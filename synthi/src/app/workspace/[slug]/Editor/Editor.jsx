@@ -902,6 +902,7 @@ const EditorPanel = ({
         if (!editorInstance || !monacoInstance || !activeFile || !slug || isPrivateMode) {
             // Clear collab connected state if dependencies are missing
             setCollabConnected(false);
+            boundFilePathRef.current = null;
             return;
         }
 
@@ -914,6 +915,7 @@ const EditorPanel = ({
             // Destroy any existing collab doc for this file to ensure fresh content
             try { collabClient.destroyDocument(slug, activeFile.path); } catch (e) { /* ignore */ }
             setCollabConnected(false);
+            boundFilePathRef.current = null;
             return;
         }
 
@@ -922,6 +924,7 @@ const EditorPanel = ({
         if (!model) {
             console.warn('[Collab] Editor model not available, skipping collab binding');
             setCollabConnected(false);
+            boundFilePathRef.current = null;
             return;
         }
 
@@ -965,6 +968,9 @@ const EditorPanel = ({
         } catch (e) {
             console.warn('[Collab] Failed to attach editor to collaborative session', e);
             setCollabConnected(false);
+            // Critical: if binding failed, clear stale path guard so local edits
+            // still propagate to Redux/save pipeline.
+            boundFilePathRef.current = null;
         }
 
         return () => {
@@ -1227,7 +1233,7 @@ const EditorPanel = ({
         // CRITICAL: Only process changes if we're bound to the correct file
         // This prevents stale onChange handlers from writing content to the wrong file
         // during file transitions.
-        if (activeFile && boundFilePathRef.current && boundFilePathRef.current !== activeFile.path) {
+        if (activeFile && collabConnected && boundFilePathRef.current && boundFilePathRef.current !== activeFile.path) {
             console.debug('[Editor] Skipping — boundFilePathRef mismatch:', boundFilePathRef.current, '!==', activeFile.path);
             return;
         }
@@ -1270,7 +1276,7 @@ const EditorPanel = ({
                 requestAiCompletion(true, latestCodeRef.current, { reason: 'pause', pauseTrigger: true, recentEditSnippet: takeLastChars(latestCodeRef.current, 512) });
             }
         }, 900);
-    }, [activeFile, aiAutoEnabled, activeDiffCheck, cancelActiveCompletion, dispatch, requestAiCompletion]);
+    }, [activeFile, aiAutoEnabled, activeDiffCheck, cancelActiveCompletion, dispatch, requestAiCompletion, collabConnected]);
 
     // Keep a ref to the latest handleCodeChange to avoid stale closures in the editor onMount listener
     const handleCodeChangeRef = useRef(handleCodeChange);
