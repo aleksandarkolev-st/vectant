@@ -244,8 +244,24 @@ export const parseFileDiffBlocks = (text = '', fallbackPath = null) => {
     }
     if (!blocks.length && fallbackPath) {
         const raw = stripFence(text).replace(/\r\n/g, '\n').trim();
+        if (!raw) return blocks;
         const looksLikeDiff = /^---\s+/m.test(raw) && /^\+\+\+\s+/m.test(raw) && /@@\s+/m.test(raw);
         const isSearchReplace = hasSearchReplaceBlocks(raw);
+        // If the text is neither a diff nor SEARCH/REPLACE, check if it's actually
+        // code vs a natural language explanation. Only create a fallback block for code.
+        if (!looksLikeDiff && !isSearchReplace) {
+            const sentences = (raw.match(/[.!?](?:\s|$)/g) || []).length;
+            const codeTokens = (raw.match(/[{}();=<>[\]]/g) || []).length;
+            const codeRatio = codeTokens / raw.length;
+            const startsWithProse = /^(The |No |I |This |It |There |These |That |All |However |Note |In |Based |After |Upon |Looking |I've |Your |We )/.test(raw);
+            // If it looks like prose (many sentences, few code tokens), don't create block
+            if (startsWithProse && sentences >= 2 && codeRatio < 0.03) {
+                return blocks;
+            }
+            if (sentences >= 4 && codeRatio < 0.015) {
+                return blocks;
+            }
+        }
         blocks.push({
             path: fallbackPath,
             diffText: looksLikeDiff ? raw : null,

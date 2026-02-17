@@ -777,22 +777,22 @@ class ContextBudget:
     Hard limits prevent silent overflow and degraded quality.
     """
     # Maximum total tokens
-    max_tokens: int = 8000
+    max_tokens: int = 200_000
     
     # Reserved for repo summary
-    repo_summary_budget: int = 800
+    repo_summary_budget: int = 4000
     
     # Reserved for file summaries
-    file_summaries_budget: int = 1500
+    file_summaries_budget: int = 20_000
     
     # Reserved for code chunks
-    code_chunks_budget: int = 5000
+    code_chunks_budget: int = 150_000
     
     # Reserved for "missing context" notes
-    notes_budget: int = 200
+    notes_budget: int = 1000
     
     # Reserved for model response
-    reserved_for_response: int = 500
+    reserved_for_response: int = 2000
     
     # Current usage
     used_tokens: int = 0

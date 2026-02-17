@@ -33,15 +33,31 @@ export default function TerminalManager({ visible, onCloseAll, workspaceSlug = '
   }, []);
 
   // ── Listen for AI terminal open events ────────────────────────────────
+  // Consolidate: reuse ONE AI tab per chat prompt instead of creating a new tab per command.
+  // If an AI tab already exists, update it to show the latest session. Only create a new
+  // tab when there is no existing AI terminal.
   useEffect(() => {
     const handleAiTerminal = (e) => {
       const { sessionId, command } = e.detail || {};
       if (!sessionId) return;
-      const id = `ai-${Date.now()}`;
       const label = `AI: ${(command || 'command').slice(0, 20)}${(command || '').length > 20 ? '…' : ''}`;
-      const newTerm = { id, label, split: false, fixedSessionId: sessionId, isAi: true };
-      setTerminals(prev => [...prev, newTerm]);
-      setActiveId(id);
+
+      setTerminals(prev => {
+        // Check if there's already an AI terminal tab
+        const existingIdx = prev.findIndex(t => t.isAi);
+        if (existingIdx !== -1) {
+          // Update existing AI tab with the new session
+          const updated = [...prev];
+          updated[existingIdx] = { ...updated[existingIdx], fixedSessionId: sessionId, label };
+          // Switch to the existing AI tab
+          setActiveId(updated[existingIdx].id);
+          return updated;
+        }
+        // No existing AI tab — create one
+        const id = `ai-${Date.now()}`;
+        setActiveId(id);
+        return [...prev, { id, label, split: false, fixedSessionId: sessionId, isAi: true }];
+      });
     };
     window.addEventListener('ai-terminal-open', handleAiTerminal);
     return () => window.removeEventListener('ai-terminal-open', handleAiTerminal);

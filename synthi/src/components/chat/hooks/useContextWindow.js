@@ -15,22 +15,68 @@
 
 import { useCallback, useMemo, useRef } from 'react';
 
+// ── Model Context Windows ───────────────────────────────────────────
+
+/**
+ * Maps model name prefixes to their full input context window size (tokens).
+ * When the model name starts with a key, the corresponding window is used.
+ * Ordered most-specific first so "gemini-2.5-flash-lite" matches before "gemini".
+ */
+const MODEL_CONTEXT_WINDOWS = [
+    // Gemini family
+    ['gemini-2.5-pro',          1_048_576],
+    ['gemini-2.5-flash',        1_048_576],
+    ['gemini-2.0-flash',        1_048_576],
+    ['gemini-1.5-pro',          2_097_152],
+    ['gemini-1.5-flash',        1_048_576],
+    ['gemini',                  1_048_576],
+    // OpenAI family
+    ['gpt-4.1',                 1_047_576],
+    ['gpt-4o',                    128_000],
+    ['gpt-4-turbo',               128_000],
+    ['gpt-4',                       8_192],
+    ['gpt-3.5-turbo',             16_385],
+    ['o3',                        200_000],
+    ['o4-mini',                   200_000],
+    // Claude family
+    ['claude-3.5-sonnet',         200_000],
+    ['claude-3-opus',             200_000],
+    ['claude-3-sonnet',           200_000],
+    ['claude-3-haiku',            200_000],
+    ['claude',                    200_000],
+    // DeepSeek
+    ['deepseek',                  128_000],
+];
+
+/**
+ * Look up the context window for a model. Returns the full input token
+ * limit, or the fallback default for unknown models.
+ */
+const getModelContextWindow = (modelName) => {
+    if (!modelName || typeof modelName !== 'string') return 1_048_576; // default (Gemini 2.0 Flash)
+    const lower = modelName.toLowerCase();
+    for (const [prefix, tokens] of MODEL_CONTEXT_WINDOWS) {
+        if (lower.startsWith(prefix)) return tokens;
+    }
+    return 1_048_576; // unknown model — assume large
+};
+
 // ── Token Budget Constants ──────────────────────────────────────────
 
-/** Default maximum context tokens sent to the model */
-const DEFAULT_MAX_CONTEXT_TOKENS = 28000;
+/** Default maximum context tokens — uses full Gemini 2.0 Flash window */
+const DEFAULT_MAX_CONTEXT_TOKENS = 1_048_576;
 /** Tokens reserved for the system prompt */
-const SYSTEM_PROMPT_RESERVE = 2000;
+const SYSTEM_PROMPT_RESERVE = 4000;
 /** Tokens reserved for the model's response */
-const RESPONSE_RESERVE = 4096;
+const RESPONSE_RESERVE = 8192;
 /** Max tokens for a single file in context */
-const MAX_FILE_TOKENS = 6000;
+const MAX_FILE_TOKENS = 100_000;
 /** Max tokens for conversation history */
-const MAX_HISTORY_TOKENS = 8000;
+const MAX_HISTORY_TOKENS = 200_000;
 /** Max tokens for a conversation summary */
-const MAX_SUMMARY_TOKENS = 800;
+const MAX_SUMMARY_TOKENS = 2000;
 /** Number of recent messages always included verbatim */
-const RECENT_MESSAGE_COUNT = 6;
+const RECENT_MESSAGE_COUNT = 10;
 /** Approximate chars per token (conservative for code) */
 const CHARS_PER_TOKEN = 3.5;
 
@@ -152,15 +198,17 @@ const PRIORITY = {
 
 // ── Hook ────────────────────────────────────────────────────────────
 
-export const useContextWindow = ({ maxTokens = DEFAULT_MAX_CONTEXT_TOKENS } = {}) => {
+export const useContextWindow = ({ maxTokens = DEFAULT_MAX_CONTEXT_TOKENS, model = null } = {}) => {
+    // Resolve effective max tokens: if a model name is provided, use its full window
+    const effectiveMaxTokens = model ? getModelContextWindow(model) : maxTokens;
     const summaryCache = useRef(new Map());
 
     /**
      * Available tokens after reserves.
      */
     const availableTokens = useMemo(
-        () => maxTokens - SYSTEM_PROMPT_RESERVE - RESPONSE_RESERVE,
-        [maxTokens]
+        () => effectiveMaxTokens - SYSTEM_PROMPT_RESERVE - RESPONSE_RESERVE,
+        [effectiveMaxTokens]
     );
 
     /**
@@ -437,7 +485,7 @@ export const useContextWindow = ({ maxTokens = DEFAULT_MAX_CONTEXT_TOKENS } = {}
         getContextDebugInfo,
         estimateTokens,
         availableTokens,
-        maxTokens,
+        maxTokens: effectiveMaxTokens,
     };
 };
 
@@ -453,4 +501,4 @@ function truncateToTokenBudget(text, maxTokens) {
     return `${head}\n\n... [${text.length - charBudget} chars truncated] ...\n\n${tail}`;
 }
 
-export { estimateTokens, PRIORITY, DEFAULT_MAX_CONTEXT_TOKENS };
+export { estimateTokens, PRIORITY, DEFAULT_MAX_CONTEXT_TOKENS, MODEL_CONTEXT_WINDOWS, getModelContextWindow };
