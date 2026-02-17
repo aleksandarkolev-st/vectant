@@ -1,4 +1,5 @@
 import { getSession } from 'next-auth/react';
+import collabSessionService from '@/services/collabSessionService';
 
 const COLLAB_SERVER_URL = process.env.NEXT_PUBLIC_COLLAB_SERVER_URL || 'http://localhost:1234';
 
@@ -15,6 +16,9 @@ export const gitClient = {
             const userId = session?.user?.id || session?.user?.email;
             if (userId) {
                 headers['x-user-id'] = userId;
+            }
+            if (collabSessionService?.isActive && collabSessionService.sessionId) {
+                headers['x-session-id'] = collabSessionService.sessionId;
             }
         } catch (_) {
             // Non-fatal — request will fall back to slug-level repo
