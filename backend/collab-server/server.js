@@ -461,7 +461,7 @@ class ValidatingPersistence {
    *
    * @param {string} docName  e.g. "workspace:slug:path/to/file.js"
    */
-  async flushDocToDisk(docName) {
+  async flushDocToDisk(docName, options = {}) {
     const parsed = parseDocName(docName);
     if (!parsed) return;
 
@@ -481,18 +481,25 @@ class ValidatingPersistence {
       throw new Error(`Refusing unscoped flush for doc ${docName}`);
     }
 
+    // Prefer explicit content during save to avoid races where the in-memory
+    // Yjs state lags behind the payload currently being persisted.
+    let content = typeof options.contentOverride === 'string'
+      ? options.contentOverride
+      : null;
+
     // Read content from the in-memory Yjs doc (the observer tracks it)
     const entry = this.docObservers.get(docName);
-    let content;
-    if (entry && entry.text) {
-      content = entry.text.toString();
-    } else {
-      // Fallback: look up the Y.Doc directly
-      const ydoc = this.inner && typeof this.inner.getYDoc === 'function'
-        ? this.inner.getYDoc(docName)
-        : null;
-      if (!ydoc) return;
-      content = ydoc.getText(YTEXT_TYPE).toString();
+    if (content == null) {
+      if (entry && entry.text) {
+        content = entry.text.toString();
+      } else {
+        // Fallback: look up the Y.Doc directly
+        const ydoc = this.inner && typeof this.inner.getYDoc === 'function'
+          ? this.inner.getYDoc(docName)
+          : null;
+        if (!ydoc) return;
+        content = ydoc.getText(YTEXT_TYPE).toString();
+      }
     }
 
     if (content == null) return;
@@ -516,6 +523,21 @@ class ValidatingPersistence {
 
     // Update hash cache
     fileHashCache.set(docName, { hash: computeHash(content), timestamp: Date.now() });
+
+    // Keep live Yjs text aligned with persisted content when save payload
+    // was provided explicitly.
+    if (typeof options.contentOverride === 'string' && entry?.text) {
+      try {
+        const current = entry.text.toString();
+        if (current !== options.contentOverride) {
+          entry.ydoc?.transact(() => {
+            entry.text.delete(0, entry.text.length);
+            entry.text.insert(0, options.contentOverride);
+          });
+        }
+        entry.dirty = false;
+      } catch (_) {}
+    }
 
     // Optional: code-intel indexing
     if (config.CODE_INTEL_AUTO_INDEX && fetchFunc && CODE_INTEL_URL) {
@@ -1525,7 +1547,7 @@ const server = http.createServer(async (req, res) => {
                     //    repos get the latest content on explicit save.
                     {
                       const docKey = buildDocName(slug, data.filePath, notifyScope);
-                      await persistence.flushDocToDisk(docKey);
+                      await persistence.flushDocToDisk(docKey, { contentOverride: data.content });
                     }
                     result = { success: true };
                     break;

@@ -84,27 +84,10 @@ export const saveFileContentThunk = createAsyncThunk(
             return;
         }
 
-        // Determine the authoritative content to save:
-        // 1. If a collab doc exists for this file, use the CRDT content (most up-to-date)
-        // 2. Otherwise fall back to Redux currentContent
+        // Determine the authoritative content to save.
+        // Use Redux editor content as the source of truth; CRDT snapshots can
+        // momentarily lag during high-frequency edits and cause stale writes.
         let contentToSave = currentContent;
-        let usedCrdt = false;
-        
-        try {
-            // Build the key the same way collabClient._roomKey() does (raw path, no sanitisation)
-            const key = collabClient.getRoomKey(slug, activeFile.path);
-            const entry = collabClient.docs.get(key);
-            
-            if (entry && entry.ytext) {
-                const crdtText = entry.ytext.toString();
-                if (crdtText && crdtText.length > 0) {
-                    contentToSave = crdtText;
-                    usedCrdt = true;
-                }
-            }
-        } catch (e) {
-            console.warn('[Save] Failed to get CRDT content, using Redux content', e);
-        }
         
         // Skip save if content hasn't changed
         if (contentToSave === state.savedContent) {
