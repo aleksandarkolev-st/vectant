@@ -151,6 +151,7 @@ const EditorPanel = ({
     const rawFiles = useAppSelector(state => state.workspace.rawFiles);
     const showTerminal = useAppSelector(state => state.ui.showTerminal);
     const autoSaveEnabled = useAppSelector(selectAutoSaveEnabled);
+    const savedContent = useAppSelector(state => state.workspace.savedContent);
     const aiAutoEnabled = useAppSelector(selectAutoCompletionEnabled);
     const presenceGranularity = useAppSelector(selectPresenceGranularity);
     
@@ -1305,12 +1306,14 @@ const EditorPanel = ({
 
     // Auto-save mode: persist edits after a short idle period.
     useEffect(() => {
-        if (!autoSaveEnabled || !activeFile || !isUnsaved) return;
+        if (!autoSaveEnabled || !activeFile) return;
+        const normalizeTrailing = (s) => (typeof s === 'string' ? s.replace(/[\r\n]+$/, '') : '');
+        if (normalizeTrailing(code) === normalizeTrailing(savedContent)) return;
         const timer = setTimeout(() => {
             dispatch(saveFileContentThunk());
         }, 900);
         return () => clearTimeout(timer);
-    }, [autoSaveEnabled, activeFile, isUnsaved, dispatch, code]);
+    }, [autoSaveEnabled, activeFile, dispatch, code, savedContent]);
 
     // Git status refresh — in manual-save mode, status updates after explicit save.
     // In auto-save mode, status updates after each debounced autosave write.
@@ -2008,7 +2011,7 @@ const EditorPanel = ({
                                                         • When saved & not hovered → empty (reserving space) */}
                                                     <div className="ml-auto w-5 h-5 flex-shrink-0 flex items-center justify-center relative">
                                                         {/* Unsaved dot — hidden on group hover so the close ✕ takes over */}
-                                                        {(file.isUnsaved || (isActive && remoteUnsaved)) && (
+                                                        {((file.isUnsaved || (isActive && isUnsaved)) || (isActive && remoteUnsaved)) && (
                                                             <Circle
                                                                 className="w-2.5 h-2.5 fill-[#ff6b6b] text-[#ff6b6b] drop-shadow-[0_0_4px_rgba(255,107,107,0.6)] group-hover:hidden"
                                                             />
