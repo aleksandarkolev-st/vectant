@@ -30,6 +30,50 @@ const DEFAULT_GEMINI_MODEL = process.env.SYNTHI_AI_MODEL || process.env.GEMINI_M
 const UPSTREAM_TIMEOUT_MS = 45_000;
 
 /**
+ * Maps model name prefixes to their maximum output token limit.
+ * Ordered most-specific first so e.g. "gemini-2.5-flash-lite" matches before "gemini".
+ * Values sourced from each provider's official model documentation.
+ */
+const MODEL_MAX_OUTPUT_TOKENS = [
+    // Gemini family
+    ['gemini-2.5-pro',       65_536],
+    ['gemini-2.5-flash',     65_536],
+    ['gemini-2.0-flash',      8_192],
+    ['gemini-1.5-pro',        8_192],
+    ['gemini-1.5-flash',      8_192],
+    ['gemini',                8_192],
+    // OpenAI family
+    ['gpt-4.1',             32_768],
+    ['gpt-4o',              16_384],
+    ['gpt-4-turbo',          4_096],
+    ['gpt-4',                8_192],
+    ['gpt-3.5-turbo',        4_096],
+    ['o3',                  100_000],
+    ['o4-mini',             100_000],
+    // Claude family
+    ['claude-3.5-sonnet',    8_192],
+    ['claude-3-opus',        4_096],
+    ['claude-3-sonnet',      4_096],
+    ['claude-3-haiku',       4_096],
+    ['claude',               4_096],
+    // DeepSeek
+    ['deepseek',             8_192],
+];
+
+/**
+ * Look up the maximum output tokens for a given model name.
+ * Falls back to 8192 for unknown models.
+ */
+function getMaxOutputTokens(modelName) {
+    if (!modelName || typeof modelName !== 'string') return 8_192;
+    const lower = modelName.toLowerCase();
+    for (const [prefix, tokens] of MODEL_MAX_OUTPUT_TOKENS) {
+        if (lower.startsWith(prefix)) return tokens;
+    }
+    return 8_192;
+}
+
+/**
  * Classify user query intent using the AI backend's LLM-based classifier.
  * This determines whether the user wants code changes or just an explanation.
  * 
@@ -655,7 +699,7 @@ const streamGeminiWithTools = async ({
     const streamEndpoint = `${GEMINI_BASE}/models/${encodeURIComponent(targetModel)}:streamGenerateContent?alt=sse&key=${key}`;
 
     const systemInstruction = { parts: [{ text: AGENTIC_SYSTEM_PROMPT }] };
-    const generationConfig = { maxOutputTokens: 16384, temperature: 0.2 };
+    const generationConfig = { maxOutputTokens: getMaxOutputTokens(targetModel), temperature: 0.2 };
     const tools = [{ functionDeclarations: TOOL_DECLARATIONS }];
 
     // Build contents array (same as streamGemini)
@@ -867,7 +911,7 @@ const streamGemini = async ({ model, apiKey, userContent, conversationHistory = 
     const requestBody = JSON.stringify({
         systemInstruction: { parts: [{ text: CODE_INTEL_SYSTEM_PROMPT }] },
         contents,
-        generationConfig: { maxOutputTokens: 16384, temperature: 0.2 },
+        generationConfig: { maxOutputTokens: getMaxOutputTokens(targetModel), temperature: 0.2 },
     });
 
     // Retry loop for 429 rate limiting
