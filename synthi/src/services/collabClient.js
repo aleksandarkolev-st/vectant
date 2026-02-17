@@ -380,6 +380,7 @@ class CollabClient {
       this.serverUrl = 'ws://localhost:1234';
     }
     this.docs = new Map(); // key -> {doc, provider, bindings: Set}
+    this.identity = { userId: null, sessionId: null };
     // awareness listener registry: key -> Map<originalCb, wrappedCb>
     this._awarenessListeners = new Map();
 
@@ -430,7 +431,41 @@ class CollabClient {
     // sanitization would cause a mismatch: the server would look for the
     // sanitized path on disk and fail to find it.
     const safePath = path || 'root';
-    return `workspace:${slug}:${safePath}`;
+    if (this.identity.sessionId) {
+      return `workspace:${slug}:session:${this.identity.sessionId}:${safePath}`;
+    }
+    if (this.identity.userId) {
+      return `workspace:${slug}:user:${encodeURIComponent(String(this.identity.userId))}:${safePath}`;
+    }
+    // Strict mode: unauthenticated users cannot open Yjs docs.
+    return `workspace:${slug}:legacy-denied:${safePath}`;
+  }
+
+  getRoomKey(slug, path) {
+    return this._roomKey(slug, path);
+  }
+
+  setIdentity({ userId = null, sessionId = null } = {}) {
+    const nextUser = userId || null;
+    const nextSession = sessionId || null;
+    const changed = this.identity.userId !== nextUser || this.identity.sessionId !== nextSession;
+    if (!changed) return;
+
+    this.identity = { userId: nextUser, sessionId: nextSession };
+
+    // Room keys depend on identity scope. Recreate docs on scope change.
+    for (const [key, entry] of this.docs.entries()) {
+      try {
+        entry.bindings.forEach(binding => {
+          try { binding.destroy(); } catch (_) {}
+        });
+        entry.bindings.clear();
+        try { entry.provider.destroy(); } catch (_) {}
+        try { entry.doc.destroy(); } catch (_) {}
+      } catch (_) {}
+      this.docs.delete(key);
+    }
+    this._updateConnectionStatus();
   }
 
   /**
@@ -526,8 +561,18 @@ class CollabClient {
     const key = this._roomKey(slug, path);
     if (this.docs.has(key)) return this.docs.get(key);
 
+    if (!this.identity.userId) {
+      throw new Error('Authenticated user id is required for collaboration');
+    }
+
     const doc = new Y.Doc();
-    const provider = new WebsocketProvider(this.serverUrl, key, doc, { connect: true });
+    const provider = new WebsocketProvider(this.serverUrl, key, doc, {
+      connect: true,
+      params: {
+        userId: this.identity.userId,
+        ...(this.identity.sessionId ? { sessionId: this.identity.sessionId } : {}),
+      },
+    });
     provider.on('status', (ev) => {
       console.debug('[Collab] Provider status for', key, ev.status);
       this._updateConnectionStatus();
@@ -938,15 +983,21 @@ class CollabClient {
    *
    * @param {string} slug - workspace slug
    * @param {{ onFileTreeChanged?: Function }} handlers - event callbacks
+   * @param {{ userId?: string|null, sessionId?: string|null }|string|null} scope
    * @returns {Function} teardown function to close the connection
    */
-  connectNotifications(slug, handlers = {}, userId = null) {
+  connectNotifications(slug, handlers = {}, scope = null) {
     if (!slug) return () => {};
+
+    const normalizedScope = (typeof scope === 'string')
+      ? { userId: scope, sessionId: null }
+      : { userId: scope?.userId || null, sessionId: scope?.sessionId || null };
 
     // Build ws(s) URL for /notifications
     const base = this.serverUrl.replace(/\/$/, '');
     let url = `${base}/notifications?slug=${encodeURIComponent(slug)}`;
-    if (userId) url += `&userId=${encodeURIComponent(userId)}`;
+    if (normalizedScope.userId) url += `&userId=${encodeURIComponent(normalizedScope.userId)}`;
+    if (normalizedScope.sessionId) url += `&sessionId=${encodeURIComponent(normalizedScope.sessionId)}`;
 
     let ws;
     let reconnectTimer = null;
