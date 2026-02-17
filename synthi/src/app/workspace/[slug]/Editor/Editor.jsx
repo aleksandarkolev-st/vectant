@@ -19,7 +19,7 @@ import {
     closeFile,
     reorderOpenFiles
 } from '@/redux/workspaceSlice';
-import { selectAutoCompletionEnabled, toggleAutoCompletion, selectPresenceGranularity, startCreate, setCursorPosition } from '@/redux/uiSlice';
+import { selectAutoCompletionEnabled, toggleAutoCompletion, selectPresenceGranularity, startCreate, setCursorPosition, selectAutoSaveEnabled } from '@/redux/uiSlice';
 import { fetchGitStatus, closeConflictResolver } from '@/redux/gitSlice';
 import { Circle, Save, Sparkles, Loader2 } from 'lucide-react';
 import { getFileIcon } from '@/utils/fileIcons';
@@ -150,8 +150,7 @@ const EditorPanel = ({
     const loadingFiles = useAppSelector(selectLoadingFiles);
     const rawFiles = useAppSelector(state => state.workspace.rawFiles);
     const showTerminal = useAppSelector(state => state.ui.showTerminal);
-    // autoSaveEnabled is no longer used — changes always stay editor-only
-    // until explicit save.  The toggle still exists in TopNav for UX purposes.
+    const autoSaveEnabled = useAppSelector(selectAutoSaveEnabled);
     const aiAutoEnabled = useAppSelector(selectAutoCompletionEnabled);
     const presenceGranularity = useAppSelector(selectPresenceGranularity);
     
@@ -1304,22 +1303,20 @@ const EditorPanel = ({
         if (onSave) onSave();
     }, [activeFile, isUnsaved, dispatch, onSave, compilerClient, code, slug]);
 
-    // Auto-save — DISABLED: editor-only mode
-    // When autoSaveEnabled is ON, changes stay in the editor (Redux +
-    // Monaco) and are NOT persisted to disk/GCS.  The user must explicitly
-    // save with Ctrl+S to write content.
-    //
-    // The "auto-save" toggle now controls whether the unsaved dot indicator
-    // is suppressed (cosmetic only) — actual persistence always requires an
-    // explicit save action.
-    //
-    // Previously this dispatched saveFileContentThunk() on a 500ms delay,
-    // pushing every keystroke to disk.
+    // Auto-save mode: persist edits after a short idle period.
+    useEffect(() => {
+        if (!autoSaveEnabled || !activeFile || !isUnsaved) return;
+        const timer = setTimeout(() => {
+            dispatch(saveFileContentThunk());
+        }, 900);
+        return () => clearTimeout(timer);
+    }, [autoSaveEnabled, activeFile, isUnsaved, dispatch, code]);
 
-    // Git status refresh — now that auto-flush no longer writes to disk on
-    // every keystroke, there's no need to poll git status after each edit.
+    // Git status refresh — in manual-save mode, status updates after explicit save.
+    // In auto-save mode, status updates after each debounced autosave write.
     // Git status is refreshed:
-    //  1. On explicit save (handleSave → saveFileContentThunk → fetchGitStatus)
+    //  1. On explicit save (Ctrl/Cmd+S)
+    //  2. On debounced autosave when enabled
     //  2. Via the 5-second poll (existing setInterval in the workspace page)
     //  3. When the server broadcasts git-status-changed (after explicit flush)
 
