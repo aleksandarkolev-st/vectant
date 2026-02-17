@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState, useCallback, useMemo } from 'react';
-import { Send, X, Plus, ChevronDown, ChevronRight, Sparkles, FileCode, Paperclip } from 'lucide-react';
+import { Send, X, Plus, ChevronDown, ChevronRight, Sparkles, FileCode, Paperclip, Link, Unlink } from 'lucide-react';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
@@ -20,6 +20,7 @@ import { fileSuggestionStatusClasses, fileSuggestionStatusLabel } from './utils/
 import { formatMessageContent } from './utils/formatMessage';
 import MessageContent from './utils/MessageContent';
 import { ThinkingDots } from './ThinkingDots';
+import CommandApprovalCard from './CommandApprovalCard';
 
 const formatTimestamp = (timestamp) => {
     if (!timestamp) return '';
@@ -128,6 +129,8 @@ const AIChatWindow = ({
     const [suggestionExpanded, setSuggestionExpanded] = useState(true);
     const [collapsedFiles, setCollapsedFiles] = useState({});
     const [agentMenuOpen, setAgentMenuOpen] = useState(false);
+    const [pendingCommands, setPendingCommands] = useState([]); // {id, command, status: 'pending'|'approved'|'rejected'}
+    const [contextFileAttached, setContextFileAttached] = useState(false); // active file NOT auto-attached as context
 
     useEffect(() => {
         try {
@@ -216,7 +219,9 @@ const AIChatWindow = ({
         setProgressStatus('Working…');
         setProgressExpanded(true);
         setSuggestionExpanded(true);
+        setPendingCommands([]);
         handleSendMessage(value, attachments, {
+            includeActiveFile: contextFileAttached,
             controller: aborter,
             onStreamStart: () => setIsThinking(true),
             onFirstToken: () => {
@@ -253,6 +258,12 @@ const AIChatWindow = ({
                     return [...prev, { id: Date.now() + Math.random(), text: line }];
                 });
             },
+            onCommandPending: (cp) => {
+                setPendingCommands((prev) => [
+                    ...prev,
+                    { id: cp.id, command: cp.command, status: 'pending', timestamp: new Date() },
+                ]);
+            },
         });
         clearAttachments();
         setInputValue('');
@@ -276,6 +287,17 @@ const AIChatWindow = ({
         ? { id: 'suggestion-live', role: 'suggestion-live', timestamp: suggestionTimestamp, snapshot: { fileSuggestions, suggestedCode, diffChunks } }
         : null;
     const timeline = liveSuggestionEntry ? [...messages, liveSuggestionEntry] : [...messages];
+    // Inject pending command approval cards into the timeline
+    for (const cmd of pendingCommands) {
+        timeline.push({
+            id: `cmd-approval-${cmd.id}`,
+            role: 'command-approval',
+            command: cmd.command,
+            approvalId: cmd.id,
+            approvalStatus: cmd.status,
+            timestamp: cmd.timestamp,
+        });
+    }
     timeline.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
 
     useEffect(() => {
@@ -285,7 +307,7 @@ const AIChatWindow = ({
                 scrollArea.scrollTo({ top: scrollArea.scrollHeight, behavior: 'smooth' });
             }
         }
-    }, [messages, suggestedCode, fileSuggestions, streamingMessage, showThinking, progressLog, progressExpanded]);
+    }, [messages, suggestedCode, fileSuggestions, streamingMessage, showThinking, progressLog, progressExpanded, pendingCommands]);
 
     const toggleProgressMessage = (id) => {
         if (!activeSession) return;
@@ -294,6 +316,71 @@ const AIChatWindow = ({
             messages: session.messages.map((m) => m.id === id ? { ...m, expanded: !m.expanded } : m),
         }));
     };
+
+    // ── Command approval handlers ───────────────────────────────────
+    const handleCommandApprove = useCallback(async (approvalId) => {
+        try {
+            // Set to 'running' immediately while we wait for execution
+            setPendingCommands((prev) =>
+                prev.map((c) => (c.id === approvalId ? { ...c, status: 'running' } : c))
+            );
+            const res = await fetch('/api/chat/approve-command', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ id: approvalId, approved: true }),
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) {
+                // Server error (404 = expired/not found, 500 = exec failed)
+                console.error('[CommandApproval] Server error:', res.status, data);
+                setPendingCommands((prev) =>
+                    prev.map((c) => (c.id === approvalId ? { ...c, status: 'failed', output: data?.error || `Server error ${res.status}` } : c))
+                );
+                return;
+            }
+            // For deferred commands, the endpoint executes and returns the result
+            if (data?.deferred && data?.result) {
+                // exitCode === 0 is success. null/undefined means unknown — check for explicit error.
+                const hasExplicitError = Boolean(data.result.error);
+                const exitOk = data.result.exitCode === 0;
+                const exitUnknown = data.result.exitCode == null;
+                const success = exitOk || (exitUnknown && !hasExplicitError);
+                setPendingCommands((prev) =>
+                    prev.map((c) => (c.id === approvalId ? { ...c, status: success ? 'approved' : 'failed', output: data.result.output || data.result.error } : c))
+                );
+            } else if (data?.deferred) {
+                // Deferred but no result body
+                setPendingCommands((prev) =>
+                    prev.map((c) => (c.id === approvalId ? { ...c, status: 'approved' } : c))
+                );
+            } else {
+                // Live command — just mark approved (tool loop continues server-side)
+                setPendingCommands((prev) =>
+                    prev.map((c) => (c.id === approvalId ? { ...c, status: 'approved' } : c))
+                );
+            }
+        } catch (e) {
+            console.error('[CommandApproval] Approve failed:', e);
+            setPendingCommands((prev) =>
+                prev.map((c) => (c.id === approvalId ? { ...c, status: 'failed' } : c))
+            );
+        }
+    }, []);
+
+    const handleCommandReject = useCallback(async (approvalId) => {
+        try {
+            await fetch('/api/chat/approve-command', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ id: approvalId, approved: false }),
+            });
+            setPendingCommands((prev) =>
+                prev.map((c) => (c.id === approvalId ? { ...c, status: 'rejected' } : c))
+            );
+        } catch (e) {
+            console.error('[CommandApproval] Reject failed:', e);
+        }
+    }, []);
 
     const toggleFilePreview = (path) => {
         setCollapsedFiles((prev) => ({
@@ -635,6 +722,23 @@ const AIChatWindow = ({
                         </div>
                     ) : (
                         timeline.map((msg) => {
+                            // ── Command Approval Card ────────────────────────
+                            if (msg.role === 'command-approval') {
+                                return (
+                                    <div key={msg.id} className="flex justify-start min-w-0">
+                                        <div className="w-full min-w-0">
+                                            <CommandApprovalCard
+                                                id={msg.approvalId}
+                                                command={msg.command}
+                                                status={msg.approvalStatus}
+                                                onApprove={handleCommandApprove}
+                                                onReject={handleCommandReject}
+                                            />
+                                        </div>
+                                    </div>
+                                );
+                            }
+
                             if (msg.role === 'progress') {
                                 const expanded = msg.expanded === true;
                                 const isFinished = msg.status === 'finished';
@@ -1055,15 +1159,18 @@ const AIChatWindow = ({
                             {chips.map((chip) => {
                                 const meta = buildLanguageMeta(chip.name || '');
                                 const isWorkspaceFile = chip.isWorkspaceFile;
+                                const isDetachedContext = chip.isContext && !contextFileAttached;
                                 return (
                                     <div
                                         key={chip.id}
                                         className={`flex items-center gap-1.5 border px-2 py-1 rounded text-[10px] min-w-0 ${
-                                            isWorkspaceFile 
-                                                ? 'bg-[#0d1a15] border-[#1a3d2e]' 
-                                                : 'bg-[#101118] border-[#1a1b24]'
+                                            isDetachedContext
+                                                ? 'bg-[#101118] border-[#1a1b24] opacity-50'
+                                                : isWorkspaceFile 
+                                                    ? 'bg-[#0d1a15] border-[#1a3d2e]' 
+                                                    : 'bg-[#101118] border-[#1a1b24]'
                                         }`}
-                                        title={chip.path || chip.name}
+                                        title={chip.isContext ? (contextFileAttached ? `${chip.name} (attached as context — click link to detach)` : `${chip.name} (not attached — click link to attach as context)`) : (chip.path || chip.name)}
                                     >
                                         <span
                                             className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded"
@@ -1073,14 +1180,29 @@ const AIChatWindow = ({
                                             <span className="font-semibold">{meta.label}</span>
                                         </span>
                                         <div className="flex-1 min-w-0">
-                                            <span className="truncate text-[#e4e4e7] block leading-tight">
-                                                {chip.isContext ? <span className="italic">{chip.name}</span> : chip.name}
+                                            <span className={`truncate block leading-tight ${isDetachedContext ? 'text-[#6b7280]' : 'text-[#e4e4e7]'}`}>
+                                                {chip.name}
                                             </span>
                                             {chip.size ? (
                                                 <span className="text-[#5a6178] whitespace-nowrap">{formatBytes(chip.size)}</span>
                                             ) : null}
                                         </div>
-                                        {!chip.isContext ? (
+                                        {chip.isContext ? (
+                                            <button
+                                                type="button"
+                                                onClick={() => setContextFileAttached((prev) => !prev)}
+                                                className={`p-0.5 rounded transition-colors ${
+                                                    contextFileAttached
+                                                        ? 'text-[#4aba9a] hover:text-[#6dd4b8]'
+                                                        : 'text-[#5a6178] hover:text-[#9ba2b8]'
+                                                }`}
+                                                title={contextFileAttached ? 'Detach from context' : 'Attach as context'}
+                                            >
+                                                {contextFileAttached
+                                                    ? <Link className="w-3 h-3" strokeWidth={1.5} />
+                                                    : <Unlink className="w-3 h-3" strokeWidth={1.5} />}
+                                            </button>
+                                        ) : (
                                             <button
                                                 onClick={() => removeAttachment(chip.id)}
                                                 className="p-0.5 text-[#5a6178] hover:text-[#9ba2b8]"
@@ -1088,7 +1210,7 @@ const AIChatWindow = ({
                                             >
                                                 <X className="w-2.5 h-2.5" strokeWidth={1.5} />
                                             </button>
-                                        ) : null}
+                                        )}
                                     </div>
                                 );
                             })}

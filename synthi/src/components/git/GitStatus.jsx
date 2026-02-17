@@ -25,6 +25,7 @@ const SectionHead = ({ dot, label, count, actions }) => (
 
 const GhostBtn = ({ onClick, disabled, title, children, className = '' }) => (
     <button
+        type="button"
         onClick={onClick}
         disabled={disabled}
         title={title}
@@ -36,6 +37,7 @@ const GhostBtn = ({ onClick, disabled, title, children, className = '' }) => (
 
 const IconBtn = ({ onClick, disabled, title, children, className = '' }) => (
     <button
+        type="button"
         onClick={onClick}
         disabled={disabled}
         title={title}
@@ -99,11 +101,14 @@ export function GitStatus({ slug }) {
 
     const handleSync = () => {
         if (slug) {
-            dispatch(fetchRemote(slug));
+            // Only refresh local git state — do NOT call fetchRemote (git fetch)
+            // which contacts the remote and triggers GitHub authentication dialogs
+            dispatch(fetchGitStatus(slug));
             dispatch(fetchRemotes(slug));
             dispatch(fetchCommitHistory({ slug }));
             dispatch(fetchUnpushedCommits({ slug, max: 50 }));
             dispatch(fetchIncomingCommits({ slug, max: 50 }));
+            dispatch(fetchStashList(slug));
         }
     };
 
@@ -834,6 +839,7 @@ export function GitStatus({ slug }) {
                             onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && handleCommit()}
                         />
                         <button
+                            type="button"
                             onClick={() => setShowCommitBody(!showCommitBody)}
                             className={`flex-shrink-0 p-1.5 rounded-lg text-xs transition-all ${showCommitBody ? 'bg-violet-500/15 text-violet-300' : 'text-[#52525b] hover:text-[#d4d4d8] hover:bg-white/[0.06]'}`}
                             title="Add description"
@@ -841,6 +847,7 @@ export function GitStatus({ slug }) {
                             <Edit3 className="w-3.5 h-3.5" strokeWidth={1.5} />
                         </button>
                         <button
+                            type="button"
                             onClick={handleCommit}
                             disabled={!message || staged.length === 0}
                             className="flex-shrink-0 p-1.5 rounded-lg bg-violet-500/20 hover:bg-violet-500/30 text-violet-300 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"

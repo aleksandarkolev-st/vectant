@@ -101,6 +101,44 @@ export const TOOL_DECLARATIONS = [
             required: ['query'],
         },
     },
+    {
+        name: 'create_file',
+        description:
+            'Create a new file in the workspace with the given content, or overwrite an existing file. ' +
+            'Use this instead of run_command with echo/touch/cat when creating or writing source files. ' +
+            'Parent directories are created automatically. ' +
+            'This is the PREFERRED way to create files — it writes directly to disk without the terminal.',
+        parameters: {
+            type: 'OBJECT',
+            properties: {
+                path: {
+                    type: 'STRING',
+                    description: 'Relative workspace path for the new file, e.g. "src/pages/about.jsx"',
+                },
+                content: {
+                    type: 'STRING',
+                    description: 'Full file content to write',
+                },
+            },
+            required: ['path', 'content'],
+        },
+    },
+    {
+        name: 'create_directory',
+        description:
+            'Create a new directory in the workspace. Parent directories are created automatically. ' +
+            'Use this instead of run_command with mkdir.',
+        parameters: {
+            type: 'OBJECT',
+            properties: {
+                path: {
+                    type: 'STRING',
+                    description: 'Relative workspace directory path, e.g. "src/components/ui"',
+                },
+            },
+            required: ['path'],
+        },
+    },
 ];
 
 /* ─── Helpers ─────────────────────────────────────────────────────── */
@@ -191,7 +229,7 @@ const BLOCKED_PATTERNS = [
 ];
 
 async function execRunCommand(slug, args) {
-    const command = (args?.command || '').trim();
+    let command = (args?.command || '').trim();
     if (!command) return { error: 'Missing required parameter: command' };
 
     // Safety: block obviously destructive patterns
@@ -199,6 +237,16 @@ async function execRunCommand(slug, args) {
         if (pattern.test(command)) {
             return { error: `Blocked: command matches a restricted pattern` };
         }
+    }
+
+    // ── Windows PowerShell 5.1 compatibility ──
+    // The AI often generates bash-style `cmd1 && cmd2` chains, but
+    // PowerShell 5.1 does NOT support `&&` as a pipeline chain operator
+    // (that was added in PowerShell 7+). Replace with `;` which is the
+    // PowerShell statement separator. This makes chained commands work
+    // correctly in the PTY terminal.
+    if (typeof process !== 'undefined' && process.platform === 'win32' && command.includes('&&')) {
+        command = command.replace(/\s*&&\s*/g, ' ; ');
     }
 
     try {
@@ -388,12 +436,61 @@ async function execWebSearch(_slug, args, _signal, options = {}) {
     return { error: 'No search API configured. Set SERPER_API_KEY, GOOGLE_SEARCH_API_KEY + GOOGLE_SEARCH_CX, or GEMINI_API_KEY in environment variables.' };
 }
 
+/* ─── Create File executor ─────────────────────────────────────── */
+
+async function execCreateFile(slug, args) {
+    const filePath = (args?.path || '').trim();
+    const content = args?.content ?? '';
+    if (!filePath) return { error: 'Missing required parameter: path' };
+    try {
+        const url = `${COLLAB_BASE}/git/${encodeURIComponent(slug)}/write-file`;
+        const res = await fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ path: filePath, content }),
+            signal: AbortSignal.timeout(10000),
+        });
+        if (!res.ok) {
+            const body = await res.text().catch(() => '');
+            return { error: `Failed to write file (${res.status}): ${body.slice(0, 300)}` };
+        }
+        return { success: true, path: filePath, bytesWritten: content.length };
+    } catch (e) {
+        return { error: `Failed to create file: ${e.message}` };
+    }
+}
+
+/* ─── Create Directory executor ───────────────────────────────── */
+
+async function execCreateDirectory(slug, args) {
+    const dirPath = (args?.path || '').trim();
+    if (!dirPath) return { error: 'Missing required parameter: path' };
+    try {
+        const url = `${COLLAB_BASE}/git/${encodeURIComponent(slug)}/create-directory`;
+        const res = await fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ path: dirPath }),
+            signal: AbortSignal.timeout(10000),
+        });
+        if (!res.ok) {
+            const body = await res.text().catch(() => '');
+            return { error: `Failed to create directory (${res.status}): ${body.slice(0, 300)}` };
+        }
+        return { success: true, path: dirPath };
+    } catch (e) {
+        return { error: `Failed to create directory: ${e.message}` };
+    }
+}
+
 const EXECUTORS = {
     read_file: execReadFile,
     search_workspace: execSearchWorkspace,
     list_directory: execListDirectory,
     run_command: execRunCommand,
     web_search: execWebSearch,
+    create_file: execCreateFile,
+    create_directory: execCreateDirectory,
 };
 
 /**

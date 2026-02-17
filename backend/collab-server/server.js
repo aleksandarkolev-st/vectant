@@ -797,12 +797,19 @@ const server = http.createServer(async (req, res) => {
             : afterCmd.trim();
         }
 
-        console.log(`[ExecTerminal] Done: sessionId=${sessionId} output=${cleanOutput.length}B`);
+        // Try to infer exit code from output (PTY doesn't expose it directly).
+        // Heuristic: check for common error patterns that indicate failure.
+        const looksLikeError = /\b(error|fatal|not recognized|cannot be loaded|is not a valid|denied|failed|abort)\b/i.test(cleanOutput)
+          && !/\b(0 error|no error|fixed|resolved|warning)\b/i.test(cleanOutput);
+        const inferredExitCode = looksLikeError ? 1 : 0;
+
+        console.log(`[ExecTerminal] Done: sessionId=${sessionId} output=${cleanOutput.length}B exitCode=${inferredExitCode}`);
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({
           sessionId,
           command,
           output: cleanOutput || '(no output)',
+          exitCode: inferredExitCode,
           timedOut: false,
         }));
       }

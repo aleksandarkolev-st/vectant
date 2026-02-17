@@ -2,6 +2,69 @@ import { NextResponse } from 'next/server';
 import { TOOL_DECLARATIONS, executeTool, isComplexTask } from './toolDefinitions.js';
 
 const encoder = new TextEncoder();
+
+/* ─── Pending command approvals (module-level, shared across requests) ─── */
+/**
+ * Use globalThis to persist Maps across Next.js HMR/module re-evaluations in dev mode.
+ * Without this, Maps are reset on every file save, causing deferred commands to be lost.
+ */
+if (!globalThis.__chatPendingCommandApprovals) {
+    globalThis.__chatPendingCommandApprovals = new Map();
+}
+if (!globalThis.__chatDeferredCommandsMap) {
+    globalThis.__chatDeferredCommandsMap = new Map();
+}
+
+/**
+ * Map of command IDs → { resolve, command, timestamp }
+ * When a run_command tool call is encountered, the tool loop pauses and
+ * waits for the frontend to approve/reject via POST /api/chat/approve-command.
+ */
+export const pendingCommandApprovals = globalThis.__chatPendingCommandApprovals;
+
+/**
+ * Map of deferred command IDs → { command, workspacePath }
+ * Git write commands (add, commit, push) are deferred until after the user
+ * reviews FILE: blocks. The approve-command endpoint executes them on approval.
+ */
+export const deferredCommandsMap = globalThis.__chatDeferredCommandsMap;
+
+/** Regex to detect git write commands that should be deferred until after file review */
+const GIT_WRITE_CMD_RE = /\bgit\s+(add|commit|push|merge|rebase|stash|reset|cherry-pick|tag\b)/i;
+
+const COMMAND_APPROVAL_TIMEOUT_MS = 120_000; // 2 minutes to approve
+
+/**
+ * Wait for user approval of a pending command.
+ * Returns true if approved, false if rejected or timed out.
+ */
+function waitForCommandApproval(id, command) {
+    return new Promise((resolve) => {
+        const timeout = setTimeout(() => {
+            if (pendingCommandApprovals.has(id)) {
+                pendingCommandApprovals.delete(id);
+                resolve(false);
+            }
+        }, COMMAND_APPROVAL_TIMEOUT_MS);
+
+        pendingCommandApprovals.set(id, {
+            resolve: (approved) => {
+                clearTimeout(timeout);
+                resolve(approved);
+            },
+            command,
+            timestamp: Date.now(),
+        });
+    });
+}
+
+/**
+ * Generate a unique ID for pending command approvals.
+ */
+let approvalIdCounter = 0;
+function generateApprovalId() {
+    return `cmd-${Date.now()}-${++approvalIdCounter}`;
+}
 const GEMINI_BASE =
     (process.env.GEMINI_API_BASE || 'https://generativelanguage.googleapis.com/v1beta').replace(/\/$/, '');
 
@@ -254,10 +317,15 @@ You have access to the following tools to help answer the user's request. USE TH
 - read_file(path): Read the contents of a file in the workspace.
 - search_workspace(query): Search for text/symbols across the workspace.
 - list_directory(path): List files and folders in a directory.
-- run_command(command): Execute a shell command in the user's live terminal (they can see it running). Use this for: checking git status, checking versions, running build tools, installing packages, running tests, linting, or any CLI task. IMPORTANT: Each call opens a new terminal tab, so chain related commands with && (e.g. "git add . && git commit -m 'msg' && git push"). Only use separate calls when you need output from one command to decide the next.
+- create_file(path, content): Create a new file in the workspace. The file will be presented to the user for review with Apply/Reject buttons before being written to disk. Always use this tool when creating new files — it is the preferred way to create files.
+- create_directory(path): Create a directory in the workspace. Parent directories are created automatically. Use this instead of mkdir via the terminal.
+- run_command(command): Execute a shell command in the user's live terminal (they can see it running). Use this ONLY for: git operations, installing packages, running builds/tests/linting, and other CLI tasks. Do NOT use this for creating or writing files. The user must approve command execution before it runs. IMPORTANT: Each call opens a new terminal tab, so chain related commands with && (e.g. "git add . && git commit -m 'msg' && git push"). Only use separate calls when you need output from one command to decide the next.
 - web_search(query, num_results?): Search the internet and return real, up-to-date results with titles, URLs, and snippets.
 
 IMPORTANT TOOL GUIDELINES:
+- FILE CREATION: When the user asks you to create NEW files (pages, components, modules, scripts, stylesheets, configs), ALWAYS use the create_file tool. Call create_file(path, content) for EACH new file with its full content. The system will present the files to the user for review with Apply/Reject buttons. Do NOT use echo, touch, cat, printf, or run_command to create files. Do NOT generate FILE: blocks in your text — use the create_file tool instead.
+- ORDERING: When the user asks you to create files AND THEN commit/push/run commands: call create_file for each file, then call run_command for git operations. Git write commands (add/commit/push) are automatically deferred — they are presented to the user only AFTER they review and apply the files. So call them freely; the system handles the ordering.
+- DIRECTORY CREATION: Use create_directory instead of mkdir via run_command.
 - When the user asks to run a command, check a status, install, commit, push, or perform any terminal/git task — use the run_command tool. Do NOT tell the user to do it themselves. Do NOT suggest code changes instead.
 - When the user asks to "check" something (e.g., "check git status", "check if X is installed"), use run_command. Do NOT return code changes.
 - When you need to understand the codebase, use read_file and search_workspace to gather context before answering.
@@ -267,8 +335,8 @@ IMPORTANT TOOL GUIDELINES:
 - When the user's request only involves running commands (not editing code), respond with the command output only — do NOT generate FILE: blocks or code changes.
 - CRITICAL: When the user asks you to commit, push, deploy, delete, install, or execute any potentially destructive or irreversible command, you MUST describe what commands you plan to run and ask the user for confirmation BEFORE executing them. Only proceed to call run_command after the user confirms. For safe read-only commands (git status, git log, ls, cat, etc.), you may execute immediately without asking.
 - TERMINAL TAB EFFICIENCY: Each run_command call opens a new terminal tab in the user's IDE. To avoid cluttering the terminal bar, ALWAYS chain related commands into a single run_command call using && (e.g. "mkdir project && cd project && npm init -y", or "git add . && git commit -m 'msg' && git push"). Only use separate run_command calls when you genuinely need the output of one command to decide the next command.
-- FILE CREATION: When the user asks you to create files with specific content, prefer using FILE: blocks (code changes) rather than echo/touch/run_command. Use run_command only for git operations, installs, and other CLI tasks — not for creating source files. Creating files via FILE: blocks gives the user diff previews and undo capability.
-- NEW vs EXISTING: When the user says "create new files/pages/components", generate FILE: blocks for NEW paths that do not already exist. Do NOT modify existing files from the context to serve as the "new" files. Choose unique, descriptive names. Existing files in context are only for reference (e.g., to match the project style or to add navigation links).
+- FILE CREATION REMINDER: When the user asks you to create files with specific content, ALWAYS use the create_file tool with the full file content. Do NOT use run_command with echo/touch/cat. Do NOT generate FILE: blocks in your text response — the create_file tool handles presenting files for user review.
+- NEW vs EXISTING: When the user says "create new files/pages/components", use create_file for NEW paths that do not already exist. Do NOT modify existing files from the context to serve as the "new" files. Choose unique, descriptive names. Existing files in context are only for reference (e.g., to match the project style or to add navigation links).
 
 WEB SEARCH GUIDELINES:
 - ONLY use web_search when: (1) the user explicitly asks you to search, find, or look up something online, (2) the user needs a real, valid URL such as an image link, CDN link, API endpoint, or documentation page, or (3) you genuinely cannot answer without current information from the internet (e.g., latest package versions, current API docs, real resource URLs).
@@ -673,10 +741,11 @@ const callGeminiOnce = async ({ endpoint, systemInstruction, contents, tools, ge
  * Flow:
  *  1. Initial Gemini call (non-streaming) with tool declarations
  *  2. If response contains functionCall parts → execute tools, append results, loop
- *  3. Once Gemini returns only text → stream the final text to the client
+ *  3. For run_command: emit commandPending event, wait for user approval
+ *  4. Once Gemini returns only text → stream the final text to the client
  *
- * We use non-streaming for tool-loop turns (they're fast, small) and then
- * convert the final text into the same NDJSON stream format the frontend expects.
+ * Events are streamed in real-time (not collected) so the frontend sees
+ * command approval requests as they happen.
  *
  * @returns {ReadableStream} NDJSON stream compatible with the existing frontend
  */
@@ -694,7 +763,6 @@ const streamGeminiWithTools = async ({
     if (!key) throw new Error('Gemini API key is not configured');
 
     const targetModel = model || DEFAULT_GEMINI_MODEL;
-    // Use non-streaming generateContent for tool rounds, streaming for final pass
     const endpoint = `${GEMINI_BASE}/models/${encodeURIComponent(targetModel)}:generateContent?key=${key}`;
     const streamEndpoint = `${GEMINI_BASE}/models/${encodeURIComponent(targetModel)}:streamGenerateContent?alt=sse&key=${key}`;
 
@@ -702,7 +770,7 @@ const streamGeminiWithTools = async ({
     const generationConfig = { maxOutputTokens: getMaxOutputTokens(targetModel), temperature: 0.2 };
     const tools = [{ functionDeclarations: TOOL_DECLARATIONS }];
 
-    // Build contents array (same as streamGemini)
+    // Build contents array
     const contents = [];
     const recentHistory = Array.isArray(conversationHistory) ? conversationHistory.slice(-20) : [];
     for (const msg of recentHistory) {
@@ -716,73 +784,257 @@ const streamGeminiWithTools = async ({
     const imageParts = buildImageParts(attachments);
     contents.push({ role: 'user', parts: [{ text: userContent }, ...imageParts] });
 
-    // Collect tool-call events for the frontend progress stream
-    const toolEvents = [];
-    let round = 0;
+    // Use a TransformStream so we can push events in real-time  
+    const { readable, writable } = new TransformStream();
+    const writer = writable.getWriter();
 
-    // ── Tool loop ────────────────────────────────────────────────────
-    while (round < MAX_TOOL_ROUNDS) {
-        let data;
-        // Retry wrapper for 429s
-        for (let attempt = 0; attempt <= maxRetries; attempt++) {
-            try {
-                data = await callGeminiOnce({ endpoint, systemInstruction, contents, tools, generationConfig, signal });
-                break;
-            } catch (e) {
-                const msg = String(e?.message || '').toLowerCase();
-                if ((msg.includes('429') || msg.includes('quota')) && attempt < maxRetries) {
-                    await sleep(500 * Math.pow(2, attempt) + Math.random() * 300);
-                    continue;
+    const writeEvent = async (obj) => {
+        try {
+            await writer.write(encoder.encode(JSON.stringify(obj) + '\n'));
+        } catch (e) {
+            // Stream may have been cancelled
+        }
+    };
+
+    // Run the tool loop asynchronously, pushing events as they happen
+    (async () => {
+        try {
+            let round = 0;
+            const deferredCommands = [];  // git write commands deferred until after FILE: blocks
+            const collectedFiles = [];    // create_file calls intercepted → emit as FILE: blocks
+
+            while (round < MAX_TOOL_ROUNDS) {
+                let data;
+                for (let attempt = 0; attempt <= maxRetries; attempt++) {
+                    try {
+                        data = await callGeminiOnce({ endpoint, systemInstruction, contents, tools, generationConfig, signal });
+                        break;
+                    } catch (e) {
+                        const msg = String(e?.message || '').toLowerCase();
+                        if ((msg.includes('429') || msg.includes('quota')) && attempt < maxRetries) {
+                            await sleep(500 * Math.pow(2, attempt) + Math.random() * 300);
+                            continue;
+                        }
+                        throw e;
+                    }
                 }
-                throw e;
+
+                const candidate = data?.candidates?.[0];
+                const parts = candidate?.content?.parts || [];
+
+                const fnCalls = parts.filter((p) => p.functionCall);
+                if (fnCalls.length === 0) {
+                    // No tool calls — model produced final text. Stream it out.
+                    const finalText = parts.map((p) => p.text || '').join('');
+                    const CHUNK_SIZE = 120;
+                    for (let i = 0; i < finalText.length; i += CHUNK_SIZE) {
+                        await writeEvent({ delta: finalText.slice(i, i + CHUNK_SIZE) });
+                    }
+                    // Emit synthetic FILE: blocks for any create_file calls we intercepted
+                    if (collectedFiles.length > 0) {
+                        let syntheticBlocks = '\n\n';
+                        for (const cf of collectedFiles) {
+                            syntheticBlocks += `FILE: ${cf.path}\n\`\`\`\n${cf.content}\n\`\`\`\n\n`;
+                        }
+                        await writeEvent({ delta: syntheticBlocks });
+                    }
+                    // Emit deferred git commands AFTER the file content so the user sees FILE: blocks first
+                    for (const dc of deferredCommands) {
+                        await writeEvent({
+                            commandPending: {
+                                id: dc.id,
+                                command: dc.command,
+                                tool: 'run_command',
+                                args: dc.args,
+                                deferred: true,
+                            },
+                        });
+                    }
+                    await writeEvent({ done: true });
+                    await writer.close();
+                    return;
+                }
+
+                // Append model's function-call turn to contents
+                contents.push({ role: 'model', parts });
+
+                // Execute tool calls — with approval gating for run_command
+                const fnResponses = [];
+                for (const part of fnCalls) {
+                    const { name, args } = part.functionCall;
+
+                    if (name === 'run_command') {
+                        const command = (args?.command || '').trim();
+
+                        // ── Detect git write commands → DEFER them ──
+                        // Git add/commit/push must wait until the user reviews
+                        // and applies FILE: block suggestions. We tell Gemini
+                        // the command is deferred and continue generating.
+                        if (GIT_WRITE_CMD_RE.test(command)) {
+                            const approvalId = generateApprovalId();
+                            deferredCommands.push({ id: approvalId, command, args });
+                            // Store for the approve-command endpoint to execute later
+                            deferredCommandsMap.set(approvalId, { command, workspacePath });
+                            // Tell Gemini the command is deferred — don't retry
+                            fnResponses.push({
+                                functionResponse: {
+                                    name,
+                                    response: {
+                                        deferred: true,
+                                        message: `Command "${command}" has been deferred. It will be presented to the user for approval AFTER they review and apply the file changes you generate. Do NOT retry or re-call this command. Instead, continue by generating the FILE: blocks for any files you need to create, then mention the deferred command in your response text.`,
+                                    },
+                                },
+                            });
+                            continue;
+                        }
+
+                        // ── Non-git commands: Command Approval Gate ──
+                        const approvalId = generateApprovalId();
+
+                        // Emit commandPending event to the frontend
+                        await writeEvent({
+                            commandPending: {
+                                id: approvalId,
+                                command,
+                                tool: name,
+                                args,
+                            },
+                        });
+
+                        // Wait for user approval (blocks until approved/rejected/timeout)
+                        const approved = await waitForCommandApproval(approvalId, command);
+
+                        if (approved) {
+                            // User approved — execute the command
+                            await writeEvent({ toolCall: { tool: name, args, status: 'running' } });
+                            const result = await executeTool(name, args, workspacePath, signal, { apiKey: key });
+                            const evt = { tool: name, args, status: 'done' };
+                            if (result?.sessionId) evt.sessionId = result.sessionId;
+                            await writeEvent({ toolCall: evt });
+                            fnResponses.push({ functionResponse: { name, response: result } });
+                        } else {
+                            // User rejected — tell Gemini the command was declined
+                            await writeEvent({
+                                toolCall: { tool: name, args, status: 'declined' },
+                            });
+                            fnResponses.push({
+                                functionResponse: {
+                                    name,
+                                    response: {
+                                        error: 'User declined command execution. Do not retry this command. Continue without it or ask the user for guidance.',
+                                        declined: true,
+                                    },
+                                },
+                            });
+                        }
+                    } else if (name === 'create_file') {
+                        // ── Intercept create_file → collect for FILE: blocks ──
+                        // Instead of writing to disk, we collect the file content
+                        // and emit it as synthetic FILE: blocks AFTER the text streams.
+                        // This gives the user Apply/Reject buttons for review.
+                        const filePath = (args?.path || '').trim();
+                        const content = args?.content ?? '';
+                        if (filePath) {
+                            collectedFiles.push({ path: filePath, content });
+                            await writeEvent({ toolCall: { tool: name, args: { path: filePath }, status: 'collected' } });
+                        }
+                        // Tell Gemini the file was accepted — so it doesn't retry
+                        fnResponses.push({
+                            functionResponse: {
+                                name,
+                                response: {
+                                    success: true,
+                                    path: filePath,
+                                    bytesWritten: content.length,
+                                    note: 'File will be presented to the user for review. Do NOT generate FILE: blocks for this file in your text response — it is already handled.',
+                                },
+                            },
+                        });
+                    } else {
+                        // Non-command tools execute immediately (read_file, search, etc.)
+                        await writeEvent({ toolCall: { tool: name, args, status: 'running' } });
+                        const result = await executeTool(name, args, workspacePath, signal, { apiKey: key });
+                        await writeEvent({ toolCall: { tool: name, args, status: 'done' } });
+                        fnResponses.push({ functionResponse: { name, response: result } });
+                    }
+                }
+
+                contents.push({ role: 'function', parts: fnResponses });
+                round++;
             }
-        }
 
-        const candidate = data?.candidates?.[0];
-        const parts = candidate?.content?.parts || [];
+            // Exhausted tool rounds — final streaming call WITHOUT tools
+            const finalBody = { systemInstruction, contents, generationConfig };
+            const finalRes = await fetch(streamEndpoint, {
+                method: 'POST',
+                headers: { 'content-type': 'application/json', accept: 'text/event-stream' },
+                body: JSON.stringify(finalBody),
+                signal,
+            });
+            if (!finalRes.ok) throw new Error(`Gemini error ${finalRes.status}`);
 
-        // Check for function calls
-        const fnCalls = parts.filter((p) => p.functionCall);
-        if (fnCalls.length === 0) {
-            // No tool calls — model produced final text. Stream it out.
-            const finalText = parts.map((p) => p.text || '').join('');
-            return createTextStream(finalText, toolEvents);
-        }
-
-        // Append model's function-call turn to contents
-        contents.push({ role: 'model', parts });
-
-        // Execute each tool call in parallel
-        const fnResponses = await Promise.all(
-            fnCalls.map(async (part) => {
-                const { name, args } = part.functionCall;
-                toolEvents.push({ tool: name, args, status: 'running' });
-                const result = await executeTool(name, args, workspacePath, signal, { apiKey: key });
-                const evt = toolEvents[toolEvents.length - 1];
-                evt.status = 'done';
-                // Propagate sessionId from run_command so frontend can open terminal
-                if (name === 'run_command' && result?.sessionId) {
-                    evt.sessionId = result.sessionId;
+            // Stream the final SSE response
+            const reader = finalRes.body.getReader();
+            const decoder = new TextDecoder();
+            let sseBuffer = '';
+            let accumulatedText = '';
+            while (true) {
+                const { value, done } = await reader.read();
+                if (done) break;
+                if (!value) continue;
+                sseBuffer += decoder.decode(value, { stream: true });
+                const lines = sseBuffer.split('\n');
+                sseBuffer = lines.pop() || '';
+                for (const raw of lines) {
+                    const line = raw.replace(/^data:\s*/, '').trim();
+                    if (!line || line === '[DONE]') continue;
+                    try {
+                        const parsed = JSON.parse(line);
+                        const textDelta = (parsed?.candidates?.[0]?.content?.parts || []).map((p) => p?.text || '').join('');
+                        if (textDelta) {
+                            accumulatedText += textDelta;
+                            await writeEvent({ delta: textDelta });
+                        }
+                    } catch (e) { /* skip */ }
                 }
-                return { functionResponse: { name, response: result } };
-            })
-        );
+            }
+            // Validate final output
+            const validation = validateResponseFormat(accumulatedText);
+            if (!validation.isValid && validation.errors.length > 0) {
+                await writeEvent({ validationError: validation.errors.join('\n'), validationFailed: true });
+            }
+            // Emit synthetic FILE: blocks for any create_file calls we intercepted
+            if (collectedFiles.length > 0) {
+                let syntheticBlocks = '\n\n';
+                for (const cf of collectedFiles) {
+                    syntheticBlocks += `FILE: ${cf.path}\n\`\`\`\n${cf.content}\n\`\`\`\n\n`;
+                }
+                await writeEvent({ delta: syntheticBlocks });
+            }
+            // Emit deferred git commands AFTER the file content
+            for (const dc of deferredCommands) {
+                await writeEvent({
+                    commandPending: {
+                        id: dc.id,
+                        command: dc.command,
+                        tool: 'run_command',
+                        args: dc.args,
+                        deferred: true,
+                    },
+                });
+            }
+            await writeEvent({ done: true });
+            await writer.close();
+        } catch (e) {
+            try {
+                await writeEvent({ error: e.message || 'Tool loop failed' });
+                await writeEvent({ done: true });
+                await writer.close();
+            } catch (_) { }
+        }
+    })();
 
-        // Append function responses to contents so Gemini sees the results
-        contents.push({ role: 'function', parts: fnResponses });
-        round++;
-    }
-
-    // If we exhausted rounds, do a final streaming call WITHOUT tools to force text output
-    const finalBody = { systemInstruction, contents, generationConfig };
-    const finalRes = await fetch(streamEndpoint, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json', accept: 'text/event-stream' },
-        body: JSON.stringify(finalBody),
-        signal,
-    });
-    if (!finalRes.ok) throw new Error(`Gemini error ${finalRes.status}`);
-    return createAgenticValidatedStream(finalRes.body, toolEvents);
+    return readable;
 };
 
 /**
