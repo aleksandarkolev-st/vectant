@@ -2,6 +2,7 @@
 
 import { getSession } from 'next-auth/react';
 import SynthiException from "@/components/SynthiException";
+import collabSessionService from '@/services/collabSessionService';
 
 function languageFromExtension(ext) {
     const m = {
@@ -105,6 +106,9 @@ export class ApiClient {
             const session = await getSession();
             const userId = session?.user?.id || session?.user?.email;
             if (userId) base['x-user-id'] = userId;
+            if (collabSessionService?.isActive && collabSessionService.sessionId) {
+                base['x-session-id'] = collabSessionService.sessionId;
+            }
         } catch (_) {
             // Non-fatal — server falls back to slug-level repo
         }
