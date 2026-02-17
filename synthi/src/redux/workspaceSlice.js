@@ -92,7 +92,7 @@ export const saveFileContentThunk = createAsyncThunk(
         
         try {
             // Build the key the same way collabClient._roomKey() does (raw path, no sanitisation)
-            const key = `workspace:${slug}:${activeFile.path}`;
+            const key = collabClient.getRoomKey(slug, activeFile.path);
             const entry = collabClient.docs.get(key);
             
             if (entry && entry.ytext) {
@@ -242,7 +242,7 @@ export const selectFileThunk = createAsyncThunk(
 // `serverContent`, otherwise returns null.
 function getCrdtBaselineIfNewer(slug, filePath, serverContent) {
     try {
-        const key = `workspace:${slug}:${filePath}`;
+        const key = collabClient.getRoomKey(slug, filePath);
         const entry = collabClient.docs.get(key);
         if (!entry?.ytext) return null;
         const crdtText = entry.ytext.toString();
