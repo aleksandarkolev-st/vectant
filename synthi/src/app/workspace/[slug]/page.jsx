@@ -7,6 +7,7 @@ import { useAppDispatch, useAppSelector } from '@/redux/hooks';
 import { fetchFilesThunk, selectActiveFile, setSlug, selectFileThunk, selectCurrentContent, selectFileCacheEntries } from '@/redux/workspaceSlice';
 import { fetchGitStatus } from '@/redux/gitSlice';
 import collabClient from '@/services/collabClient';
+import collabSessionService from '@/services/collabSessionService';
 import { 
     selectShowTerminal, 
     selectShowEmulatorPreview,
@@ -249,6 +250,13 @@ export default function EditorPage({ params }) {
     // Workspace state
     const [workspaceMissing, setWorkspaceMissing] = useState(false);
     const [workspaceMissingMessage, setWorkspaceMissingMessage] = useState('');
+    const [activeSessionId, setActiveSessionId] = useState(collabSessionService?.isActive ? collabSessionService.sessionId : null);
+
+    useEffect(() => {
+        return collabSessionService.onChange(() => {
+            setActiveSessionId(collabSessionService?.isActive ? collabSessionService.sessionId : null);
+        });
+    }, []);
 
     useEffect(() => {
         if (slug) {
@@ -335,6 +343,10 @@ export default function EditorPage({ params }) {
     // all connected clients stay in sync when any teammate mutates the tree.
     const authUserId = authSession?.user?.id || authSession?.user?.email || null;
     useEffect(() => {
+        collabClient.setIdentity({ userId: authUserId, sessionId: activeSessionId });
+    }, [authUserId, activeSessionId]);
+
+    useEffect(() => {
         if (!slug) return;
         const teardown = collabClient.connectNotifications(slug, {
             onFileTreeChanged: () => {
@@ -353,9 +365,9 @@ export default function EditorPage({ params }) {
                 // Source Control panel updates without waiting for the poll.
                 dispatch(fetchGitStatus(slug));
             },
-        }, authUserId);
+        }, { userId: authUserId, sessionId: activeSessionId });
         return teardown;
-    }, [slug, dispatch, authUserId]);
+    }, [slug, dispatch, authUserId, activeSessionId]);
 
     // 2. Consume global state directly via selectors
     const activeFile = useAppSelector(selectActiveFile);
