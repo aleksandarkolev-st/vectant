@@ -98,10 +98,39 @@ const fileHashCache = new Map(); // docName -> { hash, timestamp }
 // for .git before re-initialising) and merges GCS contents via downloadGcsToRepo().
 // Keyed by "slug" for slug-level hydration and "slug:userId" for per-user repos.
 const hydratedSlugs = new Set();
+const purgedLegacyRooms = new Set();
 
 /** Build a hydration key — includes userId when present. */
 function hydrationKey(slug, userId) {
   return userId ? `${slug}:${userId}` : slug;
+}
+
+async function purgeLegacyRoomState(slug, filePath) {
+  const legacyDoc = `workspace:${slug}:${filePath}`;
+  if (purgedLegacyRooms.has(legacyDoc)) return;
+  purgedLegacyRooms.add(legacyDoc);
+
+  try {
+    await persistence.clearDocument(legacyDoc);
+  } catch (_) {}
+
+  try {
+    fileHashCache.delete(legacyDoc);
+  } catch (_) {}
+
+  try {
+    if (yWsDocs && yWsDocs.has(legacyDoc)) {
+      const wsDoc = yWsDocs.get(legacyDoc);
+      if (wsDoc?.conns?.size > 0) {
+        for (const conn of Array.from(wsDoc.conns.keys())) {
+          try { conn.close(4001, 'legacy-room-purged'); } catch (_) {}
+        }
+      }
+      try { wsDoc.destroy(); } catch (_) {}
+      yWsDocs.delete(legacyDoc);
+    }
+    activeDocuments.delete(legacyDoc);
+  } catch (_) {}
 }
 
 /**
@@ -112,18 +141,132 @@ function computeHash(content) {
 }
 
 /**
- * Parse document name to extract slug and file path
- * Format: "workspace:slug:filepath"
+ * Build a deterministic Yjs room/doc name.
+ * v2 format:
+ *   workspace:<slug>:user:<encodedUserId>:<filePath>
+ *   workspace:<slug>:session:<sessionId>:<filePath>
+ * legacy v1 format (read-only compatibility):
+ *   workspace:<slug>:<filePath>
+ */
+function buildDocName(slug, filePath, { userId = null, sessionId = null } = {}) {
+  const safePath = filePath || 'root';
+  if (sessionId) {
+    return `workspace:${slug}:session:${sessionId}:${safePath}`;
+  }
+  if (userId) {
+    return `workspace:${slug}:user:${encodeURIComponent(String(userId))}:${safePath}`;
+  }
+  return `workspace:${slug}:${safePath}`;
+}
+
+/**
+ * Parse a Yjs room/doc name.
  */
 function parseDocName(docName) {
-  if (!docName || !docName.startsWith('workspace:')) {
-    return null;
+  if (!docName || !docName.startsWith('workspace:')) return null;
+
+  const body = docName.slice('workspace:'.length);
+  const firstColon = body.indexOf(':');
+  if (firstColon <= 0) return null;
+
+  const slug = body.slice(0, firstColon);
+  const remainder = body.slice(firstColon + 1);
+
+  if (remainder.startsWith('user:')) {
+    const afterTag = remainder.slice('user:'.length);
+    const userSep = afterTag.indexOf(':');
+    if (userSep <= 0) return null;
+    const encodedUserId = afterTag.slice(0, userSep);
+    const filePath = afterTag.slice(userSep + 1);
+    if (!filePath) return null;
+    return {
+      slug,
+      filePath,
+      scopeType: 'user',
+      userId: decodeURIComponent(encodedUserId),
+      sessionId: null,
+      isLegacy: false,
+    };
   }
-  const parts = docName.split(':');
-  if (parts.length < 3) return null;
-  const slug = parts[1];
-  const filePath = parts.slice(2).join(':'); // Handle colons in file path
-  return { slug, filePath };
+
+  if (remainder.startsWith('session:')) {
+    const afterTag = remainder.slice('session:'.length);
+    const sessionSep = afterTag.indexOf(':');
+    if (sessionSep <= 0) return null;
+    const sessionId = afterTag.slice(0, sessionSep);
+    const filePath = afterTag.slice(sessionSep + 1);
+    if (!filePath) return null;
+    return {
+      slug,
+      filePath,
+      scopeType: 'session',
+      sessionId,
+      userId: null,
+      isLegacy: false,
+    };
+  }
+
+  // Legacy v1 room (workspace:<slug>:<filePath>)
+  return {
+    slug,
+    filePath: remainder,
+    scopeType: 'legacy',
+    userId: null,
+    sessionId: null,
+    isLegacy: true,
+  };
+}
+
+function resolveEffectiveUserForDoc(parsed, fallbackUserId = null) {
+  if (!parsed) return fallbackUserId || null;
+  if (parsed.scopeType === 'user') return parsed.userId || fallbackUserId || null;
+  if (parsed.scopeType === 'session') {
+    const session = parsed.sessionId ? sessionManager.getSession(parsed.sessionId) : null;
+    return session?.hostId || fallbackUserId || null;
+  }
+  return fallbackUserId || null;
+}
+
+function getWsQueryParams(reqUrl) {
+  try {
+    const params = new URLSearchParams((reqUrl || '').split('?')[1] || '');
+    return {
+      userId: params.get('userId') || null,
+      sessionId: params.get('sessionId') || null,
+    };
+  } catch (_) {
+    return { userId: null, sessionId: null };
+  }
+}
+
+function validateDocAccess(parsedDoc, { userId, sessionId }) {
+  if (!parsedDoc) return { ok: false, status: 400, reason: 'invalid_doc_name' };
+  if (!userId) return { ok: false, status: 401, reason: 'user_required' };
+
+  if (parsedDoc.scopeType === 'session') {
+    if (!sessionId || sessionId !== parsedDoc.sessionId) {
+      return { ok: false, status: 403, reason: 'session_mismatch' };
+    }
+    const session = sessionManager.getSession(sessionId);
+    if (!session) return { ok: false, status: 404, reason: 'session_not_found' };
+    if (session.slug !== parsedDoc.slug) {
+      return { ok: false, status: 403, reason: 'session_slug_mismatch' };
+    }
+    if (!sessionManager.checkPermission(sessionId, userId, 'canEdit')) {
+      return { ok: false, status: 403, reason: 'edit_permission_required' };
+    }
+    return { ok: true };
+  }
+
+  if (parsedDoc.scopeType === 'user') {
+    if (parsedDoc.userId !== userId) {
+      return { ok: false, status: 403, reason: 'user_scope_mismatch' };
+    }
+    return { ok: true };
+  }
+
+  // Legacy rooms are denied in strict per-user mode.
+  return { ok: false, status: 410, reason: 'legacy_room_unsupported' };
 }
 
 /**
@@ -138,13 +281,6 @@ async function getActualFileContent(slug, filePath, userId) {
     const content = await fsPromises.readFile(fullPath, 'utf8');
     return content;
   } catch (e) {
-    // If per-user path failed and we had a userId, try the slug-level fallback
-    if (userId) {
-      try {
-        const fallbackPath = path.join(gitService.getRepoPath(slug), filePath);
-        return await fsPromises.readFile(fallbackPath, 'utf8');
-      } catch (_) { /* fall through */ }
-    }
     console.log(`[Collab] Could not read file ${slug}/${filePath}:`, e.code || e.message);
     return null;
   }
@@ -243,7 +379,7 @@ class ValidatingPersistence {
     // Clean up existing observer if any
     this._cleanupAutoFlush(docName);
 
-    const { slug, filePath } = parsed;
+    const { filePath } = parsed;
     
     // Use the canonical text type
     const targetText = ydoc.getText(YTEXT_TYPE);
@@ -264,10 +400,6 @@ class ValidatingPersistence {
         try {
           const content = targetText.toString();
           fileHashCache.set(docName, { hash: computeHash(content), timestamp: Date.now() });
-
-          // Notify frontends so Source Control can show pending changes
-          // (but do NOT write to disk — that waits for explicit save)
-          broadcastGitStatusChanged(slug, filePath);
         } catch (e) {
           console.error(`[Collab AutoFlush] Hash update failed for ${filePath}:`, e.message);
         }
@@ -333,7 +465,21 @@ class ValidatingPersistence {
     const parsed = parseDocName(docName);
     if (!parsed) return;
 
-    const { slug, filePath } = parsed;
+    const { slug, filePath, userId: docUserId, sessionId: docSessionId } = parsed;
+    let effectiveUserId = docUserId || null;
+
+    // For shared session docs, writes should target the host's working tree.
+    if (docSessionId && !effectiveUserId) {
+      const session = sessionManager.getSession(docSessionId);
+      if (!session) {
+        throw new Error(`Session ${docSessionId} not found for doc ${docName}`);
+      }
+      effectiveUserId = session.hostId;
+    }
+
+    if (!effectiveUserId) {
+      throw new Error(`Refusing unscoped flush for doc ${docName}`);
+    }
 
     // Read content from the in-memory Yjs doc (the observer tracks it)
     const entry = this.docObservers.get(docName);
@@ -354,35 +500,18 @@ class ValidatingPersistence {
     // ── 1. GCS sync (durable store) ──────────────────────────────────
     if (config.GCS_SYNC_ON_FLUSH && gcsSync && typeof gcsSync.isGcsConfigured === 'function' && gcsSync.isGcsConfigured()) {
       try {
-        await gcsSync.syncFileToGcs(slug, filePath, content);
+        await gcsSync.syncFileToGcs(slug, filePath, content, effectiveUserId);
       } catch (e) {
         console.warn(`[Collab Flush] GCS sync failed for ${filePath}:`, e?.message || e);
       }
     }
 
-    // ── 2. Disk write to per-user repos ──────────────────────────────
-    let wroteAny = false;
-    try {
-      const userRepos = gitService.listUserRepos(slug);
-      for (const { path: userRepoPath } of userRepos) {
-        try {
-          if (!fs.existsSync(userRepoPath)) continue;
-          const userFullPath = path.join(userRepoPath, filePath);
-          await fsPromises.mkdir(path.dirname(userFullPath), { recursive: true });
-          await fsPromises.writeFile(userFullPath, content, 'utf-8');
-          wroteAny = true;
-        } catch (_) { /* non-fatal per user */ }
-      }
-    } catch (_) { /* non-fatal */ }
-
-    // Fallback: slug-level repo if no per-user repos exist yet
-    if (!wroteAny) {
-      const repoPath = gitService.getRepoPath(slug);
-      if (fs.existsSync(repoPath)) {
-        const fullPath = path.join(repoPath, filePath);
-        await fsPromises.mkdir(path.dirname(fullPath), { recursive: true });
-        await fsPromises.writeFile(fullPath, content, 'utf-8');
-      }
+    // ── 2. Disk write to the scoped repo only ────────────────────────
+    const repoPath = gitService.getEffectiveRepoPath(slug, effectiveUserId);
+    if (fs.existsSync(repoPath)) {
+      const fullPath = path.join(repoPath, filePath);
+      await fsPromises.mkdir(path.dirname(fullPath), { recursive: true });
+      await fsPromises.writeFile(fullPath, content, 'utf-8');
     }
 
     // Update hash cache
@@ -399,7 +528,7 @@ class ValidatingPersistence {
       } catch (_) { /* non-fatal */ }
     }
 
-    broadcastGitStatusChanged(slug, filePath);
+    broadcastGitStatusChanged(slug, filePath, { userId: effectiveUserId, sessionId: docSessionId || null });
     console.log(`[Collab Flush] Explicit save: ${filePath} -> disk + GCS (${content.length} chars)`);
   }
 
@@ -418,7 +547,8 @@ class ValidatingPersistence {
 
     const { slug, filePath } = parsed;
     
-    const actualContent = await getActualFileContent(slug, filePath);
+    const effectiveUserId = resolveEffectiveUserForDoc(parsed);
+    const actualContent = await getActualFileContent(slug, filePath, effectiveUserId);
     
     if (actualContent === null) {
       // File doesn't exist on disk yet — still set up auto-flush so that
@@ -476,19 +606,8 @@ class ValidatingPersistence {
     // Update hash cache when writing
     fileHashCache.set(docName, { hash: computeHash(content), timestamp: Date.now() });
 
-    // Safety net: when the Y.Doc is being closed (all clients disconnected),
-    // check if the observer marked it dirty (changes occurred but were never
-    // explicitly saved).  If so, flush to disk/GCS to avoid data loss.
-    const entry = this.docObservers.get(docName);
-    if (entry && entry.dirty) {
-      console.log(`[Collab writeState] Doc "${docName}" has unsaved changes — flushing to disk before close`);
-      try {
-        await this.flushDocToDisk(docName);
-        entry.dirty = false;
-      } catch (e) {
-        console.error(`[Collab writeState] Flush failed for "${docName}":`, e.message);
-      }
-    }
+    // Do NOT flush to disk on close in manual-save mode.
+    // Persisting unsaved buffers to git worktrees causes unexpected source-control changes.
   }
 
   async clearDocument(docName) {
@@ -547,7 +666,7 @@ if (yWsUtils && typeof yWsUtils.setPersistence === 'function') {
  * @param {string} slug - Workspace slug
  * @param {string[]} [filePaths] - Specific file paths to invalidate. If empty/null, invalidates ALL docs for the slug.
  */
-async function invalidateDocsForSlug(slug, filePaths = null) {
+async function invalidateDocsForSlug(slug, filePaths = null, scope = {}) {
   const prefix = `workspace:${slug}:`;
   const toInvalidate = [];
 
@@ -555,8 +674,15 @@ async function invalidateDocsForSlug(slug, filePaths = null) {
   if (yWsDocs) {
     for (const docName of yWsDocs.keys()) {
       if (!docName.startsWith(prefix)) continue;
+      const parsed = parseDocName(docName);
+      if (!parsed) continue;
+      if (scope.sessionId && parsed.sessionId !== scope.sessionId) continue;
+      if (!scope.sessionId && scope.userId) {
+        const docUserId = resolveEffectiveUserForDoc(parsed);
+        if (docUserId !== scope.userId) continue;
+      }
       if (filePaths && filePaths.length > 0) {
-        const docPath = docName.slice(prefix.length);
+        const docPath = parsed?.filePath || docName.slice(prefix.length);
         if (!filePaths.includes(docPath)) continue;
       }
       toInvalidate.push(docName);
@@ -566,8 +692,15 @@ async function invalidateDocsForSlug(slug, filePaths = null) {
   // Also scan persistence observer map for docs that may not be in yWsDocs
   for (const docName of persistence.docObservers.keys()) {
     if (!docName.startsWith(prefix)) continue;
+    const parsed = parseDocName(docName);
+    if (!parsed) continue;
+    if (scope.sessionId && parsed.sessionId !== scope.sessionId) continue;
+    if (!scope.sessionId && scope.userId) {
+      const docUserId = resolveEffectiveUserForDoc(parsed);
+      if (docUserId !== scope.userId) continue;
+    }
     if (filePaths && filePaths.length > 0) {
-      const docPath = docName.slice(prefix.length);
+      const docPath = parsed?.filePath || docName.slice(prefix.length);
       if (!filePaths.includes(docPath)) continue;
     }
     if (!toInvalidate.includes(docName)) toInvalidate.push(docName);
@@ -620,11 +753,11 @@ async function invalidateDocsForSlug(slug, filePaths = null) {
  * Broadcast a file-tree-changed event to notification WebSocket clients
  * for a specific workspace slug. Clients should re-fetch the file tree.
  */
-function broadcastFileTreeChanged(slug) {
-  const message = JSON.stringify({ type: 'file-tree-changed', slug });
+function broadcastFileTreeChanged(slug, scope = {}) {
+  const message = JSON.stringify({ type: 'file-tree-changed', slug, scope });
   notifyWss.clients.forEach((ws) => {
     // Only send to clients subscribed to this slug
-    if (ws.readyState === WebSocket.OPEN && ws._slug === slug) {
+    if (ws.readyState === WebSocket.OPEN && ws._slug === slug && _matchesNotifyScope(ws, scope)) {
       try { ws.send(message); } catch (_) {}
     }
   });
@@ -641,15 +774,27 @@ function broadcastFileTreeChanged(slug) {
  * @param {string} [filePath] - optional file path that triggered the change
  */
 const _gitStatusBroadcastTimers = new Map();
-function broadcastGitStatusChanged(slug, filePath) {
-  if (_gitStatusBroadcastTimers.has(slug)) {
-    clearTimeout(_gitStatusBroadcastTimers.get(slug));
+function _makeScopeKey(scope = {}) {
+  return `${scope.sessionId || ''}|${scope.userId || ''}`;
+}
+
+function _matchesNotifyScope(ws, scope = {}) {
+  if (!scope) return true;
+  if (scope.sessionId) return ws._sessionId === scope.sessionId;
+  if (scope.userId) return ws._userId === scope.userId && !ws._sessionId;
+  return true;
+}
+
+function broadcastGitStatusChanged(slug, filePath, scope = {}) {
+  const timerKey = `${slug}|${_makeScopeKey(scope)}`;
+  if (_gitStatusBroadcastTimers.has(timerKey)) {
+    clearTimeout(_gitStatusBroadcastTimers.get(timerKey));
   }
-  _gitStatusBroadcastTimers.set(slug, setTimeout(() => {
-    _gitStatusBroadcastTimers.delete(slug);
-    const message = JSON.stringify({ type: 'git-status-changed', slug, filePath });
+  _gitStatusBroadcastTimers.set(timerKey, setTimeout(() => {
+    _gitStatusBroadcastTimers.delete(timerKey);
+    const message = JSON.stringify({ type: 'git-status-changed', slug, filePath, scope });
     notifyWss.clients.forEach((ws) => {
-      if (ws.readyState === WebSocket.OPEN && ws._slug === slug) {
+      if (ws.readyState === WebSocket.OPEN && ws._slug === slug && _matchesNotifyScope(ws, scope)) {
         try { ws.send(message); } catch (_) {}
       }
     });
@@ -664,10 +809,10 @@ function broadcastGitStatusChanged(slug, filePath) {
  * @param {string} slug - workspace slug
  * @param {string[]} filePaths - file paths that were reverted (empty = all files)
  */
-function broadcastFileReverted(slug, filePaths = []) {
-  const message = JSON.stringify({ type: 'file-reverted', slug, filePaths });
+function broadcastFileReverted(slug, filePaths = [], scope = {}) {
+  const message = JSON.stringify({ type: 'file-reverted', slug, filePaths, scope });
   notifyWss.clients.forEach((ws) => {
-    if (ws.readyState === WebSocket.OPEN && ws._slug === slug) {
+    if (ws.readyState === WebSocket.OPEN && ws._slug === slug && _matchesNotifyScope(ws, scope)) {
       try { ws.send(message); } catch (_) {}
     }
   });
@@ -738,8 +883,10 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     
-    const docName = `workspace:${slug}:${filePath}`;
-    const actualContent = await getActualFileContent(slug, filePath);
+    const debugUserId = req.headers['x-user-id'] || urlObj.searchParams.get('userId') || null;
+    const debugSessionId = req.headers['x-session-id'] || urlObj.searchParams.get('sessionId') || null;
+    const docName = buildDocName(slug, filePath, { userId: debugUserId, sessionId: debugSessionId });
+    const actualContent = await getActualFileContent(slug, filePath, debugUserId);
     const cachedHash = fileHashCache.get(docName);
     
     const result = {
@@ -1053,6 +1200,7 @@ const server = http.createServer(async (req, res) => {
             // Extract session context from headers/query and check permissions
             const sessionId = req.headers['x-session-id'] || urlObj.searchParams.get('sessionId');
             const userId    = req.headers['x-user-id']    || urlObj.searchParams.get('userId');
+            const notifyScope = { userId: userId || null, sessionId: sessionId || null };
 
             // ── Permission check FIRST ──────────────────────────────────
             // Check permissions BEFORE provisioning repos to prevent
@@ -1222,7 +1370,7 @@ const server = http.createServer(async (req, res) => {
                     console.warn('[Collab] Fetch not available - skipping workspace creation in main app. Set SYNTHI_APP_URL or install node-fetch.');
                   }
 
-                  broadcastFileTreeChanged(slug);
+                  broadcastFileTreeChanged(slug, notifyScope);
                   break;
                 case 'status':
                     result = await gitService.getStatus(slug, userId);
@@ -1233,85 +1381,85 @@ const server = http.createServer(async (req, res) => {
                 case 'checkout':
                     result = await gitService.checkout(slug, data.branch, data.create, userId);
                     // Branch switch may change any file on disk — invalidate all Yjs docs
-                    await invalidateDocsForSlug(slug);
-                    broadcastFileReverted(slug, []);
-                    broadcastFileTreeChanged(slug);
+                    await invalidateDocsForSlug(slug, null, notifyScope);
+                    broadcastFileReverted(slug, [], notifyScope);
+                    broadcastFileTreeChanged(slug, notifyScope);
                     break;
                 case 'fetch':
                     result = await gitService.fetch(slug, userId);
                     break;
                 case 'commit':
                     result = await gitService.commit(slug, data.message, userId);
-                    broadcastGitStatusChanged(slug);
+                    broadcastGitStatusChanged(slug, undefined, notifyScope);
                     break;
                 case 'stage':
                     result = await gitService.stageFile(slug, data.filePath, userId);
-                    broadcastGitStatusChanged(slug);
+                    broadcastGitStatusChanged(slug, undefined, notifyScope);
                     break;
                 case 'stage-all':
                     result = await gitService.stageAll(slug, userId);
-                    broadcastGitStatusChanged(slug);
+                    broadcastGitStatusChanged(slug, undefined, notifyScope);
                     break;
                 case 'stage-lines':
                     result = await gitService.stageLines(slug, data.filePath, data.patch, userId);
-                    broadcastGitStatusChanged(slug);
+                    broadcastGitStatusChanged(slug, undefined, notifyScope);
                     break;
                 case 'unstage':
                     result = await gitService.unstageFile(slug, data.filePath, userId);
-                    broadcastGitStatusChanged(slug);
+                    broadcastGitStatusChanged(slug, undefined, notifyScope);
                     break;
                 case 'unstage-all':
                     result = await gitService.unstageAll(slug, userId);
-                    broadcastGitStatusChanged(slug);
+                    broadcastGitStatusChanged(slug, undefined, notifyScope);
                     break;
                 case 'push':
                     result = await gitService.push(slug, userId);
-                    broadcastGitStatusChanged(slug);
+                    broadcastGitStatusChanged(slug, undefined, notifyScope);
                     break;
                 case 'pull':
                     result = await gitService.pull(slug, userId);
                     // Pull changes files on disk — invalidate all Yjs docs
-                    await invalidateDocsForSlug(slug);
+                    await invalidateDocsForSlug(slug, null, notifyScope);
                     // Notify clients to reset their Yjs docs — without this,
                     // the client-side Y.Docs keep stale CRDT state and merge
                     // it with fresh server content on reconnect (doubling).
-                    broadcastFileReverted(slug, []);
-                    broadcastFileTreeChanged(slug);
-                    broadcastGitStatusChanged(slug);
+                    broadcastFileReverted(slug, [], notifyScope);
+                    broadcastFileTreeChanged(slug, notifyScope);
+                    broadcastGitStatusChanged(slug, undefined, notifyScope);
                     break;
                 case 'discard':
                     result = await gitService.discardChange(slug, data.filePath, userId);
                     // File reverted on disk — invalidate its Yjs doc
                     if (data.filePath) {
-                      await invalidateDocsForSlug(slug, [data.filePath]);
+                      await invalidateDocsForSlug(slug, [data.filePath], notifyScope);
                     }
                     // Notify clients to reset their editor models for the reverted file
-                    broadcastFileReverted(slug, data.filePath ? [data.filePath] : []);
-                    broadcastFileTreeChanged(slug);
-                    broadcastGitStatusChanged(slug);
+                    broadcastFileReverted(slug, data.filePath ? [data.filePath] : [], notifyScope);
+                    broadcastFileTreeChanged(slug, notifyScope);
+                    broadcastGitStatusChanged(slug, undefined, notifyScope);
                     break;
                 case 'discard-all':
                     result = await gitService.discardAll(slug, userId);
                     // All files reverted — invalidate all Yjs docs
-                    await invalidateDocsForSlug(slug);
+                    await invalidateDocsForSlug(slug, null, notifyScope);
                     // Notify clients to reset ALL editor models
-                    broadcastFileReverted(slug, []);
-                    broadcastFileTreeChanged(slug);
-                    broadcastGitStatusChanged(slug);
+                    broadcastFileReverted(slug, [], notifyScope);
+                    broadcastFileTreeChanged(slug, notifyScope);
+                    broadcastGitStatusChanged(slug, undefined, notifyScope);
                     break;
                 // Merge conflict resolution
                 case 'resolve-ours':
                     result = await gitService.resolveConflictOurs(slug, data.filePath, userId);
                     if (data.filePath) {
-                      await invalidateDocsForSlug(slug, [data.filePath]);
-                      broadcastFileReverted(slug, [data.filePath]);
+                      await invalidateDocsForSlug(slug, [data.filePath], notifyScope);
+                      broadcastFileReverted(slug, [data.filePath], notifyScope);
                     }
                     break;
                 case 'resolve-theirs':
                     result = await gitService.resolveConflictTheirs(slug, data.filePath, userId);
                     if (data.filePath) {
-                      await invalidateDocsForSlug(slug, [data.filePath]);
-                      broadcastFileReverted(slug, [data.filePath]);
+                      await invalidateDocsForSlug(slug, [data.filePath], notifyScope);
+                      broadcastFileReverted(slug, [data.filePath], notifyScope);
                     }
                     break;
                 case 'mark-resolved':
@@ -1319,9 +1467,9 @@ const server = http.createServer(async (req, res) => {
                     break;
                 case 'abort-merge':
                     result = await gitService.abortMerge(slug, userId);
-                    await invalidateDocsForSlug(slug);
-                    broadcastFileReverted(slug, []);
-                    broadcastFileTreeChanged(slug);
+                    await invalidateDocsForSlug(slug, null, notifyScope);
+                    broadcastFileReverted(slug, [], notifyScope);
+                    broadcastFileTreeChanged(slug, notifyScope);
                     break;
                 case 'conflict-versions':
                     result = await gitService.getConflictVersions(slug, data.filePath, userId);
@@ -1356,14 +1504,14 @@ const server = http.createServer(async (req, res) => {
                     break;
                 case 'stash-pop':
                     result = await gitService.stashPop(slug, data.index, userId);
-                    await invalidateDocsForSlug(slug);
-                    broadcastFileReverted(slug, []);
-                    broadcastFileTreeChanged(slug);
+                    await invalidateDocsForSlug(slug, null, notifyScope);
+                    broadcastFileReverted(slug, [], notifyScope);
+                    broadcastFileTreeChanged(slug, notifyScope);
                     break;
                 case 'stash-apply':
                     result = await gitService.stashApply(slug, data.index, userId);
-                    await invalidateDocsForSlug(slug);
-                    broadcastFileTreeChanged(slug);
+                    await invalidateDocsForSlug(slug, null, notifyScope);
+                    broadcastFileTreeChanged(slug, notifyScope);
                     break;
                 case 'stash-drop':
                     result = await gitService.stashDrop(slug, data.index, userId);
@@ -1376,7 +1524,7 @@ const server = http.createServer(async (req, res) => {
                     //    This ensures GCS stays up-to-date and all per-user
                     //    repos get the latest content on explicit save.
                     {
-                      const docKey = `workspace:${slug}:${data.filePath}`;
+                      const docKey = buildDocName(slug, data.filePath, notifyScope);
                       await persistence.flushDocToDisk(docKey);
                     }
                     result = { success: true };
@@ -1429,7 +1577,7 @@ const server = http.createServer(async (req, res) => {
                 case 'write-file':
                     await gitService.writeFile(slug, data.path, data.content, userId);
                     result = { success: true };
-                    broadcastFileTreeChanged(slug);
+                    broadcastFileTreeChanged(slug, notifyScope);
                     break;
                 case 'write-files-batch':
                   // Batch write many files (supports base64 for binary).
@@ -1442,7 +1590,7 @@ const server = http.createServer(async (req, res) => {
                 case 'create-directory':
                     await gitService.createDirectory(slug, data.path, userId);
                     result = { success: true };
-                    broadcastFileTreeChanged(slug);
+                    broadcastFileTreeChanged(slug, notifyScope);
                     break;
                 case 'delete-item':
                     // Delete a file or folder from the workspace
@@ -1450,24 +1598,24 @@ const server = http.createServer(async (req, res) => {
                     result = await gitService.deleteItem(slug, data.path, userId);
                     console.log('[Collab] delete-item result:', result);
                     if (data.path) {
-                      await invalidateDocsForSlug(slug, [data.path]);
+                      await invalidateDocsForSlug(slug, [data.path], notifyScope);
                     }
-                    broadcastFileTreeChanged(slug);
+                    broadcastFileTreeChanged(slug, notifyScope);
                     break;
                 case 'rename-item':
                     // Rename / move a file or directory
                     result = await gitService.renameItem(slug, data.oldPath, data.newPath, userId);
                     // Invalidate old path's Yjs doc (the file no longer exists at old path)
                     if (data.oldPath) {
-                      await invalidateDocsForSlug(slug, [data.oldPath]);
+                      await invalidateDocsForSlug(slug, [data.oldPath], notifyScope);
                     }
-                    broadcastFileTreeChanged(slug);
+                    broadcastFileTreeChanged(slug, notifyScope);
                     break;
                 case 'clear-collab':
                     // Clear Yjs persistence for specified files (used after merge conflict resolution)
                     const filesToClear = Array.isArray(data.files) ? data.files : (data.path ? [data.path] : []);
                     for (const filePath of filesToClear) {
-                        const docName = `workspace:${slug}:${filePath}`;
+                      const docName = buildDocName(slug, filePath, notifyScope);
                         await clearDocumentPersistence(docName);
                     }
                     result = { success: true, cleared: filesToClear.length };
@@ -1542,13 +1690,28 @@ const activeDocuments = new Map(); // docName -> { ydoc, lastContent, clientCoun
 
 wss.on('connection', (ws, req) => {
   const roomName = req.url ? req.url.slice(1).split('?')[0] : 'unknown';
+  const { userId, sessionId } = getWsQueryParams(req.url || '');
   const clientIp = req.socket?.remoteAddress || 'unknown';
+  ws._userId = userId;
+  ws._sessionId = sessionId;
   
   console.log(`[Collab DEBUG] === WebSocket Connection ===`);
   console.log(`[Collab DEBUG]   Room: ${roomName}`);
   console.log(`[Collab DEBUG]   Client IP: ${clientIp}`);
   console.log(`[Collab DEBUG]   URL: ${req.url}`);
   
+  const parsed = parseDocName(roomName);
+  const access = validateDocAccess(parsed, { userId, sessionId });
+  if (!access.ok) {
+    try { ws.close(1008, access.reason); } catch (_) {}
+    console.warn(`[Collab] Denied Yjs WS for room=${roomName}: ${access.reason}`);
+    return;
+  }
+
+  if (parsed && !parsed.isLegacy) {
+    purgeLegacyRoomState(parsed.slug, parsed.filePath).catch(() => {});
+  }
+
   // setupWSConnection handles the y-websocket protocol for a Y.Doc room
   setupWSConnection(ws, req, {
     persistence,
@@ -1559,11 +1722,12 @@ wss.on('connection', (ws, req) => {
   // Without this, a notification WS disconnect (network blip) would
   // un-pin the repo, and the LRU TTL eviction could delete the working
   // tree while the Yjs connection is still active — causing ENOENT.
-  const parsed = parseDocName(roomName);
   if (parsed) {
     const { slug } = parsed;
-    repoCache.pin(slug);
-    console.log(`[Collab] Pinned repo "${slug}" for Yjs WS`);
+    const effectiveUserId = resolveEffectiveUserForDoc(parsed, userId);
+    repoCache.pin(slug, effectiveUserId || undefined);
+    ws._effectiveUserId = effectiveUserId || null;
+    console.log(`[Collab] Pinned repo "${slug}" for Yjs WS (user=${effectiveUserId || 'n/a'})`);
   }
   
   // Track this connection
@@ -1587,15 +1751,22 @@ wss.on('connection', (ws, req) => {
     docInfo.clientCount--;
     console.log(`[Collab DEBUG] Connection closed for ${roomName}. Remaining clients: ${docInfo.clientCount}`);
 
-    // Unpin the repo ONLY if no other Yjs connections remain for the same slug.
+    // Unpin the repo ONLY if no other Yjs connections remain for the same scope.
     if (parsed) {
       const { slug } = parsed;
+      const effectiveUserId = ws._effectiveUserId || resolveEffectiveUserForDoc(parsed, userId);
       const anyActiveForSlug = [...activeDocuments.entries()].some(
-        ([key, info]) => key.startsWith(`workspace:${slug}:`) && info.clientCount > 0
+        ([key, info]) => {
+          if (info.clientCount <= 0) return false;
+          const p = parseDocName(key);
+          if (!p || p.slug !== slug) return false;
+          const pUser = resolveEffectiveUserForDoc(p);
+          return (pUser || null) === (effectiveUserId || null);
+        }
       );
       if (!anyActiveForSlug) {
-        repoCache.unpin(slug);
-        console.log(`[Collab] Unpinned repo "${slug}" — no more Yjs clients`);
+        repoCache.unpin(slug, effectiveUserId || undefined);
+        console.log(`[Collab] Unpinned repo "${slug}" — no more Yjs clients for user=${effectiveUserId || 'n/a'}`);
       }
     }
   });
@@ -1650,6 +1821,7 @@ server.on('upgrade', (request, socket, head) => {
       const params = new URLSearchParams((request.url || '').split('?')[1] || '');
       ws._slug = params.get('slug') || '';
       ws._userId = params.get('userId') || '';
+      ws._sessionId = params.get('sessionId') || '';
       notifyWss.emit('connection', ws, request);
       console.log(`[Collab] Notification client connected for slug: ${ws._slug}, user: ${ws._userId}`);
       ws.on('close', () => {
@@ -1684,6 +1856,15 @@ server.on('upgrade', (request, socket, head) => {
     // Yjs sync protocol – per-document CRDT connections
     const roomName = pathname.slice(1) || 'unknown';
     console.log(`[Collab DEBUG] Upgrade request for room: ${roomName}`);
+    const parsed = parseDocName(roomName);
+    const access = validateDocAccess(parsed, getWsQueryParams(request.url || ''));
+    if (!access.ok) {
+      try {
+        socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n');
+      } catch (_) {}
+      try { socket.destroy(); } catch (_) {}
+      return;
+    }
     wss.handleUpgrade(request, socket, head, (ws) => {
       wss.emit('connection', ws, request);
     });
