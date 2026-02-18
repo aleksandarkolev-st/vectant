@@ -1402,9 +1402,10 @@ const server = http.createServer(async (req, res) => {
                     break;
                 case 'checkout':
                     result = await gitService.checkout(slug, data.branch, data.create, userId);
-                    // Branch switch may change any file on disk — invalidate all Yjs docs
-                    await invalidateDocsForSlug(slug, null, notifyScope);
+                    // Broadcast BEFORE invalidation so clients destroy stale
+                    // Yjs docs before WS close triggers provider reconnect.
                     broadcastFileReverted(slug, [], notifyScope);
+                    await invalidateDocsForSlug(slug, null, notifyScope);
                     broadcastFileTreeChanged(slug, notifyScope);
                     break;
                 case 'fetch':
@@ -1440,32 +1441,30 @@ const server = http.createServer(async (req, res) => {
                     break;
                 case 'pull':
                     result = await gitService.pull(slug, userId);
-                    // Pull changes files on disk — invalidate all Yjs docs
-                    await invalidateDocsForSlug(slug, null, notifyScope);
-                    // Notify clients to reset their Yjs docs — without this,
-                    // the client-side Y.Docs keep stale CRDT state and merge
-                    // it with fresh server content on reconnect (doubling).
+                    // Broadcast BEFORE invalidation so clients destroy stale
+                    // Yjs docs before WS close triggers provider reconnect.
                     broadcastFileReverted(slug, [], notifyScope);
+                    await invalidateDocsForSlug(slug, null, notifyScope);
                     broadcastFileTreeChanged(slug, notifyScope);
                     broadcastGitStatusChanged(slug, undefined, notifyScope);
                     break;
                 case 'discard':
                     result = await gitService.discardChange(slug, data.filePath, userId);
-                    // File reverted on disk — invalidate its Yjs doc
+                    // Broadcast BEFORE invalidation so clients destroy stale
+                    // Yjs docs before WS close triggers provider reconnect.
+                    broadcastFileReverted(slug, data.filePath ? [data.filePath] : [], notifyScope);
                     if (data.filePath) {
                       await invalidateDocsForSlug(slug, [data.filePath], notifyScope);
                     }
-                    // Notify clients to reset their editor models for the reverted file
-                    broadcastFileReverted(slug, data.filePath ? [data.filePath] : [], notifyScope);
                     broadcastFileTreeChanged(slug, notifyScope);
                     broadcastGitStatusChanged(slug, undefined, notifyScope);
                     break;
                 case 'discard-all':
                     result = await gitService.discardAll(slug, userId);
-                    // All files reverted — invalidate all Yjs docs
-                    await invalidateDocsForSlug(slug, null, notifyScope);
-                    // Notify clients to reset ALL editor models
+                    // Broadcast BEFORE invalidation so clients destroy stale
+                    // Yjs docs before WS close triggers provider reconnect.
                     broadcastFileReverted(slug, [], notifyScope);
+                    await invalidateDocsForSlug(slug, null, notifyScope);
                     broadcastFileTreeChanged(slug, notifyScope);
                     broadcastGitStatusChanged(slug, undefined, notifyScope);
                     break;
@@ -1473,15 +1472,15 @@ const server = http.createServer(async (req, res) => {
                 case 'resolve-ours':
                     result = await gitService.resolveConflictOurs(slug, data.filePath, userId);
                     if (data.filePath) {
-                      await invalidateDocsForSlug(slug, [data.filePath], notifyScope);
                       broadcastFileReverted(slug, [data.filePath], notifyScope);
+                      await invalidateDocsForSlug(slug, [data.filePath], notifyScope);
                     }
                     break;
                 case 'resolve-theirs':
                     result = await gitService.resolveConflictTheirs(slug, data.filePath, userId);
                     if (data.filePath) {
-                      await invalidateDocsForSlug(slug, [data.filePath], notifyScope);
                       broadcastFileReverted(slug, [data.filePath], notifyScope);
+                      await invalidateDocsForSlug(slug, [data.filePath], notifyScope);
                     }
                     break;
                 case 'mark-resolved':
@@ -1489,8 +1488,8 @@ const server = http.createServer(async (req, res) => {
                     break;
                 case 'abort-merge':
                     result = await gitService.abortMerge(slug, userId);
-                    await invalidateDocsForSlug(slug, null, notifyScope);
                     broadcastFileReverted(slug, [], notifyScope);
+                    await invalidateDocsForSlug(slug, null, notifyScope);
                     broadcastFileTreeChanged(slug, notifyScope);
                     break;
                 case 'conflict-versions':
@@ -1526,12 +1525,13 @@ const server = http.createServer(async (req, res) => {
                     break;
                 case 'stash-pop':
                     result = await gitService.stashPop(slug, data.index, userId);
-                    await invalidateDocsForSlug(slug, null, notifyScope);
                     broadcastFileReverted(slug, [], notifyScope);
+                    await invalidateDocsForSlug(slug, null, notifyScope);
                     broadcastFileTreeChanged(slug, notifyScope);
                     break;
                 case 'stash-apply':
                     result = await gitService.stashApply(slug, data.index, userId);
+                    broadcastFileReverted(slug, [], notifyScope);
                     await invalidateDocsForSlug(slug, null, notifyScope);
                     broadcastFileTreeChanged(slug, notifyScope);
                     break;
