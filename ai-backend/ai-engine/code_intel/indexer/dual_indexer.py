@@ -416,6 +416,7 @@ class DualIndexer:
         self,
         relative_path: str,
         content: Optional[str] = None,
+        invalidate_path_cache: bool = True,
     ) -> List[SemanticChunk]:
         """
         Update index for a changed file.
@@ -432,7 +433,8 @@ class DualIndexer:
         # 2. Delete all graph edges originating from this file
         # 3. Re-extract and insert new chunks
         self.remove_file(relative_path)
-        self._path_set_cache = None
+        if invalidate_path_cache:
+            self._path_set_cache = None
         
         # Re-index
         if content:
@@ -640,13 +642,30 @@ class DualIndexer:
         Returns:
             Statistics about the reindexing
         """
-        changed = self.get_changed_files()
+        # If we have NO cached hashes at all this is effectively a first run.
+        # Delegate to the batch index_repository() which is much faster than
+        # calling update_file() 28K times.
+        if not self._file_hashes:
+            logger.info("No cached hashes – falling back to full index_repository()")
+            return self.index_repository(progress_callback)
+
+        # Single walk to collect both changed files AND the current path set.
+        changed: List[str] = []
+        current_files: Set[str] = set()
+        for file in self.walker.walk():
+            current_files.add(file.relative_path)
+            old_hash = self._file_hashes.get(file.relative_path)
+            if old_hash != file.content_hash:
+                changed.append(file.relative_path)
 
         # Purge deleted files from indices
-        current_files = {f.relative_path for f in self.walker.walk()}
         deleted_files = [p for p in list(self._file_hashes.keys()) if p not in current_files]
         for deleted in deleted_files:
             self.remove_file(deleted)
+
+        # Reuse one snapshot for import resolution during this pass to avoid
+        # O(N^2) rescans when many files are changed.
+        self._path_set_cache = current_files
         
         if not changed and not deleted_files:
             return {"files_updated": 0, "chunks_updated": 0}
@@ -658,8 +677,11 @@ class DualIndexer:
             if progress_callback:
                 progress_callback(i, len(changed), path)
             
-            chunks = self.update_file(path)
+            chunks = self.update_file(path, invalidate_path_cache=False)
             total_chunks += len(chunks)
+
+        # Clear cache after this batch to avoid stale paths in future operations.
+        self._path_set_cache = None
         
         # Persist
         self.vector_index.persist()

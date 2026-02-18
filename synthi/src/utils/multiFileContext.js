@@ -42,25 +42,26 @@ const buildFilesPayload = ({
     activeFileMaxChars = MAX_ACTIVE_FILE_CONTEXT_CHARS,
     secondaryFileMaxChars = MAX_SECONDARY_FILE_CHARS,
 } = {}) => {
-    if (!activeFile) return [];
-    const activePath = activeFile.path || activeFile.name || 'active-file';
+    const activePath = activeFile?.path || activeFile?.name || null;
     const files = [];
 
-    const activeContent = collapseContent(fullDocument, activeFileMaxChars);
-    const sections = [];
-    if (beforeCursor || afterCursor) {
-        sections.push(`Around cursor:\n${beforeCursor || ''}<<CURSOR>>${afterCursor || ''}`);
-    }
-    if (fileHeader) sections.push(`File header:\n${fileHeader}`);
-    if (fileTail) sections.push(`File tail:\n${fileTail}`);
+    if (activePath) {
+        const activeContent = collapseContent(fullDocument, activeFileMaxChars);
+        const sections = [];
+        if (beforeCursor || afterCursor) {
+            sections.push(`Around cursor:\n${beforeCursor || ''}<<CURSOR>>${afterCursor || ''}`);
+        }
+        if (fileHeader) sections.push(`File header:\n${fileHeader}`);
+        if (fileTail) sections.push(`File tail:\n${fileTail}`);
 
-    const activePayload = [activeContent, ...sections].filter(Boolean).join('\n\n-----\n\n');
-    if (activePayload.trim()) {
-        files.push({
-            path: activePath,
-            name: activeFile.name || deriveNameFromPath(activePath),
-            content: activePayload,
-        });
+        const activePayload = [activeContent, ...sections].filter(Boolean).join('\n\n-----\n\n');
+        if (activePayload.trim()) {
+            files.push({
+                path: activePath,
+                name: activeFile.name || deriveNameFromPath(activePath),
+                content: activePayload,
+            });
+        }
     }
 
     if (!Array.isArray(cacheEntries) || files.length >= maxEntries) {

@@ -310,9 +310,9 @@ class CodeIntelEngine:
             if getattr(self._dual_indexer, "_rebuild_required", False):
                 result = await self._dual_indexer.index_repository_async()
             else:
-                result = self._dual_indexer.reindex_changed()
-            files_count = result.get("files_updated", 0)
-            chunks_count = result.get("chunks_updated", 0)
+                result = await asyncio.to_thread(self._dual_indexer.reindex_changed)
+            files_count = result.get("files_updated", result.get("files", 0))
+            chunks_count = result.get("chunks_updated", result.get("chunks", 0))
         else:
             # Full reindex
             result = await self._dual_indexer.index_repository_async()
@@ -334,32 +334,39 @@ class CodeIntelEngine:
         
         logger.info(f"Indexed {self._stats.chunks_indexed} chunks in {self._stats.last_index_time_ms:.0f}ms")
 
-        # Sync summaries and facts store
+        # Sync summaries and facts store in a worker thread so event loop stays responsive.
         try:
-            if self._summary_manager:
-                file_hashes = self._file_walker.get_all_hashes()
-                file_chunks = {}
-                for file_path in file_hashes.keys():
-                    chunk_ids = self._structural_index.get_chunks_for_file(file_path)
-                    chunks = []
-                    for cid in chunk_ids:
-                        chunk = self._vector_index.get_chunk(cid)
-                        if chunk:
-                            chunks.append(chunk)
-                    if not chunks:
-                        try:
-                            file_obj = self._file_walker.get_file(file_path)
-                            if file_obj:
-                                chunks = self._dual_indexer.extractor.extract(file_obj)
-                        except Exception:
-                            chunks = []
-                    if chunks:
-                        file_chunks[file_path] = chunks
-                self._summary_manager.sync(file_hashes=file_hashes, file_chunks=file_chunks)
+            await asyncio.to_thread(self._sync_summaries_after_index)
         except Exception as e:
             logger.warning(f"Summary sync failed: {e}")
         
         return self._stats
+
+    def _sync_summaries_after_index(self) -> None:
+        """Build and persist summary/fact metadata after indexing."""
+        if not self._summary_manager:
+            return
+
+        file_hashes = self._file_walker.get_all_hashes()
+        file_chunks = {}
+        for file_path in file_hashes.keys():
+            chunk_ids = self._structural_index.get_chunks_for_file(file_path)
+            chunks = []
+            for cid in chunk_ids:
+                chunk = self._vector_index.get_chunk(cid)
+                if chunk:
+                    chunks.append(chunk)
+            if not chunks:
+                try:
+                    file_obj = self._file_walker.get_file(file_path)
+                    if file_obj:
+                        chunks = self._dual_indexer.extractor.extract(file_obj)
+                except Exception:
+                    chunks = []
+            if chunks:
+                file_chunks[file_path] = chunks
+
+        self._summary_manager.sync(file_hashes=file_hashes, file_chunks=file_chunks)
     
     async def index_file(self, file_path: str) -> int:
         """

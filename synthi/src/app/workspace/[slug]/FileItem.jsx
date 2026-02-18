@@ -121,7 +121,7 @@ const FileItem = ({
         // recompute active editors (deduped)
         const act = collabClient.getActiveEditors(slug, item.path);
         setPresenceStates(act || []);
-      });
+      }, { connect: false });
       // seed initial with active editors only
       const initial = collabClient.getActiveEditors(slug, item.path);
       setPresenceStates(initial || []);

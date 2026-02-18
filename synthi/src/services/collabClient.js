@@ -494,12 +494,14 @@ class CollabClient {
   }
 
   // Subscribe to awareness change events for a room and receive current states
-  addAwarenessListener(slug, path, cb) {
+  addAwarenessListener(slug, path, cb, options = {}) {
     if (typeof cb !== 'function') return () => {};
-    const entry = this.ensureDoc(slug, path);
+    const shouldConnect = options?.connect !== false;
+    const key = this._roomKey(slug, path);
+    const entry = shouldConnect ? this.ensureDoc(slug, path) : this.docs.get(key);
     if (!entry || !entry.provider || !entry.provider.awareness) return () => {};
 
-    const key = entry.key;
+    const roomKey = entry.key || key;
     const wrapped = (changes) => {
       try {
         const states = this.getAwarenessStates(slug, path);
@@ -510,8 +512,8 @@ class CollabClient {
     };
 
     // save wrapper reference so it can be removed
-    if (!this._awarenessListeners.has(key)) this._awarenessListeners.set(key, new Map());
-    this._awarenessListeners.get(key).set(cb, wrapped);
+    if (!this._awarenessListeners.has(roomKey)) this._awarenessListeners.set(roomKey, new Map());
+    this._awarenessListeners.get(roomKey).set(cb, wrapped);
     try { entry.provider.awareness.on('change', wrapped); } catch (_) {}
 
     // return unsubscribe helper

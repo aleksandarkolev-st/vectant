@@ -17,6 +17,8 @@ const BINARY_EXTENSIONS = new Set([
 
 const VENDOR_DIRS = new Set(['node_modules','vendor','third_party','external','.yarn','.pnpm']);
 const GENERATED_DIRS = new Set(['dist','build','out','coverage','.next','.nuxt','target']);
+// Directories to ALWAYS skip when listing files (never descend)
+const SKIP_DIRS = new Set(['.git', 'node_modules', '.synthi', '.code_intel', '__pycache__', '.next', '.venv', 'venv', '.tox', '.mypy_cache', '.pytest_cache', '.turbo', '.cache', '.parcel-cache']);
 
 function isBinaryExtension(ext) {
     return BINARY_EXTENSIONS.has(String(ext || '').toLowerCase());
@@ -1162,7 +1164,7 @@ class GitService {
 
             for await (const dirent of dh) {
                 const name = dirent.name;
-                if (name === '.git') continue;
+                if (SKIP_DIRS.has(name)) continue;
                 const full = path.join(dir, name);
                 if (dirent.isDirectory()) {
                     // Include folder markers so the tree can represent empty dirs
@@ -1201,12 +1203,8 @@ class GitService {
                     const ext = (path.extname(rel).replace('.', '') || '').toLowerCase();
                     const isText = TEXT_EXTENSIONS.has(ext) || ext === '';
                     const isBinary = !isText && isBinaryExtension(ext);
-                    let contentHash = '';
-                    try {
-                        contentHash = await hashFile(full);
-                    } catch (_) {
-                        contentHash = '';
-                    }
+                    // Skip expensive per-file hashing for the tree listing.
+                    // Hash is only needed for VFS validation (file-hash endpoint).
                     out.push({
                         path: rel,
                         size: st.size,
@@ -1217,7 +1215,7 @@ class GitService {
                         is_binary: isBinary,
                         is_vendor: isVendorPath(rel),
                         is_generated: isGeneratedPath(rel),
-                        content_hash: contentHash,
+                        content_hash: '',
                         last_author: null,
                         last_commit: null,
                     });

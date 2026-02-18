@@ -440,6 +440,83 @@ export const useAISuggestions = ({
         return siblings;
     }, [flattenWorkspaceFiles]);
 
+    const extractAgentDiscoveredPaths = useCallback((results = []) => {
+        if (!Array.isArray(results) || results.length === 0) return [];
+        const found = new Set();
+
+        const addPath = (rawPath) => {
+            if (!rawPath || typeof rawPath !== 'string') return;
+            const cleaned = rawPath
+                .trim()
+                .replace(/[)>,;:]+$/, '')
+                .replace(/^['"`]+|['"`]+$/g, '');
+            if (!cleaned) return;
+            const resolved = resolveWorkspacePath(cleaned) || (flattenWorkspaceFiles.includes(cleaned) ? cleaned : null);
+            if (resolved) found.add(resolved);
+        };
+
+        for (const step of results) {
+            if (!step || step.status !== 'completed') continue;
+
+            if (Array.isArray(step.toolCalls)) {
+                for (const call of step.toolCalls) {
+                    addPath(call?.args?.path);
+                    addPath(call?.args?.file);
+                    addPath(call?.args?.filePath);
+                }
+            }
+
+            const output = typeof step.output === 'string' ? step.output : '';
+            if (!output) continue;
+
+            const fileHeaderRe = /^FILE:\s+([^\n(]+).*$/gim;
+            let match;
+            while ((match = fileHeaderRe.exec(output))) {
+                addPath(match[1]);
+            }
+
+            const inlinePathRe = /\b([\w./-]+\.[a-zA-Z0-9]{1,8})\b/g;
+            while ((match = inlinePathRe.exec(output))) {
+                addPath(match[1]);
+            }
+        }
+
+        return Array.from(found).slice(0, 12);
+    }, [flattenWorkspaceFiles, resolveWorkspacePath]);
+
+    const discoverPromptRelevantPaths = useCallback(async (prompt, limit = 10) => {
+        const discovered = new Set();
+
+        const words = String(prompt || '')
+            .toLowerCase()
+            .match(/[a-zA-Z_][a-zA-Z0-9_-]{2,}/g) || [];
+        const stop = new Set(['the', 'and', 'for', 'with', 'from', 'that', 'this', 'then', 'into', 'onto', 'about', 'please', 'update', 'change', 'modify', 'create', 'file', 'files', 'page', 'pages', 'component', 'components', 'code', 'project']);
+        const terms = Array.from(new Set(words.filter((w) => !stop.has(w)))).slice(0, 6);
+
+        if (terms.length > 0 && Array.isArray(flattenWorkspaceFiles) && flattenWorkspaceFiles.length > 0) {
+            const localMatches = flattenWorkspaceFiles
+                .filter((path) => terms.some((term) => path.toLowerCase().includes(term)))
+                .slice(0, limit);
+            localMatches.forEach((p) => discovered.add(p));
+        }
+
+        if (workspaceSlug) {
+            try {
+                const query = terms.length ? terms.join(' ') : String(prompt || '').slice(0, 80);
+                const resp = await api.searchIndex(workspaceSlug, query);
+                const results = Array.isArray(resp?.results) ? resp.results : [];
+                for (const r of results.slice(0, limit)) {
+                    const path = r?.file?.path;
+                    if (typeof path === 'string' && path) discovered.add(path);
+                }
+            } catch (_) {
+                // best-effort only
+            }
+        }
+
+        return Array.from(discovered).slice(0, limit);
+    }, [flattenWorkspaceFiles, workspaceSlug]);
+
     // Clear inline suggestion previews when a clear signal is triggered.
     useEffect(() => {
         const session = activeSession;
@@ -1508,12 +1585,22 @@ If image attachments are present, read/ocr the images and extract any text or co
             // Also skip when user has detached the active file from context
 
             const activePath = includeActiveFile ? (activeFile?.path || activeFile?.name || '') : '';
-            const skipFileContext = isRunOnly || !includeActiveFile;
+            const skipFileContext = isRunOnly;
             const referencedPaths = skipFileContext ? [] : extractReferencedPaths(activePath, code);
             const siblingPaths = skipFileContext ? [] : (referencedPaths.length === 0 ? inferSiblingPaths(activePath) : []);
             // Also extract files mentioned in the user's chat prompt (e.g., "fix main.js", "the main page")
             const promptMentionedPaths = skipFileContext ? [] : extractPromptMentionedPaths(userPrompt, activePath);
-            const relatedPaths = Array.from(new Set([...referencedPaths, ...siblingPaths, ...promptMentionedPaths]));
+            const agentDiscoveredPaths = skipFileContext ? [] : extractAgentDiscoveredPaths(agentResults);
+            const promptDiscoveredPaths = skipFileContext
+                ? []
+                : await discoverPromptRelevantPaths(userPrompt, 10);
+            const relatedPaths = Array.from(new Set([
+                ...referencedPaths,
+                ...siblingPaths,
+                ...promptMentionedPaths,
+                ...agentDiscoveredPaths,
+                ...promptDiscoveredPaths,
+            ])).slice(0, 12);
             const referencedEntries = relatedPaths.length
                 ? await Promise.all(relatedPaths.map(async (path) => [path, await getBaseContentForPath(path)]))
                 : [];
@@ -1523,6 +1610,10 @@ If image attachments are present, read/ocr the images and extract any text or co
                 if (!cacheEntryMap.has(path)) cacheEntryMap.set(path, content);
             });
             const mergedCacheEntries = Array.from(cacheEntryMap.entries());
+
+            if (!skipFileContext && useAgents) {
+                appendProgressLog(`Agent discovered files: ${relatedPaths.length}`);
+            }
 
             const filesPayloadRaw = skipFileContext ? [] : buildFilesPayload({
                 activeFile: includeActiveFile ? activeFile : null,
@@ -1552,6 +1643,7 @@ If image attachments are present, read/ocr the images and extract any text or co
                 const allKnownPaths = Array.from(new Set([
                     ...existingPaths,
                     ...Array.from(cachedFileMap.keys()),
+                    ...flattenWorkspaceFiles,
                 ]));
                 if (allKnownPaths.length > 0) {
                     requestPrompt = `${requestPrompt}\n\nEXISTING FILES IN WORKSPACE (DO NOT reuse these names for new files — pick unique names):\n${allKnownPaths.map(p => `- ${p}`).join('\n')}`;
@@ -2234,7 +2326,7 @@ If image attachments are present, read/ocr the images and extract any text or co
             setIsLoading(false);
             try { if (typeof onBusy === 'function') onBusy(false); } catch(e){}
         }
-    }, [activeSession, activeFile, appendMessagesToSession, archiveCurrentSuggestion, buildMultiFileSuggestions, currentCode, fileCacheEntries, mutateSession, onBusy, onSuggest, aiApiKey, aiModel, buildContextWindow, formatForAPI, getContextDebugInfo, availableTokens, shouldUseAgents, runPipeline, agentMode, extractPromptMentionedPaths]);
+    }, [activeSession, activeFile, appendMessagesToSession, archiveCurrentSuggestion, buildMultiFileSuggestions, currentCode, fileCacheEntries, mutateSession, onBusy, onSuggest, aiApiKey, aiModel, buildContextWindow, formatForAPI, getContextDebugInfo, availableTokens, shouldUseAgents, runPipeline, agentMode, extractPromptMentionedPaths, flattenWorkspaceFiles, extractAgentDiscoveredPaths, discoverPromptRelevantPaths]);
 
     const suggestedCode = activeSession?.suggestedCode ?? null;
     const fileSuggestions = activeSession?.fileSuggestions ?? [];

@@ -203,6 +203,15 @@ class FileWalker:
         except Exception:
             return ""
     
+    # Directories to ALWAYS skip regardless of depth or pattern config.
+    # These are checked by bare name so nested occurrences are caught too.
+    _ALWAYS_SKIP_DIRS: set = {
+        "node_modules", ".git", "__pycache__", ".next", "dist",
+        "build", ".venv", "venv", ".synthi", ".code_intel",
+        ".tox", ".mypy_cache", ".pytest_cache", "coverage",
+        ".turbo", ".cache", ".parcel-cache",
+    }
+
     def walk(self) -> Iterator[WalkedFile]:
         """
         Walk the repository and yield discovered files.
@@ -215,7 +224,13 @@ class FileWalker:
         files_skipped = 0
         
         for dirpath, dirnames, filenames in os.walk(self.root):
-            # Filter out ignored directories in-place (optimization)
+            # ---- prune directories by bare name first (handles any depth) ----
+            dirnames[:] = [
+                d for d in dirnames
+                if d not in self._ALWAYS_SKIP_DIRS
+            ]
+
+            # ---- then apply user/config ignore patterns on the relative path ----
             rel_dir = os.path.relpath(dirpath, self.root)
             if rel_dir != ".":
                 dirnames[:] = [
