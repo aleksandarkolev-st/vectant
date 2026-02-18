@@ -609,6 +609,35 @@ class ValidatingPersistence {
 
       // Update hash cache
       fileHashCache.set(docName, { hash: actualHash, timestamp: Date.now() });
+
+      // SAFEGUARD: After resetting, a reconnecting client may still send
+      // stale CRDT state via the sync protocol, which Yjs merges into this
+      // doc — causing content duplication.  Install a one-shot update
+      // handler that detects unexpected growth and re-resets the doc.
+      // Active for 2 seconds after reset, then auto-removed.
+      const resetLength = actualContent.length;
+      const GROWTH_THRESHOLD = 1.5; // Flag if content grows >50% beyond expected
+      let guardRemoved = false;
+      const staleGuard = () => {
+        if (guardRemoved) return;
+        try {
+          const currentText = ydoc.getText(YTEXT_TYPE).toString();
+          if (currentText.length > resetLength * GROWTH_THRESHOLD && resetLength > 0) {
+            console.warn(`[Collab] STALE MERGE detected for ${filePath}: expected ~${resetLength} chars, got ${currentText.length}. Re-resetting.`);
+            ydoc.transact(() => {
+              const canonical = ydoc.getText(YTEXT_TYPE);
+              canonical.delete(0, canonical.length);
+              canonical.insert(0, actualContent);
+            });
+            fileHashCache.set(docName, { hash: actualHash, timestamp: Date.now() });
+          }
+        } catch (_) {}
+      };
+      ydoc.on('update', staleGuard);
+      setTimeout(() => {
+        guardRemoved = true;
+        try { ydoc.off('update', staleGuard); } catch (_) {}
+      }, 2000);
     } else {
       fileHashCache.set(docName, { hash: actualHash, timestamp: Date.now() });
     }
