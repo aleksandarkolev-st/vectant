@@ -573,16 +573,24 @@ class CollabClient {
     // onclose handler can schedule a reconnect, so the provider sees
     // shouldConnect === false and aborts.
     const self = this;
+    // Capture the entry reference (set after provider creation) so the
+    // microtask only destroys THIS specific entry, not a newer fresh
+    // one that may have been created if ensureDoc was called between
+    // the notification-destroy and the microtask firing.
+    let entryRef = null;
     const InvalidationAwareWS = class extends WebSocket {
       constructor(url, protocols) {
         super(url, protocols);
         this.addEventListener('close', (event) => {
           if (event.code === 4000) {
             console.log('[Collab] WS close 4000 (doc-invalidated) for', key);
-            // Use queueMicrotask so this runs before the provider's
-            // setTimeout-based reconnect but after the current event.
             queueMicrotask(() => {
-              self.destroyDocument(slug, path);
+              // Only destroy if the current entry is still the one we were
+              // created for — prevents accidentally destroying a fresh doc.
+              const current = self.docs.get(key);
+              if (current && current === entryRef) {
+                self.destroyDocument(slug, path);
+              }
             });
           }
         });
@@ -606,6 +614,8 @@ class CollabClient {
     const ytext = doc.getText('monaco');
 
     const entry = { key, doc, provider, ytext, bindings: new Set() };
+    // Set the entry reference for the InvalidationAwareWS identity check.
+    entryRef = entry;
     this.docs.set(key, entry);
     return entry;
   }

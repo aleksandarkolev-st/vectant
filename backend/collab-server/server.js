@@ -855,6 +855,7 @@ async function invalidateDocsForSlug(slug, filePaths = null, scope = {}) {
  * for a specific workspace slug. Clients should re-fetch the file tree.
  */
 function broadcastFileTreeChanged(slug, scope = {}) {
+  if (!slug || !notifyWss) return;
   const message = JSON.stringify({ type: 'file-tree-changed', slug, scope });
   notifyWss.clients.forEach((ws) => {
     // Only send to clients subscribed to this slug
@@ -887,6 +888,7 @@ function _matchesNotifyScope(ws, scope = {}) {
 }
 
 function broadcastGitStatusChanged(slug, filePath, scope = {}) {
+  if (!slug || !notifyWss) return;
   const timerKey = `${slug}|${_makeScopeKey(scope)}`;
   if (_gitStatusBroadcastTimers.has(timerKey)) {
     clearTimeout(_gitStatusBroadcastTimers.get(timerKey));
@@ -911,6 +913,8 @@ function broadcastGitStatusChanged(slug, filePath, scope = {}) {
  * @param {string[]} filePaths - file paths that were reverted (empty = all files)
  */
 function broadcastFileReverted(slug, filePaths = [], scope = {}) {
+  if (!slug) return; // Guard against falsy slug to avoid mismatched broadcasts
+  if (!notifyWss) return; // Server not yet initialized
   const message = JSON.stringify({ type: 'file-reverted', slug, filePaths, scope });
   notifyWss.clients.forEach((ws) => {
     if (ws.readyState === WebSocket.OPEN && ws._slug === slug && _matchesNotifyScope(ws, scope)) {

@@ -353,20 +353,25 @@ export default function EditorPage({ params }) {
                 dispatch(fetchFilesThunk(slug));
             },
             onFileReverted: (filePaths) => {
-                // Invalidate fileCache for reverted files so stale cached
-                // content isn't served to openDiffThunk or other consumers.
-                if (!filePaths || filePaths.length === 0) {
-                    fileCache.clear();
-                } else {
-                    filePaths.forEach(fp => fileCache.delete(fp));
+                try {
+                    // Invalidate fileCache for reverted files so stale cached
+                    // content isn't served to openDiffThunk or other consumers.
+                    if (!filePaths || filePaths.length === 0) {
+                        fileCache.clear();
+                    } else {
+                        filePaths.forEach(fp => fileCache.delete(fp));
+                    }
+                    // Dispatch a DOM custom event so the Editor can react without
+                    // prop-drilling. The Editor listens for 'synthi:file-reverted'
+                    // and resets its Monaco model + Yjs binding for the affected files.
+                    window.dispatchEvent(new CustomEvent('synthi:file-reverted', {
+                        detail: { slug, filePaths },
+                    }));
+                } catch (e) {
+                    console.warn('[Page] Error in onFileReverted handler:', e);
                 }
-                // Dispatch a DOM custom event so the Editor can react without
-                // prop-drilling. The Editor listens for 'synthi:file-reverted'
-                // and resets its Monaco model + Yjs binding for the affected files.
-                window.dispatchEvent(new CustomEvent('synthi:file-reverted', {
-                    detail: { slug, filePaths },
-                }));
-                // Refresh git status to reflect the reverted state
+                // Refresh git status even if the above threw — always try to
+                // reflect the latest state in Source Control.
                 dispatch(fetchGitStatus(slug));
             },
             onGitStatusChanged: () => {
