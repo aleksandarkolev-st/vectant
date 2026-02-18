@@ -71,6 +71,7 @@ import { gitClient } from '@/services/gitClient';
 import { useSession } from 'next-auth/react';
 import { useCompiler } from '@/hooks/useCompiler';
 import { CompilerStatus } from '@/services/compilerClient';
+import { useFilePresence } from '@/hooks/useFilePresence';
 
 // Configure Monaco workers
 if (typeof window !== 'undefined') {
@@ -192,6 +193,9 @@ const EditorPanel = ({
     const [collabConnected, setCollabConnected] = useState(false); // Track if collab is actively bound
     const [isPrivateMode, setIsPrivateMode] = useState(false);
     const [remoteUnsaved, setRemoteUnsaved] = useState(false);
+    
+    // File-level presence: which remote users are editing which files
+    const { presenceByFile } = useFilePresence(slug, authUserId);
     
     // Track which file path the editor is currently bound to
     // This prevents stale onChange handlers from writing to the wrong file
@@ -2081,6 +2085,49 @@ const EditorPanel = ({
                                                             </span>
                                                         )}
                                                     </div>
+
+                                                    {/* Presence avatars — small colored dots for remote users on this file */}
+                                                    {(() => {
+                                                        const fileUsers = presenceByFile[file.path];
+                                                        if (!fileUsers || fileUsers.length === 0) return null;
+                                                        return (
+                                                            <div className="flex items-center -space-x-1 flex-shrink-0 group-hover:hidden" title={fileUsers.map(u => u.name).join(', ')}>
+                                                                {fileUsers.slice(0, 3).map((u) => (
+                                                                    u.image ? (
+                                                                        <img
+                                                                            key={u.userId}
+                                                                            src={u.image}
+                                                                            alt={u.name}
+                                                                            style={{
+                                                                                width: 14, height: 14,
+                                                                                borderRadius: '50%',
+                                                                                border: `1.5px solid ${u.color}`,
+                                                                                objectFit: 'cover',
+                                                                            }}
+                                                                        />
+                                                                    ) : (
+                                                                        <span
+                                                                            key={u.userId}
+                                                                            style={{
+                                                                                width: 10, height: 10,
+                                                                                borderRadius: '50%',
+                                                                                backgroundColor: u.color,
+                                                                                display: 'inline-block',
+                                                                                border: '1.5px solid #0c0d12',
+                                                                                flexShrink: 0,
+                                                                            }}
+                                                                        />
+                                                                    )
+                                                                ))}
+                                                                {fileUsers.length > 3 && (
+                                                                    <span style={{
+                                                                        fontSize: 8, color: '#7c80a0', marginLeft: 2,
+                                                                        fontWeight: 600, lineHeight: 1,
+                                                                    }}>+{fileUsers.length - 3}</span>
+                                                                )}
+                                                            </div>
+                                                        );
+                                                    })()}
 
                                                     {/* VSCode-style: unsaved dot and close button share the same slot.
                                                         • When unsaved & not hovered → coral dot visible
