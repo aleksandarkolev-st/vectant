@@ -590,14 +590,15 @@ export function GitStatus({ slug }) {
         {/* ── Merge Conflicts ─────────────────────── */}
         {hasConflicts && (
           <>
-            <div className="mb-3 p-2 bg-orange-900/30 border border-orange-700/50 rounded">
+            <div className="mb-3 p-2 rounded border" style={{ backgroundColor: 'rgba(245, 158, 66, 0.08)', borderColor: 'rgba(245, 158, 66, 0.20)' }}>
               <div className="flex items-center gap-2 mb-1.5">
-                <AlertTriangle className="w-3.5 h-3.5 text-orange-400" />
-                <span className="text-xs font-semibold text-orange-300">Merge Conflicts</span>
-                <span className="text-[10px] text-orange-400/60 ml-auto">{conflictedFiles.length} file{conflictedFiles.length > 1 ? 's' : ''}</span>
+                <AlertTriangle className="w-3.5 h-3.5" style={{ color: '#f59e42' }} />
+                <span className="text-xs font-semibold" style={{ color: '#f59e42' }}>Merge Conflicts</span>
+                <span className="text-[10px] ml-auto" style={{ color: 'rgba(245, 158, 66, 0.6)' }}>{conflictedFiles.length} file{conflictedFiles.length > 1 ? 's' : ''}</span>
               </div>
               <button onClick={handleAbortMerge}
-                className="bg-orange-700/60 hover:bg-orange-600 text-white px-2 py-0.5 rounded text-xs flex items-center gap-1 transition-colors">
+                className="px-2 py-0.5 rounded text-xs flex items-center gap-1 transition-colors border"
+                style={{ backgroundColor: 'rgba(255, 87, 87, 0.10)', borderColor: 'rgba(255, 87, 87, 0.25)', color: '#ff5757' }}>
                 <X className="w-2.5 h-2.5" /> Abort Merge
               </button>
             </div>
@@ -605,16 +606,25 @@ export function GitStatus({ slug }) {
               <ul className="space-y-0.5">
                 {conflictedFiles.map(filePath => (
                   <li key={`conflict-${filePath}`}
-                    className="flex items-center justify-between bg-orange-900/15 hover:bg-orange-900/25 px-2 py-1 rounded group cursor-pointer border border-orange-800/30"
+                    className="flex items-center justify-between px-2 py-1 rounded group cursor-pointer border transition-colors"
+                    style={{ backgroundColor: 'rgba(245, 158, 66, 0.05)', borderColor: 'rgba(245, 158, 66, 0.15)' }}
+                    onMouseEnter={e => e.currentTarget.style.backgroundColor = 'rgba(245, 158, 66, 0.10)'}
+                    onMouseLeave={e => e.currentTarget.style.backgroundColor = 'rgba(245, 158, 66, 0.05)'}
                     onClick={() => handleConflictFileClick(filePath)}>
                     <div className="flex items-center gap-1.5 overflow-hidden min-w-0">
-                      <AlertTriangle className="w-3 h-3 text-orange-400 flex-shrink-0" />
-                      <span className="truncate text-xs text-orange-200" title={filePath}>{filePath}</span>
+                      <AlertTriangle className="w-3 h-3 flex-shrink-0" style={{ color: '#f59e42' }} />
+                      <span className="truncate text-xs" style={{ color: '#e8eaf0' }} title={filePath}>{filePath}</span>
                     </div>
                     <div className="flex gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0">
-                      <button onClick={(e) => handleResolveOurs(e, filePath)} className="bg-blue-700 hover:bg-blue-600 px-1.5 py-0.5 rounded text-[10px] text-white" title="Accept ours">Ours</button>
-                      <button onClick={(e) => handleResolveTheirs(e, filePath)} className="bg-green-700 hover:bg-green-600 px-1.5 py-0.5 rounded text-[10px] text-white" title="Accept theirs">Theirs</button>
-                      <button onClick={(e) => handleMarkResolved(e, filePath)} className="bg-zinc-600 hover:bg-zinc-500 px-1.5 py-0.5 rounded text-[10px] text-white" title="Resolved">Resolved</button>
+                      <button onClick={(e) => handleResolveOurs(e, filePath)}
+                        className="px-1.5 py-0.5 rounded text-[10px] font-medium transition-colors"
+                        style={{ backgroundColor: 'rgba(58, 133, 116, 0.15)', color: '#4aba9a' }} title="Accept ours">Current</button>
+                      <button onClick={(e) => handleResolveTheirs(e, filePath)}
+                        className="px-1.5 py-0.5 rounded text-[10px] font-medium transition-colors"
+                        style={{ backgroundColor: 'rgba(122, 184, 248, 0.15)', color: '#7cb8f8' }} title="Accept theirs">Incoming</button>
+                      <button onClick={(e) => handleMarkResolved(e, filePath)}
+                        className="px-1.5 py-0.5 rounded text-[10px] font-medium transition-colors"
+                        style={{ backgroundColor: 'rgba(74, 186, 154, 0.10)', color: '#4aba9a' }} title="Mark resolved">Resolved</button>
                     </div>
                   </li>
                 ))}
