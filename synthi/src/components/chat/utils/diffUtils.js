@@ -177,44 +177,128 @@ export const applySearchReplace = (original, blockText) => {
     let result = original || '';
     let match;
     let applied = 0;
+
+    /** Normalise a line for fuzzy comparison: trim + collapse whitespace */
+    const normLine = (l) => l.trim().replace(/\s+/g, ' ');
+
     while ((match = blockRe.exec(blockText)) !== null) {
         const searchText = match[1];
         const replaceText = match[2];
-        // Try exact match first
+
+        // ── Strategy 1: Exact match ─────────────────────────────
         let idx = result.indexOf(searchText);
-        if (idx === -1) {
-            // Try trimmed-line matching (handles whitespace differences)
-            const searchLines = searchText.split('\n').map(l => l.trimEnd());
-            const resultLines = result.split('\n');
-            idx = -1;
-            for (let i = 0; i <= resultLines.length - searchLines.length; i++) {
-                let found = true;
-                for (let j = 0; j < searchLines.length; j++) {
-                    if (resultLines[i + j].trimEnd() !== searchLines[j]) {
-                        found = false;
-                        break;
-                    }
-                }
-                if (found) {
-                    // Reconstruct the exact text from the result to replace
-                    const matchedLines = resultLines.slice(i, i + searchLines.length);
-                    const exactOriginal = matchedLines.join('\n');
-                    result = result.slice(0, result.indexOf(exactOriginal)) + replaceText + result.slice(result.indexOf(exactOriginal) + exactOriginal.length);
+        if (idx !== -1) {
+            result = result.slice(0, idx) + replaceText + result.slice(idx + searchText.length);
+            applied++;
+            continue;
+        }
+
+        // ── Strategy 2: Trimmed-line matching ───────────────────
+        const searchLines = searchText.split('\n').map(l => l.trimEnd());
+        const resultLines = result.split('\n');
+        let found = false;
+        for (let i = 0; i <= resultLines.length - searchLines.length; i++) {
+            let ok = true;
+            for (let j = 0; j < searchLines.length; j++) {
+                if (resultLines[i + j].trimEnd() !== searchLines[j]) { ok = false; break; }
+            }
+            if (ok) {
+                const matchedLines = resultLines.slice(i, i + searchLines.length);
+                const exactOriginal = matchedLines.join('\n');
+                const pos = result.indexOf(exactOriginal);
+                if (pos !== -1) {
+                    result = result.slice(0, pos) + replaceText + result.slice(pos + exactOriginal.length);
                     applied++;
-                    idx = 0; // mark as found
+                    found = true;
                     break;
                 }
             }
-            if (idx === -1) {
-                console.warn('[SEARCH/REPLACE] Could not find search text:', searchText.slice(0, 100));
-                return false;
-            }
-        } else {
-            result = result.slice(0, idx) + replaceText + result.slice(idx + searchText.length);
-            applied++;
         }
+        if (found) continue;
+
+        // ── Strategy 3: Normalised whitespace matching ──────────
+        // Collapse all runs of whitespace so indentation / tab-vs-space differences don't matter
+        const searchNorm = searchLines.map(normLine).filter(Boolean);
+        if (searchNorm.length > 0) {
+            for (let i = 0; i <= resultLines.length - searchNorm.length; i++) {
+                let ok = true;
+                for (let j = 0; j < searchNorm.length; j++) {
+                    if (normLine(resultLines[i + j]) !== searchNorm[j]) { ok = false; break; }
+                }
+                if (ok) {
+                    const matchedLines = resultLines.slice(i, i + searchNorm.length);
+                    const exactOriginal = matchedLines.join('\n');
+                    const pos = result.indexOf(exactOriginal);
+                    if (pos !== -1) {
+                        result = result.slice(0, pos) + replaceText + result.slice(pos + exactOriginal.length);
+                        applied++;
+                        found = true;
+                        break;
+                    }
+                }
+            }
+        }
+        if (found) continue;
+
+        // ── Strategy 4: Best subsequence match ──────────────────
+        // The AI sometimes includes extra context lines or omits lines.
+        // Find the longest contiguous run of matching normalised lines in
+        // the result. If ≥50% of searchNorm lines match, accept it.
+        if (searchNorm.length >= 2) {
+            const resultNorm = resultLines.map(normLine);
+            let bestStart = -1, bestLen = 0, bestSearchStart = 0;
+            for (let si = 0; si < searchNorm.length; si++) {
+                for (let ri = 0; ri < resultNorm.length; ri++) {
+                    if (resultNorm[ri] !== searchNorm[si]) continue;
+                    // Count how many consecutive lines match
+                    let len = 0;
+                    while (si + len < searchNorm.length && ri + len < resultNorm.length
+                           && resultNorm[ri + len] === searchNorm[si + len]) {
+                        len++;
+                    }
+                    if (len > bestLen) {
+                        bestLen = len;
+                        bestStart = ri;
+                        bestSearchStart = si;
+                    }
+                }
+            }
+            // Accept if ≥50% of search lines matched contiguously
+            if (bestLen >= Math.ceil(searchNorm.length * 0.5) && bestStart !== -1) {
+                const matchedLines = resultLines.slice(bestStart, bestStart + bestLen);
+                const exactOriginal = matchedLines.join('\n');
+                const pos = result.indexOf(exactOriginal);
+                if (pos !== -1) {
+                    result = result.slice(0, pos) + replaceText + result.slice(pos + exactOriginal.length);
+                    applied++;
+                    found = true;
+                }
+            }
+        }
+        if (found) continue;
+
+        console.warn('[SEARCH/REPLACE] Could not find search text:', searchText.slice(0, 100));
+        return false;
     }
     return applied > 0 ? result : false;
+};
+
+/**
+ * Extract REPLACE sections from SEARCH/REPLACE blocks without matching.
+ * Used as a last-resort fallback when applySearchReplace fails —
+ * shows the intended replacement content so the user can manually apply it.
+ * @param {string} blockText - Text containing SEARCH/REPLACE blocks
+ * @returns {string|null} Concatenated REPLACE content, or null
+ */
+export const extractReplaceContent = (blockText) => {
+    if (!blockText) return null;
+    const blockRe = /<<<+\s*SEARCH\s*\n[\s\S]*?\n?=======\s*\n([\s\S]*?)\n?>>>+\s*REPLACE/gi;
+    const parts = [];
+    let m;
+    while ((m = blockRe.exec(blockText)) !== null) {
+        if (m[1] != null) parts.push(m[1]);
+    }
+    return parts.length > 0 ? parts.join('\n') : null;
 };
 
 export const parseFileDiffBlocks = (text = '', fallbackPath = null) => {

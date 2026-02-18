@@ -337,6 +337,7 @@ IMPORTANT TOOL GUIDELINES:
 - TERMINAL TAB EFFICIENCY: Each run_command call opens a new terminal tab in the user's IDE. To avoid cluttering the terminal bar, ALWAYS chain related commands into a single run_command call using && (e.g. "mkdir project && cd project && npm init -y", or "git add . && git commit -m 'msg' && git push"). Only use separate run_command calls when you genuinely need the output of one command to decide the next command.
 - FILE CREATION REMINDER: When the user asks you to create files with specific content, ALWAYS use the create_file tool with the full file content. Do NOT use run_command with echo/touch/cat. Do NOT generate FILE: blocks in your text response — the create_file tool handles presenting files for user review.
 - NEW vs EXISTING: When the user says "create new files/pages/components", use create_file for NEW paths that do not already exist. Do NOT modify existing files from the context to serve as the "new" files. Choose unique, descriptive names. Existing files in context are only for reference (e.g., to match the project style or to add navigation links).
+- BEFORE EDITING: When you need to MODIFY an EXISTING file using SEARCH/REPLACE blocks in your text response, you MUST first call read_file(path) to read its current contents. The SEARCH section must EXACTLY match lines from the file you just read. NEVER generate SEARCH blocks from memory or guesswork — always base them on the actual file content you just retrieved via read_file.
 
 WEB SEARCH GUIDELINES:
 - ONLY use web_search when: (1) the user explicitly asks you to search, find, or look up something online, (2) the user needs a real, valid URL such as an image link, CDN link, API endpoint, or documentation page, or (3) you genuinely cannot answer without current information from the internet (e.g., latest package versions, current API docs, real resource URLs).
@@ -830,13 +831,27 @@ const streamGeminiWithTools = async ({
                     for (let i = 0; i < finalText.length; i += CHUNK_SIZE) {
                         await writeEvent({ delta: finalText.slice(i, i + CHUNK_SIZE) });
                     }
-                    // Emit synthetic FILE: blocks for any create_file calls we intercepted
+                    // Emit collected files as structured event — reliable delivery
+                    // independent of text delta stream / progressive parsing
+                    if (collectedFiles.length > 0) {
+                        await writeEvent({ fileBlocks: collectedFiles.map(f => ({ path: f.path, content: f.content })) });
+                    }
+                    // Also emit as synthetic FILE: blocks in the text stream for
+                    // backwards compatibility / text bubble display
                     if (collectedFiles.length > 0) {
                         let syntheticBlocks = '\n\n';
                         for (const cf of collectedFiles) {
                             syntheticBlocks += `FILE: ${cf.path}\n\`\`\`\n${cf.content}\n\`\`\`\n\n`;
                         }
                         await writeEvent({ delta: syntheticBlocks });
+                    }
+                    // Attach collected files to deferred command map entries so
+                    // approve-command can write them to disk before running git
+                    if (collectedFiles.length > 0) {
+                        for (const dc of deferredCommands) {
+                            const entry = deferredCommandsMap.get(dc.id);
+                            if (entry) entry.files = collectedFiles.map(f => ({ ...f }));
+                        }
                     }
                     // Emit deferred git commands AFTER the file content so the user sees FILE: blocks first
                     for (const dc of deferredCommands) {
@@ -847,6 +862,7 @@ const streamGeminiWithTools = async ({
                                 tool: 'run_command',
                                 args: dc.args,
                                 deferred: true,
+                                filesCount: collectedFiles.length,
                             },
                         });
                     }
@@ -1003,13 +1019,25 @@ const streamGeminiWithTools = async ({
             if (!validation.isValid && validation.errors.length > 0) {
                 await writeEvent({ validationError: validation.errors.join('\n'), validationFailed: true });
             }
-            // Emit synthetic FILE: blocks for any create_file calls we intercepted
+            // Emit collected files as structured event — reliable delivery
+            if (collectedFiles.length > 0) {
+                await writeEvent({ fileBlocks: collectedFiles.map(f => ({ path: f.path, content: f.content })) });
+            }
+            // Also emit as synthetic FILE: blocks in the text stream
             if (collectedFiles.length > 0) {
                 let syntheticBlocks = '\n\n';
                 for (const cf of collectedFiles) {
                     syntheticBlocks += `FILE: ${cf.path}\n\`\`\`\n${cf.content}\n\`\`\`\n\n`;
                 }
                 await writeEvent({ delta: syntheticBlocks });
+            }
+            // Attach collected files to deferred command map entries so
+            // approve-command can write them to disk before running git
+            if (collectedFiles.length > 0) {
+                for (const dc of deferredCommands) {
+                    const entry = deferredCommandsMap.get(dc.id);
+                    if (entry) entry.files = collectedFiles.map(f => ({ ...f }));
+                }
             }
             // Emit deferred git commands AFTER the file content
             for (const dc of deferredCommands) {
@@ -1020,6 +1048,7 @@ const streamGeminiWithTools = async ({
                         tool: 'run_command',
                         args: dc.args,
                         deferred: true,
+                        filesCount: collectedFiles.length,
                     },
                 });
             }

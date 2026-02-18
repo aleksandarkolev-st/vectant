@@ -13,7 +13,7 @@ import { Terminal, ShieldCheck, ShieldX, Loader2 } from 'lucide-react';
  *   onReject  – (id) => void
  *   status    – 'pending' | 'running' | 'approved' | 'rejected' | 'failed' | 'expired'
  */
-export default function CommandApprovalCard({ id, command, onApprove, onReject, status = 'pending' }) {
+export default function CommandApprovalCard({ id, command, onApprove, onReject, status = 'pending', output, filesCount = 0 }) {
     const [busy, setBusy] = useState(false);
 
     const handleApprove = async () => {
@@ -101,6 +101,22 @@ export default function CommandApprovalCard({ id, command, onApprove, onReject, 
                     {command}
                 </pre>
             </div>
+
+            {/* Auto-apply note for deferred commands with pending files */}
+            {isPending && filesCount > 0 && (
+                <div className="px-3 py-1.5 text-[10px] text-amber-400/80 bg-amber-500/5 border-t border-white/[0.04]">
+                    Approving will save {filesCount} file{filesCount > 1 ? 's' : ''} to disk first, then run the command.
+                </div>
+            )}
+
+            {/* Output display */}
+            {output && (isApproved || isFailed) && (
+                <div className="px-3 py-2 border-t border-white/[0.06]">
+                    <pre className="text-[10px] font-mono text-[#a1a1aa] bg-black/20 rounded px-2 py-1.5 whitespace-pre-wrap break-all leading-snug max-h-32 overflow-y-auto border border-white/[0.03]">
+                        {output}
+                    </pre>
+                </div>
+            )}
 
             {/* Actions */}
             {(isPending || isRunning) && (

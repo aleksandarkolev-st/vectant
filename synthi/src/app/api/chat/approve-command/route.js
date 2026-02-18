@@ -36,7 +36,27 @@ export async function POST(request) {
             if (!approved) {
                 return NextResponse.json({ ok: true, approved: false, deferred: true });
             }
-            // Execute the git command now that the user has approved
+            // Write any collected files to disk BEFORE running the git command.
+            // These files were intercepted create_file calls collected during the
+            // tool loop. Without writing them first, git add has nothing to stage.
+            let filesWritten = 0;
+            if (Array.isArray(deferred.files) && deferred.files.length > 0) {
+                for (const file of deferred.files) {
+                    try {
+                        await executeTool(
+                            'create_file',
+                            { path: file.path, content: file.content },
+                            deferred.workspacePath,
+                            AbortSignal.timeout(10000),
+                        );
+                        filesWritten++;
+                    } catch (writeErr) {
+                        console.error(`[ApproveCommand] Failed to write file ${file.path}:`, writeErr.message);
+                    }
+                }
+            }
+
+            // Execute the git command now that files are on disk
             try {
                 const result = await executeTool(
                     'run_command',
@@ -48,6 +68,7 @@ export async function POST(request) {
                     ok: true,
                     approved: true,
                     deferred: true,
+                    filesWritten,
                     result,
                 });
             } catch (execErr) {

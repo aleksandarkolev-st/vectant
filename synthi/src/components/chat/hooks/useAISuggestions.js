@@ -3,7 +3,7 @@ import { applyPatch } from 'diff';
 import { getFileLanguage, findFirstFile } from '@/utils/fileUtils';
 import { buildFilesPayload } from '@/utils/multiFileContext';
 import { api } from '@/services/api';
-import { computeDiffChunks, parseFileDiffBlocks, stripDiffMarkers, validateFileDiffBlocks, applySearchReplace } from '../utils/diffUtils';
+import { computeDiffChunks, parseFileDiffBlocks, stripDiffMarkers, validateFileDiffBlocks, applySearchReplace, extractReplaceContent } from '../utils/diffUtils';
 import { selectFileThunk, setExternalFileContent, fetchFilesThunk } from '@/redux/workspaceSlice';
 import { setShowTerminal } from '@/redux/uiSlice';
 import { useContextWindow } from './useContextWindow';
@@ -764,15 +764,35 @@ export const useAISuggestions = ({
             if (block.searchReplaceText) {
                 const applied = applySearchReplace(currentContent, block.searchReplaceText);
                 if (applied === false) {
-                    hydrated.push({
-                        path: block.path,
-                        resolvedPath,
-                        diffText: block.searchReplaceText,
-                        status: 'error',
-                        error: baseIsMissing
-                            ? 'File not found; unable to apply SEARCH/REPLACE.'
-                            : 'Failed to match SEARCH block against current file contents.',
-                    });
+                    // Fallback: extract just the REPLACE content and show it
+                    // as a manual-review suggestion instead of a hard error
+                    const replaceOnly = extractReplaceContent(block.searchReplaceText);
+                    if (replaceOnly && replaceOnly.trim()) {
+                        console.warn('[SEARCH/REPLACE] Fuzzy match failed for', block.path, '— falling back to REPLACE content');
+                        hydrated.push({
+                            path: block.path,
+                            resolvedPath,
+                            diffText: null,
+                            originalContent: currentContent,
+                            updatedContent: baseIsMissing ? replaceOnly : currentContent,
+                            isNewFile: baseIsMissing,
+                            isFolder: false,
+                            chunks: baseIsMissing ? computeDiffChunks('', replaceOnly) : [],
+                            status: baseIsMissing ? 'pending' : 'error',
+                            error: baseIsMissing ? undefined : 'SEARCH block did not match current file. The intended replacement is shown below — review carefully before applying.',
+                            intendedContent: replaceOnly,
+                        });
+                    } else {
+                        hydrated.push({
+                            path: block.path,
+                            resolvedPath,
+                            diffText: block.searchReplaceText,
+                            status: 'error',
+                            error: baseIsMissing
+                                ? 'File not found; unable to apply SEARCH/REPLACE.'
+                                : 'Failed to match SEARCH block against current file contents.',
+                        });
+                    }
                     continue;
                 }
                 hydrated.push({
@@ -1764,6 +1784,60 @@ If image attachments are present, read/ocr the images and extract any text or co
                         console.warn('[AI Chat] Validation:', parsed.validationError || 'format issue');
                         continue;
                     }
+                    // ── Handle structured file blocks (from intercepted create_file) ──
+                    // These arrive as a reliable structured event, independent of
+                    // the text delta stream that may fail to parse FILE: markers.
+                    if (parsed?.fileBlocks && Array.isArray(parsed.fileBlocks) && parsed.fileBlocks.length > 0) {
+                        appendProgressLog(`Received ${parsed.fileBlocks.length} file suggestion(s)`);
+                        onLog?.(`Processing ${parsed.fileBlocks.length} file suggestion(s)`);
+                        try {
+                            const fbSuggestions = [];
+                            for (const fb of parsed.fileBlocks) {
+                                const resolvedPath = resolveWorkspacePath(fb.path) || fb.path;
+                                let baseContent = await getBaseContentForPath(resolvedPath);
+                                if (typeof baseContent !== 'string' && fb.path !== resolvedPath) {
+                                    baseContent = await getBaseContentForPath(fb.path);
+                                }
+                                const baseIsMissing = typeof baseContent !== 'string';
+                                const currentContent = baseIsMissing ? '' : baseContent;
+                                fbSuggestions.push({
+                                    path: fb.path,
+                                    resolvedPath,
+                                    diffText: null,
+                                    originalContent: currentContent,
+                                    updatedContent: fb.content,
+                                    isNewFile: baseIsMissing,
+                                    isFolder: false,
+                                    chunks: computeDiffChunks(currentContent, fb.content),
+                                    status: 'pending',
+                                });
+                            }
+                            if (fbSuggestions.length > 0) {
+                                mutateSession(activeSession.id, (session) => ({
+                                    ...session,
+                                    fileSuggestions: [
+                                        ...(session.fileSuggestions || []),
+                                        ...fbSuggestions,
+                                    ],
+                                    showDiff: true,
+                                    suggestionTimestamp: Date.now(),
+                                }));
+                                lastSuggestionSnapshotRef.current = {
+                                    fileSuggestions: fbSuggestions,
+                                    suggestedCode: null,
+                                    diffChunks: [],
+                                    timestamp: new Date(),
+                                };
+                                // Mark that structured file blocks were received so
+                                // post-stream finalization knows suggestions exist
+                                if (!toolCreatedFiles) toolCreatedFiles = new Set();
+                                for (const fb of fbSuggestions) toolCreatedFiles.add(fb.path);
+                            }
+                        } catch (fbErr) {
+                            console.error('[AI Chat] Failed to process fileBlocks:', fbErr);
+                        }
+                        continue;
+                    }
                     // ── Handle command approval requests ─────────────────
                     if (parsed?.commandPending) {
                         const cp = parsed.commandPending;
@@ -1969,8 +2043,19 @@ If image attachments are present, read/ocr the images and extract any text or co
             }
             const hasMultiFileSuggestions = multiFileSuggestions.length > 0;
 
+            // Check if structured fileBlocks already populated suggestions during streaming
+            const existingFileSuggestions = (() => {
+                try {
+                    const session = chatSessionsRef.current?.find(s => s.id === activeSession.id);
+                    return session?.fileSuggestions || [];
+                } catch (_) { return []; }
+            })();
+            const hasStructuredFileSuggestions = existingFileSuggestions.length > 0 && !hasMultiFileSuggestions;
+
             let codeOnly = null;
-            let displayedContent = suggestion || 'No response received';
+            let displayedContent = suggestion || (hasStructuredFileSuggestions
+                ? `AI suggested changes for ${existingFileSuggestions.length} file${existingFileSuggestions.length > 1 ? 's' : ''}. Review them below.`
+                : 'No response received');
             const isPlaceholderText = (text = '') => {
                 const normalized = text.toLowerCase();
                 return (
@@ -2001,6 +2086,11 @@ If image attachments are present, read/ocr the images and extract any text or co
                 } catch (e) {}
                 const prefix = summaryText ? `${summaryText}\n\n` : '';
                 displayedContent = `${prefix}AI suggested changes for ${multiFileSuggestions.length} file${multiFileSuggestions.length > 1 ? 's' : ''}. Review them below.`;
+            } else if (hasStructuredFileSuggestions) {
+                // Structured fileBlocks already populated suggestions during streaming.
+                // Don't clear them — just set the display content.
+                const prefix = summaryText ? `${summaryText}\n\n` : '';
+                displayedContent = `${prefix}AI suggested changes for ${existingFileSuggestions.length} file${existingFileSuggestions.length > 1 ? 's' : ''}. Review them below.`;
             } else {
                 // Clear any existing suggestions
                 mutateSession(activeSession.id, (session) => ({

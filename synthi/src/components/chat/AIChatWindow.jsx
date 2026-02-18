@@ -261,7 +261,7 @@ const AIChatWindow = ({
             onCommandPending: (cp) => {
                 setPendingCommands((prev) => [
                     ...prev,
-                    { id: cp.id, command: cp.command, status: 'pending', timestamp: new Date() },
+                    { id: cp.id, command: cp.command, status: 'pending', timestamp: new Date(), filesCount: cp.filesCount || 0 },
                 ]);
             },
         });
@@ -296,6 +296,8 @@ const AIChatWindow = ({
             approvalId: cmd.id,
             approvalStatus: cmd.status,
             timestamp: cmd.timestamp,
+            output: cmd.output || null,
+            filesCount: cmd.filesCount || 0,
         });
     }
     timeline.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
@@ -731,6 +733,8 @@ const AIChatWindow = ({
                                                 id={msg.approvalId}
                                                 command={msg.command}
                                                 status={msg.approvalStatus}
+                                                output={msg.output}
+                                                filesCount={msg.filesCount}
                                                 onApprove={handleCommandApprove}
                                                 onReject={handleCommandReject}
                                             />
