@@ -20,6 +20,14 @@ import { perfMeasureToConsole, perfOnce } from '@/services/perfMarkers';
 
 // --- Initial State and Utilities ---
 
+/**
+ * Normalize trailing newlines/carriage returns for content comparison.
+ * Yjs sync can add/remove trailing newlines, so we strip them to avoid
+ * false unsaved states.  Defined once at module level to avoid repeated
+ * inline re-definitions (DRY).
+ */
+const normalizeTrailing = (s) => (typeof s === 'string' ? s.replace(/[\r\n]+$/, '') : '');
+
 export const initialWorkspaceState = {
     slug: null,
     rawFiles: [],
@@ -88,10 +96,6 @@ export const saveFileContentThunk = createAsyncThunk(
         // Use Redux editor content as the source of truth; CRDT snapshots can
         // momentarily lag during high-frequency edits and cause stale writes.
         let contentToSave = currentContent;
-
-        // Normalize for comparison — trailing newline differences between the
-        // editor and the saved baseline should NOT prevent a save from running.
-        const normalizeTrailing = (s) => s ? s.replace(/[\r\n]+$/, '') : '';
 
         // Skip ONLY when content truly hasn't changed (after normalization).
         // When content is the same, still refresh git status so the Source
@@ -451,8 +455,6 @@ const workspaceSlice = createSlice({
                 if (state.activeFile && state.activeFile.path) {
                     state.fileContentCache.set(state.activeFile.path, newContent);
                     const activePath = state.activeFile.path;
-                    // Normalize trailing newlines for comparison to prevent false unsaved states from Yjs sync
-                    const normalizeTrailing = (s) => s ? s.replace(/[\r\n]+$/, '') : '';
                     const isUnsaved = normalizeTrailing(newContent) !== normalizeTrailing(state.savedContent);
                     const idx = state.openFiles.findIndex(f => f.path === activePath);
                     if (idx !== -1) {
@@ -660,9 +662,6 @@ const workspaceSlice = createSlice({
                 }
                 
                 // Cache unsaved content of OLD active file before switching
-                // Use normalized comparison to handle trailing newline differences from Yjs sync
-                // Only strip newlines, not spaces/tabs, so whitespace changes are still detected
-                const normalizeTrailing = (s) => s ? s.replace(/[\r\n]+$/, '') : '';
                 if (state.activeFile && state.activeFile.path && normalizeTrailing(state.currentContent) !== normalizeTrailing(state.savedContent)) {
                     // Persist the per-file savedContent so switching back later
                     // doesn't lose the unsaved baseline.
