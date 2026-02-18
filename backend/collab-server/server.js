@@ -96,6 +96,16 @@ const fileHashCache = new Map(); // docName -> { hash, timestamp }
 const revertCooldowns = new Map();
 const REVERT_COOLDOWN_MS = 3000; // 3 seconds
 
+// Periodically garbage-collect expired cooldowns so the map doesn't grow
+// unboundedly on long-running servers.
+setInterval(() => {
+  if (revertCooldowns.size === 0) return;
+  const now = Date.now();
+  for (const [key, ts] of revertCooldowns) {
+    if (now - ts > REVERT_COOLDOWN_MS * 2) revertCooldowns.delete(key);
+  }
+}, 30_000); // every 30 seconds
+
 // Track which slugs have been hydrated from GCS this boot.
 // Solves the case where a repo directory exists (e.g. from a prior run or
 // background indexer) but its contents are stale/partial.  On first access
