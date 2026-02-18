@@ -133,6 +133,32 @@ export function useCollabSession() {
     collabSessionService.leaveSession();
   }, []);
 
+  const requestJoinSession = useCallback(async (sessionId) => {
+    setIsLoading(true);
+    setError(null);
+    try {
+      const userId = typeof window !== 'undefined'
+        ? localStorage.getItem('synthi-user-id') || 'guest'
+        : 'guest';
+      const userName = typeof window !== 'undefined'
+        ? localStorage.getItem('synthi-user-name') || 'Guest'
+        : 'Guest';
+      const userAvatar = typeof window !== 'undefined'
+        ? localStorage.getItem('synthi-user-avatar') || ''
+        : '';
+      await collabSessionService.requestJoinSession(sessionId, {
+        guestId: userId,
+        displayName: userName,
+        avatarUrl: userAvatar,
+      });
+    } catch (e) {
+      setError(e.message);
+      throw e;
+    } finally {
+      setIsLoading(false);
+    }
+  }, []);
+
   return {
     // State
     role,
@@ -159,6 +185,7 @@ export function useCollabSession() {
     // Guest actions
     joinViaToken,
     leaveSession,
+    requestJoinSession,
 
     // Clear error
     clearError: () => setError(null),
