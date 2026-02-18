@@ -59,6 +59,8 @@ import { ProblemsPanel } from '@/components/analysis';
 import { DockablePanel, DockablePanelProvider, PANEL_STATE, DOCK_POSITION } from '@/components/docking';
 import { AlertCircle } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { useCollabNotifications } from '@/hooks/useCollabNotifications';
+import { GuestBanner } from '@/components/collaboration';
 
 export default function EditorPage({ params }) {
     const dispatch = useAppDispatch();
@@ -88,6 +90,9 @@ export default function EditorPage({ params }) {
     const { analyzeCode, analyzeProactive, analyzeContainer, analyzeUnified, lastResult, isAnalyzing: isAnalyzingGateway, connectionMeta } = useAnalyzerGateway();
     const { client, compile, mediaStream, cancelMobileJob, isCompiling, status: compilerStatus } = useCompiler();
     useHMR();
+    
+    // Collaboration event toast notifications
+    useCollabNotifications();
     
     // Code Intelligence - auto-index workspace for AI context retrieval
     const { 
@@ -1855,6 +1860,9 @@ export default function EditorPage({ params }) {
                 onMoveLineDown={handleMoveLineDown}
                 onDuplicateSelection={handleDuplicateSelection}
             />
+
+            {/* Collaboration: guest banner when viewing another user's session */}
+            <GuestBanner />
 
             {buildLogs.length > 0 && (
                 <div className="border-b border-[#1a1a1e] bg-[#09090b] px-3 py-2 text-xs font-mono text-[#D7DAE0] max-h-28 overflow-auto">
