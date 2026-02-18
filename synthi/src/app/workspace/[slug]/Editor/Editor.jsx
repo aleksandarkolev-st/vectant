@@ -1346,15 +1346,29 @@ const EditorPanel = ({
     }, [activeFile, dispatch, onSave, compilerClient, code, slug]);
 
     // Auto-save mode: persist edits after a short idle period.
+    // Flush the pending Redux debounce first (same as handleSave does for
+    // Ctrl+S) so saveFileContentThunk reads the absolute latest content.
     useEffect(() => {
         if (!autoSaveEnabled || !activeFile) return;
         const normalizeTrailing = (s) => (typeof s === 'string' ? s.replace(/[\r\n]+$/, '') : '');
         if (normalizeTrailing(code) === normalizeTrailing(savedContent)) return;
         const timer = setTimeout(() => {
-            dispatch(saveFileContentThunk());
+            // Flush any pending Redux debounce so the thunk reads latest content
+            if (reduxSyncTimerRef.current) {
+                clearTimeout(reduxSyncTimerRef.current);
+                reduxSyncTimerRef.current = null;
+                dispatch(updateContent(latestCodeRef.current));
+            }
+            dispatch(saveFileContentThunk()).then(() => {
+                // Force git status refresh after autosave — the normal
+                // fetchGitStatus inside saveFileContentThunk may be
+                // deduplicated by the _statusFetching guard.  This explicit
+                // delayed dispatch ensures Source Control updates.
+                setTimeout(() => dispatch(fetchGitStatus(slug)), 200);
+            });
         }, 900);
         return () => clearTimeout(timer);
-    }, [autoSaveEnabled, activeFile, dispatch, code, savedContent]);
+    }, [autoSaveEnabled, activeFile, dispatch, code, savedContent, slug]);
 
     // Latch diffModeEverActive so the DiffEditor stays mounted (hidden) once
     // the user first opens it — avoids React passive-unmount crash.
