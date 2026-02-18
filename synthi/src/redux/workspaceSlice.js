@@ -630,9 +630,15 @@ const workspaceSlice = createSlice({
             })
             .addCase(openDiffThunk.fulfilled, (state, action) => {
                 const { file, currentContent, originalContent } = action.payload;
+
+                // Preserve the saved baseline if re-opening the same file in diff.
+                // Only reset savedContent when switching to a different file.
+                const isSameFile = state.activeFile && state.activeFile.path === file.path;
                 state.activeFile = file;
                 state.currentContent = currentContent;
-                state.savedContent = currentContent; // Assuming saved on disk matches current for now
+                if (!isSameFile) {
+                    state.savedContent = currentContent;
+                }
                 state.originalContent = originalContent;
                 state.diffMode = true;
                 
