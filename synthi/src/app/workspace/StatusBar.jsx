@@ -7,6 +7,7 @@ import { selectActiveFile } from '@/redux/workspaceSlice';
 import { getMonacoLanguage } from '@/utils/languageMapper';
 import { useCollabStatus } from '@/hooks/useCollabStatus';
 import { useCollabSession } from '@/hooks/useCollabSession';
+import { useWorkspacePresence } from '@/hooks/useWorkspacePresence';
 import { AlertCircle, AlertTriangle, Cpu, Zap, Loader2, Wifi, WifiOff, Radio, Users } from 'lucide-react';
 
 /**
@@ -68,6 +69,8 @@ export default function StatusBar({
   // Aggregated collaboration WebSocket status
   const collabStatus = useCollabStatus();
   const { role: sessionRole, guests, isHost, isGuest, session } = useCollabSession();
+  const { activeUsers } = useWorkspacePresence(slug);
+  const otherUserCount = activeUsers ? activeUsers.filter(u => u.userId !== position?.userId).length : 0;
   const getCollabStyle = () => {
     switch (collabStatus) {
       case 'connected':
@@ -145,6 +148,12 @@ export default function StatusBar({
           <collabStyle.Icon className={`w-3.5 h-3.5 ${collabStyle.textColor}`} strokeWidth={2} />
           <div className={`w-2 h-2 rounded-full ${collabStyle.dot}`} />
           <span className={`${collabStyle.textColor} font-semibold`}>{collabStyle.text}</span>
+          {otherUserCount > 0 && (
+            <span className="flex items-center gap-1 ml-1" title={`${otherUserCount} other user${otherUserCount > 1 ? 's' : ''} online`}>
+              <Users className="w-3 h-3 text-[#7c80a0]" strokeWidth={2} />
+              <span className="text-[#9ba2b8] font-semibold">{otherUserCount}</span>
+            </span>
+          )}
         </div>
 
         {/* Session Sharing Indicator */}
