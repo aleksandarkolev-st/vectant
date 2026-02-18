@@ -156,6 +156,8 @@ const EditorPanel = ({
     const savedContent = useAppSelector(state => state.workspace.savedContent);
     const aiAutoEnabled = useAppSelector(selectAutoCompletionEnabled);
     const presenceGranularity = useAppSelector(selectPresenceGranularity);
+    const diffMode = useAppSelector(state => state.workspace.diffMode);
+    const originalContent = useAppSelector(state => state.workspace.originalContent);
     
     // Git status for conflict detection
     const gitStatus = useAppSelector(state => state.git?.status);
@@ -1888,11 +1890,6 @@ const EditorPanel = ({
             }
         }
     }, [latestCompletion, editorInstance, code, activeLanguage]);
-
-
-
-    const diffMode = useAppSelector(state => state.workspace.diffMode);
-    const originalContent = useAppSelector(state => state.workspace.originalContent);
 
     // --- Custom Scrollbar Logic ---
     const {
