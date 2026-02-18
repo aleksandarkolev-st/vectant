@@ -3,6 +3,7 @@
 import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { usePresence } from '@/hooks/usePresence';
 import { useCollabSession } from '@/hooks/useCollabSession';
+import ShareModal from './ShareModal';
 import {
   Users, Link2, Copy, Check, X, Shield, ShieldOff,
   Terminal, GitBranch, FileEdit, FolderEdit, UserX,
@@ -47,6 +48,7 @@ export default function CollabToolbar({ slug }) {
 
   const [copied, setCopied] = useState(false);
   const [showCreate, setShowCreate] = useState(false);
+  const [shareModalOpen, setShareModalOpen] = useState(false);
 
   // ── Copy invite link ──────────────────────────────────────────────────
 
@@ -84,7 +86,7 @@ export default function CollabToolbar({ slug }) {
 
       {/* ── Session Controls (based on role) ─────────────────────────── */}
       {role === 'idle' && !showCreate && (
-        <ShareButton onClick={() => setShowCreate(true)} />
+        <ShareButton onClick={() => setShareModalOpen(true)} />
       )}
 
       {showCreate && !isHost && (
@@ -123,6 +125,13 @@ export default function CollabToolbar({ slug }) {
       {isKnocking && (
         <KnockingIndicator onCancel={leaveSession} />
       )}
+
+      {/* ── Share Modal ──────────────────────────────────────────────── */}
+      <ShareModal
+        slug={slug}
+        open={shareModalOpen}
+        onClose={() => setShareModalOpen(false)}
+      />
     </div>
   );
 }
