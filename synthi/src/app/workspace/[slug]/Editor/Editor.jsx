@@ -17,11 +17,12 @@ import {
     selectLoadingFiles,
     selectFileThunk,
     closeFile,
-    reorderOpenFiles
+    reorderOpenFiles,
+    setDiffMode
 } from '@/redux/workspaceSlice';
 import { selectAutoCompletionEnabled, toggleAutoCompletion, selectPresenceGranularity, startCreate, setCursorPosition, selectAutoSaveEnabled } from '@/redux/uiSlice';
 import { fetchGitStatus, closeConflictResolver } from '@/redux/gitSlice';
-import { Circle, Save, Sparkles, Loader2 } from 'lucide-react';
+import { Circle, Save, Sparkles, Loader2, X } from 'lucide-react';
 import { getFileIcon } from '@/utils/fileIcons';
 import {
     ResizableHandle,
@@ -178,6 +179,9 @@ const EditorPanel = ({
     const [servicesReady, setServicesReady] = useState(false);
     const slug = useAppSelector(state => state.workspace.slug);
     const session = useSession();
+    // Derive authenticated user id from the session — used as a guard for
+    // collab binding so we never open Yjs docs before identity is set.
+    const authUserId = session?.data?.user?.id || session?.data?.user?.email || null;
     const collabBindingRef = useRef(null);
     const [collabConnected, setCollabConnected] = useState(false); // Track if collab is actively bound
     const [isPrivateMode, setIsPrivateMode] = useState(false);
@@ -906,6 +910,17 @@ const EditorPanel = ({
             return;
         }
 
+        // CRITICAL: Wait for authenticated user id before opening Yjs docs.
+        // Without this guard the collab binding can fire before setIdentity()
+        // has been called on the singleton collabClient, causing legacy room
+        // names (workspace:<slug>:<path>) that bypass per-user isolation.
+        if (!authUserId) {
+            console.debug('[Collab] Waiting for authenticated user id before binding');
+            setCollabConnected(false);
+            boundFilePathRef.current = null;
+            return;
+        }
+
         // Skip Yjs collaboration for files with merge conflicts
         // This ensures the editor shows the actual filesystem content with conflict markers
         // rather than stale content from Yjs persistence
@@ -953,6 +968,16 @@ const EditorPanel = ({
             boundFilePathRef.current = activeFile.path; // Track which file we're bound to
             setCollabConnected(true); // Mark collab as connected
             
+            // CRITICAL: After the binding is established, the model content
+            // may differ from Redux (e.g. Yjs has unsaved edits from a
+            // previous session that were seeded via model.setValue, which
+            // our isFlush guard intentionally skips).  Do a one-time sync
+            // so Redux currentContent matches what the user sees.
+            const modelContent = editorInstance.getModel()?.getValue() ?? '';
+            if (modelContent && modelContent !== code) {
+                dispatch(updateContent(modelContent));
+            }
+            
             // Sync initial unsaved state
             bindingHandle.updateLocalUnsaved(isUnsaved);
 
@@ -981,7 +1006,7 @@ const EditorPanel = ({
             setCollabConnected(false);
             setRemoteUnsaved(false);
         };
-    }, [editorInstance, monacoInstance, activeFile, slug, session, presenceGranularity, isPrivateMode, conflictedFiles]);
+    }, [editorInstance, monacoInstance, activeFile, slug, session, authUserId, presenceGranularity, isPrivateMode, conflictedFiles]);
 
     // ── Ghost-revert fix ─────────────────────────────────────────────────
     // Listen for server-side 'file-reverted' events (emitted after discard,
@@ -1285,18 +1310,24 @@ const EditorPanel = ({
     }, [handleCodeChange]);
 
     const handleSave = useCallback(() => {
-        // P0: Flush pending Redux debounce before save so latest content is in state
+        // P0: Flush pending Redux debounce before save so latest content is in state.
+        // dispatch(updateContent(...)) is synchronous in Redux — the store is
+        // updated immediately.  However, the React component has NOT re-rendered
+        // yet, so closure values like `isUnsaved` are stale.  Therefore we must
+        // NOT rely on the closure `isUnsaved` to gate the save — instead, always
+        // dispatch saveFileContentThunk which reads live state via getState().
         if (reduxSyncTimerRef.current) {
             clearTimeout(reduxSyncTimerRef.current);
             reduxSyncTimerRef.current = null;
             dispatch(updateContent(latestCodeRef.current));
         }
-        if (activeFile && isUnsaved) {
+        if (activeFile) {
+            // Always dispatch — the thunk uses getState() to read the latest
+            // currentContent vs savedContent and skips the network call when
+            // content is already saved.  This avoids the race where the closure
+            // `isUnsaved` is stale (false) because the debounced updateContent
+            // just ran but React hasn't re-rendered yet.
             dispatch(saveFileContentThunk());
-        } else if (activeFile && slug) {
-            // Even if not marked unsaved, refresh git status so Source Control
-            // picks up changes that the Yjs auto-flush already wrote to disk.
-            dispatch(fetchGitStatus(slug));
         }
         // ── Push saved content to worker disk via file-sync channel ──
         // This ensures the worker's filesystem (used by the LSP server for
@@ -1308,7 +1339,7 @@ const EditorPanel = ({
         }
         // Trigger HMR/Compilation on save
         if (onSave) onSave();
-    }, [activeFile, isUnsaved, dispatch, onSave, compilerClient, code, slug]);
+    }, [activeFile, dispatch, onSave, compilerClient, code, slug]);
 
     // Auto-save mode: persist edits after a short idle period.
     useEffect(() => {
@@ -1355,6 +1386,11 @@ const EditorPanel = ({
                 e.preventDefault();
                 handleSave();
             }
+            // Escape: close diff view
+            if (e.key === 'Escape' && diffMode) {
+                e.preventDefault();
+                dispatch(setDiffMode(false));
+            }
             // Format: Alt+F
             if (e.altKey && (e.key === 'f' || e.key === 'F')) {
                 e.preventDefault();
@@ -1392,7 +1428,7 @@ const EditorPanel = ({
         };
         window.addEventListener('keydown', handleKeyDown, { capture: true });
         return () => window.removeEventListener('keydown', handleKeyDown, { capture: true });
-    }, [handleSave, editorInstance, requestAiCompletion, cancelActiveCompletion, dispatch, activeFile, aiCompletionState, applyAiCompletionText]);
+    }, [handleSave, editorInstance, requestAiCompletion, cancelActiveCompletion, dispatch, activeFile, aiCompletionState, applyAiCompletionText, diffMode]);
 
     // Ensure disabling auto AI clears any pending/computed suggestions
     useEffect(() => {
@@ -2134,21 +2170,39 @@ const EditorPanel = ({
                                 <ContextMenuTrigger asChild>
                                     <div className="h-full w-full">
                                         {diffMode ? (
-                                            <DiffEditor
-                                                height="100%"
-                                                original={originalContent}
-                                                modified={code ?? ''}
-                                                language={activeLanguage}
-                                                theme="synthi-theme"
-                                                options={{
-                                                    ...EDITOR_OPTIONS,
-                                                    readOnly: true, // Diff view is usually read-only for now
-                                                    renderSideBySide: true
-                                                }}
-                                                beforeMount={(monaco) => {
-                                                    monaco.editor.defineTheme('synthi-theme', SYNTHI_THEME);
-                                                }}
-                                            />
+                                            <div className="h-full w-full relative">
+                                                {/* Diff view header with close button */}
+                                                <div className="flex items-center justify-between px-3 py-1.5 bg-[#0c0d12] border-b border-[#1a1b24] text-xs text-[#8b8fa3]">
+                                                    <span>
+                                                        <span className="text-[#f4f5f8] font-medium">{activeFile?.name || 'Unknown'}</span>
+                                                        <span className="mx-2">—</span>
+                                                        <span>Working Copy vs HEAD</span>
+                                                    </span>
+                                                    <button
+                                                        onClick={() => dispatch(setDiffMode(false))}
+                                                        className="flex items-center gap-1 px-2 py-0.5 rounded hover:bg-[#1a1b24] text-[#8b8fa3] hover:text-[#f4f5f8] transition-colors"
+                                                        title="Close diff view (Esc)"
+                                                    >
+                                                        <X className="w-3.5 h-3.5" />
+                                                        <span>Close</span>
+                                                    </button>
+                                                </div>
+                                                <DiffEditor
+                                                    height="calc(100% - 30px)"
+                                                    original={originalContent}
+                                                    modified={code ?? ''}
+                                                    language={activeLanguage}
+                                                    theme="synthi-theme"
+                                                    options={{
+                                                        ...EDITOR_OPTIONS,
+                                                        readOnly: true,
+                                                        renderSideBySide: true
+                                                    }}
+                                                    beforeMount={(monaco) => {
+                                                        monaco.editor.defineTheme('synthi-theme', SYNTHI_THEME);
+                                                    }}
+                                                />
+                                            </div>
                                         ) : (
                                             <Editor
                                                 key={activeFileIdentity}
@@ -2234,8 +2288,20 @@ const EditorPanel = ({
                                                     //  (c) Syncs to Redux on 300ms debounce pause (not every frame)
                                                     //  (d) Triggers AI debounce via handleCodeChangeRef
                                                     // No model.getValue() on every keystroke — only when flushing.
-                                                    editor.onDidChangeModelContent(() => {
-                                                        console.debug('[Editor] onDidChangeModelContent fired');
+                                                    editor.onDidChangeModelContent((e) => {
+                                                        console.debug('[Editor] onDidChangeModelContent fired, isFlush:', e.isFlush);
+                                                        // CRITICAL: Skip model.setValue() calls (isFlush=true).
+                                                        // These come from Yjs seeding / doSeed() sync handler
+                                                        // and should NOT propagate to Redux via handleCodeChange,
+                                                        // because they carry server/CRDT content that may reset
+                                                        // isUnsaved to false.  The Yjs binding uses
+                                                        // editor.executeEdits() (which does NOT set isFlush) for
+                                                        // its _yObserver path, so real remote edits still flow
+                                                        // through.  User edits (typing) also don't set isFlush.
+                                                        if (e.isFlush) {
+                                                            console.debug('[Editor] Skipping isFlush event (setValue from seeding/sync)');
+                                                            return;
+                                                        }
                                                         // (a) P0: Debounce marker clearing — NOT synchronous.
                                                         // Markers are for stale diagnostic snapshots; 200ms delay is fine.
                                                         if (!markerClearTimerRef.current) {

@@ -804,7 +804,7 @@ const workspaceSlice = createSlice({
     },
 });
 
-export const { updateContent, renameItemStateUpdate, setSlug, setExternalFileContent, openFile, closeFile, reorderOpenFiles, hydrateWorkspace, clearFileCache } = workspaceSlice.actions;
+export const { updateContent, renameItemStateUpdate, setSlug, setExternalFileContent, openFile, closeFile, reorderOpenFiles, hydrateWorkspace, clearFileCache, setDiffMode } = workspaceSlice.actions;
 
 export const refreshWorkspaceThunk = createAsyncThunk(
     'workspace/refresh',
