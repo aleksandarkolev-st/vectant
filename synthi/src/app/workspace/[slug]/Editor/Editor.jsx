@@ -1021,9 +1021,9 @@ const EditorPanel = ({
     //   1. Tear down the Yjs binding so stale dirty content can't re-flush
     //   2. Re-fetch the clean content via selectFileThunk (which reads disk)
     //   3. Reset the Monaco model to the clean content
-    // The collab binding effect above will re-run automatically because
-    // selectFileThunk updates `activeFile` in Redux, triggering the
-    // dependency array.
+    // A revert lock prevents CRDT content from being applied during the
+    // transition window, eliminating brief content duplication on pull.
+    const revertLockRef = useRef(false);
     useEffect(() => {
         const handler = async (ev) => {
             const { slug: evSlug, filePaths } = ev.detail || {};
@@ -1036,6 +1036,11 @@ const EditorPanel = ({
             if (!affectsActive || !activeFile) return;
 
             console.log('[Editor] file-reverted received for', activeFile.path, '— resetting editor');
+
+            // ── Revert lock: prevent stale CRDT content from being applied
+            // during the transition.  The lock is checked by handleCodeChange
+            // and the collab binding observer.
+            revertLockRef.current = true;
 
             // 1. Cancel any pending Redux sync timer (prevent stale content from being dispatched)
             if (reduxSyncTimerRef.current) {
@@ -1064,13 +1069,17 @@ const EditorPanel = ({
                 allFiles ? { all: true } : { paths: filePaths }
             ));
 
-            // 4. Re-select the file — this fetches clean content from the
+            // 4. Small delay to let the server fully invalidate Yjs docs
+            //    and close WebSocket connections — prevents stale CRDT merge.
+            await new Promise(r => setTimeout(r, 100));
+
+            // 5. Re-select the file — this fetches clean content from the
             //    server and updates Redux (savedContent, currentContent).
             //    It also triggers the collab binding effect to re-run, which
             //    will create a fresh Yjs provider seeded from disk content.
             await dispatch(selectFileThunk(activeFile));
 
-            // 5. Force-set the Monaco model to the clean content so the editor
+            // 6. Force-set the Monaco model to the clean content so the editor
             //    doesn't flash stale text before the binding kicks in.
             try {
                 const model = editorInstance?.getModel?.();
@@ -1079,6 +1088,9 @@ const EditorPanel = ({
                     latestCodeRef.current = cleanContent;
                 }
             } catch (_) {}
+
+            // 7. Release the revert lock after a brief settling period
+            setTimeout(() => { revertLockRef.current = false; }, 500);
         };
 
         window.addEventListener('synthi:file-reverted', handler);
@@ -1269,6 +1281,10 @@ const EditorPanel = ({
             console.warn('[Editor] Skipping — boundFilePathRef mismatch:', boundFilePathRef.current, '!==', activeFile.path);
             return;
         }
+
+        // Suppress content changes during revert/pull to prevent brief
+        // duplication from stale CRDT merges.
+        if (revertLockRef.current) return;
         
         // Always track latest content for flush-on-unmount and save
         latestCodeRef.current = newCode;
