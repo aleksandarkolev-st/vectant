@@ -344,8 +344,8 @@ class MonacoTextBinding {
     style.innerHTML = `
       .collab-selection-${clientId} {
         background-color: ${selectionColor};
-        border-bottom: 2px solid ${color};
-        opacity: 0.5;
+        border-radius: 2px;
+        min-width: 4px;
       }
     `;
     document.head.appendChild(style);
