@@ -48,7 +48,6 @@ class MonacoTextBinding {
             // Mark guard so local change handler (MonacoTextBinding._modelListener)
             // skips this update — prevents Yjs → Monaco → Yjs feedback loop.
             this._applyingRemote = true;
-            console.debug('[Collab] _applyingRemote = true (applying remote edit)');
 
             // Apply the full replacement via editor.executeEdits which is
             // safer for Monaco's edit flow than manipulating model directly
@@ -64,7 +63,6 @@ class MonacoTextBinding {
             // previous requestAnimationFrame delay which left a window
             // where user keystrokes were silently swallowed.
             this._applyingRemote = false;
-            console.debug('[Collab] _applyingRemote = false (reset in finally)');
           }
         }, 0);
 
@@ -127,7 +125,6 @@ class MonacoTextBinding {
       if (e.isFlush) return; // setValue or similar bulk operation, skip to avoid loops
       // Verify we're still the active model on the editor
       if (this.editor.getModel() !== this.model) {
-        console.debug('[Collab] Ignoring model change for inactive model');
         return;
       }
       try {

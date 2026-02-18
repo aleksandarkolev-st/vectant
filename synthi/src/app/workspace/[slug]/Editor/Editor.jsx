@@ -1256,13 +1256,12 @@ const EditorPanel = ({
     }, [dispatch]);
 
     const handleCodeChange = useCallback((newCode) => {
-        console.debug('[Editor] handleCodeChange called, length:', newCode?.length);
 
         // CRITICAL: Only process changes if we're bound to the correct file
         // This prevents stale onChange handlers from writing content to the wrong file
         // during file transitions.
         if (activeFile && collabConnected && boundFilePathRef.current && boundFilePathRef.current !== activeFile.path) {
-            console.debug('[Editor] Skipping — boundFilePathRef mismatch:', boundFilePathRef.current, '!==', activeFile.path);
+            console.warn('[Editor] Skipping — boundFilePathRef mismatch:', boundFilePathRef.current, '!==', activeFile.path);
             return;
         }
         
@@ -1271,9 +1270,7 @@ const EditorPanel = ({
 
         // Check if collab is applying remote changes
         const remoteApplying = !!collabBindingRef.current?.isApplyingRemote?.();
-        if (remoteApplying) {
-            console.debug('[Editor] isApplyingRemote=true — scheduling Redux sync but skipping AI/cancel');
-        }
+
 
         // P0: ALWAYS dispatch to Redux regardless of isApplyingRemote.
         // The unsaved indicator, save flow, and tab dot all depend on Redux
@@ -1286,7 +1283,6 @@ const EditorPanel = ({
         if (reduxSyncTimerRef.current) clearTimeout(reduxSyncTimerRef.current);
         reduxSyncTimerRef.current = setTimeout(() => {
             reduxSyncTimerRef.current = null;
-            console.debug('[Editor] Dispatching updateContent to Redux, length:', latestCodeRef.current?.length);
             dispatch(updateContent(latestCodeRef.current));
         }, 150);
 
@@ -2294,7 +2290,6 @@ const EditorPanel = ({
                                                     //  (d) Triggers AI debounce via handleCodeChangeRef
                                                     // No model.getValue() on every keystroke — only when flushing.
                                                     editor.onDidChangeModelContent((e) => {
-                                                        console.debug('[Editor] onDidChangeModelContent fired, isFlush:', e.isFlush);
                                                         // CRITICAL: Skip model.setValue() calls (isFlush=true).
                                                         // These come from Yjs seeding / doSeed() sync handler
                                                         // and should NOT propagate to Redux via handleCodeChange,
@@ -2303,10 +2298,7 @@ const EditorPanel = ({
                                                         // editor.executeEdits() (which does NOT set isFlush) for
                                                         // its _yObserver path, so real remote edits still flow
                                                         // through.  User edits (typing) also don't set isFlush.
-                                                        if (e.isFlush) {
-                                                            console.debug('[Editor] Skipping isFlush event (setValue from seeding/sync)');
-                                                            return;
-                                                        }
+                                                        if (e.isFlush) return;
                                                         // (a) P0: Debounce marker clearing — NOT synchronous.
                                                         // Markers are for stale diagnostic snapshots; 200ms delay is fine.
                                                         if (!markerClearTimerRef.current) {
