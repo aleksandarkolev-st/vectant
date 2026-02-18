@@ -2171,38 +2171,40 @@ const EditorPanel = ({
                                 <ContextMenuTrigger asChild>
                                     <div className="h-full w-full">
                                         {diffMode ? (
-                                            <div className="h-full w-full relative">
+                                            <div className="h-full w-full relative flex flex-col">
                                                 {/* Diff view header with close button */}
-                                                <div className="flex items-center justify-between px-3 py-1.5 bg-[#0c0d12] border-b border-[#1a1b24] text-xs text-[#8b8fa3]">
-                                                    <span>
-                                                        <span className="text-[#f4f5f8] font-medium">{activeFile?.name || 'Unknown'}</span>
-                                                        <span className="mx-2">—</span>
-                                                        <span>Working Copy vs HEAD</span>
-                                                    </span>
+                                                <div className="flex items-center justify-between px-3 py-1 bg-[#0d0e14] border-b border-[#1e1f2e] text-xs shrink-0 select-none" style={{ height: 32 }}>
+                                                    <div className="flex items-center gap-2 min-w-0">
+                                                        <span className="text-[#e8eaf0] font-medium truncate">{activeFile?.name || 'Unknown'}</span>
+                                                        <span className="text-[#4d5168]">•</span>
+                                                        <span className="text-[#7c80a0] whitespace-nowrap">Working Copy ↔ HEAD</span>
+                                                    </div>
                                                     <button
                                                         onClick={() => dispatch(setDiffMode(false))}
-                                                        className="flex items-center gap-1 px-2 py-0.5 rounded hover:bg-[#1a1b24] text-[#8b8fa3] hover:text-[#f4f5f8] transition-colors"
+                                                        className="flex items-center justify-center w-6 h-6 rounded hover:bg-[#1e1f2e] text-[#7c80a0] hover:text-[#e8eaf0] transition-colors shrink-0"
                                                         title="Close diff view (Esc)"
+                                                        aria-label="Close diff view"
                                                     >
-                                                        <X className="w-3.5 h-3.5" />
-                                                        <span>Close</span>
+                                                        <X className="w-4 h-4" />
                                                     </button>
                                                 </div>
-                                                <DiffEditor
-                                                    height="calc(100% - 30px)"
-                                                    original={originalContent}
-                                                    modified={code ?? ''}
-                                                    language={activeLanguage}
-                                                    theme="synthi-theme"
-                                                    options={{
-                                                        ...EDITOR_OPTIONS,
-                                                        readOnly: true,
-                                                        renderSideBySide: true
-                                                    }}
-                                                    beforeMount={(monaco) => {
-                                                        monaco.editor.defineTheme('synthi-theme', SYNTHI_THEME);
-                                                    }}
-                                                />
+                                                <div className="flex-1 min-h-0">
+                                                    <DiffEditor
+                                                        height="100%"
+                                                        original={originalContent || ''}
+                                                        modified={code ?? ''}
+                                                        language={activeLanguage}
+                                                        theme="synthi-theme"
+                                                        options={{
+                                                            ...EDITOR_OPTIONS,
+                                                            readOnly: true,
+                                                            renderSideBySide: true
+                                                        }}
+                                                        beforeMount={(monaco) => {
+                                                            monaco.editor.defineTheme('synthi-theme', SYNTHI_THEME);
+                                                        }}
+                                                    />
+                                                </div>
                                             </div>
                                         ) : (
                                             <Editor
