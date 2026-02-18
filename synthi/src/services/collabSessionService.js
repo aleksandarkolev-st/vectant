@@ -270,6 +270,48 @@ class CollabSessionService extends EventTarget {
     return data;
   }
 
+  // ── Workspace Presence ────────────────────────────────────────────────────
+
+  /**
+   * Fetch all active users and sessions for a workspace.
+   *
+   * @param {string} slug — Workspace slug
+   * @returns {Promise<{ activeUsers: Array, sessions: Array }>}
+   */
+  async getWorkspacePresence(slug) {
+    const res = await fetch(`${COLLAB_URL}/workspace-presence/${encodeURIComponent(slug)}`);
+    if (!res.ok) return { activeUsers: [], sessions: [] };
+    return res.json();
+  }
+
+  /**
+   * Request to join another user's active session (knock on their door).
+   *
+   * @param {string} sessionId — Target session to join
+   * @param {{ guestId: string, displayName: string, avatarUrl?: string }} guestInfo
+   */
+  async requestJoinSession(sessionId, { guestId, displayName, avatarUrl = '' }) {
+    this._role = 'knocking';
+    this._sessionId = sessionId;
+    this._userId = guestId;
+
+    const res = await fetch(`${COLLAB_URL}/session/request-join/${sessionId}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ guestId, displayName, avatarUrl }),
+    });
+
+    if (!res.ok) {
+      this._role = 'idle';
+      this._sessionId = null;
+      const err = await res.json().catch(() => ({ error: 'Failed to request join' }));
+      throw new Error(err.error || 'Failed to request join');
+    }
+
+    this._connectWs();
+    this._emit('knock:sent', { sessionId });
+  }
+
   // ── WebSocket for real-time events ────────────────────────────────────────
 
   _connectWs() {
