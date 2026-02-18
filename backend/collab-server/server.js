@@ -722,6 +722,31 @@ if (yWsUtils && typeof yWsUtils.setPersistence === 'function') {
  * @param {string} slug - Workspace slug
  * @param {string[]} [filePaths] - Specific file paths to invalidate. If empty/null, invalidates ALL docs for the slug.
  */
+
+/**
+ * Validate a client-provided file path to prevent path-traversal attacks.
+ * Returns the normalized path or throws on invalid input.
+ * Rules:
+ *  - Must be a non-empty string
+ *  - No null bytes
+ *  - After normalization, must not start with / or contain ..
+ *  - Must not contain backslashes (Windows-style traversal)
+ */
+function validateFilePath(filePath) {
+  if (!filePath || typeof filePath !== 'string') {
+    throw new Error('filePath is required and must be a non-empty string');
+  }
+  if (filePath.includes('\0')) {
+    throw new Error('filePath must not contain null bytes');
+  }
+  // Normalize to forward slashes and resolve . / ..
+  const normalized = path.posix.normalize(filePath.replace(/\\/g, '/'));
+  if (normalized.startsWith('/') || normalized.startsWith('..') || normalized.includes('/../')) {
+    throw new Error(`filePath traversal rejected: ${filePath}`);
+  }
+  return normalized;
+}
+
 async function invalidateDocsForSlug(slug, filePaths = null, scope = {}) {
   const prefix = `workspace:${slug}:`;
   const toInvalidate = [];
@@ -1350,6 +1375,24 @@ const server = http.createServer(async (req, res) => {
             }
 
             let result;
+
+            // Validate file paths before processing any action that accepts one.
+            // This prevents path-traversal attacks (e.g. "../../etc/passwd").
+            const FILE_PATH_ACTIONS = [
+              'discard', 'stage', 'stage-lines', 'unstage', 'sync',
+              'file-content', 'resolve-ours', 'resolve-theirs',
+              'mark-resolved', 'conflict-versions', 'read-file', 'write-file',
+            ];
+            if (FILE_PATH_ACTIONS.includes(action) && data.filePath) {
+              try {
+                data.filePath = validateFilePath(data.filePath);
+              } catch (pathErr) {
+                console.warn(`[Collab] Path validation failed for action=${action}:`, pathErr.message);
+                res.writeHead(400, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ error: 'invalid_path', message: pathErr.message }));
+                return;
+              }
+            }
 
             switch (action) {
                 case 'init':
