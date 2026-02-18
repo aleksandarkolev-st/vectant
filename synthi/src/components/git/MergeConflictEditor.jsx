@@ -1,26 +1,61 @@
 'use client';
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { useDispatch } from 'react-redux';
-import { Check, X, GitMerge, ChevronDown, ChevronUp } from 'lucide-react';
+import {
+    Check, X, GitMerge, ChevronDown, ChevronUp
+} from 'lucide-react';
 import { markResolved } from '@/redux/gitSlice';
 import { refreshWorkspaceThunk } from '@/redux/workspaceSlice';
 import { gitClient } from '@/services/gitClient';
 
-/**
- * Parse conflict markers from file content
- * Returns array of conflict blocks with ours/theirs content and line positions
- */
+// ── Synthi dark theme colors (matching editor theme) ───────────────────────
+const THEME = {
+    bg:            '#0c0d12',
+    headerBg:      '#0d0e14',
+    borderDim:     '#1a1b24',
+
+    textPrimary:   '#e8eaf0',
+    textSecondary: '#7c80a0',
+    textMuted:     '#4d5168',
+    textAccent:    '#4aba9a',
+
+    // Current (ours) — teal-green tint
+    currentBg:        'rgba(58, 133, 116, 0.10)',
+    currentHeaderBg:  'rgba(58, 133, 116, 0.18)',
+    currentGutter:    'rgba(58, 133, 116, 0.50)',
+    currentLabel:     '#4aba9a',
+
+    // Incoming (theirs) — blue tint
+    incomingBg:       'rgba(122, 184, 248, 0.10)',
+    incomingHeaderBg: 'rgba(122, 184, 248, 0.18)',
+    incomingGutter:   'rgba(122, 184, 248, 0.50)',
+    incomingLabel:    '#7cb8f8',
+
+    // Separator
+    separatorBg:   'rgba(77, 81, 104, 0.20)',
+
+    // Action buttons
+    acceptBtn:      'rgba(74, 186, 154, 0.12)',
+    acceptBtnHover: 'rgba(74, 186, 154, 0.22)',
+
+    // Line numbers
+    lineNumBg: '#0d0e14',
+    lineNum:   '#454a5e',
+};
+
+// ── Conflict parser ─────────────────────────────────────────────────────────
+
 function parseConflicts(content) {
-    if (!content) return { conflicts: [], cleanContent: content };
-    
+    if (!content) return { conflicts: [], lines: [] };
+
     const lines = content.split('\n');
     const conflicts = [];
     let currentConflict = null;
     let conflictId = 0;
-    
+
     for (let i = 0; i < lines.length; i++) {
         const line = lines[i];
-        
+
         if (line.startsWith('<<<<<<< ')) {
             currentConflict = {
                 id: conflictId++,
@@ -29,10 +64,12 @@ function parseConflicts(content) {
                 oursLines: [],
                 theirsLines: [],
                 theirsLabel: '',
+                separatorLine: -1,
                 endLine: -1,
                 inTheirs: false,
             };
         } else if (line === '=======' && currentConflict) {
+            currentConflict.separatorLine = i;
             currentConflict.inTheirs = true;
         } else if (line.startsWith('>>>>>>> ') && currentConflict) {
             currentConflict.theirsLabel = line.substring(8).trim() || 'Incoming Change';
@@ -47,17 +84,14 @@ function parseConflicts(content) {
             }
         }
     }
-    
+
     return { conflicts, lines };
 }
 
-/**
- * Resolve a single conflict by replacing marker block with chosen content
- */
 function resolveConflict(content, conflict, resolution) {
     const lines = content.split('\n');
     let replacementLines = [];
-    
+
     switch (resolution) {
         case 'ours':
             replacementLines = conflict.oursLines;
@@ -71,171 +105,137 @@ function resolveConflict(content, conflict, resolution) {
         default:
             return content;
     }
-    
-    // Replace lines from startLine to endLine with replacementLines
-    const newLines = [
+
+    return [
         ...lines.slice(0, conflict.startLine),
         ...replacementLines,
         ...lines.slice(conflict.endLine + 1)
-    ];
-    
-    return newLines.join('\n');
+    ].join('\n');
 }
 
-/**
- * Single conflict block component with resolution buttons
- */
-function ConflictBlock({ conflict, onResolve, expanded, onToggleExpand }) {
+// ── VS Code-style inline action links (CodeLens) ───────────────────────────
+
+function ConflictActionBar({ onAcceptCurrent, onAcceptIncoming, onAcceptBoth }) {
     return (
-        <div className="border border-orange-700/50 rounded-lg overflow-hidden my-2 bg-[#1a1a2e]">
-            {/* Header */}
-            <div className="flex items-center justify-between px-3 py-2 bg-orange-900/30 border-b border-orange-700/50">
-                <div className="flex items-center gap-2">
-                    <GitMerge className="w-4 h-4 text-orange-400" />
-                    <span className="text-sm font-medium text-orange-300">Merge Conflict</span>
-                    <span className="text-xs text-gray-500">Line {conflict.startLine + 1}</span>
-                </div>
-                <div className="flex items-center gap-2">
-                    <button
-                        onClick={() => onResolve('ours')}
-                        className="px-2 py-1 text-xs bg-blue-600 hover:bg-blue-500 text-white rounded flex items-center gap-1"
-                        title="Accept Current Change (Ours)"
-                    >
-                        Accept Current
-                    </button>
-                    <button
-                        onClick={() => onResolve('theirs')}
-                        className="px-2 py-1 text-xs bg-green-600 hover:bg-green-500 text-white rounded flex items-center gap-1"
-                        title="Accept Incoming Change (Theirs)"
-                    >
-                        Accept Incoming
-                    </button>
-                    <button
-                        onClick={() => onResolve('both')}
-                        className="px-2 py-1 text-xs bg-purple-600 hover:bg-purple-500 text-white rounded flex items-center gap-1"
-                        title="Accept Both Changes"
-                    >
-                        Accept Both
-                    </button>
-                    <button
-                        onClick={onToggleExpand}
-                        className="p-1 text-gray-400 hover:text-white hover:bg-gray-700 rounded"
-                    >
-                        {expanded ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
-                    </button>
-                </div>
-            </div>
-            
-            {expanded && (
-                <div className="grid grid-cols-2 divide-x divide-gray-700">
-                    {/* Ours (Current) */}
-                    <div className="bg-blue-900/10">
-                        <div className="px-3 py-1 bg-blue-900/30 text-xs text-blue-300 border-b border-blue-800/50">
-                            Current Change: <span className="font-mono">{conflict.oursLabel}</span>
-                        </div>
-                        <pre className="p-3 text-sm font-mono text-gray-300 overflow-x-auto max-h-48 overflow-y-auto">
-                            {conflict.oursLines.length > 0 
-                                ? conflict.oursLines.map((line, i) => (
-                                    <div key={i} className="flex">
-                                        <span className="w-8 text-gray-600 select-none text-right pr-2">{i + 1}</span>
-                                        <span className="text-blue-200">{line || ' '}</span>
-                                    </div>
-                                ))
-                                : <span className="text-gray-500 italic">(empty)</span>
-                            }
-                        </pre>
-                    </div>
-                    
-                    {/* Theirs (Incoming) */}
-                    <div className="bg-green-900/10">
-                        <div className="px-3 py-1 bg-green-900/30 text-xs text-green-300 border-b border-green-800/50">
-                            Incoming Change: <span className="font-mono">{conflict.theirsLabel}</span>
-                        </div>
-                        <pre className="p-3 text-sm font-mono text-gray-300 overflow-x-auto max-h-48 overflow-y-auto">
-                            {conflict.theirsLines.length > 0
-                                ? conflict.theirsLines.map((line, i) => (
-                                    <div key={i} className="flex">
-                                        <span className="w-8 text-gray-600 select-none text-right pr-2">{i + 1}</span>
-                                        <span className="text-green-200">{line || ' '}</span>
-                                    </div>
-                                ))
-                                : <span className="text-gray-500 italic">(empty)</span>
-                            }
-                        </pre>
-                    </div>
-                </div>
-            )}
+        <div className="flex items-center gap-3 py-[2px] select-none" style={{ paddingLeft: 55 }}>
+            <button
+                onClick={onAcceptCurrent}
+                className="text-[11px] font-medium hover:underline transition-colors"
+                style={{ color: THEME.textAccent }}
+            >
+                Accept Current Change
+            </button>
+            <span style={{ color: THEME.textMuted }}>|</span>
+            <button
+                onClick={onAcceptIncoming}
+                className="text-[11px] font-medium hover:underline transition-colors"
+                style={{ color: THEME.textAccent }}
+            >
+                Accept Incoming Change
+            </button>
+            <span style={{ color: THEME.textMuted }}>|</span>
+            <button
+                onClick={onAcceptBoth}
+                className="text-[11px] font-medium hover:underline transition-colors"
+                style={{ color: THEME.textAccent }}
+            >
+                Accept Both Changes
+            </button>
         </div>
     );
 }
 
-/**
- * Main Merge Conflict Editor component
- * Shows file content with inline conflict resolution like GitHub
- */
-export function MergeConflictEditor({ slug, filePath, onClose, onResolved }) {
+// ── Single code line renderer ───────────────────────────────────────────────
+
+function CodeLine({ lineNumber, text, bgColor, gutterColor, isMarker, markerLabel }) {
+    return (
+        <div
+            className="flex items-stretch font-mono text-[13px] leading-[20px] min-h-[20px]"
+            style={{ backgroundColor: bgColor || 'transparent' }}
+        >
+            {/* Gutter color strip */}
+            <div className="w-[3px] shrink-0" style={{ backgroundColor: gutterColor || 'transparent' }} />
+            {/* Line number */}
+            <div
+                className="w-[48px] shrink-0 text-right pr-3 select-none"
+                style={{ color: THEME.lineNum, backgroundColor: THEME.lineNumBg }}
+            >
+                {isMarker ? '' : lineNumber}
+            </div>
+            {/* Content */}
+            <div className="flex-1 px-3 whitespace-pre overflow-x-auto">
+                {isMarker ? (
+                    <span style={{ color: THEME.textMuted, fontStyle: 'italic', fontSize: 11 }}>
+                        {markerLabel || text}
+                    </span>
+                ) : (
+                    <span style={{ color: THEME.textPrimary }}>{text || ' '}</span>
+                )}
+            </div>
+        </div>
+    );
+}
+
+// ── Main Merge Conflict Editor ──────────────────────────────────────────────
+
+export default function MergeConflictEditor({ slug, filePath, onClose, onResolved }) {
     const dispatch = useDispatch();
     const [content, setContent] = useState('');
     const [loading, setLoading] = useState(true);
     const [saving, setSaving] = useState(false);
     const [error, setError] = useState(null);
-    const [expandedConflicts, setExpandedConflicts] = useState({});
-    
+    const [currentConflictIdx, setCurrentConflictIdx] = useState(0);
+    const conflictRefs = useRef([]);
+    const scrollContainerRef = useRef(null);
+
     // Load file content
     useEffect(() => {
         async function loadContent() {
             try {
                 setLoading(true);
                 setError(null);
-                // Read the current working copy (with conflict markers)
                 const result = await gitClient.request(slug, 'file', { path: filePath });
                 setContent(result.content || '');
-                // Expand all conflicts by default
-                const { conflicts } = parseConflicts(result.content || '');
-                const expanded = {};
-                conflicts.forEach(c => { expanded[c.id] = true; });
-                setExpandedConflicts(expanded);
             } catch (e) {
                 setError(e.message || 'Failed to load file');
             } finally {
                 setLoading(false);
             }
         }
-        if (slug && filePath) {
-            loadContent();
-        }
+        if (slug && filePath) loadContent();
     }, [slug, filePath]);
-    
-    const { conflicts, lines } = useMemo(() => parseConflicts(content), [content]);
-    
-    const handleResolveConflict = useCallback((conflictId, resolution) => {
+
+    const { conflicts } = useMemo(() => parseConflicts(content), [content]);
+    const remainingConflicts = conflicts.length;
+
+    const handleResolve = useCallback((conflictId, resolution) => {
         const conflict = conflicts.find(c => c.id === conflictId);
         if (!conflict) return;
-        
-        const newContent = resolveConflict(content, conflict, resolution);
-        setContent(newContent);
+        setContent(resolveConflict(content, conflict, resolution));
     }, [content, conflicts]);
-    
-    const toggleConflictExpand = useCallback((conflictId) => {
-        setExpandedConflicts(prev => ({
-            ...prev,
-            [conflictId]: !prev[conflictId]
-        }));
-    }, []);
-    
-    const remainingConflicts = useMemo(() => parseConflicts(content).conflicts.length, [content]);
-    
-    const handleSaveAndMarkResolved = async () => {
-        if (remainingConflicts > 0) {
-            alert(`Please resolve all ${remainingConflicts} remaining conflict(s) first.`);
-            return;
+
+    const handleResolveAll = useCallback((resolution) => {
+        let result = content;
+        const { conflicts: cur } = parseConflicts(result);
+        for (let i = cur.length - 1; i >= 0; i--) {
+            result = resolveConflict(result, cur[i], resolution);
         }
-        
+        setContent(result);
+    }, [content]);
+
+    const navigateConflict = useCallback((direction) => {
+        const newIdx = direction === 'next'
+            ? Math.min(currentConflictIdx + 1, conflicts.length - 1)
+            : Math.max(currentConflictIdx - 1, 0);
+        setCurrentConflictIdx(newIdx);
+        conflictRefs.current[newIdx]?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }, [currentConflictIdx, conflicts.length]);
+
+    const handleSaveAndMarkResolved = async () => {
+        if (remainingConflicts > 0) return;
         try {
             setSaving(true);
-            // Save the resolved content
             await gitClient.syncFile(slug, filePath, content);
-            // Mark as resolved (stages the file)
             await dispatch(markResolved({ slug, filePath }));
             dispatch(refreshWorkspaceThunk());
             onResolved?.();
@@ -246,148 +246,220 @@ export function MergeConflictEditor({ slug, filePath, onClose, onResolved }) {
             setSaving(false);
         }
     };
-    
-    // Render content with embedded conflict blocks
-    const renderContentWithConflicts = () => {
-        if (!content) return null;
-        
-        const { conflicts: currentConflicts } = parseConflicts(content);
-        if (currentConflicts.length === 0) {
-            // No conflicts - show plain content
-            return (
-                <pre className="p-4 text-sm font-mono text-gray-300 overflow-auto flex-1 bg-[#0d1117]">
-                    {content.split('\n').map((line, i) => (
-                        <div key={i} className="flex hover:bg-gray-800/30">
-                            <span className="w-12 text-gray-600 select-none text-right pr-3 border-r border-gray-800">{i + 1}</span>
-                            <span className="pl-3">{line || ' '}</span>
-                        </div>
-                    ))}
-                </pre>
-            );
-        }
-        
-        // Build segments: normal lines and conflict blocks
-        const segments = [];
+
+    // ── Build rendering segments ────────────────────────────────────────
+
+    const segments = useMemo(() => {
+        if (!content) return [];
+        const { conflicts: cur } = parseConflicts(content);
+        const allLines = content.split('\n');
+        const segs = [];
         let lastEnd = 0;
-        
-        currentConflicts.forEach((conflict, idx) => {
-            // Lines before this conflict
+
+        cur.forEach((conflict) => {
             if (conflict.startLine > lastEnd) {
-                const normalLines = content.split('\n').slice(lastEnd, conflict.startLine);
-                segments.push({
-                    type: 'normal',
-                    lines: normalLines,
-                    startLine: lastEnd
-                });
+                segs.push({ type: 'normal', lines: allLines.slice(lastEnd, conflict.startLine), startLine: lastEnd });
             }
-            
-            // The conflict block
-            segments.push({
-                type: 'conflict',
-                conflict,
-                idx
-            });
-            
+            segs.push({ type: 'conflict', conflict });
             lastEnd = conflict.endLine + 1;
         });
-        
-        // Lines after last conflict
-        const allLines = content.split('\n');
+
         if (lastEnd < allLines.length) {
-            segments.push({
-                type: 'normal',
-                lines: allLines.slice(lastEnd),
-                startLine: lastEnd
-            });
+            segs.push({ type: 'normal', lines: allLines.slice(lastEnd), startLine: lastEnd });
         }
-        
-        return (
-            <div className="flex-1 overflow-auto bg-[#0d1117]">
-                {segments.map((segment, i) => {
-                    if (segment.type === 'normal') {
-                        return (
-                            <pre key={i} className="text-sm font-mono text-gray-300">
-                                {segment.lines.map((line, j) => (
-                                    <div key={j} className="flex hover:bg-gray-800/30 px-4">
-                                        <span className="w-12 text-gray-600 select-none text-right pr-3 border-r border-gray-800">
-                                            {segment.startLine + j + 1}
-                                        </span>
-                                        <span className="pl-3">{line || ' '}</span>
-                                    </div>
-                                ))}
-                            </pre>
-                        );
-                    } else {
-                        return (
-                            <div key={i} className="px-4">
-                                <ConflictBlock
-                                    conflict={segment.conflict}
-                                    onResolve={(resolution) => handleResolveConflict(segment.conflict.id, resolution)}
-                                    expanded={expandedConflicts[segment.conflict.id] ?? true}
-                                    onToggleExpand={() => toggleConflictExpand(segment.conflict.id)}
-                                />
-                            </div>
-                        );
-                    }
-                })}
-            </div>
-        );
-    };
-    
+        return segs;
+    }, [content]);
+
+    // ── Loading ─────────────────────────────────────────────────────────
+
     if (loading) {
         return (
-            <div className="flex items-center justify-center h-full bg-[#0d1117]">
-                <div className="text-gray-400">Loading...</div>
+            <div className="flex items-center justify-center h-full" style={{ backgroundColor: THEME.bg }}>
+                <div className="flex items-center gap-2" style={{ color: THEME.textSecondary }}>
+                    <div className="w-4 h-4 border-2 border-current border-t-transparent rounded-full animate-spin" />
+                    Loading...
+                </div>
             </div>
         );
     }
-    
+
     return (
-        <div className="flex flex-col h-full bg-[#0d1117]">
-            {/* Header */}
-            <div className="flex items-center justify-between px-4 py-3 bg-[#161b22] border-b border-gray-800">
+        <div className="flex flex-col h-full" style={{ backgroundColor: THEME.bg }}>
+            {/* ── Top toolbar ──────────────────────────────────────────── */}
+            <div
+                className="flex items-center justify-between px-4 shrink-0 select-none"
+                style={{ height: 40, backgroundColor: THEME.headerBg, borderBottom: `1px solid ${THEME.borderDim}` }}
+            >
                 <div className="flex items-center gap-3">
-                    <GitMerge className="w-5 h-5 text-orange-400" />
-                    <div>
-                        <div className="text-sm font-medium text-gray-200">{filePath}</div>
-                        <div className="text-xs text-gray-500">
-                            {remainingConflicts > 0 
-                                ? `${remainingConflicts} conflict${remainingConflicts > 1 ? 's' : ''} remaining`
-                                : 'All conflicts resolved'
-                            }
-                        </div>
-                    </div>
+                    <GitMerge className="w-4 h-4" style={{ color: THEME.textAccent }} />
+                    <span className="text-sm font-medium" style={{ color: THEME.textPrimary }}>{filePath}</span>
+                    <span
+                        className="text-xs px-2 py-0.5 rounded-full"
+                        style={{
+                            backgroundColor: remainingConflicts > 0 ? 'rgba(245, 158, 66, 0.15)' : 'rgba(74, 186, 154, 0.15)',
+                            color: remainingConflicts > 0 ? '#f59e42' : THEME.textAccent,
+                        }}
+                    >
+                        {remainingConflicts > 0
+                            ? `${remainingConflicts} conflict${remainingConflicts > 1 ? 's' : ''}`
+                            : 'All resolved'}
+                    </span>
                 </div>
+
                 <div className="flex items-center gap-2">
+                    {/* Conflict navigator */}
+                    {remainingConflicts > 1 && (
+                        <div className="flex items-center gap-1 mr-2">
+                            <button
+                                onClick={() => navigateConflict('prev')}
+                                disabled={currentConflictIdx === 0}
+                                className="p-1 rounded hover:bg-[#1e1f2e] disabled:opacity-30 transition-colors"
+                                style={{ color: THEME.textSecondary }}
+                            >
+                                <ChevronUp className="w-4 h-4" />
+                            </button>
+                            <span className="text-xs tabular-nums min-w-[40px] text-center" style={{ color: THEME.textSecondary }}>
+                                {currentConflictIdx + 1}/{remainingConflicts}
+                            </span>
+                            <button
+                                onClick={() => navigateConflict('next')}
+                                disabled={currentConflictIdx >= remainingConflicts - 1}
+                                className="p-1 rounded hover:bg-[#1e1f2e] disabled:opacity-30 transition-colors"
+                                style={{ color: THEME.textSecondary }}
+                            >
+                                <ChevronDown className="w-4 h-4" />
+                            </button>
+                        </div>
+                    )}
+
+                    {/* Resolve all buttons */}
+                    {remainingConflicts > 1 && (
+                        <div className="flex items-center gap-1 mr-2 border-l pl-2" style={{ borderColor: THEME.borderDim }}>
+                            <button
+                                onClick={() => handleResolveAll('ours')}
+                                className="px-2 py-1 rounded text-[11px] font-medium transition-colors hover:brightness-125"
+                                style={{ backgroundColor: THEME.acceptBtn, color: THEME.currentLabel }}
+                            >
+                                All Current
+                            </button>
+                            <button
+                                onClick={() => handleResolveAll('theirs')}
+                                className="px-2 py-1 rounded text-[11px] font-medium transition-colors hover:brightness-125"
+                                style={{ backgroundColor: 'rgba(124, 184, 248, 0.12)', color: THEME.incomingLabel }}
+                            >
+                                All Incoming
+                            </button>
+                        </div>
+                    )}
+
+                    {/* Mark resolved */}
                     {remainingConflicts === 0 && (
                         <button
                             onClick={handleSaveAndMarkResolved}
                             disabled={saving}
-                            className="px-3 py-1.5 bg-green-600 hover:bg-green-500 disabled:opacity-50 text-white text-sm rounded flex items-center gap-2"
+                            className="flex items-center gap-1.5 px-3 py-1.5 rounded text-sm font-medium transition-colors disabled:opacity-50"
+                            style={{ backgroundColor: 'rgba(74, 186, 154, 0.15)', color: THEME.textAccent }}
                         >
-                            <Check className="w-4 h-4" />
-                            {saving ? 'Saving...' : 'Mark as Resolved'}
+                            <Check className="w-3.5 h-3.5" />
+                            {saving ? 'Saving...' : 'Mark Resolved'}
                         </button>
                     )}
-                    <button
-                        onClick={onClose}
-                        className="p-1.5 text-gray-400 hover:text-white hover:bg-gray-700 rounded"
-                    >
-                        <X className="w-5 h-5" />
+
+                    <button onClick={onClose} className="p-1.5 rounded hover:bg-[#1e1f2e] transition-colors" style={{ color: THEME.textSecondary }}>
+                        <X className="w-4 h-4" />
                     </button>
                 </div>
             </div>
-            
+
+            {/* Error */}
             {error && (
-                <div className="px-4 py-2 bg-red-900/50 text-red-200 text-sm border-b border-red-800">
+                <div className="px-4 py-2 text-sm" style={{ backgroundColor: 'rgba(255,87,87,0.10)', color: '#ff5757', borderBottom: '1px solid rgba(255,87,87,0.20)' }}>
                     {error}
                 </div>
             )}
-            
-            {/* Content with embedded conflicts */}
-            {renderContentWithConflicts()}
+
+            {/* ── File content with inline conflicts ───────────────────── */}
+            <div ref={scrollContainerRef} className="flex-1 overflow-auto">
+                {segments.map((segment, segIdx) => {
+                    if (segment.type === 'normal') {
+                        return (
+                            <div key={segIdx}>
+                                {segment.lines.map((line, j) => (
+                                    <CodeLine key={`${segIdx}-${j}`} lineNumber={segment.startLine + j + 1} text={line} />
+                                ))}
+                            </div>
+                        );
+                    }
+
+                    const { conflict } = segment;
+                    const conflictArrayIdx = conflicts.findIndex(c => c.id === conflict.id);
+
+                    return (
+                        <div key={segIdx} ref={(el) => { conflictRefs.current[conflictArrayIdx] = el; }}>
+                            {/* VS Code-style inline action links */}
+                            <ConflictActionBar
+                                onAcceptCurrent={() => handleResolve(conflict.id, 'ours')}
+                                onAcceptIncoming={() => handleResolve(conflict.id, 'theirs')}
+                                onAcceptBoth={() => handleResolve(conflict.id, 'both')}
+                            />
+
+                            {/* <<<<<<< Current marker */}
+                            <CodeLine
+                                lineNumber={conflict.startLine + 1}
+                                text={`<<<<<<< ${conflict.oursLabel}`}
+                                bgColor={THEME.currentHeaderBg}
+                                gutterColor={THEME.currentGutter}
+                                isMarker
+                                markerLabel={`Current Change — ${conflict.oursLabel}`}
+                            />
+
+                            {/* Current (ours) lines */}
+                            {conflict.oursLines.map((line, i) => (
+                                <CodeLine
+                                    key={`ours-${i}`}
+                                    lineNumber={conflict.startLine + 2 + i}
+                                    text={line}
+                                    bgColor={THEME.currentBg}
+                                    gutterColor={THEME.currentGutter}
+                                />
+                            ))}
+
+                            {/* ======= separator */}
+                            <CodeLine
+                                lineNumber=""
+                                text="======="
+                                bgColor={THEME.separatorBg}
+                                isMarker
+                                markerLabel="═══════════════════════════════════════════"
+                            />
+
+                            {/* Incoming (theirs) lines */}
+                            {conflict.theirsLines.map((line, i) => (
+                                <CodeLine
+                                    key={`theirs-${i}`}
+                                    lineNumber={(conflict.separatorLine || conflict.startLine + conflict.oursLines.length + 1) + 1 + i + 1}
+                                    text={line}
+                                    bgColor={THEME.incomingBg}
+                                    gutterColor={THEME.incomingGutter}
+                                />
+                            ))}
+
+                            {/* >>>>>>> Incoming marker */}
+                            <CodeLine
+                                lineNumber={conflict.endLine + 1}
+                                text={`>>>>>>> ${conflict.theirsLabel}`}
+                                bgColor={THEME.incomingHeaderBg}
+                                gutterColor={THEME.incomingGutter}
+                                isMarker
+                                markerLabel={`Incoming Change — ${conflict.theirsLabel}`}
+                            />
+                        </div>
+                    );
+                })}
+            </div>
         </div>
     );
 }
 
-export default MergeConflictEditor;
+// Re-export for named import compatibility
+export { MergeConflictEditor };
