@@ -131,25 +131,30 @@ export default function GuestBanner() {
   const hasEditAccess = permissions.canEdit;
 
   return (
-    <div className={`flex items-center justify-between px-4 py-2 border-b-2 ${
-      hasEditAccess
-        ? 'bg-[#3a857410] border-[#3a8574]'
-        : 'bg-[#fbbf2410] border-[#fbbf24]'
-    }`}>
+    <div
+      className="flex items-center justify-between px-4 py-2 border-b-2"
+      style={{
+        backgroundColor: hasEditAccess ? 'rgba(58,133,116,0.06)' : 'rgba(251,191,36,0.06)',
+        borderColor: hasEditAccess ? '#4aba9a' : '#fbbf24',
+      }}
+    >
       {/* Left: Session info + permission pills */}
       <div className="flex items-center gap-3">
-        {hasEditAccess ? (
-          <Edit3 className="w-4 h-4 text-[#3a8574]" />
-        ) : (
-          <Eye className="w-4 h-4 text-[#fbbf24]" />
-        )}
+        <div className="flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-bold"
+          style={{
+            backgroundColor: hasEditAccess ? 'rgba(74,186,154,0.12)' : 'rgba(251,191,36,0.12)',
+            color: hasEditAccess ? '#4aba9a' : '#fbbf24',
+          }}>
+          {hasEditAccess ? <Edit3 className="w-3 h-3" /> : <Eye className="w-3 h-3" />}
+          {hasEditAccess ? 'EDIT' : 'VIEW'}
+        </div>
 
-        <span className={`text-sm font-semibold ${hasEditAccess ? 'text-[#3a8574]' : 'text-[#fbbf24]'}`}>
-          {hasEditAccess ? `Editing ${hostName}'s Session` : `Viewing ${hostName}'s Session (Read-Only)`}
+        <span className="text-sm font-semibold" style={{ color: hasEditAccess ? '#4aba9a' : '#fbbf24' }}>
+          {hasEditAccess ? `${hostName}'s Session` : `${hostName}'s Session (Read-Only)`}
         </span>
 
         {/* Permission pills */}
-        <div className="flex items-center gap-1.5 ml-2">
+        <div className="flex items-center gap-1 ml-2">
           <PermPill enabled={permissions.canEdit} icon={FileEdit} label="Edit" />
           <PermPill enabled={permissions.canFileOps} icon={FolderEdit} label="Files" />
           <PermPill enabled={permissions.canTerminal} icon={Terminal} label="Term" />
@@ -160,10 +165,13 @@ export default function GuestBanner() {
       {/* Right: Leave button */}
       <button
         onClick={leaveSession}
-        className="flex items-center gap-1.5 px-3 py-1 rounded-md bg-[#ff575715] hover:bg-[#ff575725] text-[#ff5757] text-sm font-medium transition-colors"
+        className="flex items-center gap-1.5 px-3 py-1 rounded-md text-sm font-medium transition-colors"
+        style={{ backgroundColor: 'rgba(255,87,87,0.08)', color: '#ff5757' }}
+        onMouseEnter={e => e.currentTarget.style.backgroundColor = 'rgba(255,87,87,0.15)'}
+        onMouseLeave={e => e.currentTarget.style.backgroundColor = 'rgba(255,87,87,0.08)'}
       >
         <LogOut className="w-3.5 h-3.5" />
-        Leave
+        Leave Session
       </button>
     </div>
   );
@@ -175,11 +183,11 @@ export default function GuestBanner() {
 function PermPill({ enabled, icon: Icon, label }) {
   return (
     <div
-      className={`flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium ${
-        enabled
-          ? 'bg-[#3a857415] text-[#3a8574]'
-          : 'bg-[#ff575710] text-[#5a6178]'
-      }`}
+      className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium"
+      style={{
+        backgroundColor: enabled ? 'rgba(74,186,154,0.10)' : 'rgba(90,97,120,0.10)',
+        color: enabled ? '#4aba9a' : '#5a6178',
+      }}
       title={enabled ? `${label}: Granted` : `${label}: Denied — Ask host for permission`}
     >
       <Icon className="w-3 h-3" />
@@ -189,25 +197,19 @@ function PermPill({ enabled, icon: Icon, label }) {
 }
 
 /**
- * Wrapper component that adds an orange/green border to the IDE
+ * Wrapper component that adds a teal/amber border to the IDE
  * when a guest is connected.
- *
- * Usage:
- *   <GuestSessionBorder>
- *     <YourIDELayout />
- *   </GuestSessionBorder>
  */
 export function GuestSessionBorder({ children }) {
   const { isGuest, permissions } = useCollabSession();
 
   if (!isGuest) return <>{children}</>;
 
-  const borderColor = permissions.canEdit
-    ? 'ring-[#3a8574]'
-    : 'ring-[#fbbf24]';
+  const borderColor = permissions.canEdit ? '#4aba9a' : '#fbbf24';
 
   return (
-    <div className={`ring-2 ${borderColor} ring-inset rounded-lg overflow-hidden h-full`}>
+    <div className="ring-2 ring-inset rounded-lg overflow-hidden h-full"
+      style={{ '--tw-ring-color': borderColor }}>
       {children}
     </div>
   );
