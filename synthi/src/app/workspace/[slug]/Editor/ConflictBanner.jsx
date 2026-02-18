@@ -175,13 +175,13 @@ export function ConflictBanner({
             const style = document.createElement('style');
             style.id = 'conflict-decoration-styles';
             style.textContent = `
-                .conflict-block-background { background-color: rgba(255, 165, 0, 0.08) !important; }
-                .conflict-ours-background { background-color: rgba(34, 139, 34, 0.15) !important; }
-                .conflict-theirs-background { background-color: rgba(30, 144, 255, 0.15) !important; }
-                .conflict-ours-margin { background-color: rgba(34, 139, 34, 0.4) !important; width: 4px !important; margin-left: 3px; }
-                .conflict-theirs-margin { background-color: rgba(30, 144, 255, 0.4) !important; width: 4px !important; margin-left: 3px; }
-                .conflict-marker-line { background-color: rgba(255, 140, 0, 0.25) !important; }
-                .conflict-glyph-margin { background-color: rgba(255, 140, 0, 0.5) !important; }
+                .conflict-block-background { background-color: rgba(245, 158, 66, 0.06) !important; }
+                .conflict-ours-background { background-color: rgba(58, 133, 116, 0.12) !important; }
+                .conflict-theirs-background { background-color: rgba(122, 184, 248, 0.12) !important; }
+                .conflict-ours-margin { background-color: rgba(74, 186, 154, 0.45) !important; width: 3px !important; margin-left: 2px; }
+                .conflict-theirs-margin { background-color: rgba(124, 184, 248, 0.45) !important; width: 3px !important; margin-left: 2px; }
+                .conflict-marker-line { background-color: rgba(245, 158, 66, 0.12) !important; }
+                .conflict-glyph-margin { background-color: rgba(245, 158, 66, 0.35) !important; }
             `;
             document.head.appendChild(style);
         }
@@ -271,9 +271,10 @@ export function ConflictBanner({
     };
     
     return (
-        <div className="bg-orange-900/30 border-b border-orange-700/50 px-3 py-2 flex items-center gap-3 text-sm">
+        <div className="border-b px-3 py-2 flex items-center gap-3 text-sm select-none"
+            style={{ backgroundColor: 'rgba(245, 158, 66, 0.08)', borderColor: 'rgba(245, 158, 66, 0.20)' }}>
             {/* Warning icon and conflict count */}
-            <div className="flex items-center gap-2 text-orange-300">
+            <div className="flex items-center gap-2" style={{ color: '#f59e42' }}>
                 <AlertTriangle className="w-4 h-4" />
                 <span className="font-medium">
                     {conflicts.length} merge conflict{conflicts.length > 1 ? 's' : ''}
@@ -281,51 +282,55 @@ export function ConflictBanner({
             </div>
             
             {/* Conflict navigator */}
-            <div className="flex items-center gap-1 border-l border-orange-700/50 pl-3">
+            <div className="flex items-center gap-1 border-l pl-3" style={{ borderColor: 'rgba(245, 158, 66, 0.20)' }}>
                 <button
                     onClick={goToPrevConflict}
                     disabled={currentConflictIndex === 0 || isResolving}
-                    className="p-1 hover:bg-orange-800/40 rounded disabled:opacity-40 disabled:cursor-not-allowed"
+                    className="p-1 rounded disabled:opacity-30 disabled:cursor-not-allowed hover:bg-[#1e1f2e] transition-colors"
                     title="Previous conflict"
+                    style={{ color: '#7c80a0' }}
                 >
-                    <ChevronUp className="w-4 h-4 text-orange-300" />
+                    <ChevronUp className="w-4 h-4" />
                 </button>
-                <span className="text-orange-200 min-w-[60px] text-center">
+                <span className="min-w-[50px] text-center text-xs tabular-nums" style={{ color: '#7c80a0' }}>
                     {currentConflictIndex + 1} of {conflicts.length}
                 </span>
                 <button
                     onClick={goToNextConflict}
                     disabled={currentConflictIndex >= conflicts.length - 1 || isResolving}
-                    className="p-1 hover:bg-orange-800/40 rounded disabled:opacity-40 disabled:cursor-not-allowed"
+                    className="p-1 rounded disabled:opacity-30 disabled:cursor-not-allowed hover:bg-[#1e1f2e] transition-colors"
                     title="Next conflict"
+                    style={{ color: '#7c80a0' }}
                 >
-                    <ChevronDown className="w-4 h-4 text-orange-300" />
+                    <ChevronDown className="w-4 h-4" />
                 </button>
             </div>
             
             {/* Current conflict actions */}
-            <div className="flex items-center gap-2 border-l border-orange-700/50 pl-3">
-                <span className="text-orange-200/70 text-xs">Current:</span>
+            <div className="flex items-center gap-2 border-l pl-3" style={{ borderColor: 'rgba(245, 158, 66, 0.20)' }}>
                 <button
                     onClick={() => handleResolve('ours')}
                     disabled={isResolving}
-                    className="px-2 py-1 bg-blue-600 hover:bg-blue-500 rounded text-xs text-white disabled:opacity-50"
+                    className="px-2 py-1 rounded text-xs font-medium disabled:opacity-50 transition-colors"
+                    style={{ backgroundColor: 'rgba(58, 133, 116, 0.15)', color: '#4aba9a' }}
                     title={`Accept "${currentConflict?.oursLabel || 'Current'}"`}
                 >
-                    Accept Ours
+                    Accept Current
                 </button>
                 <button
                     onClick={() => handleResolve('theirs')}
                     disabled={isResolving}
-                    className="px-2 py-1 bg-green-600 hover:bg-green-500 rounded text-xs text-white disabled:opacity-50"
+                    className="px-2 py-1 rounded text-xs font-medium disabled:opacity-50 transition-colors"
+                    style={{ backgroundColor: 'rgba(122, 184, 248, 0.15)', color: '#7cb8f8' }}
                     title={`Accept "${currentConflict?.theirsLabel || 'Incoming'}"`}
                 >
-                    Accept Theirs
+                    Accept Incoming
                 </button>
                 <button
                     onClick={() => handleResolve('both')}
                     disabled={isResolving}
-                    className="px-2 py-1 bg-purple-600 hover:bg-purple-500 rounded text-xs text-white disabled:opacity-50"
+                    className="px-2 py-1 rounded text-xs font-medium disabled:opacity-50 transition-colors"
+                    style={{ backgroundColor: 'rgba(196, 181, 253, 0.15)', color: '#c4b5fd' }}
                     title="Accept both changes"
                 >
                     Accept Both
@@ -334,35 +339,38 @@ export function ConflictBanner({
             
             {/* Resolve all actions */}
             {conflicts.length > 1 && (
-                <div className="flex items-center gap-2 border-l border-orange-700/50 pl-3">
-                    <span className="text-orange-200/70 text-xs">All:</span>
+                <div className="flex items-center gap-2 border-l pl-3" style={{ borderColor: 'rgba(245, 158, 66, 0.20)' }}>
+                    <span className="text-xs" style={{ color: '#4d5168' }}>All:</span>
                     <button
                         onClick={() => handleResolveAll('ours')}
                         disabled={isResolving}
-                        className="px-2 py-1 bg-blue-800 hover:bg-blue-700 rounded text-xs text-white disabled:opacity-50"
+                        className="px-2 py-1 rounded text-xs font-medium disabled:opacity-50 transition-colors"
+                        style={{ backgroundColor: 'rgba(58, 133, 116, 0.10)', color: '#4aba9a' }}
                     >
-                        All Ours
+                        All Current
                     </button>
                     <button
                         onClick={() => handleResolveAll('theirs')}
                         disabled={isResolving}
-                        className="px-2 py-1 bg-green-800 hover:bg-green-700 rounded text-xs text-white disabled:opacity-50"
+                        className="px-2 py-1 rounded text-xs font-medium disabled:opacity-50 transition-colors"
+                        style={{ backgroundColor: 'rgba(122, 184, 248, 0.10)', color: '#7cb8f8' }}
                     >
-                        All Theirs
+                        All Incoming
                     </button>
                 </div>
             )}
             
             {/* Mark as resolved (when no conflicts remain) */}
             {conflicts.length === 0 && (
-                <div className="flex items-center gap-2 border-l border-orange-700/50 pl-3">
+                <div className="flex items-center gap-2 border-l pl-3" style={{ borderColor: 'rgba(245, 158, 66, 0.20)' }}>
                     <button
                         onClick={handleMarkResolved}
                         disabled={isResolving}
-                        className="px-2 py-1 bg-green-600 hover:bg-green-500 rounded text-xs text-white flex items-center gap-1 disabled:opacity-50"
+                        className="px-2 py-1 rounded text-xs font-medium flex items-center gap-1 disabled:opacity-50 transition-colors"
+                        style={{ backgroundColor: 'rgba(74, 186, 154, 0.15)', color: '#4aba9a' }}
                     >
                         <Check className="w-3 h-3" />
-                        Mark as Resolved
+                        Mark Resolved
                     </button>
                 </div>
             )}
