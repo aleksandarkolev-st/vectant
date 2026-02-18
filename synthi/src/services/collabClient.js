@@ -566,12 +566,39 @@ class CollabClient {
     }
 
     const doc = new Y.Doc();
+
+    // Create a WebSocket wrapper that intercepts close code 4000
+    // (doc-invalidated).  When the server invalidates a Yjs doc it closes
+    // connections with code 4000.  The WebsocketProvider would normally
+    // auto-reconnect with the SAME Y.Doc (carrying stale CRDT state),
+    // merging old + new content and causing duplication.
+    // This wrapper destroys the doc on code 4000 BEFORE the provider's
+    // onclose handler can schedule a reconnect, so the provider sees
+    // shouldConnect === false and aborts.
+    const self = this;
+    const InvalidationAwareWS = class extends WebSocket {
+      constructor(url, protocols) {
+        super(url, protocols);
+        this.addEventListener('close', (event) => {
+          if (event.code === 4000) {
+            console.log('[Collab] WS close 4000 (doc-invalidated) for', key);
+            // Use queueMicrotask so this runs before the provider's
+            // setTimeout-based reconnect but after the current event.
+            queueMicrotask(() => {
+              self.destroyDocument(slug, path);
+            });
+          }
+        });
+      }
+    };
+
     const provider = new WebsocketProvider(this.serverUrl, key, doc, {
       connect: true,
       params: {
         userId: this.identity.userId,
         ...(this.identity.sessionId ? { sessionId: this.identity.sessionId } : {}),
       },
+      WebSocketPolyfill: InvalidationAwareWS,
     });
     provider.on('status', (ev) => {
       console.debug('[Collab] Provider status for', key, ev.status);
@@ -765,14 +792,24 @@ class CollabClient {
       entry._seeded = false;
     }
     
+    // Flag: set to true once the MonacoTextBinding is created below.
+    // When the binding exists, Yjs → model sync is handled by the binding's
+    // _yObserver (via editor.executeEdits), so doSeed() should NOT call
+    // model.setValue() directly — that would fire isFlush=true on the model
+    // event and could overwrite user edits that arrived between mount and
+    // the provider sync event.
+    let bindingEstablished = false;
+    
     const doSeed = () => {
       // Only seed once per doc lifecycle
       if (entry._seeded) return;
       
       const currentYtext = entry.ytext.toString();
       if (currentYtext.length > 0) {
-        // Ytext has content now (from server), use it
-        if (model.getValue() !== currentYtext) {
+        // Ytext has content now (from server).
+        // If the binding is already established, let the _yObserver handle
+        // the model update — it uses editor.executeEdits (no isFlush).
+        if (!bindingEstablished && model.getValue() !== currentYtext) {
           model.setValue(currentYtext);
         }
         entry._seeded = true;
@@ -784,7 +821,9 @@ class CollabClient {
           }
           entry.ytext.insert(0, providedContent);
         });
-        if (model.getValue() !== providedContent) {
+        // Writing to Yjs triggers _yObserver which updates the model.
+        // Only call model.setValue() if the binding isn't established yet.
+        if (!bindingEstablished && model.getValue() !== providedContent) {
           model.setValue(providedContent);
         }
         entry._seeded = true;
@@ -839,6 +878,11 @@ class CollabClient {
     } catch (_) {}
 
     const binding = new MonacoTextBinding(entry.ytext, model, editor, entry.provider.awareness, monaco);
+
+    // Now that the binding is established, the _yObserver handles Yjs → model
+    // sync.  Mark the flag so a late-firing doSeed() sync handler won't call
+    // model.setValue() and accidentally overwrite user edits / reset isUnsaved.
+    bindingEstablished = true;
 
     // Set local awareness if user provided
     if (user && entry.provider && entry.provider.awareness) {
@@ -1037,8 +1081,23 @@ class CollabClient {
             }
           }
           if (msg.type === 'file-reverted' && msg.slug === slug) {
+            // CRITICAL: Destroy affected Yjs docs IMMEDIATELY — before
+            // calling external handlers and before the Yjs WebsocketProvider
+            // can auto-reconnect with stale CRDT state.  The server closes
+            // the Yjs WS (code 4000) during invalidation, and the provider
+            // schedules a reconnect after ~100ms.  By destroying the doc
+            // here (which sets provider.shouldConnect = false), we prevent
+            // the stale reconnect that causes content duplication.
+            const filePaths = msg.filePaths || [];
+            if (filePaths.length === 0) {
+              this.destroyAllForSlug(slug);
+            } else {
+              for (const fp of filePaths) {
+                this.destroyDocument(slug, fp);
+              }
+            }
             if (typeof handlers.onFileReverted === 'function') {
-              handlers.onFileReverted(msg.filePaths || []);
+              handlers.onFileReverted(filePaths);
             }
           }
           if (msg.type === 'git-status-changed' && msg.slug === slug) {
