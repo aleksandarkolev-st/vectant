@@ -91,6 +91,11 @@ const PORT = config.PORT;
 // Track file hashes to detect when actual files change outside of the editor
 const fileHashCache = new Map(); // docName -> { hash, timestamp }
 
+// Revert cooldown: after invalidateDocsForSlug, reject stale sync (save)
+// requests for a short window.  Key = "slug:filePath", value = timestamp.
+const revertCooldowns = new Map();
+const REVERT_COOLDOWN_MS = 3000; // 3 seconds
+
 // Track which slugs have been hydrated from GCS this boot.
 // Solves the case where a repo directory exists (e.g. from a prior run or
 // background indexer) but its contents are stale/partial.  On first access
@@ -797,6 +802,16 @@ async function invalidateDocsForSlug(slug, filePaths = null, scope = {}) {
 
   if (toInvalidate.length > 0) {
     console.log(`[Collab] Invalidated ${toInvalidate.length} Yjs docs for slug ${slug}`);
+
+    // Set revert cooldown for affected file paths — reject stale sync (save)
+    // requests that were in-flight before the invalidation.
+    const now = Date.now();
+    const affectedPaths = filePaths && filePaths.length > 0
+      ? filePaths
+      : toInvalidate.map(dn => { const p = parseDocName(dn); return p?.filePath; }).filter(Boolean);
+    for (const fp of affectedPaths) {
+      revertCooldowns.set(`${slug}:${fp}`, now);
+    }
   }
 }
 
@@ -1569,12 +1584,25 @@ const server = http.createServer(async (req, res) => {
                     break;
                 case 'sync':
                     // Sync a single file — explicit save action from the client.
-                    // 1. Write the content provided by the client to the git working tree.
-                    await gitService.syncFile(slug, data.filePath, data.content, userId);
-                    // 2. Also flush the Yjs CRDT content to disk + GCS.
-                    //    This ensures GCS stays up-to-date and all per-user
-                    //    repos get the latest content on explicit save.
+                    // Guard: reject stale save requests that were in-flight during
+                    // a revert/pull/checkout. The revert cooldown prevents overwriting
+                    // freshly reverted disk content with pre-revert editor content.
                     {
+                      const cooldownKey = `${slug}:${data.filePath}`;
+                      const cooldownTs = revertCooldowns.get(cooldownKey);
+                      if (cooldownTs && (Date.now() - cooldownTs) < REVERT_COOLDOWN_MS) {
+                        console.log(`[Collab Sync] Rejected stale save for ${data.filePath} — revert cooldown active (${Date.now() - cooldownTs}ms since invalidation)`);
+                        result = { success: false, reason: 'revert-cooldown' };
+                        break;
+                      }
+                      // Clean up expired cooldown
+                      if (cooldownTs) revertCooldowns.delete(cooldownKey);
+
+                      // 1. Write the content provided by the client to the git working tree.
+                      await gitService.syncFile(slug, data.filePath, data.content, userId);
+                      // 2. Also flush the Yjs CRDT content to disk + GCS.
+                      //    This ensures GCS stays up-to-date and all per-user
+                      //    repos get the latest content on explicit save.
                       const docKey = buildDocName(slug, data.filePath, notifyScope);
                       await persistence.flushDocToDisk(docKey, { contentOverride: data.content });
                     }
