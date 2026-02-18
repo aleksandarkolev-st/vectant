@@ -168,6 +168,9 @@ const EditorPanel = ({
     const [position, setPosition] = useState({ lineNumber: 1, column: 1 });
     const [editorInstance, setEditorInstance] = useState(null);
     const [monacoInstance, setMonacoInstance] = useState(null);
+    // Track whether the DiffEditor has ever been activated — once true, we keep
+    // it mounted (hidden) to avoid React unmount crash in passive effects.
+    const [diffModeEverActive, setDiffModeEverActive] = useState(false);
     const latestCodeRef = useRef(code);
     const pendingContentFrameRef = useRef(null);
     const pendingPositionFrameRef = useRef(null);
@@ -1353,6 +1356,12 @@ const EditorPanel = ({
         return () => clearTimeout(timer);
     }, [autoSaveEnabled, activeFile, dispatch, code, savedContent]);
 
+    // Latch diffModeEverActive so the DiffEditor stays mounted (hidden) once
+    // the user first opens it — avoids React passive-unmount crash.
+    useEffect(() => {
+        if (diffMode) setDiffModeEverActive(true);
+    }, [diffMode]);
+
     // Git status refresh — in manual-save mode, status updates after explicit save.
     // In auto-save mode, status updates after each debounced autosave write.
     // Git status is refreshed:
@@ -2167,8 +2176,14 @@ const EditorPanel = ({
                             <ContextMenu>
                                 <ContextMenuTrigger asChild>
                                     <div className="h-full w-full">
-                                        {diffMode ? (
-                                            <div className="h-full w-full relative flex flex-col">
+                                        {/* DiffEditor — kept mounted (display:none) once activated
+                                            to prevent React unmount crash in
+                                            recursivelyTraversePassiveUnmountEffects.
+                                            Monaco DiffEditor's internal useEffect cleanup can throw
+                                            during React passive unmount; keeping it in the DOM and
+                                            hiding via CSS avoids the disposal race entirely. */}
+                                        {diffModeEverActive && (
+                                            <div className="h-full w-full relative flex flex-col" style={{ display: diffMode ? 'flex' : 'none' }}>
                                                 {/* Diff view header with close button */}
                                                 <div className="flex items-center justify-between px-3 py-1 bg-[#0d0e14] border-b border-[#1e1f2e] text-xs shrink-0 select-none" style={{ height: 32 }}>
                                                     <div className="flex items-center gap-2 min-w-0">
@@ -2188,8 +2203,8 @@ const EditorPanel = ({
                                                 <div className="flex-1 min-h-0">
                                                     <DiffEditor
                                                         height="100%"
-                                                        original={originalContent || ''}
-                                                        modified={code ?? ''}
+                                                        original={diffMode ? (originalContent || '') : ''}
+                                                        modified={diffMode ? (code ?? '') : ''}
                                                         language={activeLanguage}
                                                         theme="synthi-theme"
                                                         options={{
@@ -2203,7 +2218,9 @@ const EditorPanel = ({
                                                     />
                                                 </div>
                                             </div>
-                                        ) : (
+                                        )}
+                                        {/* Regular Editor — hidden when diff is active */}
+                                        <div className="h-full w-full" style={{ display: diffMode ? 'none' : undefined }}>
                                             <Editor
                                                 key={activeFileIdentity}
                                                 height="100%"
@@ -2340,7 +2357,7 @@ const EditorPanel = ({
                                                     }, 100);
                                                 }}
                                             />
-                                        )}
+                                        </div>
                                     </div>
                                 </ContextMenuTrigger>
                                 <ContextMenuContent className="w-56 bg-[#252526] border-[#454545] text-gray-200">
