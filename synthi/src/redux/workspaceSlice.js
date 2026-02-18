@@ -88,15 +88,25 @@ export const saveFileContentThunk = createAsyncThunk(
         // Use Redux editor content as the source of truth; CRDT snapshots can
         // momentarily lag during high-frequency edits and cause stale writes.
         let contentToSave = currentContent;
-        
-        // Skip save if content hasn't changed
-        if (contentToSave === state.savedContent) {
-            return contentToSave; // Return content to ensure reducer still marks as saved
+
+        // Normalize for comparison — trailing newline differences between the
+        // editor and the saved baseline should NOT prevent a save from running.
+        const normalizeTrailing = (s) => s ? s.replace(/[\r\n]+$/, '') : '';
+
+        // Skip ONLY when content truly hasn't changed (after normalization).
+        // When content is the same, still refresh git status so the Source
+        // Control panel picks up any out-of-band changes (e.g. from Yjs auto-
+        // flush or terminal-level edits).
+        if (normalizeTrailing(contentToSave) === normalizeTrailing(state.savedContent)) {
+            dispatch(fetchGitStatus(slug));
+            return contentToSave; // fulfilled reducer marks as saved
         }
 
         try {
             // Single write through collab-server (writes to disk, GCS sync handled by auto-flush)
             await dispatch(syncFileToGit({ slug, filePath: activeFile.path, content: contentToSave })).unwrap();
+            // Refresh git status AFTER the disk write completes so Source
+            // Control reflects the newly saved content immediately.
             dispatch(fetchGitStatus(slug));
 
         } catch (e) {
@@ -390,10 +400,25 @@ export const openDiffThunk = createAsyncThunk(
         const slug = state.slug;
 
         // 1. Fetch current content (working copy)
+        // Priority order:
+        //   a) If this is the currently active file, use Redux currentContent
+        //      (reflects live edits, not stale cache).
+        //   b) Check the live Yjs CRDT for this file (has unsaved edits from
+        //      the collaboration layer).
+        //   c) Fall back to fileCache or server fetch.
         let currentContent = '';
-        const cachedContent = fileCache.get(file.path);
-        if (cachedContent !== undefined) currentContent = cachedContent;
-        else currentContent = await loadScheduler.requestFileContent(slug, file.path, { priority: 'high', background: false });
+        if (state.activeFile && state.activeFile.path === file.path) {
+            currentContent = state.currentContent || '';
+        } else {
+            const crdtContent = getCrdtBaselineIfNewer(slug, file.path, '');
+            if (crdtContent !== null) {
+                currentContent = crdtContent;
+            } else {
+                const cachedContent = fileCache.get(file.path);
+                if (cachedContent !== undefined) currentContent = cachedContent;
+                else currentContent = await loadScheduler.requestFileContent(slug, file.path, { priority: 'high', background: false });
+            }
+        }
 
         // 2. Fetch original content (HEAD)
         let originalContent = '';
