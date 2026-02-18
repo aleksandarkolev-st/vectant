@@ -550,6 +550,27 @@ const workspaceSlice = createSlice({
             try { fileCache.clear(); } catch (_) {}
             try { loadScheduler.cancelBackground(); } catch (_) {}
         },
+        // Clear stale saved baselines after a revert/pull/checkout.
+        // Accepts { paths: string[] } or { all: true }.
+        // Must be dispatched BEFORE selectFileThunk so the fulfilled handler
+        // doesn't re-apply the old savedContent from _savedContentByPath.
+        clearSavedBaselines: (state, action) => {
+            const { paths, all } = action.payload || {};
+            if (all) {
+                state._savedContentByPath = {};
+                state.openFiles = state.openFiles.map(f =>
+                    f.isUnsaved ? { ...f, isUnsaved: false } : f
+                );
+            } else if (Array.isArray(paths)) {
+                for (const p of paths) {
+                    delete state._savedContentByPath?.[p];
+                    const idx = state.openFiles.findIndex(f => f.path === p);
+                    if (idx !== -1 && state.openFiles[idx].isUnsaved) {
+                        state.openFiles[idx] = { ...state.openFiles[idx], isUnsaved: false };
+                    }
+                }
+            }
+        },
         hydrateWorkspace: (state, action) => {
             const { openFiles, activeFile } = action.payload;
             if (openFiles) {
@@ -804,7 +825,7 @@ const workspaceSlice = createSlice({
     },
 });
 
-export const { updateContent, renameItemStateUpdate, setSlug, setExternalFileContent, openFile, closeFile, reorderOpenFiles, hydrateWorkspace, clearFileCache, setDiffMode } = workspaceSlice.actions;
+export const { updateContent, renameItemStateUpdate, setSlug, setExternalFileContent, openFile, closeFile, reorderOpenFiles, hydrateWorkspace, clearFileCache, clearSavedBaselines, setDiffMode } = workspaceSlice.actions;
 
 export const refreshWorkspaceThunk = createAsyncThunk(
     'workspace/refresh',

@@ -18,7 +18,8 @@ import {
     selectFileThunk,
     closeFile,
     reorderOpenFiles,
-    setDiffMode
+    setDiffMode,
+    clearSavedBaselines
 } from '@/redux/workspaceSlice';
 import { selectAutoCompletionEnabled, toggleAutoCompletion, selectPresenceGranularity, startCreate, setCursorPosition, selectAutoSaveEnabled } from '@/redux/uiSlice';
 import { fetchGitStatus, closeConflictResolver } from '@/redux/gitSlice';
@@ -1050,6 +1051,13 @@ const EditorPanel = ({
             if (diffMode) {
                 dispatch(setDiffMode(false));
             }
+
+            // 3b. Clear stale saved-content baselines so selectFileThunk
+            //     doesn't re-apply the old savedContent from _savedContentByPath.
+            //     Without this, the tab would still show an unsaved dot after revert.
+            dispatch(clearSavedBaselines(
+                allFiles ? { all: true } : { paths: filePaths }
+            ));
 
             // 4. Re-select the file — this fetches clean content from the
             //    server and updates Redux (savedContent, currentContent).
