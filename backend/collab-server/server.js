@@ -1127,6 +1127,93 @@ const server = http.createServer(async (req, res) => {
   }
 
   // ========================================================================
+  // WORKSPACE PRESENCE API — Active users + sessions for a workspace
+  // ========================================================================
+  if (req.url.startsWith('/workspace-presence/') && req.method === 'GET') {
+    const urlObj = new URL(req.url, `http://${req.headers.host}`);
+    const slug = urlObj.pathname.split('/')[2];
+    if (!slug) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'slug is required' }));
+      return;
+    }
+
+    try {
+      // 1) Gather active Yjs awareness users for this slug
+      const prefix = `workspace:${slug}:`;
+      const seen = new Map();
+      for (const [docName, doc] of docs) {
+        if (!docName.startsWith(prefix)) continue;
+        const awareness = doc.awareness;
+        if (!awareness) continue;
+        awareness.getStates().forEach((state, clientId) => {
+          if (!state || !state.user) return;
+          const userId = String(state.user.id || clientId);
+          const prev = seen.get(userId);
+          const ts = state.lastActive || 0;
+          if (!prev || (prev.lastActive || 0) < ts) {
+            seen.set(userId, {
+              id: userId,
+              name: state.user.name || 'Anonymous',
+              color: state.user.color || '#888',
+              image: state.user.image || null,
+              lastActive: ts,
+              currentFile: docName.slice(prefix.length).replace(/^user:[^:]+:/, ''),
+            });
+          }
+        });
+      }
+      const activeUsers = Array.from(seen.values());
+
+      // 2) Get active collaboration sessions for this slug
+      const sessions = sessionManager.getSessionsForSlug(slug);
+
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ slug, activeUsers, sessions }));
+    } catch (e) {
+      console.error('[Workspace Presence] Error:', e.message);
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: e.message }));
+    }
+    return;
+  }
+
+  // ========================================================================
+  // SESSION INVITE API — Request to join another user's session
+  // ========================================================================
+  if (req.url.startsWith('/session/request-join/') && req.method === 'POST') {
+    const urlObj = new URL(req.url, `http://${req.headers.host}`);
+    const targetSessionId = urlObj.pathname.split('/')[3];
+    if (!targetSessionId) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'sessionId is required' }));
+      return;
+    }
+
+    let body = '';
+    req.on('data', chunk => body += chunk);
+    req.on('end', () => {
+      try {
+        const data = JSON.parse(body);
+        const { guestId, displayName, avatarUrl } = data;
+        if (!guestId) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'guestId is required' }));
+          return;
+        }
+        // Reuse knock mechanism — "request to join" is semantically the same
+        sessionManager.knock(targetSessionId, { guestId, displayName: displayName || guestId, avatarUrl: avatarUrl || '' });
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: true, message: 'Join request sent' }));
+      } catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: e.message }));
+      }
+    });
+    return;
+  }
+
+  // ========================================================================
   // SESSION API — Host/Guest "Remote Control" collaboration
   // ========================================================================
   if (req.url.startsWith('/session/') && (req.method === 'POST' || req.method === 'GET' || req.method === 'DELETE')) {
