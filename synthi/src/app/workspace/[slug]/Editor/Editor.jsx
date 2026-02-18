@@ -1023,10 +1023,6 @@ const EditorPanel = ({
             const { slug: evSlug, filePaths } = ev.detail || {};
             if (evSlug !== slug) return;
 
-            // filePaths=[] means ALL files were reverted (pull, checkout,
-            // discard-all). In that case we must destroy ALL cached Yjs docs
-            // for this slug to prevent stale CRDT state from being merged on
-            // auto-reconnect.  For single-file discard, only destroy that doc.
             const allFiles = !filePaths || filePaths.length === 0;
             const affectsActive = allFiles
                 || (activeFile && filePaths.includes(activeFile.path));
@@ -1041,33 +1037,32 @@ const EditorPanel = ({
                 reduxSyncTimerRef.current = null;
             }
 
-            // 2. Tear down Yjs binding — this prevents the dirty editor from
-            //    writing stale content back into the freshly recreated Yjs doc
+            // 2. Tear down the local binding reference.
+            //    Note: The Yjs doc/provider are already destroyed by
+            //    collabClient.connectNotifications (which fires first and
+            //    calls destroyDocument/destroyAllForSlug).  We only need
+            //    to clear the local ref + awareness subscription.
             try { collabBindingRef.current?._awarenessUnsub?.(); } catch (_) {}
             try { collabBindingRef.current?.dispose(); } catch (_) {}
             collabBindingRef.current = null;
 
-            // Destroy Yjs docs — ALL for the slug if every file was affected
-            // (pull/checkout/discard-all), or just the specific file (single discard).
-            if (allFiles) {
-                try { collabClient.destroyAllForSlug(slug); } catch (_) {}
-            } else {
-                try { collabClient.destroyDocument(slug, activeFile.path); } catch (_) {}
+            // 3. Close diff view if open — reverted content invalidates it
+            if (diffMode) {
+                dispatch(setDiffMode(false));
             }
 
-            // 3. Re-select the file — this fetches clean content from the
+            // 4. Re-select the file — this fetches clean content from the
             //    server and updates Redux (savedContent, currentContent).
             //    It also triggers the collab binding effect to re-run, which
             //    will create a fresh Yjs provider seeded from disk content.
             await dispatch(selectFileThunk(activeFile));
 
-            // 4. Force-set the Monaco model to the clean content so the editor
+            // 5. Force-set the Monaco model to the clean content so the editor
             //    doesn't flash stale text before the binding kicks in.
             try {
                 const model = editorInstance?.getModel?.();
                 if (model) {
                     const cleanContent = model.getValue();
-                    // Sync latestCodeRef so any flush-on-unmount uses clean content
                     latestCodeRef.current = cleanContent;
                 }
             } catch (_) {}
@@ -1075,7 +1070,7 @@ const EditorPanel = ({
 
         window.addEventListener('synthi:file-reverted', handler);
         return () => window.removeEventListener('synthi:file-reverted', handler);
-    }, [slug, activeFile, editorInstance, dispatch]);
+    }, [slug, activeFile, editorInstance, dispatch, diffMode]);
 
     // Sync local unsaved state to awareness
     useEffect(() => {
