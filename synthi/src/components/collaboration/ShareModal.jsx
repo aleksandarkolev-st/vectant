@@ -330,6 +330,24 @@ function ShareTab({
         <Radio className="w-4 h-4" />
         Start Sharing
       </button>
+
+      {/* Quick info cards */}
+      <div className="grid grid-cols-2 gap-2 mt-2">
+        <div className="px-3 py-2.5 rounded-lg border" style={{ backgroundColor: T.surface, borderColor: T.border }}>
+          <div className="flex items-center gap-1.5 mb-1">
+            <Shield className="w-3 h-3" style={{ color: T.teal }} />
+            <span className="text-[10px] font-semibold" style={{ color: T.textSec }}>Encrypted</span>
+          </div>
+          <p className="text-[10px] leading-tight" style={{ color: T.textMuted }}>End-to-end sync via CRDT</p>
+        </div>
+        <div className="px-3 py-2.5 rounded-lg border" style={{ backgroundColor: T.surface, borderColor: T.border }}>
+          <div className="flex items-center gap-1.5 mb-1">
+            <Users className="w-3 h-3" style={{ color: T.blue }} />
+            <span className="text-[10px] font-semibold" style={{ color: T.textSec }}>Real-time</span>
+          </div>
+          <p className="text-[10px] leading-tight" style={{ color: T.textMuted }}>Live cursors & edits</p>
+        </div>
+      </div>
     </div>
   );
 }
