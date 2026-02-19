@@ -409,6 +409,11 @@ class CollabSessionService extends EventTarget {
         }
         break;
 
+      case 'guest:left':
+        // A guest voluntarily left — notify the host so the guest list updates
+        this._emit('guest:left', msg);
+        break;
+
       case 'permissions:updated':
         // If it's our permissions that changed
         if (msg.guestId === this._userId) {
