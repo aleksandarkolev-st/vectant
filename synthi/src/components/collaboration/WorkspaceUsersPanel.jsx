@@ -3,12 +3,13 @@
 import React, { useState, useCallback, useEffect } from 'react';
 import { useWorkspacePresence } from '@/hooks/useWorkspacePresence';
 import { useCollabSession } from '@/hooks/useCollabSession';
+import { useBlockedUsers } from '@/hooks/useBlockedUsers';
 import collabClient from '@/services/collabClient';
 import collabSessionService from '@/services/collabSessionService';
 import {
   Users, Radio, Eye, FileEdit, Clock, Globe,
   ChevronRight, Loader2, UserPlus, Shield, Send,
-  Check, X, Bell
+  Check, X, Bell, Ban, MoreHorizontal
 } from 'lucide-react';
 
 // ── Theme ─────────────────────────────────────────────────────────────────────
@@ -41,6 +42,7 @@ export default function WorkspaceUsersPanel({ slug }) {
     requestJoinSession, joinUser, inviteUser,
     error, hostId,
   } = useCollabSession();
+  const { blockUser, unblockUser, isBlocked } = useBlockedUsers();
   const [joiningSessionId, setJoiningSessionId] = useState(null);
   const [joiningUserId, setJoiningUserId] = useState(null);
   const [invitingUserId, setInvitingUserId] = useState(null);
@@ -102,6 +104,22 @@ export default function WorkspaceUsersPanel({ slug }) {
   const handleDeclineInvite = useCallback(() => {
     setPendingInvite(null);
   }, []);
+
+  // ── Block / Unblock ───────────────────────────────────────────────────
+
+  const handleBlockUser = useCallback(async (userId) => {
+    try {
+      await blockUser(userId);
+      refresh(); // re-fetch presence so blocked user disappears
+    } catch (_) {}
+  }, [blockUser, refresh]);
+
+  const handleUnblockUser = useCallback(async (userId) => {
+    try {
+      await unblockUser(userId);
+      refresh();
+    } catch (_) {}
+  }, [unblockUser, refresh]);
 
   // ── Group users: those in sessions vs solo ────────────────────────────
 
@@ -207,6 +225,7 @@ export default function WorkspaceUsersPanel({ slug }) {
                 invitingUserId={invitingUserId}
                 onJoinUser={handleJoinUser}
                 onInviteUser={handleInviteUser}
+                onBlockUser={handleBlockUser}
               />
             ))}
           </div>
@@ -322,13 +341,14 @@ function SessionCard({ session, myUserId, isIdle, isKnocking, joiningSessionId, 
 
 // ── User Row ──────────────────────────────────────────────────────────────────
 
-function UserRow({ user, isIdle, isHost, isKnocking, joiningUserId, invitingUserId, onJoinUser, onInviteUser }) {
+function UserRow({ user, isIdle, isHost, isKnocking, joiningUserId, invitingUserId, onJoinUser, onInviteUser, onBlockUser }) {
   const isJoining = joiningUserId === user.id;
   const isInviting = invitingUserId === user.id;
   const canAct = (isIdle || isHost) && !isKnocking;
+  const [showMenu, setShowMenu] = useState(false);
 
   return (
-    <div className="flex items-center gap-2 px-2 py-1.5 rounded-md transition-colors hover:bg-[#ffffff04] group">
+    <div className="flex items-center gap-2 px-2 py-1.5 rounded-md transition-colors hover:bg-[#ffffff04] group relative">
       <UserAvatar name={user.name} avatar={user.image} color={user.color} size={24} />
       <div className="flex-1 min-w-0">
         <span className="text-xs font-medium truncate block" style={{ color: T.text }}>
@@ -384,6 +404,32 @@ function UserRow({ user, isIdle, isHost, isKnocking, joiningUserId, invitingUser
             }
             Invite
           </button>
+          {/* More menu (block) */}
+          <div className="relative">
+            <button
+              onClick={() => setShowMenu(!showMenu)}
+              className="p-0.5 rounded hover:bg-[#ffffff08] transition-colors"
+              title="More options"
+            >
+              <MoreHorizontal className="w-3 h-3" style={{ color: T.textMuted }} />
+            </button>
+            {showMenu && (
+              <>
+                <div className="fixed inset-0 z-[50]" onClick={() => setShowMenu(false)} />
+                <div className="absolute right-0 top-full mt-1 z-[51] rounded-lg border shadow-xl py-1 min-w-[140px]"
+                  style={{ backgroundColor: T.bg, borderColor: T.border }}>
+                  <button
+                    onClick={() => { onBlockUser(user.id); setShowMenu(false); }}
+                    className="w-full flex items-center gap-2 px-3 py-1.5 text-[11px] font-medium transition-colors hover:bg-[#ff575710]"
+                    style={{ color: T.red }}
+                  >
+                    <Ban className="w-3 h-3" />
+                    Block {user.name}
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
         </div>
       )}
       {!canAct && (

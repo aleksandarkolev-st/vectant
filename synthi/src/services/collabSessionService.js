@@ -311,9 +311,59 @@ class CollabSessionService extends EventTarget {
    * @returns {Promise<{ activeUsers: Array, sessions: Array }>}
    */
   async getWorkspacePresence(slug) {
-    const res = await fetch(`${COLLAB_URL}/workspace-presence/${encodeURIComponent(slug)}`);
+    const userId = this._userId || (typeof window !== 'undefined' ? localStorage.getItem('synthi-user-id') : null);
+    let url = `${COLLAB_URL}/workspace-presence/${encodeURIComponent(slug)}`;
+    if (userId) url += `?userId=${encodeURIComponent(userId)}`;
+    const res = await fetch(url);
     if (!res.ok) return { activeUsers: [], sessions: [] };
     return res.json();
+  }
+
+  // ── User Blocking ──────────────────────────────────────────────────────
+
+  /**
+   * Block a user. Blocked users are hidden from presence and cannot
+   * invite/join you.
+   */
+  async blockUser(blockedUserId) {
+    const userId = this._userId || (typeof window !== 'undefined' ? localStorage.getItem('synthi-user-id') : null);
+    if (!userId) throw new Error('No userId available');
+    const res = await fetch(`${COLLAB_URL}/user/block`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userId, blockedUserId }),
+    });
+    if (!res.ok) throw new Error('Failed to block user');
+    this._emit('block:changed', { userId, blockedUserId, action: 'block' });
+    return res.json();
+  }
+
+  /**
+   * Unblock a user.
+   */
+  async unblockUser(blockedUserId) {
+    const userId = this._userId || (typeof window !== 'undefined' ? localStorage.getItem('synthi-user-id') : null);
+    if (!userId) throw new Error('No userId available');
+    const res = await fetch(`${COLLAB_URL}/user/unblock`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userId, blockedUserId }),
+    });
+    if (!res.ok) throw new Error('Failed to unblock user');
+    this._emit('block:changed', { userId, blockedUserId, action: 'unblock' });
+    return res.json();
+  }
+
+  /**
+   * Get the list of blocked user IDs for the current user.
+   */
+  async getBlockedList() {
+    const userId = this._userId || (typeof window !== 'undefined' ? localStorage.getItem('synthi-user-id') : null);
+    if (!userId) return [];
+    const res = await fetch(`${COLLAB_URL}/user/blocked-list?userId=${encodeURIComponent(userId)}`);
+    if (!res.ok) return [];
+    const data = await res.json();
+    return data.blockedUsers || [];
   }
 
   /**
