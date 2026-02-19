@@ -9,6 +9,7 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover
 import { useAppDispatch, useAppSelector } from '@/redux/hooks';
 import { selectFileThunk } from '@/redux/workspaceSlice';
 import { selectFileCacheEntries } from '@/redux/workspaceSlice';
+import { setShowTerminal } from '@/redux/uiSlice';
 import { findFileInTree } from '@/utils/fileUtils';
 import { useChatSessions } from './hooks/useChatSessions';
 import { useChatInput } from './hooks/useChatInput';
@@ -350,6 +351,13 @@ const AIChatWindow = ({
                 setPendingCommands((prev) =>
                     prev.map((c) => (c.id === approvalId ? { ...c, status: success ? 'approved' : 'failed', output: data.result.output || data.result.error } : c))
                 );
+                // Open a terminal tab so the user can see the command output
+                if (data.result.sessionId && typeof window !== 'undefined') {
+                    try { dispatch(setShowTerminal(true)); } catch (_) {}
+                    window.dispatchEvent(new CustomEvent('ai-terminal-open', {
+                        detail: { sessionId: data.result.sessionId, command: data.result.command || '' },
+                    }));
+                }
             } else if (data?.deferred) {
                 // Deferred but no result body
                 setPendingCommands((prev) =>
