@@ -178,6 +178,9 @@ class RAGPipeline:
         """
         Ingest all documents from a directory.
 
+        Also purges stale documents whose source files no longer exist on disk
+        and deduplicates documents that were previously ingested.
+
         Args:
             directory: Directory to ingest. Defaults to workspace root.
 
@@ -194,8 +197,24 @@ class RAGPipeline:
 
         result = processor.process_directory(dir_path)
 
+        # Build set of freshly-ingested file paths for stale-detection later
+        ingested_paths: set = set()
+
         # Store ingested documents
         for doc in result.documents:
+            file_path = doc.metadata.file_path if doc.metadata else None
+            if file_path:
+                ingested_paths.add(str(file_path))
+
+            # Remove existing doc for this path to avoid duplicates
+            if file_path:
+                existing_id = self.document_store.get_by_path(str(file_path))
+                if existing_id:
+                    try:
+                        self._remove_doc_by_id(existing_id)
+                    except Exception as e:
+                        logger.debug(f"Stale doc cleanup for {file_path}: {e}")
+
             # Store document
             self.document_store.add(doc)
 
@@ -215,6 +234,25 @@ class RAGPipeline:
                     doc.id, doc.summary
                 )
 
+        # ── Purge stale documents for files that no longer exist ─────────
+        stale_removed = 0
+        try:
+            all_metadata = self.document_store._load_metadata()
+            stale_ids = []
+            for doc_id, meta in all_metadata.items():
+                fp = getattr(meta, 'file_path', None) or (meta.get('file_path') if isinstance(meta, dict) else None)
+                if fp and str(fp) not in ingested_paths:
+                    if not Path(str(fp)).exists():
+                        stale_ids.append(doc_id)
+            for doc_id in stale_ids:
+                try:
+                    self._remove_doc_by_id(doc_id)
+                    stale_removed += 1
+                except Exception as e:
+                    logger.debug(f"Failed to purge stale doc {doc_id}: {e}")
+        except Exception as e:
+            logger.warning(f"Stale document purge failed: {e}")
+
         # Persist everything
         self.summary_index.save()
         self._keyword_filter_instance().save()
@@ -225,13 +263,15 @@ class RAGPipeline:
             "documents_processed": result.documents_processed,
             "documents_skipped": result.documents_skipped,
             "documents_failed": result.documents_failed,
+            "documents_purged": stale_removed,
             "total_sections": sum(len(d.sections) for d in result.documents),
             "time_ms": elapsed,
         }
 
         logger.info(
             f"Ingestion complete: {stats['documents_processed']} docs "
-            f"({stats['total_sections']} sections) in {elapsed:.0f}ms"
+            f"({stats['total_sections']} sections, {stale_removed} purged) "
+            f"in {elapsed:.0f}ms"
         )
 
         return stats
@@ -902,6 +942,19 @@ class RAGPipeline:
         self._keyword_filter_instance().save()
         logger.info("RAG pipeline data cleared")
 
+    def _remove_doc_by_id(self, doc_id: str) -> int:
+        """Remove a document and all its associated data by ID.
+        
+        Returns:
+            Number of sections removed.
+        """
+        sections_removed = self.section_store.remove_by_document(doc_id)
+        self.toc_store.remove(doc_id)
+        self.summary_index.remove(doc_id)
+        self._keyword_filter_instance().remove_document(doc_id)
+        self.document_store.remove(doc_id)
+        return sections_removed
+
     def remove_file(self, file_path: str) -> Dict[str, Any]:
         """
         Remove a file's data from all RAG stores.
@@ -921,11 +974,7 @@ class RAGPipeline:
         if not doc_id:
             return {"status": "not_found", "file": file_path}
 
-        sections_removed = self.section_store.remove_by_document(doc_id)
-        self.toc_store.remove(doc_id)
-        self.summary_index.remove(doc_id)
-        self._keyword_filter_instance().remove_document(doc_id)
-        self.document_store.remove(doc_id)
+        sections_removed = self._remove_doc_by_id(doc_id)
 
         # Persist
         self.summary_index.save()
