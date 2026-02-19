@@ -299,7 +299,7 @@ export const handleCreateItemThunk = createAsyncThunk(
         dispatch(cancelUiAction());
         await dispatch(fetchFilesThunk(slug));
 
-        // If file created, select it
+        // If file created, select it and notify CodeIntel for indexing
         if (!isFolder) {
             const newFile = {
                 name: finalName,
@@ -308,6 +308,13 @@ export const handleCreateItemThunk = createAsyncThunk(
                 path: fullPath
             };
             dispatch(selectFileThunk(newFile));
+            
+            // Emit event so page-level listener can trigger CodeIntel re-index
+            if (typeof window !== 'undefined') {
+                window.dispatchEvent(new CustomEvent('synthi:codeintel-index-file', {
+                    detail: { filePath: fullPath },
+                }));
+            }
         }
     }
 );
