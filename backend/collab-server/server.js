@@ -62,6 +62,13 @@ const gitService = require('./gitService');
 const repoCache = require('./repoCache');
 const sessionManager = require('./SessionManager');
 const { extractSessionContext, requireGitActionPermission, wsRequirePermission, wsDenyAction, wsAttachContext } = require('./permissionMiddleware');
+
+// ── User block list (in-memory) ──────────────────────────────────────────────
+// blockedBy: userId → Set<blockedUserId>
+// If user A blocks user B, blockedBy.get(A) contains B.
+// This means B cannot: see A in presence, invite A, or join A's workspace.
+const blockedBy = new Map();
+
 let fetchFunc = null;
 if (typeof fetch === 'function') {
   fetchFunc = fetch;
@@ -1174,6 +1181,86 @@ const server = http.createServer(async (req, res) => {
   }
 
   // ========================================================================
+  // USER BLOCK API — Block/unblock other users
+  // ========================================================================
+
+  /**
+   * POST /user/block  { userId, blockedUserId }
+   * Blocks blockedUserId for userId. The blocked user won't see userId in
+   * presence, can't invite them, and can't join their workspace.
+   */
+  if (req.url === '/user/block' && req.method === 'POST') {
+    let body = '';
+    req.on('data', chunk => body += chunk);
+    req.on('end', () => {
+      try {
+        const { userId, blockedUserId } = JSON.parse(body);
+        if (!userId || !blockedUserId) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'userId and blockedUserId are required' }));
+          return;
+        }
+        if (!blockedBy.has(userId)) blockedBy.set(userId, new Set());
+        blockedBy.get(userId).add(blockedUserId);
+        console.log(`[Block] ${userId} blocked ${blockedUserId}`);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: true }));
+      } catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: e.message }));
+      }
+    });
+    return;
+  }
+
+  /**
+   * POST /user/unblock  { userId, blockedUserId }
+   */
+  if (req.url === '/user/unblock' && req.method === 'POST') {
+    let body = '';
+    req.on('data', chunk => body += chunk);
+    req.on('end', () => {
+      try {
+        const { userId, blockedUserId } = JSON.parse(body);
+        if (!userId || !blockedUserId) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'userId and blockedUserId are required' }));
+          return;
+        }
+        if (blockedBy.has(userId)) {
+          blockedBy.get(userId).delete(blockedUserId);
+          if (blockedBy.get(userId).size === 0) blockedBy.delete(userId);
+        }
+        console.log(`[Block] ${userId} unblocked ${blockedUserId}`);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: true }));
+      } catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: e.message }));
+      }
+    });
+    return;
+  }
+
+  /**
+   * GET /user/blocked-list?userId=...
+   * Returns the list of blocked user IDs for the given user.
+   */
+  if (req.url.startsWith('/user/blocked-list') && req.method === 'GET') {
+    const urlObj = new URL(req.url, `http://${req.headers.host}`);
+    const userId = urlObj.searchParams.get('userId');
+    if (!userId) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'userId is required' }));
+      return;
+    }
+    const list = blockedBy.has(userId) ? Array.from(blockedBy.get(userId)) : [];
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ userId, blockedUsers: list }));
+    return;
+  }
+
+  // ========================================================================
   // WORKSPACE PRESENCE API — Active users + sessions for a workspace
   // ========================================================================
   if (req.url.startsWith('/workspace-presence/') && req.method === 'GET') {
@@ -1212,10 +1299,27 @@ const server = http.createServer(async (req, res) => {
           }
         });
       }
-      const activeUsers = Array.from(seen.values());
+      let activeUsers = Array.from(seen.values());
 
       // 2) Get active collaboration sessions for this slug
       const sessions = sessionManager.getSessionsForSlug(slug);
+
+      // 3) Filter out blocked users.
+      //    If requesterId is provided, hide users who have blocked them
+      //    AND users whom they have blocked.
+      const requesterId = urlObj.searchParams.get('userId');
+      if (requesterId) {
+        const myBlocked = blockedBy.get(requesterId) || new Set(); // users I blocked
+        activeUsers = activeUsers.filter(u => {
+          if (u.id === requesterId) return true; // always include self
+          // Hide users I blocked
+          if (myBlocked.has(u.id)) return false;
+          // Hide users who blocked me
+          const theirBlocked = blockedBy.get(u.id);
+          if (theirBlocked && theirBlocked.has(requesterId)) return false;
+          return true;
+        });
+      }
 
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ slug, activeUsers, sessions }));
@@ -1248,6 +1352,15 @@ const server = http.createServer(async (req, res) => {
         if (!hostId || !targetUserId || !slug) {
           res.writeHead(400, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ error: 'hostId, targetUserId, and slug are required' }));
+          return;
+        }
+
+        // Block check: if target blocked host or host blocked target, deny
+        const targetBlocked = blockedBy.get(targetUserId);
+        const hostBlocked = blockedBy.get(hostId);
+        if ((targetBlocked && targetBlocked.has(hostId)) || (hostBlocked && hostBlocked.has(targetUserId))) {
+          res.writeHead(403, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Cannot invite this user' }));
           return;
         }
 
@@ -1314,6 +1427,15 @@ const server = http.createServer(async (req, res) => {
         if (!targetUserId || !guestId || !slug) {
           res.writeHead(400, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ error: 'targetUserId, guestId, and slug are required' }));
+          return;
+        }
+
+        // Block check: if target blocked guest or guest blocked target, deny
+        const targetBlocked = blockedBy.get(targetUserId);
+        const guestBlocked = blockedBy.get(guestId);
+        if ((targetBlocked && targetBlocked.has(guestId)) || (guestBlocked && guestBlocked.has(targetUserId))) {
+          res.writeHead(403, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Cannot join this user' }));
           return;
         }
 
