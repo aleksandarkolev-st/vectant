@@ -489,6 +489,11 @@ class CollabSessionService extends EventTarget {
 
     this._ws = new WebSocket(url);
 
+    this._ws.onopen = () => {
+      // Reset backoff on successful connection
+      this._reconnectDelay = 1000;
+    };
+
     this._ws.onmessage = (event) => {
       try {
         const msg = JSON.parse(event.data);
@@ -497,9 +502,12 @@ class CollabSessionService extends EventTarget {
     };
 
     this._ws.onclose = () => {
-      // Reconnect if still active
+      // Reconnect with exponential backoff if still active
       if (this.isActive || this._role === 'knocking') {
-        setTimeout(() => this._connectWs(), 2000);
+        const delay = this._reconnectDelay || 1000;
+        this._reconnectDelay = Math.min(delay * 2, 30000); // cap at 30s
+        console.warn(`[CollabSession] WS closed, reconnecting in ${delay}ms`);
+        setTimeout(() => this._connectWs(), delay);
       }
     };
 
@@ -611,6 +619,7 @@ class CollabSessionService extends EventTarget {
     this._sessionSlug = null;
     this._permissions = { ...HOST_PERMISSIONS };
     this._pendingKnocks = [];
+    this._reconnectDelay = 1000;
   }
 
   _emit(type, detail) {
