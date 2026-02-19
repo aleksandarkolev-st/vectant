@@ -163,6 +163,71 @@ export function useCollabSession() {
     }
   }, []);
 
+  // ── Direct Collaboration actions ─────────────────────────────────────
+
+  /**
+   * Ask to join a specific user's workspace (no pre-existing session needed).
+   */
+  const joinUser = useCallback(async (targetUserId, targetUserName, slug) => {
+    setIsLoading(true);
+    setError(null);
+    try {
+      const guestId = typeof window !== 'undefined'
+        ? localStorage.getItem('synthi-user-id') || 'guest'
+        : 'guest';
+      const displayName = typeof window !== 'undefined'
+        ? localStorage.getItem('synthi-user-name') || 'Guest'
+        : 'Guest';
+      const avatarUrl = typeof window !== 'undefined'
+        ? localStorage.getItem('synthi-user-avatar') || ''
+        : '';
+      return await collabSessionService.joinUser({
+        targetUserId,
+        targetUserName,
+        slug,
+        guestId,
+        displayName,
+        avatarUrl,
+      });
+    } catch (e) {
+      setError(e.message);
+      throw e;
+    } finally {
+      setIsLoading(false);
+    }
+  }, []);
+
+  /**
+   * Invite another user to join YOUR workspace (auto-creates session).
+   */
+  const inviteUser = useCallback(async (targetUserId, slug) => {
+    setIsLoading(true);
+    setError(null);
+    try {
+      const hostId = typeof window !== 'undefined'
+        ? localStorage.getItem('synthi-user-id') || 'host'
+        : 'host';
+      const hostName = typeof window !== 'undefined'
+        ? localStorage.getItem('synthi-user-name') || 'Host'
+        : 'Host';
+      const hostAvatar = typeof window !== 'undefined'
+        ? localStorage.getItem('synthi-user-avatar') || ''
+        : '';
+      return await collabSessionService.inviteUser({
+        targetUserId,
+        hostId,
+        hostName,
+        hostAvatar,
+        slug,
+      });
+    } catch (e) {
+      setError(e.message);
+      throw e;
+    } finally {
+      setIsLoading(false);
+    }
+  }, []);
+
   return {
     // State
     role,
@@ -193,6 +258,10 @@ export function useCollabSession() {
     joinViaToken,
     leaveSession,
     requestJoinSession,
+
+    // Direct collaboration
+    joinUser,
+    inviteUser,
 
     // Clear error
     clearError: () => setError(null),
