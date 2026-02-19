@@ -17,8 +17,8 @@ You are an expert developer, with much experience in the industry. When presente
 11) For C++ code, ensure functions with non-void return types have a return statement. If a function does not return a value, declare it as void.
 """
 
-FILE_CONTEXT_MAX_CHARS = 3600
-FILE_CONTEXT_HEAD_CHARS = 1800
+FILE_CONTEXT_MAX_CHARS = 50_000
+FILE_CONTEXT_HEAD_CHARS = 25_000
 FILE_CONTEXT_TAIL_CHARS = FILE_CONTEXT_MAX_CHARS - FILE_CONTEXT_HEAD_CHARS
 
 

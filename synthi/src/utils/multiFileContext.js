@@ -2,6 +2,18 @@ const MAX_MULTI_FILE_ENTRIES = 5;
 const MAX_ACTIVE_FILE_CONTEXT_CHARS = 12000;
 const MAX_SECONDARY_FILE_CHARS = 3600;
 
+const EXCLUDED_PATH_MARKERS = [
+    '/node_modules/',
+    '/build/',
+];
+
+const normalizePath = (value = '') => `/${String(value || '').replace(/\\/g, '/').replace(/^\/+/, '')}`;
+
+const isExcludedPath = (value = '') => {
+    const normalized = normalizePath(value);
+    return EXCLUDED_PATH_MARKERS.some((marker) => normalized.includes(marker));
+};
+
 const collapseContent = (value = '', max = MAX_SECONDARY_FILE_CHARS) => {
     if (typeof value !== 'string' || !value.trim()) return '';
     if (value.length <= max) return value;
@@ -30,25 +42,26 @@ const buildFilesPayload = ({
     activeFileMaxChars = MAX_ACTIVE_FILE_CONTEXT_CHARS,
     secondaryFileMaxChars = MAX_SECONDARY_FILE_CHARS,
 } = {}) => {
-    if (!activeFile) return [];
-    const activePath = activeFile.path || activeFile.name || 'active-file';
+    const activePath = activeFile?.path || activeFile?.name || null;
     const files = [];
 
-    const activeContent = collapseContent(fullDocument, activeFileMaxChars);
-    const sections = [];
-    if (beforeCursor || afterCursor) {
-        sections.push(`Around cursor:\n${beforeCursor || ''}<<CURSOR>>${afterCursor || ''}`);
-    }
-    if (fileHeader) sections.push(`File header:\n${fileHeader}`);
-    if (fileTail) sections.push(`File tail:\n${fileTail}`);
+    if (activePath) {
+        const activeContent = collapseContent(fullDocument, activeFileMaxChars);
+        const sections = [];
+        if (beforeCursor || afterCursor) {
+            sections.push(`Around cursor:\n${beforeCursor || ''}<<CURSOR>>${afterCursor || ''}`);
+        }
+        if (fileHeader) sections.push(`File header:\n${fileHeader}`);
+        if (fileTail) sections.push(`File tail:\n${fileTail}`);
 
-    const activePayload = [activeContent, ...sections].filter(Boolean).join('\n\n-----\n\n');
-    if (activePayload.trim()) {
-        files.push({
-            path: activePath,
-            name: activeFile.name || deriveNameFromPath(activePath),
-            content: activePayload,
-        });
+        const activePayload = [activeContent, ...sections].filter(Boolean).join('\n\n-----\n\n');
+        if (activePayload.trim()) {
+            files.push({
+                path: activePath,
+                name: activeFile.name || deriveNameFromPath(activePath),
+                content: activePayload,
+            });
+        }
     }
 
     if (!Array.isArray(cacheEntries) || files.length >= maxEntries) {
@@ -57,7 +70,7 @@ const buildFilesPayload = ({
 
     const remainingSlots = Math.max(0, maxEntries - files.length);
     cacheEntries
-        .filter(([path]) => path && path !== activePath)
+        .filter(([path]) => path && path !== activePath && !isExcludedPath(path))
         .slice(0, remainingSlots)
         .forEach(([path, content]) => {
             const trimmed = collapseContent(content, secondaryFileMaxChars);

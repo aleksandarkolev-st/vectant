@@ -258,8 +258,8 @@ class LspConfig:
 class ContextConfig:
     """Configuration for context management."""
     # Token limits
-    max_context_tokens: int = 12000
-    response_reserve_tokens: int = 700
+    max_context_tokens: int = 200_000
+    response_reserve_tokens: int = 2000
 
     # Chunk cap for final context
     max_chunks: int = 30

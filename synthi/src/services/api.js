@@ -207,12 +207,39 @@ export class ApiClient {
 
     // MUTATIONS (Write Operations)
     async saveFileContent(slug, filePath, content, fileName) {
+        const COLLAB_SERVER_URL = process.env.NEXT_PUBLIC_COLLAB_SERVER_URL || 'http://localhost:1234';
+
+        // Try collab-server first (source of truth for local filesystem / file tree)
+        try {
+            const collabRes = await fetch(`${COLLAB_SERVER_URL}/git/${slug}/write-file`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ path: filePath, content }),
+            });
+            if (collabRes.ok) {
+                // Also save to GCS in background for persistence
+                (async () => {
+                    try {
+                        const formData = new FormData();
+                        const blob = new Blob([content], { type: 'text/plain' });
+                        formData.append('file', blob, fileName);
+                        formData.append('filePath', filePath);
+                        await fetch(`${this.baseUrl}/${slug}/item/`, { method: 'POST', body: formData });
+                    } catch (_) {}
+                })();
+                return { ok: true };
+            }
+        } catch (e) {
+            console.warn('[saveFileContent] Collab-server write failed, using GCS:', e.message);
+        }
+
+        // Fallback to GCS
         const formData = new FormData();
         const blob = new Blob([content], { type: 'text/plain' });
         formData.append('file', blob, fileName);
         formData.append('filePath', filePath);
       
-        // This runs in background, retuning an early positive -> IIFE
+        // This runs in background, returning an early positive -> IIFE
         (async () => {
           try {
             const res = await fetch(`${this.baseUrl}/${slug}/item/`, {
@@ -228,8 +255,31 @@ export class ApiClient {
     }
 
     async createItem(slug, fullPath, isFolder) {
+        const COLLAB_SERVER_URL = process.env.NEXT_PUBLIC_COLLAB_SERVER_URL || 'http://localhost:1234';
+
+        // Try collab-server first (source of truth for local filesystem / file tree)
+        try {
+            if (isFolder) {
+                const collabRes = await fetch(`${COLLAB_SERVER_URL}/git/${slug}/create-directory`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ path: fullPath }),
+                });
+                if (collabRes.ok) return await collabRes.json();
+            } else {
+                const collabRes = await fetch(`${COLLAB_SERVER_URL}/git/${slug}/write-file`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ path: fullPath, content: '' }),
+                });
+                if (collabRes.ok) return await collabRes.json();
+            }
+        } catch (e) {
+            console.warn('[createItem] Collab-server failed, falling back to GCS:', e.message);
+        }
+
+        // Fallback to GCS storage
         const formData = new FormData();
-        // Extract file name from full path for blob append
         const fileName = fullPath.split('/').pop();
         const blob = new Blob([''], { type: 'text/plain' });
         formData.append('file', blob, fileName);
