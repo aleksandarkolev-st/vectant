@@ -2184,6 +2184,7 @@ server.listen(PORT, '0.0.0.0', () => {
     broadcastSessionEvent(sessionId, 'guest:joined', {
       guest,
       hostId: hostId || null,
+      hostName: joinedSession?.hostName || null,
       slug: joinedSession?.slug || null,
     });
   });

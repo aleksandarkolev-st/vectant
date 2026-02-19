@@ -394,6 +394,15 @@ class CollabSessionService extends EventTarget {
           // Store host info for direct repo access
           this._hostId = msg.hostId || null;
           this._sessionSlug = msg.slug || null;
+          // Pre-populate _session so UI can render host info immediately
+          // (before the async refreshSession() fetch completes)
+          this._session = {
+            ...this._session,
+            id: this._sessionId,
+            hostId: msg.hostId || null,
+            hostName: msg.hostName || null,
+            slug: msg.slug || null,
+          };
           this._emit('session:joined', { ...msg.guest, hostId: this._hostId, slug: this._sessionSlug });
         }
         break;
