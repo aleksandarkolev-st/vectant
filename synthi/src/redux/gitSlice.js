@@ -2,22 +2,36 @@ import { createSlice, createAsyncThunk } from '@reduxjs/toolkit';
 import { gitClient } from '@/services/gitClient';
 import collabClient from '@/services/collabClient';
 
+// Track a queued re-fetch so that when a fetchGitStatus is in-flight and
+// another request arrives, we automatically re-fetch once the current one
+// finishes rather than silently dropping the request.
+let _pendingRefetchSlug = null;
+
 export const fetchGitStatus = createAsyncThunk(
     'git/fetchStatus',
-    async (slug) => {
+    async (slug, { dispatch }) => {
         const status = await gitClient.getStatus(slug);
         const branches = await gitClient.getBranches(slug);
+        // If another request was queued while we were in-flight, re-dispatch
+        // after returning so the caller (reducer) marks _statusFetching = false
+        // before the next fetch starts.
+        if (_pendingRefetchSlug) {
+            const queuedSlug = _pendingRefetchSlug;
+            _pendingRefetchSlug = null;
+            // Use queueMicrotask to dispatch after the fulfilled reducer runs
+            queueMicrotask(() => dispatch(fetchGitStatus(queuedSlug)));
+        }
         return { status, branches };
     },
     {
         // Prevent redundant concurrent fetches — if a fetchGitStatus is already
-        // in-flight (state.git.loading === true from this thunk), skip.
-        condition: (_, { getState }) => {
+        // in-flight, queue a re-fetch for when it completes instead of dropping.
+        condition: (slug, { getState }) => {
             const { git } = getState();
-            // Only block if loading is specifically from a status fetch.
-            // We use a dedicated flag to avoid conflating with other thunks
-            // that also set `loading`.
-            if (git._statusFetching) return false;
+            if (git._statusFetching) {
+                _pendingRefetchSlug = slug;
+                return false;
+            }
         },
     }
 );
