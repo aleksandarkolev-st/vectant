@@ -319,6 +319,9 @@ class CodeIntelConfig:
     context: ContextConfig = field(default_factory=ContextConfig)
     editing: EditingConfig = field(default_factory=EditingConfig)
     
+    # RAG subsystem (4-step retrieval-augmented generation)
+    enable_rag: bool = True
+    
     # Global settings
     debug: bool = False
     log_level: str = "INFO"
@@ -336,6 +339,8 @@ class CodeIntelConfig:
             self.retrieval.enable_multi_pass = False
         if os.getenv("CODE_INTEL_DYNAMIC_BUDGETS", "").lower() == "false":
             self.retrieval.enable_dynamic_budgets = False
+        if os.getenv("CODE_INTEL_RAG", "").lower() == "false":
+            self.enable_rag = False
         
         if os.getenv("CODE_INTEL_DEBUG"):
             self.debug = True
