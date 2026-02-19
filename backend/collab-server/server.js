@@ -783,17 +783,25 @@ async function invalidateDocsForSlug(slug, filePaths = null, scope = {}) {
   const prefix = `workspace:${slug}:`;
   const toInvalidate = [];
 
+  // Direct-access model: scope may have both sessionId and userId.
+  // Match docs by userId (repo owner) OR sessionId (session-scoped docs).
+  const matchesScope = (parsed) => {
+    if (!scope.sessionId && !scope.userId) return true; // no scope filter
+    const docUserId = resolveEffectiveUserForDoc(parsed);
+    // Match if the doc belongs to the scope's user (direct-access)
+    if (scope.userId && docUserId === scope.userId) return true;
+    // Match session-scoped docs by sessionId (legacy compat)
+    if (scope.sessionId && parsed.sessionId === scope.sessionId) return true;
+    return false;
+  };
+
   // Collect doc names to invalidate
   if (yWsDocs) {
     for (const docName of yWsDocs.keys()) {
       if (!docName.startsWith(prefix)) continue;
       const parsed = parseDocName(docName);
       if (!parsed) continue;
-      if (scope.sessionId && parsed.sessionId !== scope.sessionId) continue;
-      if (!scope.sessionId && scope.userId) {
-        const docUserId = resolveEffectiveUserForDoc(parsed);
-        if (docUserId !== scope.userId) continue;
-      }
+      if (!matchesScope(parsed)) continue;
       if (filePaths && filePaths.length > 0) {
         const docPath = parsed?.filePath || docName.slice(prefix.length);
         if (!filePaths.includes(docPath)) continue;
@@ -807,11 +815,7 @@ async function invalidateDocsForSlug(slug, filePaths = null, scope = {}) {
     if (!docName.startsWith(prefix)) continue;
     const parsed = parseDocName(docName);
     if (!parsed) continue;
-    if (scope.sessionId && parsed.sessionId !== scope.sessionId) continue;
-    if (!scope.sessionId && scope.userId) {
-      const docUserId = resolveEffectiveUserForDoc(parsed);
-      if (docUserId !== scope.userId) continue;
-    }
+    if (!matchesScope(parsed)) continue;
     if (filePaths && filePaths.length > 0) {
       const docPath = parsed?.filePath || docName.slice(prefix.length);
       if (!filePaths.includes(docPath)) continue;
