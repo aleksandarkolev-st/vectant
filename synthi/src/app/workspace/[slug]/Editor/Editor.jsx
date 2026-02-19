@@ -2243,6 +2243,19 @@ const EditorPanel = ({
                                 filePath={activeFile.path}
                                 slug={slug}
                                 onContentChange={async (newContent) => {
+                                    // Apply resolved content to the Monaco model directly.
+                                    // The model is bound to Yjs via MonacoBinding, so
+                                    // model.setValue() propagates to the CRDT → server.
+                                    // Without this, only Redux is updated but the Monaco
+                                    // model (from Yjs) still shows conflict markers.
+                                    const model = editorInstance?.getModel?.();
+                                    if (model) {
+                                        const fullRange = model.getFullModelRange();
+                                        editorInstance.executeEdits('conflict-resolve', [{
+                                            range: fullRange,
+                                            text: newContent,
+                                        }]);
+                                    }
                                     dispatch(updateContent(newContent));
                                     // Also write to git filesystem to persist resolution
                                     try {
