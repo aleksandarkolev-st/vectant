@@ -457,6 +457,14 @@ class CodeIntelEngine:
         except Exception as e:
             logger.debug(f"Index-file summary update failed: {e}")
         
+        # Sync single file into RAG stores
+        try:
+            if self._rag_pipeline:
+                abs_path = str(self.workspace_root / file_path)
+                self._rag_pipeline.ingest_file(abs_path)
+        except Exception as e:
+            logger.debug(f"RAG single-file ingest failed for {file_path}: {e}")
+        
         return len(chunks)
     
     # =========================================================================
