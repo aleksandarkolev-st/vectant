@@ -91,6 +91,13 @@ def resolve_workspace_path(workspace_path: str) -> str:
 
 router = APIRouter(prefix="/code-intel", tags=["code-intelligence"])
 
+# Register RAG sub-routes on the same router
+try:
+    from .rag.api import register_rag_routes
+    register_rag_routes(router)
+except Exception as _rag_err:
+    logger.warning(f"RAG routes not registered: {_rag_err}")
+
 
 def _require_api_key(request: Request) -> None:
     required = os.getenv("CODE_INTEL_API_KEY")
@@ -142,6 +149,7 @@ class ContextResponse(BaseModel):
     trace: Optional[List[Dict[str, Any]]] = Field(None, description="Selection trace for observability")
     grounding_spans: Optional[List[Dict[str, Any]]] = Field(None, description="Grounding spans for verifier")
     clarifying_question: Optional[str] = Field(None, description="Clarifying question when uncertainty is high")
+    pipeline: str = Field("legacy", description="Retrieval pipeline used: 'rag' or 'legacy'")
 
 
 class ToolCallRequest(BaseModel):
@@ -367,13 +375,80 @@ async def index_file(request: IndexFileRequest, http_request: Request) -> IndexF
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# ── Delete / Rename endpoints ───────────────────────────────────────────────
+
+class DeleteFileRequest(BaseModel):
+    """Request to remove a file from all indexes."""
+    workspace_path: str = Field(..., description="Path to workspace")
+    file_path: str = Field(..., description="Relative path to the deleted file")
+
+
+class DeleteFileResponse(BaseModel):
+    """Response from file deletion cleanup."""
+    success: bool
+    detail: dict = {}
+
+
+@router.post("/index/file/delete", response_model=DeleteFileResponse)
+async def delete_file(request: DeleteFileRequest, http_request: Request) -> DeleteFileResponse:
+    """
+    Purge a deleted file from all indexes and stores.
+
+    Called by the frontend after a file is removed from the workspace.
+    """
+    try:
+        _require_api_key(http_request)
+        engine = get_engine(request.workspace_path)
+        detail = await engine.delete_file(request.file_path)
+        return DeleteFileResponse(success=True, detail=detail)
+    except Exception as e:
+        logger.exception("File delete cleanup failed")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class RenameFileRequest(BaseModel):
+    """Request to rename a file across all indexes."""
+    workspace_path: str = Field(..., description="Path to workspace")
+    old_path: str = Field(..., description="Previous relative file path")
+    new_path: str = Field(..., description="New relative file path")
+
+
+class RenameFileResponse(BaseModel):
+    """Response from file rename."""
+    success: bool
+    chunks_indexed: int = 0
+    detail: dict = {}
+
+
+@router.post("/index/file/rename", response_model=RenameFileResponse)
+async def rename_file(request: RenameFileRequest, http_request: Request) -> RenameFileResponse:
+    """
+    Update all indexes after a file rename.
+
+    Atomically removes old-path data and re-indexes the new path.
+    """
+    try:
+        _require_api_key(http_request)
+        engine = get_engine(request.workspace_path)
+        detail = await engine.rename_file(request.old_path, request.new_path)
+        return RenameFileResponse(
+            success=True,
+            chunks_indexed=detail.get("chunks_indexed", 0),
+            detail=detail,
+        )
+    except Exception as e:
+        logger.exception("File rename cleanup failed")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.post("/context", response_model=ContextResponse)
 async def get_context(request: ContextRequest, http_request: Request) -> ContextResponse:
     """
     Get context for a query.
     
     Assembles relevant code context for the given query within token budget.
-    Uses deterministic retrieval controller to decide what context to include.
+    Uses the RAG pipeline (Macro-Retrieval + Micro-Navigation) when available,
+    falling back to the legacy retrieval pipeline otherwise.
     Returns sufficiency indicator so LLM knows if context is complete.
     """
     try:
@@ -408,33 +483,43 @@ async def get_context(request: ContextRequest, http_request: Request) -> Context
                 refusal = str(refusal)
         
         trace = result.trace if result.trace else None
+        pipeline_type = (result.debug or {}).get("pipeline", "legacy")
+
         if os.getenv("CODE_INTEL_DEBUG") and result.debug:
             if trace is None:
                 trace = []
             trace.append({"debug": result.debug})
 
-        score_by_chunk_id: Dict[str, float] = {}
-        if trace:
-            for item in trace:
-                if item.get("reason") != "included":
-                    continue
-                chunk_id = item.get("chunk_id")
-                if not chunk_id:
-                    continue
-                score = item.get("score")
-                if score is None:
-                    continue
-                prev = score_by_chunk_id.get(chunk_id)
-                if prev is None or score > prev:
-                    score_by_chunk_id[chunk_id] = score
+        # Build sources: from grounding_spans (RAG) or chunks (legacy)
+        sources = []
+        if result.grounding_spans:
+            # RAG pipeline: sources come from grounding_spans
+            for gs in result.grounding_spans:
+                sources.append({
+                    "file": gs.get("file", ""),
+                    "start_line": gs.get("start_line", 0),
+                    "end_line": gs.get("end_line", 0),
+                    "symbol": gs.get("symbol", ""),
+                    "score": gs.get("score", 0.0),
+                })
+        elif result.chunks:
+            # Legacy pipeline: sources come from chunks
+            score_by_chunk_id: Dict[str, float] = {}
+            if trace:
+                for item in trace:
+                    if item.get("reason") != "included":
+                        continue
+                    chunk_id = item.get("chunk_id")
+                    if not chunk_id:
+                        continue
+                    score = item.get("score")
+                    if score is None:
+                        continue
+                    prev = score_by_chunk_id.get(chunk_id)
+                    if prev is None or score > prev:
+                        score_by_chunk_id[chunk_id] = score
 
-        return ContextResponse(
-            context=result.assembled_context,
-            chunks_used=len(result.chunks),
-            tokens_used=result.total_tokens,
-            sufficiency=sufficiency,
-            refusal=refusal,
-            sources=[
+            sources = [
                 {
                     "file": c.metadata.file_path,
                     "start_line": c.metadata.start_line,
@@ -443,10 +528,26 @@ async def get_context(request: ContextRequest, http_request: Request) -> Context
                     "score": score_by_chunk_id.get(c.id, 0.0),
                 }
                 for c in result.chunks
-            ],
+            ]
+
+        chunks_used = len(result.chunks) if result.chunks else len(sources)
+
+        logger.info(
+            f"[Context] pipeline={pipeline_type} | query={request.query[:60]!r} | "
+            f"sources={len(sources)} | tokens={result.total_tokens} | {sufficiency}"
+        )
+
+        return ContextResponse(
+            context=result.assembled_context,
+            chunks_used=chunks_used,
+            tokens_used=result.total_tokens,
+            sufficiency=sufficiency,
+            refusal=refusal,
+            sources=sources,
             trace=trace,
             grounding_spans=result.grounding_spans if result.grounding_spans else None,
             clarifying_question=result.clarifying_question,
+            pipeline=pipeline_type,
         )
     except Exception as e:
         logger.exception("Context retrieval failed")

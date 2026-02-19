@@ -24,7 +24,7 @@ import {
     ContextMenuSeparator,
     ContextMenuTrigger,
 } from '@/components/ui/context-menu';
-import { PanelLeftClose, PanelRightClose } from 'lucide-react';
+import { PanelLeftClose, PanelRightClose, FolderOpen } from 'lucide-react';
 import { getFileIcon, FolderIcon } from '@/utils/fileIcons';
 import FileItem from './FileItem';
 
@@ -156,24 +156,26 @@ const FileTreeView = ({
           onMouseEnter={() => setIsTreeHovered(true)}
           onMouseLeave={() => setIsTreeHovered(false)}
         >
-          {/* Header - Better separation */}
-          <div className={`px-3 py-1 flex items-center ${isRightSide ? 'flex-row-reverse' : ''} justify-between border-[#252a38] sticky top-0 bg-[#0B0E13] z-10`}>
-            <div className="flex items-center gap-2">
-              <span className="text-[11px] font-semibold tracking-widest uppercase text-[#f1f3f8]">
-                Explorer
-              </span>
+          {/* Header strip with gradient accent */}
+          <div className="flex-shrink-0">
+            <div className="h-[2px]" style={{ background: 'linear-gradient(90deg, #3b82f6, #60a5fa, #93c5fd, transparent)' }} />
+            <div className={`flex items-center gap-2 px-3 py-2 ${isRightSide ? 'flex-row-reverse' : ''}`}>
+              <FolderOpen size={14} className="text-blue-400 flex-shrink-0" />
+              <span className="text-sm font-semibold text-[#e4e4e7]">Explorer</span>
+              <div className={`${isRightSide ? 'mr-auto' : 'ml-auto'} flex items-center gap-0.5`}>
+                <button
+                  onClick={onToggleOrientation}
+                  title={isRightSide ? "Move to left" : "Move to right"}
+                  className="p-1.5 rounded-lg transition-all text-[#71717a] hover:text-[#d4d4d8] hover:bg-white/[0.06]"
+                >
+                  {isRightSide ? (
+                    <PanelLeftClose className="w-3.5 h-3.5" strokeWidth={1.5} />
+                  ) : (
+                    <PanelRightClose className="w-3.5 h-3.5" strokeWidth={1.5} />
+                  )}
+                </button>
+              </div>
             </div>
-            <button
-              onClick={onToggleOrientation}
-              className={`p-1 rounded border border-[#3f4557] bg-[#1c2130] hover:bg-[#232a3b] hover:border-[#63e6be] transition opacity-90 hover:opacity-100 ${isRightSide ? 'mr-auto' : 'ml-auto'}`}
-              title={isRightSide ? "Move to left" : "Move to right"}
-            >
-              {isRightSide ? (
-                <PanelLeftClose className="w-3.5 h-3.5 text-[#f8f9fb]" />
-              ) : (
-                <PanelRightClose className="w-3.5 h-3.5 text-[#f8f9fb]" />
-              )}
-            </button>
           </div>
 
           {/* File list - slightly tighter spacing for compactness */}

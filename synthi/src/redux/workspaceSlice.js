@@ -121,6 +121,13 @@ export const saveFileContentThunk = createAsyncThunk(
             throw e; // Re-throw so the thunk is rejected
         }
         
+        // Notify CodeIntel/RAG to re-index this file (covers both auto-save and manual save)
+        if (typeof window !== 'undefined' && activeFile.path) {
+            window.dispatchEvent(new CustomEvent('synthi:codeintel-index-file', {
+                detail: { filePath: activeFile.path },
+            }));
+        }
+        
         // Ensure tree is revalidated silently after save
         dispatch(fetchFilesThunk(slug)); 
 
@@ -299,7 +306,7 @@ export const handleCreateItemThunk = createAsyncThunk(
         dispatch(cancelUiAction());
         await dispatch(fetchFilesThunk(slug));
 
-        // If file created, select it
+        // If file created, select it and notify CodeIntel for indexing
         if (!isFolder) {
             const newFile = {
                 name: finalName,
@@ -308,6 +315,13 @@ export const handleCreateItemThunk = createAsyncThunk(
                 path: fullPath
             };
             dispatch(selectFileThunk(newFile));
+            
+            // Emit event so page-level listener can trigger CodeIntel re-index
+            if (typeof window !== 'undefined') {
+                window.dispatchEvent(new CustomEvent('synthi:codeintel-index-file', {
+                    detail: { filePath: fullPath },
+                }));
+            }
         }
     }
 );
@@ -342,6 +356,13 @@ export const handleRenameItemThunk = createAsyncThunk(
             getCompilerClient().renameFile(item.path, newPath);
         } catch (_) { /* best-effort */ }
         
+        // Notify CodeIntel so indexes are updated atomically (delete old + index new)
+        if (typeof window !== 'undefined') {
+            window.dispatchEvent(new CustomEvent('synthi:codeintel-rename-file', {
+                detail: { oldPath: item.path, newPath },
+            }));
+        }
+        
         dispatch(cancelUiAction());
         await dispatch(fetchFilesThunk(slug));
     }
@@ -369,6 +390,13 @@ export const deleteItemThunk = createAsyncThunk(
         try {
             getCompilerClient().deleteFile(item.path);
         } catch (_) { /* best-effort */ }
+        
+        // Notify CodeIntel so all indexes/RAG stores are cleaned up
+        if (typeof window !== 'undefined') {
+            window.dispatchEvent(new CustomEvent('synthi:codeintel-delete-file', {
+                detail: { filePath: item.path },
+            }));
+        }
         
         await dispatch(fetchFilesThunk(state.slug));
         

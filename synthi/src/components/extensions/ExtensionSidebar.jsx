@@ -476,23 +476,24 @@ module.exports = { activate, deactivate };
 
   return (
     <div className="h-full flex flex-col bg-[#09090b] text-[#e8eaed]">
-      {/* Header */}
-      <div className="px-3 pt-3 pb-2 border-b border-[#1a1b24]">
-        <div className="flex items-center justify-between mb-1.5">
-          <div className="flex items-center gap-1.5">
-            <Puzzle className="w-4 h-4 text-[#4aba9a]" />
-            <span className="text-[13px] font-semibold tracking-tight">Extensions</span>
-          </div>
-          <div className="flex items-center gap-1">
+      {/* Header strip with gradient accent */}
+      <div className="flex-shrink-0">
+        <div className="h-[2px]" style={{ background: 'linear-gradient(90deg, #4aba9a, #14b8a6, #2dd4bf, transparent)' }} />
+        <div className="flex items-center gap-2 px-3 py-2">
+          <Puzzle size={14} className="text-teal-400 flex-shrink-0" />
+          <span className="text-sm font-semibold text-[#e4e4e7]">Extensions</span>
+          <div className="ml-auto flex items-center gap-0.5">
             <button
               onClick={() => setShowInstall(!showInstall)}
-              className="p-1 rounded hover:bg-[#1a1b24] text-[#6b7280] hover:text-[#e8eaed] transition-colors"
+              className="p-1.5 rounded-lg transition-all text-[#71717a] hover:text-[#d4d4d8] hover:bg-white/[0.06]"
               title="Install from code"
             >
-              <Plus className="w-3.5 h-3.5" />
+              <Plus className="w-3.5 h-3.5" strokeWidth={1.5} />
             </button>
           </div>
         </div>
+      </div>
+      <div className="px-3 pb-2 border-b border-[#1a1b24]">
 
         {/* Tab bar: Installed | Marketplace */}
         <div className="flex gap-0.5 bg-[#0c0d12] rounded-md p-0.5 mb-2">

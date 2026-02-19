@@ -64,6 +64,10 @@ from .tools.tool_registry import ToolRegistry
 from .tools.tool_executor import ToolExecutor
 from .editing.edit_session import EditSession, EditSessionManager
 
+# RAG subsystem
+from .rag.pipeline import RAGPipeline
+from .rag.config import RAGConfig
+
 __version__ = "1.0.0"
 
 __all__ = [
@@ -95,4 +99,7 @@ __all__ = [
     "ToolExecutor",
     "EditSession",
     "EditSessionManager",
+    # RAG
+    "RAGPipeline",
+    "RAGConfig",
 ]
