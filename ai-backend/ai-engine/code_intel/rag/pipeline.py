@@ -240,6 +240,10 @@ class RAGPipeline:
         """
         Ingest a single file.
 
+        If the file was previously ingested, the old document and all
+        associated data (sections, ToC, summary, keywords) are removed
+        first to prevent duplicates.
+
         Args:
             file_path: Path to the file.
 
@@ -252,6 +256,15 @@ class RAGPipeline:
         doc = processor.process_file(file_path)
         if not doc:
             return {"status": "skipped", "file": file_path}
+
+        # ── Remove stale data if the file was already ingested ───────────
+        existing_id = self.document_store.get_by_path(file_path)
+        if existing_id:
+            try:
+                self.remove_file(file_path)
+                logger.debug(f"Replaced existing document {existing_id} for {file_path}")
+            except Exception as e:
+                logger.warning(f"Failed to remove old document for {file_path}: {e}")
 
         self.document_store.add(doc)
         if doc.toc:
