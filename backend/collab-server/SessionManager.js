@@ -499,6 +499,46 @@ class SessionManager extends EventEmitter {
     return result;
   }
 
+  // ── Effective user resolution ────────────────────────────────────────────
+
+  /**
+   * Resolve the effective userId for a given user and session context.
+   * 
+   * When a guest is in an active session, they operate on the HOST's repo
+   * and Yjs rooms — so the "effective" user is the hostId, not the guest's
+   * own id.  For the host (or when no session is active), returns the
+   * original userId.
+   *
+   * @param {string} userId    — The authenticated user id
+   * @param {string} [sessionId] — Optional active session id
+   * @returns {string} The effective userId for repo/room resolution
+   */
+  getEffectiveUserId(userId, sessionId) {
+    if (!sessionId) return userId;
+    const session = this.sessions.get(sessionId);
+    if (!session || session.status !== 'active') return userId;
+    // Host stays as-is
+    if (session.hostId === userId) return userId;
+    // Guest maps to host
+    if (session.guests.has(userId)) return session.hostId;
+    return userId;
+  }
+
+  /**
+   * Get the host's userId for a guest's active session.
+   * Returns null if the user is not a guest in any session.
+   *
+   * @param {string} guestId — The guest's userId
+   * @returns {{ hostId: string, sessionId: string, slug: string } | null}
+   */
+  getHostForGuest(guestId) {
+    const sessionId = this.guestIndex.get(guestId);
+    if (!sessionId) return null;
+    const session = this.sessions.get(sessionId);
+    if (!session || session.status !== 'active') return null;
+    return { hostId: session.hostId, sessionId: session.id, slug: session.slug };
+  }
+
   // ── Internals ────────────────────────────────────────────────────────────
 
   _getActiveSession(sessionId) {
