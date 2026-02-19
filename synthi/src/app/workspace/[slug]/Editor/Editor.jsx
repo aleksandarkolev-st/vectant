@@ -52,6 +52,7 @@ import { takeLastChars, useCustomScrollbar } from './utils';
 import { SYNTHI_THEME } from './theme';
 import { ConflictBanner } from './ConflictBanner';
 import MergeConflictEditor from '@/components/git/MergeConflictEditor';
+import { useSessionPermissions } from '@/hooks/useCollabSession';
 import * as monaco from 'monaco-editor';
 import { toast } from 'sonner';
 
@@ -165,6 +166,10 @@ const EditorPanel = ({
     const gitStatus = useAppSelector(state => state.git?.status);
     const conflictedFiles = gitStatus?.conflictedFiles || [];
     const conflictResolverFile = useAppSelector(state => state.git?.conflictResolverFile);
+
+    // Collaboration permissions — enforce read-only for guests without canEdit
+    const { canEdit: collabCanEdit, role: collabRole } = useSessionPermissions();
+    const isCollabReadOnly = collabRole === 'guest' && !collabCanEdit;
 
     // Local state
     const [position, setPosition] = useState({ lineNumber: 1, column: 1 });
@@ -911,6 +916,12 @@ const EditorPanel = ({
         });
 
     }, [monacoInstance, compilerClient, compilerStatus, activeFile, editorInstance, servicesReady]);
+
+    // Dynamically sync read-only state when collab permissions change mid-session
+    useEffect(() => {
+        if (!editorInstance) return;
+        editorInstance.updateOptions({ readOnly: isCollabReadOnly });
+    }, [editorInstance, isCollabReadOnly]);
 
     // Hook up Yjs-based collaboration when an editor and activeFile are present.
     useEffect(() => {
@@ -2297,7 +2308,11 @@ const EditorPanel = ({
                                                 theme="synthi-theme"
                                                 options={{
                                                     ...EDITOR_OPTIONS,
-                                                    semanticHighlighting: { enabled: true }
+                                                    semanticHighlighting: { enabled: true },
+                                                    readOnly: isCollabReadOnly,
+                                                    readOnlyMessage: isCollabReadOnly
+                                                        ? { value: 'You have view-only access in this session. Ask the host to grant edit permission.' }
+                                                        : undefined,
                                                 }}
                                                 beforeMount={(monaco) => {
                                                     monaco.editor.defineTheme('synthi-theme', SYNTHI_THEME);
