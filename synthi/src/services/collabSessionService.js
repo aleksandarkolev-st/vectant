@@ -247,10 +247,24 @@ class CollabSessionService extends EventTarget {
 
   /**
    * Guest leaves the session voluntarily.
+   * Notifies the server so the host's guest list is updated immediately.
    */
-  leaveSession() {
+  async leaveSession() {
+    const sessionId = this._sessionId;
+    const userId = this._userId;
     this._cleanup();
     this._emit('session:left', {});
+
+    // Best-effort server notification — fire and forget
+    if (sessionId) {
+      try {
+        await fetch(`${COLLAB_URL}/session/leave/${sessionId}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ guestId: userId }),
+        });
+      } catch (_) { /* non-fatal */ }
+    }
   }
 
   /**

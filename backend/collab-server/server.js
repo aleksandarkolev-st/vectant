@@ -1358,6 +1358,18 @@ const server = http.createServer(async (req, res) => {
             break;
           }
 
+          case 'leave': {
+            // POST /session/leave/:sessionId  — guest voluntarily leaves
+            if (!sessionIdParam) { res.writeHead(400); res.end('Missing sessionId'); return; }
+            const guestId = data.guestId || data.userId;
+            if (guestId) {
+              sessionManager.removeGuest(sessionIdParam, guestId, 'left');
+              broadcastSessionEvent(sessionIdParam, 'guest:left', { guestId });
+            }
+            result = { success: true };
+            break;
+          }
+
           case 'terminate': {
             // DELETE /session/terminate/:sessionId
             if (!sessionIdParam) { res.writeHead(400); res.end('Missing sessionId'); return; }
