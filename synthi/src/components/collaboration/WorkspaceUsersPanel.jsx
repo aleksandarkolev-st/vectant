@@ -91,7 +91,11 @@ export default function WorkspaceUsersPanel({ slug }) {
 
   // ── Block / Unblock ───────────────────────────────────────────────────
 
-  const handleBlockUser = useCallback(async (userId) => {
+  const handleBlockUser = useCallback(async (userId, userName) => {
+    const confirmed = window.confirm(
+      `Block ${userName || 'this user'}? They won\u2019t be able to see you in the users list or send you requests.`
+    );
+    if (!confirmed) return;
     try {
       await blockUser(userId);
       refresh(); // re-fetch presence so blocked user disappears
@@ -403,7 +407,7 @@ function UserRow({ user, isIdle, isHost, isKnocking, joiningUserId, invitingUser
                 <div className="absolute right-0 top-full mt-1 z-[51] rounded-lg border shadow-xl py-1 min-w-[140px]"
                   style={{ backgroundColor: T.bg, borderColor: T.border }}>
                   <button
-                    onClick={() => { onBlockUser(user.id); setShowMenu(false); }}
+                    onClick={() => { onBlockUser(user.id, user.name); setShowMenu(false); }}
                     className="w-full flex items-center gap-2 px-3 py-1.5 text-[11px] font-medium transition-colors hover:bg-[#ff575710]"
                     style={{ color: T.red }}
                   >
