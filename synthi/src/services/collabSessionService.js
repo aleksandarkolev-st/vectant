@@ -437,6 +437,14 @@ class CollabSessionService extends EventTarget {
         }
         break;
 
+      case 'knock:cancelled':
+        // Guest disconnected while knocking — remove from host's pending list
+        if (this.isHost && msg.guestId) {
+          this._pendingKnocks = this._pendingKnocks.filter(k => k.guestId !== msg.guestId);
+          this._emit('knock:cancelled', msg);
+        }
+        break;
+
       case 'permission:denied':
         // Action was denied by the backend
         this._emit('action:denied', msg);

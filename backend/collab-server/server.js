@@ -2195,6 +2195,9 @@ server.listen(PORT, '0.0.0.0', () => {
   sessionManager.on('session:knockDenied', ({ sessionId, guestId }) => {
     broadcastSessionEvent(sessionId, 'knock:denied', { guestId });
   });
+  sessionManager.on('session:knockCancelled', ({ sessionId, guestId }) => {
+    broadcastSessionEvent(sessionId, 'knock:cancelled', { guestId });
+  });
   // Warn about legacy workspaces.json if it still exists on disk
   const legacyWsFile = path.join(__dirname, 'workspaces.json');
   if (fs.existsSync(legacyWsFile)) {

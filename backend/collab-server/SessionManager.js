@@ -461,6 +461,17 @@ class SessionManager extends EventEmitter {
             return;
           }
         }
+        // Not a guest and not a host socket — check if they were a pending knock.
+        // Clean up stale knocks so the host's pending list stays accurate.
+        for (const [, session] of this.sessions) {
+          if (session.pendingKnocks.has(identifier)) {
+            session.pendingKnocks.delete(identifier);
+            this.emit('session:knockCancelled', {
+              sessionId: session.id || [...this.sessions.entries()].find(([, s]) => s === session)?.[0],
+              guestId: identifier,
+            });
+          }
+        }
         return;
       }
     }
