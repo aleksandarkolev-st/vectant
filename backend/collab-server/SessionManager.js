@@ -444,24 +444,32 @@ class SessionManager extends EventEmitter {
   /**
    * Handle a socket disconnecting — clean up guest mapping.
    */
-  handleDisconnect(socketId) {
-    const guestId = this.socketIndex.get(socketId);
+  handleDisconnect(identifier) {
+    // identifier can be a socketId OR a userId/guestId.
+    // Try socketIndex first (backward compat), then guestIndex.
+    let guestId = this.socketIndex.get(identifier);
+
     if (!guestId) {
-      // Check if it's a host socket
-      for (const [, session] of this.sessions) {
-        if (session._hostSocketId === socketId) {
-          delete session._hostSocketId;
-          return;
+      // Check if identifier is itself a guestId
+      if (this.guestIndex.has(identifier)) {
+        guestId = identifier;
+      } else {
+        // Check if it's a host socket
+        for (const [, session] of this.sessions) {
+          if (session._hostSocketId === identifier) {
+            delete session._hostSocketId;
+            return;
+          }
         }
+        return;
       }
-      return;
     }
 
     const sessionId = this.guestIndex.get(guestId);
     if (sessionId) {
       this.removeGuest(sessionId, guestId, 'disconnected');
     }
-    this.socketIndex.delete(socketId);
+    this.socketIndex.delete(identifier);
   }
 
   /**
