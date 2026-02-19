@@ -2300,10 +2300,14 @@ const EditorPanel = ({
                                                 <div className="flex-1 min-h-0">
                                                     <DiffEditor
                                                         height="100%"
-                                                        original={diffMode ? (originalContent || '') : ''}
-                                                        modified={diffMode ? (code ?? '') : ''}
+                                                        original={originalContent || ''}
+                                                        modified={code ?? ''}
                                                         language={activeLanguage}
                                                         theme="synthi-theme"
+                                                        originalModelPath={activeFile ? `inmemory://synthi/diff/original/${activeFile.path}` : undefined}
+                                                        modifiedModelPath={activeFile ? `inmemory://synthi/diff/modified/${activeFile.path}` : undefined}
+                                                        keepCurrentOriginalModel={true}
+                                                        keepCurrentModifiedModel={true}
                                                         options={{
                                                             ...EDITOR_OPTIONS,
                                                             readOnly: true,
