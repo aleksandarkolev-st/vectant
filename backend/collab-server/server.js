@@ -1228,6 +1228,154 @@ const server = http.createServer(async (req, res) => {
   }
 
   // ========================================================================
+  // DIRECT COLLABORATION — invite / ask-to-join a user (no pre-existing
+  // session required). Sessions are auto-created on demand.
+  // ========================================================================
+
+  /**
+   * POST /session/invite-user
+   * Inviter becomes host (auto-creates session if not already hosting).
+   * Sends an invite notification to the target user via notification WS.
+   * Target can accept by knocking on the auto-created session.
+   */
+  if (req.url.startsWith('/session/invite-user') && req.method === 'POST') {
+    let body = '';
+    req.on('data', chunk => body += chunk);
+    req.on('end', () => {
+      try {
+        const data = JSON.parse(body);
+        const { hostId, hostName, hostAvatar, targetUserId, slug } = data;
+        if (!hostId || !targetUserId || !slug) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'hostId, targetUserId, and slug are required' }));
+          return;
+        }
+
+        // Auto-create session if needed
+        let session = sessionManager.getSessionByHost(hostId);
+        if (!session) {
+          session = sessionManager.createSession({
+            hostId,
+            hostName: hostName || hostId,
+            hostAvatar: hostAvatar || '',
+            slug,
+            worktreePath: '', // resolved at git-op time
+            defaultPerms: { canEdit: true, canTerminal: false, canGit: false, canFileOps: false },
+          });
+        }
+
+        // Send invite notification to the target user via notification WS
+        const inviteMsg = JSON.stringify({
+          type: 'collab-invite',
+          slug,
+          sessionId: session.id,
+          hostId,
+          hostName: hostName || hostId,
+          hostAvatar: hostAvatar || '',
+          inviteToken: session.inviteToken,
+        });
+        if (notifyWss) {
+          notifyWss.clients.forEach((ws) => {
+            if (ws.readyState === WebSocket.OPEN && ws._slug === slug && ws._userId === targetUserId) {
+              try { ws.send(inviteMsg); } catch (_) {}
+            }
+          });
+        }
+
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          success: true,
+          sessionId: session.id,
+          inviteToken: session.inviteToken,
+          inviteLink: session.inviteLink,
+        }));
+      } catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: e.message }));
+      }
+    });
+    return;
+  }
+
+  /**
+   * POST /session/join-user
+   * Request to join a specific user's workspace.  If the target user
+   * doesn't have an active session yet, one is implicitly created for
+   * them by the server.  The guest's knock is then forwarded to that
+   * session so the target user can accept/deny.
+   */
+  if (req.url.startsWith('/session/join-user') && req.method === 'POST') {
+    let body = '';
+    req.on('data', chunk => body += chunk);
+    req.on('end', () => {
+      try {
+        const data = JSON.parse(body);
+        const { targetUserId, targetUserName, guestId, displayName, avatarUrl, slug } = data;
+        if (!targetUserId || !guestId || !slug) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'targetUserId, guestId, and slug are required' }));
+          return;
+        }
+
+        // Find or auto-create a session for the target user
+        let session = sessionManager.getSessionByHost(targetUserId);
+        if (!session) {
+          session = sessionManager.createSession({
+            hostId: targetUserId,
+            hostName: targetUserName || targetUserId,
+            hostAvatar: '',
+            slug,
+            worktreePath: '',
+            defaultPerms: { canEdit: true, canTerminal: false, canGit: false, canFileOps: false },
+          });
+          console.log(`[Session] Auto-created session ${session.id} for host ${targetUserId} (on demand)`);
+
+          // Notify the target user that a session was auto-created for them
+          const autoHostMsg = JSON.stringify({
+            type: 'auto-session-created',
+            slug,
+            sessionId: session.id,
+            inviteToken: session.inviteToken,
+          });
+          // Send to session WS and notification WS
+          if (sessionWss) {
+            sessionWss.clients.forEach((ws) => {
+              if (ws.readyState === WebSocket.OPEN && ws._userId === targetUserId) {
+                try { ws.send(autoHostMsg); } catch (_) {}
+              }
+            });
+          }
+          if (notifyWss) {
+            notifyWss.clients.forEach((ws) => {
+              if (ws.readyState === WebSocket.OPEN && ws._slug === slug && ws._userId === targetUserId) {
+                try { ws.send(autoHostMsg); } catch (_) {}
+              }
+            });
+          }
+        }
+
+        // Knock on the session
+        sessionManager.knock(session.id, {
+          guestId,
+          displayName: displayName || guestId,
+          avatarUrl: avatarUrl || '',
+        });
+
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          success: true,
+          sessionId: session.id,
+          message: 'Join request sent',
+        }));
+      } catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: e.message }));
+      }
+    });
+    return;
+  }
+
+  // ========================================================================
   // SESSION INVITE API — Request to join another user's session
   // ========================================================================
   if (req.url.startsWith('/session/request-join/') && req.method === 'POST') {

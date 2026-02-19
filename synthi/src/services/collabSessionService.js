@@ -344,6 +344,89 @@ class CollabSessionService extends EventTarget {
     this._emit('knock:sent', { sessionId });
   }
 
+  // ── Direct Collaboration (no pre-existing session required) ───────────────
+
+  /**
+   * Ask to join a specific user's workspace.  If the target user doesn't
+   * have an active session, one is created for them on the server side.
+   *
+   * @param {{ targetUserId: string, targetUserName: string, slug: string, guestId: string, displayName: string, avatarUrl?: string }} opts
+   */
+  async joinUser({ targetUserId, targetUserName, slug, guestId, displayName, avatarUrl = '' }) {
+    this._role = 'knocking';
+    this._userId = guestId;
+
+    const res = await fetch(`${COLLAB_URL}/session/join-user`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ targetUserId, targetUserName, guestId, displayName, avatarUrl, slug }),
+    });
+
+    if (!res.ok) {
+      this._role = 'idle';
+      const err = await res.json().catch(() => ({ error: 'Failed to send join request' }));
+      throw new Error(err.error || 'Failed to send join request');
+    }
+
+    const data = await res.json();
+    this._sessionId = data.sessionId;
+    this._connectWs();
+    this._emit('knock:sent', { sessionId: data.sessionId });
+    return data;
+  }
+
+  /**
+   * Invite a specific user to join YOUR workspace.  Auto-creates a
+   * session for the current user if not already hosting.
+   *
+   * @param {{ targetUserId: string, hostId: string, hostName: string, hostAvatar?: string, slug: string }} opts
+   */
+  async inviteUser({ targetUserId, hostId, hostName, hostAvatar = '', slug }) {
+    const res = await fetch(`${COLLAB_URL}/session/invite-user`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ hostId, hostName, hostAvatar, targetUserId, slug }),
+    });
+
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: 'Failed to send invite' }));
+      throw new Error(err.error || 'Failed to send invite');
+    }
+
+    const data = await res.json();
+    // Auto-adopt hosting role if not already hosting
+    if (!this.isHost) {
+      this._role = 'hosting';
+      this._sessionId = data.sessionId;
+      this._userId = hostId;
+      this._sessionSlug = slug;
+      this._permissions = { ...HOST_PERMISSIONS };
+      this._session = { id: data.sessionId, inviteLink: data.inviteLink, inviteToken: data.inviteToken };
+      this._pendingKnocks = [];
+      this._connectWs();
+      this._emit('session:created', data);
+    }
+    return data;
+  }
+
+  /**
+   * Handle the server auto-creating a session for us (someone asked to
+   * join our workspace and we didn't have an active session).
+   * Called when the notification WS or session WS receives
+   * 'auto-session-created'.
+   */
+  _handleAutoSessionCreated({ sessionId, inviteToken, slug }) {
+    if (this.isHost || this.isGuest) return; // Already in a session
+    this._role = 'hosting';
+    this._sessionId = sessionId;
+    this._sessionSlug = slug;
+    this._permissions = { ...HOST_PERMISSIONS };
+    this._session = { id: sessionId, inviteToken };
+    this._pendingKnocks = [];
+    this._connectWs();
+    this._emit('session:created', { sessionId, inviteToken });
+  }
+
   // ── WebSocket for real-time events ────────────────────────────────────────
 
   _connectWs() {
