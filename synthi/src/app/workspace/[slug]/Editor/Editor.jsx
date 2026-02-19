@@ -2215,8 +2215,11 @@ const EditorPanel = ({
                             </div>
                         </div>
 
-                        {/* Merge Conflict Resolver — replaces editor when active */}
-                        {conflictResolverFile ? (
+                        {/* Merge Conflict Resolver — overlays the editor when active.
+                            Kept as a sibling (not a conditional replacement) so the Monaco
+                            editor stays mounted and its passive-unmount effects don't throw
+                            during the React reconciliation (commitPassiveUnmountOnFiber). */}
+                        {conflictResolverFile && (
                             <div className="flex-1 overflow-hidden relative">
                                 <MergeConflictEditor
                                     slug={slug}
@@ -2229,8 +2232,10 @@ const EditorPanel = ({
                                     }}
                                 />
                             </div>
-                        ) : (
-                        <>
+                        )}
+
+                        {/* Normal editor area — hidden (not unmounted) when conflict resolver is active */}
+                        <div style={{ display: conflictResolverFile ? 'none' : 'contents' }}>
                         {/* Merge Conflict Banner */}
                         {activeFile && (
                             <ConflictBanner
@@ -2461,8 +2466,7 @@ const EditorPanel = ({
                                 </ContextMenuContent>
                             </ContextMenu>
                         </div>
-                        </>
-                        )}
+                        </div>
                     </div>
                 </ResizablePanel>
 
