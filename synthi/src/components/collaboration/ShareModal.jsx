@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useCallback, useEffect } from 'react';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { useCollabSession } from '@/hooks/useCollabSession';
 import WorkspaceUsersPanel from './WorkspaceUsersPanel';
 import {
@@ -23,14 +23,17 @@ export default function ShareModal({ slug, open, onClose }) {
   } = useCollabSession();
 
   const [copied, setCopied] = useState(false);
+  const modalRef = useRef(null);
 
-  // Reset state when modal opens
+  // Reset state when modal opens + focus the modal for keyboard nav
   useEffect(() => {
     if (open) {
       setCopied(false);
       if (error) clearError();
+      // Focus the modal so Escape works immediately
+      requestAnimationFrame(() => modalRef.current?.focus());
     }
-  }, [open]);
+  }, [open, clearError]);
 
   // Copy invite link
   const handleCopy = useCallback(async () => {
@@ -45,7 +48,15 @@ export default function ShareModal({ slug, open, onClose }) {
   if (!open) return null;
 
   return (
-    <div className="fixed inset-0 z-[200] flex items-center justify-center">
+    <div
+      className="fixed inset-0 z-[200] flex items-center justify-center"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="share-modal-title"
+      ref={modalRef}
+      tabIndex={-1}
+      onKeyDown={(e) => { if (e.key === 'Escape') onClose(); }}
+    >
       {/* Backdrop */}
       <div
         className="absolute inset-0 bg-black/60 backdrop-blur-sm"
@@ -61,7 +72,7 @@ export default function ShareModal({ slug, open, onClose }) {
         <div className="flex items-center justify-between px-5 py-3 border-b" style={{ borderColor: T.border }}>
           <div className="flex items-center gap-2.5">
             <Users className="w-4.5 h-4.5" style={{ color: T.teal }} />
-            <h2 className="text-sm font-semibold" style={{ color: T.text }}>Collaboration</h2>
+            <h2 id="share-modal-title" className="text-sm font-semibold" style={{ color: T.text }}>Collaboration</h2>
             {isHost && (
               <span className="flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[9px] font-bold"
                 style={{ backgroundColor: 'rgba(255,87,87,0.10)', color: T.live }}>
@@ -73,7 +84,7 @@ export default function ShareModal({ slug, open, onClose }) {
               </span>
             )}
           </div>
-          <button onClick={onClose} className="p-1 rounded hover:bg-[#1a1b24] transition-colors">
+          <button onClick={onClose} className="p-1 rounded hover:bg-[#1a1b24] transition-colors" aria-label="Close collaboration dialog">
             <X className="w-4 h-4" style={{ color: T.textMuted }} />
           </button>
         </div>
@@ -85,6 +96,7 @@ export default function ShareModal({ slug, open, onClose }) {
             <input
               readOnly
               value={session.inviteLink || ''}
+              aria-label="Invite link"
               className="flex-1 rounded-md px-2.5 py-1 text-[11px] font-mono truncate border focus:outline-none"
               style={{ backgroundColor: T.surface, borderColor: T.border, color: T.textSec }}
             />
