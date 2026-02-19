@@ -102,6 +102,7 @@ class SummaryIndex:
         document_id: str,
         embedding: np.ndarray,
         summary: DocumentSummary,
+        auto_save: bool = False,
     ) -> None:
         """
         Add a document summary with its embedding.
@@ -110,6 +111,7 @@ class SummaryIndex:
             document_id: Document ID.
             embedding: Summary embedding vector.
             summary: DocumentSummary object.
+            auto_save: If True, persist to disk immediately after adding.
 
         Raises:
             StoreError: If embedding dimensions don't match.
@@ -143,6 +145,9 @@ class SummaryIndex:
                 self._matrix = np.vstack([self._matrix, embedding.reshape(1, -1)])
 
         self._summaries[document_id] = summary
+
+        if auto_save:
+            self.save()
 
     def remove(self, document_id: str) -> bool:
         """
