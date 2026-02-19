@@ -10,7 +10,7 @@ import { getCurrentUser } from '@/services/userIdentity';
 import getInitials from '@/utils/getInitials';
 import {
   Users, FileEdit, Globe, Loader2, UserPlus, Shield,
-  Send, Check, X, Bell, Ban, MoreHorizontal
+  Send, Check, X, Bell, Ban, MoreHorizontal, Radio
 } from 'lucide-react';
 
 import T from './collabTheme';
