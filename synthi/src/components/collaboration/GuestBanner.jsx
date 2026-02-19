@@ -34,6 +34,12 @@ export default function GuestBanner() {
       collabSessionService.on('session:kicked', () => setKicked(true)),
       collabSessionService.on('session:terminated', () => setTerminated(true)),
       collabSessionService.on('knock:denied', () => setDenied(true)),
+      // Reset notification states when user joins a new session
+      collabSessionService.on('session:joined', () => {
+        setKicked(false);
+        setTerminated(false);
+        setDenied(false);
+      }),
     ];
     return () => unsubs.forEach(fn => fn());
   }, []);
