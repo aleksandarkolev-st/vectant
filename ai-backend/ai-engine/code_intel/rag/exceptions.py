@@ -34,6 +34,14 @@ class RAGError(Exception):
             result["cause"] = str(self.cause)
         return result
 
+    def __repr__(self) -> str:
+        parts = [f"{self.__class__.__name__}({str(self)!r})"]
+        if self.details:
+            parts.append(f"details={self.details!r}")
+        if self.cause:
+            parts.append(f"cause={self.cause!r}")
+        return ", ".join(parts)
+
 
 class IngestionError(RAGError):
     """Error during document ingestion (Step 1)."""
