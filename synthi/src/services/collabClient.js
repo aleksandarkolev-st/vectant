@@ -1095,7 +1095,7 @@ class CollabClient {
         attempt = 0; // Reset backoff on successful connection
         console.log('[Collab] Notification WS connected for slug:', slug);
       };
-      ws.onmessage = (ev) => {
+      ws.onmessage = async (ev) => {
         try {
           const msg = JSON.parse(ev.data);
           if (msg.type === 'file-tree-changed' && msg.slug === slug) {
@@ -1126,6 +1126,21 @@ class CollabClient {
           if (msg.type === 'git-status-changed' && msg.slug === slug) {
             if (typeof handlers.onGitStatusChanged === 'function') {
               handlers.onGitStatusChanged(msg.filePath || null);
+            }
+          }
+          // ── Direct collaboration notifications ──────────────────────
+          if (msg.type === 'auto-session-created') {
+            // Server auto-created a session for us because someone asked
+            // to join our workspace.  Transition to hosting role.
+            const { default: collabSessionService } = await import('@/services/collabSessionService');
+            collabSessionService._handleAutoSessionCreated(msg);
+          }
+          if (msg.type === 'collab-invite') {
+            // Another user invited us to their session.  Emit a custom
+            // event so the UI (e.g. WorkspaceUsersPanel) can show an
+            // accept / decline prompt.
+            if (typeof handlers.onCollabInvite === 'function') {
+              handlers.onCollabInvite(msg);
             }
           }
         } catch (_) {

@@ -386,6 +386,13 @@ export default function EditorPage({ params }) {
                 // Source Control panel updates without waiting for the poll.
                 dispatch(fetchGitStatus(slug));
             },
+            onCollabInvite: (msg) => {
+                // Forward collab-invite to collabSessionService so UI can
+                // show accept/decline prompt in WorkspaceUsersPanel.
+                import('@/services/collabSessionService').then(({ default: svc }) => {
+                    svc._emit('collab-invite', msg);
+                });
+            },
         }, { userId: authUserId, sessionId: activeSessionId });
         return teardown;
     }, [slug, dispatch, authUserId, activeSessionId]);
