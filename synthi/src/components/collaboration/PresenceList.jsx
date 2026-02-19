@@ -2,6 +2,7 @@
 
 import { useMemo } from 'react';
 import { usePresence } from '@/hooks/usePresence';
+import getInitials from '@/utils/getInitials';
 
 /**
  * PresenceList – Google-Docs-style horizontal avatar bar.
@@ -84,12 +85,4 @@ function Avatar({ user }) {
       </div>
     </div>
   );
-}
-
-/** Extract up to two initials from a display name. */
-function getInitials(name) {
-  if (!name) return '?';
-  const parts = name.trim().split(/\s+/);
-  if (parts.length >= 2) return (parts[0][0] + parts[1][0]).toUpperCase();
-  return name.slice(0, 2).toUpperCase();
 }

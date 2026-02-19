@@ -3,6 +3,7 @@
 import React, { useState, useCallback, useEffect } from 'react';
 import { usePresence } from '@/hooks/usePresence';
 import { useCollabSession } from '@/hooks/useCollabSession';
+import getInitials from '@/utils/getInitials';
 import ShareModal from './ShareModal';
 import {
   Users, Link2, Copy, Check, X, Shield, ShieldOff,
@@ -630,11 +631,4 @@ function MiniToggle({ enabled }) {
       }`} />
     </div>
   );
-}
-
-function getInitials(name) {
-  if (!name) return '?';
-  const parts = name.trim().split(/\s+/);
-  if (parts.length >= 2) return (parts[0][0] + parts[1][0]).toUpperCase();
-  return name.slice(0, 2).toUpperCase();
 }

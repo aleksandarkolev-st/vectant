@@ -6,6 +6,7 @@ import { useCollabSession } from '@/hooks/useCollabSession';
 import { useBlockedUsers } from '@/hooks/useBlockedUsers';
 import collabClient from '@/services/collabClient';
 import collabSessionService from '@/services/collabSessionService';
+import getInitials from '@/utils/getInitials';
 import {
   Users, FileEdit, Globe, Loader2, UserPlus, Shield,
   Send, Check, X, Bell, Ban, MoreHorizontal
@@ -462,11 +463,4 @@ function UserAvatar({ name, avatar, color, size = 24 }) {
       )}
     </div>
   );
-}
-
-function getInitials(name) {
-  if (!name) return '?';
-  const parts = name.trim().split(/\s+/);
-  if (parts.length >= 2) return (parts[0][0] + parts[1][0]).toUpperCase();
-  return name.slice(0, 2).toUpperCase();
 }
