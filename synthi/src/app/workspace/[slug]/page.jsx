@@ -8,6 +8,7 @@ import { fetchFilesThunk, selectActiveFile, setSlug, selectFileThunk, selectCurr
 import { fetchGitStatus } from '@/redux/gitSlice';
 import collabClient from '@/services/collabClient';
 import collabSessionService from '@/services/collabSessionService';
+import { USER_ID_KEY, USER_NAME_KEY, USER_AVATAR_KEY } from '@/services/userIdentity';
 import { 
     selectShowTerminal, 
     selectShowEmulatorPreview,
@@ -73,6 +74,20 @@ export default function EditorPage({ params }) {
             router.replace('/');
         }
     }, [authStatus, router]);
+
+    // ── Persist auth identity into localStorage so getCurrentUser() works ──
+    // Guest pages set this for guest users; workspace pages must do the same
+    // for authenticated users so components like WorkspaceUsersPanel can
+    // identify the current user and filter them from the list, prevent
+    // self-blocking, etc.
+    useEffect(() => {
+        if (authSession?.user) {
+            const { id, name, email, image } = authSession.user;
+            if (id || email)  localStorage.setItem(USER_ID_KEY, id || email);
+            if (name)         localStorage.setItem(USER_NAME_KEY, name);
+            if (image)        localStorage.setItem(USER_AVATAR_KEY, image);
+        }
+    }, [authSession]);
     
     // 1. Consume the slug parameter first (needed by hooks below)
     const { slug } = use(params);

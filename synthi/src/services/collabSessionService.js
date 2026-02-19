@@ -67,6 +67,9 @@ class CollabSessionService extends EventTarget {
 
     /** @type {Array<{guestId: string, displayName: string, avatarUrl: string}>} */
     this._pendingKnocks = [];
+
+    /** @type {object|null} Most recent incoming collab-invite (persists across modal open/close) */
+    this._pendingInvite = null;
   }
 
   // ── Getters ──────────────────────────────────────────────────────────────
@@ -90,6 +93,13 @@ class CollabSessionService extends EventTarget {
   get isGuest() { return this._role === 'guest'; }
   get isActive() { return this._role === 'hosting' || this._role === 'guest'; }
   get pendingKnocks() { return [...this._pendingKnocks]; }
+
+  /** Most recent pending invite — survives UI mount/unmount cycles */
+  get pendingInvite() { return this._pendingInvite; }
+  clearPendingInvite() {
+    this._pendingInvite = null;
+    this._emit('invite:cleared', {});
+  }
 
   // ── Host: Create session ─────────────────────────────────────────────────
 
@@ -619,10 +629,15 @@ class CollabSessionService extends EventTarget {
     this._sessionSlug = null;
     this._permissions = { ...HOST_PERMISSIONS };
     this._pendingKnocks = [];
+    this._pendingInvite = null;
     this._reconnectDelay = 1000;
   }
 
   _emit(type, detail) {
+    // Persist collab-invite so it survives UI unmount/remount cycles
+    if (type === 'collab-invite') {
+      this._pendingInvite = detail;
+    }
     this.dispatchEvent(new CustomEvent(type, { detail }));
     // Also fire a generic 'change' event for React hooks
     this.dispatchEvent(new CustomEvent('change', { detail: { type, ...detail } }));

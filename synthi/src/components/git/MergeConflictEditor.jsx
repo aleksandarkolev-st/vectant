@@ -55,12 +55,13 @@ function parseConflicts(content) {
 
     for (let i = 0; i < lines.length; i++) {
         const line = lines[i];
+        const trimmed = line.replace(/\r$/, '');  // Handle CRLF line endings
 
-        if (line.startsWith('<<<<<<< ')) {
+        if (trimmed.startsWith('<<<<<<<')) {
             currentConflict = {
                 id: conflictId++,
                 startLine: i,
-                oursLabel: line.substring(8).trim() || 'Current Change',
+                oursLabel: trimmed.replace('<<<<<<<', '').trim() || 'Current Change',
                 oursLines: [],
                 theirsLines: [],
                 theirsLabel: '',
@@ -68,19 +69,19 @@ function parseConflicts(content) {
                 endLine: -1,
                 inTheirs: false,
             };
-        } else if (line === '=======' && currentConflict) {
+        } else if (trimmed.startsWith('=======') && currentConflict && !currentConflict.inTheirs) {
             currentConflict.separatorLine = i;
             currentConflict.inTheirs = true;
-        } else if (line.startsWith('>>>>>>> ') && currentConflict) {
-            currentConflict.theirsLabel = line.substring(8).trim() || 'Incoming Change';
+        } else if (trimmed.startsWith('>>>>>>>') && currentConflict) {
+            currentConflict.theirsLabel = trimmed.replace('>>>>>>>', '').trim() || 'Incoming Change';
             currentConflict.endLine = i;
             conflicts.push(currentConflict);
             currentConflict = null;
         } else if (currentConflict) {
             if (currentConflict.inTheirs) {
-                currentConflict.theirsLines.push(line);
+                currentConflict.theirsLines.push(trimmed);
             } else {
-                currentConflict.oursLines.push(line);
+                currentConflict.oursLines.push(trimmed);
             }
         }
     }
@@ -89,7 +90,8 @@ function parseConflicts(content) {
 }
 
 function resolveConflict(content, conflict, resolution) {
-    const lines = content.split('\n');
+    // Normalize CRLF to ensure consistent line splitting
+    const lines = content.replace(/\r\n/g, '\n').split('\n');
     let replacementLines = [];
 
     switch (resolution) {
@@ -195,7 +197,7 @@ export default function MergeConflictEditor({ slug, filePath, onClose, onResolve
                 setLoading(true);
                 setError(null);
                 const result = await gitClient.request(slug, 'file', { path: filePath });
-                setContent(result.content || '');
+                setContent((result.content || '').replace(/\r\n/g, '\n'));
             } catch (e) {
                 setError(e.message || 'Failed to load file');
             } finally {

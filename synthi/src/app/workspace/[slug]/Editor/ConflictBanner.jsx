@@ -10,7 +10,8 @@ function parseConflicts(content) {
     if (!content) return [];
     
     const conflicts = [];
-    const lines = content.split('\n');
+    // Normalize CRLF → LF so line slicing is consistent across platforms
+    const lines = content.replace(/\r\n/g, '\n').split('\n');
     let i = 0;
     
     while (i < lines.length) {
@@ -56,11 +57,13 @@ function parseConflicts(content) {
  * Resolves a specific conflict in the content
  */
 function resolveConflict(content, conflictIndex, resolution) {
-    const conflicts = parseConflicts(content);
+    // Normalize CRLF to ensure consistent line splitting
+    const normalized = content.replace(/\r\n/g, '\n');
+    const conflicts = parseConflicts(normalized);
     if (conflictIndex >= conflicts.length) return content;
     
     const conflict = conflicts[conflictIndex];
-    const lines = content.split('\n');
+    const lines = normalized.split('\n');
     
     let replacement;
     switch (resolution) {

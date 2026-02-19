@@ -97,7 +97,15 @@ export function useCollabNotifications() {
           icon: '📡',
         });
       }),
-
+      // ── Incoming collaboration invite ────────────────────────
+      collabSessionService.on('collab-invite', (detail) => {
+        const name = detail?.hostName || 'Someone';
+        toast.info(`${name} invited you to collaborate`, {
+          description: 'Open the Share panel to accept or decline.',
+          duration: 10000,
+          icon: '📨',
+        });
+      }),
       // ── Joined a session (guest confirmation) ────────────────────
       collabSessionService.on('session:joined', (detail) => {
         toast.success('You joined the session!', {

@@ -32,12 +32,17 @@ export default function WorkspaceUsersPanel({ slug }) {
   const [joiningSessionId, setJoiningSessionId] = useState(null);
   const [joiningUserId, setJoiningUserId] = useState(null);
   const [invitingUserId, setInvitingUserId] = useState(null);
-  const [pendingInvite, setPendingInvite] = useState(null); // incoming invite
+  // Seed from service in case an invite arrived while the modal was closed
+  const [pendingInvite, setPendingInvite] = useState(() => collabSessionService.pendingInvite);
 
   const myUserId = getCurrentUser().id;
 
   // ── Listen for incoming collab-invite notifications ───────────────────
   useEffect(() => {
+    // Re-read from service on mount (may have arrived while unmounted)
+    const stored = collabSessionService.pendingInvite;
+    if (stored) setPendingInvite(stored);
+
     const unsub = collabSessionService.on('collab-invite', (detail) => {
       setPendingInvite(detail);
     });
@@ -82,16 +87,20 @@ export default function WorkspaceUsersPanel({ slug }) {
   const handleAcceptInvite = useCallback(async () => {
     if (!pendingInvite?.sessionId) return;
     setPendingInvite(null);
+    collabSessionService.clearPendingInvite();
     await requestJoinSession(pendingInvite.sessionId);
   }, [pendingInvite, requestJoinSession]);
 
   const handleDeclineInvite = useCallback(() => {
     setPendingInvite(null);
+    collabSessionService.clearPendingInvite();
   }, []);
 
   // ── Block / Unblock ───────────────────────────────────────────────────
 
   const handleBlockUser = useCallback(async (userId, userName) => {
+    // Prevent self-blocking
+    if (userId === myUserId) return;
     const confirmed = window.confirm(
       `Block ${userName || 'this user'}? They won\u2019t be able to see you in the users list or send you requests.`
     );
@@ -100,7 +109,7 @@ export default function WorkspaceUsersPanel({ slug }) {
       await blockUser(userId);
       refresh(); // re-fetch presence so blocked user disappears
     } catch (err) { console.warn('[Collab] blockUser:', err?.message); }
-  }, [blockUser, refresh]);
+  }, [blockUser, refresh, myUserId]);
 
   const handleUnblockUser = useCallback(async (userId) => {
     try {

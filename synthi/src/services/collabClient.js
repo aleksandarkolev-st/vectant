@@ -21,51 +21,73 @@ class MonacoTextBinding {
     // local change handlers to re-propagate back into Yjs producing loops.
     this._applyingRemote = false;
 
-    // Observe Y.Text changes
+    // Observe Y.Text changes — apply incremental delta edits to Monaco
+    // so remote keystrokes don't replace the full document and jump the cursor.
     this._yObserver = (event) => {
       try {
+        if (this._destroyed) return;
+        if (this.editor.getModel() !== this.model) return;
+
+        const delta = event.delta;
+        if (!delta || delta.length === 0) return;
+
+        // Quick no-op check: if content already matches, skip
         const newText = this.ytext.toString();
         const current = this.model.getValue();
-        
-        // Normalize line endings for comparison to avoid false positives on Windows
-        // Monaco might normalize to CRLF while Yjs has LF or vice versa
         const normalize = (s) => s ? s.replace(/\r\n/g, '\n') : '';
         if (normalize(current) === normalize(newText)) return;
 
-        console.log('[Collab] Remote change detected. Applying to Monaco.');
-        console.log(`[Collab] Current length: ${current.length}, New length: ${newText.length}`);
+        // Build incremental Monaco edits from the Yjs delta.
+        // Delta ops: { retain: n }, { insert: string }, { delete: n }
+        // 'index' tracks position in the NEW Y.Text (y-monaco convention):
+        //   retain → advance in both old & new
+        //   insert → advance in new only (no old chars consumed)
+        //   delete → don't advance (old chars consumed; pos stays for next insert)
+        const edits = [];
+        let index = 0;
 
-        // Use setTimeout to avoid reentrancy issues when Monaco fires view events
-        // synchronously — scheduling to next event loop reduces chance of
-        // 'invalid edit' exceptions while being reasonably responsive.
-        if (this._observerTimeout) clearTimeout(this._observerTimeout);
-        this._observerTimeout = setTimeout(() => {
-          if (this._destroyed) return;
-          // Ensure we are still editing the same model
-          if (this.editor.getModel() !== this.model) return;
-
-          try {
-            // Mark guard so local change handler (MonacoTextBinding._modelListener)
-            // skips this update — prevents Yjs → Monaco → Yjs feedback loop.
-            this._applyingRemote = true;
-
-            // Apply the full replacement via editor.executeEdits which is
-            // safer for Monaco's edit flow than manipulating model directly
-            // during view events.
-            this.editor.executeEdits('synthi-collab', [{ range: this.model.getFullModelRange(), text: newText }]);
-
-          } catch (e) {
-            console.warn('[Collab] failed to apply remote diff to Monaco model', e?.message || e);
-          } finally {
-            // Reset flag synchronously. Monaco's onDidChangeContent fires
-            // synchronously during executeEdits above, so it already saw
-            // the flag as true. Resetting synchronously here avoids the
-            // previous requestAnimationFrame delay which left a window
-            // where user keystrokes were silently swallowed.
-            this._applyingRemote = false;
+        for (const op of delta) {
+          if (op.retain != null) {
+            index += op.retain;
+          } else if (op.insert != null) {
+            const pos = this.model.getPositionAt(index);
+            edits.push({
+              range: new this.monaco.Range(pos.lineNumber, pos.column, pos.lineNumber, pos.column),
+              text: typeof op.insert === 'string' ? op.insert : '',
+            });
+            index += (typeof op.insert === 'string' ? op.insert.length : 0);
+          } else if (op.delete != null) {
+            const pos = this.model.getPositionAt(index);
+            const endPos = this.model.getPositionAt(index + op.delete);
+            edits.push({
+              range: new this.monaco.Range(pos.lineNumber, pos.column, endPos.lineNumber, endPos.column),
+              text: '',
+            });
+            // don't advance index — chars consumed from old doc
           }
-        }, 0);
+        }
 
+        if (edits.length === 0) return;
+
+        // Use model.applyEdits for remote changes:
+        //  • Synchronous — avoids reentrancy risk vs setTimeout
+        //  • Doesn't pollute the local undo stack (remote edits shouldn't be Ctrl+Z'able)
+        this._applyingRemote = true;
+        try {
+          this.model.applyEdits(edits);
+        } catch (e) {
+          console.warn('[Collab] incremental remote apply failed, falling back to full replace', e?.message);
+          try {
+            this.model.applyEdits([{
+              range: this.model.getFullModelRange(),
+              text: newText,
+            }]);
+          } catch (e2) {
+            console.warn('[Collab] full-replace fallback also failed', e2?.message);
+          }
+        } finally {
+          this._applyingRemote = false;
+        }
       } catch (err) {
         console.warn('[Collab] ytext observer error', err?.message || err);
       }
@@ -116,33 +138,51 @@ class MonacoTextBinding {
       }
     });
 
-    // When the Monaco model changes locally, reflect into Yjs
+    // When the Monaco model changes locally, reflect into Yjs incrementally.
+    // Using e.changes (offset + length) avoids the destructive delete-all/insert-all
+    // pattern that previously obliterated Yjs merge semantics and caused cursor jumps.
     this._modelListener = this.model.onDidChangeContent((e) => {
       if (this._applyingRemote) return;
-      if (this._destroyed) return; // Don't write if binding is destroyed
-      // Skip changes that came from our own collab edits (check source/origin)
-      // Monaco's executeEdits passes a source string we can check
-      if (e.isFlush) return; // setValue or similar bulk operation, skip to avoid loops
-      // Verify we're still the active model on the editor
-      if (this.editor.getModel() !== this.model) {
-        return;
-      }
+      if (this._destroyed) return;
+      if (e.isFlush) return;
+      if (this.editor.getModel() !== this.model) return;
+
       try {
-        const value = this.model.getValue();
+        const changes = e.changes;
+        if (!changes || changes.length === 0) return;
+
         const doc = this.ytext.doc;
         if (!doc) return;
-        
-        // Check if ytext already has this exact content to avoid redundant writes
-        const currentYtext = this.ytext.toString();
-        if (currentYtext === value) return;
-        
-        // Full replace for now — later can patch using diffs for efficiency
+
         doc.transact(() => {
-          this.ytext.delete(0, this.ytext.length);
-          this.ytext.insert(0, value);
+          // Apply changes in reverse order (end → start) so earlier offsets
+          // stay valid after each mutation.  Monaco's changes array is sorted
+          // ascending by position; iterating in reverse is correct.
+          for (let i = changes.length - 1; i >= 0; i--) {
+            const change = changes[i];
+            if (change.rangeLength > 0) {
+              this.ytext.delete(change.rangeOffset, change.rangeLength);
+            }
+            if (change.text.length > 0) {
+              this.ytext.insert(change.rangeOffset, change.text);
+            }
+          }
         });
       } catch (err) {
-        console.warn('[Collab] error writing Monaco change to Yjs', err?.message || err);
+        console.warn('[Collab] incremental Yjs write failed, attempting full replace', err?.message || err);
+        // Fallback: full replace (preserves old behaviour as safety net)
+        try {
+          const value = this.model.getValue();
+          const doc = this.ytext.doc;
+          if (doc) {
+            doc.transact(() => {
+              this.ytext.delete(0, this.ytext.length);
+              this.ytext.insert(0, value);
+            });
+          }
+        } catch (e2) {
+          console.warn('[Collab] full-replace fallback also failed', e2?.message);
+        }
       }
     });
 
