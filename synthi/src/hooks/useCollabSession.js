@@ -172,6 +172,8 @@ export function useCollabSession() {
     isGuest: role === 'guest',
     isActive: role === 'hosting' || role === 'guest',
     isKnocking: role === 'knocking',
+    hostId: collabSessionService.hostId,
+    effectiveUserId: collabSessionService.effectiveUserId,
 
     // Host actions
     createSession,

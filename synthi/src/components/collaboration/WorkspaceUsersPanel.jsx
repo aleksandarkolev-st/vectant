@@ -33,7 +33,7 @@ const T = {
  */
 export default function WorkspaceUsersPanel({ slug }) {
   const { activeUsers, sessions, loading, refresh } = useWorkspacePresence(slug);
-  const { role, isHost, isGuest, isKnocking, requestJoinSession, error } = useCollabSession();
+  const { role, isHost, isGuest, isKnocking, requestJoinSession, error, hostId } = useCollabSession();
   const [joiningSessionId, setJoiningSessionId] = useState(null);
 
   const myUserId = typeof window !== 'undefined'
@@ -72,6 +72,31 @@ export default function WorkspaceUsersPanel({ slug }) {
 
   return (
     <div className="space-y-3">
+      {/* ── Guest connection banner ─────────────────────────────────── */}
+      {isGuest && hostId && (
+        <div className="flex items-center gap-2 px-3 py-2 rounded-lg border"
+          style={{ backgroundColor: 'rgba(74,186,154,0.06)', borderColor: 'rgba(74,186,154,0.20)' }}>
+          <span className="relative flex h-2 w-2">
+            <span className="animate-ping absolute inline-flex h-full w-full rounded-full opacity-75" style={{ backgroundColor: T.teal }} />
+            <span className="relative inline-flex rounded-full h-2 w-2" style={{ backgroundColor: T.teal }} />
+          </span>
+          <span className="text-[11px] font-medium" style={{ color: T.teal }}>
+            Connected — sharing host&apos;s workspace
+          </span>
+        </div>
+      )}
+
+      {/* ── Knocking banner ─────────────────────────────────────────── */}
+      {isKnocking && (
+        <div className="flex items-center gap-2 px-3 py-2 rounded-lg border"
+          style={{ backgroundColor: 'rgba(251,191,36,0.06)', borderColor: 'rgba(251,191,36,0.20)' }}>
+          <Loader2 className="w-3 h-3 animate-spin" style={{ color: T.amber }} />
+          <span className="text-[11px] font-medium" style={{ color: T.amber }}>
+            Waiting for host to approve…
+          </span>
+        </div>
+      )}
+
       {/* ── Active Sessions ─────────────────────────────────────────── */}
       {sessions.length > 0 && (
         <div>
