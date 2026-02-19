@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef } from 'react';
 import collabSessionService from '@/services/collabSessionService';
+import { getCurrentUser } from '@/services/userIdentity';
 
 /**
  * React hook for managing a collaboration session.
@@ -141,15 +142,7 @@ export function useCollabSession() {
     setIsLoading(true);
     setError(null);
     try {
-      const userId = typeof window !== 'undefined'
-        ? localStorage.getItem('synthi-user-id') || 'guest'
-        : 'guest';
-      const userName = typeof window !== 'undefined'
-        ? localStorage.getItem('synthi-user-name') || 'Guest'
-        : 'Guest';
-      const userAvatar = typeof window !== 'undefined'
-        ? localStorage.getItem('synthi-user-avatar') || ''
-        : '';
+      const { id: userId, name: userName, avatar: userAvatar } = getCurrentUser();
       await collabSessionService.requestJoinSession(sessionId, {
         guestId: userId,
         displayName: userName,
@@ -172,15 +165,7 @@ export function useCollabSession() {
     setIsLoading(true);
     setError(null);
     try {
-      const guestId = typeof window !== 'undefined'
-        ? localStorage.getItem('synthi-user-id') || 'guest'
-        : 'guest';
-      const displayName = typeof window !== 'undefined'
-        ? localStorage.getItem('synthi-user-name') || 'Guest'
-        : 'Guest';
-      const avatarUrl = typeof window !== 'undefined'
-        ? localStorage.getItem('synthi-user-avatar') || ''
-        : '';
+      const { id: guestId, name: displayName, avatar: avatarUrl } = getCurrentUser();
       return await collabSessionService.joinUser({
         targetUserId,
         targetUserName,
@@ -204,15 +189,7 @@ export function useCollabSession() {
     setIsLoading(true);
     setError(null);
     try {
-      const hostId = typeof window !== 'undefined'
-        ? localStorage.getItem('synthi-user-id') || 'host'
-        : 'host';
-      const hostName = typeof window !== 'undefined'
-        ? localStorage.getItem('synthi-user-name') || 'Host'
-        : 'Host';
-      const hostAvatar = typeof window !== 'undefined'
-        ? localStorage.getItem('synthi-user-avatar') || ''
-        : '';
+      const { id: hostId, name: hostName, avatar: hostAvatar } = getCurrentUser();
       return await collabSessionService.inviteUser({
         targetUserId,
         hostId,

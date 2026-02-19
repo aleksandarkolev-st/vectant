@@ -6,6 +6,7 @@ import { useCollabSession } from '@/hooks/useCollabSession';
 import { useBlockedUsers } from '@/hooks/useBlockedUsers';
 import collabClient from '@/services/collabClient';
 import collabSessionService from '@/services/collabSessionService';
+import { getCurrentUser } from '@/services/userIdentity';
 import getInitials from '@/utils/getInitials';
 import {
   Users, FileEdit, Globe, Loader2, UserPlus, Shield,
@@ -33,9 +34,7 @@ export default function WorkspaceUsersPanel({ slug }) {
   const [invitingUserId, setInvitingUserId] = useState(null);
   const [pendingInvite, setPendingInvite] = useState(null); // incoming invite
 
-  const myUserId = typeof window !== 'undefined'
-    ? localStorage.getItem('synthi-user-id') || ''
-    : '';
+  const myUserId = getCurrentUser().id;
 
   // ── Listen for incoming collab-invite notifications ───────────────────
   useEffect(() => {
