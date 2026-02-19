@@ -1085,9 +1085,12 @@ const EditorPanel = ({
                 allFiles ? { all: true } : { paths: filePaths }
             ));
 
-            // 4. Small delay to let the server fully invalidate Yjs docs
-            //    and close WebSocket connections — prevents stale CRDT merge.
-            await new Promise(r => setTimeout(r, 100));
+            // 4. Yield to microtask queue so collabClient.destroyAllForSlug
+            //    (fired by the notification handler) finishes before we
+            //    re-create a fresh provider. No artificial delay needed —
+            //    the destroy already ran synchronously in the notification
+            //    handler before this DOM event was dispatched.
+            await new Promise(r => queueMicrotask(r));
 
             // 5. Re-select the file — this fetches clean content from the
             //    server and updates Redux (savedContent, currentContent).
@@ -1106,7 +1109,7 @@ const EditorPanel = ({
             } catch (_) {}
 
             // 7. Release the revert lock after a brief settling period
-            setTimeout(() => { revertLockRef.current = false; }, 500);
+            setTimeout(() => { revertLockRef.current = false; }, 200);
         };
 
         window.addEventListener('synthi:file-reverted', handler);

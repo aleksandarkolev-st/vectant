@@ -920,20 +920,34 @@ function _matchesNotifyScope(ws, scope = {}) {
   return false;
 }
 
-function broadcastGitStatusChanged(slug, filePath, scope = {}) {
+function broadcastGitStatusChanged(slug, filePath, scope = {}, { immediate = false } = {}) {
   if (!slug || !notifyWss) return;
-  const timerKey = `${slug}|${_makeScopeKey(scope)}`;
-  if (_gitStatusBroadcastTimers.has(timerKey)) {
-    clearTimeout(_gitStatusBroadcastTimers.get(timerKey));
-  }
-  _gitStatusBroadcastTimers.set(timerKey, setTimeout(() => {
-    _gitStatusBroadcastTimers.delete(timerKey);
+  const send = () => {
     const message = JSON.stringify({ type: 'git-status-changed', slug, filePath, scope });
     notifyWss.clients.forEach((ws) => {
       if (ws.readyState === WebSocket.OPEN && ws._slug === slug && _matchesNotifyScope(ws, scope)) {
         try { ws.send(message); } catch (_) {}
       }
     });
+  };
+  if (immediate) {
+    // Explicit user actions (pull, checkout, discard, etc.) — send immediately
+    const timerKey = `${slug}|${_makeScopeKey(scope)}`;
+    if (_gitStatusBroadcastTimers.has(timerKey)) {
+      clearTimeout(_gitStatusBroadcastTimers.get(timerKey));
+      _gitStatusBroadcastTimers.delete(timerKey);
+    }
+    send();
+    return;
+  }
+  // Auto-flush / background changes — debounce per-slug (500ms)
+  const timerKey = `${slug}|${_makeScopeKey(scope)}`;
+  if (_gitStatusBroadcastTimers.has(timerKey)) {
+    clearTimeout(_gitStatusBroadcastTimers.get(timerKey));
+  }
+  _gitStatusBroadcastTimers.set(timerKey, setTimeout(() => {
+    _gitStatusBroadcastTimers.delete(timerKey);
+    send();
   }, 500));
 }
 
@@ -1674,31 +1688,31 @@ const server = http.createServer(async (req, res) => {
                     break;
                 case 'commit':
                     result = await gitService.commit(slug, data.message, effectiveUserId);
-                    broadcastGitStatusChanged(slug, undefined, notifyScope);
+                    broadcastGitStatusChanged(slug, undefined, notifyScope, { immediate: true });
                     break;
                 case 'stage':
                     result = await gitService.stageFile(slug, data.filePath, effectiveUserId);
-                    broadcastGitStatusChanged(slug, undefined, notifyScope);
+                    broadcastGitStatusChanged(slug, undefined, notifyScope, { immediate: true });
                     break;
                 case 'stage-all':
                     result = await gitService.stageAll(slug, effectiveUserId);
-                    broadcastGitStatusChanged(slug, undefined, notifyScope);
+                    broadcastGitStatusChanged(slug, undefined, notifyScope, { immediate: true });
                     break;
                 case 'stage-lines':
                     result = await gitService.stageLines(slug, data.filePath, data.patch, effectiveUserId);
-                    broadcastGitStatusChanged(slug, undefined, notifyScope);
+                    broadcastGitStatusChanged(slug, undefined, notifyScope, { immediate: true });
                     break;
                 case 'unstage':
                     result = await gitService.unstageFile(slug, data.filePath, effectiveUserId);
-                    broadcastGitStatusChanged(slug, undefined, notifyScope);
+                    broadcastGitStatusChanged(slug, undefined, notifyScope, { immediate: true });
                     break;
                 case 'unstage-all':
                     result = await gitService.unstageAll(slug, effectiveUserId);
-                    broadcastGitStatusChanged(slug, undefined, notifyScope);
+                    broadcastGitStatusChanged(slug, undefined, notifyScope, { immediate: true });
                     break;
                 case 'push':
                     result = await gitService.push(slug, effectiveUserId);
-                    broadcastGitStatusChanged(slug, undefined, notifyScope);
+                    broadcastGitStatusChanged(slug, undefined, notifyScope, { immediate: true });
                     break;
                 case 'pull':
                     result = await gitService.pull(slug, effectiveUserId);
@@ -1707,7 +1721,7 @@ const server = http.createServer(async (req, res) => {
                     broadcastFileReverted(slug, [], notifyScope);
                     await invalidateDocsForSlug(slug, null, notifyScope);
                     broadcastFileTreeChanged(slug, notifyScope);
-                    broadcastGitStatusChanged(slug, undefined, notifyScope);
+                    broadcastGitStatusChanged(slug, undefined, notifyScope, { immediate: true });
                     break;
                 case 'discard':
                     result = await gitService.discardChange(slug, data.filePath, effectiveUserId);
@@ -1718,7 +1732,7 @@ const server = http.createServer(async (req, res) => {
                       await invalidateDocsForSlug(slug, [data.filePath], notifyScope);
                     }
                     broadcastFileTreeChanged(slug, notifyScope);
-                    broadcastGitStatusChanged(slug, undefined, notifyScope);
+                    broadcastGitStatusChanged(slug, undefined, notifyScope, { immediate: true });
                     break;
                 case 'discard-all':
                     result = await gitService.discardAll(slug, effectiveUserId);
@@ -1727,7 +1741,7 @@ const server = http.createServer(async (req, res) => {
                     broadcastFileReverted(slug, [], notifyScope);
                     await invalidateDocsForSlug(slug, null, notifyScope);
                     broadcastFileTreeChanged(slug, notifyScope);
-                    broadcastGitStatusChanged(slug, undefined, notifyScope);
+                    broadcastGitStatusChanged(slug, undefined, notifyScope, { immediate: true });
                     break;
                 // Merge conflict resolution
                 case 'resolve-ours':
