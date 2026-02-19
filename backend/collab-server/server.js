@@ -1461,6 +1461,10 @@ const server = http.createServer(async (req, res) => {
               ? sessionManager.getEffectiveUserId(userId, sessionId)
               : userId;
 
+            if (effectiveUserId && effectiveUserId !== userId) {
+              console.log(`[Collab] Direct-access: guest=${userId} → host=${effectiveUserId} session=${sessionId} action=${action}`);
+            }
+
             const notifyScope = { userId: effectiveUserId || null, sessionId: sessionId || null };
 
             // ── Permission check FIRST ──────────────────────────────────
