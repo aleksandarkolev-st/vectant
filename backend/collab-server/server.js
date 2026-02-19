@@ -1263,11 +1263,19 @@ const server = http.createServer(async (req, res) => {
               res.end(JSON.stringify({ error: 'hostId and slug are required' }));
               return;
             }
-            // Ensure a session worktree exists for the host
-            const wt = await gitService.ensureSessionWorktree(slug, hostId);
+            // Direct-access model: ensure the host's per-user repo exists
+            // (guests will share this repo via effectiveUserId mapping).
+            // No separate worktree needed — all participants use repos/<slug>/<hostId>/.
+            let hostRepoPath = null;
+            try {
+              const hostRepo = await gitService.ensureUserRepo(slug, hostId);
+              hostRepoPath = hostRepo.path;
+            } catch (e) {
+              console.warn(`[Collab] Could not ensure host repo for session: ${e.message}`);
+            }
             const session = sessionManager.createSession({
               hostId, hostName: hostName || hostId, hostAvatar: hostAvatar || '',
-              slug, worktreePath: wt.path, defaultPerms,
+              slug, worktreePath: hostRepoPath || '', defaultPerms,
             });
             result = {
               sessionId: session.id,
