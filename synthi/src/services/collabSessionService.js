@@ -493,7 +493,7 @@ class CollabSessionService extends EventTarget {
       try {
         const msg = JSON.parse(event.data);
         this._handleWsMessage(msg);
-      } catch (_) {}
+      } catch (err) { console.warn('[CollabSession] WS parse:', err?.message); }
     };
 
     this._ws.onclose = () => {
@@ -503,7 +503,7 @@ class CollabSessionService extends EventTarget {
       }
     };
 
-    this._ws.onerror = () => {};
+    this._ws.onerror = (e) => console.warn('[CollabSession] WS error:', e?.message || 'connection error');
   }
 
   _handleWsMessage(msg) {

@@ -55,7 +55,7 @@ export default function ShareModal({ slug, open, onClose }) {
       await navigator.clipboard.writeText(session.inviteLink);
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
-    } catch (_) {}
+    } catch (err) { console.warn('[Collab] clipboard copy:', err?.message); }
   }, [session?.inviteLink]);
 
   if (!open) return null;

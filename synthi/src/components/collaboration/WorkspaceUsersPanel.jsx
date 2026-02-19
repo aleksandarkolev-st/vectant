@@ -66,7 +66,7 @@ export default function WorkspaceUsersPanel({ slug }) {
     setJoiningSessionId(sessionId);
     try {
       await requestJoinSession(sessionId);
-    } catch (_) { /* error handled by hook */ }
+    } catch (err) { console.warn('[Collab] requestJoinSession:', err?.message); }
     setJoiningSessionId(null);
   }, [isHost, isGuest, isKnocking, requestJoinSession]);
 
@@ -77,7 +77,7 @@ export default function WorkspaceUsersPanel({ slug }) {
     setJoiningUserId(userId);
     try {
       await joinUser(userId, userName, slug);
-    } catch (_) { /* error handled by hook */ }
+    } catch (err) { console.warn('[Collab] joinUser:', err?.message); }
     setJoiningUserId(null);
   }, [isHost, isGuest, isKnocking, joinUser, slug]);
 
@@ -88,7 +88,7 @@ export default function WorkspaceUsersPanel({ slug }) {
     setInvitingUserId(userId);
     try {
       await inviteUser(userId, slug);
-    } catch (_) { /* error handled by hook */ }
+    } catch (err) { console.warn('[Collab] inviteUser:', err?.message); }
     setInvitingUserId(null);
   }, [isGuest, isKnocking, inviteUser, slug]);
 
@@ -110,14 +110,14 @@ export default function WorkspaceUsersPanel({ slug }) {
     try {
       await blockUser(userId);
       refresh(); // re-fetch presence so blocked user disappears
-    } catch (_) {}
+    } catch (err) { console.warn('[Collab] blockUser:', err?.message); }
   }, [blockUser, refresh]);
 
   const handleUnblockUser = useCallback(async (userId) => {
     try {
       await unblockUser(userId);
       refresh();
-    } catch (_) {}
+    } catch (err) { console.warn('[Collab] unblockUser:', err?.message); }
   }, [unblockUser, refresh]);
 
   // ── Group users: those in sessions vs solo ────────────────────────────
