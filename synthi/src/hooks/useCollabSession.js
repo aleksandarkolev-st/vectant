@@ -178,6 +178,7 @@ export function useCollabSession() {
     isKnocking: role === 'knocking',
     hostId,
     effectiveUserId,
+    sessionSlug: collabSessionService.sessionSlug,
 
     // Host actions
     createSession,
