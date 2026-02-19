@@ -102,6 +102,10 @@ from .eviction.context_pinner import ContextPinner
 from .editing.edit_session import EditSession, EditSessionManager
 from .editing.edit_planner import EditPlan
 
+# RAG (4-step retrieval-augmented generation)
+from .rag.pipeline import RAGPipeline
+from .rag.api import register_rag_routes, set_rag_workspace
+
 
 logger = logging.getLogger("code_intel.engine")
 
@@ -165,6 +169,9 @@ class CodeIntelEngine:
         self._context_stabilizer: Optional[ContextStabilizer] = None
         
         self._edit_session_manager: Optional[EditSessionManager] = None
+
+        # RAG (4-step retrieval-augmented generation)
+        self._rag_pipeline: Optional[RAGPipeline] = None
         
         # State
         self._initialized = False
@@ -278,6 +285,18 @@ class CodeIntelEngine:
         
         # Editing
         self._edit_session_manager = EditSessionManager(str(self.workspace_root))
+
+        # RAG pipeline (4-step retrieval-augmented generation)
+        if self.config.enable_rag:
+            try:
+                self._rag_pipeline = RAGPipeline(
+                    workspace_root=str(self.workspace_root),
+                )
+                set_rag_workspace(str(self.workspace_root))
+                logger.info("RAG pipeline initialized")
+            except Exception as e:
+                logger.warning(f"RAG pipeline initialization failed: {e}")
+                self._rag_pipeline = None
         
         self._initialized = True
         logger.info(f"CodeIntelEngine initialized for: {self.workspace_root}")
@@ -706,6 +725,58 @@ class CodeIntelEngine:
         """Get an existing edit session."""
         self._initialize_components()
         return self._edit_session_manager.get_session(session_id)
+    
+    # =========================================================================
+    # RAG API (4-Step Retrieval-Augmented Generation)
+    # =========================================================================
+    
+    def rag_query(self, query: str, **kwargs) -> Dict[str, Any]:
+        """
+        Execute a RAG query through the 4-step pipeline.
+        
+        Steps: Macro-Retrieval → Micro-Navigation → Synthesis → Cited Answer.
+        
+        Args:
+            query: User question.
+            **kwargs: Override RAGQuery defaults.
+            
+        Returns:
+            RAGResult as a dictionary.
+        """
+        self._initialize_components()
+        if not self._rag_pipeline:
+            return {"error": "RAG pipeline not available", "answer": ""}
+        result = self._rag_pipeline.query(query, **kwargs)
+        return result.to_dict()
+    
+    def rag_ingest(
+        self,
+        directory: Optional[str] = None,
+        file_path: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Ingest documents into the RAG pipeline.
+        
+        Args:
+            directory: Directory to ingest. Defaults to workspace root.
+            file_path: Single file to ingest.
+            
+        Returns:
+            Ingestion statistics.
+        """
+        self._initialize_components()
+        if not self._rag_pipeline:
+            return {"error": "RAG pipeline not available"}
+        if file_path:
+            return self._rag_pipeline.ingest_file(file_path)
+        return self._rag_pipeline.ingest_directory(directory)
+    
+    def rag_stats(self) -> Dict[str, Any]:
+        """Get RAG pipeline statistics."""
+        self._initialize_components()
+        if not self._rag_pipeline:
+            return {"error": "RAG pipeline not available"}
+        return self._rag_pipeline.get_stats()
     
     # =========================================================================
     # Persistence API
