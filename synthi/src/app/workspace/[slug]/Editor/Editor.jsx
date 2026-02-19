@@ -1297,19 +1297,17 @@ const EditorPanel = ({
         const remoteApplying = !!collabBindingRef.current?.isApplyingRemote?.();
 
 
-        // P0: ALWAYS dispatch to Redux regardless of isApplyingRemote.
+        // P0: ALWAYS dispatch to Redux immediately — no debounce.
         // The unsaved indicator, save flow, and tab dot all depend on Redux
-        // currentContent being up-to-date.  The value prop → setValue feedback
-        // loop that isApplyingRemote was guarding against is NOT triggered by
-        // Redux updates — the Editor does NOT call editor.setValue() from
-        // currentContent.  The only feedback path was Yjs → executeEdits →
-        // onChange → Yjs, which is already guarded by _applyingRemote inside
-        // MonacoTextBinding._modelListener.
-        if (reduxSyncTimerRef.current) clearTimeout(reduxSyncTimerRef.current);
-        reduxSyncTimerRef.current = setTimeout(() => {
+        // currentContent being up-to-date.  Debouncing this caused the unsaved
+        // dot to appear seconds after the first keystroke.  The updateContent
+        // reducer already short-circuits when content hasn't changed, so
+        // dispatching on every keystroke is cheap.
+        if (reduxSyncTimerRef.current) {
+            clearTimeout(reduxSyncTimerRef.current);
             reduxSyncTimerRef.current = null;
-            dispatch(updateContent(latestCodeRef.current));
-        }, 150);
+        }
+        dispatch(updateContent(newCode));
 
         // Skip AI auto-complete and active completion cancel for remote changes
         // — these should only fire on local user edits
@@ -1334,17 +1332,10 @@ const EditorPanel = ({
     }, [handleCodeChange]);
 
     const handleSave = useCallback(() => {
-        // P0: Flush pending Redux debounce before save so latest content is in state.
-        // dispatch(updateContent(...)) is synchronous in Redux — the store is
-        // updated immediately.  However, the React component has NOT re-rendered
-        // yet, so closure values like `isUnsaved` are stale.  Therefore we must
-        // NOT rely on the closure `isUnsaved` to gate the save — instead, always
-        // dispatch saveFileContentThunk which reads live state via getState().
-        if (reduxSyncTimerRef.current) {
-            clearTimeout(reduxSyncTimerRef.current);
-            reduxSyncTimerRef.current = null;
-            dispatch(updateContent(latestCodeRef.current));
-        }
+        // Ensure Redux has the absolute latest content before saving.
+        // Since updateContent is now dispatched synchronously in handleCodeChange,
+        // this is a safety net for edge cases (e.g. rapid save before React tick).
+        dispatch(updateContent(latestCodeRef.current));
         if (activeFile) {
             // Always dispatch — the thunk uses getState() to read the latest
             // currentContent vs savedContent and skips the network call when
@@ -1373,12 +1364,8 @@ const EditorPanel = ({
         const normalizeTrailing = (s) => (typeof s === 'string' ? s.replace(/[\r\n]+$/, '') : '');
         if (normalizeTrailing(code) === normalizeTrailing(savedContent)) return;
         const timer = setTimeout(() => {
-            // Flush any pending Redux debounce so the thunk reads latest content
-            if (reduxSyncTimerRef.current) {
-                clearTimeout(reduxSyncTimerRef.current);
-                reduxSyncTimerRef.current = null;
-                dispatch(updateContent(latestCodeRef.current));
-            }
+            // Safety: ensure Redux has the absolute latest content
+            dispatch(updateContent(latestCodeRef.current));
             dispatch(saveFileContentThunk()).then(() => {
                 // Force git status refresh after autosave — the normal
                 // fetchGitStatus inside saveFileContentThunk may be

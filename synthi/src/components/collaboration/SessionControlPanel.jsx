@@ -5,7 +5,7 @@ import { useCollabSession } from '@/hooks/useCollabSession';
 import {
   Users, Link2, Copy, Check, X, Shield, ShieldOff,
   Terminal, GitBranch, FileEdit, FolderEdit, UserX,
-  Radio, RadioOff, ChevronDown, ChevronUp, Bell,
+  Radio, ChevronDown, ChevronUp, Bell,
   RefreshCw
 } from 'lucide-react';
 
@@ -234,7 +234,7 @@ export default function SessionControlPanel({ slug }) {
               onClick={terminateSession}
               className="w-full flex items-center justify-center gap-2 px-4 py-2 bg-[#ff575715] hover:bg-[#ff575725] border border-[#ff575740] rounded-lg text-[#ff5757] font-semibold text-sm transition-all"
             >
-              <RadioOff className="w-4 h-4" />
+              <X className="w-4 h-4" />
               Stop Sharing
             </button>
           </div>
