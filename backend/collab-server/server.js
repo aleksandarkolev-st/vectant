@@ -1303,8 +1303,13 @@ const server = http.createServer(async (req, res) => {
             if (!sessionIdParam) { res.writeHead(400); res.end('Missing sessionId'); return; }
             const guest = sessionManager.admitGuest(sessionIdParam, data);
             result = { success: true, guest };
-            // Notify via the session notification channel
-            broadcastSessionEvent(sessionIdParam, 'guest:joined', { guest });
+            // Notify via the session notification channel (include hostId for guest clients)
+            const admitSession = sessionManager.getSession(sessionIdParam);
+            broadcastSessionEvent(sessionIdParam, 'guest:joined', {
+              guest,
+              hostId: admitSession?.hostId || null,
+              slug: admitSession?.slug || null,
+            });
             break;
           }
 
@@ -2139,8 +2144,13 @@ server.listen(PORT, '0.0.0.0', () => {
   sessionManager.on('session:knock', ({ sessionId, guestId, displayName, avatarUrl }) => {
     broadcastSessionEvent(sessionId, 'knock', { guestId, displayName, avatarUrl });
   });
-  sessionManager.on('session:guestJoined', ({ sessionId, guest }) => {
-    broadcastSessionEvent(sessionId, 'guest:joined', { guest });
+  sessionManager.on('session:guestJoined', ({ sessionId, hostId, guest }) => {
+    const joinedSession = sessionManager.getSession(sessionId);
+    broadcastSessionEvent(sessionId, 'guest:joined', {
+      guest,
+      hostId: hostId || null,
+      slug: joinedSession?.slug || null,
+    });
   });
   sessionManager.on('session:guestRemoved', ({ sessionId, guestId, reason }) => {
     broadcastSessionEvent(sessionId, 'guest:removed', { guestId, reason });
