@@ -908,9 +908,13 @@ function _makeScopeKey(scope = {}) {
 
 function _matchesNotifyScope(ws, scope = {}) {
   if (!scope) return true;
-  if (scope.sessionId) return ws._sessionId === scope.sessionId;
-  if (scope.userId) return ws._userId === scope.userId && !ws._sessionId;
-  return true;
+  // Direct-access model: match by sessionId OR userId.
+  // Both host and guest notification WS clients should receive events.
+  if (scope.sessionId && ws._sessionId === scope.sessionId) return true;
+  if (scope.userId && ws._userId === scope.userId) return true;
+  // If scope has no filters, broadcast to all
+  if (!scope.sessionId && !scope.userId) return true;
+  return false;
 }
 
 function broadcastGitStatusChanged(slug, filePath, scope = {}) {
