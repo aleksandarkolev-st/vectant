@@ -119,6 +119,11 @@ class EngineStats:
     symbols_tracked: int = 0
     summaries_generated: int = 0
     
+    # RAG pipeline stats
+    rag_documents: int = 0
+    rag_sections: int = 0
+    rag_summaries: int = 0
+    
     # Memory usage
     vector_index_size_mb: float = 0.0
     structural_index_size_mb: float = 0.0
@@ -393,9 +398,12 @@ class CodeIntelEngine:
                 rag_stats = self._rag_pipeline.ingest_directory(
                     str(self.workspace_root)
                 )
+                self._stats.rag_documents = rag_stats.get('documents_processed', 0)
+                self._stats.rag_sections = rag_stats.get('total_sections', 0)
+                self._stats.rag_summaries = rag_stats.get('documents_processed', 0)
                 logger.info(
-                    f"RAG ingestion: {rag_stats.get('documents_processed', 0)} docs, "
-                    f"{rag_stats.get('total_sections', 0)} sections"
+                    f"RAG ingestion: {self._stats.rag_documents} docs, "
+                    f"{self._stats.rag_sections} sections"
                 )
         except Exception as e:
             logger.warning(f"RAG ingestion failed: {e}")
