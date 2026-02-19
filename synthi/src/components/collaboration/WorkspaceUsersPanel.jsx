@@ -7,9 +7,8 @@ import { useBlockedUsers } from '@/hooks/useBlockedUsers';
 import collabClient from '@/services/collabClient';
 import collabSessionService from '@/services/collabSessionService';
 import {
-  Users, Radio, Eye, FileEdit, Clock, Globe,
-  ChevronRight, Loader2, UserPlus, Shield, Send,
-  Check, X, Bell, Ban, MoreHorizontal
+  Users, FileEdit, Globe, Loader2, UserPlus, Shield,
+  Send, Check, X, Bell, Ban, MoreHorizontal
 } from 'lucide-react';
 
 // ── Theme ─────────────────────────────────────────────────────────────────────

@@ -4,9 +4,7 @@ import React, { useState, useCallback, useEffect } from 'react';
 import { useCollabSession } from '@/hooks/useCollabSession';
 import WorkspaceUsersPanel from './WorkspaceUsersPanel';
 import {
-  X, Share2, Link2, Copy, Check, Users, Radio, Shield,
-  Terminal, GitBranch, FileEdit, FolderEdit, RefreshCw,
-  CircleOff
+  X, Link2, Copy, Check, Users, RefreshCw, CircleOff
 } from 'lucide-react';
 
 // ── Theme ─────────────────────────────────────────────────────────────────────
