@@ -100,7 +100,7 @@ const IGNORE_FILENAMES = new Set([
 // Code Intelligence Backend
 const CODE_INTEL_BASE = process.env.CODE_INTEL_URL || process.env.AI_ENGINE_URL || 'http://localhost:8000';
 
-const DEFAULT_GEMINI_MODEL = process.env.SYNTHI_AI_MODEL || process.env.GEMINI_MODEL || 'gemini-2.0-flash';
+const DEFAULT_GEMINI_MODEL = process.env.SYNTHI_AI_MODEL || process.env.GEMINI_MODEL || 'gemini-3-flash';
 const UPSTREAM_TIMEOUT_MS = 45_000;
 
 /**
@@ -110,6 +110,7 @@ const UPSTREAM_TIMEOUT_MS = 45_000;
  */
 const MODEL_MAX_OUTPUT_TOKENS = [
     // Gemini family
+    ['gemini-3-flash',       65_536],
     ['gemini-2.5-pro',       65_536],
     ['gemini-2.5-flash',     65_536],
     ['gemini-2.0-flash',      8_192],

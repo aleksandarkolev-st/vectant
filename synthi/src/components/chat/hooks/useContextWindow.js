@@ -24,6 +24,7 @@ import { useCallback, useMemo, useRef } from 'react';
  */
 const MODEL_CONTEXT_WINDOWS = [
     // Gemini family
+    ['gemini-3-flash',          1_048_576],
     ['gemini-2.5-pro',          1_048_576],
     ['gemini-2.5-flash',        1_048_576],
     ['gemini-2.0-flash',        1_048_576],
@@ -53,7 +54,7 @@ const MODEL_CONTEXT_WINDOWS = [
  * limit, or the fallback default for unknown models.
  */
 const getModelContextWindow = (modelName) => {
-    if (!modelName || typeof modelName !== 'string') return 1_048_576; // default (Gemini 2.0 Flash)
+    if (!modelName || typeof modelName !== 'string') return 1_048_576; // default (Gemini 3 Flash)
     const lower = modelName.toLowerCase();
     for (const [prefix, tokens] of MODEL_CONTEXT_WINDOWS) {
         if (lower.startsWith(prefix)) return tokens;
@@ -63,7 +64,7 @@ const getModelContextWindow = (modelName) => {
 
 // ── Token Budget Constants ──────────────────────────────────────────
 
-/** Default maximum context tokens — uses full Gemini 2.0 Flash window */
+/** Default maximum context tokens — uses full Gemini 3 Flash window */
 const DEFAULT_MAX_CONTEXT_TOKENS = 1_048_576;
 /** Tokens reserved for the system prompt */
 const SYSTEM_PROMPT_RESERVE = 4000;
