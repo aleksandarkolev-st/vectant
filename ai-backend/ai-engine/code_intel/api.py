@@ -149,6 +149,7 @@ class ContextResponse(BaseModel):
     trace: Optional[List[Dict[str, Any]]] = Field(None, description="Selection trace for observability")
     grounding_spans: Optional[List[Dict[str, Any]]] = Field(None, description="Grounding spans for verifier")
     clarifying_question: Optional[str] = Field(None, description="Clarifying question when uncertainty is high")
+    pipeline: str = Field("legacy", description="Retrieval pipeline used: 'rag' or 'legacy'")
 
 
 class ToolCallRequest(BaseModel):
@@ -546,6 +547,7 @@ async def get_context(request: ContextRequest, http_request: Request) -> Context
             trace=trace,
             grounding_spans=result.grounding_spans if result.grounding_spans else None,
             clarifying_question=result.clarifying_question,
+            pipeline=pipeline_type,
         )
     except Exception as e:
         logger.exception("Context retrieval failed")
