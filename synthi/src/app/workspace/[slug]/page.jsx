@@ -1660,11 +1660,9 @@ export default function EditorPage({ params }) {
         const source = typeof currentContent === 'string' ? currentContent : '';
         const filename = activeFile?.path || activeFile?.name || 'main';
 
-        // ── Incremental CodeIntel/RAG re-index ─────────────────────────
-        // Fire-and-forget so it doesn't block the save flow.
-        if (triggerCodeIntelFileIndex && activeFile?.path) {
-            triggerCodeIntelFileIndex(activeFile.path);
-        }
+        // Note: CodeIntel re-index is triggered by saveFileContentThunk
+        // (via synthi:codeintel-index-file event) so both manual and auto-save
+        // paths are covered. No need to trigger it again here.
 
         // Check if language is supported for compilation to avoid errors
         const ext = (filename.split('.').pop() || '').toLowerCase();
@@ -1700,7 +1698,7 @@ export default function EditorPage({ params }) {
         } catch (err) {
             console.error('[HMR] Silent compile failed', err);
         }
-    }, [activeFile, currentContent, rawFiles, slug, compile, triggerCodeIntelFileIndex]);
+    }, [activeFile, currentContent, rawFiles, slug, compile]);
 
     const handleEditorMount = useCallback((editorInstance) => {
         setEditor(editorInstance);

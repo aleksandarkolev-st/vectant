@@ -121,6 +121,13 @@ export const saveFileContentThunk = createAsyncThunk(
             throw e; // Re-throw so the thunk is rejected
         }
         
+        // Notify CodeIntel/RAG to re-index this file (covers both auto-save and manual save)
+        if (typeof window !== 'undefined' && activeFile.path) {
+            window.dispatchEvent(new CustomEvent('synthi:codeintel-index-file', {
+                detail: { filePath: activeFile.path },
+            }));
+        }
+        
         // Ensure tree is revalidated silently after save
         dispatch(fetchFilesThunk(slug)); 
 
