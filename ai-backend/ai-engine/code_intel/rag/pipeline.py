@@ -54,7 +54,6 @@ from .macro.document_ranker import DocumentRanker
 # Micro-navigation
 from .micro.tree_navigator import TreeNavigator
 from .micro.section_extractor import SectionExtractor
-from .micro.page_resolver import PageResolver
 from .micro.relevance_scorer import RelevanceScorer
 
 # Synthesis
@@ -124,7 +123,6 @@ class RAGPipeline:
         self._document_ranker: Optional[DocumentRanker] = None
         self._tree_navigator: Optional[TreeNavigator] = None
         self._section_extractor: Optional[SectionExtractor] = None
-        self._page_resolver: Optional[PageResolver] = None
         self._relevance_scorer: Optional[RelevanceScorer] = None
         self._context_builder: Optional[ContextBuilder] = None
         self._answer_synthesizer: Optional[AnswerSynthesizer] = None
@@ -612,14 +610,6 @@ class RAGPipeline:
                 config=self.config,
             )
         return self._section_extractor
-
-    def _page_resolver_instance(self) -> PageResolver:
-        if self._page_resolver is None:
-            self._page_resolver = PageResolver(
-                document_store=self.document_store,
-                section_store=self.section_store,
-            )
-        return self._page_resolver
 
     def _relevance_scorer_instance(self) -> RelevanceScorer:
         if self._relevance_scorer is None:
