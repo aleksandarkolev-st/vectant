@@ -487,6 +487,96 @@ class CodeIntelEngine:
         
         return len(chunks)
     
+    async def delete_file(self, file_path: str) -> Dict[str, Any]:
+        """
+        Remove a file from all indexes and stores.
+        
+        Called when a file is deleted from the workspace so that stale data
+        is purged from the dual-index, summaries, facts, and RAG stores.
+        
+        Args:
+            file_path: Path to file (relative to workspace)
+            
+        Returns:
+            Dict summarising what was cleaned up
+        """
+        self._initialize_components()
+        
+        cleaned: Dict[str, Any] = {"file": file_path}
+        
+        # 1. Dual indexer (vector + structural + lexical)
+        try:
+            self._dual_indexer.remove_file(file_path)
+            cleaned["dual_index"] = True
+        except Exception as e:
+            logger.warning(f"DualIndexer remove failed for {file_path}: {e}")
+            cleaned["dual_index"] = False
+        
+        # 2. Summary store
+        try:
+            if self._summary_store:
+                self._summary_store.remove_file_summary(file_path)
+                self._summary_store.remove_file_hash(file_path)
+            cleaned["summaries"] = True
+        except Exception as e:
+            logger.warning(f"Summary removal failed for {file_path}: {e}")
+            cleaned["summaries"] = False
+        
+        # 3. Facts store
+        try:
+            if self._facts_store:
+                self._facts_store.remove_facts_for_file(file_path)
+            cleaned["facts"] = True
+        except Exception as e:
+            logger.warning(f"Facts removal failed for {file_path}: {e}")
+            cleaned["facts"] = False
+        
+        # 4. RAG stores
+        try:
+            if self._rag_pipeline:
+                abs_path = str(self.workspace_root / file_path)
+                self._rag_pipeline.remove_file(abs_path)
+            cleaned["rag"] = True
+        except Exception as e:
+            logger.warning(f"RAG removal failed for {file_path}: {e}")
+            cleaned["rag"] = False
+        
+        logger.info(f"Deleted file from indexes: {file_path} -> {cleaned}")
+        return cleaned
+    
+    async def rename_file(
+        self, old_path: str, new_path: str,
+    ) -> Dict[str, Any]:
+        """
+        Atomically rename a file across all indexes.
+        
+        Implemented as delete-old + index-new so every store is consistent.
+        
+        Args:
+            old_path: Previous file path (relative to workspace)
+            new_path: New file path (relative to workspace)
+            
+        Returns:
+            Dict with cleanup and re-index results
+        """
+        result: Dict[str, Any] = {"old_path": old_path, "new_path": new_path}
+        
+        # Remove old entries
+        cleanup = await self.delete_file(old_path)
+        result["cleanup"] = cleanup
+        
+        # Re-index under the new path
+        try:
+            chunks = await self.index_file(new_path)
+            result["chunks_indexed"] = chunks
+        except Exception as e:
+            logger.warning(f"Re-index after rename failed for {new_path}: {e}")
+            result["chunks_indexed"] = 0
+            result["error"] = str(e)
+        
+        logger.info(f"Renamed file in indexes: {old_path} -> {new_path}")
+        return result
+    
     # =========================================================================
     # Context Retrieval API
     # =========================================================================
