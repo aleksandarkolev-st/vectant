@@ -374,6 +374,72 @@ async def index_file(request: IndexFileRequest, http_request: Request) -> IndexF
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# ── Delete / Rename endpoints ───────────────────────────────────────────────
+
+class DeleteFileRequest(BaseModel):
+    """Request to remove a file from all indexes."""
+    workspace_path: str = Field(..., description="Path to workspace")
+    file_path: str = Field(..., description="Relative path to the deleted file")
+
+
+class DeleteFileResponse(BaseModel):
+    """Response from file deletion cleanup."""
+    success: bool
+    detail: dict = {}
+
+
+@router.post("/index/file/delete", response_model=DeleteFileResponse)
+async def delete_file(request: DeleteFileRequest, http_request: Request) -> DeleteFileResponse:
+    """
+    Purge a deleted file from all indexes and stores.
+
+    Called by the frontend after a file is removed from the workspace.
+    """
+    try:
+        _require_api_key(http_request)
+        engine = get_engine(request.workspace_path)
+        detail = await engine.delete_file(request.file_path)
+        return DeleteFileResponse(success=True, detail=detail)
+    except Exception as e:
+        logger.exception("File delete cleanup failed")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class RenameFileRequest(BaseModel):
+    """Request to rename a file across all indexes."""
+    workspace_path: str = Field(..., description="Path to workspace")
+    old_path: str = Field(..., description="Previous relative file path")
+    new_path: str = Field(..., description="New relative file path")
+
+
+class RenameFileResponse(BaseModel):
+    """Response from file rename."""
+    success: bool
+    chunks_indexed: int = 0
+    detail: dict = {}
+
+
+@router.post("/index/file/rename", response_model=RenameFileResponse)
+async def rename_file(request: RenameFileRequest, http_request: Request) -> RenameFileResponse:
+    """
+    Update all indexes after a file rename.
+
+    Atomically removes old-path data and re-indexes the new path.
+    """
+    try:
+        _require_api_key(http_request)
+        engine = get_engine(request.workspace_path)
+        detail = await engine.rename_file(request.old_path, request.new_path)
+        return RenameFileResponse(
+            success=True,
+            chunks_indexed=detail.get("chunks_indexed", 0),
+            detail=detail,
+        )
+    except Exception as e:
+        logger.exception("File rename cleanup failed")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.post("/context", response_model=ContextResponse)
 async def get_context(request: ContextRequest, http_request: Request) -> ContextResponse:
     """
