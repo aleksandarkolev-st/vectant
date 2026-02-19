@@ -378,6 +378,19 @@ class CodeIntelEngine:
         except Exception as e:
             logger.warning(f"Summary sync failed: {e}")
         
+        # Sync RAG pipeline stores (dual-ingestion: ToC, sections, summaries)
+        try:
+            if self._rag_pipeline:
+                rag_stats = self._rag_pipeline.ingest_directory(
+                    str(self.workspace_root)
+                )
+                logger.info(
+                    f"RAG ingestion: {rag_stats.get('documents_processed', 0)} docs, "
+                    f"{rag_stats.get('total_sections', 0)} sections"
+                )
+        except Exception as e:
+            logger.warning(f"RAG ingestion failed: {e}")
+        
         return self._stats
     
     async def index_file(self, file_path: str) -> int:
