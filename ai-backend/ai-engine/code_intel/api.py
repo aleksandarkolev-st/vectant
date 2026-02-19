@@ -91,6 +91,13 @@ def resolve_workspace_path(workspace_path: str) -> str:
 
 router = APIRouter(prefix="/code-intel", tags=["code-intelligence"])
 
+# Register RAG sub-routes on the same router
+try:
+    from .rag.api import register_rag_routes
+    register_rag_routes(router)
+except Exception as _rag_err:
+    logger.warning(f"RAG routes not registered: {_rag_err}")
+
 
 def _require_api_key(request: Request) -> None:
     required = os.getenv("CODE_INTEL_API_KEY")
