@@ -112,6 +112,8 @@ export default function EditorPage({ params }) {
         filesIndexed: codeIntelFilesIndexed,
         indexWorkspace: triggerCodeIntelIndex,
         indexFile: triggerCodeIntelFileIndex,
+        deleteFile: triggerCodeIntelDeleteFile,
+        renameFile: triggerCodeIntelRenameFile,
     } = useCodeIntelIndex({
         workspaceSlug: slug,
         autoIndex: true, // Auto-index when workspace opens
@@ -239,6 +241,36 @@ export default function EditorPage({ params }) {
             }
         };
     }, []);
+
+    // ── CodeIntel CRUD event listeners ──────────────────────────────────
+    // Redux thunks (workspaceSlice) emit CustomEvents for file create/delete/rename.
+    // We listen here so we can call the hook-based CodeIntel functions.
+    useEffect(() => {
+        if (typeof window === 'undefined') return;
+
+        const onIndexFile = (e) => {
+            const { filePath } = e.detail || {};
+            if (filePath && triggerCodeIntelFileIndex) triggerCodeIntelFileIndex(filePath);
+        };
+        const onDeleteFile = (e) => {
+            const { filePath } = e.detail || {};
+            if (filePath && triggerCodeIntelDeleteFile) triggerCodeIntelDeleteFile(filePath);
+        };
+        const onRenameFile = (e) => {
+            const { oldPath, newPath } = e.detail || {};
+            if (oldPath && newPath && triggerCodeIntelRenameFile) triggerCodeIntelRenameFile(oldPath, newPath);
+        };
+
+        window.addEventListener('synthi:codeintel-index-file', onIndexFile);
+        window.addEventListener('synthi:codeintel-delete-file', onDeleteFile);
+        window.addEventListener('synthi:codeintel-rename-file', onRenameFile);
+
+        return () => {
+            window.removeEventListener('synthi:codeintel-index-file', onIndexFile);
+            window.removeEventListener('synthi:codeintel-delete-file', onDeleteFile);
+            window.removeEventListener('synthi:codeintel-rename-file', onRenameFile);
+        };
+    }, [triggerCodeIntelFileIndex, triggerCodeIntelDeleteFile, triggerCodeIntelRenameFile]);
 
     // Helper to dispatch GUI events to the backend via CompilerClient middleware
     const sendGuiEvent = (eventPayload) => {
