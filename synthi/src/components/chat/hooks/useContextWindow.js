@@ -187,14 +187,14 @@ const PRIORITY = {
     RECENT_HISTORY: 70,
     /** Agent step results from current pipeline */
     AGENT_RESULTS: 65,
+    /** Code intelligence / RAG pipeline context (high relevance) */
+    CODE_INTEL: 75,
     /** Sibling/related files */
     RELATED_FILES: 50,
     /** Older conversation history */
     OLD_HISTORY: 30,
     /** Summarized old messages */
     SUMMARY: 20,
-    /** Code intelligence context */
-    CODE_INTEL: 60,
 };
 
 // ── Hook ────────────────────────────────────────────────────────────
