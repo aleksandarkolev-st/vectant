@@ -1,11 +1,14 @@
 "use client";
 
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import { useWorkspacePresence } from '@/hooks/useWorkspacePresence';
 import { useCollabSession } from '@/hooks/useCollabSession';
+import collabClient from '@/services/collabClient';
+import collabSessionService from '@/services/collabSessionService';
 import {
   Users, Radio, Eye, FileEdit, Clock, Globe,
-  ChevronRight, Loader2, UserPlus, Shield
+  ChevronRight, Loader2, UserPlus, Shield, Send,
+  Check, X, Bell
 } from 'lucide-react';
 
 // ── Theme ─────────────────────────────────────────────────────────────────────
@@ -33,14 +36,29 @@ const T = {
  */
 export default function WorkspaceUsersPanel({ slug }) {
   const { activeUsers, sessions, loading, refresh } = useWorkspacePresence(slug);
-  const { role, isHost, isGuest, isKnocking, requestJoinSession, error, hostId } = useCollabSession();
+  const {
+    role, isHost, isGuest, isKnocking,
+    requestJoinSession, joinUser, inviteUser,
+    error, hostId,
+  } = useCollabSession();
   const [joiningSessionId, setJoiningSessionId] = useState(null);
+  const [joiningUserId, setJoiningUserId] = useState(null);
+  const [invitingUserId, setInvitingUserId] = useState(null);
+  const [pendingInvite, setPendingInvite] = useState(null); // incoming invite
 
   const myUserId = typeof window !== 'undefined'
     ? localStorage.getItem('synthi-user-id') || ''
     : '';
 
-  // ── Request to join a session ─────────────────────────────────────────
+  // ── Listen for incoming collab-invite notifications ───────────────────
+  useEffect(() => {
+    const unsub = collabSessionService.on('collab-invite', (detail) => {
+      setPendingInvite(detail);
+    });
+    return unsub;
+  }, []);
+
+  // ── Request to join an existing session ────────────────────────────────
 
   const handleRequestJoin = useCallback(async (sessionId) => {
     if (isHost || isGuest || isKnocking) return;
@@ -50,6 +68,40 @@ export default function WorkspaceUsersPanel({ slug }) {
     } catch (_) { /* error handled by hook */ }
     setJoiningSessionId(null);
   }, [isHost, isGuest, isKnocking, requestJoinSession]);
+
+  // ── Ask to join a solo user (direct collab) ───────────────────────────
+
+  const handleJoinUser = useCallback(async (userId, userName) => {
+    if (isHost || isGuest || isKnocking) return;
+    setJoiningUserId(userId);
+    try {
+      await joinUser(userId, userName, slug);
+    } catch (_) { /* error handled by hook */ }
+    setJoiningUserId(null);
+  }, [isHost, isGuest, isKnocking, joinUser, slug]);
+
+  // ── Invite a solo user (direct collab) ────────────────────────────────
+
+  const handleInviteUser = useCallback(async (userId) => {
+    if (isGuest || isKnocking) return;
+    setInvitingUserId(userId);
+    try {
+      await inviteUser(userId, slug);
+    } catch (_) { /* error handled by hook */ }
+    setInvitingUserId(null);
+  }, [isGuest, isKnocking, inviteUser, slug]);
+
+  // ── Accept incoming invite ────────────────────────────────────────────
+
+  const handleAcceptInvite = useCallback(async () => {
+    if (!pendingInvite?.sessionId) return;
+    setPendingInvite(null);
+    await requestJoinSession(pendingInvite.sessionId);
+  }, [pendingInvite, requestJoinSession]);
+
+  const handleDeclineInvite = useCallback(() => {
+    setPendingInvite(null);
+  }, []);
 
   // ── Group users: those in sessions vs solo ────────────────────────────
 
@@ -69,9 +121,31 @@ export default function WorkspaceUsersPanel({ slug }) {
   }
 
   const isEmpty = activeUsers.length <= 1 && sessions.length === 0;
+  const isIdle = role === 'idle';
 
   return (
     <div className="space-y-3">
+      {/* ── Incoming invite banner ──────────────────────────────────── */}
+      {pendingInvite && (
+        <div className="flex items-center gap-2 px-3 py-2 rounded-lg border"
+          style={{ backgroundColor: 'rgba(124,184,248,0.06)', borderColor: 'rgba(124,184,248,0.20)' }}>
+          <Bell className="w-3.5 h-3.5 flex-shrink-0" style={{ color: T.blue }} />
+          <div className="flex-1 min-w-0">
+            <span className="text-[11px] font-medium" style={{ color: T.text }}>
+              <span style={{ color: T.blue }}>{pendingInvite.hostName || 'Someone'}</span> invited you to collaborate
+            </span>
+          </div>
+          <button onClick={handleAcceptInvite}
+            className="p-1 rounded bg-[#4aba9a20] hover:bg-[#4aba9a30]" title="Accept">
+            <Check className="w-3.5 h-3.5" style={{ color: T.teal }} />
+          </button>
+          <button onClick={handleDeclineInvite}
+            className="p-1 rounded bg-[#ff575720] hover:bg-[#ff575730]" title="Decline">
+            <X className="w-3.5 h-3.5" style={{ color: T.red }} />
+          </button>
+        </div>
+      )}
+
       {/* ── Guest connection banner ─────────────────────────────────── */}
       {isGuest && hostId && (
         <div className="flex items-center gap-2 px-3 py-2 rounded-lg border"
@@ -107,7 +181,7 @@ export default function WorkspaceUsersPanel({ slug }) {
                 key={session.id}
                 session={session}
                 myUserId={myUserId}
-                isIdle={role === 'idle'}
+                isIdle={isIdle}
                 isKnocking={isKnocking}
                 joiningSessionId={joiningSessionId}
                 onRequestJoin={handleRequestJoin}
@@ -123,7 +197,17 @@ export default function WorkspaceUsersPanel({ slug }) {
           <SectionLabel icon={Users} color={T.textMuted} label="Online" count={soloUsers.length} />
           <div className="space-y-0.5 mt-1.5">
             {soloUsers.map(user => (
-              <UserRow key={user.id} user={user} />
+              <UserRow
+                key={user.id}
+                user={user}
+                isIdle={isIdle}
+                isHost={isHost}
+                isKnocking={isKnocking}
+                joiningUserId={joiningUserId}
+                invitingUserId={invitingUserId}
+                onJoinUser={handleJoinUser}
+                onInviteUser={handleInviteUser}
+              />
             ))}
           </div>
         </div>
@@ -238,9 +322,13 @@ function SessionCard({ session, myUserId, isIdle, isKnocking, joiningSessionId, 
 
 // ── User Row ──────────────────────────────────────────────────────────────────
 
-function UserRow({ user }) {
+function UserRow({ user, isIdle, isHost, isKnocking, joiningUserId, invitingUserId, onJoinUser, onInviteUser }) {
+  const isJoining = joiningUserId === user.id;
+  const isInviting = invitingUserId === user.id;
+  const canAct = (isIdle || isHost) && !isKnocking;
+
   return (
-    <div className="flex items-center gap-2 px-2 py-1.5 rounded-md transition-colors hover:bg-[#ffffff04]">
+    <div className="flex items-center gap-2 px-2 py-1.5 rounded-md transition-colors hover:bg-[#ffffff04] group">
       <UserAvatar name={user.name} avatar={user.image} color={user.color} size={24} />
       <div className="flex-1 min-w-0">
         <span className="text-xs font-medium truncate block" style={{ color: T.text }}>
@@ -253,7 +341,54 @@ function UserRow({ user }) {
           </span>
         )}
       </div>
-      <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ backgroundColor: T.teal }} />
+      {/* Action buttons — visible on hover or when loading */}
+      {canAct && (
+        <div className={`flex items-center gap-1 ${isJoining || isInviting ? '' : 'opacity-0 group-hover:opacity-100'} transition-opacity`}>
+          {/* Ask to Join — join the other user's workspace */}
+          {isIdle && (
+            <button
+              onClick={() => onJoinUser(user.id, user.name)}
+              disabled={isJoining}
+              className="flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-medium transition-all"
+              style={{
+                backgroundColor: 'rgba(74,186,154,0.10)',
+                border: '1px solid rgba(74,186,154,0.25)',
+                color: T.teal,
+                opacity: isJoining ? 0.5 : 1,
+              }}
+              title="Ask to join their workspace"
+            >
+              {isJoining
+                ? <Loader2 className="w-2.5 h-2.5 animate-spin" />
+                : <UserPlus className="w-2.5 h-2.5" />
+              }
+              Join
+            </button>
+          )}
+          {/* Invite — invite to YOUR workspace */}
+          <button
+            onClick={() => onInviteUser(user.id)}
+            disabled={isInviting}
+            className="flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-medium transition-all"
+            style={{
+              backgroundColor: 'rgba(124,184,248,0.10)',
+              border: '1px solid rgba(124,184,248,0.25)',
+              color: T.blue,
+              opacity: isInviting ? 0.5 : 1,
+            }}
+            title="Invite to your workspace"
+          >
+            {isInviting
+              ? <Loader2 className="w-2.5 h-2.5 animate-spin" />
+              : <Send className="w-2.5 h-2.5" />
+            }
+            Invite
+          </button>
+        </div>
+      )}
+      {!canAct && (
+        <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ backgroundColor: T.teal }} />
+      )}
     </div>
   );
 }
