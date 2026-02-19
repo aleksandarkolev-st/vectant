@@ -392,21 +392,33 @@ class CodeIntelEngine:
         except Exception as e:
             logger.warning(f"Summary sync failed: {e}")
         
-        # Sync RAG pipeline stores (dual-ingestion: ToC, sections, summaries)
-        try:
-            if self._rag_pipeline:
-                rag_stats = self._rag_pipeline.ingest_directory(
-                    str(self.workspace_root)
-                )
-                self._stats.rag_documents = rag_stats.get('documents_processed', 0)
-                self._stats.rag_sections = rag_stats.get('total_sections', 0)
-                self._stats.rag_summaries = rag_stats.get('documents_processed', 0)
-                logger.info(
-                    f"RAG ingestion: {self._stats.rag_documents} docs, "
-                    f"{self._stats.rag_sections} sections"
-                )
-        except Exception as e:
-            logger.warning(f"RAG ingestion failed: {e}")
+        # Sync RAG pipeline stores in a background thread so it doesn't
+        # block the HTTP response for index_workspace.
+        if self._rag_pipeline:
+            import threading
+
+            def _rag_ingest_background():
+                try:
+                    rag_stats = self._rag_pipeline.ingest_directory(
+                        str(self.workspace_root)
+                    )
+                    self._stats.rag_documents = rag_stats.get('documents_processed', 0)
+                    self._stats.rag_sections = rag_stats.get('total_sections', 0)
+                    self._stats.rag_summaries = rag_stats.get('documents_processed', 0)
+                    logger.info(
+                        f"RAG ingestion complete: {self._stats.rag_documents} docs, "
+                        f"{self._stats.rag_sections} sections"
+                    )
+                except Exception as e:
+                    logger.warning(f"RAG background ingestion failed: {e}")
+
+            thread = threading.Thread(
+                target=_rag_ingest_background,
+                name="rag-ingest",
+                daemon=True,
+            )
+            thread.start()
+            logger.info("RAG ingestion started in background thread")
         
         return self._stats
     
@@ -489,7 +501,8 @@ class CodeIntelEngine:
         Get relevant context for a query.
         
         This is the main API for context assembly.
-        Uses deterministic controller to decide what context to include.
+        Uses the RAG pipeline (Steps 2+3: Macro-Retrieval + Micro-Navigation)
+        when available. Falls back to the old retrieval pipeline otherwise.
         
         Args:
             query: User query or intent
@@ -501,7 +514,102 @@ class CodeIntelEngine:
         """
         self._initialize_components()
         
-        # Create budget
+        # ── Try RAG pipeline first (superior retrieval) ──────────────────
+        if self._rag_pipeline and self._rag_pipeline.document_store.count() > 0:
+            return await self._get_context_via_rag(query, max_tokens)
+        
+        # ── Fallback: old retrieval pipeline ─────────────────────────────
+        return await self._get_context_via_old_pipeline(query, max_tokens)
+
+    async def _get_context_via_rag(
+        self,
+        query: str,
+        max_tokens: int,
+    ) -> RetrievalResult:
+        """
+        Context retrieval using the new 4-step RAG pipeline (Steps 2+3 only).
+        
+        Runs Macro-Retrieval → Micro-Navigation → ContextBuilder.
+        No heavy LLM call — the frontend's Gemini call handles synthesis.
+        """
+        import asyncio
+        
+        budget = ContextBudget(max_tokens=max_tokens)
+        
+        loop = asyncio.get_event_loop()
+        rag_ctx = await loop.run_in_executor(
+            None,
+            lambda: self._rag_pipeline.retrieve_context(query, max_tokens=max_tokens)
+        )
+        
+        context_text = rag_ctx.get("context_text", "")
+        sources = rag_ctx.get("sources", [])
+        tokens_used = rag_ctx.get("tokens_used", 0)
+        timing = rag_ctx.get("timing", {})
+        trace = rag_ctx.get("trace", [])
+        sufficiency_str = rag_ctx.get("sufficiency", "UNKNOWN")
+        
+        # Map RAG sufficiency string to controller enum
+        sufficiency = ContextSufficiency.SUFFICIENT
+        refusal = None
+        if sufficiency_str == "EMPTY":
+            sufficiency = ContextSufficiency.INSUFFICIENT
+            refusal = RefusalReason.NO_RESULTS
+        elif sufficiency_str == "INSUFFICIENT":
+            sufficiency = ContextSufficiency.INSUFFICIENT
+            refusal = RefusalReason.TOPIC_NOT_FOUND
+        elif sufficiency_str == "PARTIAL":
+            sufficiency = ContextSufficiency.PARTIAL
+        
+        # Build grounding spans from RAG sources
+        grounding_spans = [
+            {
+                "file": s.get("file", ""),
+                "start_line": s.get("start_line", 0),
+                "end_line": s.get("end_line", 0),
+                "symbol": s.get("symbol", ""),
+                "score": s.get("score", 0.0),
+                "citation_id": s.get("citation_id", ""),
+                "breadcrumb": s.get("breadcrumb", ""),
+            }
+            for s in sources
+        ]
+        
+        retrieval_result = RetrievalResult(
+            chunks=[],
+            file_summaries=[],
+            repo_summary=None,
+            query=query,
+            total_tokens=tokens_used,
+            budget=budget,
+            assembled_context=context_text,
+            trace=trace,
+            debug={
+                "timings_ms": timing,
+                "pipeline": "rag",
+                "documents_searched": rag_ctx.get("documents_searched", 0),
+                "documents_selected": rag_ctx.get("documents_selected", 0),
+                "sections_used": rag_ctx.get("sections_used", 0),
+            },
+            grounding_spans=grounding_spans,
+            sufficiency=sufficiency,
+            refusal_reason=refusal,
+        )
+        
+        return retrieval_result
+
+    async def _get_context_via_old_pipeline(
+        self,
+        query: str,
+        max_tokens: int,
+    ) -> RetrievalResult:
+        """
+        Context retrieval using the legacy retrieval pipeline.
+        
+        Used as fallback when RAG stores are empty.
+        """
+        import asyncio
+        
         budget = ContextBudget(max_tokens=max_tokens)
 
         # Refresh summaries for retrieval
@@ -528,7 +636,6 @@ class CodeIntelEngine:
             logger.debug(f"Failed to update summaries for retrieval: {e}")
         
         # Run retrieval pipeline (synchronous, so run in executor)
-        import asyncio
         loop = asyncio.get_event_loop()
         pipeline_result = await loop.run_in_executor(
             None,
@@ -565,6 +672,7 @@ class CodeIntelEngine:
                     "assembly": pipeline_result.assembly_time_ms,
                     "total": pipeline_result.total_time_ms,
                 },
+                "pipeline": "legacy",
                 "counters": self._last_metrics(),
             },
             grounding_spans=pipeline_result.grounding_spans,

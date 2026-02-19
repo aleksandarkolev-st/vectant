@@ -380,7 +380,8 @@ async def get_context(request: ContextRequest, http_request: Request) -> Context
     Get context for a query.
     
     Assembles relevant code context for the given query within token budget.
-    Uses deterministic retrieval controller to decide what context to include.
+    Uses the RAG pipeline (Macro-Retrieval + Micro-Navigation) when available,
+    falling back to the legacy retrieval pipeline otherwise.
     Returns sufficiency indicator so LLM knows if context is complete.
     """
     try:
@@ -415,33 +416,43 @@ async def get_context(request: ContextRequest, http_request: Request) -> Context
                 refusal = str(refusal)
         
         trace = result.trace if result.trace else None
+        pipeline_type = (result.debug or {}).get("pipeline", "legacy")
+
         if os.getenv("CODE_INTEL_DEBUG") and result.debug:
             if trace is None:
                 trace = []
             trace.append({"debug": result.debug})
 
-        score_by_chunk_id: Dict[str, float] = {}
-        if trace:
-            for item in trace:
-                if item.get("reason") != "included":
-                    continue
-                chunk_id = item.get("chunk_id")
-                if not chunk_id:
-                    continue
-                score = item.get("score")
-                if score is None:
-                    continue
-                prev = score_by_chunk_id.get(chunk_id)
-                if prev is None or score > prev:
-                    score_by_chunk_id[chunk_id] = score
+        # Build sources: from grounding_spans (RAG) or chunks (legacy)
+        sources = []
+        if result.grounding_spans:
+            # RAG pipeline: sources come from grounding_spans
+            for gs in result.grounding_spans:
+                sources.append({
+                    "file": gs.get("file", ""),
+                    "start_line": gs.get("start_line", 0),
+                    "end_line": gs.get("end_line", 0),
+                    "symbol": gs.get("symbol", ""),
+                    "score": gs.get("score", 0.0),
+                })
+        elif result.chunks:
+            # Legacy pipeline: sources come from chunks
+            score_by_chunk_id: Dict[str, float] = {}
+            if trace:
+                for item in trace:
+                    if item.get("reason") != "included":
+                        continue
+                    chunk_id = item.get("chunk_id")
+                    if not chunk_id:
+                        continue
+                    score = item.get("score")
+                    if score is None:
+                        continue
+                    prev = score_by_chunk_id.get(chunk_id)
+                    if prev is None or score > prev:
+                        score_by_chunk_id[chunk_id] = score
 
-        return ContextResponse(
-            context=result.assembled_context,
-            chunks_used=len(result.chunks),
-            tokens_used=result.total_tokens,
-            sufficiency=sufficiency,
-            refusal=refusal,
-            sources=[
+            sources = [
                 {
                     "file": c.metadata.file_path,
                     "start_line": c.metadata.start_line,
@@ -450,7 +461,22 @@ async def get_context(request: ContextRequest, http_request: Request) -> Context
                     "score": score_by_chunk_id.get(c.id, 0.0),
                 }
                 for c in result.chunks
-            ],
+            ]
+
+        chunks_used = len(result.chunks) if result.chunks else len(sources)
+
+        logger.info(
+            f"[Context] pipeline={pipeline_type} | query={request.query[:60]!r} | "
+            f"sources={len(sources)} | tokens={result.total_tokens} | {sufficiency}"
+        )
+
+        return ContextResponse(
+            context=result.assembled_context,
+            chunks_used=chunks_used,
+            tokens_used=result.total_tokens,
+            sufficiency=sufficiency,
+            refusal=refusal,
+            sources=sources,
             trace=trace,
             grounding_spans=result.grounding_spans if result.grounding_spans else None,
             clarifying_question=result.clarifying_question,

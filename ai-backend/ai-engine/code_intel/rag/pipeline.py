@@ -275,7 +275,233 @@ class RAGPipeline:
         }
 
     # =========================================================================
-    # Steps 2-4: Query Pipeline
+    # Steps 2-3: Context Retrieval (no LLM synthesis)
+    # =========================================================================
+
+    def retrieve_context(
+        self,
+        query_text: str,
+        max_tokens: int = 8000,
+        **kwargs,
+    ) -> Dict[str, Any]:
+        """
+        Retrieve relevant context using Steps 2+3 only (no heavy LLM call).
+
+        This is the PRIMARY method for integration with the chat pipeline.
+        It gives us the RAG pipeline's superior retrieval (macro-retrieval +
+        micro-navigation) without the latency of a synthesis LLM call.
+
+        Args:
+            query_text: User question.
+            max_tokens: Token budget for assembled context.
+            **kwargs: Override RAGQuery defaults.
+
+        Returns:
+            Dict with:
+                context_text: Assembled context string for the LLM prompt.
+                sources: List of source sections with file/line/score.
+                tokens_used: Estimated tokens in context.
+                documents_searched: Total documents considered.
+                documents_selected: Documents selected by macro-retrieval.
+                sections_used: Number of sections in context.
+                truncated: Whether context was truncated.
+                timing: Sub-step timing breakdown.
+                trace: Full pipeline trace for observability.
+        """
+        self._ensure_initialized()
+        t_start = time.time()
+
+        query = RAGQuery(text=query_text, max_tokens=max_tokens, **kwargs)
+
+        # Check if we have any data
+        if self.document_store.count() == 0:
+            return {
+                "context_text": "",
+                "sources": [],
+                "tokens_used": 0,
+                "documents_searched": 0,
+                "documents_selected": 0,
+                "sections_used": 0,
+                "truncated": False,
+                "timing": {"total_ms": (time.time() - t_start) * 1000},
+                "trace": [],
+                "sufficiency": "EMPTY",
+            }
+
+        # ── Step 2: Macro-Retrieval ──────────────────────────────────────
+        try:
+            macro_result = self._run_macro_retrieval(query)
+        except Exception as e:
+            logger.error(f"Macro-retrieval failed: {e}")
+            return {
+                "context_text": "",
+                "sources": [],
+                "tokens_used": 0,
+                "documents_searched": 0,
+                "documents_selected": 0,
+                "sections_used": 0,
+                "truncated": False,
+                "timing": {"total_ms": (time.time() - t_start) * 1000},
+                "trace": [{"step": "macro", "error": str(e)}],
+                "sufficiency": "INSUFFICIENT",
+            }
+
+        if not macro_result.document_ids:
+            return {
+                "context_text": "",
+                "sources": [],
+                "tokens_used": 0,
+                "documents_searched": macro_result.total_candidates,
+                "documents_selected": 0,
+                "sections_used": 0,
+                "truncated": False,
+                "timing": {
+                    "macro_ms": macro_result.time_ms,
+                    "total_ms": (time.time() - t_start) * 1000,
+                },
+                "trace": [{"step": "macro", "result": "no_documents"}],
+                "sufficiency": "INSUFFICIENT",
+            }
+
+        # ── Step 3: Micro-Navigation ─────────────────────────────────────
+        try:
+            micro_result, extraction_results = self._run_micro_navigation(
+                query, macro_result
+            )
+        except Exception as e:
+            logger.error(f"Micro-navigation failed: {e}")
+            return {
+                "context_text": "",
+                "sources": [],
+                "tokens_used": 0,
+                "documents_searched": macro_result.total_candidates,
+                "documents_selected": len(macro_result.document_ids),
+                "sections_used": 0,
+                "truncated": False,
+                "timing": {
+                    "macro_ms": macro_result.time_ms,
+                    "total_ms": (time.time() - t_start) * 1000,
+                },
+                "trace": [{"step": "micro", "error": str(e)}],
+                "sufficiency": "INSUFFICIENT",
+            }
+
+        if not extraction_results:
+            return {
+                "context_text": "",
+                "sources": [],
+                "tokens_used": 0,
+                "documents_searched": macro_result.total_candidates,
+                "documents_selected": len(macro_result.document_ids),
+                "sections_used": 0,
+                "truncated": False,
+                "timing": {
+                    "macro_ms": macro_result.time_ms,
+                    "micro_ms": micro_result.time_ms,
+                    "total_ms": (time.time() - t_start) * 1000,
+                },
+                "trace": [{"step": "micro", "result": "no_sections"}],
+                "sufficiency": "INSUFFICIENT",
+            }
+
+        # ── Build context (reuse Step 4's ContextBuilder, no LLM) ────────
+        try:
+            builder = self._context_builder_instance()
+            synth_ctx = builder.build_context(
+                extraction_results, token_budget=max_tokens
+            )
+        except Exception as e:
+            logger.error(f"Context building failed: {e}")
+            return {
+                "context_text": "",
+                "sources": [],
+                "tokens_used": 0,
+                "documents_searched": macro_result.total_candidates,
+                "documents_selected": len(macro_result.document_ids),
+                "sections_used": len(micro_result.sections),
+                "truncated": False,
+                "timing": {
+                    "macro_ms": macro_result.time_ms,
+                    "micro_ms": micro_result.time_ms,
+                    "total_ms": (time.time() - t_start) * 1000,
+                },
+                "trace": [{"step": "build", "error": str(e)}],
+                "sufficiency": "INSUFFICIENT",
+            }
+
+        total_ms = (time.time() - t_start) * 1000
+
+        # Build sources list from context sections (for ContextResponse)
+        sources = []
+        for cs in synth_ctx.sections:
+            sources.append({
+                "file": cs.file_path or cs.document_title,
+                "start_line": cs.start_line,
+                "end_line": cs.end_line,
+                "symbol": cs.section_title,
+                "score": 0.0,
+                "document_id": cs.document_id,
+                "citation_id": cs.citation_id,
+                "breadcrumb": cs.breadcrumb,
+            })
+
+        # Map relevance scores from micro-navigation
+        score_map = {
+            ref.section_id: ref.relevance_score
+            for ref in micro_result.sections
+            if ref.relevance_score > 0
+        }
+        for src in sources:
+            sid = src.get("document_id", "")
+            if sid in score_map:
+                src["score"] = score_map[sid]
+
+        # Build trace
+        trace = []
+        for ref in micro_result.sections:
+            trace.append({
+                "reason": "included",
+                "file": ref.document_title,
+                "symbol": ref.section_title,
+                "score": ref.relevance_score,
+                "chunk_id": ref.section_id,
+                "breadcrumb": ref.breadcrumb,
+            })
+
+        # Determine sufficiency
+        if synth_ctx.section_count == 0:
+            sufficiency = "EMPTY"
+        elif synth_ctx.truncated:
+            sufficiency = "PARTIAL"
+        else:
+            sufficiency = "SUFFICIENT"
+
+        logger.info(
+            f"RAG context retrieved: {synth_ctx.section_count} sections "
+            f"from {synth_ctx.document_count} docs in {total_ms:.0f}ms "
+            f"({synth_ctx.total_tokens} tokens, {sufficiency})"
+        )
+
+        return {
+            "context_text": synth_ctx.context_text,
+            "sources": sources,
+            "tokens_used": synth_ctx.total_tokens,
+            "documents_searched": macro_result.total_candidates,
+            "documents_selected": len(macro_result.document_ids),
+            "sections_used": synth_ctx.section_count,
+            "truncated": synth_ctx.truncated,
+            "timing": {
+                "macro_ms": macro_result.time_ms,
+                "micro_ms": micro_result.time_ms,
+                "build_ms": total_ms - macro_result.time_ms - micro_result.time_ms,
+                "total_ms": total_ms,
+            },
+            "trace": trace,
+            "sufficiency": sufficiency,
+        }
+
+    # =========================================================================
+    # Steps 2-4: Full Query Pipeline (with synthesis)
     # =========================================================================
 
     def query(self, query_text: str, **kwargs) -> RAGResult:
