@@ -377,7 +377,7 @@ class CollabClient {
       this.serverUrl = 'ws://localhost:1234';
     }
     this.docs = new Map(); // key -> {doc, provider, bindings: Set}
-    this.identity = { userId: null, sessionId: null };
+    this.identity = { userId: null, sessionId: null, hostId: null };
     // awareness listener registry: key -> Map<originalCb, wrappedCb>
     this._awarenessListeners = new Map();
 
@@ -428,11 +428,14 @@ class CollabClient {
     // sanitization would cause a mismatch: the server would look for the
     // sanitized path on disk and fail to find it.
     const safePath = path || 'root';
-    if (this.identity.sessionId) {
-      return `workspace:${slug}:session:${this.identity.sessionId}:${safePath}`;
-    }
-    if (this.identity.userId) {
-      return `workspace:${slug}:user:${encodeURIComponent(String(this.identity.userId))}:${safePath}`;
+
+    // Direct-access collaboration: when the user is a guest in a session,
+    // use the HOST's userId for room naming so both host and guest share
+    // the same Yjs document (backed by the host's repo on disk).
+    const scopeUserId = this.identity.hostId || this.identity.userId;
+
+    if (scopeUserId) {
+      return `workspace:${slug}:user:${encodeURIComponent(String(scopeUserId))}:${safePath}`;
     }
     // Strict mode: unauthenticated users cannot open Yjs docs.
     return `workspace:${slug}:legacy-denied:${safePath}`;
@@ -442,13 +445,16 @@ class CollabClient {
     return this._roomKey(slug, path);
   }
 
-  setIdentity({ userId = null, sessionId = null } = {}) {
+  setIdentity({ userId = null, sessionId = null, hostId = null } = {}) {
     const nextUser = userId || null;
     const nextSession = sessionId || null;
-    const changed = this.identity.userId !== nextUser || this.identity.sessionId !== nextSession;
+    const nextHost = hostId || null;
+    const changed = this.identity.userId !== nextUser
+      || this.identity.sessionId !== nextSession
+      || this.identity.hostId !== nextHost;
     if (!changed) return;
 
-    this.identity = { userId: nextUser, sessionId: nextSession };
+    this.identity = { userId: nextUser, sessionId: nextSession, hostId: nextHost };
 
     // Room keys depend on identity scope. Recreate docs on scope change.
     for (const [key, entry] of this.docs.entries()) {
