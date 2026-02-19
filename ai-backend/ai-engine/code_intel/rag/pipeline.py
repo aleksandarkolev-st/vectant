@@ -16,6 +16,8 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+import numpy as np
+
 from .config import RAGConfig, get_rag_config
 from .types import (
     RAGQuery,
@@ -193,7 +195,7 @@ class RAGPipeline:
 
             # Store ToC tree
             if doc.toc:
-                self.toc_store.add(doc.id, doc.toc)
+                self.toc_store.set(doc.id, doc.toc)
 
             # Store sections
             if doc.sections:
@@ -201,7 +203,8 @@ class RAGPipeline:
 
             # Store summary + embedding
             if doc.summary:
-                self.summary_index.add(doc.id, doc.summary)
+                embedding = self._compute_embedding(doc.summary)
+                self.summary_index.add(doc.id, embedding, doc.summary)
                 self._keyword_filter_instance().add_document(
                     doc.id, doc.summary
                 )
@@ -246,11 +249,12 @@ class RAGPipeline:
 
         self.document_store.add(doc)
         if doc.toc:
-            self.toc_store.add(doc.id, doc.toc)
+            self.toc_store.set(doc.id, doc.toc)
         if doc.sections:
             self.section_store.add_sections(doc.sections)
         if doc.summary:
-            self.summary_index.add(doc.id, doc.summary)
+            embedding = self._compute_embedding(doc.summary)
+            self.summary_index.add(doc.id, embedding, doc.summary)
             self._keyword_filter_instance().add_document(doc.id, doc.summary)
 
         self.summary_index.save()
@@ -496,6 +500,47 @@ class RAGPipeline:
     def _ensure_initialized(self) -> None:
         if not self._initialized:
             self.initialize()
+
+    def _compute_embedding(self, summary) -> np.ndarray:
+        """
+        Compute embedding for a DocumentSummary.
+
+        Uses the existing code_intel Embedder when available.
+        Falls back to a zero vector when no API key is configured,
+        allowing ingestion to proceed (search quality will be limited).
+        """
+        if summary.embedding is not None:
+            vec = np.asarray(summary.embedding, dtype=np.float32)
+            if vec.shape == (self.config.embedding_dimension,):
+                return vec
+
+        text = summary.to_embed_text()
+        try:
+            embedder = self._get_embedder()
+            if embedder:
+                vec = embedder.embed_query(text)
+                if vec is not None:
+                    return np.asarray(vec, dtype=np.float32)
+        except Exception as e:
+            logger.warning(f"Embedding generation failed: {e}")
+
+        # Fallback: zero vector (search won't work but stores are populated)
+        logger.debug("Using zero-vector fallback for summary embedding")
+        return np.zeros(self.config.embedding_dimension, dtype=np.float32)
+
+    def _get_embedder(self):
+        """Lazy-load the embedding model."""
+        if not hasattr(self, '_embedder_instance'):
+            self._embedder_instance = None
+            try:
+                from ..indexer.embedder import Embedder
+                self._embedder_instance = Embedder(
+                    model=self.config.embedding_model,
+                    api_key=self.config.embedding_api_key,
+                )
+            except (ImportError, Exception) as e:
+                logger.info(f"Embedder not available: {e}")
+        return self._embedder_instance
 
     def _processor_instance(self) -> DocumentProcessor:
         if self._processor is None:
