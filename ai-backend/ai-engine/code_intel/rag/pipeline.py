@@ -888,3 +888,43 @@ class RAGPipeline:
         self.summary_index.save()
         self._keyword_filter_instance().save()
         logger.info("RAG pipeline data cleared")
+
+    def remove_file(self, file_path: str) -> Dict[str, Any]:
+        """
+        Remove a file's data from all RAG stores.
+
+        Cleans up document, sections, ToC tree, summary vector,
+        and keyword index entry for the given file path.
+
+        Args:
+            file_path: Absolute or relative file path.
+
+        Returns:
+            Removal result with counts.
+        """
+        self._ensure_initialized()
+
+        doc_id = self.document_store.get_by_path(file_path)
+        if not doc_id:
+            return {"status": "not_found", "file": file_path}
+
+        sections_removed = self.section_store.remove_by_document(doc_id)
+        self.toc_store.remove(doc_id)
+        self.summary_index.remove(doc_id)
+        self._keyword_filter_instance().remove_document(doc_id)
+        self.document_store.remove(doc_id)
+
+        # Persist
+        self.summary_index.save()
+        self._keyword_filter_instance().save()
+
+        logger.info(
+            f"Removed file from RAG: {file_path} "
+            f"(doc={doc_id}, {sections_removed} sections)"
+        )
+        return {
+            "status": "removed",
+            "file": file_path,
+            "document_id": doc_id,
+            "sections_removed": sections_removed,
+        }
