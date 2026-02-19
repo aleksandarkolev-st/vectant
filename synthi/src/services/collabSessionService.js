@@ -121,6 +121,7 @@ class CollabSessionService extends EventTarget {
     this._role = 'hosting';
     this._sessionId = data.sessionId;
     this._userId = hostId;
+    this._sessionSlug = slug;
     this._permissions = { ...HOST_PERMISSIONS };
     this._session = { id: data.sessionId, inviteLink: data.inviteLink, inviteToken: data.inviteToken };
     this._pendingKnocks = [];
