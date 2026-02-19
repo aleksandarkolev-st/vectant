@@ -1628,6 +1628,12 @@ export default function EditorPage({ params }) {
         const source = typeof currentContent === 'string' ? currentContent : '';
         const filename = activeFile?.path || activeFile?.name || 'main';
 
+        // ── Incremental CodeIntel/RAG re-index ─────────────────────────
+        // Fire-and-forget so it doesn't block the save flow.
+        if (triggerCodeIntelFileIndex && activeFile?.path) {
+            triggerCodeIntelFileIndex(activeFile.path);
+        }
+
         // Check if language is supported for compilation to avoid errors
         const ext = (filename.split('.').pop() || '').toLowerCase();
         const supportedExts = ['cpp', 'cc', 'cxx', 'hpp', 'h', 'rs', 'ts', 'tsx'];
@@ -1662,7 +1668,7 @@ export default function EditorPage({ params }) {
         } catch (err) {
             console.error('[HMR] Silent compile failed', err);
         }
-    }, [activeFile, currentContent, rawFiles, slug, compile]);
+    }, [activeFile, currentContent, rawFiles, slug, compile, triggerCodeIntelFileIndex]);
 
     const handleEditorMount = useCallback((editorInstance) => {
         setEditor(editorInstance);
@@ -1768,11 +1774,12 @@ export default function EditorPage({ params }) {
                             <ResizablePanel defaultSize={65} minSize={20}>
                                 <>
                                     <div className="flex-1 min-h-0 overflow-hidden">
-
-                                <FileTreeView onToggleOrientation={toggleTreeOrientation} />
-                            </div>
-                            <GitSummaryPanel onOpenScm={() => setSidebarView('scm')} />
-                        </>
+                                        <FileTreeView onToggleOrientation={toggleTreeOrientation} />
+                                    </div>
+                                    <GitSummaryPanel onOpenScm={() => setSidebarView('scm')} />
+                                </>
+                            </ResizablePanel>
+                        </ResizablePanelGroup>
                     )}
                 </div>
             </div>
