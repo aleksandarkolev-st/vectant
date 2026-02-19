@@ -1433,6 +1433,52 @@ export async function POST(request) {
         codeIntelPromise,
         hydratePromise,
     ]);
+
+    // ── RAG-driven file hydration ───────────────────────────────────
+    // Extract file paths discovered by the RAG pipeline and hydrate any
+    // that weren't already in the frontend's files[] payload.  This
+    // ensures the LLM sees full file content for RAG-sourced files,
+    // not just the text blob summary.
+    let finalFiles = hydratedFiles;
+    if (codeIntelContext?.sources?.length && workspacePath) {
+        const existingPaths = new Set(
+            (hydratedFiles || []).map((f) => f?.path || f?.name).filter(Boolean)
+        );
+        // Normalise: strip leading slashes so paths match
+        const norm = (p) => String(p || '').replace(/^\/+/, '').replace(/\\/g, '/');
+        const normExisting = new Set([...existingPaths].map(norm));
+
+        const ragPaths = [...new Set(
+            codeIntelContext.sources
+                .map((s) => s?.file)
+                .filter(Boolean)
+                .filter((f) => !NODE_MODULES_PATTERN.test(f))
+        )];
+
+        const ragNewPaths = ragPaths.filter((p) => !normExisting.has(norm(p)));
+        if (ragNewPaths.length > 0) {
+            const ragHydrated = [];
+            for (const ragPath of ragNewPaths.slice(0, 8)) {
+                try {
+                    const content = await fetchCollabFileContent(workspacePath, ragPath, request.signal);
+                    if (typeof content === 'string' && content) {
+                        const trimmed = content.length > MAX_FILE_CHARS ? content.slice(0, MAX_FILE_CHARS) : content;
+                        ragHydrated.push({
+                            path: ragPath,
+                            content: `[RAG-sourced: high relevance]\n${trimmed}`,
+                            ragSource: true,
+                        });
+                    }
+                } catch (_) { /* skip on error */ }
+            }
+            if (ragHydrated.length > 0) {
+                // Prepend RAG files so they appear first (highest relevance)
+                finalFiles = [...ragHydrated, ...hydratedFiles];
+                console.log(`[CodeIntel] RAG-hydrated ${ragHydrated.length} additional files:`,
+                    ragHydrated.map((f) => f.path));
+            }
+        }
+    }
     
     if (codeIntelContext?.context) {
         console.log('[CodeIntel] Context fetched:', {
@@ -1445,7 +1491,7 @@ export async function POST(request) {
     const userContent = buildUserContent({
         prompt,
         code: hydratedCode,
-        files: hydratedFiles,
+        files: finalFiles,
         lang,
         focusPath,
         codeIntelContext,
