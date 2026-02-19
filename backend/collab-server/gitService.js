@@ -391,6 +391,54 @@ class GitService {
         }
     }
 
+    /**
+     * Resolve the remote origin URL for a workspace.
+     *
+     * Checks (in order):
+     *   1. Any existing per-user repo's origin remote
+     *   2. The workspace metadata (workspaceManager)
+     *
+     * @param {string} slug
+     * @returns {Promise<string|null>} Remote URL or null
+     */
+    async _resolveRemoteUrl(slug) {
+        // 1. Check existing user repos for a configured origin remote
+        const userRepos = this.listUserRepos(slug);
+        for (const repo of userRepos) {
+            try {
+                const git = simpleGit(repo.path);
+                const remotes = await git.getRemotes(true);
+                const origin = remotes.find(r => r.name === 'origin');
+                if (origin?.refs?.fetch) {
+                    return origin.refs.fetch;
+                }
+            } catch (_) { /* continue checking next repo */ }
+        }
+
+        // 2. Check the bare repo
+        const barePath = this.getBarePath(slug);
+        if (fs.existsSync(barePath)) {
+            try {
+                const bareGit = simpleGit(barePath);
+                const remotes = await bareGit.getRemotes(true);
+                const origin = remotes.find(r => r.name === 'origin');
+                if (origin?.refs?.fetch) {
+                    return origin.refs.fetch;
+                }
+            } catch (_) { /* non-fatal */ }
+        }
+
+        // 3. Check workspaceManager in-memory metadata
+        try {
+            const workspaceManager = require('./workspaceManager');
+            const all = workspaceManager.getAllWorkspaces();
+            const ws = all.find(w => w.slug === slug);
+            if (ws?.repoUrl) return ws.repoUrl;
+        } catch (_) { /* non-fatal */ }
+
+        return null;
+    }
+
     async initRepo(slug, remoteUrl, userId) {
         const initResult = await this.withLock(slug, async () => {
             // repoCache.acquire (inside withLock) already materialised files
@@ -2321,10 +2369,12 @@ class GitService {
     /**
      * Ensure a per-user working tree exists for the given user.
      *
-     * If the workspace has an upstream bare repo (migrated structure), the
-     * user repo is created as a `git worktree add` from the bare.  Otherwise
-     * (un-migrated legacy repo), we fall back to a plain `git clone --shared`
-     * from the slug-level working tree.
+     * Clone source priority:
+     *   1. Upstream bare repo (migrated structure)
+     *   2. First existing user repo (avoids slug-level nesting)
+     *   3. Slug-level working tree (legacy, no per-user repos yet)
+     *   4. Remote origin URL from any existing repo (fetches latest remote)
+     *   5. Fresh git init (absolute fallback)
      *
      * This is the PRIMARY entry-point for provisioning a user's isolated repo.
      * It is idempotent — calling it multiple times for the same (slug, userId)
@@ -2370,6 +2420,29 @@ class GitService {
                     console.log(`[GitService] Using existing user repo as clone source for ${slug}/${userId} (avoiding slug-level nesting)`);
                 } else {
                     cloneSource = slugRepoPath;
+                }
+            }
+
+            // ── No local source — try cloning from the remote URL ───────
+            // When a new user joins a workspace (e.g. via collab invite),
+            // there may be no local repo to clone from.  If any existing
+            // user repo or the workspaceManager knows the remote URL, clone
+            // directly from the upstream so the user gets the latest code.
+            if (!cloneSource) {
+                const remoteUrl = await this._resolveRemoteUrl(slug);
+                if (remoteUrl) {
+                    fs.mkdirSync(path.dirname(userRepoPath), { recursive: true });
+                    try {
+                        const git = simpleGit();
+                        await git.clone(remoteUrl, userRepoPath, ['--no-hardlinks']);
+                        this._ensureLocalExcludes(userRepoPath);
+                        console.log(`[GitService] Cloned user repo for ${slug}/${userId} from remote: ${remoteUrl}`);
+                        return { path: userRepoPath, created: true };
+                    } catch (e) {
+                        // Remote clone failed — clean up and fall through to fresh init
+                        try { fs.rmSync(userRepoPath, { recursive: true, force: true }); } catch (_) {}
+                        console.warn(`[GitService] Remote clone failed for ${slug}/${userId}: ${e.message}, falling back to fresh init`);
+                    }
                 }
             }
 
