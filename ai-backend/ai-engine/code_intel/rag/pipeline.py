@@ -151,7 +151,14 @@ class RAGPipeline:
 
         # Load persisted stores
         self.summary_index.load()
-        self._keyword_filter_instance().save()  # Ensure file exists
+
+        # Only create keyword index file if it doesn't already exist;
+        # the KeywordFilter constructor already loads from disk if present
+        kf = self._keyword_filter_instance()
+        if kf.count() == 0:
+            kw_path = Path(self._store_dir) / self.config.store.keyword_index_file
+            if not kw_path.exists():
+                kf.save()  # Create empty file for first time only
 
         self._initialized = True
         logger.info(
