@@ -132,6 +132,7 @@ class RAGPipeline:
         self._confidence_scorer: Optional[ConfidenceScorer] = None
 
         self._initialized = False
+        self._zero_vector_count = 0
 
     # =========================================================================
     # Initialization
@@ -537,8 +538,14 @@ class RAGPipeline:
         except Exception as e:
             logger.warning(f"Embedding generation failed: {e}")
 
-        # Fallback: zero vector (search won't work but stores are populated)
-        logger.debug("Using zero-vector fallback for summary embedding")
+        # Fallback: zero vector — vector search is effectively disabled
+        self._zero_vector_count += 1
+        if self._zero_vector_count == 1:
+            logger.warning(
+                "No embedding API available — using zero-vector fallback. "
+                "Vector search in macro-retrieval will not return results. "
+                "Set GEMINI_API_KEY to enable real embeddings."
+            )
         return np.zeros(self.config.embedding_dimension, dtype=np.float32)
 
     def _get_embedder(self):
