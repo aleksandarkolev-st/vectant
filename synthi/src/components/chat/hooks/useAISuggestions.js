@@ -514,8 +514,57 @@ export const useAISuggestions = ({
             }
         }
 
+        // Fallback for broad prompts when keyword/index lookup is sparse.
+        // Seed with common entry/style files so code-change prompts don't run with empty context.
+        if (discovered.size === 0 && Array.isArray(flattenWorkspaceFiles) && flattenWorkspaceFiles.length > 0) {
+            const COMMON = [
+                '/src/app/page.', '/src/app/layout.', '/src/app/globals.css',
+                '/index.html', '/src/index.', '/src/main.', '/src/App.',
+                '/app/page.', '/app/layout.', '/app/globals.css',
+            ];
+            const seeded = flattenWorkspaceFiles
+                .filter((path) => COMMON.some((needle) => path.includes(needle)))
+                .slice(0, limit);
+            seeded.forEach((p) => discovered.add(p));
+        }
+
         return Array.from(discovered).slice(0, limit);
     }, [flattenWorkspaceFiles, workspaceSlug]);
+
+    const inferDesignCompanionPaths = useCallback((activePath, prompt = '', limit = 8) => {
+        if (!Array.isArray(flattenWorkspaceFiles) || flattenWorkspaceFiles.length === 0) return [];
+        const promptLower = String(prompt || '').toLowerCase();
+        const isDesignTask = /\b(ui|ux|design|style|styled|theme|look|visual|vintage|modern|layout|typography|palette|color|css)\b/i.test(promptLower);
+        if (!isDesignTask) return [];
+
+        // Scope to the same project root when possible (e.g. educational-platform/...)
+        const normalizedActive = String(activePath || '').replace(/\\/g, '/');
+        const projectRoot = normalizedActive.includes('/') ? normalizedActive.split('/')[0] : '';
+        const inScope = flattenWorkspaceFiles.filter((p) => {
+            if (!projectRoot) return true;
+            return p === projectRoot || p.startsWith(`${projectRoot}/`);
+        });
+
+        const score = (path) => {
+            const lower = path.toLowerCase();
+            let s = 0;
+            if (/globals\.(css|scss|sass)$/.test(lower)) s += 10;
+            if (/layout\.(jsx|tsx|js|ts)$/.test(lower)) s += 9;
+            if (/page\.(jsx|tsx|js|ts|html|htm)$/.test(lower)) s += 8;
+            if (/(^|\/)app\.(jsx|tsx|js|ts|css|scss|sass)$/.test(lower)) s += 7;
+            if (/(^|\/)(styles?|theme)\.(css|scss|sass|js|ts)$/.test(lower)) s += 7;
+            if (/(^|\/)(tailwind\.config|postcss\.config)\./.test(lower)) s += 5;
+            if (/(^|\/)(components?|src\/app)\//.test(lower)) s += 2;
+            return s;
+        };
+
+        return inScope
+            .map((p) => ({ path: p, score: score(p) }))
+            .filter((x) => x.score > 0)
+            .sort((a, b) => b.score - a.score)
+            .slice(0, limit)
+            .map((x) => x.path);
+    }, [flattenWorkspaceFiles]);
 
     // Clear inline suggestion previews when a clear signal is triggered.
     useEffect(() => {
@@ -1594,12 +1643,16 @@ If image attachments are present, read/ocr the images and extract any text or co
             const promptDiscoveredPaths = skipFileContext
                 ? []
                 : await discoverPromptRelevantPaths(userPrompt, 10);
+            const designCompanionPaths = skipFileContext
+                ? []
+                : inferDesignCompanionPaths(activePath, userPrompt, 8);
             const relatedPaths = Array.from(new Set([
                 ...referencedPaths,
                 ...siblingPaths,
                 ...promptMentionedPaths,
                 ...agentDiscoveredPaths,
                 ...promptDiscoveredPaths,
+                ...designCompanionPaths,
             ])).slice(0, 12);
             const referencedEntries = relatedPaths.length
                 ? await Promise.all(relatedPaths.map(async (path) => [path, await getBaseContentForPath(path)]))
@@ -2326,7 +2379,7 @@ If image attachments are present, read/ocr the images and extract any text or co
             setIsLoading(false);
             try { if (typeof onBusy === 'function') onBusy(false); } catch(e){}
         }
-    }, [activeSession, activeFile, appendMessagesToSession, archiveCurrentSuggestion, buildMultiFileSuggestions, currentCode, fileCacheEntries, mutateSession, onBusy, onSuggest, aiApiKey, aiModel, buildContextWindow, formatForAPI, getContextDebugInfo, availableTokens, shouldUseAgents, runPipeline, agentMode, extractPromptMentionedPaths, flattenWorkspaceFiles, extractAgentDiscoveredPaths, discoverPromptRelevantPaths]);
+    }, [activeSession, activeFile, appendMessagesToSession, archiveCurrentSuggestion, buildMultiFileSuggestions, currentCode, fileCacheEntries, mutateSession, onBusy, onSuggest, aiApiKey, aiModel, buildContextWindow, formatForAPI, getContextDebugInfo, availableTokens, shouldUseAgents, runPipeline, agentMode, extractPromptMentionedPaths, flattenWorkspaceFiles, extractAgentDiscoveredPaths, discoverPromptRelevantPaths, inferDesignCompanionPaths]);
 
     const suggestedCode = activeSession?.suggestedCode ?? null;
     const fileSuggestions = activeSession?.fileSuggestions ?? [];
