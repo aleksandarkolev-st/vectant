@@ -349,6 +349,13 @@ export const handleRenameItemThunk = createAsyncThunk(
             getCompilerClient().renameFile(item.path, newPath);
         } catch (_) { /* best-effort */ }
         
+        // Notify CodeIntel so indexes are updated atomically (delete old + index new)
+        if (typeof window !== 'undefined') {
+            window.dispatchEvent(new CustomEvent('synthi:codeintel-rename-file', {
+                detail: { oldPath: item.path, newPath },
+            }));
+        }
+        
         dispatch(cancelUiAction());
         await dispatch(fetchFilesThunk(slug));
     }
