@@ -370,7 +370,7 @@ WEB SEARCH GUIDELINES:
  * @param {Array} params.conversationHistory - Previous messages
  * @returns {Promise<Object>} - Context response with sufficiency indicator
  */
-async function fetchCodeIntelContext({ workspacePath, query, maxTokens = 6000, conversationHistory = [] }) {
+async function fetchCodeIntelContext({ workspacePath, query, maxTokens = 30000, conversationHistory = [] }) {
     if (!workspacePath) {
         return { context: '', sufficiency: 'UNKNOWN', sources: [], refusal: null };
     }
@@ -385,9 +385,8 @@ async function fetchCodeIntelContext({ workspacePath, query, maxTokens = 6000, c
                 max_tokens: maxTokens,
                 conversation_history: conversationHistory,
             }),
-            // TTFT optimization: Reduced timeout to 3s - if code intel is slow, skip it
-            // This ensures we don't block streaming for too long
-            signal: AbortSignal.timeout(3000),
+            // RAG micro-navigation needs ~2-3s; give 6s to avoid dropping context
+            signal: AbortSignal.timeout(6000),
         });
         
         if (!response.ok) {
@@ -1399,7 +1398,7 @@ export async function POST(request) {
         // Code intelligence integration
         workspacePath = '',
         useCodeIntel = true, // Enable by default when workspacePath is provided
-        maxContextTokens = 6000,
+        maxContextTokens = 30000,
         conversationHistory = [],
         fullRepoContext = false,
         // Agentic tool-use mode

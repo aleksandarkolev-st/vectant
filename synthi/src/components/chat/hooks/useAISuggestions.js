@@ -1871,7 +1871,7 @@ If image attachments are present, read/ocr the images and extract any text or co
                     // Code intelligence integration
                     workspacePath: workspaceSlug || null,
                     useCodeIntel: !isRunOnly,
-                    maxContextTokens: isRunOnly ? 0 : Math.min(6000, Math.floor(availableTokens * 0.2)),
+                    maxContextTokens: isRunOnly ? 0 : Math.min(30000, Math.floor(availableTokens * 0.3)),
                     fullRepoContext: wantsFullRepo,
                     // Context window conversation history for multi-turn coherence
                     conversationHistory: formatForAPI(contextWindow).conversationHistory,
