@@ -11,6 +11,13 @@ import os
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
+# Load .env so GEMINI_API_KEY is available via os.getenv
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
 
 @dataclass
 class IngestionConfig:
