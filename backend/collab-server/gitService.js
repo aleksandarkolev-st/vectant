@@ -2219,6 +2219,8 @@ class GitService {
      * @param {string} userId — The host user's id
      * @param {string} [branch] — Branch to check out (defaults to current branch)
      * @returns {Promise<{ path: string, created: boolean }>}
+     * @deprecated Use ensureUserRepo() instead. In the direct-access model,
+     *   guests share the host's per-user repo — session worktrees are no longer created.
      */
     async ensureSessionWorktree(slug, userId, branch = null) {
         return this.withLock(slug, async () => {
