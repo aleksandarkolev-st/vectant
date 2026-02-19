@@ -965,15 +965,34 @@ class RAGPipeline:
 
     def _remove_doc_by_id(self, doc_id: str) -> int:
         """Remove a document and all its associated data by ID.
+
+        Each store removal is wrapped in a try/except so a failure in one
+        store doesn't prevent cleanup of the others.
         
         Returns:
             Number of sections removed.
         """
-        sections_removed = self.section_store.remove_by_document(doc_id)
-        self.toc_store.remove(doc_id)
-        self.summary_index.remove(doc_id)
-        self._keyword_filter_instance().remove_document(doc_id)
-        self.document_store.remove(doc_id)
+        sections_removed = 0
+        try:
+            sections_removed = self.section_store.remove_by_document(doc_id)
+        except Exception as e:
+            logger.debug(f"section_store.remove_by_document({doc_id}): {e}")
+        try:
+            self.toc_store.remove(doc_id)
+        except Exception as e:
+            logger.debug(f"toc_store.remove({doc_id}): {e}")
+        try:
+            self.summary_index.remove(doc_id)
+        except Exception as e:
+            logger.debug(f"summary_index.remove({doc_id}): {e}")
+        try:
+            self._keyword_filter_instance().remove_document(doc_id)
+        except Exception as e:
+            logger.debug(f"keyword_filter.remove_document({doc_id}): {e}")
+        try:
+            self.document_store.remove(doc_id)
+        except Exception as e:
+            logger.debug(f"document_store.remove({doc_id}): {e}")
         return sections_removed
 
     def remove_file(self, file_path: str) -> Dict[str, Any]:
