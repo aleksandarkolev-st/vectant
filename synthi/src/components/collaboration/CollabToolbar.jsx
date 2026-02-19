@@ -1,14 +1,14 @@
 "use client";
 
-import React, { useState, useCallback, useEffect, useRef } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import { usePresence } from '@/hooks/usePresence';
 import { useCollabSession } from '@/hooks/useCollabSession';
 import ShareModal from './ShareModal';
 import {
   Users, Link2, Copy, Check, X, Shield, ShieldOff,
   Terminal, GitBranch, FileEdit, FolderEdit, UserX,
-  Radio, CircleOff, ChevronDown, Bell, RefreshCw,
-  Share2, LogOut, Eye, Edit3, Plus
+  CircleOff, ChevronDown, Bell, RefreshCw,
+  Share2, LogOut, Eye, Edit3
 } from 'lucide-react';
 import {
   Popover,
@@ -41,13 +41,12 @@ export default function CollabToolbar({ slug }) {
   const {
     role, session, guests, pendingKnocks, permissions,
     isHost, isGuest, isKnocking, isActive,
-    createSession, admitGuest, denyKnock, updatePermissions,
+    admitGuest, denyKnock, updatePermissions,
     kickGuest, terminateSession, regenerateInvite, leaveSession,
     error, clearError,
   } = useCollabSession();
 
   const [copied, setCopied] = useState(false);
-  const [showCreate, setShowCreate] = useState(false);
   const [shareModalOpen, setShareModalOpen] = useState(false);
 
   // ── Copy invite link ──────────────────────────────────────────────────
@@ -61,39 +60,14 @@ export default function CollabToolbar({ slug }) {
     } catch (_) {}
   }, [session?.inviteLink]);
 
-  // ── Create session ────────────────────────────────────────────────────
-
-  const handleCreate = useCallback(async (defaultPerms) => {
-    const userId = typeof window !== 'undefined'
-      ? localStorage.getItem('synthi-user-id') || 'host'
-      : 'host';
-    const userName = typeof window !== 'undefined'
-      ? localStorage.getItem('synthi-user-name') || 'Host'
-      : 'Host';
-    await createSession({
-      hostId: userId,
-      hostName: userName,
-      slug,
-      defaultPerms,
-    });
-    setShowCreate(false);
-  }, [createSession, slug]);
-
   return (
     <div className="flex items-center gap-2">
       {/* ── Presence Avatars ────────────────────────────────────────── */}
       <PresenceAvatars users={users} />
 
       {/* ── Session Controls (based on role) ─────────────────────────── */}
-      {role === 'idle' && !showCreate && (
+      {role === 'idle' && (
         <ShareButton onClick={() => setShareModalOpen(true)} />
-      )}
-
-      {showCreate && !isHost && (
-        <CreateSessionPopover
-          onClose={() => setShowCreate(false)}
-          onCreate={handleCreate}
-        />
       )}
 
       {isHost && (
@@ -228,83 +202,6 @@ function ShareButton({ onClick }) {
       <Share2 className="w-3.5 h-3.5" />
       Share
     </button>
-  );
-}
-
-// ── Create Session Popover ───────────────────────────────────────────────────
-
-function CreateSessionPopover({ onClose, onCreate }) {
-  const [perms, setPerms] = useState({
-    canEdit: true,
-    canTerminal: false,
-    canGit: false,
-    canFileOps: false,
-  });
-
-  return (
-    <Popover open onOpenChange={(open) => { if (!open) onClose(); }}>
-      <PopoverTrigger asChild>
-        <button className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-[#3a857420] border border-[#3a857440] text-[#3a8574] text-[11px] font-medium">
-          <Share2 className="w-3.5 h-3.5" />
-          Share…
-        </button>
-      </PopoverTrigger>
-      <PopoverContent
-        className="w-[340px] bg-[#0d0e14] border-[#1c1d26] p-0 shadow-xl rounded-xl"
-        style={{ backgroundColor: '#0d0e14' }}
-        align="end"
-      >
-        <div className="p-4">
-          <div className="flex items-center justify-between mb-3">
-            <h3 className="text-sm font-semibold text-[#e0e4ec] flex items-center gap-2">
-              <Users className="w-4 h-4 text-[#3a8574]" />
-              Share Session
-            </h3>
-            <button onClick={onClose} className="p-1 rounded hover:bg-[#1a1b24]">
-              <X className="w-4 h-4 text-[#5a6178]" />
-            </button>
-          </div>
-
-          <p className="text-xs text-[#5a6178] mb-3">
-            Set default guest permissions. You can change per-user later.
-          </p>
-
-          <div className="space-y-1.5 mb-4">
-            {PERM_CONFIG.map(({ key, label, icon: Icon, risk, desc }) => (
-              <button
-                key={key}
-                onClick={() => setPerms(p => ({ ...p, [key]: !p[key] }))}
-                className={`w-full flex items-center justify-between px-3 py-2 rounded-lg transition-all text-left ${
-                  perms[key]
-                    ? 'bg-[#3a857412] border border-[#3a857430]'
-                    : 'bg-[#101118] border border-[#1a1b24] hover:border-[#2a2b38]'
-                }`}
-                title={desc}
-              >
-                <div className="flex items-center gap-2">
-                  <Icon className={`w-3.5 h-3.5 ${perms[key] ? 'text-[#3a8574]' : 'text-[#5a6178]'}`} />
-                  <span className={`text-xs font-medium ${perms[key] ? 'text-[#e0e4ec]' : 'text-[#5a6178]'}`}>
-                    {label}
-                  </span>
-                  {risk === 'high' && (
-                    <span className="text-[10px] text-[#ff5757]">⚠</span>
-                  )}
-                </div>
-                <MiniToggle enabled={perms[key]} />
-              </button>
-            ))}
-          </div>
-
-          <button
-            onClick={() => onCreate(perms)}
-            className="w-full py-2 bg-[#3a8574] hover:bg-[#327464] text-white font-semibold text-sm rounded-lg transition-colors flex items-center justify-center gap-2"
-          >
-            <Radio className="w-3.5 h-3.5" />
-            Start Sharing
-          </button>
-        </div>
-      </PopoverContent>
-    </Popover>
   );
 }
 
