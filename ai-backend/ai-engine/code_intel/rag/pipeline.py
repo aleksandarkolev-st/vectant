@@ -939,12 +939,15 @@ class RAGPipeline:
 
     def get_stats(self) -> Dict[str, Any]:
         """Get pipeline statistics."""
+        kf = self._keyword_filter_instance()
+        kf_stats = kf.get_stats()
         return {
             "documents": self.document_store.count(),
             "summaries": self.summary_index.count(),
             "sections": self.section_store.count(),
             "toc_trees": self.toc_store.count(),
-            "keyword_terms": self._keyword_filter_instance().count(),
+            "keyword_docs": kf_stats.get("document_count", 0),
+            "keyword_terms": kf_stats.get("unique_terms", 0),
             "store_directory": self._store_dir,
         }
 
