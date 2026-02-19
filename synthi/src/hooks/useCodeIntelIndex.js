@@ -44,6 +44,7 @@ export function useCodeIntelIndex({
     
     const indexingRef = useRef(false);
     const hasAutoIndexedRef = useRef(false);
+    const fileIndexTimersRef = useRef(new Map()); // debounce per file path
     
     /**
      * Trigger workspace indexing.
