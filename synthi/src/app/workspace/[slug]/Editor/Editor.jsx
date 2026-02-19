@@ -140,6 +140,7 @@ const EditorPanel = ({
     aiBusy = false,
     onClearCompletion = null,
     chatVisible = false,
+    collabHostId = null,
 }) => {
     const dispatch = useAppDispatch();
 
@@ -1016,7 +1017,7 @@ const EditorPanel = ({
             setCollabConnected(false);
             setRemoteUnsaved(false);
         };
-    }, [editorInstance, monacoInstance, activeFile, slug, session, authUserId, presenceGranularity, isPrivateMode, conflictedFiles]);
+    }, [editorInstance, monacoInstance, activeFile, slug, session, authUserId, presenceGranularity, isPrivateMode, conflictedFiles, collabHostId]);
 
     // ── Ghost-revert fix ─────────────────────────────────────────────────
     // Listen for server-side 'file-reverted' events (emitted after discard,

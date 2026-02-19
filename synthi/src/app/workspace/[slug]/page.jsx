@@ -1756,6 +1756,7 @@ export default function EditorPage({ params }) {
             aiBusy={aiBusy}
             onClearCompletion={handleClearLatestCompletion}
             chatVisible={chatVisible}
+            collabHostId={collabHostId}
         />
     );
 
