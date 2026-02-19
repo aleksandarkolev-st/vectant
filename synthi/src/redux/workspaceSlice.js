@@ -377,6 +377,13 @@ export const deleteItemThunk = createAsyncThunk(
             getCompilerClient().deleteFile(item.path);
         } catch (_) { /* best-effort */ }
         
+        // Notify CodeIntel so all indexes/RAG stores are cleaned up
+        if (typeof window !== 'undefined') {
+            window.dispatchEvent(new CustomEvent('synthi:codeintel-delete-file', {
+                detail: { filePath: item.path },
+            }));
+        }
+        
         await dispatch(fetchFilesThunk(state.slug));
         
         return { deleted: true, path: itemPath };
