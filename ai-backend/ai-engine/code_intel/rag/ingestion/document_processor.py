@@ -94,11 +94,61 @@ class DocumentProcessor:
         self._loader = DocumentLoader(config=ingestion_cfg)
         self._toc_extractor = ToCExtractor(config=ingestion_cfg)
         self._section_splitter = SectionSplitter(config=ingestion_cfg)
-        self._summary_generator = SummaryGenerator(config=ingestion_cfg)
+        self._summary_generator = SummaryGenerator(
+            config=ingestion_cfg,
+            llm_client=self._create_llm_client(config),
+        )
         self._hasher = ContentHasher(algorithm=ingestion_cfg.hash_algorithm)
 
         # Track content hashes for dedup within a single ingestion run
         self._seen_hashes: Dict[str, str] = {}  # content_hash → doc_id
+
+    @staticmethod
+    def _create_llm_client(config: RAGConfig):
+        """
+        Create a Gemini-backed LLM client for summary generation.
+
+        Returns None gracefully if google-generativeai is not installed
+        or no API key is configured.
+        """
+        api_key = config.embedding_api_key
+        if not api_key:
+            return None
+
+        try:
+            import google.generativeai as genai
+
+            genai.configure(api_key=api_key)
+            model = genai.GenerativeModel(config.micro.routing_model)
+
+            class _GeminiSummaryClient:
+                """Adapter that exposes generate_summary for SummaryGenerator."""
+
+                def generate_summary(self, prompt: str) -> Optional[Dict]:
+                    try:
+                        response = model.generate_content(prompt)
+                        text = response.text.strip()
+                        # Parse structured output
+                        import json as _json
+                        # Try JSON first
+                        try:
+                            return _json.loads(text)
+                        except _json.JSONDecodeError:
+                            pass
+                        # Fallback: treat entire response as summary text
+                        return {
+                            "summary": text[:500],
+                            "topics": [],
+                            "entities": [],
+                        }
+                    except Exception as e:
+                        logger.warning(f"Gemini summary call failed: {e}")
+                        return None
+
+            return _GeminiSummaryClient()
+        except (ImportError, Exception) as e:
+            logger.info(f"LLM summary client not available: {e}")
+            return None
 
     # =====================================================================
     # Public API
