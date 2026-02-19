@@ -246,6 +246,12 @@ export default function WorkspaceUsersPanel({ slug }) {
 
 // ── Session Card ──────────────────────────────────────────────────────────────
 
+/**
+ * SessionCard — Displays a live collaboration session with host info,
+ * guest list, and a "Request to Join" button for idle users.
+ *
+ * @param {{ session: object, myUserId: string, isIdle: boolean, isKnocking: boolean, joiningSessionId: string|null, onRequestJoin: (id: string) => void }} props
+ */
 function SessionCard({ session, myUserId, isIdle, isKnocking, joiningSessionId, onRequestJoin }) {
   const isMySession = session.hostId === myUserId;
   const guestCount = session.guestCount || session.guests?.length || 0;
@@ -329,6 +335,12 @@ function SessionCard({ session, myUserId, isIdle, isKnocking, joiningSessionId, 
 
 // ── User Row ──────────────────────────────────────────────────────────────────
 
+/**
+ * UserRow — A single user entry with avatar, name, current file, and
+ * hover-visible Join / Invite / Block action buttons.
+ *
+ * @param {{ user: object, isIdle: boolean, isHost: boolean, isKnocking: boolean, joiningUserId: string|null, invitingUserId: string|null, onJoinUser: (id: string, name: string) => void, onInviteUser: (id: string) => void, onBlockUser: (id: string, name: string) => void }} props
+ */
 function UserRow({ user, isIdle, isHost, isKnocking, joiningUserId, invitingUserId, onJoinUser, onInviteUser, onBlockUser }) {
   const isJoining = joiningUserId === user.id;
   const isInviting = invitingUserId === user.id;
@@ -433,6 +445,12 @@ function UserRow({ user, isIdle, isHost, isKnocking, joiningUserId, invitingUser
 
 // ── Shared ────────────────────────────────────────────────────────────────────
 
+/**
+ * SectionLabel — Small uppercase label with icon, used to separate
+ * sections in the users list (e.g. "Active Sessions", "Online Users").
+ *
+ * @param {{ icon: React.ElementType, color: string, label: string, count?: number }} props
+ */
 function SectionLabel({ icon: Icon, color, label, count }) {
   return (
     <div className="flex items-center gap-1.5 px-1">
@@ -447,6 +465,11 @@ function SectionLabel({ icon: Icon, color, label, count }) {
   );
 }
 
+/**
+ * UserAvatar — Circular avatar showing a user image or initials fallback.
+ *
+ * @param {{ name: string, avatar?: string, color?: string, size?: number }} props
+ */
 function UserAvatar({ name, avatar, color, size = 24 }) {
   const initials = getInitials(name);
 
