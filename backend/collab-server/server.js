@@ -1142,7 +1142,9 @@ const server = http.createServer(async (req, res) => {
       // 1) Gather active Yjs awareness users for this slug
       const prefix = `workspace:${slug}:`;
       const seen = new Map();
-      for (const [docName, doc] of docs) {
+      // yWsDocs is the y-websocket internal Map<docName, WSSharedDoc>
+      const docsMap = yWsDocs || new Map();
+      for (const [docName, doc] of docsMap) {
         if (!docName.startsWith(prefix)) continue;
         const awareness = doc.awareness;
         if (!awareness) continue;
