@@ -4,7 +4,7 @@ import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { useCollabSession } from '@/hooks/useCollabSession';
 import WorkspaceUsersPanel from './WorkspaceUsersPanel';
 import {
-  X, Link2, Copy, Check, Users, RefreshCw, CircleOff
+  X, Link2, Copy, Check, Users, RefreshCw, CircleOff, Loader2
 } from 'lucide-react';
 
 import T from './collabTheme';
@@ -23,6 +23,8 @@ export default function ShareModal({ slug, open, onClose }) {
   } = useCollabSession();
 
   const [copied, setCopied] = useState(false);
+  const [regenerating, setRegenerating] = useState(false);
+  const [terminating, setTerminating] = useState(false);
   const modalRef = useRef(null);
 
   // Reset state when modal opens + focus the modal for keyboard nav
@@ -44,6 +46,22 @@ export default function ShareModal({ slug, open, onClose }) {
       setTimeout(() => setCopied(false), 2000);
     } catch (err) { console.warn('[Collab] clipboard copy:', err?.message); }
   }, [session?.inviteLink]);
+
+  // Regenerate invite link with loading state
+  const handleRegenerate = useCallback(async () => {
+    setRegenerating(true);
+    try { await regenerateInvite(); }
+    catch (err) { console.warn('[Collab] regenerateInvite:', err?.message); }
+    finally { setRegenerating(false); }
+  }, [regenerateInvite]);
+
+  // Terminate session with loading state
+  const handleTerminate = useCallback(async () => {
+    setTerminating(true);
+    try { await terminateSession(); }
+    catch (err) { console.warn('[Collab] terminateSession:', err?.message); }
+    finally { setTerminating(false); }
+  }, [terminateSession]);
 
   if (!open) return null;
 
@@ -109,11 +127,15 @@ export default function ShareModal({ slug, open, onClose }) {
                 : <Copy className="w-3 h-3" style={{ color: T.textMuted }} />
               }
             </button>
-            <button onClick={regenerateInvite}
+            <button onClick={handleRegenerate}
+              disabled={regenerating}
               className="p-1.5 rounded-md border transition-colors"
-              style={{ backgroundColor: T.surface, borderColor: T.border }}
+              style={{ backgroundColor: T.surface, borderColor: T.border, opacity: regenerating ? 0.5 : 1 }}
               title="Regenerate link">
-              <RefreshCw className="w-3 h-3" style={{ color: T.textMuted }} />
+              {regenerating
+                ? <Loader2 className="w-3 h-3 animate-spin" style={{ color: T.textMuted }} />
+                : <RefreshCw className="w-3 h-3" style={{ color: T.textMuted }} />
+              }
             </button>
           </div>
         )}
@@ -126,11 +148,15 @@ export default function ShareModal({ slug, open, onClose }) {
         {/* ── Footer: Stop sharing (host only) ────────────────────── */}
         {isHost && (
           <div className="px-4 py-3 border-t" style={{ borderColor: T.border }}>
-            <button onClick={terminateSession}
+            <button onClick={handleTerminate}
+              disabled={terminating}
               className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-xs font-semibold transition-all border"
-              style={{ backgroundColor: 'rgba(255,87,87,0.08)', borderColor: 'rgba(255,87,87,0.25)', color: T.red }}>
-              <CircleOff className="w-3.5 h-3.5" />
-              Stop Sharing
+              style={{ backgroundColor: 'rgba(255,87,87,0.08)', borderColor: 'rgba(255,87,87,0.25)', color: T.red, opacity: terminating ? 0.5 : 1 }}>
+              {terminating
+                ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                : <CircleOff className="w-3.5 h-3.5" />
+              }
+              {terminating ? 'Stopping…' : 'Stop Sharing'}
             </button>
           </div>
         )}
