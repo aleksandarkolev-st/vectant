@@ -274,10 +274,32 @@ function validateDocAccess(parsedDoc, { userId, sessionId }) {
   }
 
   if (parsedDoc.scopeType === 'user') {
-    if (parsedDoc.userId !== userId) {
-      return { ok: false, status: 403, reason: 'user_scope_mismatch' };
+    // Owner of this user-scoped room → always allowed
+    if (parsedDoc.userId === userId) {
+      return { ok: true };
     }
-    return { ok: true };
+    // Guest accessing the host's user-scoped room (direct-access model):
+    // If the connecting user is a guest in a session whose host owns this
+    // room, AND the guest has canEdit permission, allow access.
+    if (sessionId) {
+      const session = sessionManager.getSession(sessionId);
+      if (session && session.hostId === parsedDoc.userId && session.slug === parsedDoc.slug) {
+        if (sessionManager.checkPermission(sessionId, userId, 'canEdit')) {
+          return { ok: true };
+        }
+        return { ok: false, status: 403, reason: 'edit_permission_required' };
+      }
+    }
+    // Also check if the user is a guest anywhere whose host matches the room
+    const hostInfo = sessionManager.getHostForGuest(userId);
+    if (hostInfo && hostInfo.hostId === parsedDoc.userId && hostInfo.slug === parsedDoc.slug) {
+      const guestSessionId = hostInfo.sessionId;
+      if (sessionManager.checkPermission(guestSessionId, userId, 'canEdit')) {
+        return { ok: true };
+      }
+      return { ok: false, status: 403, reason: 'edit_permission_required' };
+    }
+    return { ok: false, status: 403, reason: 'user_scope_mismatch' };
   }
 
   // Legacy rooms are denied in strict per-user mode.
