@@ -191,6 +191,86 @@ fn extract_fingerprint(sdp: &str) -> Option<String> {
     None
 }
 
+/// Send data on a DataChannel with SCTP backpressure.
+/// Waits for `buffered_amount()` to drop below the threshold before sending,
+/// and retries on transient errors instead of breaking the forwarding loop.
+const DC_BUFFER_THRESHOLD: usize = 256 * 1024; // 256 KB
+const DC_BACKPRESSURE_POLL_MS: u64 = 10;
+const DC_SEND_MAX_RETRIES: u32 = 5;
+
+async fn dc_send_with_backpressure(
+    dc: &Arc<RTCDataChannel>,
+    data: &Bytes,
+    label: &str,
+) -> anyhow::Result<()> {
+    // Wait for the SCTP send buffer to drain below the threshold
+    let mut waited = 0u32;
+    while dc.buffered_amount().await > DC_BUFFER_THRESHOLD {
+        tokio::time::sleep(std::time::Duration::from_millis(DC_BACKPRESSURE_POLL_MS)).await;
+        waited += 1;
+        if waited % 100 == 0 {
+            eprintln!("[{}] backpressure: waited {}ms for DC buffer to drain (buffered={})",
+                label, waited as u64 * DC_BACKPRESSURE_POLL_MS, dc.buffered_amount().await);
+        }
+        // Safety valve: after 10s of waiting, give up
+        if waited > 1000 {
+            eprintln!("[{}] backpressure timeout after 10s, attempting send anyway", label);
+            break;
+        }
+    }
+
+    // Retry send on transient errors
+    let mut retries = 0u32;
+    loop {
+        match dc.send(data).await {
+            Ok(_) => return Ok(()),
+            Err(e) => {
+                retries += 1;
+                if retries > DC_SEND_MAX_RETRIES {
+                    eprintln!("[{}] send failed after {} retries: {}", label, DC_SEND_MAX_RETRIES, e);
+                    return Err(anyhow::anyhow!("{}", e));
+                }
+                eprintln!("[{}] send error (retry {}/{}): {}", label, retries, DC_SEND_MAX_RETRIES, e);
+                // Exponential backoff: 20ms, 40ms, 80ms, 160ms, 320ms
+                tokio::time::sleep(std::time::Duration::from_millis(20 * (1 << (retries - 1)))).await;
+            }
+        }
+    }
+}
+
+async fn dc_send_text_with_backpressure(
+    dc: &Arc<RTCDataChannel>,
+    text: String,
+    label: &str,
+) -> anyhow::Result<()> {
+    // Wait for buffer to drain
+    let mut waited = 0u32;
+    while dc.buffered_amount().await > DC_BUFFER_THRESHOLD {
+        tokio::time::sleep(std::time::Duration::from_millis(DC_BACKPRESSURE_POLL_MS)).await;
+        waited += 1;
+        if waited > 1000 {
+            eprintln!("[{}] backpressure timeout after 10s, attempting send_text anyway", label);
+            break;
+        }
+    }
+
+    let mut retries = 0u32;
+    loop {
+        match dc.send_text(text.clone()).await {
+            Ok(_) => return Ok(()),
+            Err(e) => {
+                retries += 1;
+                if retries > DC_SEND_MAX_RETRIES {
+                    eprintln!("[{}] send_text failed after {} retries: {}", label, DC_SEND_MAX_RETRIES, e);
+                    return Err(anyhow::anyhow!("{}", e));
+                }
+                eprintln!("[{}] send_text error (retry {}/{}): {}", label, retries, DC_SEND_MAX_RETRIES, e);
+                tokio::time::sleep(std::time::Duration::from_millis(20 * (1 << (retries - 1)))).await;
+            }
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     eprintln!("=== WORKER BUILD 2026-02-06-LSP-DEBUG ===");
@@ -359,6 +439,11 @@ async fn main() -> Result<()> {
     // Simple in-memory cache for tracking compiled lib paths (legacy, used alongside IncrementalCache)
     let compile_cache: Arc<Mutex<HashMap<String, (u64, String)>>> =
         Arc::new(Mutex::new(HashMap::new()));
+
+    // VS Code Server Manager: holds kill sender
+    // for the vscode-server-manager.js process.
+    let vscode_server_kill_tx: Arc<Mutex<Option<(mpsc::UnboundedSender<()>, tokio::time::Instant)>>> =
+        Arc::new(Mutex::new(None));
 
     // Content-addressable incremental compilation cache (persists across sessions)
     // Uses /dev/shm on Linux for fast RAM-based caching
@@ -583,6 +668,7 @@ async fn main() -> Result<()> {
         metrics_aggregator.clone(),
         restart_controller.clone(),
         ipc_config.clone(),
+        vscode_server_kill_tx.clone(),
     ).await?;
 
     let mut current_remote_fingerprint: Option<String> = None;
@@ -642,6 +728,7 @@ async fn main() -> Result<()> {
                                     metrics_aggregator.clone(),
                                     restart_controller.clone(),
                                     ipc_config.clone(),
+                                    vscode_server_kill_tx.clone(),
                                 )
                                 .await?;
                                 pc = new_pc;
@@ -718,6 +805,14 @@ async fn main() -> Result<()> {
                      let mut guard = sdl_input_store.lock().await;
                      guard.clear();
                 }
+                // Kill any running VS Code Server manager process
+                {
+                    let mut guard = vscode_server_kill_tx.lock().await;
+                    if let Some((tx, _)) = guard.take() {
+                        eprintln!("[WebRTC-signal] Killing vscode-server-manager process during reset...");
+                        let _ = tx.send(());
+                    }
+                }
 
                 // 4. Create a fresh PeerConnection
                 match create_peer(signal_tx.clone()).await {
@@ -738,6 +833,7 @@ async fn main() -> Result<()> {
                              metrics_aggregator.clone(),
                              restart_controller.clone(),
                              ipc_config.clone(),
+                             vscode_server_kill_tx.clone(),
                          ).await?;
                          pc = new_pc;
                          eprintln!("[WebRTC-signal] Soft reset complete. New PeerConnection ready.");
@@ -989,6 +1085,7 @@ async fn wire_peer_channels(
     metrics_aggregator: Arc<tokio::sync::Mutex<MetricsAggregator>>,
     restart_controller: Arc<tokio::sync::Mutex<RestartController>>,
     ipc_config: Arc<IpcConfig>,
+    vscode_server_kill_tx: Arc<Mutex<Option<(mpsc::UnboundedSender<()>, tokio::time::Instant)>>>,
 ) -> Result<()> {
     let pc = pc.clone();
     let build_log_dc = pc
@@ -1022,6 +1119,7 @@ async fn wire_peer_channels(
     let restart_controller_for_callback = restart_controller.clone();
     let ipc_config_for_callback = ipc_config.clone();
     let sdl_input_store_for_callback = sdl_input_store.clone();
+    let vscode_server_kill_tx_for_callback = vscode_server_kill_tx.clone();
     pc.on_data_channel(Box::new(move |dc: Arc<RTCDataChannel>| {
         let store = compile_store.clone();
         let term_store = term_store.clone();
@@ -1039,6 +1137,7 @@ async fn wire_peer_channels(
         let metrics_aggregator_outer = metrics_aggregator_for_callback.clone();
         let restart_controller_outer = restart_controller_for_callback.clone();
         let ipc_config_outer = ipc_config_for_callback.clone();
+        let vscode_server_kill_tx_outer = vscode_server_kill_tx_for_callback.clone();
         async move {
             let label = dc.label();
             eprintln!("[on_data_channel] Received data channel: label='{}', id={}", label, dc.id());
@@ -1635,11 +1734,24 @@ async fn wire_peer_channels(
                         "cpp" | "c" => {
                             // Create compile_flags.txt to enforce C++17
                             let flags_path = workspace_path.join("compile_flags.txt");
-                            if let Ok(mut file) = std::fs::File::create(flags_path) {
+                            if let Ok(mut file) = std::fs::File::create(&flags_path) {
                                 use std::io::Write;
                                 let _ = writeln!(file, "-std=c++17");
                                 // Force C++ mode to ensure headers are treated correctly
                                 let _ = writeln!(file, "-xc++");
+                            }
+
+                            // Create .clang-tidy to disable the include-cleaner check.
+                            // clang-tidy's misc-include-cleaner aggressively flags newly
+                            // added includes as "unused" before the TU is fully re-indexed,
+                            // which is confusing in an interactive editor.
+                            let clang_tidy_path = workspace_path.join(".clang-tidy");
+                            if !clang_tidy_path.exists() {
+                                if let Ok(mut f) = std::fs::File::create(&clang_tidy_path) {
+                                    use std::io::Write;
+                                    let _ = f.write_all(b"Checks: '-misc-include-cleaner'\n");
+                                    println!("[LSP-CONFIG] Created .clang-tidy (disabled include-cleaner)");
+                                }
                             }
 
                             let mut c = system_command("clangd");
@@ -1839,6 +1951,63 @@ async fn wire_peer_channels(
                             c.arg("--stdio");
                             c
                         },
+                        "prisma" => {
+                            // Prisma Language Server (Node.js based)
+                            // Installed via: npm i -g @prisma/language-server
+                            let mut c = system_command("prisma-language-server");
+                            c.arg("--stdio");
+                            c
+                        },
+                        "tailwindcss" => {
+                            // Tailwind CSS Language Server
+                            // Installed via: npm i -g @tailwindcss/language-server
+                            let mut c = system_command("tailwindcss-language-server");
+                            c.arg("--stdio");
+                            c
+                        },
+                        "eslint" => {
+                            // ESLint Language Server (vscode-langservers-extracted)
+                            let mut c = system_command("vscode-eslint-language-server");
+                            c.arg("--stdio");
+                            c
+                        },
+                        "yaml" => {
+                            // YAML Language Server
+                            // Installed via: npm i -g yaml-language-server
+                            let mut c = system_command("yaml-language-server");
+                            c.arg("--stdio");
+                            c
+                        },
+                        "toml" => {
+                            // Taplo TOML Language Server
+                            // Installed via: cargo install taplo-cli --features lsp
+                            let mut c = system_command("taplo");
+                            c.arg("lsp");
+                            c.arg("stdio");
+                            c
+                        },
+                        "json" | "jsonc" => {
+                            // VSCode JSON language server (vscode-langservers-extracted)
+                            let mut c = system_command("vscode-json-language-server");
+                            c.arg("--stdio");
+                            c
+                        },
+                        "graphql" => {
+                            // GraphQL Language Server
+                            // Installed via: npm i -g graphql-language-service-cli
+                            let mut c = system_command("graphql-lsp");
+                            c.arg("server");
+                            c.arg("-m");
+                            c.arg("stream");
+                            c
+                        },
+                        "dockerfile" => {
+                            // Dockerfile Language Server
+                            // Installed via: npm i -g dockerfile-language-server-nodejs
+                            let mut c = system_command("docker-langserver");
+                            c.arg("--stdio");
+                            c
+                        },
                         _ => {
                             println!("Unsupported language for LSP: {}", lang);
                             return;
@@ -1849,6 +2018,45 @@ async fn wire_peer_channels(
                     cmd.stdin(Stdio::piped());
                     cmd.stdout(Stdio::piped());
                     cmd.stderr(Stdio::piped());
+
+                    // Pre-spawn check: verify the binary is actually executable.
+                    // This prevents cryptic "Permission denied" errors from spawn()
+                    // when a previous install left a non-executable file on disk.
+                    let binary_name = cmd.as_std().get_program().to_string_lossy().to_string();
+                    let pre_check = if cfg!(target_os = "windows") {
+                        Command::new("wsl")
+                            .args(["test", "-x", &format!("$(which {} 2>/dev/null || echo /nonexistent)", binary_name)])
+                            .stdout(Stdio::null())
+                            .stderr(Stdio::null())
+                            .status()
+                            .await
+                    } else {
+                        Command::new("sh")
+                            .args(["-c", &format!(
+                                "BIN=$(which {} 2>/dev/null) && test -x \"$BIN\"",
+                                binary_name
+                            )])
+                            .stdout(Stdio::null())
+                            .stderr(Stdio::null())
+                            .status()
+                            .await
+                    };
+                    if !matches!(pre_check, Ok(s) if s.success()) {
+                        eprintln!("[LSP] Pre-spawn check: {} is not executable or not found — attempting chmod fix", binary_name);
+                        // Try to fix permissions on well-known install locations
+                        let fix_cmd = format!(
+                            "BIN=$(which {bin} 2>/dev/null || echo /usr/local/bin/{bin}); \
+                             test -f \"$BIN\" && chmod +x \"$BIN\" 2>/dev/null || true",
+                            bin = binary_name
+                        );
+                        if cfg!(target_os = "windows") {
+                            let _ = Command::new("wsl").args(["bash", "-lc", &fix_cmd])
+                                .status().await;
+                        } else {
+                            let _ = Command::new("bash").args(["-lc", &fix_cmd])
+                                .status().await;
+                        }
+                    }
 
                     match cmd.spawn() {
                         Ok(mut child) => {
@@ -2386,15 +2594,27 @@ async fn wire_peer_channels(
                                             Ok(_) => {
                                                 if let Ok(mut json_val) = serde_json::from_slice::<serde_json::Value>(&buf) {
                                                     // Log initialize response capabilities (for debugging)
-                                                    // NOTE: We no longer force textDocumentSync to Full(1).
-                                                    // The worker's didChange handler now supports both full
-                                                    // and incremental sync modes, applying range-based edits
-                                                    // to the file on disk when ranges are present.
-                                                    if let Some(result) = json_val.get("result") {
-                                                        if let Some(caps) = result.get("capabilities") {
+                                                    // Force textDocumentSync to Full(1) so the client always
+                                                    // sends the entire file content on every change.  This
+                                                    // avoids the incremental-sync disk-write codepath which
+                                                    // has UTF-16-vs-byte-offset bugs that cause the worker's
+                                                    // on-disk copy to diverge from the LSP server's in-memory
+                                                    // state, leading to stale diagnostics (e.g. "header not
+                                                    // used" right after adding an #include).
+                                                    if let Some(result) = json_val.get_mut("result") {
+                                                        if let Some(caps) = result.get_mut("capabilities") {
                                                             if let Some(sync) = caps.get("textDocumentSync") {
-                                                                println!("[LSP] Server textDocumentSync capability: {}", sync);
+                                                                println!("[LSP] Server textDocumentSync capability (original): {}", sync);
                                                             }
+                                                            // Override to Full(1)
+                                                            caps.as_object_mut().map(|m| {
+                                                                m.insert("textDocumentSync".to_string(), serde_json::json!({
+                                                                    "openClose": true,
+                                                                    "change": 1,
+                                                                    "save": { "includeText": true }
+                                                                }));
+                                                            });
+                                                            println!("[LSP] Forced textDocumentSync to Full(1)");
                                                         }
                                                     }
 
@@ -2409,15 +2629,15 @@ async fn wire_peer_channels(
                                                             let chunks = make_chunks(&new_content, msg_id);
                                                             for chunk in chunks {
                                                                 let data = Bytes::from(chunk);
-                                                                if let Err(e) = dc_out.send(&data).await {
-                                                                    eprintln!("Failed to send chunk: {}", e);
+                                                                if let Err(e) = dc_send_with_backpressure(&dc_out, &data, "lsp").await {
+                                                                    eprintln!("[lsp] Failed to send chunk: {}", e);
                                                                     break;
                                                                 }
                                                             }
                                                         } else {
                                                             let data = Bytes::copy_from_slice(&new_content);
-                                                            if let Err(e) = dc_out.send(&data).await {
-                                                                eprintln!("Failed to send to WebRTC: {}", e);
+                                                            if let Err(e) = dc_send_with_backpressure(&dc_out, &data, "lsp").await {
+                                                                eprintln!("[lsp] Failed to send to WebRTC: {}", e);
                                                                 break;
                                                             }
                                                         }
@@ -2426,8 +2646,8 @@ async fn wire_peer_channels(
                                                     // Failed to parse JSON — send raw body
                                                     eprintln!("[LSP] Failed to parse JSON from stdout, forwarding raw bytes");
                                                     let data = Bytes::copy_from_slice(&buf);
-                                                    if let Err(e) = dc_out.send(&data).await {
-                                                        eprintln!("Failed to send raw bytes to WebRTC: {}", e);
+                                                    if let Err(e) = dc_send_with_backpressure(&dc_out, &data, "lsp").await {
+                                                        eprintln!("[lsp] Failed to send raw bytes to WebRTC: {}", e);
                                                         break;
                                                     }
                                                 }
@@ -2649,6 +2869,350 @@ async fn wire_peer_channels(
                     }
                     .boxed()
                 }));
+            }
+            // ── Remote Extension Host (DEPRECATED) ─────────────────
+            // The legacy ext-host DataChannel used to spawn remote-ext-host.js
+            // directly.  This has been replaced by the vscode-server DataChannel
+            // which manages a real VS Code Server (code-server) with
+            // ext-host-preload.js injected via NODE_OPTIONS for full API
+            // compatibility.  If a browser still requests this DC, send back
+            // a deprecation error so it knows to use vscode-server instead.
+            else if label.starts_with("ext-host") {
+                let dc_clone = dc.clone();
+                eprintln!(
+                    "[ext-host] DEPRECATED: ext-host DataChannel requested — \
+                     use vscode-server DC instead.  Sending deprecation error."
+                );
+                tokio::spawn(async move {
+                    let err = serde_json::json!({
+                        "id": 0,
+                        "type": "event",
+                        "method": "error",
+                        "args": ["ext-host DataChannel is deprecated. Use the vscode-server DataChannel instead."],
+                        "generation": 0
+                    });
+                    let _ = dc_clone.send_text(
+                        serde_json::to_string(&err).unwrap_or_default()
+                    ).await;
+                });
+            }
+            // ── VS Code Server Manager ───────────────────────────────
+            // Spawns vscode-server-manager.js which downloads/starts a
+            // real VS Code Server (code-server) with a genuine Extension
+            // Host.  Same stdin/stdout JSON-RPC pattern as ext-host.
+            else if label.starts_with("vscode-server") {
+                let slug_opt = if let Some((_prefix, slug)) = label.split_once("?slug=") {
+                    Some(slug.to_string())
+                } else {
+                    None
+                };
+
+                let dc_clone = dc.clone();
+
+                // Deduplication: ignore if spawned recently (< 10s)
+                {
+                    let guard = vscode_server_kill_tx_outer.lock().await;
+                    if let Some((_tx, spawned_at)) = guard.as_ref() {
+                        let age = spawned_at.elapsed();
+                        if age < std::time::Duration::from_secs(10) {
+                            println!(
+                                "[vscode-server] Ignoring duplicate DC (current process only {}ms old)",
+                                age.as_millis()
+                            );
+                            drop(guard);
+                            return;
+                        }
+                    }
+                }
+
+                // Kill any previously running vscode-server-manager process
+                {
+                    let mut guard = vscode_server_kill_tx_outer.lock().await;
+                    if let Some((old_tx, _)) = guard.take() {
+                        println!("[vscode-server] Killing previous vscode-server-manager process");
+                        let _ = old_tx.send(());
+                    }
+                }
+
+                // Create a kill channel for THIS instance
+                let (kill_tx, mut kill_rx) = mpsc::unbounded_channel::<()>();
+                {
+                    let mut guard = vscode_server_kill_tx_outer.lock().await;
+                    *guard = Some((kill_tx, tokio::time::Instant::now()));
+                }
+
+                // Buffer incoming messages
+                let (incoming_tx, mut incoming_rx) = mpsc::unbounded_channel::<webrtc::data_channel::data_channel_message::DataChannelMessage>();
+                let incoming_tx_clone = incoming_tx.clone();
+                dc.on_message(Box::new(move |msg| {
+                    let tx = incoming_tx_clone.clone();
+                    async move { let _ = tx.send(msg); }.boxed()
+                }));
+
+                println!("[on_data_channel] vscode-server branch matched, spawning vscode-server-manager.js...");
+
+                // Signal when DC opens
+                let (dc_open_tx, dc_open_rx) = tokio::sync::oneshot::channel::<()>();
+                let dc_open_tx = std::sync::Mutex::new(Some(dc_open_tx));
+                dc.on_open(Box::new(move || {
+                    println!("[vscode-server] DataChannel is now open");
+                    if let Some(tx) = dc_open_tx.lock().unwrap().take() {
+                        let _ = tx.send(());
+                    }
+                    async {}.boxed()
+                }));
+
+                tokio::spawn(async move {
+                    // Locate the script — same directory as the binary
+                    let manager_script = {
+                        let exe_dir = std::env::current_exe()
+                            .ok()
+                            .and_then(|p| p.parent().map(|d| d.to_path_buf()));
+                        let candidates = vec![
+                            exe_dir.as_ref().map(|d| d.join("vscode-server-manager.js")),
+                            Some(std::path::PathBuf::from("vscode-server-manager.js")),
+                            Some(std::path::PathBuf::from("../vscode-server-manager.js")),
+                        ];
+                        let mut found = None;
+                        for c in candidates.into_iter().flatten() {
+                            if c.exists() {
+                                found = Some(c);
+                                break;
+                            }
+                        }
+                        match found {
+                            Some(p) => p,
+                            None => {
+                                eprintln!("[vscode-server] vscode-server-manager.js not found");
+                                let err = serde_json::json!({
+                                    "id": 0, "type": "event", "method": "error",
+                                    "args": ["vscode-server-manager.js not found on worker"],
+                                    "generation": 0
+                                });
+                                let _ = dc_clone.send_text(serde_json::to_string(&err).unwrap_or_default()).await;
+                                return;
+                            }
+                        }
+                    };
+
+                    println!("[vscode-server] Using script: {}", manager_script.display());
+
+                    let mut cmd = Command::new("node");
+                    cmd.arg(&manager_script);
+                    cmd.stdin(Stdio::piped());
+                    cmd.stdout(Stdio::piped());
+                    cmd.stderr(Stdio::piped());
+
+                    match cmd.spawn() {
+                        Ok(mut child) => {
+                            let mut stdin = child.stdin.take().expect("[vscode-server] Failed to open stdin");
+                            let stdout = child.stdout.take().expect("[vscode-server] Failed to open stdout");
+                            let stderr = child.stderr.take().expect("[vscode-server] Failed to open stderr");
+
+                            // DC → stdin
+                            let (stdin_tx, mut stdin_rx) = mpsc::unbounded_channel::<Vec<u8>>();
+                            let stdin_tx_clone = stdin_tx.clone();
+                            tokio::spawn(async move {
+                                while let Some(msg) = incoming_rx.recv().await {
+                                    let mut line = msg.data.to_vec();
+                                    if !line.ends_with(b"\n") { line.push(b'\n'); }
+                                    let _ = stdin_tx_clone.send(line);
+                                }
+                            });
+                            tokio::spawn(async move {
+                                while let Some(data) = stdin_rx.recv().await {
+                                    if stdin.write_all(&data).await.is_err() { break; }
+                                    if stdin.flush().await.is_err() { break; }
+                                }
+                            });
+
+                            // stdout → DC (wait for DC open first)
+                            let dc_out = dc_clone.clone();
+                            tokio::spawn(async move {
+                                match tokio::time::timeout(
+                                    std::time::Duration::from_secs(15),
+                                    dc_open_rx,
+                                ).await {
+                                    Err(_) => { eprintln!("[vscode-server] Timed out waiting for DC open"); return; }
+                                    Ok(Err(_)) => { eprintln!("[vscode-server] DC open signal dropped"); return; }
+                                    Ok(Ok(())) => {}
+                                }
+                                println!("[vscode-server] DC open, starting stdout→DC forwarding");
+                                let mut reader = BufReader::new(stdout);
+                                let mut line = String::new();
+                                loop {
+                                    line.clear();
+                                    match reader.read_line(&mut line).await {
+                                        Ok(0) => break,
+                                        Ok(_) => {
+                                            let trimmed = line.trim();
+                                            if trimmed.is_empty() { continue; }
+
+
+                                            // Chunk large messages (>60KB) for WebRTC SCTP
+                                            let data_bytes = trimmed.as_bytes();
+                                            if data_bytes.len() > 60000 {
+                                                let msg_id = (std::time::SystemTime::now()
+                                                    .duration_since(std::time::UNIX_EPOCH)
+                                                    .unwrap().as_nanos() % 0xFFFFFFFF) as u32;
+                                                let chunks = make_chunks(data_bytes, msg_id);
+                                                println!("[vscode-server] Chunking large message: {} bytes → {} chunks", data_bytes.len(), chunks.len());
+                                                for chunk in chunks {
+                                                    let data = Bytes::from(chunk);
+                                                    if let Err(e) = dc_send_with_backpressure(&dc_out, &data, "vscode-server").await {
+                                                        eprintln!("[vscode-server] chunk send failed permanently: {}", e);
+                                                        // Don't break the outer loop — just skip this message
+                                                        break;
+                                                    }
+                                                }
+                                            } else {
+                                                if let Err(e) = dc_send_text_with_backpressure(&dc_out, trimmed.to_string(), "vscode-server").await {
+                                                    eprintln!("[vscode-server] send failed permanently: {}", e);
+                                                    // Don't break — continue trying with next messages
+                                                }
+                                            }
+                                        }
+                                        Err(e) => { eprintln!("[vscode-server] stdout read error: {}", e); break; }
+                                    }
+                                }
+                                println!("[vscode-server] stdout reader exited");
+                            });
+
+                            // stderr → logs
+                            tokio::spawn(async move {
+                                let mut reader = BufReader::new(stderr);
+                                let mut line = String::new();
+                                loop {
+                                    line.clear();
+                                    match reader.read_line(&mut line).await {
+                                        Ok(0) => break,
+                                        Ok(_) => { eprint!("[vscode-server] {}", line); }
+                                        Err(_) => break,
+                                    }
+                                }
+                            });
+
+                            let _ = tokio::select! {
+                                status = child.wait() => {
+                                    println!("[vscode-server] Manager process exited: {:?}", status);
+                                    status
+                                }
+                                _ = kill_rx.recv() => {
+                                    println!("[vscode-server] Received kill signal, terminating manager");
+                                    let _ = child.kill().await;
+                                    child.wait().await
+                                }
+                            };
+                            println!("[vscode-server] Manager process cleanup complete");
+                        }
+                        Err(e) => {
+                            eprintln!("[vscode-server] Failed to spawn Node.js: {}", e);
+                            let err = serde_json::json!({
+                                "id": 0, "type": "event", "method": "error",
+                                "args": [format!("Failed to spawn vscode-server-manager: {}", e)],
+                                "generation": 0
+                            });
+                            let _ = dc_clone.send_text(serde_json::to_string(&err).unwrap_or_default()).await;
+                        }
+                    }
+                });
+            }
+            // ── VS Code Server WebSocket Tunnel ──────────────────────
+            // Bridges a DataChannel to the VS Code Server's TCP port so
+            // the browser can establish a WebSocket connection to the real
+            // Extension Host through the WebRTC transport.
+            //
+            // Label format: "vscode-ws-tunnel?port=18000"
+            // Data flows bidirectionally: DC ↔ TCP (127.0.0.1:<port>)
+            else if label.starts_with("vscode-ws-tunnel") {
+                let port: u16 = label
+                    .split_once("?port=")
+                    .and_then(|(_, p)| p.parse().ok())
+                    .unwrap_or(18000);
+
+                let dc_clone = dc.clone();
+
+                // Buffer incoming DC messages
+                let (incoming_tx, mut incoming_rx) = mpsc::unbounded_channel::<webrtc::data_channel::data_channel_message::DataChannelMessage>();
+                let incoming_tx_clone = incoming_tx.clone();
+                dc.on_message(Box::new(move |msg| {
+                    let tx = incoming_tx_clone.clone();
+                    async move { let _ = tx.send(msg); }.boxed()
+                }));
+
+                // Wait for DC to open, then connect TCP
+                let (dc_open_tx, dc_open_rx) = tokio::sync::oneshot::channel::<()>();
+                let dc_open_tx = std::sync::Mutex::new(Some(dc_open_tx));
+                dc.on_open(Box::new(move || {
+                    println!("[vscode-ws-tunnel] DataChannel opened, port={}", port);
+                    if let Some(tx) = dc_open_tx.lock().unwrap().take() {
+                        let _ = tx.send(());
+                    }
+                    async {}.boxed()
+                }));
+
+                tokio::spawn(async move {
+                    // Wait for DC open
+                    if dc_open_rx.await.is_err() {
+                        eprintln!("[vscode-ws-tunnel] DC open signal dropped");
+                        return;
+                    }
+
+                    // Connect to the VS Code Server's TCP port
+                    let addr = format!("127.0.0.1:{}", port);
+                    let tcp_stream = match tokio::net::TcpStream::connect(&addr).await {
+                        Ok(s) => s,
+                        Err(e) => {
+                            eprintln!("[vscode-ws-tunnel] Failed to connect to {}: {}", addr, e);
+                            let err = serde_json::json!({
+                                "id": 0, "type": "event", "method": "error",
+                                "args": [format!("TCP connect failed: {}", e)],
+                                "generation": 0
+                            });
+                            let _ = dc_clone.send_text(serde_json::to_string(&err).unwrap_or_default()).await;
+                            return;
+                        }
+                    };
+                    println!("[vscode-ws-tunnel] TCP connected to {}", addr);
+
+                    let (tcp_read, mut tcp_write) = tcp_stream.into_split();
+
+                    // DC → TCP: forward DataChannel binary data to TCP socket
+                    let dc_to_tcp = tokio::spawn(async move {
+                        while let Some(msg) = incoming_rx.recv().await {
+                            if tcp_write.write_all(&msg.data).await.is_err() { break; }
+                        }
+                        println!("[vscode-ws-tunnel] DC→TCP forwarder exited");
+                    });
+
+                    // TCP → DC: forward TCP data back to DataChannel
+                    let dc_for_tcp = dc_clone.clone();
+                    let tcp_to_dc = tokio::spawn(async move {
+                        let mut reader = tokio::io::BufReader::new(tcp_read);
+                        let mut buf = vec![0u8; 64 * 1024];
+                        loop {
+                            match reader.read(&mut buf).await {
+                                Ok(0) => break, // EOF
+                                Ok(n) => {
+                                    let data = Bytes::copy_from_slice(&buf[..n]);
+                                    if dc_for_tcp.send(&data).await.is_err() { break; }
+                                }
+                                Err(e) => {
+                                    eprintln!("[vscode-ws-tunnel] TCP read error: {}", e);
+                                    break;
+                                }
+                            }
+                        }
+                        println!("[vscode-ws-tunnel] TCP→DC forwarder exited");
+                    });
+
+                    // Wait for either direction to finish
+                    tokio::select! {
+                        _ = dc_to_tcp => {}
+                        _ = tcp_to_dc => {}
+                    }
+                    println!("[vscode-ws-tunnel] Tunnel closed for port {}", port);
+                });
             }
         }
         .boxed()
@@ -5240,9 +5804,32 @@ path = "{}"
                 }
             }
         }
+        "prisma" => {
+            // Prisma Language Server works with .prisma files directly.
+            // No extra config needed — it reads schema.prisma from the workspace.
+            let schema = workspace.join("prisma/schema.prisma");
+            if !schema.exists() {
+                // Check root level too
+                let root_schema = workspace.join("schema.prisma");
+                if root_schema.exists() {
+                    println!("[LSP-CONFIG] Prisma schema found at root level");
+                }
+            } else {
+                println!("[LSP-CONFIG] Prisma schema found at prisma/schema.prisma");
+            }
+        }
+        "json" | "jsonc" => {
+            // vscode-json-language-server works out of the box.
+            // Optionally, we could provide schema associations.
+        }
+        "yaml" => {
+            // yaml-language-server works out of the box.
+            // Could provide schema associations via settings.
+        }
         // Python: pylsp/pyright works well for standalone files without extra config.
         // C/C++: compile_flags.txt is created in the cmd match arm below.
         // Java: jdtls creates .jdtls-data itself.
+        // TOML, GraphQL, Dockerfile, Tailwind, ESLint: work without extra config.
         _ => {}
     }
 }

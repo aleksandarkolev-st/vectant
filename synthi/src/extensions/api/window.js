@@ -28,8 +28,8 @@ export function createWindowAPI(extensionId, host) {
      * Active text editor (read-only)
      */
     get activeTextEditor() {
-      // Would need main thread state sync
-      return undefined;
+      // Synced from main thread via ACTIVE_EDITOR_CHANGED events
+      return host._activeTextEditor || undefined;
     },
 
     /**
@@ -92,10 +92,12 @@ export function createWindowAPI(extensionId, host) {
      */
     async showQuickPick(items, options, token) {
       const resolvedItems = await Promise.resolve(items);
-      
-      // For now, just return undefined - would need main thread UI
-      host.emit(WorkerToMainMethods.SHOW_QUICK_PICK, resolvedItems, options);
-      return undefined;
+      try {
+        const result = await host.request(WorkerToMainMethods.SHOW_QUICK_PICK, [resolvedItems, options]);
+        return result;
+      } catch {
+        return undefined;
+      }
     },
 
     /**
@@ -105,8 +107,12 @@ export function createWindowAPI(extensionId, host) {
      * @returns {Promise<string|undefined>}
      */
     async showInputBox(options, token) {
-      host.emit(WorkerToMainMethods.SHOW_INPUT_BOX, options);
-      return undefined;
+      try {
+        const result = await host.request(WorkerToMainMethods.SHOW_INPUT_BOX, [options]);
+        return result;
+      } catch {
+        return undefined;
+      }
     },
 
     /**
@@ -360,9 +366,86 @@ export function createWindowAPI(extensionId, host) {
      * @returns {{ dispose(): void }}
      */
     registerWebviewViewProvider(viewId, provider, options) {
-      // Would need main thread support
-      console.warn('[window.registerWebviewViewProvider] Not fully implemented');
-      return { dispose() {} };
+      const wvViewId = `${extensionId}.webviewView.${viewId}`;
+      let webviewHtml = '';
+      const messageListeners = [];
+      const disposeListeners = [];
+      const visibilityListeners = [];
+
+      const webviewView = {
+        viewType: viewId,
+        visible: true,
+        onDidChangeVisibility: (listener, thisArgs, disposables) => {
+          const bound = thisArgs ? listener.bind(thisArgs) : listener;
+          visibilityListeners.push(bound);
+          const d = { dispose() { const i = visibilityListeners.indexOf(bound); if (i !== -1) visibilityListeners.splice(i, 1); } };
+          if (disposables) disposables.push(d);
+          return d;
+        },
+        onDidDispose: (listener, thisArgs, disposables) => {
+          const bound = thisArgs ? listener.bind(thisArgs) : listener;
+          disposeListeners.push(bound);
+          const d = { dispose() { const i = disposeListeners.indexOf(bound); if (i !== -1) disposeListeners.splice(i, 1); } };
+          if (disposables) disposables.push(d);
+          return d;
+        },
+        show(preserveFocus) { /* no-op */ },
+        webview: {
+          options: options || {},
+          get html() { return webviewHtml; },
+          set html(value) {
+            webviewHtml = value;
+            host.emit(WorkerToMainMethods.UPDATE_WEBVIEW, wvViewId, { html: value });
+          },
+          onDidReceiveMessage: (listener, thisArgs, disposables) => {
+            const bound = thisArgs ? listener.bind(thisArgs) : listener;
+            messageListeners.push(bound);
+            const d = { dispose() { const i = messageListeners.indexOf(bound); if (i !== -1) messageListeners.splice(i, 1); } };
+            if (disposables) disposables.push(d);
+            return d;
+          },
+          postMessage(message) {
+            host.emit(WorkerToMainMethods.POST_WEBVIEW_MESSAGE, wvViewId, message);
+            return Promise.resolve(true);
+          },
+          asWebviewUri(localResource) {
+            return {
+              scheme: 'https',
+              authority: 'file+.vscode-resource.vscode-cdn.net',
+              path: localResource.path,
+              fsPath: localResource.fsPath,
+              toString() { return `https://file+.vscode-resource.vscode-cdn.net${localResource.path}`; }
+            };
+          },
+          get cspSource() { return "'self' https:"; },
+          // Internal: receive message from main thread
+          _receiveMessage(message) { messageListeners.forEach(l => l(message)); },
+        },
+      };
+
+      // Notify main thread to create the webview
+      host.emit(WorkerToMainMethods.CREATE_WEBVIEW, wvViewId, viewId, viewId, options || {});
+
+      // Resolve the view — the provider will set .webview.html
+      try {
+        const result = provider.resolveWebviewView(
+          webviewView,
+          { state: undefined },
+          { isCancellationRequested: false, onCancellationRequested: { dispose() {} } }
+        );
+        if (result && typeof result.then === 'function') {
+          result.catch(e => console.error(`[registerWebviewViewProvider] resolveWebviewView failed for ${viewId}:`, e));
+        }
+      } catch (e) {
+        console.error(`[registerWebviewViewProvider] resolveWebviewView threw for ${viewId}:`, e);
+      }
+
+      return {
+        dispose() {
+          disposeListeners.forEach(l => l());
+          host.emit(WorkerToMainMethods.DISPOSE_WEBVIEW, wvViewId);
+        }
+      };
     },
 
     /**

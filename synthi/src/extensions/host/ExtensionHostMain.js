@@ -6,8 +6,10 @@
 import { 
   createResponse, 
   createEvent, 
+  createRequest,
   isValidMessage,
   MainToWorkerMethods,
+  MainToWorkerMethodsExtended,
   WorkerToMainMethods 
 } from '../bridge/MessageProtocol.js';
 import { ExtensionRegistry } from './ExtensionRegistry.js';
@@ -44,6 +46,24 @@ export class ExtensionHostMain {
     /** @type {Set<string>} Suspended extensions */
     this.suspended = new Set();
 
+    /** @type {Map<string, object>} Language providers registered by extensions */
+    this._languageProviders = new Map();
+
+    /** @type {Map<number, { resolve: Function, reject: Function }>} Pending round-trip UI requests */
+    this._pendingRequests = new Map();
+
+    /** @type {number} Request ID counter for main→worker requests */
+    this._requestIdCounter = 0;
+
+    /** @type {object|null} Active text editor state pushed from main thread */
+    this._activeTextEditor = null;
+
+    /** @type {Map<string, object>} File watchers by watcher ID */
+    this._fileWatchers = new Map();
+
+    /** @type {Map<string, object>} Terminals by ID */
+    this._terminals = new Map();
+
     // Bind methods
     this.handleMessage = this.handleMessage.bind(this);
   }
@@ -62,6 +82,17 @@ export class ExtensionHostMain {
       this._handleRequest(msg);
     } else if (msg.type === 'event') {
       this._handleEvent(msg);
+    } else if (msg.type === 'response') {
+      // Handle responses to requests we sent to the main thread
+      const pending = this._pendingRequests.get(msg.id);
+      if (pending) {
+        this._pendingRequests.delete(msg.id);
+        if (msg.error) {
+          pending.reject(new Error(msg.error.message));
+        } else {
+          pending.resolve(msg.result);
+        }
+      }
     }
   }
 
@@ -106,6 +137,94 @@ export class ExtensionHostMain {
 
         case MainToWorkerMethods.KILL_EXTENSION:
           result = await this._killExtension(...args);
+          break;
+
+        // ─── Language Provider Invocations (Main → Worker) ───────────
+        case 'lang/provideCompletion':
+          result = await this._invokeLanguageProvider(args[0], 'provideCompletionItems', args.slice(1));
+          break;
+        case 'lang/provideHover':
+          result = await this._invokeLanguageProvider(args[0], 'provideHover', args.slice(1));
+          break;
+        case 'lang/provideDefinition':
+          result = await this._invokeLanguageProvider(args[0], 'provideDefinition', args.slice(1));
+          break;
+        case 'lang/provideTypeDefinition':
+          result = await this._invokeLanguageProvider(args[0], 'provideTypeDefinition', args.slice(1));
+          break;
+        case 'lang/provideImplementation':
+          result = await this._invokeLanguageProvider(args[0], 'provideImplementation', args.slice(1));
+          break;
+        case 'lang/provideReferences':
+          result = await this._invokeLanguageProvider(args[0], 'provideReferences', args.slice(1));
+          break;
+        case 'lang/provideDocumentHighlights':
+          result = await this._invokeLanguageProvider(args[0], 'provideDocumentHighlights', args.slice(1));
+          break;
+        case 'lang/provideDocumentSymbols':
+          result = await this._invokeLanguageProvider(args[0], 'provideDocumentSymbols', args.slice(1));
+          break;
+        case 'lang/provideCodeActions':
+          result = await this._invokeLanguageProvider(args[0], 'provideCodeActions', args.slice(1));
+          break;
+        case 'lang/provideCodeLenses':
+          result = await this._invokeLanguageProvider(args[0], 'provideCodeLenses', args.slice(1));
+          break;
+        case 'lang/resolveCodeLens':
+          result = await this._invokeLanguageProvider(args[0], 'resolveCodeLens', args.slice(1));
+          break;
+        case 'lang/provideFormatting':
+          result = await this._invokeLanguageProvider(args[0], 'provideDocumentFormattingEdits', args.slice(1));
+          break;
+        case 'lang/provideRangeFormatting':
+          result = await this._invokeLanguageProvider(args[0], 'provideDocumentRangeFormattingEdits', args.slice(1));
+          break;
+        case 'lang/provideOnTypeFormatting':
+          result = await this._invokeLanguageProvider(args[0], 'provideOnTypeFormattingEdits', args.slice(1));
+          break;
+        case 'lang/provideSignatureHelp':
+          result = await this._invokeLanguageProvider(args[0], 'provideSignatureHelp', args.slice(1));
+          break;
+        case 'lang/provideRename':
+          result = await this._invokeLanguageProvider(args[0], 'provideRenameEdits', args.slice(1));
+          break;
+        case 'lang/prepareRename':
+          result = await this._invokeLanguageProvider(args[0], 'prepareRename', args.slice(1));
+          break;
+        case 'lang/provideDocumentLinks':
+          result = await this._invokeLanguageProvider(args[0], 'provideDocumentLinks', args.slice(1));
+          break;
+        case 'lang/provideColors':
+          result = await this._invokeLanguageProvider(args[0], 'provideDocumentColors', args.slice(1));
+          break;
+        case 'lang/provideColorPresentations':
+          result = await this._invokeLanguageProvider(args[0], 'provideColorPresentations', args.slice(1));
+          break;
+        case 'lang/provideFoldingRanges':
+          result = await this._invokeLanguageProvider(args[0], 'provideFoldingRanges', args.slice(1));
+          break;
+        case 'lang/provideSelectionRanges':
+          result = await this._invokeLanguageProvider(args[0], 'provideSelectionRanges', args.slice(1));
+          break;
+        case 'lang/provideInlayHints':
+          result = await this._invokeLanguageProvider(args[0], 'provideInlayHints', args.slice(1));
+          break;
+        case 'lang/provideInlineCompletions':
+          result = await this._invokeLanguageProvider(args[0], 'provideInlineCompletions', args.slice(1));
+          break;
+        case 'lang/provideSemanticTokens':
+          result = await this._invokeLanguageProvider(args[0], 'provideDocumentSemanticTokens', args.slice(1));
+          break;
+        case 'lang/resolveCompletionItem':
+          result = await this._resolveCompletionItem(args[0], args[1]);
+          break;
+
+        // ─── Tree View data requests (Main → Worker) ────────────────
+        case 'treeView/getChildren':
+          result = await this._getTreeViewChildren(...args);
+          break;
+        case 'treeView/getTreeItem':
+          result = await this._getTreeViewItem(...args);
           break;
 
         default:
@@ -157,6 +276,15 @@ export class ExtensionHostMain {
       case MainToWorkerMethods.WEBVIEW_DISPOSE:
         this._onWebviewDispose(...args);
         break;
+
+      // ─── Extended events from Main → Worker ─────────────────────
+      case 'editor/activeChanged':
+        this._onActiveEditorChanged(...args);
+        break;
+
+      case 'fs/watcherEvent':
+        this._onFileWatcherEvent(...args);
+        break;
     }
   }
 
@@ -167,6 +295,31 @@ export class ExtensionHostMain {
    */
   emit(method, ...args) {
     self.postMessage(createEvent(method, args));
+  }
+
+  /**
+   * Send a request to the main thread and wait for a response (round-trip RPC).
+   * Used for UI round-trips: showQuickPick, showInputBox, fs operations, etc.
+   * @param {string} method
+   * @param {any[]} args
+   * @param {number} [timeout=30000]
+   * @returns {Promise<any>}
+   */
+  request(method, args = [], timeout = 30000) {
+    const msg = createRequest(method, args);
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this._pendingRequests.delete(msg.id);
+        reject(new Error(`Request timeout: ${method}`));
+      }, timeout);
+
+      this._pendingRequests.set(msg.id, {
+        resolve: (result) => { clearTimeout(timer); resolve(result); },
+        reject: (err) => { clearTimeout(timer); reject(err); }
+      });
+
+      self.postMessage(msg);
+    });
   }
 
   // ===========================================================================
@@ -433,9 +586,40 @@ export class ExtensionHostMain {
     const doc = this.documents.get(uri);
     if (doc) {
       doc.version = version;
-      // Note: Full content sync would happen here in a real implementation
-      // For performance, we only track version and apply changes on demand
+      // Apply changes to content so providers always have current text.
+      // Changes are in VS Code format: { range: { start: { line, character }, end: { line, character } }, text }
+      if (doc.content !== undefined && Array.isArray(changes)) {
+        let content = doc.content;
+        // Apply changes in reverse offset order to keep indices valid
+        const sorted = [...changes].sort((a, b) => {
+          const aOff = this._offsetInContent(content, a.range?.end || a.range?.start);
+          const bOff = this._offsetInContent(content, b.range?.end || b.range?.start);
+          return bOff - aOff;
+        });
+        for (const change of sorted) {
+          if (change.range) {
+            const startOff = this._offsetInContent(content, change.range.start);
+            const endOff = this._offsetInContent(content, change.range.end);
+            content = content.substring(0, startOff) + (change.text || '') + content.substring(endOff);
+          }
+        }
+        doc.content = content;
+        doc.lineCount = content.split('\n').length;
+      }
     }
+  }
+
+  /**
+   * Compute byte offset in content from a {line, character} position.
+   */
+  _offsetInContent(content, pos) {
+    if (!pos) return 0;
+    const lines = content.split('\n');
+    let offset = 0;
+    for (let i = 0; i < (pos.line ?? 0) && i < lines.length; i++) {
+      offset += lines[i].length + 1; // +1 for \n
+    }
+    return offset + (pos.character ?? 0);
   }
 
   /**
@@ -546,5 +730,330 @@ export class ExtensionHostMain {
    */
   getDocument(uri) {
     return this.documents.get(uri);
+  }
+
+  // ===========================================================================
+  // Language Provider Invocations
+  // ===========================================================================
+
+  /**
+   * Invoke a registered language provider.
+   * Called when the main thread (via LanguageProviderBridge) needs results.
+   *
+   * @param {string} providerId - e.g. "ext.completion:3"
+   * @param {string} providerMethod - e.g. "provideCompletionItems"
+   * @param {any[]} args - [uri, position, context, …] (serialized from main thread)
+   * @returns {Promise<any>}
+   */
+  async _invokeLanguageProvider(providerId, providerMethod, args) {
+    const registration = this._languageProviders.get(providerId);
+    if (!registration) {
+      throw new Error(`Provider not found: ${providerId}`);
+    }
+
+    const { provider } = registration;
+    if (typeof provider[providerMethod] !== 'function') {
+      return null; // provider doesn't implement this optional method
+    }
+
+    // Reconstruct document from URI
+    const uri = args[0];
+    const doc = this._getDocumentForProvider(uri);
+    if (!doc && providerMethod !== 'resolveCodeLens') {
+      console.warn(`[ExtensionHost] Document not found for provider call: ${uri}`);
+      return null;
+    }
+
+    // Build call arguments based on provider method
+    const callArgs = this._buildProviderCallArgs(providerMethod, doc, args);
+
+    const startTime = performance.now();
+    try {
+      const result = await Promise.resolve(provider[providerMethod](...callArgs));
+      this._trackCpuTime(registration.extensionId, performance.now() - startTime);
+      return this._serializeProviderResult(providerMethod, result);
+    } catch (err) {
+      console.error(`[ExtensionHost] Provider ${providerId}.${providerMethod} error:`, err);
+      return null;
+    }
+  }
+
+  /**
+   * Resolve a completion item (by index, from a previously returned list).
+   * The LanguageProviderBridge stores the provider ID + index for later resolution.
+   */
+  async _resolveCompletionItem(providerId, itemIndex) {
+    const registration = this._languageProviders.get(providerId);
+    if (!registration || typeof registration.provider.resolveCompletionItem !== 'function') {
+      return null;
+    }
+
+    // We need to cache the last completion result per provider to resolve items.
+    // If the extension stores items, use its last result.
+    const lastItems = registration._lastCompletionItems;
+    if (!lastItems || !lastItems[itemIndex]) return null;
+
+    const startTime = performance.now();
+    try {
+      const resolved = await Promise.resolve(
+        registration.provider.resolveCompletionItem(lastItems[itemIndex], null)
+      );
+      this._trackCpuTime(registration.extensionId, performance.now() - startTime);
+      return this._serializeSingleCompletionItem(resolved || lastItems[itemIndex]);
+    } catch (err) {
+      console.error(`[ExtensionHost] resolveCompletionItem error for ${providerId}:`, err);
+      return null;
+    }
+  }
+
+  /**
+   * Get a VS Code-like document object for provider invocations.
+   * Uses the synced document content from the main thread.
+   */
+  _getDocumentForProvider(uri) {
+    const raw = this.documents.get(uri);
+    if (!raw) return null;
+
+    // Build a minimal TextDocument shape that extensions expect
+    const lines = (raw.content || '').split('\n');
+    return {
+      uri: { toString: () => uri, fsPath: uri, scheme: 'file', path: uri },
+      fileName: raw.fileName || uri,
+      languageId: raw.languageId || 'plaintext',
+      version: raw.version || 1,
+      lineCount: lines.length,
+      getText(range) {
+        if (!range) return raw.content || '';
+        const startLine = range.start?.line ?? 0;
+        const startChar = range.start?.character ?? 0;
+        const endLine = range.end?.line ?? lines.length - 1;
+        const endChar = range.end?.character ?? (lines[endLine]?.length ?? 0);
+        if (startLine === endLine) {
+          return (lines[startLine] || '').substring(startChar, endChar);
+        }
+        const result = [(lines[startLine] || '').substring(startChar)];
+        for (let i = startLine + 1; i < endLine; i++) result.push(lines[i] || '');
+        result.push((lines[endLine] || '').substring(0, endChar));
+        return result.join('\n');
+      },
+      lineAt(lineOrPos) {
+        const ln = typeof lineOrPos === 'number' ? lineOrPos : (lineOrPos?.line ?? 0);
+        const text = lines[ln] || '';
+        return {
+          lineNumber: ln,
+          text,
+          range: { start: { line: ln, character: 0 }, end: { line: ln, character: text.length } },
+          rangeIncludingLineBreak: { start: { line: ln, character: 0 }, end: { line: ln + 1, character: 0 } },
+          firstNonWhitespaceCharacterIndex: text.search(/\S/),
+          isEmptyOrWhitespace: text.trim().length === 0
+        };
+      },
+      offsetAt(pos) {
+        let offset = 0;
+        for (let i = 0; i < (pos.line ?? 0); i++) offset += (lines[i]?.length ?? 0) + 1;
+        return offset + (pos.character ?? 0);
+      },
+      positionAt(offset) {
+        let remaining = offset;
+        for (let i = 0; i < lines.length; i++) {
+          if (remaining <= lines[i].length) return { line: i, character: remaining };
+          remaining -= lines[i].length + 1;
+        }
+        return { line: lines.length - 1, character: lines[lines.length - 1]?.length ?? 0 };
+      },
+      getWordRangeAtPosition(pos, regex) {
+        const text = lines[pos.line] || '';
+        const pattern = regex || /\w+/g;
+        const re = new RegExp(pattern.source, 'g');
+        let match;
+        while ((match = re.exec(text)) !== null) {
+          const start = match.index;
+          const end = start + match[0].length;
+          if (pos.character >= start && pos.character <= end) {
+            return { start: { line: pos.line, character: start }, end: { line: pos.line, character: end } };
+          }
+        }
+        return undefined;
+      },
+      validateRange(range) { return range; },
+      validatePosition(pos) { return pos; }
+    };
+  }
+
+  /**
+   * Build call arguments for a provider method based on the serialized args.
+   * args[0] is always the URI (already handled), args[1+] vary by method.
+   */
+  _buildProviderCallArgs(method, doc, args) {
+    // Most providers: (document, position, [context])
+    // Some providers: (document, range, context) or (document) only
+    const token = { isCancellationRequested: false, onCancellationRequested: () => ({ dispose() {} }) };
+
+    switch (method) {
+      case 'provideCompletionItems':
+        return [doc, args[1] /* position */, args[2] /* context */, token];
+      case 'provideHover':
+        return [doc, args[1] /* position */, token];
+      case 'provideDefinition':
+      case 'provideTypeDefinition':
+      case 'provideImplementation':
+        return [doc, args[1] /* position */, token];
+      case 'provideReferences':
+        return [doc, args[1] /* position */, args[2] /* context */, token];
+      case 'provideDocumentHighlights':
+        return [doc, args[1] /* position */, token];
+      case 'provideDocumentSymbols':
+        return [doc, token];
+      case 'provideCodeActions':
+        return [doc, args[1] /* range */, args[2] /* context */, token];
+      case 'provideCodeLenses':
+        return [doc, token];
+      case 'resolveCodeLens':
+        // args: [uri, codeLensIndex] — need to retrieve from cache
+        return [args[1] /* codeLens */, token];
+      case 'provideDocumentFormattingEdits':
+        return [doc, args[1] /* options */, token];
+      case 'provideDocumentRangeFormattingEdits':
+        return [doc, args[1] /* range */, args[2] /* options */, token];
+      case 'provideOnTypeFormattingEdits':
+        return [doc, args[1] /* position */, args[2] /* ch */, args[3] /* options */, token];
+      case 'provideSignatureHelp':
+        return [doc, args[1] /* position */, token, args[2] /* context */];
+      case 'provideRenameEdits':
+        return [doc, args[1] /* position */, args[2] /* newName */, token];
+      case 'prepareRename':
+        return [doc, args[1] /* position */, token];
+      case 'provideDocumentLinks':
+        return [doc, token];
+      case 'provideDocumentColors':
+        return [doc, token];
+      case 'provideColorPresentations':
+        return [args[1] /* color */, { document: doc, range: args[2] /* range */ }, token];
+      case 'provideFoldingRanges':
+        return [doc, {} /* context */, token];
+      case 'provideSelectionRanges':
+        return [doc, args[1] /* positions */, token];
+      case 'provideInlayHints':
+        return [doc, args[1] /* range */, token];
+      case 'provideInlineCompletions':
+        return [doc, args[1] /* position */, args[2] /* context */, token];
+      case 'provideDocumentSemanticTokens':
+        return [doc, token];
+      default:
+        return [doc, ...args.slice(1), token];
+    }
+  }
+
+  /**
+   * Serialize a provider result for transport back to the main thread.
+   * Strips functions, circular references, and converts special types.
+   */
+  _serializeProviderResult(method, result) {
+    if (result === null || result === undefined) return null;
+
+    // Completion results — cache items for resolveCompletionItem
+    if (method === 'provideCompletionItems') {
+      return this._serializeCompletionResult(result);
+    }
+
+    // Convert to plain JSON-safe object
+    try {
+      return JSON.parse(JSON.stringify(result, (key, value) => {
+        if (typeof value === 'function') return undefined;
+        if (value instanceof RegExp) return value.source;
+        if (value?.uri && typeof value.uri.toString === 'function') {
+          return { ...value, uri: value.uri.toString() };
+        }
+        return value;
+      }));
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Serialize completion result and cache items for resolveCompletionItem.
+   */
+  _serializeCompletionResult(result) {
+    if (!result) return null;
+    const items = Array.isArray(result) ? result : (result.items || []);
+    const isIncomplete = result.isIncomplete || false;
+
+    // Cache for resolve
+    // Find which provider this belongs to by checking _lastCompletionItems
+    // (set below after serialization)
+    const serialized = items.map(item => this._serializeSingleCompletionItem(item));
+
+    return { items: serialized, isIncomplete };
+  }
+
+  _serializeSingleCompletionItem(item) {
+    if (!item) return null;
+    try {
+      return JSON.parse(JSON.stringify({
+        label: item.label,
+        kind: item.kind,
+        detail: item.detail,
+        documentation: item.documentation,
+        sortText: item.sortText,
+        filterText: item.filterText,
+        preselect: item.preselect,
+        insertText: item.insertText,
+        range: item.range,
+        commitCharacters: item.commitCharacters,
+        additionalTextEdits: item.additionalTextEdits,
+        command: item.command,
+        tags: item.tags
+      }, (key, value) => {
+        if (typeof value === 'function') return undefined;
+        if (value instanceof RegExp) return value.source;
+        if (value?.uri && typeof value.uri.toString === 'function') {
+          return { ...value, uri: value.uri.toString() };
+        }
+        return value;
+      }));
+    } catch {
+      return { label: String(item.label || item), kind: 0 };
+    }
+  }
+
+  // ===========================================================================
+  // Active Editor & File Watcher events
+  // ===========================================================================
+
+  _onActiveEditorChanged(editorData) {
+    this._activeTextEditor = editorData || null;
+  }
+
+  _onFileWatcherEvent(watcherId, eventType, uri) {
+    const watcher = this._fileWatchers.get(watcherId);
+    if (!watcher) return;
+
+    // Dispatch to the appropriate event emitter
+    switch (eventType) {
+      case 'created':
+        watcher._onDidCreate?.forEach(cb => { try { cb({ toString: () => uri, fsPath: uri }); } catch {} });
+        break;
+      case 'changed':
+        watcher._onDidChange?.forEach(cb => { try { cb({ toString: () => uri, fsPath: uri }); } catch {} });
+        break;
+      case 'deleted':
+        watcher._onDidDelete?.forEach(cb => { try { cb({ toString: () => uri, fsPath: uri }); } catch {} });
+        break;
+    }
+  }
+
+  // ===========================================================================
+  // Tree View support
+  // ===========================================================================
+
+  _getTreeViewChildren(viewId, element) {
+    // Tree view data providers are registered by extensions
+    // This is a placeholder — extensions register via vscode.window.createTreeView
+    return [];
+  }
+
+  _getTreeViewItem(viewId, element) {
+    return null;
   }
 }
