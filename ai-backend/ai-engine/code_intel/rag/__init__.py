@@ -73,9 +73,13 @@ from .exceptions import (
     DocumentNotFoundError,
 )
 
+from .pipeline import RAGPipeline
+
 __version__ = "1.0.0"
 
 __all__ = [
+    # Pipeline
+    "RAGPipeline",
     # Types
     "Document",
     "DocumentMetadata",
