@@ -8,6 +8,10 @@ const createChatSession = (index = 1) => ({
     showDiff: true,
     fileSuggestions: [],
     suggestionTimestamp: null,
+    // Context window metadata
+    contextStats: null,
+    // Agent pipeline history for this session
+    agentRuns: [],
 });
 
 export const useChatSessions = () => {

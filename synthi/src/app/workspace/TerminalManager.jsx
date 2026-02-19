@@ -2,7 +2,7 @@
 
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import dynamic from 'next/dynamic';
-import { SplitSquareHorizontal, Plus, X, TerminalSquare } from 'lucide-react';
+import { SplitSquareHorizontal, Plus, X, TerminalSquare, Bot } from 'lucide-react';
 import { useDispatch } from 'react-redux';
 import { fetchFilesThunk } from '@/redux/workspaceSlice';
 
@@ -30,6 +30,37 @@ export default function TerminalManager({ visible, onCloseAll, workspaceSlug = '
     return () => {
       if (fsRefreshTimer.current) clearTimeout(fsRefreshTimer.current);
     };
+  }, []);
+
+  // ── Listen for AI terminal open events ────────────────────────────────
+  // Consolidate: reuse ONE AI tab per chat prompt instead of creating a new tab per command.
+  // If an AI tab already exists, update it to show the latest session. Only create a new
+  // tab when there is no existing AI terminal.
+  useEffect(() => {
+    const handleAiTerminal = (e) => {
+      const { sessionId, command } = e.detail || {};
+      if (!sessionId) return;
+      const label = `AI: ${(command || 'command').slice(0, 20)}${(command || '').length > 20 ? '…' : ''}`;
+
+      setTerminals(prev => {
+        // Check if there's already an AI terminal tab
+        const existingIdx = prev.findIndex(t => t.isAi);
+        if (existingIdx !== -1) {
+          // Update existing AI tab with the new session
+          const updated = [...prev];
+          updated[existingIdx] = { ...updated[existingIdx], fixedSessionId: sessionId, label };
+          // Switch to the existing AI tab
+          setActiveId(updated[existingIdx].id);
+          return updated;
+        }
+        // No existing AI tab — create one
+        const id = `ai-${Date.now()}`;
+        setActiveId(id);
+        return [...prev, { id, label, split: false, fixedSessionId: sessionId, isAi: true }];
+      });
+    };
+    window.addEventListener('ai-terminal-open', handleAiTerminal);
+    return () => window.removeEventListener('ai-terminal-open', handleAiTerminal);
   }, []);
 
   useEffect(() => {
@@ -98,7 +129,11 @@ export default function TerminalManager({ visible, onCloseAll, workspaceSlug = '
             }`} 
             onClick={() => setActiveId(t.id)}
           >
-            <TerminalSquare className="w-3.5 h-3.5" strokeWidth={2} />
+            {t.isAi ? (
+              <Bot className="w-3.5 h-3.5 text-[#327464]" strokeWidth={2} />
+            ) : (
+              <TerminalSquare className="w-3.5 h-3.5" strokeWidth={2} />
+            )}
             <span className="text-xs font-medium">{t.label}</span>
             {/* Close button - appears on hover, safe position */}
             <button 
@@ -157,7 +192,7 @@ export default function TerminalManager({ visible, onCloseAll, workspaceSlug = '
               }}
             >
               <div className={`h-full w-full ${t.split ? 'grid grid-cols-2 gap-0' : ''}`}>
-                <TerminalPane key={`${t.id}-main`} terminalId={t.id} paneSide="main" workspaceSlug={workspaceSlug} onFsChange={handleFsChange} />
+                <TerminalPane key={`${t.id}-main`} terminalId={t.id} paneSide="main" workspaceSlug={workspaceSlug} onFsChange={handleFsChange} fixedSessionId={t.fixedSessionId || null} />
                 {t.split && (
                   <TerminalPane key={`${t.id}-split`} terminalId={t.id} paneSide="split" workspaceSlug={workspaceSlug} onFsChange={handleFsChange} />
                 )}

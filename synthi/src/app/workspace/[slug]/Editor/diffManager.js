@@ -173,30 +173,119 @@ export const useDiffManager = ({
             const style = document.createElement('style');
             style.id = 'ai-inline-diff-style';
             style.innerHTML = `
-                .ai-remove-chunk { background: rgba(239,68,68,0.18) !important; border-left: 3px solid rgba(239,68,68,0.6); }
-                .ai-remove-gutter { border-color: rgba(239,68,68,0.7) !important; }
-                .ai-insert-zone, .ai-remove-zone { display: flex; flex-direction: column; gap: 6px; font-family: 'JetBrains Mono', monospace; font-size: 12px; padding: 4px 6px 14px 6px; margin: 0; border-radius: 6px; }
-                .ai-insert-zone { background: rgba(16,185,129,0.08); color: rgba(190,250,230,0.82); border: 1px dashed rgba(16,185,129,0.35); }
-                .ai-remove-zone { background: rgba(248,113,113,0.1); color: rgba(255,228,230,0.9); border: 1px dashed rgba(248,113,113,0.35); }
-                .ai-insert-zone pre, .ai-remove-zone pre { margin: 0; padding: 2px 4px; background: transparent; border: none; border-radius: 6px; color: rgba(190,250,230,0.74); line-height: 1.35; }
-                .ai-remove-zone pre { color: rgba(255,228,230,0.78); }
-                .ai-insert-zone .controls, .ai-remove-zone .controls { display: flex; gap: 8px; margin-top: 2px; align-items: center; flex-wrap: wrap; justify-content: flex-start; }
-                .ai-action-btn { font-size: 11px; padding: 5px 14px; border-radius: 999px; border: 1px solid rgba(255,255,255,0.18); cursor: pointer; box-shadow: 0 1px 2px rgba(0,0,0,0.25); transition: background 120ms ease, border-color 120ms ease, color 120ms ease; }
-                .ai-action-btn.accept-add { background: rgba(16,185,129,0.25); color: #befae6; border-color: rgba(16,185,129,0.45); }
-                .ai-action-btn.reject-add { background: rgba(16,185,129,0.05); color: #fca5a5; border-color: rgba(248,113,113,0.4); }
-                .ai-action-btn.accept-rem { background: rgba(248,113,113,0.22); color: #ffe4e6; border-color: rgba(248,113,113,0.5); }
-                .ai-action-btn.reject-rem { background: rgba(248,113,113,0.05); color: #fca5a5; border-color: rgba(248,113,113,0.35); }
-                .ai-action-btn.accept-add:hover { background: rgba(16,185,129,0.4); }
-                .ai-action-btn.reject-add:hover { background: rgba(248,113,113,0.16); }
-                .ai-action-btn.accept-rem:hover { background: rgba(248,113,113,0.32); }
-                .ai-action-btn.reject-rem:hover { background: rgba(248,113,113,0.16); }
+                /* ── Removed lines in editor ─────────────────────── */
+                .ai-remove-chunk {
+                    background: rgba(255, 107, 107, 0.07) !important;
+                }
+                .ai-remove-gutter {
+                    margin-left: 8px;
+                    width: 3px !important;
+                    height: 100% !important;
+                    border-radius: 0 !important;
+                    background: rgba(255, 107, 107, 0.50) !important;
+                }
+
+                /* ── Shared zone base ────────────────────────────── */
+                .ai-diff-zone {
+                    font-family: 'JetBrains Mono', 'Cascadia Code', Consolas, monospace;
+                    font-size: 12px;
+                    margin: 0;
+                    overflow: visible;
+                }
+
+                /* ── Addition zone ───────────────────────────────── */
+                .ai-diff-zone.add {
+                    border-left: 3px solid rgba(58, 133, 116, 0.6);
+                    background: rgba(58, 133, 116, 0.04);
+                }
+                .ai-diff-zone.add .ai-diff-bar {
+                    background: rgba(58, 133, 116, 0.06);
+                    border-bottom: 1px solid rgba(58, 133, 116, 0.10);
+                }
+                .ai-diff-zone.add .ai-diff-tag {
+                    color: #4aba9a;
+                }
+                .ai-diff-zone.add pre {
+                    color: #a2c4b8;
+                }
+
+                /* ── Removal zone ────────────────────────────────── */
+                .ai-diff-zone.rem {
+                    border-left: 3px solid rgba(255, 107, 107, 0.5);
+                    background: rgba(255, 107, 107, 0.03);
+                }
+                .ai-diff-zone.rem .ai-diff-bar {
+                    background: rgba(255, 107, 107, 0.05);
+                    border-bottom: 1px solid rgba(255, 107, 107, 0.08);
+                }
+                .ai-diff-zone.rem .ai-diff-tag {
+                    color: #ff8a8a;
+                }
+
+                /* ── Top bar (label + buttons) ───────────────────── */
+                .ai-diff-bar {
+                    display: flex;
+                    align-items: center;
+                    justify-content: space-between;
+                    padding: 4px 10px;
+                    user-select: none;
+                }
+                .ai-diff-tag {
+                    font-size: 10px;
+                    font-weight: 600;
+                    letter-spacing: 0.5px;
+                    text-transform: uppercase;
+                }
+                .ai-diff-actions {
+                    display: flex;
+                    gap: 4px;
+                }
+
+                /* ── Buttons ─────────────────────────────────────── */
+                .ai-diff-btn {
+                    font-family: inherit;
+                    font-size: 11px;
+                    padding: 2px 10px;
+                    border-radius: 4px;
+                    border: none;
+                    cursor: pointer;
+                    transition: background 80ms;
+                    outline: none;
+                    line-height: 1.4;
+                }
+                .ai-diff-btn.accept {
+                    background: rgba(58, 133, 116, 0.18);
+                    color: #4aba9a;
+                }
+                .ai-diff-btn.accept:hover {
+                    background: rgba(58, 133, 116, 0.32);
+                }
+                .ai-diff-btn.reject {
+                    background: transparent;
+                    color: #5a6178;
+                }
+                .ai-diff-btn.reject:hover {
+                    color: #ff8a8a;
+                    background: rgba(255, 107, 107, 0.08);
+                }
+
+                /* ── Code block ──────────────────────────────────── */
+                .ai-diff-zone pre {
+                    margin: 0;
+                    padding: 4px 12px 6px;
+                    background: transparent;
+                    border: none;
+                    font-size: 12px;
+                    line-height: 19px;
+                    overflow-x: auto;
+                    overflow-y: visible;
+                }
+                .ai-diff-zone pre::-webkit-scrollbar { width: 4px; height: 4px; }
+                .ai-diff-zone pre::-webkit-scrollbar-track { background: transparent; }
+                .ai-diff-zone pre::-webkit-scrollbar-thumb { background: #2a2b38; border-radius: 2px; }
             `;
             document.head.appendChild(style);
         }
-
-        const lineHeight = editorInstance.getOption
-            ? editorInstance.getOption(monacoInstance.editor.EditorOption.lineHeight) || 20
-            : 20;
 
         chunks.forEach((chunk) => {
             aiDiffChunksRef.current.set(chunk.id, chunk);
@@ -210,10 +299,27 @@ export const useDiffManager = ({
                     options: {
                         isWholeLine: true,
                         className: 'ai-remove-chunk',
-                        linesDecorationsClassName: 'ai-remove-gutter'
+                        linesDecorationsClassName: 'ai-remove-gutter',
+                        minimap: { color: '#ff6b6b', position: monacoInstance.editor.MinimapPosition.Inline },
+                        overviewRuler: { color: '#ff6b6b', position: monacoInstance.editor.OverviewRulerLane.Center },
                     }
                 }]);
                 chunk.decorationIds = ids;
+            }
+
+            // Minimap marker for added lines (placed after insertion point)
+            if (chunk.addLines.length > 0) {
+                const afterLine = Math.max(1, chunk.additionAfterLine);
+                const mmIds = editorInstance.deltaDecorations([], [{
+                    range: new monacoInstance.Range(afterLine, 1, afterLine, 1),
+                    options: {
+                        isWholeLine: true,
+                        className: 'ai-add-minimap',
+                        minimap: { color: '#3a8574', position: monacoInstance.editor.MinimapPosition.Inline },
+                        overviewRuler: { color: '#3a8574', position: monacoInstance.editor.OverviewRulerLane.Center },
+                    }
+                }]);
+                chunk.decorationIds = [...(chunk.decorationIds || []), ...mmIds];
             }
 
             chunk.addLines = chunk.addLines || [];
@@ -226,86 +332,82 @@ export const useDiffManager = ({
                 zoneWrapper.style.userSelect = 'none';
                 zoneWrapper.style.position = 'relative';
                 zoneWrapper.style.zIndex = '5';
-                zoneWrapper.style.marginBottom = '16px';
 
-                const domNode = document.createElement('div');
-                domNode.className = 'ai-insert-zone';
-                domNode.style.pointerEvents = 'auto';
-                domNode.style.userSelect = 'text';
-                domNode.style.position = 'relative';
-                domNode.style.overflow = 'visible';
-                domNode.style.padding = '8px 8px 10px 8px';
+                const zone = document.createElement('div');
+                zone.className = 'ai-diff-zone add';
+                zone.style.pointerEvents = 'auto';
 
-                const title = document.createElement('div');
-                title.style.fontSize = '13px';
-                title.style.textTransform = 'uppercase';
-                title.style.letterSpacing = '0.08em';
-                title.style.marginBottom = '8px';
-                title.textContent = `AI suggestion · ${chunk.addLines.length} ${chunk.addLines.length === 1 ? 'line' : 'lines'}`;
-                domNode.appendChild(title);
+                // ── Bar: label + buttons ────────────────────
+                const bar = document.createElement('div');
+                bar.className = 'ai-diff-bar';
 
-                if (chunk.addLines.length) {
-                    const code = document.createElement('pre');
-                    code.style.fontSize = '14px';
-                    code.textContent = chunk.addLines.join('\n');
-                    domNode.appendChild(code);
-                }
+                const tag = document.createElement('span');
+                tag.className = 'ai-diff-tag';
+                tag.textContent = `AI suggestion · ${chunk.addLines.length} ${chunk.addLines.length === 1 ? 'line' : 'lines'}`;
 
-                const controls = document.createElement('div');
-                controls.className = 'controls';
-                controls.style.marginBottom = '2px';
-                controls.style.marginTop = '10px';
+                const actions = document.createElement('div');
+                actions.className = 'ai-diff-actions';
 
                 const acceptBtn = document.createElement('button');
-                acceptBtn.className = 'ai-action-btn accept-add';
+                acceptBtn.className = 'ai-diff-btn accept';
                 acceptBtn.textContent = 'Accept';
-                acceptBtn.onclick = (e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    handleAcceptDiffChunk(chunk.id);
-                };
+                acceptBtn.onclick = (e) => { e.preventDefault(); e.stopPropagation(); handleAcceptDiffChunk(chunk.id); };
 
                 const rejectBtn = document.createElement('button');
-                rejectBtn.className = 'ai-action-btn reject-add';
+                rejectBtn.className = 'ai-diff-btn reject';
                 rejectBtn.textContent = 'Reject';
-                rejectBtn.onclick = (e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    handleRejectDiffChunk(chunk.id);
-                };
+                rejectBtn.onclick = (e) => { e.preventDefault(); e.stopPropagation(); handleRejectDiffChunk(chunk.id); };
 
-                controls.appendChild(acceptBtn);
-                controls.appendChild(rejectBtn);
-                domNode.appendChild(controls);
+                actions.appendChild(acceptBtn);
+                actions.appendChild(rejectBtn);
+                bar.appendChild(tag);
+                bar.appendChild(actions);
+                zone.appendChild(bar);
 
-                zoneWrapper.appendChild(domNode);
+                // ── Code ────────────────────────────────────
+                if (chunk.addLines.length) {
+                    const code = document.createElement('pre');
+                    code.textContent = chunk.addLines.join('\n');
+                    zone.appendChild(code);
+                }
 
-                const estimatedAddHeight = Math.max(chunk.addLines.length, 1) * (lineHeight + 2) + 90;
-                const initialHeight = Math.min(estimatedAddHeight, 420);
+                zoneWrapper.appendChild(zone);
+
+                // Height: bar (~26px) + code lines + padding (~12px)
+                const codeLineH = 19;
+                const codeBlockH = Math.max(chunk.addLines.length, 1) * codeLineH;
+                const chromeH = 26 + 12;
+                const estimatedAddHeight = codeBlockH + chromeH;
                 let zoneId = null;
                 editorInstance.changeViewZones(accessor => {
                     zoneId = accessor.addZone({
                         afterLineNumber: Math.max(0, chunk.additionAfterLine),
-                        heightInPx: initialHeight,
+                        heightInPx: estimatedAddHeight,
                         domNode: zoneWrapper
                     });
                 });
                 chunk.viewZoneId = zoneId;
-                // Adjust height after render to match actual content height (prevents overlap)
+                // Double-rAF: first frame triggers layout, second reads correct scrollHeight
                 if (zoneId) {
                     requestAnimationFrame(() => {
-                        const desired = Math.min(Math.max(zoneWrapper.scrollHeight + 4, initialHeight), 540);
-                        if (desired !== initialHeight) {
-                            editorInstance.changeViewZones(accessor => {
-                                accessor.removeZone(zoneId);
-                                const newId = accessor.addZone({
-                                    afterLineNumber: Math.max(0, chunk.additionAfterLine),
-                                    heightInPx: desired,
-                                    domNode: zoneWrapper
-                                });
-                                chunk.viewZoneId = newId;
-                            });
-                        }
+                        requestAnimationFrame(() => {
+                            const measured = zoneWrapper.scrollHeight;
+                            if (!measured) return;
+                            const desired = measured + 8; // small buffer
+                            if (Math.abs(desired - estimatedAddHeight) > 4) {
+                                try {
+                                    editorInstance.changeViewZones(accessor => {
+                                        accessor.removeZone(chunk.viewZoneId);
+                                        const newId = accessor.addZone({
+                                            afterLineNumber: Math.max(0, chunk.additionAfterLine),
+                                            heightInPx: desired,
+                                            domNode: zoneWrapper
+                                        });
+                                        chunk.viewZoneId = newId;
+                                    });
+                                } catch (_) {}
+                            }
+                        });
                     });
                 }
             }
@@ -316,50 +418,40 @@ export const useDiffManager = ({
                 zoneWrapper.style.userSelect = 'none';
                 zoneWrapper.style.position = 'relative';
                 zoneWrapper.style.zIndex = '5';
-                zoneWrapper.style.marginBottom = '16px';
 
-                const domNode = document.createElement('div');
-                domNode.className = 'ai-remove-zone';
-                domNode.style.pointerEvents = 'auto';
-                domNode.style.userSelect = 'text';
-                domNode.style.position = 'relative';
-                domNode.style.overflow = 'visible';
-                domNode.style.padding = '12px 10px 10px 10px';
+                const zone = document.createElement('div');
+                zone.className = 'ai-diff-zone rem';
+                zone.style.pointerEvents = 'auto';
 
-                const controls = document.createElement('div');
-                controls.className = 'controls';
-                controls.style.marginBottom = '6px';
-                controls.style.marginTop = '4px';
-                controls.style.display = 'flex';
-                controls.style.gap = '8px';
-                controls.style.justifyContent = 'flex-start';
+                const bar = document.createElement('div');
+                bar.className = 'ai-diff-bar';
+
+                const tag = document.createElement('span');
+                tag.className = 'ai-diff-tag';
+                tag.textContent = `Remove ${chunk.removeLines.length} ${chunk.removeLines.length === 1 ? 'line' : 'lines'}`;
+
+                const actions = document.createElement('div');
+                actions.className = 'ai-diff-actions';
 
                 const acceptBtn = document.createElement('button');
-                acceptBtn.className = 'ai-action-btn accept-rem';
-                acceptBtn.textContent = 'Accept removal';
-                acceptBtn.onclick = (e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    handleAcceptDiffChunk(chunk.id);
-                };
+                acceptBtn.className = 'ai-diff-btn accept';
+                acceptBtn.textContent = 'Accept';
+                acceptBtn.onclick = (e) => { e.preventDefault(); e.stopPropagation(); handleAcceptDiffChunk(chunk.id); };
 
                 const rejectBtn = document.createElement('button');
-                rejectBtn.className = 'ai-action-btn reject-rem';
-                rejectBtn.textContent = 'Keep code';
-                rejectBtn.onclick = (e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    handleRejectDiffChunk(chunk.id);
-                };
+                rejectBtn.className = 'ai-diff-btn reject';
+                rejectBtn.textContent = 'Keep';
+                rejectBtn.onclick = (e) => { e.preventDefault(); e.stopPropagation(); handleRejectDiffChunk(chunk.id); };
 
-                controls.appendChild(acceptBtn);
-                controls.appendChild(rejectBtn);
-                domNode.appendChild(controls);
+                actions.appendChild(acceptBtn);
+                actions.appendChild(rejectBtn);
+                bar.appendChild(tag);
+                bar.appendChild(actions);
+                zone.appendChild(bar);
+                zoneWrapper.appendChild(zone);
 
-                zoneWrapper.appendChild(domNode);
-
-                const baseRemHeight = Math.max(chunk.removeLines.length, 1) * (lineHeight + 2) + 90;
-                const initialHeight = Math.min(baseRemHeight, 80);
+                // Single bar — compact height
+                const initialHeight = 30;
                 let zoneId = null;
                 editorInstance.changeViewZones(accessor => {
                     zoneId = accessor.addZone({
@@ -369,20 +461,27 @@ export const useDiffManager = ({
                     });
                 });
                 chunk.viewZoneId = zoneId;
+                // Double-rAF for reliable measurement
                 if (zoneId) {
                     requestAnimationFrame(() => {
-                        const desired = Math.min(Math.max(zoneWrapper.scrollHeight + 4, initialHeight), 540);
-                        if (desired !== initialHeight) {
-                            editorInstance.changeViewZones(accessor => {
-                                accessor.removeZone(zoneId);
-                                const newId = accessor.addZone({
-                                    afterLineNumber: Math.max(0, chunk.removeStartLine + chunk.removeLines.length - 1),
-                                    heightInPx: desired,
-                                    domNode: zoneWrapper
-                                });
-                                chunk.viewZoneId = newId;
-                            });
-                        }
+                        requestAnimationFrame(() => {
+                            const measured = zoneWrapper.scrollHeight;
+                            if (!measured) return;
+                            const desired = measured + 8;
+                            if (Math.abs(desired - initialHeight) > 4) {
+                                try {
+                                    editorInstance.changeViewZones(accessor => {
+                                        accessor.removeZone(chunk.viewZoneId);
+                                        const newId = accessor.addZone({
+                                            afterLineNumber: Math.max(0, chunk.removeStartLine + chunk.removeLines.length - 1),
+                                            heightInPx: desired,
+                                            domNode: zoneWrapper
+                                        });
+                                        chunk.viewZoneId = newId;
+                                    });
+                                } catch (_) {}
+                            }
+                        });
                     });
                 }
             }

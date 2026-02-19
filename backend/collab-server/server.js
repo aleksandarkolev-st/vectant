@@ -646,6 +646,369 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // ========================================================================
+  // EXEC-TERMINAL ENDPOINT — Execute command in a real PTY terminal
+  // ========================================================================
+  // POST /exec-terminal/:slug  { command: string, timeout?: number }
+  // Creates a real PTY session, executes the command, captures output,
+  // and keeps the PTY alive so the frontend can connect and see it.
+  // Returns: { sessionId, command, output, exitCode, timedOut }
+  if (req.url.startsWith('/exec-terminal/') && req.method === 'POST') {
+    const urlObj = new URL(req.url, `http://${req.headers.host}`);
+    const slug = urlObj.pathname.split('/')[2];
+    if (!slug) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Missing workspace slug' }));
+      return;
+    }
+
+    let body = '';
+    for await (const chunk of req) body += chunk;
+    let parsed;
+    try { parsed = JSON.parse(body); } catch (_) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid JSON body' }));
+      return;
+    }
+
+    const command = (parsed.command || '').trim();
+    if (!command) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Missing command' }));
+      return;
+    }
+
+    const timeoutMs = Math.min(Number(parsed.timeout) || 30000, 60000);
+
+    try {
+      const { createHeadlessSession } = require('./terminalService');
+      const crypto = require('crypto');
+      const sessionId = `ai-${crypto.randomUUID().slice(0, 8)}`;
+
+      // Create a real PTY with a known session ID
+      const { ptyProcess, cwd } = createHeadlessSession(sessionId, slug);
+
+      console.log(`[ExecTerminal] slug=${slug} cwd=${cwd} sessionId=${sessionId} cmd=${command.slice(0, 120)}`);
+
+      // Collect output from the PTY
+      let output = '';
+      const MAX_OUT = 50000;
+      let commandDone = false;
+      let commandSent = false;
+
+      const outputCollector = (data) => {
+        if (output.length < MAX_OUT) output += data;
+      };
+      ptyProcess.onData(outputCollector);
+
+      // Write the command after the shell finishes its banner output.
+      // We detect the shell is ready by waiting for the first prompt.
+      // PowerShell prompt: "PS C:\...>" | Bash prompt: "$" or "#"
+      const isWin = require('os').platform() === 'win32';
+      const promptPattern = isWin ? /PS [^\r\n]*>/ : /[$#]\s*$/;
+      let promptCheckInterval;
+      let promptWaitTimeout;
+
+      function sendCommand() {
+        if (commandSent) return;
+        commandSent = true;
+        if (promptCheckInterval) clearInterval(promptCheckInterval);
+        if (promptWaitTimeout) clearTimeout(promptWaitTimeout);
+        ptyProcess.write(command + '\r');
+        // Start stability checking AFTER the command is sent + a grace period
+        // for the command to start producing output
+        setTimeout(startStabilityCheck, 1500);
+      }
+
+      // Check every 100ms if prompt appeared
+      promptCheckInterval = setInterval(() => {
+        if (promptPattern.test(output)) {
+          sendCommand();
+        }
+      }, 100);
+
+      // Fallback: if prompt never detected, send command anyway after 1s
+      promptWaitTimeout = setTimeout(() => {
+        if (!commandSent) {
+          console.log(`[ExecTerminal] Prompt not detected, sending command anyway`);
+          sendCommand();
+        }
+      }, 1000);
+
+      // Wait for the command to finish by detecting the shell prompt returning
+      // AFTER the command output. Also use a stability fallback.
+      function startStabilityCheck() {
+        let lastOutputLen = output.length;
+        let stableCount = 0;
+        const STABLE_THRESHOLD = 4; // 4 consecutive checks × 500ms = 2s of silence
+        const CHECK_INTERVAL = 500;
+        let promptSeenAfterCmd = false;
+
+        const checkDone = setInterval(() => {
+          // Primary: detect the shell prompt reappearing after command output
+          // This means the command finished and the shell is ready for input
+          if (commandSent && output.length > lastOutputLen) {
+            // Check if the LATEST output chunk contains the prompt
+            const recentOutput = output.slice(lastOutputLen);
+            if (promptPattern.test(recentOutput)) {
+              promptSeenAfterCmd = true;
+            }
+          }
+
+          if (output.length === lastOutputLen) {
+            stableCount++;
+          } else {
+            stableCount = 0;
+            lastOutputLen = output.length;
+          }
+
+          // Done when: prompt returned after command output + output stable for 500ms
+          // OR: output stable for 2s (fallback for commands that don't return to prompt)
+          if ((promptSeenAfterCmd && stableCount >= 1) || stableCount >= STABLE_THRESHOLD || commandDone) {
+            clearInterval(checkDone);
+            clearTimeout(hardTimeout);
+            respond();
+          }
+        }, CHECK_INTERVAL);
+      }
+
+      const hardTimeout = setTimeout(() => {
+        respond();
+      }, timeoutMs);
+
+      let responded = false;
+      function respond() {
+        if (responded) return;
+        responded = true;
+
+        // Extract the command output: find the echoed command and take everything after it
+        // up to (but not including) the next shell prompt
+        let cleanOutput = output;
+
+        // Try to extract just the command output (between echoed command and next prompt)
+        const cmdIndex = output.indexOf(command);
+        if (cmdIndex !== -1) {
+          // Start after the echoed command + newline
+          const afterCmd = output.slice(cmdIndex + command.length).replace(/^\r?\n/, '');
+          // Try to strip the trailing prompt
+          const promptMatch = afterCmd.match(isWin ? /\r?\nPS [^\r\n]*>\s*$/ : /\r?\n[^\r\n]*[$#]\s*$/);
+          cleanOutput = promptMatch
+            ? afterCmd.slice(0, promptMatch.index).trim()
+            : afterCmd.trim();
+        }
+
+        // Try to infer exit code from output (PTY doesn't expose it directly).
+        // Heuristic: check for common error patterns that indicate failure.
+        const looksLikeError = /\b(error|fatal|not recognized|cannot be loaded|is not a valid|denied|failed|abort)\b/i.test(cleanOutput)
+          && !/\b(0 error|no error|fixed|resolved|warning)\b/i.test(cleanOutput);
+        const inferredExitCode = looksLikeError ? 1 : 0;
+
+        console.log(`[ExecTerminal] Done: sessionId=${sessionId} output=${cleanOutput.length}B exitCode=${inferredExitCode}`);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          sessionId,
+          command,
+          output: cleanOutput || '(no output)',
+          exitCode: inferredExitCode,
+          timedOut: false,
+        }));
+      }
+
+      // If the PTY exits before timeout (e.g., single command), respond immediately
+      ptyProcess.onExit(({ exitCode }) => {
+        commandDone = true;
+      });
+
+    } catch (err) {
+      console.error('[ExecTerminal] Error:', err.message);
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: err.message }));
+    }
+
+    return;
+  }
+
+  // ========================================================================
+  // EXEC-PTY ENDPOINT — Execute command and mirror it to user's terminal
+  // ========================================================================
+  // POST /exec-pty/:slug  { command: string, timeout?: number }
+  // Uses child_process.spawn for reliable, clean stdout/stderr capture,
+  // AND writes the command + output to the user's live PTY so they see it.
+  if (req.url.startsWith('/exec-pty/') && req.method === 'POST') {
+    const urlObj = new URL(req.url, `http://${req.headers.host}`);
+    const slug = urlObj.pathname.split('/')[2];
+    if (!slug) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Missing workspace slug' }));
+      return;
+    }
+
+    let body = '';
+    for await (const chunk of req) body += chunk;
+    let parsed;
+    try { parsed = JSON.parse(body); } catch (_) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid JSON body' }));
+      return;
+    }
+
+    const command = (parsed.command || '').trim();
+    if (!command) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Missing command' }));
+      return;
+    }
+
+    const timeoutMs = Math.min(Number(parsed.timeout) || 30000, 60000);
+    const { resolveWorkspaceCwd } = require('./terminalService');
+    const cwd = resolveWorkspaceCwd(slug);
+
+    console.log(`[ExecPTY] slug=${slug} cwd=${cwd} cmd=${command.slice(0, 120)}`);
+
+    // Find active PTY session for this workspace to mirror output
+    let targetSession = null;
+    for (const [, session] of terminalSessions) {
+      if (session.cwd && session.cwd.endsWith(slug) && session.pty) {
+        targetSession = session;
+        break;
+      }
+    }
+
+    // Use child_process.spawn for clean, reliable stdout/stderr capture
+    const { spawn } = require('child_process');
+    const isWin = require('os').platform() === 'win32';
+    const shell = isWin ? 'powershell.exe' : '/bin/bash';
+    const shellArgs = isWin ? ['-NoProfile', '-Command', command] : ['-c', command];
+
+    const child = spawn(shell, shellArgs, {
+      cwd,
+      timeout: timeoutMs,
+      env: { ...process.env, TERM: 'dumb' },
+      windowsHide: true,
+    });
+
+    let stdout = '';
+    let stderr = '';
+    let timedOut = false;
+    const MAX_OUT = 50000;
+
+    child.stdout.on('data', (d) => { if (stdout.length < MAX_OUT) stdout += d.toString(); });
+    child.stderr.on('data', (d) => { if (stderr.length < MAX_OUT) stderr += d.toString(); });
+
+    const timer = setTimeout(() => {
+      timedOut = true;
+      try { child.kill('SIGTERM'); } catch (_) {}
+    }, timeoutMs);
+
+    child.on('close', (exitCode) => {
+      clearTimeout(timer);
+
+      const combinedOutput = stdout + (stderr ? `\n${stderr}` : '');
+
+      // NOTE: Do NOT write output to the PTY via pty.write() — that sends INPUT
+      // which PowerShell/bash interprets as commands, causing errors.
+      // The AI chat UI already displays the command output to the user.
+
+      console.log(`[ExecPTY] Done: exitCode=${exitCode} timedOut=${timedOut} stdout=${stdout.length}B`);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        command,
+        exitCode,
+        stdout,
+        stderr,
+        timedOut,
+        usedPty: Boolean(targetSession),
+      }));
+    });
+
+    child.on('error', (err) => {
+      clearTimeout(timer);
+      console.error('[ExecPTY] Spawn error:', err.message);
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: err.message }));
+    });
+
+    return;
+  }
+
+  // ========================================================================
+  // EXEC ENDPOINT — One-shot command execution for AI tool-calling pipeline
+  // ========================================================================
+  // POST /exec/:slug  { command: string, timeout?: number }
+  if (req.url.startsWith('/exec/') && req.method === 'POST') {
+    const urlObj = new URL(req.url, `http://${req.headers.host}`);
+    const slug = urlObj.pathname.split('/')[2];
+    if (!slug) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Missing workspace slug' }));
+      return;
+    }
+
+    // Read JSON body
+    let body = '';
+    for await (const chunk of req) body += chunk;
+    let parsed;
+    try { parsed = JSON.parse(body); } catch (_) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid JSON body' }));
+      return;
+    }
+
+    const command = (parsed.command || '').trim();
+    if (!command) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Missing command' }));
+      return;
+    }
+
+    const timeoutMs = Math.min(Number(parsed.timeout) || 30000, 60000);
+    const { resolveWorkspaceCwd } = require('./terminalService');
+    const cwd = resolveWorkspaceCwd(slug);
+
+    console.log(`[Exec] slug=${slug} cwd=${cwd} cmd=${command.slice(0, 120)}`);
+
+    const { spawn } = require('child_process');
+    const isWin = require('os').platform() === 'win32';
+    const shell = isWin ? 'powershell.exe' : '/bin/bash';
+    const shellArgs = isWin ? ['-NoProfile', '-Command', command] : ['-c', command];
+
+    const child = spawn(shell, shellArgs, {
+      cwd,
+      timeout: timeoutMs,
+      env: { ...process.env, TERM: 'dumb' },
+      windowsHide: true,
+    });
+
+    let stdout = '';
+    let stderr = '';
+    let timedOut = false;
+    const MAX_OUT = 50000;
+
+    child.stdout.on('data', (d) => { if (stdout.length < MAX_OUT) stdout += d.toString(); });
+    child.stderr.on('data', (d) => { if (stderr.length < MAX_OUT) stderr += d.toString(); });
+
+    const timer = setTimeout(() => {
+      timedOut = true;
+      try { child.kill('SIGTERM'); } catch (_) {}
+    }, timeoutMs);
+
+    child.on('close', (exitCode) => {
+      clearTimeout(timer);
+      console.log(`[Exec] Done: exitCode=${exitCode} timedOut=${timedOut} stdout=${stdout.length}B stderr=${stderr.length}B`);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ exitCode, stdout, stderr, timedOut }));
+    });
+
+    child.on('error', (err) => {
+      clearTimeout(timer);
+      console.error('[Exec] Spawn error:', err.message);
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: err.message }));
+    });
+
+    return;
+  }
+
   if (req.url.startsWith('/workspaces') && req.method === 'GET') {
       try {
           // Parse query params for owner

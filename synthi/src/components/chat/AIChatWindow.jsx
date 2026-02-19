@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState, useCallback, useMemo } from 'react';
-import { Send, X, Plus, ChevronDown, ChevronRight, Sparkles, FileCode, Paperclip } from 'lucide-react';
+import { Send, X, Plus, ChevronDown, ChevronRight, Sparkles, FileCode, Paperclip, Link, Unlink } from 'lucide-react';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
@@ -20,11 +20,49 @@ import { fileSuggestionStatusClasses, fileSuggestionStatusLabel } from './utils/
 import { formatMessageContent } from './utils/formatMessage';
 import MessageContent from './utils/MessageContent';
 import { ThinkingDots } from './ThinkingDots';
+import CommandApprovalCard from './CommandApprovalCard';
 
 const formatTimestamp = (timestamp) => {
     if (!timestamp) return '';
     const date = timestamp instanceof Date ? timestamp : new Date(timestamp);
     return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+};
+
+const buildLanguageMeta = (filename = '') => {
+    const ext = (filename.split('.').pop() || '').toLowerCase();
+    const map = {
+        js: { label: 'JS', color: '#fcd34d' },
+        jsx: { label: 'JSX', color: '#fcd34d' },
+        ts: { label: 'TS', color: '#60a5fa' },
+        tsx: { label: 'TSX', color: '#60a5fa' },
+        json: { label: 'JSON', color: '#c084fc' },
+        md: { label: 'MD', color: '#a78bfa' },
+        txt: { label: 'TXT', color: '#a3a3a3' },
+        py: { label: 'PY', color: '#f59e0b' },
+        rb: { label: 'RB', color: '#ef4444' },
+        go: { label: 'GO', color: '#38bdf8' },
+        rs: { label: 'RS', color: '#f97316' },
+        java: { label: 'JAVA', color: '#ef4444' },
+        cpp: { label: 'C++', color: '#60a5fa' },
+        c: { label: 'C', color: '#60a5fa' },
+        cs: { label: 'C#', color: '#22c55e' },
+        php: { label: 'PHP', color: '#a78bfa' },
+        html: { label: 'HTML', color: '#f97316' },
+        css: { label: 'CSS', color: '#60a5fa' },
+        scss: { label: 'SCSS', color: '#ec4899' },
+        yml: { label: 'YML', color: '#cbd5e1' },
+        yaml: { label: 'YAML', color: '#cbd5e1' },
+        sql: { label: 'SQL', color: '#22c55e' },
+        prisma: { label: 'DB', color: '#22c55e' },
+        sh: { label: 'SH', color: '#4ade80' },
+        bash: { label: 'SH', color: '#4ade80' },
+        toml: { label: 'TOML', color: '#cbd5e1' },
+        xml: { label: 'XML', color: '#f97316' },
+        svg: { label: 'SVG', color: '#f97316' },
+        mjs: { label: 'MJS', color: '#fcd34d' },
+        cjs: { label: 'CJS', color: '#fcd34d' },
+    };
+    return map[ext] || { label: ext ? ext.toUpperCase().slice(0, 4) : 'FILE', color: '#9ba2b8' };
 };
 
 const summarizeLog = (logs = []) => {
@@ -90,6 +128,9 @@ const AIChatWindow = ({
     const [progressStatus, setProgressStatus] = useState('');
     const [suggestionExpanded, setSuggestionExpanded] = useState(true);
     const [collapsedFiles, setCollapsedFiles] = useState({});
+    const [agentMenuOpen, setAgentMenuOpen] = useState(false);
+    const [pendingCommands, setPendingCommands] = useState([]); // {id, command, status: 'pending'|'approved'|'rejected'}
+    const [contextFileAttached, setContextFileAttached] = useState(false); // active file NOT auto-attached as context
 
     useEffect(() => {
         try {
@@ -127,6 +168,13 @@ const AIChatWindow = ({
         handleApplyFileSuggestion,
         handleRejectFileSuggestion,
         handlePreviewFileSuggestion,
+        // Agent pipeline
+        agentMode,
+        setAgentMode,
+        activePipeline,
+        cancelPipeline,
+        // Context window
+        contextWindowInfo,
     } = useAISuggestions({
         activeSession,
         chatSessions,
@@ -171,7 +219,9 @@ const AIChatWindow = ({
         setProgressStatus('Working…');
         setProgressExpanded(true);
         setSuggestionExpanded(true);
+        setPendingCommands([]);
         handleSendMessage(value, attachments, {
+            includeActiveFile: contextFileAttached,
             controller: aborter,
             onStreamStart: () => setIsThinking(true),
             onFirstToken: () => {
@@ -208,6 +258,12 @@ const AIChatWindow = ({
                     return [...prev, { id: Date.now() + Math.random(), text: line }];
                 });
             },
+            onCommandPending: (cp) => {
+                setPendingCommands((prev) => [
+                    ...prev,
+                    { id: cp.id, command: cp.command, status: 'pending', timestamp: new Date(), filesCount: cp.filesCount || 0 },
+                ]);
+            },
         });
         clearAttachments();
         setInputValue('');
@@ -231,6 +287,19 @@ const AIChatWindow = ({
         ? { id: 'suggestion-live', role: 'suggestion-live', timestamp: suggestionTimestamp, snapshot: { fileSuggestions, suggestedCode, diffChunks } }
         : null;
     const timeline = liveSuggestionEntry ? [...messages, liveSuggestionEntry] : [...messages];
+    // Inject pending command approval cards into the timeline
+    for (const cmd of pendingCommands) {
+        timeline.push({
+            id: `cmd-approval-${cmd.id}`,
+            role: 'command-approval',
+            command: cmd.command,
+            approvalId: cmd.id,
+            approvalStatus: cmd.status,
+            timestamp: cmd.timestamp,
+            output: cmd.output || null,
+            filesCount: cmd.filesCount || 0,
+        });
+    }
     timeline.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
 
     useEffect(() => {
@@ -240,7 +309,7 @@ const AIChatWindow = ({
                 scrollArea.scrollTo({ top: scrollArea.scrollHeight, behavior: 'smooth' });
             }
         }
-    }, [messages, suggestedCode, fileSuggestions, streamingMessage, showThinking, progressLog, progressExpanded]);
+    }, [messages, suggestedCode, fileSuggestions, streamingMessage, showThinking, progressLog, progressExpanded, pendingCommands]);
 
     const toggleProgressMessage = (id) => {
         if (!activeSession) return;
@@ -249,6 +318,71 @@ const AIChatWindow = ({
             messages: session.messages.map((m) => m.id === id ? { ...m, expanded: !m.expanded } : m),
         }));
     };
+
+    // ── Command approval handlers ───────────────────────────────────
+    const handleCommandApprove = useCallback(async (approvalId) => {
+        try {
+            // Set to 'running' immediately while we wait for execution
+            setPendingCommands((prev) =>
+                prev.map((c) => (c.id === approvalId ? { ...c, status: 'running' } : c))
+            );
+            const res = await fetch('/api/chat/approve-command', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ id: approvalId, approved: true }),
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) {
+                // Server error (404 = expired/not found, 500 = exec failed)
+                console.error('[CommandApproval] Server error:', res.status, data);
+                setPendingCommands((prev) =>
+                    prev.map((c) => (c.id === approvalId ? { ...c, status: 'failed', output: data?.error || `Server error ${res.status}` } : c))
+                );
+                return;
+            }
+            // For deferred commands, the endpoint executes and returns the result
+            if (data?.deferred && data?.result) {
+                // exitCode === 0 is success. null/undefined means unknown — check for explicit error.
+                const hasExplicitError = Boolean(data.result.error);
+                const exitOk = data.result.exitCode === 0;
+                const exitUnknown = data.result.exitCode == null;
+                const success = exitOk || (exitUnknown && !hasExplicitError);
+                setPendingCommands((prev) =>
+                    prev.map((c) => (c.id === approvalId ? { ...c, status: success ? 'approved' : 'failed', output: data.result.output || data.result.error } : c))
+                );
+            } else if (data?.deferred) {
+                // Deferred but no result body
+                setPendingCommands((prev) =>
+                    prev.map((c) => (c.id === approvalId ? { ...c, status: 'approved' } : c))
+                );
+            } else {
+                // Live command — just mark approved (tool loop continues server-side)
+                setPendingCommands((prev) =>
+                    prev.map((c) => (c.id === approvalId ? { ...c, status: 'approved' } : c))
+                );
+            }
+        } catch (e) {
+            console.error('[CommandApproval] Approve failed:', e);
+            setPendingCommands((prev) =>
+                prev.map((c) => (c.id === approvalId ? { ...c, status: 'failed' } : c))
+            );
+        }
+    }, []);
+
+    const handleCommandReject = useCallback(async (approvalId) => {
+        try {
+            await fetch('/api/chat/approve-command', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ id: approvalId, approved: false }),
+            });
+            setPendingCommands((prev) =>
+                prev.map((c) => (c.id === approvalId ? { ...c, status: 'rejected' } : c))
+            );
+        } catch (e) {
+            console.error('[CommandApproval] Reject failed:', e);
+        }
+    }, []);
 
     const toggleFilePreview = (path) => {
         setCollapsedFiles((prev) => ({
@@ -590,6 +724,25 @@ const AIChatWindow = ({
                         </div>
                     ) : (
                         timeline.map((msg) => {
+                            // ── Command Approval Card ────────────────────────
+                            if (msg.role === 'command-approval') {
+                                return (
+                                    <div key={msg.id} className="flex justify-start min-w-0">
+                                        <div className="w-full min-w-0">
+                                            <CommandApprovalCard
+                                                id={msg.approvalId}
+                                                command={msg.command}
+                                                status={msg.approvalStatus}
+                                                output={msg.output}
+                                                filesCount={msg.filesCount}
+                                                onApprove={handleCommandApprove}
+                                                onReject={handleCommandReject}
+                                            />
+                                        </div>
+                                    </div>
+                                );
+                            }
+
                             if (msg.role === 'progress') {
                                 const expanded = msg.expanded === true;
                                 const isFinished = msg.status === 'finished';
@@ -598,50 +751,50 @@ const AIChatWindow = ({
                                 const statusColor = isFinished ? 'text-emerald-400' : isFailed ? 'text-rose-400' : 'text-amber-400';
                                 const iconColor = isFinished ? 'text-emerald-400' : isFailed ? 'text-rose-400' : 'text-amber-400';
                                 return (
-                                    <div key={msg.id} className={`text-xs rounded-xl overflow-hidden shadow-lg ${
+                                    <div key={msg.id} className={`text-xs rounded-lg overflow-hidden shadow-md ${
                                         isFinished ? 'bg-gradient-to-br from-[#0d1a15] to-[#0a0f0d] border border-emerald-900/40' :
                                         isFailed ? 'bg-gradient-to-br from-[#1a0d0d] to-[#0f0a0a] border border-rose-900/40' :
                                         'bg-gradient-to-br from-[#1a1708] to-[#0f0e0a] border border-amber-900/40'
                                     }`}>
                                         <button
-                                            className="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-white/[0.03] transition-all duration-200"
+                                            className="w-full flex items-center gap-2 px-2.5 py-1.5 text-left hover:bg-white/[0.03] transition-all duration-200"
                                             onClick={() => toggleProgressMessage(msg.id)}
                                         >
-                                            <div className={`flex items-center justify-center w-6 h-6 rounded-lg ${
+                                            <div className={`flex items-center justify-center w-5 h-5 rounded ${
                                                 isFinished ? 'bg-emerald-500/20' :
                                                 isFailed ? 'bg-rose-500/20' :
                                                 'bg-amber-500/20'
                                             }`}>
                                                 {expanded ? 
-                                                    <ChevronDown className={`w-3.5 h-3.5 ${iconColor}`} strokeWidth={2.5} /> : 
-                                                    <ChevronRight className={`w-3.5 h-3.5 ${iconColor}`} strokeWidth={2.5} />
+                                                    <ChevronDown className={`w-3 h-3 ${iconColor}`} strokeWidth={2.5} /> : 
+                                                    <ChevronRight className={`w-3 h-3 ${iconColor}`} strokeWidth={2.5} />
                                                 }
                                             </div>
-                                            <div className="flex items-center gap-2 flex-1 min-w-0">
-                                                <span className={`inline-flex items-center gap-2 text-xs font-semibold ${statusColor}`}>
-                                                    {isFinished && <span className="w-2 h-2 rounded-full bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.5)]"></span>}
-                                                    {isFailed && <span className="w-2 h-2 rounded-full bg-rose-400 shadow-[0_0_8px_rgba(251,113,133,0.5)]"></span>}
-                                                    {!isFinished && !isFailed && <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse shadow-[0_0_8px_rgba(251,191,36,0.5)]"></span>}
+                                            <div className="flex items-center gap-1.5 flex-1 min-w-0">
+                                                <span className={`inline-flex items-center gap-1.5 text-[11px] font-semibold ${statusColor}`}>
+                                                    {isFinished && <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shadow-[0_0_6px_rgba(52,211,153,0.4)]"></span>}
+                                                    {isFailed && <span className="w-1.5 h-1.5 rounded-full bg-rose-400 shadow-[0_0_6px_rgba(251,113,133,0.4)]"></span>}
+                                                    {!isFinished && !isFailed && <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse shadow-[0_0_6px_rgba(251,191,36,0.4)]"></span>}
                                                     {statusLabel}
                                                 </span>
-                                                <span className="text-[11px] text-[#71717a] truncate">{summarizeLog(msg.logs)}</span>
+                                                <span className="text-[10px] text-[#71717a] truncate">{summarizeLog(msg.logs)}</span>
                                             </div>
                                         </button>
                                         {expanded && (
-                                            <div className={`px-4 pb-3 pt-2 space-y-1.5 border-t ${
+                                            <div className={`px-2.5 pb-2 pt-1.5 space-y-1 border-t ${
                                                 isFinished ? 'border-emerald-900/30 bg-black/20' :
                                                 isFailed ? 'border-rose-900/30 bg-black/20' :
                                                 'border-amber-900/30 bg-black/20'
                                             }`}>
                                                 {(msg.logs || []).map((entry, idx) => {
                                                     return (
-                                                        <div key={`${msg.id}-log-${idx}`} className="flex items-start gap-2 text-[11px] text-[#9ba2b8] font-mono">
-                                                            <span className={`select-none mt-0.5 ${
+                                                        <div key={`${msg.id}-log-${idx}`} className="flex items-start gap-1.5 text-[10px] text-[#9ba2b8] font-mono">
+                                                            <span className={`select-none mt-px ${
                                                                 isFinished ? 'text-emerald-600' :
                                                                 isFailed ? 'text-rose-600' :
                                                                 'text-amber-600'
                                                             }`}>›</span>
-                                                            <span className="whitespace-normal break-words leading-relaxed">{entry}</span>
+                                                            <span className="whitespace-normal break-words leading-snug">{entry}</span>
                                                         </div>
                                                     );
                                                 })}
@@ -655,18 +808,18 @@ const AIChatWindow = ({
                                 const meta = msg.contextMeta || {};
                                 const sources = Array.isArray(meta.sources) ? meta.sources : [];
                                 return (
-                                    <div key={msg.id} className="text-xs rounded-md border border-[#2a2b38] bg-[#0d0d11] px-3 py-2">
-                                        <div className="flex items-center justify-between gap-2">
-                                            <div className="flex items-center gap-2">
-                                                <FileCode className="w-3.5 h-3.5 text-[#4aba9a]" />
-                                                <span className="text-[11px] uppercase tracking-wide text-[#9ba2b8]">Context used</span>
+                                    <div key={msg.id} className="text-xs rounded border border-[#2a2b38] bg-[#0d0d11] px-2 py-1.5">
+                                        <div className="flex items-center justify-between gap-1.5">
+                                            <div className="flex items-center gap-1.5">
+                                                <FileCode className="w-3 h-3 text-[#4aba9a]" />
+                                                <span className="text-[10px] uppercase tracking-wide text-[#9ba2b8]">Context used</span>
                                             </div>
                                             {meta.traceSummary ? (
-                                                <span className="text-[10px] text-[#71717a] truncate max-w-[220px]">{meta.traceSummary}</span>
+                                                <span className="text-[9px] text-[#71717a] truncate max-w-[200px]">{meta.traceSummary}</span>
                                             ) : null}
                                         </div>
                                         {sources.length > 0 && (
-                                            <div className="mt-2 space-y-1">
+                                            <div className="mt-1 space-y-0.5">
                                                 {sources.map((src, idx) => {
                                                     const file = src?.file || 'unknown';
                                                     const symbol = src?.symbol ? ` · ${src.symbol}` : '';
@@ -674,7 +827,7 @@ const AIChatWindow = ({
                                                         ? ` (L${src.start_line}-${src.end_line})`
                                                         : '';
                                                     return (
-                                                        <div key={`${file}-${idx}`} className="text-[11px] text-[#c7c9d1] font-mono truncate">
+                                                        <div key={`${file}-${idx}`} className="text-[10px] text-[#c7c9d1] font-mono truncate">
                                                             {file}{lineInfo}{symbol}
                                                         </div>
                                                     );
@@ -705,9 +858,22 @@ const AIChatWindow = ({
                                                                 className="rounded-lg border border-[#2f2f35] bg-[#0d0d11] overflow-hidden min-w-0 shadow-[0_8px_24px_rgba(0,0,0,0.28)]"
                                                                 style={codeContainerStyle}
                                                             >
-                                                                {/* File header - visually dominant */}
-                                                                <div className="flex items-center justify-between gap-3 px-3 py-2 bg-[#141418] border-b border-[#1f1f23]">
-                                                                    <div className="flex items-center gap-3 min-w-0 flex-1">
+                                                                {/* File header - compact */}
+                                                                <div className="flex items-center justify-between gap-2 px-1.5 py-1 bg-[#141418] border-b border-[#1f1f23]">
+                                                                    <div className="flex items-center gap-1.5 min-w-0 flex-1">
+                                                                        {(() => {
+                                                                            const meta = buildLanguageMeta(suggestion.path);
+                                                                            return (
+                                                                                <span
+                                                                                    className="inline-flex items-center justify-center flex-shrink-0 px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wide"
+                                                                                    style={{ color: meta.color, backgroundColor: `${meta.color}25` }}
+                                                                                    title={meta.label}
+                                                                                >
+                                                                                    <FileCode className="w-3 h-3 mr-1" strokeWidth={2} style={{ color: meta.color }} />
+                                                                                    {meta.label}
+                                                                                </span>
+                                                                            );
+                                                                        })()}
                                                                         <button
                                                                             onClick={async () => {
                                                                                 const parts = suggestion.path.split('/');
@@ -753,15 +919,15 @@ const AIChatWindow = ({
                                                                                     }
                                                                                 } catch (e) { }
                                                                             }}
-                                                                            className="text-left font-mono text-[13px] font-semibold text-[#e4e4e7] hover:text-[#4aba9a] truncate transition-colors"
+                                                                            className="text-left font-mono text-[10px] text-[#e4e4e7] hover:text-[#4aba9a] truncate transition-colors"
                                                                             title={suggestion.path}
                                                                         >
                                                                             {suggestion.path}
                                                                         </button>
                                                                         {/* Stats - more prominent */}
-                                                                        <div className="flex items-center gap-1.5 flex-shrink-0">
-                                                                            <span className="font-mono text-xs font-semibold text-emerald-400 bg-emerald-500/15 px-1.5 py-0.5 rounded">{statsAddText}</span>
-                                                                            <span className="font-mono text-xs font-semibold text-rose-400 bg-rose-500/15 px-1.5 py-0.5 rounded">{statsRemText}</span>
+                                                                        <div className="flex items-center gap-1 flex-shrink-0">
+                                                                            <span className="font-mono text-[10px] font-semibold text-emerald-400 bg-emerald-500/15 px-1 py-px rounded">{statsAddText}</span>
+                                                                            <span className="font-mono text-[10px] font-semibold text-rose-400 bg-rose-500/15 px-1 py-px rounded">{statsRemText}</span>
                                                                         </div>
                                                                     </div>
                                                                     {/* Status badge */}
@@ -770,12 +936,12 @@ const AIChatWindow = ({
                                                                     </div>
                                                                 </div>
                                                                 {/* Actions bar */}
-                                                                <div className="flex items-center justify-between gap-2 px-3 py-1.5 bg-[#111116] border-b border-[#1c1c20]">
+                                                                <div className="flex items-center justify-between gap-1.5 px-2 py-1 bg-[#111116] border-b border-[#1c1c20]">
                                                                     <button
-                                                                        className="text-[#71717a] hover:text-[#e4e4e7] text-xs flex items-center gap-1 font-medium transition-colors"
+                                                                        className="text-[#71717a] hover:text-[#e4e4e7] text-[10px] flex items-center gap-0.5 font-medium transition-colors"
                                                                         onClick={() => toggleFilePreview(suggestion.path)}
                                                                     >
-                                                                        {collapsed ? <ChevronRight className="w-3.5 h-3.5" strokeWidth={2} /> : <ChevronDown className="w-3.5 h-3.5" strokeWidth={2} />}
+                                                                        {collapsed ? <ChevronRight className="w-3 h-3" strokeWidth={2} /> : <ChevronDown className="w-3 h-3" strokeWidth={2} />}
                                                                         {collapsed ? 'Show diff' : 'Hide diff'}
                                                                     </button>
                                                                     {suggestion.status === 'pending' && msg.role === 'suggestion-live' && (
@@ -816,7 +982,7 @@ const AIChatWindow = ({
                                                                     </div>
                                                                 ) : !collapsed ? (
                                                                     <div
-                                                                        className="max-h-[45vh] min-h-[80px] overflow-auto overflow-x-auto text-xs font-mono bg-[#09090b] ai-diff-code min-w-0 w-full max-w-full"
+                                                                        className="max-h-[35vh] min-h-[60px] overflow-auto overflow-x-auto text-[10px] font-mono bg-[#09090b] ai-diff-code min-w-0 w-full max-w-full"
                                                                         style={codeContainerStyle}
                                                                     >
                                                                         {renderDiffChunkList(suggestion.chunks)}
@@ -829,10 +995,10 @@ const AIChatWindow = ({
                                             ) : snapshot.suggestedCode ? (
                                                 <div className="rounded-lg border border-[#2f2f35] bg-[#0d0d11] overflow-hidden min-w-0 shadow-[0_8px_24px_rgba(0,0,0,0.28)]">
                                                     {/* Header */}
-                                                    <div className="flex items-center justify-between px-3 py-2 bg-[#141418] border-b border-[#1f1f23]">
-                                                        <div className="flex items-center gap-2">
-                                                            <Sparkles className="w-4 h-4 text-[#4aba9a]" />
-                                                            <span className="text-[13px] font-semibold text-[#e4e4e7]">AI Suggestion</span>
+                                                    <div className="flex items-center justify-between px-2 py-1.5 bg-[#141418] border-b border-[#1f1f23]">
+                                                        <div className="flex items-center gap-1.5">
+                                                            <Sparkles className="w-3.5 h-3.5 text-[#4aba9a]" />
+                                                            <span className="text-[11px] font-semibold text-[#e4e4e7]">AI Suggestion</span>
                                                             {isLoading && (
                                                                 <span className="inline-flex items-center gap-1.5 text-xs text-amber-400">
                                                                     <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse"></span>
@@ -860,19 +1026,19 @@ const AIChatWindow = ({
                                                         )}
                                                     </div>
                                                     {/* Toggle bar */}
-                                                    <div className="flex items-center justify-between px-3 py-1.5 bg-[#111116] border-b border-[#1c1c20]">
-                                                        <span className="text-[11px] text-[#71717a] font-medium">Preview diff</span>
+                                                    <div className="flex items-center justify-between px-2 py-1 bg-[#111116] border-b border-[#1c1c20]">
+                                                        <span className="text-[10px] text-[#71717a] font-medium">Preview diff</span>
                                                         <button
-                                                            className="text-[#71717a] hover:text-[#e4e4e7] text-xs flex items-center gap-1 font-medium transition-colors"
+                                                            className="text-[#71717a] hover:text-[#e4e4e7] text-[10px] flex items-center gap-0.5 font-medium transition-colors"
                                                             onClick={() => setSuggestionExpanded((v) => !v)}
                                                         >
-                                                            {suggestionExpanded ? <ChevronDown className="w-3.5 h-3.5" strokeWidth={2} /> : <ChevronRight className="w-3.5 h-3.5" strokeWidth={2} />}
+                                                            {suggestionExpanded ? <ChevronDown className="w-3 h-3" strokeWidth={2} /> : <ChevronRight className="w-3 h-3" strokeWidth={2} />}
                                                             {suggestionExpanded ? 'Hide' : 'Show'}
                                                         </button>
                                                     </div>
                                                     {/* Diff content */}
                                                     {suggestionExpanded && (
-                                                        <div className="max-h-[45vh] min-h-[80px] overflow-auto overflow-x-auto text-xs font-mono ai-diff-code min-w-0 w-full max-w-full bg-[#09090b]">
+                                                        <div className="max-h-[35vh] min-h-[60px] overflow-auto overflow-x-auto text-[10px] font-mono ai-diff-code min-w-0 w-full max-w-full bg-[#09090b]">
                                                             {renderDiffChunkList(snapshot.diffChunks || [])}
                                                         </div>
                                                     )}
@@ -901,7 +1067,7 @@ const AIChatWindow = ({
                                                             className="max-h-48 rounded border border-[#27272a]"
                                                         />
                                                     ) : att.kind === 'text' ? (
-                                                        <pre className="text-[11px] whitespace-pre-wrap max-h-32 overflow-auto bg-[#09090b] rounded p-2">
+                                                        <pre className="text-[10px] whitespace-pre-wrap max-h-24 overflow-auto bg-[#09090b] rounded p-1.5">
                                                             {att.content?.slice(0, 2000) || ''}
                                                         </pre>
                                                     ) : (
@@ -912,7 +1078,7 @@ const AIChatWindow = ({
                                         </div>
                                     )}
                                     <div
-                                        className="break-normal whitespace-normal text-xs leading-relaxed ai-chat-content min-w-0 w-full overflow-hidden"
+                                        className="break-normal whitespace-normal text-[11px] leading-normal ai-chat-content min-w-0 w-full overflow-hidden"
                                         onClick={handleContentNavClick}
                                     >
                                         <MessageContent content={msg.content} enableNavigation={true} />
@@ -950,7 +1116,7 @@ const AIChatWindow = ({
                     )}
                     {streamingMessage ? (
                         <div 
-                            className="text-xs text-[#e4e4e7] leading-relaxed ai-chat-content min-w-0 w-full overflow-hidden"
+                            className="text-[11px] text-[#e4e4e7] leading-normal ai-chat-content min-w-0 w-full overflow-hidden"
                             onClick={handleContentNavClick}
                         >
                             <MessageContent content={streamingMessage} enableNavigation={true} />
@@ -979,36 +1145,6 @@ const AIChatWindow = ({
                     }}
                 />
                 {(() => {
-                    const buildLanguageMeta = (filename = '') => {
-                        const ext = (filename.split('.').pop() || '').toLowerCase();
-                        const map = {
-                            js: { label: 'JS', color: '#fcd34d' },
-                            jsx: { label: 'JSX', color: '#fcd34d' },
-                            ts: { label: 'TS', color: '#60a5fa' },
-                            tsx: { label: 'TSX', color: '#60a5fa' },
-                            json: { label: 'JSON', color: '#c084fc' },
-                            md: { label: 'MD', color: '#a78bfa' },
-                            txt: { label: 'TXT', color: '#a3a3a3' },
-                            py: { label: 'PY', color: '#f59e0b' },
-                            rb: { label: 'RB', color: '#ef4444' },
-                            go: { label: 'GO', color: '#38bdf8' },
-                            rs: { label: 'RS', color: '#f97316' },
-                            java: { label: 'JAVA', color: '#ef4444' },
-                            cpp: { label: 'C++', color: '#60a5fa' },
-                            c: { label: 'C', color: '#60a5fa' },
-                            cs: { label: 'C#', color: '#22c55e' },
-                            php: { label: 'PHP', color: '#a78bfa' },
-                            html: { label: 'HTML', color: '#f97316' },
-                            css: { label: 'CSS', color: '#60a5fa' },
-                            scss: { label: 'SCSS', color: '#ec4899' },
-                            yml: { label: 'YML', color: '#cbd5e1' },
-                            yaml: { label: 'YAML', color: '#cbd5e1' },
-                            sql: { label: 'SQL', color: '#22c55e' },
-                            prisma: { label: 'DB', color: '#22c55e' },
-                        };
-                        return map[ext] || { label: ext ? ext.toUpperCase().slice(0, 4) : 'FILE', color: '#9ba2b8' };
-                    };
-
                     const chips = [];
                     if (activeFile && (activeFile.name || activeFile.path)) {
                         chips.push({
@@ -1027,15 +1163,18 @@ const AIChatWindow = ({
                             {chips.map((chip) => {
                                 const meta = buildLanguageMeta(chip.name || '');
                                 const isWorkspaceFile = chip.isWorkspaceFile;
+                                const isDetachedContext = chip.isContext && !contextFileAttached;
                                 return (
                                     <div
                                         key={chip.id}
                                         className={`flex items-center gap-1.5 border px-2 py-1 rounded text-[10px] min-w-0 ${
-                                            isWorkspaceFile 
-                                                ? 'bg-[#0d1a15] border-[#1a3d2e]' 
-                                                : 'bg-[#101118] border-[#1a1b24]'
+                                            isDetachedContext
+                                                ? 'bg-[#101118] border-[#1a1b24] opacity-50'
+                                                : isWorkspaceFile 
+                                                    ? 'bg-[#0d1a15] border-[#1a3d2e]' 
+                                                    : 'bg-[#101118] border-[#1a1b24]'
                                         }`}
-                                        title={chip.path || chip.name}
+                                        title={chip.isContext ? (contextFileAttached ? `${chip.name} (attached as context — click link to detach)` : `${chip.name} (not attached — click link to attach as context)`) : (chip.path || chip.name)}
                                     >
                                         <span
                                             className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded"
@@ -1045,14 +1184,29 @@ const AIChatWindow = ({
                                             <span className="font-semibold">{meta.label}</span>
                                         </span>
                                         <div className="flex-1 min-w-0">
-                                            <span className="truncate text-[#e4e4e7] block leading-tight">
-                                                {chip.isContext ? <span className="italic">{chip.name}</span> : chip.name}
+                                            <span className={`truncate block leading-tight ${isDetachedContext ? 'text-[#6b7280]' : 'text-[#e4e4e7]'}`}>
+                                                {chip.name}
                                             </span>
                                             {chip.size ? (
                                                 <span className="text-[#5a6178] whitespace-nowrap">{formatBytes(chip.size)}</span>
                                             ) : null}
                                         </div>
-                                        {!chip.isContext ? (
+                                        {chip.isContext ? (
+                                            <button
+                                                type="button"
+                                                onClick={() => setContextFileAttached((prev) => !prev)}
+                                                className={`p-0.5 rounded transition-colors ${
+                                                    contextFileAttached
+                                                        ? 'text-[#4aba9a] hover:text-[#6dd4b8]'
+                                                        : 'text-[#5a6178] hover:text-[#9ba2b8]'
+                                                }`}
+                                                title={contextFileAttached ? 'Detach from context' : 'Attach as context'}
+                                            >
+                                                {contextFileAttached
+                                                    ? <Link className="w-3 h-3" strokeWidth={1.5} />
+                                                    : <Unlink className="w-3 h-3" strokeWidth={1.5} />}
+                                            </button>
+                                        ) : (
                                             <button
                                                 onClick={() => removeAttachment(chip.id)}
                                                 className="p-0.5 text-[#5a6178] hover:text-[#9ba2b8]"
@@ -1060,7 +1214,7 @@ const AIChatWindow = ({
                                             >
                                                 <X className="w-2.5 h-2.5" strokeWidth={1.5} />
                                             </button>
-                                        ) : null}
+                                        )}
                                     </div>
                                 );
                             })}
@@ -1086,18 +1240,58 @@ const AIChatWindow = ({
                             style={{ height: '38px', maxHeight: '120px' }}
                         />
                         <div className="flex items-center px-2 pb-2 relative">
-                            <Button
-                                variant="ghost"
-                                size="sm"
-                                disabled
-                                className="text-xs px-2.5 py-1 h-6 rounded-md bg-transparent border-none text-[#6b7280] hover:text-[#9ba1ab] transition-colors"
-                                title="Agent selection (coming soon)"
-                            >
-                                <span className="flex items-center gap-1.5">
-                                    Agent
-                                    <ChevronDown className="w-3 h-3 transition-transform duration-200 animate-bounce-subtle" />
-                                </span>
-                            </Button>
+                            <Popover open={agentMenuOpen} onOpenChange={setAgentMenuOpen}>
+                                <PopoverTrigger asChild>
+                                    <Button
+                                        variant="ghost"
+                                        size="sm"
+                                        className={`text-xs px-2.5 py-1 h-6 rounded-md bg-transparent border-none transition-colors ${agentMode === 'direct' ? 'text-[#6b7280] hover:text-[#9ba1ab]' : 'text-[#60a5fa] hover:text-[#93c5fd]'}`}
+                                        title="Agent mode"
+                                    >
+                                        <span className="flex items-center gap-1.5">
+                                            {agentMode === 'direct' ? 'Agent' : agentMode === 'auto' ? 'Auto Agent' : agentMode === 'plan' ? 'Plan Agent' : 'Research'}
+                                            <ChevronDown className={`w-3 h-3 transition-transform duration-300 ${agentMenuOpen ? 'rotate-180' : 'rotate-0'}`} />
+                                        </span>
+                                    </Button>
+                                </PopoverTrigger>
+                                <PopoverContent
+                                    className="w-64 mr-6 bg-[#14161a] border-none p-3 space-y-2"
+                                    side="top"
+                                    align="start"
+                                >
+                                    <p className="text-[10px] text-[#6b7280] uppercase tracking-wider mb-1">Agent Mode</p>
+                                    {[
+                                        { key: 'direct', label: 'Direct', desc: 'Single LLM call, no agents' },
+                                        { key: 'auto', label: 'Auto Agent', desc: 'AI decides when to use sub-agents' },
+                                        { key: 'plan', label: 'Plan & Execute', desc: 'Plan changes, then execute step-by-step' },
+                                        { key: 'research', label: 'Research', desc: 'Multi-step search and file reading' },
+                                    ].map((mode) => (
+                                        <button
+                                            key={mode.key}
+                                            onClick={() => { setAgentMode(mode.key); setAgentMenuOpen(false); }}
+                                            className={`w-full text-left px-2 py-1.5 rounded text-xs transition-colors ${agentMode === mode.key ? 'bg-[#1e293b] text-[#60a5fa]' : 'text-[#c9cdd4] hover:bg-[#1a1c22]'}`}
+                                        >
+                                            <span className="font-medium">{mode.label}</span>
+                                            <span className="block text-[10px] text-[#6b7280] mt-0.5">{mode.desc}</span>
+                                        </button>
+                                    ))}
+                                    {activePipeline && activePipeline.status !== 'completed' && activePipeline.status !== 'failed' && (
+                                        <button
+                                            onClick={() => { cancelPipeline(); setAgentMenuOpen(false); }}
+                                            className="w-full text-left px-2 py-1.5 rounded text-xs text-red-400 hover:bg-[#1a1c22] transition-colors mt-1"
+                                        >
+                                            Cancel running pipeline
+                                        </button>
+                                    )}
+                                    {contextWindowInfo && (
+                                        <div className="border-t border-[#2a2d35] pt-2 mt-2">
+                                            <p className="text-[10px] text-[#6b7280]">
+                                                Context: {Math.round(contextWindowInfo.availableTokens / 1000)}K tokens available
+                                            </p>
+                                        </div>
+                                    )}
+                                </PopoverContent>
+                            </Popover>
                             <Popover open={modelMenuOpen} onOpenChange={setModelMenuOpen}>
                                 <PopoverTrigger asChild>
                                     <Button

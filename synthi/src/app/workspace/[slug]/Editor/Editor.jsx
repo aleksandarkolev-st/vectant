@@ -43,6 +43,7 @@ import estree from "prettier/plugins/estree";
 import { EDITOR_OPTIONS } from './options';
 import { useAiCompletion } from './AICompletion';
 import { useDiffManager } from './diffManager';
+import { useGitGutter } from './gitGutterService';
 import { useEditorProviders } from './providers';
 import { useEditorEvents } from './events';
 import { takeLastChars, useCustomScrollbar } from './utils';
@@ -2315,6 +2316,14 @@ const EditorPanel = ({
         lspReady: lspStatus.startsWith('Ready'),
         diagnostics, // Pass proactive analysis diagnostics for quick fixes
         removeDiagnosticByLocation, // Callback to remove diagnostic after fix applied
+    });
+
+    // --- Git Gutter Decorations ---
+    useGitGutter({
+        editorInstance,
+        monacoInstance,
+        activeFile,
+        slug,
     });
 
     // --- Event Handlers ---

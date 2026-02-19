@@ -1,0 +1,45 @@
+/* ──────────────────────────────────────────────────────────────────────────
+   Git Gutter Decorations
+   Colored bars in the editor gutter indicating added / modified / deleted lines.
+   ────────────────────────────────────────────────────────────────────────── */
+
+/* ── Added lines — green bar ─────────────────────────────────────────────── */
+.git-gutter-added {
+    background: #a8e6cf;
+    width: 3px !important;
+    margin-left: 3px;
+}
+
+.git-gutter-margin-added {
+    /* We don't need a glyph — the line decoration is enough.
+       But keeping an empty rule here in case we want to add glyph icons later. */
+}
+
+/* ── Modified lines — blue bar ───────────────────────────────────────────── */
+.git-gutter-modified {
+    background: #88c0fc;
+    width: 3px !important;
+    margin-left: 3px;
+}
+
+.git-gutter-margin-modified {
+}
+
+/* ── Deleted lines — red triangular indicator ────────────────────────────── */
+.git-gutter-deleted {
+    /* Small red triangle pointing right, positioned to indicate "something was here" */
+    width: 0 !important;
+    height: 0 !important;
+    margin-left: 2px;
+    margin-top: 8px;
+    border-top: 4px solid transparent;
+    border-bottom: 4px solid transparent;
+    border-left: 6px solid #ff6b6b;
+}
+
+.git-gutter-margin-deleted {
+}
+
+/* ── Overview ruler (minimap-like sidebar scrollbar indicators) ───────────  */
+/* These are handled via Monaco's decoration options (overviewRuler property)
+   and don't need separate CSS — the colors are set in JS. */
