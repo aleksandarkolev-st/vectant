@@ -383,10 +383,16 @@ class RAGPipeline:
                 query.text, result.sections
             )
             for ss in scored:
+                # Resolve actual document title from store
+                doc_title = ss.section.document_id
+                doc_meta = self.document_store.get_metadata(ss.section.document_id)
+                if doc_meta:
+                    doc_title = doc_meta.title or doc_meta.file_name
+
                 ref = SectionReference(
                     section_id=ss.section.id,
                     document_id=ss.section.document_id,
-                    document_title=ss.section.document_id,
+                    document_title=doc_title,
                     section_title=ss.section.title,
                     breadcrumb=ss.section.breadcrumb,
                     relevance=ss.relevance,
