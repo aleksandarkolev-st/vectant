@@ -167,6 +167,21 @@ class RAGPipeline:
             f"{self.section_store.count()} sections"
         )
 
+    def _normalize_doc_paths(self, doc) -> None:
+        """Rewrite a document's file_path to be relative to workspace root.
+
+        This ensures stored metadata is portable and matches the relative
+        paths used by the frontend / engine layer.
+        """
+        if not doc or not doc.metadata:
+            return
+        fp = str(doc.metadata.file_path).replace("\\", "/")
+        root = str(self.workspace_root).replace("\\", "/")
+        if not root.endswith("/"):
+            root += "/"
+        if fp.startswith(root):
+            doc.metadata.file_path = fp[len(root):]
+
     # =========================================================================
     # Step 1: Ingestion
     # =========================================================================
@@ -202,6 +217,7 @@ class RAGPipeline:
 
         # Store ingested documents
         for doc in result.documents:
+            self._normalize_doc_paths(doc)
             file_path = doc.metadata.file_path if doc.metadata else None
             if file_path:
                 ingested_paths.add(str(file_path))
@@ -296,6 +312,8 @@ class RAGPipeline:
         doc = processor.process_file(file_path)
         if not doc:
             return {"status": "skipped", "file": file_path}
+
+        self._normalize_doc_paths(doc)
 
         # ── Remove stale data if the file was already ingested ───────────
         existing_id = self.document_store.get_by_path(file_path)
