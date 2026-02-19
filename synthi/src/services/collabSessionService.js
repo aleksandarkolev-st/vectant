@@ -53,6 +53,12 @@ class CollabSessionService extends EventTarget {
     /** @type {string|null} */
     this._userId = null;
 
+    /** @type {string|null} Host's userId — set when guest joins a session */
+    this._hostId = null;
+
+    /** @type {string|null} Workspace slug of the active session */
+    this._sessionSlug = null;
+
     /** @type {WebSocket|null} */
     this._ws = null;
 
@@ -69,6 +75,17 @@ class CollabSessionService extends EventTarget {
   get session() { return this._session; }
   get permissions() { return { ...this._permissions }; }
   get sessionId() { return this._sessionId; }
+  get hostId() { return this._hostId; }
+  get sessionSlug() { return this._sessionSlug; }
+  /**
+   * Returns the userId that should be used for repo/room scoping.
+   * For guests in a session, this is the host's userId.
+   * For hosts and idle users, this is their own userId.
+   */
+  get effectiveUserId() {
+    if (this._role === 'guest' && this._hostId) return this._hostId;
+    return this._userId;
+  }
   get isHost() { return this._role === 'hosting'; }
   get isGuest() { return this._role === 'guest'; }
   get isActive() { return this._role === 'hosting' || this._role === 'guest'; }
@@ -359,7 +376,10 @@ class CollabSessionService extends EventTarget {
         if (this._role === 'knocking' && msg.guest?.guestId === this._userId) {
           this._role = 'guest';
           this._permissions = { ...msg.guest.permissions };
-          this._emit('session:joined', msg.guest);
+          // Store host info for direct repo access
+          this._hostId = msg.hostId || null;
+          this._sessionSlug = msg.slug || null;
+          this._emit('session:joined', { ...msg.guest, hostId: this._hostId, slug: this._sessionSlug });
         }
         break;
 
@@ -417,6 +437,8 @@ class CollabSessionService extends EventTarget {
     this._role = 'idle';
     this._session = null;
     this._sessionId = null;
+    this._hostId = null;
+    this._sessionSlug = null;
     this._permissions = { ...HOST_PERMISSIONS };
     this._pendingKnocks = [];
   }
