@@ -142,11 +142,11 @@ export default function WorkspaceUsersPanel({ slug }) {
             </span>
           </div>
           <button onClick={handleAcceptInvite}
-            className="p-1 rounded bg-[#4aba9a20] hover:bg-[#4aba9a30]" title="Accept">
+            className="p-1 rounded bg-[#4aba9a20] hover:bg-[#4aba9a30]" title="Accept" aria-label="Accept collaboration invite">
             <Check className="w-3.5 h-3.5" style={{ color: T.teal }} />
           </button>
           <button onClick={handleDeclineInvite}
-            className="p-1 rounded bg-[#ff575720] hover:bg-[#ff575730]" title="Decline">
+            className="p-1 rounded bg-[#ff575720] hover:bg-[#ff575730]" title="Decline" aria-label="Decline collaboration invite">
             <X className="w-3.5 h-3.5" style={{ color: T.red }} />
           </button>
         </div>
@@ -365,6 +365,7 @@ function UserRow({ user, isIdle, isHost, isKnocking, joiningUserId, invitingUser
                 opacity: isJoining ? 0.5 : 1,
               }}
               title="Ask to join their workspace"
+              aria-label={`Ask to join ${user.name}'s workspace`}
             >
               {isJoining
                 ? <Loader2 className="w-2.5 h-2.5 animate-spin" />
@@ -384,8 +385,7 @@ function UserRow({ user, isIdle, isHost, isKnocking, joiningUserId, invitingUser
               color: T.blue,
               opacity: isInviting ? 0.5 : 1,
             }}
-            title="Invite to your workspace"
-          >
+            title="Invite to your workspace"              aria-label={`Invite ${user.name} to your workspace`}          >
             {isInviting
               ? <Loader2 className="w-2.5 h-2.5 animate-spin" />
               : <Send className="w-2.5 h-2.5" />
@@ -398,6 +398,8 @@ function UserRow({ user, isIdle, isHost, isKnocking, joiningUserId, invitingUser
               onClick={() => setShowMenu(!showMenu)}
               className="p-0.5 rounded hover:bg-[#ffffff08] transition-colors"
               title="More options"
+              aria-haspopup="menu"
+              aria-expanded={showMenu}
             >
               <MoreHorizontal className="w-3 h-3" style={{ color: T.textMuted }} />
             </button>
@@ -405,6 +407,8 @@ function UserRow({ user, isIdle, isHost, isKnocking, joiningUserId, invitingUser
               <>
                 <div className="fixed inset-0 z-[50]" onClick={() => setShowMenu(false)} />
                 <div className="absolute right-0 top-full mt-1 z-[51] rounded-lg border shadow-xl py-1 min-w-[140px]"
+                  role="menu"
+                  onKeyDown={(e) => { if (e.key === 'Escape') setShowMenu(false); }}
                   style={{ backgroundColor: T.bg, borderColor: T.border }}>
                   <button
                     onClick={() => { onBlockUser(user.id, user.name); setShowMenu(false); }}
