@@ -162,14 +162,17 @@ function computeHash(content) {
  *   workspace:<slug>:session:<sessionId>:<filePath>
  * legacy v1 format (read-only compatibility):
  *   workspace:<slug>:<filePath>
+ *
+ * Direct-access model: userId takes priority over sessionId because
+ * guests now share the host's user-scoped rooms, not session-scoped rooms.
  */
 function buildDocName(slug, filePath, { userId = null, sessionId = null } = {}) {
   const safePath = filePath || 'root';
-  if (sessionId) {
-    return `workspace:${slug}:session:${sessionId}:${safePath}`;
-  }
   if (userId) {
     return `workspace:${slug}:user:${encodeURIComponent(String(userId))}:${safePath}`;
+  }
+  if (sessionId) {
+    return `workspace:${slug}:session:${sessionId}:${safePath}`;
   }
   return `workspace:${slug}:${safePath}`;
 }
