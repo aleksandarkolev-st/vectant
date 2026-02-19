@@ -256,10 +256,12 @@ export default function EditorPage({ params }) {
     const [workspaceMissing, setWorkspaceMissing] = useState(false);
     const [workspaceMissingMessage, setWorkspaceMissingMessage] = useState('');
     const [activeSessionId, setActiveSessionId] = useState(collabSessionService?.isActive ? collabSessionService.sessionId : null);
+    const [collabHostId, setCollabHostId] = useState(collabSessionService?.hostId || null);
 
     useEffect(() => {
         return collabSessionService.onChange(() => {
             setActiveSessionId(collabSessionService?.isActive ? collabSessionService.sessionId : null);
+            setCollabHostId(collabSessionService?.hostId || null);
         });
     }, []);
 
@@ -348,8 +350,8 @@ export default function EditorPage({ params }) {
     // all connected clients stay in sync when any teammate mutates the tree.
     const authUserId = authSession?.user?.id || authSession?.user?.email || null;
     useEffect(() => {
-        collabClient.setIdentity({ userId: authUserId, sessionId: activeSessionId });
-    }, [authUserId, activeSessionId]);
+        collabClient.setIdentity({ userId: authUserId, sessionId: activeSessionId, hostId: collabHostId });
+    }, [authUserId, activeSessionId, collabHostId]);
 
     useEffect(() => {
         if (!slug || !authUserId) return;
