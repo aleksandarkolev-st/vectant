@@ -289,8 +289,17 @@ class CodeIntelEngine:
         # RAG pipeline (4-step retrieval-augmented generation)
         if self.config.enable_rag:
             try:
+                from .rag.config import RAGConfig as _RAGConfig
+                rag_config = _RAGConfig()
+                # Propagate API key from engine config if set explicitly
+                if self.config.gemini_api_key:
+                    rag_config.embedding_api_key = self.config.gemini_api_key
+                    rag_config.micro.routing_api_key = self.config.gemini_api_key
+                    rag_config.synthesis.synthesis_api_key = self.config.gemini_api_key
+
                 self._rag_pipeline = RAGPipeline(
                     workspace_root=str(self.workspace_root),
+                    config=rag_config,
                 )
                 set_rag_workspace(str(self.workspace_root))
                 logger.info("RAG pipeline initialized")
