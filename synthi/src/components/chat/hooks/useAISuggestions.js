@@ -3,7 +3,7 @@ import { applyPatch } from 'diff';
 import { getFileLanguage, findFirstFile } from '@/utils/fileUtils';
 import { buildFilesPayload } from '@/utils/multiFileContext';
 import { api } from '@/services/api';
-import { computeDiffChunks, parseFileDiffBlocks, stripDiffMarkers, validateFileDiffBlocks, applySearchReplace, extractReplaceContent } from '../utils/diffUtils';
+import { computeDiffChunks, parseFileDiffBlocks, stripDiffMarkers, validateFileDiffBlocks, applySearchReplace, applySearchReplacePartial, extractReplaceContent } from '../utils/diffUtils';
 import { selectFileThunk, setExternalFileContent, fetchFilesThunk } from '@/redux/workspaceSlice';
 import { setShowTerminal } from '@/redux/uiSlice';
 import { useContextWindow } from './useContextWindow';
@@ -246,6 +246,17 @@ export const useAISuggestions = ({
         return walk(rawFiles);
     }, [rawFiles]);
 
+    // Derive the top-level project directory from the active file path.
+    // For multi-project workspaces (e.g. "educational-platform/src/App.jsx"),
+    // this returns "educational-platform". Returns '' for root-level files.
+    const getActiveProjectRoot = useCallback(() => {
+        const activePath = activeFile?.path || activeFile?.name || '';
+        const normalized = String(activePath).replace(/\\/g, '/');
+        const firstSlash = normalized.indexOf('/');
+        if (firstSlash <= 0) return '';
+        return normalized.slice(0, firstSlash);
+    }, [activeFile?.path, activeFile?.name]);
+
     // Normalize and resolve a possibly partial path to a known workspace path.
     const resolveWorkspacePath = useCallback((inputPath) => {
         if (!inputPath) return null;
@@ -261,13 +272,24 @@ export const useAISuggestions = ({
             const matches = flattenWorkspaceFiles.filter((p) => p.endsWith(normalized));
             if (matches.length === 1) return matches[0];
             if (matches.length > 1) {
+                // Prefer files in the same project as the active file.
+                const projectRoot = getActiveProjectRoot();
+                if (projectRoot) {
+                    const sameProject = matches.filter((p) => p.startsWith(`${projectRoot}/`));
+                    if (sameProject.length === 1) return sameProject[0];
+                    if (sameProject.length > 1) {
+                        return sameProject.reduce((shortest, current) =>
+                            current.length < shortest.length ? current : shortest,
+                        sameProject[0]);
+                    }
+                }
                 return matches.reduce((shortest, current) =>
                     current.length < shortest.length ? current : shortest,
                 matches[0]);
             }
         }
         return null;
-    }, [flattenWorkspaceFiles]);
+    }, [flattenWorkspaceFiles, getActiveProjectRoot]);
 
     const normalizePathParts = (parts = []) => {
         const output = [];
@@ -373,15 +395,19 @@ export const useAISuggestions = ({
                 'index.js', 'main.ts', 'app.ts', 'index.tsx', 'index.jsx',
                 'style.css', 'styles.css', 'main.css',
             ];
-            // Check in the active file's directory first, then workspace root, then any match
+            // Check in the active file's directory first, then project root
             const activeDir = activePath ? activePath.replace(/\\/g, '/').split('/').slice(0, -1).join('/') : '';
             for (const candidate of ENTRY_CANDIDATES) {
                 const inDir = activeDir ? `${activeDir}/${candidate}` : candidate;
                 const resolved = resolveWorkspacePath(inDir) || resolveWorkspacePath(candidate);
                 if (resolved) found.add(resolved);
             }
-            // Also look for files matching common app patterns in the workspace tree
-            for (const wsPath of flattenWorkspaceFiles) {
+            // Scope to active project instead of searching the entire workspace
+            const projectRoot = getActiveProjectRoot();
+            const scopedFiles = projectRoot
+                ? flattenWorkspaceFiles.filter((p) => p.startsWith(`${projectRoot}/`))
+                : flattenWorkspaceFiles;
+            for (const wsPath of scopedFiles) {
                 const basename = wsPath.split('/').pop() || '';
                 if (ENTRY_CANDIDATES.includes(basename.toLowerCase())) {
                     found.add(wsPath);
@@ -403,7 +429,7 @@ export const useAISuggestions = ({
         // Remove active file from results (it's already included separately)
         if (activePath) found.delete(activePath);
         return Array.from(found).slice(0, 8);
-    }, [flattenWorkspaceFiles, resolveWorkspacePath]);
+    }, [flattenWorkspaceFiles, resolveWorkspacePath, getActiveProjectRoot]);
 
     const inferSiblingPaths = useCallback((activePath) => {
         if (!activePath) return [];
@@ -484,20 +510,43 @@ export const useAISuggestions = ({
         return Array.from(found).slice(0, 12);
     }, [flattenWorkspaceFiles, resolveWorkspacePath]);
 
+    // Filenames that should never be included as AI context (token waste).
+    const CONTEXT_EXCLUDED_FILENAMES = useMemo(() => new Set([
+        'package-lock.json', 'yarn.lock', 'pnpm-lock.yaml', 'composer.lock',
+        'Gemfile.lock', 'Cargo.lock', 'poetry.lock', '.DS_Store', 'thumbs.db',
+    ]), []);
+
+    const isContextExcluded = useCallback((path) => {
+        if (!path) return false;
+        const basename = path.split('/').pop() || '';
+        return CONTEXT_EXCLUDED_FILENAMES.has(basename);
+    }, [CONTEXT_EXCLUDED_FILENAMES]);
+
     const discoverPromptRelevantPaths = useCallback(async (prompt, limit = 10) => {
         const discovered = new Set();
+        const projectRoot = getActiveProjectRoot();
 
         const words = String(prompt || '')
             .toLowerCase()
             .match(/[a-zA-Z_][a-zA-Z0-9_-]{2,}/g) || [];
-        const stop = new Set(['the', 'and', 'for', 'with', 'from', 'that', 'this', 'then', 'into', 'onto', 'about', 'please', 'update', 'change', 'modify', 'create', 'file', 'files', 'page', 'pages', 'component', 'components', 'code', 'project']);
+        const stop = new Set(['the', 'and', 'for', 'with', 'from', 'that', 'this', 'then', 'into', 'onto', 'about', 'please', 'update', 'change', 'modify', 'create', 'file', 'files', 'page', 'pages', 'component', 'components', 'code', 'project', 'new', 'add', 'make', 'build', 'also', 'should', 'more', 'look', 'like', 'want', 'need', 'least', 'semi', 'complex', 'greatly', 'functionalities', 'functionality']);
         const terms = Array.from(new Set(words.filter((w) => !stop.has(w)))).slice(0, 6);
 
-        if (terms.length > 0 && Array.isArray(flattenWorkspaceFiles) && flattenWorkspaceFiles.length > 0) {
-            const localMatches = flattenWorkspaceFiles
-                .filter((path) => terms.some((term) => path.toLowerCase().includes(term)))
-                .slice(0, limit);
-            localMatches.forEach((p) => discovered.add(p));
+        // Candidate files — prefer same project, exclude lock files etc.
+        const candidateFiles = Array.isArray(flattenWorkspaceFiles) ? flattenWorkspaceFiles.filter((p) => !isContextExcluded(p)) : [];
+
+        if (terms.length > 0 && candidateFiles.length > 0) {
+            const allMatches = candidateFiles.filter((path) => terms.some((term) => path.toLowerCase().includes(term)));
+            // Sort: same-project files first, then by path length (shorter = more relevant)
+            if (projectRoot) {
+                allMatches.sort((a, b) => {
+                    const aInProject = a.startsWith(`${projectRoot}/`) ? 0 : 1;
+                    const bInProject = b.startsWith(`${projectRoot}/`) ? 0 : 1;
+                    if (aInProject !== bInProject) return aInProject - bInProject;
+                    return a.length - b.length;
+                });
+            }
+            allMatches.slice(0, limit).forEach((p) => discovered.add(p));
         }
 
         if (workspaceSlug) {
@@ -507,7 +556,7 @@ export const useAISuggestions = ({
                 const results = Array.isArray(resp?.results) ? resp.results : [];
                 for (const r of results.slice(0, limit)) {
                     const path = r?.file?.path;
-                    if (typeof path === 'string' && path) discovered.add(path);
+                    if (typeof path === 'string' && path && !isContextExcluded(path)) discovered.add(path);
                 }
             } catch (_) {
                 // best-effort only
@@ -516,20 +565,25 @@ export const useAISuggestions = ({
 
         // Fallback for broad prompts when keyword/index lookup is sparse.
         // Seed with common entry/style files so code-change prompts don't run with empty context.
-        if (discovered.size === 0 && Array.isArray(flattenWorkspaceFiles) && flattenWorkspaceFiles.length > 0) {
+        if (discovered.size < 3 && candidateFiles.length > 0) {
             const COMMON = [
                 '/src/app/page.', '/src/app/layout.', '/src/app/globals.css',
                 '/index.html', '/src/index.', '/src/main.', '/src/App.',
                 '/app/page.', '/app/layout.', '/app/globals.css',
             ];
-            const seeded = flattenWorkspaceFiles
+            // Scope fallback seeds to the active project when possible
+            const scopedFiles = projectRoot
+                ? candidateFiles.filter((p) => p.startsWith(`${projectRoot}/`))
+                : candidateFiles;
+            const pool = scopedFiles.length > 0 ? scopedFiles : candidateFiles;
+            const seeded = pool
                 .filter((path) => COMMON.some((needle) => path.includes(needle)))
                 .slice(0, limit);
             seeded.forEach((p) => discovered.add(p));
         }
 
         return Array.from(discovered).slice(0, limit);
-    }, [flattenWorkspaceFiles, workspaceSlug]);
+    }, [flattenWorkspaceFiles, workspaceSlug, getActiveProjectRoot, isContextExcluded]);
 
     const inferDesignCompanionPaths = useCallback((activePath, prompt = '', limit = 8) => {
         if (!Array.isArray(flattenWorkspaceFiles) || flattenWorkspaceFiles.length === 0) return [];
@@ -890,6 +944,33 @@ export const useAISuggestions = ({
             if (block.searchReplaceText) {
                 const applied = applySearchReplace(currentContent, block.searchReplaceText);
                 if (applied === false) {
+                    // Try partial application: apply as many SEARCH/REPLACE blocks as
+                    // possible (some may fail if the AI hallucinated the search context).
+                    // This preserves the blocks that DO match while gracefully degrading.
+                    const partial = !baseIsMissing
+                        ? applySearchReplacePartial(currentContent, block.searchReplaceText)
+                        : false;
+
+                    if (partial && partial.applied > 0) {
+                        const failNote = partial.failed > 0
+                            ? `${partial.applied}/${partial.total} SEARCH/REPLACE blocks applied successfully. ${partial.failed} block(s) could not be matched — review the diff carefully.`
+                            : undefined;
+                        console.warn(`[SEARCH/REPLACE] Partial apply for ${block.path}: ${partial.applied}/${partial.total} succeeded`);
+                        hydrated.push({
+                            path: block.path,
+                            resolvedPath,
+                            diffText: null,
+                            originalContent: currentContent,
+                            updatedContent: partial.result,
+                            isNewFile: false,
+                            isFolder: false,
+                            chunks: computeDiffChunks(currentContent, partial.result),
+                            status: 'pending',
+                            warning: failNote,
+                        });
+                        continue;
+                    }
+
                     // Fallback: extract just the REPLACE content and show it
                     // as a manual-review suggestion instead of a hard error
                     const replaceOnly = extractReplaceContent(block.searchReplaceText);
@@ -1653,7 +1734,7 @@ If image attachments are present, read/ocr the images and extract any text or co
                 ...agentDiscoveredPaths,
                 ...promptDiscoveredPaths,
                 ...designCompanionPaths,
-            ])).slice(0, 12);
+            ])).filter((p) => !isContextExcluded(p)).slice(0, 16);
             const referencedEntries = relatedPaths.length
                 ? await Promise.all(relatedPaths.map(async (path) => [path, await getBaseContentForPath(path)]))
                 : [];
@@ -2379,7 +2460,7 @@ If image attachments are present, read/ocr the images and extract any text or co
             setIsLoading(false);
             try { if (typeof onBusy === 'function') onBusy(false); } catch(e){}
         }
-    }, [activeSession, activeFile, appendMessagesToSession, archiveCurrentSuggestion, buildMultiFileSuggestions, currentCode, fileCacheEntries, mutateSession, onBusy, onSuggest, aiApiKey, aiModel, buildContextWindow, formatForAPI, getContextDebugInfo, availableTokens, shouldUseAgents, runPipeline, agentMode, extractPromptMentionedPaths, flattenWorkspaceFiles, extractAgentDiscoveredPaths, discoverPromptRelevantPaths, inferDesignCompanionPaths]);
+    }, [activeSession, activeFile, appendMessagesToSession, archiveCurrentSuggestion, buildMultiFileSuggestions, currentCode, fileCacheEntries, mutateSession, onBusy, onSuggest, aiApiKey, aiModel, buildContextWindow, formatForAPI, getContextDebugInfo, availableTokens, shouldUseAgents, runPipeline, agentMode, extractPromptMentionedPaths, flattenWorkspaceFiles, extractAgentDiscoveredPaths, discoverPromptRelevantPaths, inferDesignCompanionPaths, isContextExcluded]);
 
     const suggestedCode = activeSession?.suggestedCode ?? null;
     const fileSuggestions = activeSession?.fileSuggestions ?? [];

@@ -86,6 +86,17 @@ const DEFAULT_IGNORE = [
     '.turbo/',
 ];
 
+// Filenames that should never be sent as AI context (token waste).
+const IGNORE_FILENAMES = new Set([
+    'package-lock.json',
+    'yarn.lock',
+    'pnpm-lock.yaml',
+    'composer.lock',
+    'Gemfile.lock',
+    'Cargo.lock',
+    'poetry.lock',
+]);
+
 // Code Intelligence Backend
 const CODE_INTEL_BASE = process.env.CODE_INTEL_URL || process.env.AI_ENGINE_URL || 'http://localhost:8000';
 
@@ -627,7 +638,9 @@ const fetchCollabFileContent = async (slug, filePath, signal) => {
 
 const shouldIgnorePath = (path = '') => {
     const normalized = String(path || '').replace(/\\/g, '/');
-    return DEFAULT_IGNORE.some((prefix) => normalized.startsWith(prefix));
+    if (DEFAULT_IGNORE.some((prefix) => normalized.startsWith(prefix))) return true;
+    const basename = normalized.split('/').pop() || '';
+    return IGNORE_FILENAMES.has(basename);
 };
 
 const fetchRepoFileList = async (slug, signal) => {
