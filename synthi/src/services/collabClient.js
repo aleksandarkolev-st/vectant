@@ -454,21 +454,31 @@ class CollabClient {
       || this.identity.hostId !== nextHost;
     if (!changed) return;
 
+    // Only destroy docs when room-key-affecting fields change.
+    // Room keys use (hostId || userId) — not sessionId.
+    // When a host starts sharing, only sessionId changes: the room keys
+    // are identical, so destroying docs is unnecessary and causes the
+    // "collab server disconnects" bug.
+    const scopeChanged = this.identity.userId !== nextUser
+      || this.identity.hostId !== nextHost;
+
     this.identity = { userId: nextUser, sessionId: nextSession, hostId: nextHost };
 
-    // Room keys depend on identity scope. Recreate docs on scope change.
-    for (const [key, entry] of this.docs.entries()) {
-      try {
-        entry.bindings.forEach(binding => {
-          try { binding.destroy(); } catch (_) {}
-        });
-        entry.bindings.clear();
-        try { entry.provider.destroy(); } catch (_) {}
-        try { entry.doc.destroy(); } catch (_) {}
-      } catch (_) {}
-      this.docs.delete(key);
+    if (scopeChanged) {
+      // Room keys depend on identity scope. Recreate docs on scope change.
+      for (const [key, entry] of this.docs.entries()) {
+        try {
+          entry.bindings.forEach(binding => {
+            try { binding.destroy(); } catch (_) {}
+          });
+          entry.bindings.clear();
+          try { entry.provider.destroy(); } catch (_) {}
+          try { entry.doc.destroy(); } catch (_) {}
+        } catch (_) {}
+        this.docs.delete(key);
+      }
+      this._updateConnectionStatus();
     }
-    this._updateConnectionStatus();
   }
 
   /**
