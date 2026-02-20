@@ -2110,6 +2110,12 @@ class GitService {
                 const fullPath = path.join(repoPath, entry.name);
                 fs.rmSync(fullPath, { recursive: true, force: true });
             }
+            // Also remove the worktree admin entry from the bare repo
+            // so git doesn't think there's a linked worktree at the slug path.
+            const wtAdminMain = path.join(barePath, 'worktrees', 'main');
+            if (fs.existsSync(wtAdminMain)) {
+                fs.rmSync(wtAdminMain, { recursive: true, force: true });
+            }
             console.log(`[Migration]   Cleaned slug-level working tree files`);
         } catch (e) {
             // Non-fatal — files will just take up space
@@ -2123,7 +2129,9 @@ class GitService {
 
     /**
      * Validate that a migrated repo is functional.
-     * Checks that the bare repo and main worktree are intact and operable.
+     * Checks that the bare repo exists and the migration marker is present.
+     * The slug-level directory is NOT a worktree — it only contains
+     * _upstream.git and per-user subdirectories.
      *
      * @param {string} slug
      * @returns {Promise<boolean>}
@@ -2147,23 +2155,7 @@ class GitService {
             return false;
         }
 
-        // 2. Worktree (.git file) must exist in the working tree
-        const gitFile = path.join(repoPath, '.git');
-        if (!fs.existsSync(gitFile)) {
-            console.error(`[Migration] Validation failed: .git file missing in worktree`);
-            return false;
-        }
-
-        // 3. Worktree must be functional (can run git status)
-        try {
-            const wtGit = simpleGit(repoPath);
-            await wtGit.status();
-        } catch (e) {
-            console.error(`[Migration] Validation failed: worktree not functional:`, e.message);
-            return false;
-        }
-
-        // 4. Migration marker must exist
+        // 2. Migration marker must exist
         if (!fs.existsSync(path.join(repoPath, '.synthi-migrated'))) {
             console.error(`[Migration] Validation failed: migration marker missing`);
             return false;
