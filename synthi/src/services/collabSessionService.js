@@ -248,6 +248,40 @@ class CollabSessionService extends EventTarget {
   }
 
   /**
+   * Guest requests a specific permission from the host.
+   * @param {string} permKey - e.g. 'canGit', 'canTerminal'
+   */
+  requestPermission(permKey) {
+    if (this._role !== 'guest') return;
+    if (!this._ws || this._ws.readyState !== WebSocket.OPEN) return;
+    try {
+      this._ws.send(JSON.stringify({
+        type: 'permission:request',
+        permKey,
+        displayName: this._displayName || 'Guest',
+      }));
+      this._emit('permission:request-sent', { permKey });
+    } catch (_) {}
+  }
+
+  /**
+   * Host denies a permission request from a guest.
+   * @param {string} guestId
+   * @param {string} permKey
+   */
+  denyPermissionRequest(guestId, permKey) {
+    if (!this.isHost) return;
+    if (!this._ws || this._ws.readyState !== WebSocket.OPEN) return;
+    try {
+      this._ws.send(JSON.stringify({
+        type: 'permission:request-deny',
+        guestId,
+        permKey,
+      }));
+    } catch (_) {}
+  }
+
+  /**
    * Host kicks a guest.
    */
   async kickGuest(guestId) {
@@ -768,6 +802,18 @@ class CollabSessionService extends EventTarget {
       case 'permission:denied':
         // Action was denied by the backend
         this._emit('action:denied', msg);
+        break;
+
+      case 'permission:requested':
+        // Host receives a permission request from a guest
+        if (this._role === 'hosting') {
+          this._emit('permission:requested', msg);
+        }
+        break;
+
+      case 'permission:request-denied':
+        // Guest's permission request was denied by the host
+        this._emit('permission:request-denied', msg);
         break;
 
       default:

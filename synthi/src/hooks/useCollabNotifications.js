@@ -25,6 +25,14 @@ const ACTION_LABELS = {
   'git:pull': 'Git pull',
 };
 
+/** Map permission keys to user-friendly labels */
+const PERM_LABELS = {
+  canEdit: 'Edit Code',
+  canTerminal: 'Terminal access',
+  canGit: 'Git control',
+  canFileOps: 'File operations',
+};
+
 /**
  * useCollabNotifications — Listens to collaboration events and shows
  * toast notifications for key lifecycle events.
@@ -166,11 +174,60 @@ export function useCollabNotifications() {
       collabSessionService.on('action:denied', (detail) => {
         const rawAction = detail?.action || '';
         const label = ACTION_LABELS[rawAction] || rawAction.replace(/[:_]/g, ' ') || 'This action';
+        const permKey = detail?.required;
         toast.warning(`${label} is not permitted`, {
           id: `action-denied-${rawAction}`,
           description: detail?.message || 'Ask the host to update your permissions.',
-          duration: 5000,
+          duration: 6000,
           icon: '🔒',
+          action: permKey ? {
+            label: 'Request',
+            onClick: () => collabSessionService.requestPermission(permKey),
+          } : undefined,
+        });
+      }),
+
+      // ── Host receives a permission request from a guest ──────────
+      collabSessionService.on('permission:requested', (detail) => {
+        const name = detail?.displayName || 'A guest';
+        const permKey = detail?.permKey || '';
+        const guestId = detail?.guestId || '';
+        const permLabel = PERM_LABELS[permKey] || permKey;
+        toast.info(`${name} is requesting ${permLabel}`, {
+          id: `perm-request-${guestId}-${permKey}`,
+          description: 'Grant or deny this permission.',
+          duration: 15000,
+          icon: '🙋',
+          action: {
+            label: 'Grant',
+            onClick: () => collabSessionService.updatePermissions(guestId, { [permKey]: true }),
+          },
+          cancel: {
+            label: 'Deny',
+            onClick: () => collabSessionService.denyPermissionRequest(guestId, permKey),
+          },
+        });
+      }),
+
+      // ── Guest's permission request was sent ──────────────────────
+      collabSessionService.on('permission:request-sent', (detail) => {
+        const permLabel = PERM_LABELS[detail?.permKey] || detail?.permKey || 'permission';
+        toast.info(`Requested ${permLabel} from the host`, {
+          id: `perm-request-sent-${detail?.permKey}`,
+          description: 'Waiting for the host to respond.',
+          duration: 4000,
+          icon: '📤',
+        });
+      }),
+
+      // ── Guest's permission request was denied ────────────────────
+      collabSessionService.on('permission:request-denied', (detail) => {
+        const permLabel = PERM_LABELS[detail?.permKey] || detail?.permKey || 'permission';
+        toast.error(`Your request for ${permLabel} was denied`, {
+          id: `perm-request-denied-${detail?.permKey}`,
+          description: 'The host declined your permission request.',
+          duration: 5000,
+          icon: '🚫',
         });
       }),
     ];

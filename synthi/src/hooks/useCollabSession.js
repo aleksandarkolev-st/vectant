@@ -237,6 +237,18 @@ export function useCollabSession() {
     }
   }, []);
 
+  // ── Permission request actions ─────────────────────────────────────
+
+  /** Guest requests a specific permission from the host */
+  const requestPermission = useCallback((permKey) => {
+    collabSessionService.requestPermission(permKey);
+  }, []);
+
+  /** Host denies a guest's permission request */
+  const denyPermissionRequest = useCallback((guestId, permKey) => {
+    collabSessionService.denyPermissionRequest(guestId, permKey);
+  }, []);
+
   return {
     // State
     role,
@@ -273,6 +285,10 @@ export function useCollabSession() {
     joinUser,
     inviteUser,
     joinByCode,
+
+    // Permission requests
+    requestPermission,
+    denyPermissionRequest,
 
     // Clear error (stable reference — avoids re-triggering dependent effects)
     clearError: useCallback(() => setError(null), []),
