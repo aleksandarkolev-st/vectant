@@ -284,14 +284,20 @@ export function GitStatus({ slug }) {
   const handleCommit = async () => {
     if (!slug || !message) return;
     const fullMessage = commitBody ? `${message}\n\n${commitBody}` : message;
+    // Optimistic: clear the commit input immediately for snappy feel
+    const prevMessage = message;
+    const prevBody = commitBody;
+    setMessage('');
+    setCommitBody('');
+    setShowCommitBody(false);
     const resultAction = await dispatch(commitChanges({ slug, message: fullMessage }));
     if (commitChanges.fulfilled.match(resultAction)) {
-      toast.success(`Committed: ${message}`);
-      setMessage('');
-      setCommitBody('');
-      setShowCommitBody(false);
+      toast.success(`Committed: ${prevMessage}`);
     } else {
-      // Show a clear error when nothing was staged or commit failed
+      // Restore the message on failure so the user doesn't lose their input
+      setMessage(prevMessage);
+      setCommitBody(prevBody);
+      if (prevBody) setShowCommitBody(true);
       const errMsg = resultAction?.error?.message || 'Commit failed';
       toast.error(errMsg);
     }
