@@ -176,8 +176,10 @@ function TokenSecurityAlert({ remotes, onDismiss }) {
 
 export function GitStatus({ slug }) {
   const dispatch = useDispatch();
-  const { status, loading, error, actionError, actionErrorCode, remotes, stashList } = useSelector(s => s.git);
-  const { commitHistory, unpushedCommits, incomingCommits } = useSelector(s => s.git);
+  const {
+    status, loading, error, actionError, actionErrorCode,
+    remotes, stashList, commitHistory, unpushedCommits, incomingCommits,
+  } = useSelector(s => s.git);
   const [message, setMessage] = useState('');
   const [commitBody, setCommitBody] = useState('');
   const [showCommitBody, setShowCommitBody] = useState(false);
@@ -272,7 +274,11 @@ export function GitStatus({ slug }) {
   const handlePush = async () => {
     if (!slug) return;
     const result = await dispatch(pushChanges(slug));
-    if (pushChanges.fulfilled.match(result)) toast.success('Pushed to remote');
+    if (pushChanges.fulfilled.match(result)) {
+      toast.success('Pushed to remote');
+    } else if (pushChanges.rejected.match(result)) {
+      toast.error(result.payload?.message || result.error?.message || 'Push failed');
+    }
   };
 
   const handleCommit = async () => {
