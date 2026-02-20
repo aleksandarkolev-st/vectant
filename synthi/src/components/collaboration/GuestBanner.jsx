@@ -41,12 +41,12 @@ export default function GuestBanner() {
 
   if (kicked) {
     return (
-      <div className="flex items-center justify-between px-4 py-1.5 bg-[#ff575718] border-b border-[#ff575740]">
+      <div className="flex items-center justify-between px-4 py-1.5 bg-[#ff575718] border-b border-[#ff575740]" role="alert">
         <div className="flex items-center gap-2">
           <AlertTriangle className="w-3.5 h-3.5 text-[#ff5757]" />
           <span className="text-xs text-[#ff5757] font-semibold">You have been removed from the session.</span>
         </div>
-        <button onClick={() => setKicked(false)} className="p-0.5 rounded hover:bg-[#ff575730] transition-colors">
+        <button onClick={() => setKicked(false)} className="p-0.5 rounded hover:bg-[#ff575730] transition-colors" aria-label="Dismiss">
           <X className="w-3.5 h-3.5 text-[#ff5757]" />
         </button>
       </div>
@@ -57,12 +57,12 @@ export default function GuestBanner() {
 
   if (terminated) {
     return (
-      <div className="flex items-center justify-between px-4 py-1.5 bg-[#fbbf2418] border-b border-[#fbbf2440]">
+      <div className="flex items-center justify-between px-4 py-1.5 bg-[#fbbf2418] border-b border-[#fbbf2440]" role="alert">
         <div className="flex items-center gap-2">
           <AlertTriangle className="w-3.5 h-3.5 text-[#fbbf24]" />
           <span className="text-xs text-[#fbbf24] font-semibold">The host ended the session.</span>
         </div>
-        <button onClick={() => setTerminated(false)} className="p-0.5 rounded hover:bg-[#fbbf2430] transition-colors">
+        <button onClick={() => setTerminated(false)} className="p-0.5 rounded hover:bg-[#fbbf2430] transition-colors" aria-label="Dismiss">
           <X className="w-3.5 h-3.5 text-[#fbbf24]" />
         </button>
       </div>
@@ -73,12 +73,12 @@ export default function GuestBanner() {
 
   if (denied) {
     return (
-      <div className="flex items-center justify-between px-4 py-1.5 bg-[#ff575712] border-b border-[#ff575730]">
+      <div className="flex items-center justify-between px-4 py-1.5 bg-[#ff575712] border-b border-[#ff575730]" role="alert">
         <div className="flex items-center gap-2">
           <Shield className="w-3.5 h-3.5 text-[#ff5757]" />
           <span className="text-xs text-[#ff5757] font-medium">Your request to join was denied.</span>
         </div>
-        <button onClick={() => setDenied(false)} className="p-0.5 rounded hover:bg-[#ff575720] transition-colors">
+        <button onClick={() => setDenied(false)} className="p-0.5 rounded hover:bg-[#ff575720] transition-colors" aria-label="Dismiss">
           <X className="w-3.5 h-3.5 text-[#ff5757]" />
         </button>
       </div>
