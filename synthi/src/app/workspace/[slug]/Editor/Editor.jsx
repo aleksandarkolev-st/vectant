@@ -2131,9 +2131,10 @@ const EditorPanel = ({
                                                         • When saved & not hovered → empty (reserving space) */}
                                                     <div className="ml-auto w-5 h-5 flex-shrink-0 flex items-center justify-center relative">
                                                         {/* Unsaved dot — hidden on group hover so the close ✕ takes over.
-                                                            When autosave is ON, suppress the dot entirely to avoid
-                                                            a brief flicker between the edit and the autosave debounce. */}
-                                                        {!autoSaveEnabled && ((file.isUnsaved || (isActive && isUnsaved)) || (isActive && remoteUnsaved)) && (
+                                                            When autosave is ON, suppress the dot for LOCAL unsaved state to
+                                                            avoid a brief flicker between the edit and the autosave debounce.
+                                                            Remote unsaved state always shows regardless of local autosave. */}
+                                                        {((!autoSaveEnabled && (file.isUnsaved || (isActive && isUnsaved))) || (isActive && remoteUnsaved)) && (
                                                             <Circle
                                                                 className="w-2.5 h-2.5 fill-[#ff6b6b] text-[#ff6b6b] drop-shadow-[0_0_4px_rgba(255,107,107,0.6)] group-hover:hidden"
                                                             />
