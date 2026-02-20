@@ -557,6 +557,10 @@ class CollabClient {
     this.identity = { userId: null, sessionId: null, hostId: null };
     // awareness listener registry: key -> Map<originalCb, wrappedCb>
     this._awarenessListeners = new Map();
+    // Cached avatar URL — once a non-null image is received from the auth
+    // session, we persist it here so it survives file-switch teardown/recreate
+    // cycles and never flickers back to a default/letter avatar.
+    this._cachedUserImage = null;
 
     // ── Connection status tracking ──
     // Aggregated status across all active providers: 'connected' | 'connecting' | 'disconnected'
@@ -1108,7 +1112,12 @@ class CollabClient {
       }
       const name = user.name || user.email || 'Anonymous';
       const color = user.color || this._colorForUser(String(id));
-      const image = user.image || null;
+      // Use the freshly-provided image if available; otherwise keep the
+      // previously cached value so the avatar survives file switches
+      // (where the new attachEditor call may run before the auth session
+      // has fully hydrated).
+      if (user.image) this._cachedUserImage = user.image;
+      const image = this._cachedUserImage || null;
 
       const localState = { user: { id, name, color, image }, isUnsaved: false };
       entry.provider.awareness.setLocalState(localState);
