@@ -342,6 +342,23 @@ export function toggleMaximize(state, nodeId) {
  * @returns {import('../types').LayoutState}
  */
 export function floatTab(state, tabId, rect) {
+  const tab = state.tabs[tabId];
+
+  // ── Dedup guard: if a floating window for the same panelType exists, bring it to front ──
+  if (tab) {
+    for (const fw of Object.values(state.floating || {})) {
+      if (fw.tabId === tabId) continue; // same tab re-float is fine
+      const existingTab = state.tabs[fw.tabId];
+      if (existingTab && existingTab.panelType === tab.panelType) {
+        // For extension-view, also match on containerId
+        if (tab.panelType === 'extension-view') {
+          if (existingTab.data?.containerId !== tab.data?.containerId) continue;
+        }
+        return bringFloatToFront(state, fw.id);
+      }
+    }
+  }
+
   let next = removeTabFromCurrentGroup(state, tabId);
   next = cloneState(next);
 
