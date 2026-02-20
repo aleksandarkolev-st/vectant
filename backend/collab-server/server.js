@@ -929,6 +929,21 @@ function _matchesNotifyScope(ws, scope = {}) {
   // Both host and guest notification WS clients should receive events.
   if (scope.sessionId && ws._sessionId === scope.sessionId) return true;
   if (scope.userId && ws._userId === scope.userId) return true;
+
+  // If scope has a userId that is a session host, also match guests in that session.
+  // This ensures guests receive file-saved / git-status-changed events when the
+  // room key is user-scoped (workspace:{slug}:user:{hostId}:{path}) and sessionId is null.
+  if (scope.userId && sessionManager) {
+    const hostSessionId = sessionManager.hostIndex.get(scope.userId);
+    if (hostSessionId) {
+      const session = sessionManager.sessions.get(hostSessionId);
+      if (session && session.status === 'active') {
+        // Match the WS client if they are a guest in this session
+        if (session.guests.has(ws._userId)) return true;
+      }
+    }
+  }
+
   // If scope has no filters, broadcast to all
   if (!scope.sessionId && !scope.userId) return true;
   return false;
