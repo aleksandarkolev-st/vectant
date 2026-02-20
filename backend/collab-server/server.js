@@ -666,16 +666,35 @@ class ValidatingPersistence {
       // doc — causing content duplication.  Install a one-shot update
       // handler that detects unexpected growth and re-resets the doc.
       // Active for 10 seconds after reset, then auto-removed.
+      //
+      // Instead of a pure length heuristic (which destroys legitimate
+      // large pastes), check for the classic doubling signature: the
+      // content contains the original text repeated.
       const resetLength = actualContent.length;
       const GROWTH_THRESHOLD = 1.3; // Flag if content grows >30% beyond expected
       let guardRemoved = false;
       let reResetCount = 0;
+      let hasLocalEdit = false;
       const MAX_RE_RESETS = 5; // prevent infinite reset loops
-      const staleGuard = () => {
+      const staleGuard = (_update, origin) => {
         if (guardRemoved) return;
+        // Once a local (non-sync-protocol) edit arrives, the doc is
+        // actively being used — disable the guard to avoid destroying
+        // legitimate user edits (e.g., large pastes).
+        if (origin !== 'y-sync$1' && origin !== 'y-sync$2' && origin !== null) {
+          hasLocalEdit = true;
+          return;
+        }
+        if (hasLocalEdit) return;
         try {
           const currentText = ydoc.getText(YTEXT_TYPE).toString();
           if (currentText.length > resetLength * GROWTH_THRESHOLD && resetLength > 0 && reResetCount < MAX_RE_RESETS) {
+            // Extra verification: check for doubling signature
+            // (text starts with or contains the original content repeated)
+            const looksDoubled = currentText.startsWith(actualContent + actualContent.charAt(0))
+              || currentText.endsWith(actualContent.charAt(actualContent.length - 1) + actualContent)
+              || currentText.includes(actualContent.slice(0, Math.min(200, actualContent.length)) + actualContent.slice(0, Math.min(50, actualContent.length)));
+            if (!looksDoubled) return; // Legitimate growth — let it through
             reResetCount++;
             console.warn(`[Collab] STALE MERGE detected for ${filePath}: expected ~${resetLength} chars, got ${currentText.length}. Re-resetting (attempt ${reResetCount}).`);
             ydoc.transact(() => {
