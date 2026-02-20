@@ -10,3 +10,4 @@ export { useFloatingWindow } from './use-floating-window';
 export { usePopout } from './use-popout';
 export { useLayoutPersistence } from './use-layout-persistence';
 export { useKeyboardNavigation, useFocusIndicator } from './use-keyboard-navigation';
+export { useActivityBarDocking } from './use-activity-bar-docking';
