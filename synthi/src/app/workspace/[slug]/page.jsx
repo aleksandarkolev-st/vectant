@@ -1800,16 +1800,14 @@ export default function EditorPage({ params }) {
                             />
                         );
                     })() : (
-                        <ResizablePanelGroup direction="vertical">
-                            <ResizablePanel defaultSize={65} minSize={20}>
-                                <>
-                                    <div className="flex-1 min-h-0 overflow-hidden">
-                                        <FileTreeView onToggleOrientation={toggleTreeOrientation} />
-                                    </div>
-                                    <GitSummaryPanel onOpenScm={() => setSidebarView('scm')} />
-                                </>
-                            </ResizablePanel>
-                        </ResizablePanelGroup>
+                        <div className="flex flex-col h-full min-h-0">
+                            <div className="flex-1 min-h-0 overflow-y-auto">
+                                <FileTreeView onToggleOrientation={toggleTreeOrientation} />
+                            </div>
+                            <div className="flex-shrink-0">
+                                <GitSummaryPanel onOpenScm={() => setSidebarView('scm')} />
+                            </div>
+                        </div>
                     )}
                 </div>
             </div>

@@ -184,7 +184,7 @@ const PRIORITY = {
     /** Files explicitly mentioned in the current message */
     REFERENCED_FILES: 80,
     /** Recent conversation messages (last N) */
-    RECENT_HISTORY: 70,
+    RECENT_HISTORY: 60,
     /** Agent step results from current pipeline */
     AGENT_RESULTS: 65,
     /** Code intelligence / RAG pipeline context (high relevance) */
