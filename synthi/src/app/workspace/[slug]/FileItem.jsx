@@ -1,6 +1,6 @@
 // src/app/FileItem.jsx
 "use client";
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, memo } from "react";
 import collabClient from '@/services/collabClient';
 import { useAppSelector } from "@/redux/hooks";
 import { selectExpandedFolders, toggleFolderExpansion } from "@/redux/uiSlice";
@@ -8,7 +8,7 @@ import { ChevronIcon } from "./Icons";
 import { getFileIcon, FolderIcon } from "@/utils/fileIcons";
 import { setUiActionName } from "@/redux/uiSlice";
 
-const FileItem = ({
+const FileItem = memo(({
   item,
   level = 0,
   ancestorHasNext = [],
@@ -521,5 +521,5 @@ useEffect(() => {
       )}
     </>
   );
-};
+});
 export default FileItem;

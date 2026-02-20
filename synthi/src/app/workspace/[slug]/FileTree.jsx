@@ -1,5 +1,5 @@
 "use client"
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
 import { toast } from 'sonner';
 import { useAppDispatch, useAppSelector } from '@/redux/hooks';
 import { 
@@ -149,9 +149,9 @@ const FileTreeView = ({
     };
 
     // Handler for FileItem clicks
-    const onFileSelectHandler = (item) => {
+    const onFileSelectHandler = useCallback((item) => {
         dispatch(selectFileThunk(item));
-    };
+    }, [dispatch]);
 
     return (
     <ContextMenu
@@ -213,9 +213,7 @@ const FileTreeView = ({
                 onFileSelect={onFileSelectHandler}
                 activeFile={activeFile}
                 onAction={handleTreeAction}
-                onRightMouseButtonClick={(item) => {
-                  setContextTarget(item);
-                }}
+                onRightMouseButtonClick={setContextTarget}
                 uiActionState={uiActionState}
                 dispatch={dispatch}
                 handleKeyDown={handleKeyDown}
