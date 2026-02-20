@@ -749,7 +749,25 @@ const workspaceSlice = createSlice({
 
         // --- SAVE CONTENT ---
         builder
+          .addCase(saveFileContentThunk.pending, (state) => {
+                // Optimistic: immediately mark the file as saved so the UI feels instant.
+                // If the thunk rejects, the rejected handler restores isUnsaved.
+                try {
+                    if (state.activeFile && state.activeFile.path) {
+                        const idx = state.openFiles.findIndex(f => f.path === state.activeFile.path);
+                        if (idx !== -1) {
+                            state.openFiles[idx] = { ...state.openFiles[idx], isUnsaved: false };
+                        }
+                        // Cache the current savedContent so we can revert on failure
+                        state._preSaveSavedContent = state.savedContent;
+                        // Optimistically update savedContent to currentContent
+                        state.savedContent = state.currentContent;
+                    }
+                } catch (e) { /* ignore */ }
+            })
           .addCase(saveFileContentThunk.fulfilled, (state, action) => {
+                // Clean up the revert cache
+                delete state._preSaveSavedContent;
                 if (action.payload) {
                     state.savedContent = action.payload;
                     if (state.activeFile && state.activeFile.path) {
@@ -761,7 +779,7 @@ const workspaceSlice = createSlice({
                             delete state._savedContentByPath[state.activeFile.path];
                         }
                     }
-                    // Mark active tab as saved
+                    // Mark active tab as saved (also handled in pending, but confirm here)
                     try {
                         if (state.activeFile && state.activeFile.path) {
                             const idx = state.openFiles.findIndex(f => f.path === state.activeFile.path);
@@ -769,6 +787,19 @@ const workspaceSlice = createSlice({
                         }
                     } catch (e) { /* ignore */ }
                 }
+            })
+          .addCase(saveFileContentThunk.rejected, (state) => {
+                // Rollback: restore the pre-save state so the unsaved dot reappears
+                try {
+                    if (state._preSaveSavedContent !== undefined) {
+                        state.savedContent = state._preSaveSavedContent;
+                        delete state._preSaveSavedContent;
+                    }
+                    if (state.activeFile && state.activeFile.path) {
+                        const idx = state.openFiles.findIndex(f => f.path === state.activeFile.path);
+                        if (idx !== -1) state.openFiles[idx] = { ...state.openFiles[idx], isUnsaved: true };
+                    }
+                } catch (e) { /* ignore */ }
             });
 
         // --- DELETE ITEM ---
