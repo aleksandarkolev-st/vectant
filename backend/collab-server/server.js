@@ -1389,6 +1389,7 @@ const server = http.createServer(async (req, res) => {
           hostName: hostName || hostId,
           hostAvatar: hostAvatar || '',
           inviteToken: session.inviteToken,
+          roomCode: session.roomCode || null,
         });
         if (notifyWss) {
           notifyWss.clients.forEach((ws) => {
