@@ -521,9 +521,29 @@ const gitSlice = createSlice({
                     state.actionErrorCode = action.error?.code || null;
                 }
             })
-            .addCase(commitChanges.pending, (state) => { state.loading = true; state.actionError = null; state.actionErrorCode = null; })
-            .addCase(commitChanges.fulfilled, (state) => { state.loading = false; })
-            .addCase(commitChanges.rejected, (state, action) => { state.loading = false; state.actionError = action.error.message; state.actionErrorCode = action.error.code || null; });
+            .addCase(commitChanges.pending, (state) => {
+                state.loading = true; state.actionError = null; state.actionErrorCode = null;
+                // Optimistic: snapshot current files and clear staged entries
+                if (state.status?.files) {
+                    state._preCommitFiles = JSON.parse(JSON.stringify(state.status.files));
+                    // Remove all staged files from the list (they'll be committed)
+                    state.status.files = state.status.files.filter(f => f.index === ' ' || f.index === '?');
+                }
+            })
+            .addCase(commitChanges.fulfilled, (state) => {
+                state.loading = false;
+                delete state._preCommitFiles;
+            })
+            .addCase(commitChanges.rejected, (state, action) => {
+                state.loading = false;
+                state.actionError = action.error.message;
+                state.actionErrorCode = action.error.code || null;
+                // Rollback: restore staged files
+                if (state._preCommitFiles && state.status) {
+                    state.status.files = state._preCommitFiles;
+                }
+                delete state._preCommitFiles;
+            });
         
         // Staging/discard actions — Optimistic UI with rollback
         builder
