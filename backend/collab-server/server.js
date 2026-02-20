@@ -1488,9 +1488,29 @@ const server = http.createServer(async (req, res) => {
         // Find or auto-create a session for the target user
         let session = sessionManager.getSessionByHost(targetUserId);
         if (!session) {
+          // Resolve a human-readable host name: prefer the name provided by
+          // the joining guest's UI, then search Yjs awareness states for
+          // the target user's display name, and finally fall back to targetUserId.
+          let resolvedHostName = targetUserName || '';
+          if (!resolvedHostName) {
+            const prefix = `workspace:${slug}:`;
+            const docsMap = yWsDocs || new Map();
+            for (const [docName, doc] of docsMap) {
+              if (!docName.startsWith(prefix)) continue;
+              const awareness = doc.awareness;
+              if (!awareness) continue;
+              for (const [, state] of awareness.getStates()) {
+                if (state?.user && String(state.user.id) === targetUserId && state.user.name) {
+                  resolvedHostName = state.user.name;
+                  break;
+                }
+              }
+              if (resolvedHostName) break;
+            }
+          }
           session = sessionManager.createSession({
             hostId: targetUserId,
-            hostName: targetUserName || targetUserId,
+            hostName: resolvedHostName || targetUserId,
             hostAvatar: '',
             slug,
             worktreePath: '',

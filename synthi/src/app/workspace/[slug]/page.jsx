@@ -84,7 +84,10 @@ export default function EditorPage({ params }) {
         if (authSession?.user) {
             const { id, name, email, image } = authSession.user;
             if (id || email)  localStorage.setItem(USER_ID_KEY, id || email);
-            if (name)         localStorage.setItem(USER_NAME_KEY, name);
+            // Persist a human-readable name — prefer display name, then email
+            // local part, to avoid leaking opaque database IDs into the UI.
+            const displayName = name || (email ? email.split('@')[0] : null);
+            if (displayName)  localStorage.setItem(USER_NAME_KEY, displayName);
             if (image)        localStorage.setItem(USER_AVATAR_KEY, image);
         }
     }, [authSession]);
