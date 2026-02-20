@@ -2,6 +2,7 @@
 
 import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { useCollabSession } from '@/hooks/useCollabSession';
+import collabSessionService from '@/services/collabSessionService';
 import WorkspaceUsersPanel from './WorkspaceUsersPanel';
 import {
   X, Link2, Copy, Check, Users, RefreshCw, CircleOff, Loader2,
@@ -268,11 +269,20 @@ export default function ShareModal({ slug, open, onClose }) {
 
         {/* ── Error ───────────────────────────────────────────────── */}
         {error && (
-          <div className="px-4 py-2 border-t flex items-center justify-between"
-            style={{ borderColor: T.border, backgroundColor: 'rgba(255,87,87,0.06)', color: T.red }}>
-            <span className="text-[11px]">{error}</span>
+          <div className="px-4 py-2.5 border-t flex items-center gap-2"
+            style={{ borderColor: T.border, backgroundColor: 'rgba(255,87,87,0.06)' }}>
+            <CircleOff className="w-3.5 h-3.5 flex-shrink-0" style={{ color: T.red }} />
+            <span className="flex-1 text-[11px]" style={{ color: T.red }}>{error}</span>
+            {isActive && (
+              <button 
+                onClick={() => { clearError(); collabSessionService.refreshSession(); }}
+                className="px-2 py-0.5 rounded text-[10px] font-medium border transition-colors"
+                style={{ borderColor: 'rgba(255,87,87,0.25)', color: T.red }}>
+                Retry
+              </button>
+            )}
             <button onClick={clearError} className="p-0.5 rounded hover:bg-[#ff575720]">
-              <X className="w-3 h-3" />
+              <X className="w-3 h-3" style={{ color: T.red }} />
             </button>
           </div>
         )}

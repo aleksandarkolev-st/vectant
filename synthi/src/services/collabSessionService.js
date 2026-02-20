@@ -549,8 +549,14 @@ class CollabSessionService extends EventTarget {
 
     if (!res.ok) {
       this._role = 'idle';
-      const err = await res.json().catch(() => ({ error: 'Invalid room code' }));
-      throw new Error(err.error || 'Invalid room code');
+      const err = await res.json().catch(() => ({}));
+      const msg = err.error || 'Invalid room code';
+      // Map server errors to user-friendly messages
+      const friendly = msg.includes('not found') ? 'No session found with that code. It may have expired.'
+        : msg.includes('blocked') ? 'You are blocked from joining this session.'
+        : msg.includes('already') ? 'You are already in this session.'
+        : msg;
+      throw new Error(friendly);
     }
 
     const data = await res.json();
