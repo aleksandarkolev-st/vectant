@@ -23,9 +23,11 @@ export function useCollabSession() {
   const [effectiveUserId, setEffectiveUserId] = useState(collabSessionService.effectiveUserId);
   const [wsStatus, setWsStatus] = useState(collabSessionService.wsStatus);
 
-  // Sync state on every change event
+  // Sync state on every change event (debounce network fetch)
+  const refreshTimerRef = useRef(null);
+
   useEffect(() => {
-    const refresh = async () => {
+    const syncState = () => {
       setRole(collabSessionService.role);
       setSession(collabSessionService.session);
       setPermissions(collabSessionService.permissions);
@@ -33,18 +35,24 @@ export function useCollabSession() {
       setHostId(collabSessionService.hostId);
       setEffectiveUserId(collabSessionService.effectiveUserId);
       setWsStatus(collabSessionService.wsStatus);
-
-      // Fetch full session info for guest list
-      if (collabSessionService.isActive) {
-        const info = await collabSessionService.refreshSession().catch(() => null);
-        if (info?.guests) setGuests(info.guests);
-      } else {
-        setGuests([]);
-      }
     };
 
-    return collabSessionService.onChange((detail) => {
-      refresh();
+    const debouncedFetchGuests = () => {
+      // Debounce the network request — avoids hammering the server on rapid events
+      if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current);
+      refreshTimerRef.current = setTimeout(async () => {
+        if (collabSessionService.isActive) {
+          const info = await collabSessionService.refreshSession().catch(() => null);
+          if (info?.guests) setGuests(info.guests);
+        } else {
+          setGuests([]);
+        }
+      }, 300);
+    };
+
+    return collabSessionService.onChange(() => {
+      syncState();
+      debouncedFetchGuests();
     });
   }, []);
 
