@@ -234,14 +234,32 @@ class CollabSessionService extends EventTarget {
   /**
    * Host denies a knocking guest.
    * If the session is still pending and all knocks are denied, the
-   * pending session is discarded (the server session will time out).
+   * pending session is discarded without ever fully activating it.
    */
   async denyKnock(guestId) {
-    // For pending sessions, we need to activate briefly to issue the deny
-    const wasPending = !this.isHost && !!this._pendingSession;
-    if (wasPending) {
-      this.acceptPendingSession();
+    // For pending sessions, issue the deny using the pending sessionId
+    // directly — no need to fully activate (connectWs + adopt hosting role).
+    const pending = this._pendingSession;
+    if (!this.isHost && pending) {
+      const sessionId = pending.sessionId;
+      await fetch(`${COLLAB_URL}/session/deny/${sessionId}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ guestId, requesterId: this._userId }),
+      });
+
+      this._pendingKnocks = this._pendingKnocks.filter(k => k.guestId !== guestId);
+      this._emit('knock:resolved', { guestId });
+
+      // If no more knocks remain, discard the pending session entirely.
+      // The server-side session will time out on its own.
+      if (this._pendingKnocks.length === 0) {
+        this._pendingSession = null;
+        this._emit('change', { type: 'pending-session-discarded' });
+      }
+      return;
     }
+
     if (!this.isHost) throw new Error('Only the host can deny guests');
 
     await fetch(`${COLLAB_URL}/session/deny/${this._sessionId}`, {
@@ -252,12 +270,6 @@ class CollabSessionService extends EventTarget {
 
     this._pendingKnocks = this._pendingKnocks.filter(k => k.guestId !== guestId);
     this._emit('knock:resolved', { guestId });
-
-    // If we activated a pending session just to deny and there are no more
-    // knocks, terminate the session and go back to idle.
-    if (wasPending && this._pendingKnocks.length === 0) {
-      try { await this.terminateSession(); } catch (_) {}
-    }
   }
 
   /**
