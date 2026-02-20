@@ -58,7 +58,6 @@ export function createClassicLayout() {
   const searchTab = addTab(layout, createTab({ panelType: IDE_PANEL.SEARCH, title: 'Search' }));
   const welcomeTab = addTab(layout, createTab({ panelType: IDE_PANEL.EDITOR, title: 'Editor' }));
   const terminalTab = addTab(layout, createTab({ panelType: IDE_PANEL.TERMINAL, title: 'Terminal' }));
-  const problemsTab = addTab(layout, createTab({ panelType: IDE_PANEL.PROBLEMS, title: 'Problems' }));
 
   // Sidebar tab group
   const sidebarGroup = addNode(layout, createTabGroupNode({
@@ -72,9 +71,9 @@ export function createClassicLayout() {
     activeTabId: welcomeTab.id,
   }));
 
-  // Bottom panel tab group
+  // Bottom panel tab group (terminal only — Problems is a separate dockable panel)
   const bottomGroup = addNode(layout, createTabGroupNode({
-    tabs: [terminalTab.id, problemsTab.id],
+    tabs: [terminalTab.id],
     activeTabId: terminalTab.id,
   }));
 
@@ -216,7 +215,6 @@ export function createAIAssistedLayout() {
   const editorTab = addTab(layout, createTab({ panelType: IDE_PANEL.EDITOR, title: 'Editor' }));
   const chatTab = addTab(layout, createTab({ panelType: IDE_PANEL.CHAT, title: 'AI Chat' }));
   const terminalTab = addTab(layout, createTab({ panelType: IDE_PANEL.TERMINAL, title: 'Terminal' }));
-  const problemsTab = addTab(layout, createTab({ panelType: IDE_PANEL.PROBLEMS, title: 'Problems' }));
 
   const sidebarGroup = addNode(layout, createTabGroupNode({
     tabs: [explorerTab.id],
@@ -234,7 +232,7 @@ export function createAIAssistedLayout() {
   }));
 
   const bottomGroup = addNode(layout, createTabGroupNode({
-    tabs: [terminalTab.id, problemsTab.id],
+    tabs: [terminalTab.id],
     activeTabId: terminalTab.id,
   }));
 
@@ -288,7 +286,6 @@ export function createThreeColumnLayout() {
   const gitTab = addTab(layout, createTab({ panelType: IDE_PANEL.GIT, title: 'Source Control' }));
   const editorTab = addTab(layout, createTab({ panelType: IDE_PANEL.EDITOR, title: 'Editor' }));
   const chatTab = addTab(layout, createTab({ panelType: IDE_PANEL.CHAT, title: 'AI Chat' }));
-  const problemsTab = addTab(layout, createTab({ panelType: IDE_PANEL.PROBLEMS, title: 'Problems' }));
 
   const sidebarGroup = addNode(layout, createTabGroupNode({
     tabs: [explorerTab.id, gitTab.id],
@@ -301,7 +298,7 @@ export function createThreeColumnLayout() {
   }));
 
   const secondaryGroup = addNode(layout, createTabGroupNode({
-    tabs: [chatTab.id, problemsTab.id],
+    tabs: [chatTab.id],
     activeTabId: chatTab.id,
   }));
 
