@@ -697,6 +697,83 @@
   box-shadow: var(--shadow-dropdown);
 }
 
+/* ===== Theme-aware UI Utility Classes ===== */
+
+/* Ghost button — secondary text, elevated bg on hover */
+.th-btn-ghost {
+  color: var(--text-secondary);
+  transition: background 150ms, color 150ms;
+}
+.th-btn-ghost:hover {
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+}
+
+/* Active / toggled button state */
+.th-btn-active {
+  color: var(--accent-primary) !important;
+  background: color-mix(in srgb, var(--accent-primary) 8%, transparent) !important;
+  border: 1px solid color-mix(in srgb, var(--accent-primary) 25%, transparent) !important;
+}
+
+/* Input field */
+.th-input {
+  background: var(--bg-panel);
+  color: var(--text-primary);
+  border-color: var(--border-subtle);
+}
+.th-input:focus {
+  border-color: var(--accent-primary);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent-primary) 20%, transparent);
+}
+.th-input::placeholder {
+  color: var(--text-muted);
+}
+
+/* Dropdown / popover surface */
+.th-surface-dropdown {
+  background: var(--bg-panel);
+  border-color: var(--border-subtle);
+}
+
+/* Dropdown item */
+.th-dropdown-item {
+  color: var(--text-primary);
+}
+.th-dropdown-item:hover {
+  background: color-mix(in srgb, var(--accent-primary) 8%, transparent);
+}
+
+/* Quick action row — text primary, hover accent bg+text */
+.th-action {
+  color: var(--text-primary);
+  transition: background 150ms, color 150ms;
+}
+.th-action:hover {
+  color: var(--accent-primary);
+  background: color-mix(in srgb, var(--accent-primary) 8%, transparent);
+}
+
+/* Toggle switch */
+.th-toggle-on {
+  background: linear-gradient(to right, var(--accent-primary), var(--accent-secondary));
+}
+.th-toggle-off {
+  background: var(--bg-elevated);
+}
+
+/* Danger hover */
+.th-btn-danger:hover {
+  background: color-mix(in srgb, var(--status-error) 15%, transparent);
+}
+
+/* Container backgrounds (for inline-style-free usage) */
+.th-bg-app       { background: var(--bg-app); }
+.th-bg-sidebar   { background: var(--bg-sidebar); }
+.th-bg-panel     { background: var(--bg-panel); }
+.th-bg-editor    { background: var(--bg-editor); }
+.th-bg-elevated  { background: var(--bg-elevated); }
+
 /* ===== Typography Hierarchy System ===== */
 .synthi-heading {
   font-weight: 600;
