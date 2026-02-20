@@ -39,31 +39,32 @@ class MonacoTextBinding {
 
         // Build incremental Monaco edits from the Yjs delta.
         // Delta ops: { retain: n }, { insert: string }, { delete: n }
-        // 'index' tracks position in the NEW Y.Text (y-monaco convention):
-        //   retain → advance in both old & new
-        //   insert → advance in new only (no old chars consumed)
-        //   delete → don't advance (old chars consumed; pos stays for next insert)
+        //
+        // IMPORTANT: We must track the OLD model position (where edits target)
+        // separately from the Yjs delta cursor.  Retain advances both,
+        // insert doesn't advance old (new chars don't exist in old model),
+        // delete advances old but not new (chars consumed from old doc).
         const edits = [];
-        let index = 0;
+        let oldIndex = 0;   // position in the ORIGINAL model (edit target)
 
         for (const op of delta) {
           if (op.retain != null) {
-            index += op.retain;
+            oldIndex += op.retain;
           } else if (op.insert != null) {
-            const pos = this.model.getPositionAt(index);
+            const pos = this.model.getPositionAt(oldIndex);
             edits.push({
               range: new this.monaco.Range(pos.lineNumber, pos.column, pos.lineNumber, pos.column),
               text: typeof op.insert === 'string' ? op.insert : '',
             });
-            index += (typeof op.insert === 'string' ? op.insert.length : 0);
+            // DON'T advance oldIndex — inserts are new chars, not in old model
           } else if (op.delete != null) {
-            const pos = this.model.getPositionAt(index);
-            const endPos = this.model.getPositionAt(index + op.delete);
+            const pos = this.model.getPositionAt(oldIndex);
+            const endPos = this.model.getPositionAt(oldIndex + op.delete);
             edits.push({
               range: new this.monaco.Range(pos.lineNumber, pos.column, endPos.lineNumber, endPos.column),
               text: '',
             });
-            // don't advance index — chars consumed from old doc
+            oldIndex += op.delete; // advance past deleted chars in old model
           }
         }
 
@@ -137,7 +138,27 @@ class MonacoTextBinding {
         });
       };
       try { this._awareness.on('change', this._awarenessHandler); } catch (_) { /* ignore if API differs */ }
+
+      // Trigger an initial render for any already-present remote cursors.
+      // The 'change' event only fires on NEW updates; existing state won't
+      // trigger a render unless we kick it once after constructing the binding.
+      try {
+        setTimeout(() => {
+          if (this._destroyed) return;
+          this._awarenessHandler();
+        }, 100);
+      } catch (_) {}
     }
+
+    // Heartbeat: Periodically refresh awareness state to prevent the
+    // y-websocket awareness timeout from removing idle users.
+    // Default awareness outdatedTimeout is 30s; refresh every 20s.
+    this._heartbeatTimer = setInterval(() => {
+      if (this._destroyed || !this._awareness) return;
+      try {
+        this._awareness.setLocalStateField('lastActive', Date.now());
+      } catch (_) {}
+    }, 20000);
 
     // Publish local selection/cursor to awareness whenever editor selection changes.
     // Throttled to 50ms — fast enough to feel real-time but avoids flooding the
@@ -238,6 +259,7 @@ class MonacoTextBinding {
     this._destroyed = true;
     if (this._observerTimeout) clearTimeout(this._observerTimeout);
     if (this._cursorThrottleTimer) clearTimeout(this._cursorThrottleTimer);
+    if (this._heartbeatTimer) clearInterval(this._heartbeatTimer);
     if (this._awarenessRafId) cancelAnimationFrame(this._awarenessRafId);
     try { this.ytext.unobserve(this._yObserver); } catch (_) {}
     try { this._modelListener.dispose(); } catch (_) {}
@@ -321,6 +343,7 @@ class MonacoTextBinding {
       for (const [cid, info] of wanted.entries()) {
         // --- A. Handle Selection (Background Highlight) via Decorations ---
         const selectionClass = `collab-selection-${cid}`;
+        const cursorLineClass = `collab-cursor-line-${cid}`;
         this._ensureStyleForClient(cid, info.color);
 
         const decs = [];
@@ -332,12 +355,37 @@ class MonacoTextBinding {
               className: selectionClass,
               stickiness: 1,
               zIndex: 10,
+              minimap: {
+                color: info.color,
+                position: 2, // Inline
+              },
               overviewRuler: {
                 color: info.color,
                 position: 2, // Center
               },
             }
           });
+        }
+        // Always show a subtle cursor-line highlight (left colored border)
+        // so the remote user's position is visible even without a selection.
+        if (info.range) {
+          const headPos = info.range.getEndPosition();
+          const M = this.monaco || ((typeof window !== 'undefined' && window.monaco) ? window.monaco : null);
+          if (M) {
+            decs.push({
+              range: new M.Range(headPos.lineNumber, 1, headPos.lineNumber, 1),
+              options: {
+                isWholeLine: true,
+                className: cursorLineClass,
+                stickiness: 1,
+                zIndex: 5,
+                overviewRuler: {
+                  color: info.color,
+                  position: 2,
+                },
+              }
+            });
+          }
         }
         // Secondary selections (multi-cursor)
         if (info.secondaryRanges) {
@@ -447,9 +495,10 @@ class MonacoTextBinding {
     const style = document.createElement('style');
     style.id = styleId;
     
-    // Convert color to transparent version for selection
+    // Convert color to transparent versions for selection and cursor line
     let selectionColor = color;
     let borderColor = color;
+    let cursorLineColor = color;
     if(color.startsWith('#')) {
         // Simple Hex to RGBA conversion
         const r = parseInt(color.substring(1,3), 16);
@@ -457,17 +506,23 @@ class MonacoTextBinding {
         const b = parseInt(color.substring(5,7), 16);
         selectionColor = `rgba(${r}, ${g}, ${b}, 0.25)`;
         borderColor = `rgba(${r}, ${g}, ${b}, 0.45)`;
+        cursorLineColor = `rgba(${r}, ${g}, ${b}, 0.08)`;
     } else if (color.startsWith('hsl')) {
         selectionColor = color.replace('hsl', 'hsla').replace(')', ', 0.25)');
         borderColor = color.replace('hsl', 'hsla').replace(')', ', 0.45)');
+        cursorLineColor = color.replace('hsl', 'hsla').replace(')', ', 0.08)');
     }
 
     style.innerHTML = `
       .collab-selection-${clientId} {
-        background-color: ${selectionColor};
+        background-color: ${selectionColor} !important;
         border: 1px solid ${borderColor};
         border-radius: 2px;
         min-width: 4px;
+      }
+      .collab-cursor-line-${clientId} {
+        background-color: ${cursorLineColor} !important;
+        border-left: 2px solid ${color} !important;
       }
     `;
     document.head.appendChild(style);
