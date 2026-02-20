@@ -413,6 +413,26 @@ class CollabSessionService extends EventTarget {
       throw new Error(err.error || 'Failed to request join');
     }
 
+    const data = await res.json();
+
+    // If auto-admitted (invited user), transition directly to guest
+    if (data.autoAdmitted && data.guest) {
+      this._role = 'guest';
+      this._permissions = { ...data.guest.permissions };
+      this._hostId = data.hostId || null;
+      this._sessionSlug = data.slug || null;
+      this._session = {
+        ...this._session,
+        id: sessionId,
+        hostId: data.hostId || null,
+        hostName: data.hostName || null,
+        slug: data.slug || null,
+      };
+      this._connectWs();
+      this._emit('session:joined', { ...data.guest, hostId: this._hostId, slug: this._sessionSlug });
+      return;
+    }
+
     this._connectWs();
     this._emit('knock:sent', { sessionId });
   }
@@ -510,6 +530,25 @@ class CollabSessionService extends EventTarget {
 
     const data = await res.json();
     this._sessionId = data.sessionId;
+
+    // If the server auto-admitted us (invited user), transition directly to guest
+    if (data.autoAdmitted && data.guest) {
+      this._role = 'guest';
+      this._permissions = { ...data.guest.permissions };
+      this._hostId = data.hostId || null;
+      this._sessionSlug = data.slug || null;
+      this._session = {
+        ...this._session,
+        id: data.sessionId,
+        hostId: data.hostId || null,
+        hostName: data.hostName || null,
+        slug: data.slug || null,
+      };
+      this._connectWs();
+      this._emit('session:joined', { ...data.guest, hostId: this._hostId, slug: this._sessionSlug });
+      return data;
+    }
+
     this._connectWs();
     this._emit('knock:sent', { sessionId: data.sessionId });
     return data;

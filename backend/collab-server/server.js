@@ -1537,19 +1537,24 @@ const server = http.createServer(async (req, res) => {
           return;
         }
         // Knock on the session (may auto-admit if invited)
-        sessionManager.knock(session.id, {
+        const knockResult = sessionManager.knock(session.id, {
           guestId,
           displayName: displayName || guestId,
           avatarUrl: avatarUrl || '',
         });
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({
+        const response = {
           success: true,
           sessionId: session.id,
           hostName: session.hostName,
           slug: session.slug,
-          message: 'Join request sent',
-        }));
+          autoAdmitted: knockResult?.autoAdmitted || false,
+          message: knockResult?.autoAdmitted ? 'Auto-admitted (invited user)' : 'Join request sent',
+        };
+        if (knockResult?.autoAdmitted && knockResult?.guest) {
+          response.guest = knockResult.guest;
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(response));
       } catch (e) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: e.message }));
@@ -1579,9 +1584,21 @@ const server = http.createServer(async (req, res) => {
           return;
         }
         // Reuse knock mechanism — "request to join" is semantically the same
-        sessionManager.knock(targetSessionId, { guestId, displayName: displayName || guestId, avatarUrl: avatarUrl || '' });
+        const knockResult = sessionManager.knock(targetSessionId, { guestId, displayName: displayName || guestId, avatarUrl: avatarUrl || '' });
+        const response = {
+          success: true,
+          autoAdmitted: knockResult?.autoAdmitted || false,
+          message: knockResult?.autoAdmitted ? 'Auto-admitted (invited user)' : 'Join request sent',
+        };
+        if (knockResult?.autoAdmitted && knockResult?.guest) {
+          response.guest = knockResult.guest;
+          const sess = sessionManager.getSession(targetSessionId);
+          response.hostId = sess?.hostId || null;
+          response.hostName = sess?.hostName || null;
+          response.slug = sess?.slug || null;
+        }
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ success: true, message: 'Join request sent' }));
+        res.end(JSON.stringify(response));
       } catch (e) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: e.message }));

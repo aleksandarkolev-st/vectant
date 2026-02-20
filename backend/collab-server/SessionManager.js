@@ -255,7 +255,7 @@ class SessionManager extends EventEmitter {
         displayName,
         avatarUrl,
       });
-      return; // Don't emit a knock event — guest is already in
+      return { autoAdmitted: true, guest: this._serializeGuest(entry) }; // Signal auto-admit to caller
     }
 
     session.pendingKnocks.add(guestId);
@@ -268,6 +268,8 @@ class SessionManager extends EventEmitter {
       displayName,
       avatarUrl,
     });
+
+    return { autoAdmitted: false };
   }
 
   /**
