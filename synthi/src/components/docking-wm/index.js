@@ -206,6 +206,12 @@ export {
   useFloatingWindow,
   usePopout,
   useLayoutPersistence,
+  useKeyboardNavigation,
+  useFocusIndicator,
+  useActivityBarDocking,
+  useLayoutHistory,
+  useResponsiveLayout,
+  BREAKPOINT,
 } from './hooks';
 
 // ─── Components ─────────────────────────────────────────
@@ -226,7 +232,42 @@ export {
   FloatingWindow,
   PopoutWindowContent,
   WorkspaceProfileManager,
+  ContextMenu,
+  buildTabContextMenu,
+  useContextMenu,
+  LayoutPresetPicker,
 } from './components';
+
+// ─── Integration Wrapper ────────────────────────────────
+export { DockableWorkspace, useWorkspacePanelContext } from './DockableWorkspace';
+
+// ─── Panel Definitions ──────────────────────────────────
+export {
+  IDE_PANEL,
+  IDE_PANEL_DEFINITIONS,
+  IDE_PANEL_MAP,
+  registerAllIDEPanels,
+  LAYOUT_PRESETS,
+  getPreset,
+  createLayoutFromPreset,
+  createClassicLayout,
+  createFocusLayout,
+  createSideBySideLayout,
+  createAIAssistedLayout,
+  createThreeColumnLayout,
+  PANEL_WRAPPERS,
+} from './panels';
+
+// ─── Validation & ARIA ──────────────────────────────────
+export { deepValidateLayout, repairLayout } from './utils/layout-validation';
+export {
+  getTabAriaProps,
+  getTabListAriaProps,
+  getTabPanelAriaProps,
+  getSplitterAriaProps,
+  getFloatingWindowAriaProps,
+  getDnDLiveRegionProps,
+} from './utils/aria';
 
 // ─── Styles ─────────────────────────────────────────────
 // Import in your app: import '@/components/docking-wm/styles/docking.css';
