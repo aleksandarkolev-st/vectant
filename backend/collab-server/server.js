@@ -2294,6 +2294,11 @@ const notifyWss = new WebSocket.Server({ noServer: true });
 // Clients connect to /session-events?sessionId=<id>&userId=<id>.
 const sessionWss = new WebSocket.Server({ noServer: true });
 
+// Grace period for guest disconnect → reconnect (prevents phantom kicks)
+const GUEST_DISCONNECT_GRACE_MS = 30_000;
+/** @type {Map<string, NodeJS.Timeout>} userId → timeout handle */
+const guestDisconnectTimers = new Map();
+
 /**
  * Broadcast a session-level event to all participants (host + guests).
  * @param {string} sessionId
@@ -2537,6 +2542,14 @@ server.on('upgrade', (request, socket, head) => {
       ws._userId    = params.get('userId')    || '';
       sessionWss.emit('connection', ws, request);
 
+      // Cancel any pending disconnect grace timer for this user
+      const pendingTimer = guestDisconnectTimers.get(ws._userId);
+      if (pendingTimer) {
+        clearTimeout(pendingTimer);
+        guestDisconnectTimers.delete(ws._userId);
+        console.log(`[Session] Reconnect detected — cancelled disconnect timer for user=${ws._userId}`);
+      }
+
       // Register the host's socket in SessionManager so that resolveSocket
       // and other lookups work for the session WS channel too.
       if (ws._sessionId && ws._userId) {
@@ -2549,8 +2562,36 @@ server.on('upgrade', (request, socket, head) => {
 
       console.log(`[Session] Client connected: user=${ws._userId} session=${ws._sessionId}`);
       ws.on('close', () => {
-        sessionManager.handleDisconnect(ws._userId);
-        console.log(`[Session] Client disconnected: user=${ws._userId} session=${ws._sessionId}`);
+        const userId = ws._userId;
+        const sessionId = ws._sessionId;
+        console.log(`[Session] Client disconnected: user=${userId} session=${sessionId}`);
+
+        // Check if this user is an admitted guest — if so, use grace period
+        const isAdmittedGuest = sessionId && sessionManager.guestIndex?.get(userId) === sessionId;
+        if (isAdmittedGuest) {
+          console.log(`[Session] Guest ${userId} WS closed — starting ${GUEST_DISCONNECT_GRACE_MS}ms grace period`);
+          const timer = setTimeout(() => {
+            guestDisconnectTimers.delete(userId);
+            // Check if guest reconnected (another WS for same user+session exists)
+            let reconnected = false;
+            for (const client of sessionWss.clients) {
+              if (client.readyState === WebSocket.OPEN && client._userId === userId && client._sessionId === sessionId) {
+                reconnected = true;
+                break;
+              }
+            }
+            if (!reconnected) {
+              console.log(`[Session] Grace period expired — removing guest ${userId} from session ${sessionId}`);
+              sessionManager.handleDisconnect(userId);
+            } else {
+              console.log(`[Session] Grace period expired but guest ${userId} has already reconnected`);
+            }
+          }, GUEST_DISCONNECT_GRACE_MS);
+          guestDisconnectTimers.set(userId, timer);
+        } else {
+          // Not an admitted guest — handle immediately (e.g. pending knock, host socket)
+          sessionManager.handleDisconnect(userId);
+        }
       });
     });
   } else {
