@@ -39,7 +39,7 @@ export default function ShareModal({ slug, open, onClose }) {
     guests, pendingKnocks, permissions,
     admitGuest, denyKnock, updatePermissions, kickGuest,
     regenerateInvite, terminateSession, leaveSession,
-    createSession, joinByCode,
+    createSession, joinByCode, requestPermission,
     error, clearError, isLoading, wsStatus,
   } = useCollabSession();
 
@@ -191,7 +191,7 @@ export default function ShareModal({ slug, open, onClose }) {
         )}
 
         {isGuest && session && (
-          <SessionInfoGuest session={session} permissions={permissions} />
+          <SessionInfoGuest session={session} permissions={permissions} requestPermission={requestPermission} />
         )}
 
         {/* ── Pending Knocks (host only, inline) ─────────────────── */}
@@ -387,7 +387,7 @@ function SessionInfoHost({ session, copied, copiedCode, regenerating, onCopy, on
 
 // ── Session Info — Guest ─────────────────────────────────────────────────────
 
-function SessionInfoGuest({ session, permissions }) {
+function SessionInfoGuest({ session, permissions, requestPermission }) {
   const hostName = session?.hostName || 'Host';
   const hasEdit = permissions?.canEdit;
 
@@ -407,19 +407,24 @@ function SessionInfoGuest({ session, permissions }) {
           {hostName}&apos;s Session
         </span>
       </div>
-      {/* Permission pills */}
+      {/* Permission pills — denied ones are clickable to request */}
       <div className="flex items-center gap-1">
-        {PERM_CONFIG.map(({ key, icon: Icon, label }) => (
-          <div key={key}
-            className="p-1 rounded"
-            style={{
-              backgroundColor: permissions?.[key] ? 'rgba(74,186,154,0.10)' : 'transparent',
-              color: permissions?.[key] ? T.teal : T.borderHi,
-            }}
-            title={`${label}: ${permissions?.[key] ? 'Granted' : 'Denied'}`}>
-            <Icon className="w-3 h-3" />
-          </div>
-        ))}
+        {PERM_CONFIG.map(({ key, icon: Icon, label }) => {
+          const granted = !!permissions?.[key];
+          return (
+            <button key={key}
+              disabled={granted}
+              onClick={() => !granted && requestPermission?.(key)}
+              className="p-1 rounded transition-colors cursor-pointer disabled:cursor-default"
+              style={{
+                backgroundColor: granted ? 'rgba(74,186,154,0.10)' : 'transparent',
+                color: granted ? T.teal : T.borderHi,
+              }}
+              title={granted ? `${label}: Granted` : `${label}: Denied — click to request`}>
+              <Icon className="w-3 h-3" />
+            </button>
+          );
+        })}
       </div>
     </div>
   );
