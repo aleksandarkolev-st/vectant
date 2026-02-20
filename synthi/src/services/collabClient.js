@@ -75,6 +75,22 @@ class MonacoTextBinding {
         this._applyingRemote = true;
         try {
           this.model.applyEdits(edits);
+
+          // SAFEGUARD: After applying incremental edits, verify the model
+          // matches ytext.  When the model was pre-seeded optimistically
+          // (before Yjs sync) the delta is relative to the OLD empty ytext
+          // but the model already has content — causing the delta to be
+          // inserted ON TOP of existing content.  Detect this mismatch
+          // and fall back to a full replace.
+          const afterApply = normalize(this.model.getValue());
+          const expected = normalize(newText);
+          if (afterApply !== expected) {
+            console.warn('[Collab] post-apply mismatch detected (likely optimistic pre-seed race), correcting via full replace');
+            this.model.applyEdits([{
+              range: this.model.getFullModelRange(),
+              text: newText,
+            }]);
+          }
         } catch (e) {
           console.warn('[Collab] incremental remote apply failed, falling back to full replace', e?.message);
           try {
