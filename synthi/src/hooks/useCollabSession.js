@@ -274,8 +274,8 @@ export function useCollabSession() {
     inviteUser,
     joinByCode,
 
-    // Clear error
-    clearError: () => setError(null),
+    // Clear error (stable reference — avoids re-triggering dependent effects)
+    clearError: useCallback(() => setError(null), []),
   };
 }
 

@@ -51,16 +51,17 @@ export default function ShareModal({ slug, open, onClose }) {
   const [joiningByCode, setJoiningByCode] = useState(false);
   const modalRef = useRef(null);
 
-  // Reset state when modal opens
+  // Reset state when modal opens (clearError is stable via useCallback)
   useEffect(() => {
     if (open) {
       setCopied(false);
       setCopiedCode(false);
       setJoinCode('');
-      if (error) clearError();
+      clearError();
       requestAnimationFrame(() => modalRef.current?.focus());
     }
-  }, [open, clearError]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
 
   // ── Actions ───────────────────────────────────────────────────────────
 
@@ -574,7 +575,10 @@ function JoinByCodeSection({ code, onChange, onJoin, loading }) {
         <input
           value={code}
           onChange={(e) => onChange(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8))}
-          onKeyDown={(e) => { if (e.key === 'Enter') onJoin(); }}
+          onKeyDown={(e) => {
+            e.stopPropagation(); // prevent global shortcuts from intercepting input
+            if (e.key === 'Enter') onJoin();
+          }}
           placeholder="Enter code…"
           maxLength={8}
           className="flex-1 rounded-md px-3 py-1.5 text-sm font-mono tracking-widest border focus:outline-none focus:border-[#4aba9a60] uppercase"
