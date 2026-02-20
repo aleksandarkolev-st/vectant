@@ -150,6 +150,7 @@ class CollabSessionService extends EventTarget {
       inviteLink: data.inviteLink,
       inviteToken: data.inviteToken,
       roomCode: data.roomCode || null,
+      createdAt: data.createdAt || new Date().toISOString(),
     };
     this._pendingKnocks = [];
 

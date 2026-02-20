@@ -6,7 +6,7 @@ import WorkspaceUsersPanel from './WorkspaceUsersPanel';
 import {
   X, Link2, Copy, Check, Users, RefreshCw, CircleOff, Loader2,
   Hash, LogOut, Bell, Shield, ShieldOff, UserX, Eye, Edit3,
-  Terminal, GitBranch, FileEdit, FolderEdit, ArrowRight,
+  Terminal, GitBranch, FileEdit, FolderEdit, ArrowRight, Clock,
 } from 'lucide-react';
 
 import T from './collabTheme';
@@ -283,8 +283,30 @@ export default function ShareModal({ slug, open, onClose }) {
 
 // ── Session Info — Host ──────────────────────────────────────────────────────
 
+/** Format elapsed time since a given ISO timestamp */
+function useSessionDuration(createdAt) {
+  const [elapsed, setElapsed] = useState('');
+  useEffect(() => {
+    if (!createdAt) return;
+    const tick = () => {
+      const ms = Date.now() - new Date(createdAt).getTime();
+      const secs = Math.floor(ms / 1000);
+      const mins = Math.floor(secs / 60);
+      const hrs = Math.floor(mins / 60);
+      if (hrs > 0) setElapsed(`${hrs}h ${mins % 60}m`);
+      else if (mins > 0) setElapsed(`${mins}m ${secs % 60}s`);
+      else setElapsed(`${secs}s`);
+    };
+    tick();
+    const id = setInterval(tick, 1000);
+    return () => clearInterval(id);
+  }, [createdAt]);
+  return elapsed;
+}
+
 function SessionInfoHost({ session, copied, copiedCode, regenerating, onCopy, onCopyCode, onRegenerate }) {
   const roomCode = session?.roomCode;
+  const duration = useSessionDuration(session?.createdAt);
 
   return (
     <div className="px-4 py-3 border-b space-y-2" style={{ borderColor: T.border, backgroundColor: 'rgba(74,186,154,0.02)' }}>
@@ -309,6 +331,12 @@ function SessionInfoHost({ session, copied, copiedCode, regenerating, onCopy, on
               }
             </button>
           </div>
+          {duration && (
+            <div className="flex items-center gap-1 text-[10px]" style={{ color: T.textMuted }}>
+              <Clock className="w-3 h-3" />
+              {duration}
+            </div>
+          )}
         </div>
       )}
 

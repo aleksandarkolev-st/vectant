@@ -1661,6 +1661,7 @@ const server = http.createServer(async (req, res) => {
               inviteToken: session.inviteToken,
               worktreePath: session.worktreePath,
               roomCode: session.roomCode || null,
+              createdAt: session.createdAt,
               inviteLink: `${process.env.SYNTHI_APP_URL || 'http://localhost:3000'}/collab/${session.id}?token=${session.inviteToken}`,
             };
             break;
