@@ -880,6 +880,7 @@ class CollabSessionService extends EventTarget {
     this._sessionSlug = null;
     this._permissions = { ...HOST_PERMISSIONS };
     this._pendingKnocks = [];
+    this._pendingSession = null;
     this._pendingInvite = null;
     this._reconnectDelay = 1000;
   }
