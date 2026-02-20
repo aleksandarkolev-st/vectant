@@ -7,8 +7,8 @@
  * a button toggles/opens the corresponding panel in the docking tree.
  */
 
-import { memo, useMemo } from 'react';
-import { useSelector } from 'react-redux';
+import { memo, useMemo, useCallback } from 'react';
+import { useSelector, useDispatch } from 'react-redux';
 import {
   Files,
   Search,
@@ -21,9 +21,11 @@ import {
   AlertCircle,
   FileText,
   Globe,
+  Box,
 } from 'lucide-react';
 import { useActivityBarDocking } from '../hooks/use-activity-bar-docking';
-import { selectNodes, selectTabs, selectFocusedTabGroupId } from '../state/layout-slice';
+import { selectNodes, selectTabs, selectFocusedTabGroupId, openTab, activateTabAction, setFocusedTabGroup } from '../state/layout-slice';
+import { selectContributedContainers } from '@/redux/extensionSlice';
 import { IDE_PANEL } from '../panels/ide-panels';
 
 /**
@@ -61,10 +63,59 @@ const BOTTOM_ITEMS = [
 export const DockingActivityBar = memo(function DockingActivityBar() {
   const handlers = useActivityBarDocking();
   const activePanelType = useActivePanelType();
+  const extensionContainers = useSelector(selectContributedContainers) || [];
+  const dispatch = useDispatch();
+  const nodes = useSelector(selectNodes);
+  const tabs = useSelector(selectTabs);
 
-  const renderButton = ({ id, panelType, label, Icon }) => {
+  // Build dynamic extension sidebar items from installed extensions
+  const extensionItems = useMemo(() => {
+    return extensionContainers
+      .filter(c => c.location !== 'panel') // only sidebar containers
+      .map(c => ({
+        id: `ext:${c.id}`,
+        label: c.title,
+        extensionIcon: c.icon,
+        Icon: Box,
+        extensionId: c.extensionId,
+        panelType: `extension-view`,
+        containerId: c.id,
+      }));
+  }, [extensionContainers]);
+
+  // Handler for clicking an extension sidebar item
+  const handleExtensionClick = useCallback((item) => {
+    // Check if a tab for this extension view already exists
+    for (const [nodeId, node] of Object.entries(nodes)) {
+      if (node.type !== 'tabgroup') continue;
+      for (const tId of node.tabs || []) {
+        const t = tabs[tId];
+        if (t && t.panelType === 'extension-view' && t.data?.containerId === item.containerId) {
+          dispatch(setFocusedTabGroup(nodeId));
+          dispatch(activateTabAction({ tabId: tId }));
+          return;
+        }
+      }
+    }
+    // Find a sidebar group to open in
+    const groups = Object.entries(nodes).filter(([, n]) => n.type === 'tabgroup');
+    const targetGroupId = groups.length > 0 ? groups[0][0] : null;
+    if (targetGroupId) {
+      dispatch(openTab({
+        panelType: 'extension-view',
+        title: item.label,
+        targetTabGroupId: targetGroupId,
+        data: { containerId: item.containerId, extensionId: item.extensionId },
+      }));
+      dispatch(setFocusedTabGroup(targetGroupId));
+    }
+  }, [dispatch, nodes, tabs]);
+
+  const renderButton = ({ id, panelType, label, Icon, extensionIcon, onClick }) => {
     const isActive = activePanelType === panelType;
-    const handler = handlers[id];
+    const handler = onClick || handlers[id];
+    const hasImageIcon = extensionIcon && typeof extensionIcon === 'string' &&
+      (extensionIcon.startsWith('http') || extensionIcon.startsWith('data:'));
 
     return (
       <button
@@ -87,11 +138,21 @@ export const DockingActivityBar = memo(function DockingActivityBar() {
           }`}
         />
 
+        {/* Extension image icon or Lucide fallback */}
+        {hasImageIcon ? (
+          <img
+            src={extensionIcon}
+            alt={label}
+            className={`w-5 h-5 transition-all ${isActive ? 'opacity-100' : 'opacity-50 group-hover:opacity-80'}`}
+            onError={(e) => { e.target.style.display = 'none'; if (e.target.nextSibling) e.target.nextSibling.style.display = 'block'; }}
+          />
+        ) : null}
         <Icon
           className={`w-5 h-5 transition-all ${
             isActive ? 'opacity-100' : 'opacity-50 group-hover:opacity-80'
           }`}
           strokeWidth={isActive ? 2 : 1.5}
+          style={hasImageIcon ? { display: 'none' } : {}}
         />
 
         {/* Tooltip */}
@@ -110,6 +171,16 @@ export const DockingActivityBar = memo(function DockingActivityBar() {
       {/* Top sidebar items */}
       <div className="w-full flex flex-col pt-1">
         {TOP_ITEMS.map(renderButton)}
+
+        {/* Dynamic extension sidebar items */}
+        {extensionItems.length > 0 && (
+          <>
+            <div className="mx-3 my-1 border-t border-[#1a1b24]" />
+            {extensionItems.map((item) =>
+              renderButton({ ...item, onClick: () => handleExtensionClick(item) })
+            )}
+          </>
+        )}
       </div>
 
       {/* Bottom items */}

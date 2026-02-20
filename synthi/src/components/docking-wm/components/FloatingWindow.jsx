@@ -13,6 +13,14 @@ import { useDocking } from '../hooks/use-docking';
 import { useDragPanel } from '../hooks/use-drag-panel';
 import { PanelContainer } from './PanelContainer';
 import { PanelGrip } from './PanelGrip';
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+} from '@/components/ui/dropdown-menu';
+import { MoreHorizontal, ArrowDownToLine, X, Minimize2, Maximize2 } from 'lucide-react';
 
 /**
  * @param {Object} props
@@ -116,62 +124,55 @@ export const FloatingWindow = memo(function FloatingWindow({ floatingWindow }) {
           {tab.title}
         </span>
 
-        {/* Dock back button */}
-        <button
-          data-no-drag
-          onClick={(e) => {
-            e.stopPropagation();
-            dockFloat(id, null);
-          }}
-          title="Dock back"
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            width: '22px',
-            height: '22px',
-            border: 'none',
-            borderRadius: '3px',
-            backgroundColor: 'transparent',
-            color: 'var(--dock-tab-fg, #969696)',
-            cursor: 'pointer',
-            padding: 0,
-          }}
-        >
-          <svg width="12" height="12" viewBox="0 0 12 12">
-            <path d="M2 2h8v8H2z" stroke="currentColor" strokeWidth="1.2" fill="none" rx="1" />
-            <path d="M5 6V3h4v4H6" stroke="currentColor" strokeWidth="1" fill="none" />
-          </svg>
-        </button>
-
-        {/* Close button */}
-        {tab.closable !== false && (
-          <button
-            data-no-drag
-            onClick={(e) => {
-              e.stopPropagation();
-              closeTab(tabId);
-            }}
-            title="Close"
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              width: '22px',
-              height: '22px',
-              border: 'none',
-              borderRadius: '3px',
-              backgroundColor: 'transparent',
-              color: 'var(--dock-tab-fg, #969696)',
-              cursor: 'pointer',
-              padding: 0,
-            }}
+        {/* Window actions dropdown */}
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <button
+              data-no-drag
+              onClick={(e) => e.stopPropagation()}
+              title="Window actions"
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                width: '22px',
+                height: '22px',
+                border: 'none',
+                borderRadius: '3px',
+                backgroundColor: 'transparent',
+                color: 'var(--dock-tab-fg, #969696)',
+                cursor: 'pointer',
+                padding: 0,
+              }}
+            >
+              <MoreHorizontal size={14} />
+            </button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent
+            align="end"
+            sideOffset={4}
+            className="min-w-[140px] bg-[#1e1e1e] border-[#2d2d2d] text-[#ccc]"
           >
-            <svg width="10" height="10" viewBox="0 0 10 10">
-              <path d="M1 1L9 9M9 1L1 9" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
-            </svg>
-          </button>
-        )}
+            <DropdownMenuItem
+              onClick={() => dockFloat(id, null)}
+              className="gap-2 text-xs cursor-pointer hover:bg-[#2a2d2e] focus:bg-[#2a2d2e]"
+            >
+              <ArrowDownToLine size={14} />
+              Dock back
+            </DropdownMenuItem>
+            <DropdownMenuSeparator className="bg-[#2d2d2d]" />
+            {tab.closable !== false && (
+              <DropdownMenuItem
+                onClick={() => closeTab(tabId)}
+                variant="destructive"
+                className="gap-2 text-xs cursor-pointer hover:bg-[#2a2d2e] focus:bg-[#2a2d2e]"
+              >
+                <X size={14} />
+                Close
+              </DropdownMenuItem>
+            )}
+          </DropdownMenuContent>
+        </DropdownMenu>
       </div>
 
       {/* Content */}
