@@ -649,6 +649,9 @@ class CollabClient {
     this.identity = { userId: nextUser, sessionId: nextSession, hostId: nextHost };
 
     if (scopeChanged) {
+      // Clear cached avatar so it doesn't leak across accounts
+      this._cachedUserImage = null;
+
       // Room keys depend on identity scope. Recreate docs on scope change.
       for (const [key, entry] of this.docs.entries()) {
         try {
@@ -1407,6 +1410,7 @@ class CollabClient {
       try { entry.doc.destroy(); } catch (e) { /* ignore */ }
     }
     this.docs.clear();
+    this._cachedUserImage = null;
   }
 }
 
