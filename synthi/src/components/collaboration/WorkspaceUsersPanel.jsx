@@ -10,7 +10,7 @@ import { getCurrentUser } from '@/services/userIdentity';
 import getInitials from '@/utils/getInitials';
 import {
   Users, FileEdit, Globe, Loader2, UserPlus, Shield,
-  Send, Check, X, Bell, Ban, MoreHorizontal, Radio
+  Send, Check, X, Bell, Ban, MoreHorizontal, Radio, Hash
 } from 'lucide-react';
 
 import T from './collabTheme';
@@ -294,6 +294,13 @@ function SessionCard({ session, myUserId, isIdle, isKnocking, joiningSessionId, 
           <span className="text-[10px] flex items-center gap-1" style={{ color: T.textMuted }}>
             <Users className="w-2.5 h-2.5" />
             {guestCount} guest{guestCount !== 1 ? 's' : ''}
+            {session.roomCode && (
+              <>
+                <span style={{ color: T.borderHi }}>·</span>
+                <Hash className="w-2.5 h-2.5" />
+                <span className="font-mono tracking-wider">{session.roomCode}</span>
+              </>
+            )}
           </span>
         </div>
         {/* Join button */}
