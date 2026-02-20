@@ -336,3 +336,36 @@
   }
 }
 
+/* ─── Reduced Motion ─────────────────────────────────── */
+
+@media (prefers-reduced-motion: reduce) {
+  .docking-context-menu,
+  .dock-floating-window--entering,
+  .dock-maximize-enter,
+  .dock-drop-overlay__zone--active,
+  .dock-split-container > * {
+    animation: none !important;
+    transition: none !important;
+  }
+
+  .dock-drag-ghost {
+    transition: none !important;
+  }
+
+  .dock-splitter:hover .dock-splitter__line {
+    box-shadow: none !important;
+  }
+}
+
+/* ─── Print ──────────────────────────────────────────── */
+
+@media print {
+  .dock-tab-bar,
+  .dock-splitter,
+  .dock-drop-overlay,
+  .dock-floating-window,
+  .docking-context-menu,
+  .dock-tab-bar__actions {
+    display: none !important;
+  }
+}
