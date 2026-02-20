@@ -1399,12 +1399,15 @@ const server = http.createServer(async (req, res) => {
           });
         }
 
+        const appUrl = process.env.SYNTHI_APP_URL || 'http://localhost:3000';
+        const inviteLink = `${appUrl}/collab/${session.id}?token=${session.inviteToken}${session.roomCode ? `&code=${session.roomCode}` : ''}`;
+
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({
           success: true,
           sessionId: session.id,
           inviteToken: session.inviteToken,
-          inviteLink: session.inviteLink,
+          inviteLink,
           roomCode: session.roomCode || null,
         }));
       } catch (e) {
@@ -1662,7 +1665,7 @@ const server = http.createServer(async (req, res) => {
               worktreePath: session.worktreePath,
               roomCode: session.roomCode || null,
               createdAt: session.createdAt,
-              inviteLink: `${process.env.SYNTHI_APP_URL || 'http://localhost:3000'}/collab/${session.id}?token=${session.inviteToken}`,
+              inviteLink: `${process.env.SYNTHI_APP_URL || 'http://localhost:3000'}/collab/${session.id}?token=${session.inviteToken}${session.roomCode ? `&code=${session.roomCode}` : ''}`,
             };
             break;
           }
@@ -1807,7 +1810,7 @@ const server = http.createServer(async (req, res) => {
             result = {
               inviteToken: regenResult.inviteToken,
               roomCode: regenResult.roomCode,
-              inviteLink: `${process.env.SYNTHI_APP_URL || 'http://localhost:3000'}/collab/${sessionIdParam}?token=${regenResult.inviteToken}`,
+              inviteLink: `${process.env.SYNTHI_APP_URL || 'http://localhost:3000'}/collab/${sessionIdParam}?token=${regenResult.inviteToken}${regenResult.roomCode ? `&code=${regenResult.roomCode}` : ''}`,
             };
             break;
           }
