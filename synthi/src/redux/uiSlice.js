@@ -11,7 +11,7 @@ export const initialUiState = {
     showTerminal: false,
     showEmulatorPreview: false,
     treeOnRight: false,
-    autoSaveEnabled: false,
+    autoSaveEnabled: true,
     autoCompletionEnabled: true,
     uiActionState: initialUiActionState,
     expandedFolders: [],
