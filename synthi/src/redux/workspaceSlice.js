@@ -41,6 +41,7 @@ export const initialWorkspaceState = {
     diffMode: false,     // Toggle diff view
     fileContentCache: new Map(), // Deprecated (hybrid cache is in services/fileCache)
     loadingFiles: [],    // Tracks files currently being fetched
+    _filesFetching: false, // Dedup guard for fetchFilesThunk
     isLoading: false,
     status: 'idle',
     error: null,
@@ -50,6 +51,9 @@ export const initialWorkspaceState = {
 };
 
 // --- ASYNC THUNKS (Side Effects and Persistence) ---
+
+// Track queued re-fetch for fetchFilesThunk (mirrors fetchGitStatus dedup pattern)
+let _pendingFilesFetchSlug = null;
 
 // 1. Fetch Files (Read)
 export const fetchFilesThunk = createAsyncThunk(
@@ -76,8 +80,25 @@ export const fetchFilesThunk = createAsyncThunk(
             }
         }
 
+        // If another fetch was queued while we were in-flight, re-dispatch
+        if (_pendingFilesFetchSlug) {
+            const queuedSlug = _pendingFilesFetchSlug;
+            _pendingFilesFetchSlug = null;
+            queueMicrotask(() => dispatch(fetchFilesThunk(queuedSlug)));
+        }
+
         // Return files and potential file to select for the reducer
         return { files, fileToSelect };
+    },
+    {
+        // Prevent redundant concurrent fetches — queue a re-fetch instead
+        condition: (slug, { getState }) => {
+            const { workspace } = getState();
+            if (workspace._filesFetching) {
+                _pendingFilesFetchSlug = slug;
+                return false;
+            }
+        },
     }
 );
 
@@ -621,12 +642,14 @@ const workspaceSlice = createSlice({
         builder
           .addCase(fetchFilesThunk.pending, (state) => {
                 state.isLoading = true;
+                state._filesFetching = true;
                 state.status = 'pending';
                 state.error = null;
             })
           .addCase(fetchFilesThunk.fulfilled, (state, action) => {
                 state.rawFiles = action.payload.files;
                 state.isLoading = false;
+                state._filesFetching = false;
                 state.status = 'succeeded';
                 
                 // If the thunk recommended auto-selection, perform it here
@@ -637,6 +660,7 @@ const workspaceSlice = createSlice({
             })
           .addCase(fetchFilesThunk.rejected, (state, action) => {
                 state.isLoading = false;
+                state._filesFetching = false;
                 state.status = 'failed';
                 state.error = action.error.message;
             });
