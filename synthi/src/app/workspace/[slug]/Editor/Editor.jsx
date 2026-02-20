@@ -48,6 +48,7 @@ import { useEditorProviders } from './providers';
 import { useEditorEvents } from './events';
 import { takeLastChars, useCustomScrollbar } from './utils';
 import { SYNTHI_THEME } from './theme';
+import { useTheme } from '@/components/ThemeProvider';
 import { ConflictBanner } from './ConflictBanner';
 import { initSynthiFileSystem, updateFile as updateVirtualFile, disposeSynthiFileSystem } from './SynthiFileSystemProvider';
 import { registerMonarchTokenizers } from './languageTokenizers';
@@ -217,6 +218,9 @@ const EditorPanel = ({
     // Git status for conflict detection
     const gitStatus = useAppSelector(state => state.git?.status);
     const conflictedFiles = gitStatus?.conflictedFiles || [];
+
+    // Theme context — provides monacoRef for live theme switching
+    const { monacoRef: themeMonacoRef, reapply: reapplyTheme } = useTheme();
 
     // Local state
     const [position, setPosition] = useState({ lineNumber: 1, column: 1 });
@@ -3379,6 +3383,12 @@ const EditorPanel = ({
                                                     setEditorInstance(editor);
                                                     setMonacoInstance(monaco);
                                                     if (onEditorMount) onEditorMount(editor);
+
+                                                    // Wire Monaco into ThemeProvider for live theme switching
+                                                    if (themeMonacoRef) {
+                                                        themeMonacoRef.current = monaco;
+                                                        reapplyTheme();
+                                                    }
 
                                                     // Hard reset: clear only SYNTHI-owned markers on initial mount.
                                                     // P0: Do NOT clear all markers — LSP-published diagnostics must survive.
