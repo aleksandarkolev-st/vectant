@@ -4,6 +4,12 @@ import { useEffect, useRef } from 'react';
 import { toast } from 'sonner';
 import collabSessionService from '@/services/collabSessionService';
 
+/** Helper — returns a toast action that opens the collab popup */
+const openPopupAction = {
+  label: 'Open',
+  onClick: () => collabSessionService.requestOpenPopup(),
+};
+
 /**
  * useCollabNotifications — Listens to collaboration events and shows
  * toast notifications for key lifecycle events.
@@ -20,12 +26,15 @@ export function useCollabNotifications() {
 
     const unsubs = [
       // ── Host receives a knock ────────────────────────────────────
-      collabSessionService.on('knock:received', (detail) => {
-        const name = detail?.displayName || 'Someone';
+      collabSessionService.on('knock:received', (detail) => {        // Only show the notification to the Host.
+        // This is a defense-in-depth check — the backend should already
+        // route knocks exclusively to the host, but we guard here too.
+        if (collabSessionService.role !== 'hosting') return;        const name = detail?.displayName || 'Someone';
         toast.info(`${name} wants to join your session`, {
-          description: 'Check pending requests to accept or deny.',
+          description: 'Click to review pending requests.',
           duration: 8000,
           icon: '🔔',
+          action: openPopupAction,
         });
       }),
 
@@ -35,6 +44,7 @@ export function useCollabNotifications() {
         toast.success(`${name} joined the session`, {
           duration: 4000,
           icon: '👋',
+          action: openPopupAction,
         });
       }),
 
@@ -86,24 +96,27 @@ export function useCollabNotifications() {
           description: permsStr ? `Granted: ${permsStr}` : 'All permissions revoked.',
           duration: 5000,
           icon: '🛡️',
+          action: openPopupAction,
         });
       }),
 
       // ── Session created (host confirmation) ──────────────────────
       collabSessionService.on('session:created', () => {
         toast.success('Session is live!', {
-          description: 'Share your invite link to collaborate.',
+          description: 'Share your room code to collaborate.',
           duration: 4000,
           icon: '📡',
+          action: openPopupAction,
         });
       }),
       // ── Incoming collaboration invite ────────────────────────
       collabSessionService.on('collab-invite', (detail) => {
         const name = detail?.hostName || 'Someone';
         toast.info(`${name} invited you to collaborate`, {
-          description: 'Open the Share panel to accept or decline.',
+          description: 'Click to accept or decline.',
           duration: 10000,
           icon: '📨',
+          action: openPopupAction,
         });
       }),
       // ── Joined a session (guest confirmation) ────────────────────
@@ -112,6 +125,7 @@ export function useCollabNotifications() {
           description: 'You now have access to the workspace.',
           duration: 4000,
           icon: '✅',
+          action: openPopupAction,
         });
       }),
 

@@ -101,6 +101,14 @@ class CollabSessionService extends EventTarget {
     this._emit('invite:cleared', {});
   }
 
+  /**
+   * Request the UI to open the collaboration popup.
+   * Consumed by CollabToolbar to toggle the ShareModal.
+   */
+  requestOpenPopup() {
+    this._emit('popup:requestOpen', {});
+  }
+
   // ── Host: Create session ─────────────────────────────────────────────────
 
   /**
