@@ -11,8 +11,15 @@ export const gitClient = {
 
         // Attach authenticated user id for per-user repo isolation.
         // Prefer provider-assigned id; fall back to email.
+        // If getSession() returns null (SSR hydration still in progress),
+        // wait briefly and retry once — the NextAuth session cookie may not
+        // be available on the very first render tick.
         try {
-            const session = await getSession();
+            let session = await getSession();
+            if (!session) {
+                await new Promise(r => setTimeout(r, 500));
+                session = await getSession();
+            }
             const userId = session?.user?.id || session?.user?.email;
             if (userId) {
                 headers['x-user-id'] = userId;
