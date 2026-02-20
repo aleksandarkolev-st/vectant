@@ -49,16 +49,8 @@ export const DockingContainer = memo(function DockingContainer({
         position: 'relative',
         minWidth: 0,
         minHeight: 0,
-        // CSS custom properties for theming
-        '--dock-panel-bg': '#1e1e1e',
-        '--dock-tab-bar-bg': '#252526',
-        '--dock-tab-fg': '#969696',
-        '--dock-tab-active-fg': '#ffffff',
-        '--dock-tab-active-bg': '#1e1e1e',
-        '--dock-border': '#2d2d2d',
-        '--dock-accent': '#007acc',
-        '--dock-focus-border': 'rgba(0, 122, 204, 0.3)',
-        '--dock-font': "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
+        height: '100%',
+        width: '100%',
         ...style,
       }}
     >
@@ -96,7 +88,7 @@ export const DockingContainer = memo(function DockingContainer({
             inset: 0,
             pointerEvents: 'none',
             zIndex: 99,
-            outline: '2px dashed rgba(0, 122, 204, 0.3)',
+            outline: '2px dashed rgba(58, 133, 116, 0.3)',
             outlineOffset: '-2px',
             borderRadius: '2px',
           }}
