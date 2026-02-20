@@ -2403,33 +2403,26 @@ class GitService {
             }
 
             const barePath = this.getBarePath(slug);
-            const slugRepoPath = this.getRepoPath(slug);
 
-            // Determine the clone source — prefer bare repo if available
+            // ── Clone source resolution ──────────────────────────────────
+            // Priority:
+            //   1. Bare repo (_upstream.git) — canonical local source
+            //   2. Remote URL — fetches latest main branch from upstream
+            //   3. Existing per-user repo — peers have the same history
+            //   4. Fresh init — last resort
+            //
+            // NOTE: The slug-level working tree (repos/<slug>/) is
+            // intentionally skipped — it is not maintained and may contain
+            // stale or nested content.
             let cloneSource = null;
             if (fs.existsSync(barePath)) {
                 cloneSource = barePath;
-            } else if (fs.existsSync(path.join(slugRepoPath, '.git'))) {
-                // The slug-level repo has .git, but we must NOT clone it when
-                // its working tree contains per-user repo subdirectories —
-                // doing so nests one user's files inside another's clone.
-                const existingUserRepos = this.listUserRepos(slug);
-                if (existingUserRepos.length > 0) {
-                    // Per-user repos exist — clone from the first user's repo
-                    // (which has the same commit history) instead of from the
-                    // contaminated slug-level working tree.
-                    cloneSource = existingUserRepos[0].path;
-                    console.log(`[GitService] Using existing user repo as clone source for ${slug}/${userId} (avoiding slug-level nesting)`);
-                } else {
-                    cloneSource = slugRepoPath;
-                }
             }
 
-            // ── No local source — try cloning from the remote URL ───────
-            // When a new user joins a workspace (e.g. via collab invite),
-            // there may be no local repo to clone from.  If any existing
-            // user repo or the workspaceManager knows the remote URL, clone
-            // directly from the upstream so the user gets the latest code.
+            // ── Try cloning from the remote URL ─────────────────────────
+            // When a new user joins a workspace they've never worked in,
+            // cloning from the remote ensures they always get the latest
+            // main branch content.
             if (!cloneSource) {
                 const remoteUrl = await this._resolveRemoteUrl(slug);
                 if (remoteUrl) {
@@ -2441,10 +2434,20 @@ class GitService {
                         console.log(`[GitService] Cloned user repo for ${slug}/${userId} from remote: ${remoteUrl}`);
                         return { path: userRepoPath, created: true };
                     } catch (e) {
-                        // Remote clone failed — clean up and fall through to fresh init
+                        // Remote clone failed — clean up and try other sources
                         try { fs.rmSync(userRepoPath, { recursive: true, force: true }); } catch (_) {}
-                        console.warn(`[GitService] Remote clone failed for ${slug}/${userId}: ${e.message}, falling back to fresh init`);
+                        console.warn(`[GitService] Remote clone failed for ${slug}/${userId}: ${e.message}, trying other sources`);
                     }
+                }
+            }
+
+            // ── Fallback: clone from an existing peer user repo ─────────
+            if (!cloneSource) {
+                const existingUserRepos = this.listUserRepos(slug);
+                const peerRepo = existingUserRepos.find(r => r.userId !== userId);
+                if (peerRepo) {
+                    cloneSource = peerRepo.path;
+                    console.log(`[GitService] Using peer user repo as clone source for ${slug}/${userId}`);
                 }
             }
 
@@ -2481,12 +2484,12 @@ class GitService {
                 // Use --no-hardlinks to ensure complete isolation between users
                 await git.clone(cloneSource, userRepoPath, ['--no-hardlinks']);
 
-                // If we cloned from the bare repo, re-set the remote to the
-                // original upstream URL (if any) rather than the local bare path.
+                // If we cloned from the bare repo or a peer, re-set the remote to
+                // the original upstream URL (if any) rather than the local path.
                 const userGit = simpleGit(userRepoPath);
                 try {
-                    const bareGit = simpleGit(cloneSource);
-                    const remotes = await bareGit.getRemotes(true);
+                    const sourceGit = simpleGit(cloneSource);
+                    const remotes = await sourceGit.getRemotes(true);
                     const origin = remotes.find(r => r.name === 'origin');
                     if (origin && origin.refs && origin.refs.fetch) {
                         await userGit.remote(['set-url', 'origin', origin.refs.fetch]);
