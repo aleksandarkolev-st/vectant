@@ -4,12 +4,53 @@ const COLLAB_SERVER_URL = process.env.NEXT_PUBLIC_COLLAB_SERVER_URL || 'http://l
 
 let cachedUserId = null;
 
+// Resolvers that will be called when userId becomes available.
+let _userIdReadyResolvers = [];
+
+// Actions exempt from the userId requirement (read-only or bootstrapping).
+const READ_ONLY_ACTIONS = new Set([
+    'status', 'branches', 'log', 'diff', 'file-content', 'blame',
+    'unpushed', 'incoming', 'init', 'clone', 'remotes',
+]);
+
+/**
+ * Wait for cachedUserId to be set (up to timeoutMs).
+ * Resolves immediately if already set.
+ */
+function _waitForUserId(timeoutMs = 3000) {
+    if (cachedUserId) return Promise.resolve(cachedUserId);
+    return new Promise((resolve) => {
+        const timer = setTimeout(() => {
+            // Remove this resolver from the queue
+            _userIdReadyResolvers = _userIdReadyResolvers.filter(r => r !== onReady);
+            resolve(null); // timed out — proceed without userId
+        }, timeoutMs);
+        const onReady = (uid) => {
+            clearTimeout(timer);
+            resolve(uid);
+        };
+        _userIdReadyResolvers.push(onReady);
+    });
+}
+
 export const gitClient = {
     setUserId(userId) {
         cachedUserId = userId;
+        // Wake up any pending requests that were waiting for auth.
+        if (userId && _userIdReadyResolvers.length > 0) {
+            const resolvers = _userIdReadyResolvers.splice(0);
+            resolvers.forEach(r => r(userId));
+        }
     },
 
     async request(slug, action, data = {}) {
+        // For mutating actions, wait briefly for auth to be available.
+        // This prevents 401 errors when saves fire before the React
+        // lifecycle has called setUserId() (e.g., rapid Ctrl+S on load).
+        if (!cachedUserId && !READ_ONLY_ACTIONS.has(action)) {
+            await _waitForUserId(3000);
+        }
+
         const headers = {
             'Content-Type': 'application/json',
         };
