@@ -194,6 +194,7 @@ const EditorPanel = ({
     aiBusy = false,
     onClearCompletion = null,
     chatVisible = false,
+    dockingMode = false,
 }) => {
     const dispatch = useAppDispatch();
 
@@ -206,7 +207,8 @@ const EditorPanel = ({
     const openFiles = useAppSelector(selectOpenFiles);
     const loadingFiles = useAppSelector(selectLoadingFiles);
     const rawFiles = useAppSelector(state => state.workspace.rawFiles);
-    const showTerminal = useAppSelector(state => state.ui.showTerminal);
+    const showTerminalRedux = useAppSelector(state => state.ui.showTerminal);
+    const showTerminal = dockingMode ? false : showTerminalRedux;
     const autoSaveEnabled = useAppSelector(selectAutoSaveEnabled);
     const aiAutoEnabled = useAppSelector(selectAutoCompletionEnabled);
     const showAnonymousPresence = useAppSelector(selectShowAnonymousPresence);
@@ -3038,10 +3040,7 @@ const EditorPanel = ({
     // --- Render ---
 
 
-    return (
-        <ResizablePanel defaultSize={76} minSize={20}>
-            <ResizablePanelGroup direction="vertical" className="h-full">
-                <ResizablePanel defaultSize={70} minSize={20}>
+    const editorUI = (
                     <div className="h-full flex flex-col bg-[#0c0d12] rounded-tl-lg rounded-tr-lg overflow-hidden">
                         {/* Minimal Sleek Header - Synthi Brand Theme */}
                         <div className="h-10 border-b-2 border-[#1a1b24] bg-[#08090d] flex justify-between select-none shadow-sm">
@@ -3482,6 +3481,17 @@ const EditorPanel = ({
                             </ContextMenu>
                         </div>
                     </div>
+    );
+
+    if (dockingMode) {
+        return editorUI;
+    }
+
+    return (
+        <ResizablePanel defaultSize={76} minSize={20}>
+            <ResizablePanelGroup direction="vertical" className="h-full">
+                <ResizablePanel defaultSize={70} minSize={20}>
+                    {editorUI}
                 </ResizablePanel>
 
                 {showTerminal && (

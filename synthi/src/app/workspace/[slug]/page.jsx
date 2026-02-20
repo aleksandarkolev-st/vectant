@@ -59,6 +59,13 @@ import { useExtensions } from '@/hooks/useExtensions';
 import ExtensionSidebar from '@/components/extensions/ExtensionSidebar';
 import ExtensionViewContainer from '@/components/extensions/ExtensionViewContainer';
 
+// ─── New Docking Window Manager ────────────────────────
+import { DockableWorkspace } from '@/components/docking-wm/DockableWorkspace';
+
+// Feature flag: set to true to enable the new docking layout.
+// When false, the existing rigid ResizablePanelGroup layout is used.
+const USE_DOCKING_WM = true;
+
 export default function EditorPage({ params }) {
     const dispatch = useAppDispatch();
     
@@ -1912,6 +1919,41 @@ export default function EditorPage({ params }) {
                 sendGuiEvent={sendGuiEvent}
             />
 
+            {/* ─── Layout: either new docking WM or legacy rigid panels ─── */}
+            {USE_DOCKING_WM ? (
+                <div className="flex-1 min-h-0">
+                    <DockableWorkspace
+                        workspaceSlug={slug}
+                        defaultPreset="classic"
+                        panelProps={{
+                            editor,
+                            activeFile,
+                            currentCode: currentContent,
+                            diagnostics: mergedDiagnostics,
+                            diagnosticSummary,
+                            isAnalyzing: isAnalyzingProactive || isWorkspaceAnalyzing,
+                            onSuggest: (s) => setLatestCompletion(s),
+                            onBusy: (b) => setAiBusy(Boolean(b)),
+                            clearSignal: completionClearSignal,
+                            onCloseProblems: () => setShowProblemsPanel(false),
+                            onToggleOrientation: toggleTreeOrientation,
+                            onOpenScm: () => setSidebarView('scm'),
+                            editorProps: {
+                                innerRef: setEditor,
+                                slug,
+                                showTerminal,
+                                analyzeCode,
+                                analyzeUnified,
+                                lastResult,
+                                isAnalyzing: isAnalyzingGateway,
+                                connectionMeta,
+                                latestCompletion,
+                                completionClearSignal,
+                            },
+                        }}
+                    />
+                </div>
+            ) : (
             <ResizablePanelGroup direction="vertical" className="flex-1 min-h-0">
                 <ResizablePanel defaultSize={showProblemsPanel ? 75 : 100} minSize={20}>
                     <ResizablePanelGroup
@@ -1984,6 +2026,7 @@ export default function EditorPage({ params }) {
                     </>
                 )}
             </ResizablePanelGroup>
+            )}
 
         </div>
 

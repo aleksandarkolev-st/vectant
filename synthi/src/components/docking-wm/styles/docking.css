@@ -1,0 +1,482 @@
+/**
+ * Synthi Docking Window Manager — Styles
+ *
+ * CSS custom properties for theming are set on .dock-container.
+ * Override these variables to customize the appearance.
+ */
+
+/* ─── Container ──────────────────────────────────────── */
+
+.dock-container {
+  font-family: var(--dock-font, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif);
+  font-size: 13px;
+  line-height: 1.4;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  --dock-panel-bg: #0c0d12;
+  --dock-tab-bar-bg: #08090d;
+  --dock-tab-fg: #7a8099;
+  --dock-tab-active-fg: #e8eaf0;
+  --dock-tab-active-bg: #0c0d12;
+  --dock-border: #1a1b24;
+  --dock-accent: #3a8574;
+  --dock-focus-border: rgba(58, 133, 116, 0.4);
+  --dock-font: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+}
+
+.dock-container--dragging {
+  cursor: grabbing !important;
+}
+
+.dock-container--dragging * {
+  cursor: grabbing !important;
+}
+
+/* ─── Tab Bar — the docking system's region tab strip ── */
+
+.dock-tab-bar {
+  background-color: var(--dock-tab-bar-bg) !important;
+  border-bottom: 1px solid var(--dock-border) !important;
+  position: relative;
+  user-select: none;
+}
+
+.dock-tab-bar--focused {
+  border-bottom-color: var(--dock-accent) !important;
+}
+
+/* Subtle left accent on focused group's tab bar */
+.dock-tab-bar--focused::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--dock-accent);
+}
+
+.dock-tab-bar__scroll::-webkit-scrollbar {
+  display: none;
+}
+
+.dock-tab-bar__action:hover {
+  background-color: rgba(255, 255, 255, 0.08) !important;
+  opacity: 1 !important;
+}
+
+/* ─── Tabs — draggable tab items ─────────────────────── */
+
+.dock-tab {
+  cursor: grab !important;
+  position: relative;
+  transition: background-color 0.1s, color 0.1s;
+}
+
+.dock-tab:hover {
+  color: var(--dock-tab-active-fg, #e8eaf0) !important;
+  background-color: rgba(255, 255, 255, 0.04) !important;
+}
+
+.dock-tab:hover .dock-tab__close {
+  opacity: 0.5 !important;
+}
+
+.dock-tab__close:hover {
+  background-color: rgba(255, 255, 255, 0.1) !important;
+  opacity: 1 !important;
+}
+
+.dock-tab--active {
+  font-weight: 500;
+}
+
+.dock-tab--active:hover {
+  background-color: var(--dock-tab-active-bg) !important;
+}
+
+.dock-tab--dragging {
+  opacity: 0.4 !important;
+  cursor: grabbing !important;
+}
+
+/* Drag grip indicator (subtle dots on left of tab) */
+.dock-tab::before {
+  content: '⠿';
+  font-size: 8px;
+  opacity: 0;
+  margin-right: 2px;
+  color: var(--dock-tab-fg);
+  transition: opacity 0.15s;
+  flex-shrink: 0;
+}
+
+.dock-tab:hover::before {
+  opacity: 0.5;
+}
+
+/* ─── Splitter — visible resize handles ──────────────── */
+
+.dock-splitter {
+  cursor: col-resize;
+  background: transparent;
+  position: relative;
+  flex-shrink: 0;
+  z-index: 10;
+}
+
+.dock-splitter--horizontal {
+  cursor: row-resize;
+}
+
+.dock-splitter__line {
+  background-color: var(--dock-border) !important;
+  transition: background-color 0.15s, box-shadow 0.15s;
+}
+
+.dock-splitter:hover .dock-splitter__line {
+  background-color: var(--dock-accent) !important;
+  opacity: 0.8;
+  box-shadow: 0 0 6px rgba(58, 133, 116, 0.4);
+}
+
+.dock-splitter--active .dock-splitter__line {
+  background-color: var(--dock-accent) !important;
+  opacity: 1 !important;
+  box-shadow: 0 0 10px rgba(58, 133, 116, 0.6);
+}
+
+.dock-splitter:focus-visible {
+  outline: 1px solid var(--dock-accent);
+  outline-offset: -1px;
+}
+
+/* Expand hit area on hover */
+.dock-splitter--vertical:hover {
+  margin: 0 -2px;
+  padding: 0 2px;
+}
+
+.dock-splitter--horizontal:hover {
+  margin: -2px 0;
+  padding: 2px 0;
+}
+
+/* ─── Tab Group — the dockable panel unit ────────────── */
+
+.dock-tab-group {
+  border: 1px solid transparent;
+  transition: border-color 0.15s, outline-color 0.15s;
+}
+
+.dock-tab-group--focused {
+  outline: 1px solid var(--dock-focus-border) !important;
+  outline-offset: -1px;
+}
+
+.dock-tab-group--drag-over {
+  outline: 2px solid rgba(58, 133, 116, 0.6) !important;
+  outline-offset: -2px;
+}
+
+/* ─── Floating Window ────────────────────────────────── */
+
+.dock-floating-window {
+  border: 1px solid var(--dock-border);
+  border-radius: 6px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(58, 133, 116, 0.15);
+  overflow: hidden;
+}
+
+.dock-floating-window__titlebar:hover {
+  background-color: rgba(255, 255, 255, 0.02) !important;
+}
+
+.dock-floating-window--dragging {
+  opacity: 0.9;
+}
+
+.dock-floating-window button:hover {
+  background-color: rgba(255, 255, 255, 0.1) !important;
+}
+
+/* ─── Drop Overlay ───────────────────────────────────── */
+
+.dock-drop-overlay {
+  animation: dock-fade-in 0.1s ease-out;
+}
+
+@keyframes dock-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.dock-drop-overlay__zone {
+  animation: dock-zone-appear 0.12s ease-out;
+}
+
+@keyframes dock-zone-appear {
+  from {
+    opacity: 0;
+    transform: scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+/* ─── Panel Grip — drag handle icon ──────────────────── */
+
+.dock-panel-grip {
+  cursor: grab;
+}
+
+.dock-panel-grip:hover {
+  opacity: 0.6 !important;
+}
+
+.dock-panel-grip:active {
+  cursor: grabbing;
+}
+
+/* ─── Panel content area ─────────────────────────────── */
+
+.dock-panel-content-area {
+  background-color: var(--dock-panel-bg);
+}
+
+.dock-panel-container {
+  background-color: var(--dock-panel-bg);
+}
+
+/* ─── Profile Manager ────────────────────────────────── */
+
+.dock-profile-manager {
+  animation: dock-modal-appear 0.2s ease-out;
+}
+
+@keyframes dock-modal-appear {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1);
+  }
+}
+
+.dock-profile-manager input:focus {
+  border-color: var(--dock-accent, #007acc) !important;
+}
+
+.dock-profile-manager button:hover {
+  filter: brightness(1.1);
+}
+
+/* ─── Drag Ghost ─────────────────────────────────────── */
+
+.dock-drag-active-overlay {
+  animation: dock-pulse 2s ease-in-out infinite;
+}
+
+@keyframes dock-pulse {
+  0%, 100% {
+    outline-color: rgba(0, 122, 204, 0.2);
+  }
+  50% {
+    outline-color: rgba(0, 122, 204, 0.4);
+  }
+}
+
+/* ─── Utilities ──────────────────────────────────────── */
+
+.dock-no-select {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.dock-overflow-hidden {
+  overflow: hidden;
+}
+
+/* ─── Responsive ─────────────────────────────────────── */
+
+@media (max-width: 768px) {
+  .dock-tab {
+    max-width: 120px !important;
+    padding: 0 6px !important;
+    font-size: 11px !important;
+  }
+
+  .dock-tab-bar__actions {
+    display: none !important;
+  }
+}
+
+/* ─── Focus and Accessibility ────────────────────────── */
+
+.dock-tab:focus-visible {
+  outline: 1px solid var(--dock-accent, #007acc);
+  outline-offset: -1px;
+}
+
+.dock-tab-group:focus-within .dock-tab-bar {
+  border-bottom-color: rgba(0, 122, 204, 0.3);
+}
+
+/* High contrast mode */
+@media (forced-colors: active) {
+  .dock-splitter__line {
+    background-color: ButtonText !important;
+  }
+
+  .dock-tab--active {
+    border: 1px solid Highlight !important;
+  }
+
+  .dock-drop-overlay__zone {
+    border-color: Highlight !important;
+  }
+}
+
+/* ─── Context Menu ───────────────────────────────────── */
+
+.docking-context-menu {
+  animation: docking-context-menu-in 0.12s ease-out;
+}
+
+@keyframes docking-context-menu-in {
+  from {
+    opacity: 0;
+    transform: scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+/* ─── Tab Group Focus Ring ───────────────────────────── */
+
+.docking-tabgroup--focused {
+  box-shadow: inset 0 0 0 1px rgba(50, 116, 100, 0.45);
+}
+
+.docking-tabgroup--focused .dock-tab-bar {
+  border-bottom-color: rgba(50, 116, 100, 0.5);
+}
+
+/* ─── Drop Zone Pulse ────────────────────────────────── */
+
+.dock-drop-overlay__zone--active {
+  animation: dock-zone-pulse 0.8s ease-in-out infinite alternate;
+}
+
+@keyframes dock-zone-pulse {
+  from {
+    background-color: rgba(50, 116, 100, 0.15);
+  }
+  to {
+    background-color: rgba(50, 116, 100, 0.28);
+  }
+}
+
+/* ─── Floating Window Entrance ───────────────────────── */
+
+.dock-floating-window--entering {
+  animation: dock-float-in 0.2s ease-out;
+}
+
+@keyframes dock-float-in {
+  from {
+    opacity: 0;
+    transform: scale(0.9) translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+/* ─── Drag Ghost Snap ────────────────────────────────── */
+
+.dock-drag-ghost {
+  pointer-events: none;
+  opacity: 0.85;
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.5);
+  border-radius: 4px;
+  transition: transform 0.08s ease-out;
+}
+
+/* ─── Panel resize shimmer ───────────────────────────── */
+
+.dock-splitter:hover .dock-splitter__line {
+  box-shadow: 0 0 6px rgba(50, 116, 100, 0.4);
+}
+
+/* ─── Smooth layout transitions ──────────────────────── */
+
+.dock-split-container > * {
+  transition: flex-basis 0.15s ease-out;
+}
+
+.dock-split-container--resizing > * {
+  transition: none;
+}
+
+/* ─── Maximize / Restore Animation ───────────────────── */
+
+.dock-maximize-enter {
+  animation: dock-maximize-in 0.2s ease-out;
+}
+
+@keyframes dock-maximize-in {
+  from {
+    opacity: 0.8;
+    transform: scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+/* ─── Reduced Motion ─────────────────────────────────── */
+
+@media (prefers-reduced-motion: reduce) {
+  .docking-context-menu,
+  .dock-floating-window--entering,
+  .dock-maximize-enter,
+  .dock-drop-overlay__zone--active,
+  .dock-split-container > * {
+    animation: none !important;
+    transition: none !important;
+  }
+
+  .dock-drag-ghost {
+    transition: none !important;
+  }
+
+  .dock-splitter:hover .dock-splitter__line {
+    box-shadow: none !important;
+  }
+}
+
+/* ─── Print ──────────────────────────────────────────── */
+
+@media print {
+  .dock-tab-bar,
+  .dock-splitter,
+  .dock-drop-overlay,
+  .dock-floating-window,
+  .docking-context-menu,
+  .dock-tab-bar__actions {
+    display: none !important;
+  }
+}
