@@ -95,7 +95,9 @@ export default function SessionControlPanel({ slug }) {
 
   // ── Active session panel ──────────────────────────────────────────────
 
-  if (!isHost) return null;
+  // CRITICAL: This panel is ONLY for the session Host.
+  // A non-host must NEVER see the approval / management UI.
+  if (!isHost || role !== 'hosting') return null;
 
   return (
     <div className="flex flex-col bg-[#0d0e14] border border-[#ff575780] rounded-xl shadow-2xl shadow-red-500/5 overflow-hidden min-w-[320px] max-w-[380px]">

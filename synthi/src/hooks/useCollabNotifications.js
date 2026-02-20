@@ -101,10 +101,13 @@ export function useCollabNotifications() {
       }),
 
       // ── Session created (host confirmation) ──────────────────────
-      collabSessionService.on('session:created', () => {
+      collabSessionService.on('session:created', (detail) => {
+        const code = detail?.roomCode || collabSessionService.session?.roomCode;
         toast.success('Session is live!', {
-          description: 'Share your room code to collaborate.',
-          duration: 4000,
+          description: code
+            ? `Room code: ${code} — share it to collaborate.`
+            : 'Share your invite link to collaborate.',
+          duration: 6000,
           icon: '📡',
           action: openPopupAction,
         });
