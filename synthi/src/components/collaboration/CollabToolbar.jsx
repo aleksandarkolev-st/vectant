@@ -46,6 +46,18 @@ export default function CollabToolbar({ slug }) {
     return () => collabSessionService.removeEventListener('popup:requestOpen', handler);
   }, []);
 
+  // ── Keyboard shortcut: Ctrl+Shift+K to toggle ShareModal ──
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'K') {
+        e.preventDefault();
+        setShareModalOpen(prev => !prev);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
+
   const openModal = useCallback(() => setShareModalOpen(true), []);
 
   const knockCount = pendingKnocks?.length || 0;
@@ -208,7 +220,7 @@ function ShareButton({ onClick }) {
                  hover:border-[#3a8574] hover:bg-[#3a857410]
                  text-[#9ba2b8] hover:text-[#e0e4ec]
                  transition-all text-[11px] font-medium"
-      title="Start a collaboration session"
+      title="Start a collaboration session (Ctrl+Shift+K)"
     >
       <Share2 className="w-3.5 h-3.5" />
       Share
