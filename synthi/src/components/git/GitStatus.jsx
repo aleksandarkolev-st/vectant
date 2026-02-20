@@ -310,10 +310,26 @@ export function GitStatus({ slug }) {
     if (stashDrop.fulfilled.match(result)) toast.success('Stash dropped');
   };
 
-  const handleStage = (e, filePath) => { e.stopPropagation(); dispatch(stageFile({ slug, filePath })); };
-  const handleStageAll = () => { if (slug) dispatch(stageAll(slug)); };
-  const handleUnstage = (e, filePath) => { e.stopPropagation(); dispatch(unstageFile({ slug, filePath })); };
-  const handleUnstageAll = () => { if (slug) dispatch(unstageAll(slug)); };
+  const handleStage = async (e, filePath) => {
+    e.stopPropagation();
+    const result = await dispatch(stageFile({ slug, filePath }));
+    if (stageFile.rejected.match(result)) toast.error(result.error?.message || 'Failed to stage file');
+  };
+  const handleStageAll = async () => {
+    if (!slug) return;
+    const result = await dispatch(stageAll(slug));
+    if (stageAll.rejected.match(result)) toast.error(result.error?.message || 'Failed to stage all');
+  };
+  const handleUnstage = async (e, filePath) => {
+    e.stopPropagation();
+    const result = await dispatch(unstageFile({ slug, filePath }));
+    if (unstageFile.rejected.match(result)) toast.error(result.error?.message || 'Failed to unstage file');
+  };
+  const handleUnstageAll = async () => {
+    if (!slug) return;
+    const result = await dispatch(unstageAll(slug));
+    if (unstageAll.rejected.match(result)) toast.error(result.error?.message || 'Failed to unstage all');
+  };
 
   const handleDiscard = async (e, filePath) => {
     e.stopPropagation();
