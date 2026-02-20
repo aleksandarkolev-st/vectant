@@ -56,12 +56,14 @@ export function createClassicLayout() {
   // Create tabs
   const explorerTab = addTab(layout, createTab({ panelType: IDE_PANEL.EXPLORER, title: 'Explorer' }));
   const searchTab = addTab(layout, createTab({ panelType: IDE_PANEL.SEARCH, title: 'Search' }));
+  const gitTab = addTab(layout, createTab({ panelType: IDE_PANEL.GIT, title: 'Source Control' }));
+  const extensionsTab = addTab(layout, createTab({ panelType: IDE_PANEL.EXTENSIONS, title: 'Extensions' }));
   const welcomeTab = addTab(layout, createTab({ panelType: IDE_PANEL.EDITOR, title: 'Editor' }));
   const terminalTab = addTab(layout, createTab({ panelType: IDE_PANEL.TERMINAL, title: 'Terminal' }));
 
   // Sidebar tab group
   const sidebarGroup = addNode(layout, createTabGroupNode({
-    tabs: [explorerTab.id, searchTab.id],
+    tabs: [explorerTab.id, searchTab.id, gitTab.id, extensionsTab.id],
     activeTabId: explorerTab.id,
   }));
 

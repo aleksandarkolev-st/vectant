@@ -174,7 +174,7 @@ export const DOCK_POSITION = Object.freeze({
  * @property {number} [tabIndex] - for TAB_BAR zone, insertion index
  */
 
-export const LAYOUT_VERSION = 2;
+export const LAYOUT_VERSION = 3;
 
 export const MIN_PANEL_SIZE = 0.05; // 5% minimum
 export const DEFAULT_SPLIT_RATIO = 0.5;
