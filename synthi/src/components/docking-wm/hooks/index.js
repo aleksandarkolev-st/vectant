@@ -1,0 +1,11 @@
+/**
+ * @fileoverview Hooks barrel export.
+ */
+
+export { useDocking } from './use-docking';
+export { useDragPanel, parseDragPayload } from './use-drag-panel';
+export { useDropZone } from './use-drop-zone';
+export { useSplitter, useSplitterKeyboard } from './use-splitter';
+export { useFloatingWindow } from './use-floating-window';
+export { usePopout } from './use-popout';
+export { useLayoutPersistence } from './use-layout-persistence';
