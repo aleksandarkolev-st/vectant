@@ -9,3 +9,4 @@ export { useSplitter, useSplitterKeyboard } from './use-splitter';
 export { useFloatingWindow } from './use-floating-window';
 export { usePopout } from './use-popout';
 export { useLayoutPersistence } from './use-layout-persistence';
+export { useKeyboardNavigation, useFocusIndicator } from './use-keyboard-navigation';
