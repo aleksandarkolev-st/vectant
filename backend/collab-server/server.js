@@ -2686,6 +2686,31 @@ server.on('upgrade', (request, socket, head) => {
               }
               console.log(`[Session] Identify: user=${userId} session=${sessionId} role=${role}`);
             }
+          } else if (msg.type === 'permission:request') {
+            // Guest is requesting a permission from the host
+            const { permKey, displayName } = msg;
+            const guestId = ws._userId;
+            const sessionId = ws._sessionId;
+            if (!sessionId || !guestId || !permKey) return;
+            // Validate the permission key is legitimate
+            const validKeys = ['canEdit', 'canTerminal', 'canGit', 'canFileOps'];
+            if (!validKeys.includes(permKey)) return;
+            console.log(`[Session] Permission request: guest=${guestId} perm=${permKey} session=${sessionId}`);
+            // Forward to the host
+            sendToSessionHost(sessionId, 'permission:requested', {
+              guestId,
+              displayName: displayName || 'Guest',
+              permKey,
+            });
+          } else if (msg.type === 'permission:request-deny') {
+            // Host denies a permission request — forward to the requesting guest
+            const { guestId, permKey } = msg;
+            const sessionId = ws._sessionId;
+            if (!sessionId || !guestId || !permKey) return;
+            console.log(`[Session] Permission request denied: guest=${guestId} perm=${permKey} session=${sessionId}`);
+            sendToSessionUser(sessionId, guestId, 'permission:request-denied', {
+              permKey,
+            });
           }
         } catch (_) {}
       });
