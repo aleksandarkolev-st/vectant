@@ -694,8 +694,20 @@ class CollabSessionService extends EventTarget {
   // ── WebSocket for real-time events ────────────────────────────────────────
 
   _connectWs() {
+    // Bump connection tag so that stale onclose handlers from a previous WS
+    // don't trigger a redundant reconnect.
+    const tag = (this._wsConnectTag || 0) + 1;
+    this._wsConnectTag = tag;
+
     if (this._ws) {
       try { this._ws.close(); } catch (_) {}
+      this._ws = null;
+    }
+
+    // Clear any pending reconnect timer to prevent double-connections
+    if (this._reconnectTimer) {
+      clearTimeout(this._reconnectTimer);
+      this._reconnectTimer = null;
     }
 
     const wsUrl = COLLAB_URL.replace(/^http/, 'ws');
@@ -706,6 +718,9 @@ class CollabSessionService extends EventTarget {
     this._ws = new WebSocket(url);
 
     this._ws.onopen = () => {
+      // Stale socket — a newer _connectWs() call superseded this one
+      if (this._wsConnectTag !== tag) return;
+
       // Reset backoff on successful connection
       this._reconnectDelay = 300;
       this._wsStatus = 'connected';
@@ -722,6 +737,7 @@ class CollabSessionService extends EventTarget {
     };
 
     this._ws.onmessage = (event) => {
+      if (this._wsConnectTag !== tag) return;
       try {
         const msg = JSON.parse(event.data);
         this._handleWsMessage(msg);
@@ -729,6 +745,10 @@ class CollabSessionService extends EventTarget {
     };
 
     this._ws.onclose = () => {
+      // Stale socket — a newer _connectWs() call superseded this one.
+      // Don't touch state or schedule reconnect from the old handler.
+      if (this._wsConnectTag !== tag) return;
+
       this._wsStatus = 'disconnected';
       this._emit('ws:status', { status: 'disconnected' });
       // Reconnect with exponential backoff if still active
@@ -736,7 +756,12 @@ class CollabSessionService extends EventTarget {
         const delay = this._reconnectDelay || 300;
         this._reconnectDelay = Math.min(delay * 1.5, 10000); // cap at 10s
         console.warn(`[CollabSession] WS closed, reconnecting in ${delay}ms`);
-        setTimeout(() => this._connectWs(), delay);
+        this._reconnectTimer = setTimeout(() => {
+          this._reconnectTimer = null;
+          if (this._wsConnectTag === tag) {
+            this._connectWs();
+          }
+        }, delay);
       }
     };
 
@@ -885,6 +910,12 @@ class CollabSessionService extends EventTarget {
   // ── Internal helpers ──────────────────────────────────────────────────────
 
   _cleanup() {
+    // Invalidate any pending reconnect from a stale _connectWs() cycle
+    this._wsConnectTag = (this._wsConnectTag || 0) + 1;
+    if (this._reconnectTimer) {
+      clearTimeout(this._reconnectTimer);
+      this._reconnectTimer = null;
+    }
     if (this._ws) {
       try { this._ws.close(); } catch (_) {}
       this._ws = null;
