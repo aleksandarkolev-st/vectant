@@ -1,10 +1,11 @@
 "use client";
 
-import React, { useState, useCallback, useEffect } from 'react';
+import React, { useState, useCallback, useEffect, useMemo } from 'react';
 import { usePresence } from '@/hooks/usePresence';
 import { useCollabSession } from '@/hooks/useCollabSession';
 import collabSessionService from '@/services/collabSessionService';
 import getInitials from '@/utils/getInitials';
+import { getCurrentUser } from '@/services/userIdentity';
 import ShareModal from './ShareModal';
 import {
   Users, Check, X, Bell, Share2, LogOut, Eye, Edit3
@@ -37,6 +38,53 @@ export default function CollabToolbar({ slug }) {
     admitGuest, denyKnock, leaveSession,
   } = useCollabSession();
 
+  // Merge awareness-based users with session participants so ALL members
+  // always appear in the toolbar, even if they're not actively typing.
+  const allUsers = useMemo(() => {
+    const merged = new Map();
+
+    // 1. Start with awareness users (have real-time presence data)
+    for (const entry of users) {
+      const id = entry.user?.id;
+      if (id) merged.set(id, entry);
+    }
+
+    // 2. Add session participants that aren't already in awareness
+    if (session && (isHost || isGuest)) {
+      const currentUser = getCurrentUser();
+      // Add host
+      if (session.hostId && !merged.has(session.hostId)) {
+        merged.set(session.hostId, {
+          clientId: `session-host-${session.hostId}`,
+          user: {
+            id: session.hostId,
+            name: session.hostName || 'Host',
+            color: '#ff5757',
+            image: session.hostAvatar || null,
+          },
+        });
+      }
+      // Add guests
+      if (guests && guests.length > 0) {
+        for (const g of guests) {
+          if (g.guestId && !merged.has(g.guestId)) {
+            merged.set(g.guestId, {
+              clientId: `session-guest-${g.guestId}`,
+              user: {
+                id: g.guestId,
+                name: g.displayName || 'Guest',
+                color: '#3a8574',
+                image: g.avatarUrl || null,
+              },
+            });
+          }
+        }
+      }
+    }
+
+    return Array.from(merged.values());
+  }, [users, session, guests, isHost, isGuest]);
+
   const [shareModalOpen, setShareModalOpen] = useState(false);
 
   // ── Listen for global "open popup" requests (from toast actions, etc.) ──
@@ -65,7 +113,7 @@ export default function CollabToolbar({ slug }) {
   return (
     <div className="flex items-center gap-2">
       {/* ── Presence Avatars ────────────────────────────────────────── */}
-      <PresenceAvatars users={users} />
+      <PresenceAvatars users={allUsers} />
 
       {/* ── Role Badges ──────────────────────────────────────────────── */}
       {role === 'idle' && (
