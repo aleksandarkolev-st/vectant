@@ -132,17 +132,15 @@ export const DockingActivityBar = memo(function DockingActivityBar() {
         onClick={handler}
         className={`group relative w-full h-11 flex items-center justify-center transition-all duration-150 ${
           isActive
-            ? 'text-[#4aba9a] bg-[#0c0d12]'
-            : 'text-[#3d4256] hover:text-[#9ba2b8] hover:bg-[#0c0d12]'
+            ? 'th-bg-panel'
+            : 'th-bg-app'
         }`}
+        style={isActive ? { color: 'var(--accent-tertiary)' } : { color: 'var(--text-disabled)' }}
       >
         {/* Active indicator */}
         <div
-          className={`absolute left-0 top-1 bottom-1 w-[3px] rounded-r-full transition-all duration-200 ${
-            isActive
-              ? 'bg-gradient-to-b from-[#3a8574] to-[#4aba9a] shadow-[0_0_10px_rgba(58,133,116,0.6)]'
-              : 'bg-transparent'
-          }`}
+          className={`absolute left-0 top-1 bottom-1 w-[3px] rounded-r-full transition-all duration-200 bg-transparent`}
+          style={isActive ? { background: 'linear-gradient(to bottom, var(--accent-primary), var(--accent-tertiary))', boxShadow: '0 0 10px color-mix(in srgb, var(--accent-primary) 60%, transparent)' } : {}}
         />
 
         {/* Extension image icon or Lucide fallback */}
@@ -165,7 +163,8 @@ export const DockingActivityBar = memo(function DockingActivityBar() {
         {/* Tooltip */}
         <div
           role="tooltip"
-          className="pointer-events-none absolute left-full ml-3 top-1/2 -translate-y-1/2 z-50 whitespace-nowrap rounded-md border border-[#1a1b24] bg-[#0c0d12] px-2 py-1 text-[11px] font-medium text-[#f4f5f8] opacity-0 group-hover:opacity-100 transition shadow-lg"
+          className="pointer-events-none absolute left-full ml-3 top-1/2 -translate-y-1/2 z-50 whitespace-nowrap rounded-md border px-2 py-1 text-[11px] font-medium opacity-0 group-hover:opacity-100 transition shadow-lg"
+          style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-panel)', color: 'var(--text-primary)' }}
         >
           {label}
         </div>
@@ -174,7 +173,7 @@ export const DockingActivityBar = memo(function DockingActivityBar() {
   };
 
   return (
-    <div className="w-12 h-full flex flex-col items-center bg-[#08090d] border-r-2 border-[#1a1b24] flex-shrink-0">
+    <div className="w-12 h-full flex flex-col items-center border-r-2 flex-shrink-0" style={{ background: 'var(--bg-app)', borderColor: 'var(--border-subtle)' }}>
       {/* Top sidebar items */}
       <div className="w-full flex flex-col pt-1">
         {TOP_ITEMS.map(renderButton)}
@@ -182,7 +181,7 @@ export const DockingActivityBar = memo(function DockingActivityBar() {
         {/* Dynamic extension sidebar items */}
         {extensionItems.length > 0 && (
           <>
-            <div className="mx-3 my-1 border-t border-[#1a1b24]" />
+            <div className="mx-3 my-1 border-t" style={{ borderColor: 'var(--border-subtle)' }} />
             {extensionItems.map((item) =>
               renderButton({ ...item, onClick: () => handleExtensionClick(item) })
             )}
@@ -195,7 +194,8 @@ export const DockingActivityBar = memo(function DockingActivityBar() {
         <button
           type="button"
           aria-label="Settings"
-          className="group relative w-full h-11 flex items-center justify-center text-[#3d4256] hover:text-[#9ba2b8] hover:bg-[#0c0d12] transition-all duration-150"
+          className="group relative w-full h-11 flex items-center justify-center transition-all duration-150"
+          style={{ color: 'var(--text-disabled)' }}
         >
           <Settings
             className="w-5 h-5 opacity-50 group-hover:opacity-80 transition-all"
@@ -203,16 +203,18 @@ export const DockingActivityBar = memo(function DockingActivityBar() {
           />
           <div
             role="tooltip"
-            className="pointer-events-none absolute left-full ml-3 top-1/2 -translate-y-1/2 z-50 whitespace-nowrap rounded-md border border-[#1a1b24] bg-[#0c0d12] px-2 py-1 text-[11px] font-medium text-[#f4f5f8] opacity-0 group-hover:opacity-100 transition shadow-lg"
+            className="pointer-events-none absolute left-full ml-3 top-1/2 -translate-y-1/2 z-50 whitespace-nowrap rounded-md border px-2 py-1 text-[11px] font-medium opacity-0 group-hover:opacity-100 transition shadow-lg"
+            style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-panel)', color: 'var(--text-primary)' }}
           >
             Settings
           </div>
         </button>
         <div
-          className="w-7 h-7 rounded-lg bg-[#3a857412] border border-[#3a857430] flex items-center justify-center cursor-pointer hover:border-[#3a857460] hover:bg-[#3a857420] transition-all group mt-2"
+          className="w-7 h-7 rounded-lg border flex items-center justify-center cursor-pointer transition-all group mt-2"
+          style={{ background: 'color-mix(in srgb, var(--accent-primary) 7%, transparent)', borderColor: 'color-mix(in srgb, var(--accent-primary) 19%, transparent)' }}
           title="Synthi AI"
         >
-          <Sparkles className="w-3.5 h-3.5 text-[#3a8574] opacity-70 group-hover:opacity-100" strokeWidth={2} />
+          <Sparkles className="w-3.5 h-3.5 opacity-70 group-hover:opacity-100" style={{ color: 'var(--accent-primary)' }} strokeWidth={2} />
         </div>
       </div>
     </div>
