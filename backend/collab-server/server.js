@@ -1504,6 +1504,60 @@ const server = http.createServer(async (req, res) => {
   // ========================================================================
   // SESSION INVITE API — Request to join another user's session
   // ========================================================================
+
+  /**
+   * POST /session/join-by-code
+   * Join a session using a short room code. Triggers the knock flow
+   * (or auto-admit if the host previously invited this user).
+   */
+  if (req.url.startsWith('/session/join-by-code') && req.method === 'POST') {
+    let body = '';
+    req.on('data', chunk => body += chunk);
+    req.on('end', () => {
+      try {
+        const data = JSON.parse(body);
+        const { code, guestId, displayName, avatarUrl } = data;
+        if (!code || !guestId) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'code and guestId are required' }));
+          return;
+        }
+        const session = sessionManager.getSessionByRoomCode(code);
+        if (!session) {
+          res.writeHead(404, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Invalid or expired room code' }));
+          return;
+        }
+        // Block check
+        const hostBlocked = blockedBy.get(session.hostId);
+        const guestBlocked = blockedBy.get(guestId);
+        if ((hostBlocked && hostBlocked.has(guestId)) || (guestBlocked && guestBlocked.has(session.hostId))) {
+          res.writeHead(403, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Cannot join this session' }));
+          return;
+        }
+        // Knock on the session (may auto-admit if invited)
+        sessionManager.knock(session.id, {
+          guestId,
+          displayName: displayName || guestId,
+          avatarUrl: avatarUrl || '',
+        });
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          success: true,
+          sessionId: session.id,
+          hostName: session.hostName,
+          slug: session.slug,
+          message: 'Join request sent',
+        }));
+      } catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: e.message }));
+      }
+    });
+    return;
+  }
+
   if (req.url.startsWith('/session/request-join/') && req.method === 'POST') {
     const urlObj = new URL(req.url, `http://${req.headers.host}`);
     const targetSessionId = urlObj.pathname.split('/')[3];
