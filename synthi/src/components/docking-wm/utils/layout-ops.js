@@ -42,7 +42,7 @@ function cloneNode(node) {
  * @returns {import('../types').LayoutState}
  */
 export function splitNode(state, targetNodeId, tabId, zone, ratio = DEFAULT_SPLIT_RATIO) {
-  const next = cloneState(state);
+  let next = cloneState(state);
   const target = cloneNode(next.nodes[targetNodeId]);
   next.nodes[targetNodeId] = target;
 
@@ -359,7 +359,15 @@ export function dockFloat(state, floatId, targetTabGroupId, insertIndex) {
   const fw = state.floating[floatId];
   if (!fw) return state;
 
-  let next = addTabToGroup(state, targetTabGroupId, fw.tabId, insertIndex, true);
+  // Resolve null target to the focused group or first available
+  const resolvedTarget =
+    targetTabGroupId ||
+    state.focusedTabGroupId ||
+    findFirstTabGroup(state, state.rootId)?.id;
+
+  if (!resolvedTarget) return state;
+
+  let next = addTabToGroup(state, resolvedTarget, fw.tabId, insertIndex, true);
   next = cloneState(next);
   delete next.floating[floatId];
 
@@ -436,7 +444,15 @@ export function dockPopout(state, popoutIdVal, targetTabGroupId) {
   const pw = state.popouts[popoutIdVal];
   if (!pw) return state;
 
-  let next = addTabToGroup(state, targetTabGroupId, pw.tabId, undefined, true);
+  // Resolve null target to the focused group or first available
+  const resolvedTarget =
+    targetTabGroupId ||
+    state.focusedTabGroupId ||
+    findFirstTabGroup(state, state.rootId)?.id;
+
+  if (!resolvedTarget) return state;
+
+  let next = addTabToGroup(state, resolvedTarget, pw.tabId, undefined, true);
   next = cloneState(next);
   delete next.popouts[popoutIdVal];
 

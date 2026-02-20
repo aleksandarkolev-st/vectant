@@ -7,7 +7,7 @@
 
 import { useCallback, useRef, useState } from 'react';
 import { useDispatch } from 'react-redux';
-import { setDragSource } from '../state/layout-slice';
+import { setDragSource, floatTabAction } from '../state/layout-slice';
 import { DRAG_START_THRESHOLD } from '../types';
 
 /**
@@ -74,9 +74,28 @@ export function useDragPanel({ tabId, tabGroupId, tabIndex, onDragStart, onDragE
     (e) => {
       setIsDragging(false);
       dispatch(setDragSource(null));
+
+      // If the drop didn't land on a valid target, float the tab
+      // dropEffect is 'none' when the browser didn't process a drop event
+      if (e.dataTransfer.dropEffect === 'none' && tabId) {
+        // Use the mouse position as the floating window origin
+        // screenX/screenY may be 0 at end; fallback to last known position
+        const x = e.clientX > 0 ? e.clientX - 100 : 100;
+        const y = e.clientY > 0 ? e.clientY - 20 : 100;
+        dispatch(
+          floatTabAction({
+            tabId,
+            x: Math.max(0, x),
+            y: Math.max(0, y),
+            width: 500,
+            height: 400,
+          })
+        );
+      }
+
       onDragEnd?.(e);
     },
-    [dispatch, onDragEnd]
+    [tabId, dispatch, onDragEnd]
   );
 
   const dragProps = {
