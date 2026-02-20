@@ -653,7 +653,7 @@ class CollabSessionService extends EventTarget {
 
     this._ws.onopen = () => {
       // Reset backoff on successful connection
-      this._reconnectDelay = 1000;
+      this._reconnectDelay = 300;
       this._wsStatus = 'connected';
       this._emit('ws:status', { status: 'connected' });
       // Send identity message so server can re-associate this socket
@@ -679,8 +679,8 @@ class CollabSessionService extends EventTarget {
       this._emit('ws:status', { status: 'disconnected' });
       // Reconnect with exponential backoff if still active
       if (this.isActive || this._role === 'knocking') {
-        const delay = this._reconnectDelay || 1000;
-        this._reconnectDelay = Math.min(delay * 2, 30000); // cap at 30s
+        const delay = this._reconnectDelay || 300;
+        this._reconnectDelay = Math.min(delay * 1.5, 10000); // cap at 10s
         console.warn(`[CollabSession] WS closed, reconnecting in ${delay}ms`);
         setTimeout(() => this._connectWs(), delay);
       }

@@ -1381,14 +1381,8 @@ const EditorPanel = ({
         const timer = setTimeout(() => {
             // Safety: ensure Redux has the absolute latest content
             dispatch(updateContent(latestCodeRef.current));
-            dispatch(saveFileContentThunk()).then(() => {
-                // Force git status refresh after autosave — the normal
-                // fetchGitStatus inside saveFileContentThunk may be
-                // deduplicated by the _statusFetching guard.  This explicit
-                // delayed dispatch ensures Source Control updates.
-                setTimeout(() => dispatch(fetchGitStatus(slug)), 200);
-            });
-        }, 900);
+            dispatch(saveFileContentThunk());
+        }, 400);
         return () => clearTimeout(timer);
     }, [autoSaveEnabled, activeFile, dispatch, code, savedContent, slug]);
 
