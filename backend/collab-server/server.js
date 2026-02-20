@@ -478,6 +478,11 @@ class ValidatingPersistence {
             entry.lastDiskWrite = Date.now();
             // Also update the hash cache with the content we just wrote
             fileHashCache.set(docName, { hash: computeHash(content), timestamp: Date.now() });
+            // Notify clients so the Source Control panel refreshes
+            broadcastGitStatusChanged(slug, filePath, {
+              userId: effectiveUserId,
+              sessionId: parsed.sessionId || null,
+            });
           } catch (e) {
             console.error(`[Collab AutoFlush] Disk write failed for ${filePath}:`, e.message);
           }

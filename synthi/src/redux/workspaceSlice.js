@@ -135,8 +135,18 @@ export const saveFileContentThunk = createAsyncThunk(
             dispatch(fetchGitStatus(slug));
 
         } catch (e) {
-            console.error('[Save] Failed to save file', e);
-            throw e; // Re-throw so the thunk is rejected
+            // Retry once on transient failures (network hiccup, auth race).
+            // If the first attempt failed because auth wasn't ready, the
+            // auth-ready guard in gitClient.request() will have resolved
+            // the userId by now.
+            console.warn('[Save] First sync attempt failed, retrying once…', e.message || e);
+            try {
+                await dispatch(syncFileToGit({ slug, filePath: activeFile.path, content: contentToSave })).unwrap();
+                dispatch(fetchGitStatus(slug));
+            } catch (retryErr) {
+                console.error('[Save] Retry also failed', retryErr);
+                throw retryErr;
+            }
         }
         
         // Ensure tree is revalidated silently after save
