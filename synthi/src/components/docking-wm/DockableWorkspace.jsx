@@ -24,6 +24,9 @@
 import { memo, useCallback, useEffect, useMemo, useRef } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 
+// Docking CSS
+import './styles/docking.css';
+
 // Docking system imports
 import { DockingProvider } from './components/DockingProvider';
 import { DockingContainer } from './components/DockingContainer';
@@ -50,20 +53,15 @@ import {
 import { loadLayoutFromStorage } from './utils/serialization';
 
 // ────────────────────────────────────────────────────────
-//  Workspace Panel Context
+//  Workspace Panel Context (shared module to avoid circular deps)
 // ────────────────────────────────────────────────────────
-import { createContext, useContext } from 'react';
+import {
+  WorkspacePanelContext,
+  useWorkspacePanelContext,
+} from './context/workspace-panel-context';
 
-/**
- * Context for passing workspace-level props to panel components.
- * Panel components can `useWorkspacePanelContext()` to get editor,
- * activeFile, dispatch, etc.
- */
-const WorkspacePanelContext = createContext(null);
-
-export function useWorkspacePanelContext() {
-  return useContext(WorkspacePanelContext);
-}
+// Re-export so existing consumers still work
+export { useWorkspacePanelContext };
 
 // ────────────────────────────────────────────────────────
 //  Inner component (needs Redux available)
@@ -101,7 +99,7 @@ function DockableWorkspaceInner({
   }, [workspaceSlug, defaultPreset, dispatch]);
 
   // ── Auto-persist layout ──
-  useLayoutPersistence(workspaceSlug, layout, { debounceMs: 800 });
+  useLayoutPersistence({ workspaceSlug, debounceMs: 800 });
 
   // ── Focus indicator ──
   useFocusIndicator(focusedGroupId);

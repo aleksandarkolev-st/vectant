@@ -6,11 +6,23 @@
  * Each definition tells the docking system everything it needs to
  * lazily render, serialise and restore a specific IDE panel.
  *
- * Panel components are loaded via `next/dynamic` to keep the initial
- * bundle lean — only the panels actually visible will be code-split in.
+ * The `component` field for each panel points to the docking-aware
+ * wrapper (from panel-wrappers.jsx), which imports the real component
+ * via next/dynamic and reads shared state from WorkspacePanelContext.
  */
 
-import dynamic from 'next/dynamic';
+import {
+  ExplorerPanelWrapper,
+  EditorPanelWrapper,
+  TerminalPanelWrapper,
+  ChatPanelWrapper,
+  ProblemsPanelWrapper,
+  SearchPanelWrapper,
+  GitPanelWrapper,
+  ExtensionsPanelWrapper,
+  OutputPanelWrapper,
+  PreviewPanelWrapper,
+} from './panel-wrappers';
 
 // ────────────────────────────────────────────────────────
 //  Panel type keys (match PANEL_TYPES in panel-registry)
@@ -30,44 +42,6 @@ export const IDE_PANEL = Object.freeze({
 });
 
 // ────────────────────────────────────────────────────────
-//  Lazy component loaders
-// ────────────────────────────────────────────────────────
-const PanelPlaceholder = () => (
-  <div className="flex h-full w-full items-center justify-center text-xs text-zinc-500">
-    Loading…
-  </div>
-);
-
-const LazyFileTree = dynamic(
-  () => import('@/app/workspace/[slug]/FileTree'),
-  { ssr: false, loading: PanelPlaceholder },
-);
-const LazySearchView = dynamic(
-  () => import('@/app/workspace/[slug]/SearchView'),
-  { ssr: false, loading: PanelPlaceholder },
-);
-const LazyGitSummary = dynamic(
-  () => import('@/components/git/GitSummaryPanel').then(m => m),
-  { ssr: false, loading: PanelPlaceholder },
-);
-const LazyExtensionSidebar = dynamic(
-  () => import('@/components/extensions/ExtensionSidebar'),
-  { ssr: false, loading: PanelPlaceholder },
-);
-const LazyEditor = dynamic(
-  () => import('@/app/workspace/[slug]/Editor/Editor'),
-  { ssr: false, loading: PanelPlaceholder },
-);
-const LazyProblemsPanel = dynamic(
-  () => import('@/components/analysis').then(m => ({ default: m.ProblemsPanel })),
-  { ssr: false, loading: PanelPlaceholder },
-);
-const LazyAIChat = dynamic(
-  () => import('@/components/chat/AIChatWindow'),
-  { ssr: false, loading: PanelPlaceholder },
-);
-
-// ────────────────────────────────────────────────────────
 //  Panel definition objects
 // ────────────────────────────────────────────────────────
 
@@ -83,7 +57,7 @@ export const IDE_PANEL_DEFINITIONS = [
     displayName: 'Explorer',
     icon: 'files',
     category: 'sidebar',
-    component: LazyFileTree,
+    component: ExplorerPanelWrapper,
     allowMultiple: false,
     defaultLocation: 'left',
     closable: false,
@@ -93,7 +67,7 @@ export const IDE_PANEL_DEFINITIONS = [
     displayName: 'Search',
     icon: 'search',
     category: 'sidebar',
-    component: LazySearchView,
+    component: SearchPanelWrapper,
     allowMultiple: false,
     defaultLocation: 'left',
     closable: true,
@@ -103,7 +77,7 @@ export const IDE_PANEL_DEFINITIONS = [
     displayName: 'Source Control',
     icon: 'git-branch',
     category: 'sidebar',
-    component: LazyGitSummary,
+    component: GitPanelWrapper,
     allowMultiple: false,
     defaultLocation: 'left',
     closable: true,
@@ -113,7 +87,7 @@ export const IDE_PANEL_DEFINITIONS = [
     displayName: 'Extensions',
     icon: 'puzzle',
     category: 'sidebar',
-    component: LazyExtensionSidebar,
+    component: ExtensionsPanelWrapper,
     allowMultiple: false,
     defaultLocation: 'left',
     closable: true,
@@ -123,7 +97,7 @@ export const IDE_PANEL_DEFINITIONS = [
     displayName: 'Editor',
     icon: 'file-code',
     category: 'editor',
-    component: LazyEditor,
+    component: EditorPanelWrapper,
     allowMultiple: true,
     defaultLocation: 'center',
     closable: true,
@@ -133,7 +107,7 @@ export const IDE_PANEL_DEFINITIONS = [
     displayName: 'Terminal',
     icon: 'terminal',
     category: 'bottom',
-    component: null, // Terminal uses XTerm directly; rendered by panel wrapper
+    component: TerminalPanelWrapper,
     allowMultiple: true,
     defaultLocation: 'bottom',
     closable: true,
@@ -143,7 +117,7 @@ export const IDE_PANEL_DEFINITIONS = [
     displayName: 'AI Chat',
     icon: 'message-square',
     category: 'sidebar',
-    component: LazyAIChat,
+    component: ChatPanelWrapper,
     allowMultiple: false,
     defaultLocation: 'right',
     closable: true,
@@ -153,7 +127,7 @@ export const IDE_PANEL_DEFINITIONS = [
     displayName: 'Problems',
     icon: 'alert-circle',
     category: 'bottom',
-    component: LazyProblemsPanel,
+    component: ProblemsPanelWrapper,
     allowMultiple: false,
     defaultLocation: 'bottom',
     closable: true,
@@ -163,7 +137,7 @@ export const IDE_PANEL_DEFINITIONS = [
     displayName: 'Output',
     icon: 'list',
     category: 'bottom',
-    component: null, // Will be wired separately
+    component: OutputPanelWrapper,
     allowMultiple: false,
     defaultLocation: 'bottom',
     closable: true,
@@ -173,7 +147,7 @@ export const IDE_PANEL_DEFINITIONS = [
     displayName: 'Preview',
     icon: 'globe',
     category: 'editor',
-    component: null, // Will render emulator / web preview
+    component: PreviewPanelWrapper,
     allowMultiple: false,
     defaultLocation: 'center',
     closable: true,

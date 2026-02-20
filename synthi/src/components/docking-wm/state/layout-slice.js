@@ -112,10 +112,21 @@ const layoutSlice = createSlice({
 
     /**
      * Activate (select) a tab.
-     * Payload: { tabGroupId, tabId }
+     * Payload: { tabGroupId?, tabId }
+     * If tabGroupId is omitted, finds the group containing the tab.
      */
     activateTabAction(state, action) {
-      const { tabGroupId, tabId } = action.payload;
+      let { tabGroupId, tabId } = action.payload;
+      if (!tabGroupId && tabId) {
+        // Find the tab group containing this tab
+        for (const [nodeId, node] of Object.entries(state.nodes)) {
+          if (node.type === NODE_TYPE.TAB_GROUP && node.tabs?.includes(tabId)) {
+            tabGroupId = nodeId;
+            break;
+          }
+        }
+      }
+      if (!tabGroupId) return state;
       return activateTab(state, tabGroupId, tabId);
     },
 
@@ -257,7 +268,10 @@ const layoutSlice = createSlice({
      * Payload: { tabGroupId }
      */
     setFocusedTabGroup(state, action) {
-      return { ...state, focusedTabGroupId: action.payload.tabGroupId };
+      const id = typeof action.payload === 'string'
+        ? action.payload
+        : action.payload?.tabGroupId ?? null;
+      return { ...state, focusedTabGroupId: id };
     },
 
     // ── Batch cleanup ──────────────────────────────────

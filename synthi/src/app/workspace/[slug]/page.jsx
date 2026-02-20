@@ -64,7 +64,7 @@ import { DockableWorkspace } from '@/components/docking-wm/DockableWorkspace';
 
 // Feature flag: set to true to enable the new docking layout.
 // When false, the existing rigid ResizablePanelGroup layout is used.
-const USE_DOCKING_WM = false;
+const USE_DOCKING_WM = true;
 
 export default function EditorPage({ params }) {
     const dispatch = useAppDispatch();
@@ -1940,10 +1940,6 @@ export default function EditorPage({ params }) {
                             onCloseProblems: () => setShowProblemsPanel(false),
                             onToggleOrientation: toggleTreeOrientation,
                             onOpenScm: () => setSidebarView('scm'),
-                            components: {
-                                FileTree: FileTreeView,
-                                // Other components are loaded lazily via panel definitions
-                            },
                             editorProps: {
                                 innerRef: setEditor,
                                 slug,

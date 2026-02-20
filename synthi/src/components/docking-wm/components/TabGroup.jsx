@@ -51,7 +51,7 @@ export const TabGroup = memo(function TabGroup({ nodeId }) {
     <div
       {...dropProps}
       data-drop-node-id={nodeId}
-      data-tab-group-id={nodeId}
+      data-tabgroup-id={nodeId}
       className={`dock-tab-group ${isFocused ? 'dock-tab-group--focused' : ''} ${
         isOver ? 'dock-tab-group--drag-over' : ''
       }`}

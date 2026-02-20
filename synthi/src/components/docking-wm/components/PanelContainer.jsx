@@ -59,6 +59,27 @@ export const PanelContainer = memo(function PanelContainer({
 
   const PanelComponent = panelDef.component;
 
+  if (!PanelComponent) {
+    return (
+      <div
+        className="dock-panel-missing"
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          height: '100%',
+          color: 'var(--dock-tab-fg, #969696)',
+          fontSize: '13px',
+          fontFamily: 'var(--dock-font, inherit)',
+        }}
+      >
+        <span>
+          Panel &quot;{tab.panelType}&quot; has no component
+        </span>
+      </div>
+    );
+  }
+
   return (
     <div
       className="dock-panel-container"
