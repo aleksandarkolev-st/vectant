@@ -19,10 +19,10 @@ const COLLAB_URL = (
 // ── Permission defaults ─────────────────────────────────────────────────────
 
 export const DEFAULT_GUEST_PERMISSIONS = Object.freeze({
-  canEdit: false,
+  canEdit: true,
   canTerminal: false,
   canGit: false,
-  canFileOps: false,
+  canFileOps: true,
 });
 
 export const HOST_PERMISSIONS = Object.freeze({

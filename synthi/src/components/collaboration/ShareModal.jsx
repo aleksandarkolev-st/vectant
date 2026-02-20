@@ -116,7 +116,7 @@ export default function ShareModal({ slug, open, onClose }) {
       hostId: userId,
       hostName: userName,
       slug,
-      defaultPerms: { canEdit: true, canTerminal: false, canGit: false, canFileOps: false },
+      defaultPerms: { canEdit: true, canTerminal: false, canGit: false, canFileOps: true },
     });
   }, [createSession, slug]);
 

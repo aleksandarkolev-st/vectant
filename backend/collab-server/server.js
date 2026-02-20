@@ -1376,7 +1376,7 @@ const server = http.createServer(async (req, res) => {
             hostAvatar: hostAvatar || '',
             slug,
             worktreePath: '', // resolved at git-op time
-            defaultPerms: { canEdit: true, canTerminal: false, canGit: false, canFileOps: false },
+            defaultPerms: { canEdit: true, canTerminal: false, canGit: false, canFileOps: true },
           });
         }
 
@@ -1459,7 +1459,7 @@ const server = http.createServer(async (req, res) => {
             hostAvatar: '',
             slug,
             worktreePath: '',
-            defaultPerms: { canEdit: true, canTerminal: false, canGit: false, canFileOps: false },
+            defaultPerms: { canEdit: true, canTerminal: false, canGit: false, canFileOps: true },
           });
           console.log(`[Session] Auto-created session ${session.id} for host ${targetUserId} (on demand)`);
 

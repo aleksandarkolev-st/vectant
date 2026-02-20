@@ -29,10 +29,10 @@ const EventEmitter = require('events');
  * The Host can override these per-guest at invite time or on the fly.
  */
 const DEFAULT_GUEST_PERMISSIONS = Object.freeze({
-  canEdit:     false,  // Yjs updates (code editing)
+  canEdit:     true,   // Yjs updates (code editing)
   canTerminal: false,  // PTY stdin writes
   canGit:      false,  // Git mutations (commit, push, stage …)
-  canFileOps:  false,  // Create / delete / rename files
+  canFileOps:  true,   // Create / delete / rename files
 });
 
 /**
