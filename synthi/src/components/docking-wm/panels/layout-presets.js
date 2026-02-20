@@ -56,7 +56,7 @@ export function createClassicLayout() {
   // Create tabs
   const explorerTab = addTab(layout, createTab({ panelType: IDE_PANEL.EXPLORER, title: 'Explorer' }));
   const searchTab = addTab(layout, createTab({ panelType: IDE_PANEL.SEARCH, title: 'Search' }));
-  const welcomeTab = addTab(layout, createTab({ panelType: IDE_PANEL.EDITOR, title: 'Welcome', data: { welcome: true } }));
+  const welcomeTab = addTab(layout, createTab({ panelType: IDE_PANEL.EDITOR, title: 'Editor' }));
   const terminalTab = addTab(layout, createTab({ panelType: IDE_PANEL.TERMINAL, title: 'Terminal' }));
   const problemsTab = addTab(layout, createTab({ panelType: IDE_PANEL.PROBLEMS, title: 'Problems' }));
 
@@ -114,7 +114,7 @@ export function createClassicLayout() {
 export function createFocusLayout() {
   const layout = createEmptyLayout();
 
-  const editorTab = addTab(layout, createTab({ panelType: IDE_PANEL.EDITOR, title: 'Welcome', data: { welcome: true } }));
+  const editorTab = addTab(layout, createTab({ panelType: IDE_PANEL.EDITOR, title: 'Editor' }));
   const editorGroup = addNode(layout, createTabGroupNode({
     tabs: [editorTab.id],
     activeTabId: editorTab.id,
@@ -213,7 +213,7 @@ export function createAIAssistedLayout() {
   const layout = createEmptyLayout();
 
   const explorerTab = addTab(layout, createTab({ panelType: IDE_PANEL.EXPLORER, title: 'Explorer' }));
-  const editorTab = addTab(layout, createTab({ panelType: IDE_PANEL.EDITOR, title: 'Welcome' }));
+  const editorTab = addTab(layout, createTab({ panelType: IDE_PANEL.EDITOR, title: 'Editor' }));
   const chatTab = addTab(layout, createTab({ panelType: IDE_PANEL.CHAT, title: 'AI Chat' }));
   const terminalTab = addTab(layout, createTab({ panelType: IDE_PANEL.TERMINAL, title: 'Terminal' }));
   const problemsTab = addTab(layout, createTab({ panelType: IDE_PANEL.PROBLEMS, title: 'Problems' }));
@@ -286,7 +286,7 @@ export function createThreeColumnLayout() {
 
   const explorerTab = addTab(layout, createTab({ panelType: IDE_PANEL.EXPLORER, title: 'Explorer' }));
   const gitTab = addTab(layout, createTab({ panelType: IDE_PANEL.GIT, title: 'Source Control' }));
-  const editorTab = addTab(layout, createTab({ panelType: IDE_PANEL.EDITOR, title: 'Welcome' }));
+  const editorTab = addTab(layout, createTab({ panelType: IDE_PANEL.EDITOR, title: 'Editor' }));
   const chatTab = addTab(layout, createTab({ panelType: IDE_PANEL.CHAT, title: 'AI Chat' }));
   const problemsTab = addTab(layout, createTab({ panelType: IDE_PANEL.PROBLEMS, title: 'Problems' }));
 
