@@ -37,10 +37,12 @@ export const gitClient = {
         }
         if (!response.ok) {
             // Handle structured error responses
-            const error = new Error((body && (body.error || body.message)) || response.statusText || 'Unknown git error');
-            error.code = body?.code || 'UNKNOWN';
+            // Prefer body.message (human-readable) over body.error (machine key like "permission_denied")
+            const error = new Error((body && (body.message || body.error)) || response.statusText || 'Unknown git error');
+            error.code = body?.error || body?.code || 'UNKNOWN';
             error.details = body?.details || null;
             error.statusCode = response.status;
+            error.required = body?.required || null;
             throw error;
         }
         return body;
