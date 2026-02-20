@@ -407,16 +407,17 @@ class ValidatingPersistence {
   /**
    * Set up auto-flush observer for a Y.js document.
    *
-   * EDITOR-ONLY MODE: The observer no longer writes to disk or GCS
-   * automatically on every keystroke.  Instead it only keeps the
-   * in-memory hash cache up to date and marks the document as dirty.
-   * Actual disk/GCS writes happen on explicit save (via the 'sync'
-   * action which calls gitService.syncFile) or when the document is
-   * closed (writeState).
+   * The observer keeps the in-memory hash cache up to date on every edit
+   * (debounced at FLUSH_DEBOUNCE_MS) AND writes the content to the
+   * git working tree on a longer throttled interval (DISK_FLUSH_THROTTLE_MS).
    *
-   * This ensures changes stay "editor-only" — visible in the Yjs
-   * CRDT for real-time collab but NOT persisted until the user
-   * explicitly saves.
+   * Disk writes are essential so that `git status` reflects in-progress
+   * edits — without them, the Source Control panel stays empty because
+   * the working tree never diverges from HEAD.
+   *
+   * The `entry.dirty` flag is cleared by explicit saves (via the 'sync'
+   * REST action).  The throttled disk write checks this flag and skips
+   * if an explicit save already persisted newer content.
    */
   _setupAutoFlush(docName, ydoc) {
     // Only set up for workspace documents
@@ -426,21 +427,25 @@ class ValidatingPersistence {
     // Clean up existing observer if any
     this._cleanupAutoFlush(docName);
 
-    const { filePath } = parsed;
+    const { slug, filePath } = parsed;
     
     // Use the canonical text type
     const targetText = ydoc.getText(YTEXT_TYPE);
     if (!targetText) return;
 
+    // Minimum interval between disk writes per document (ms).
+    const DISK_FLUSH_THROTTLE_MS = 2000;
+
     // Store the entry reference up-front so the observer closure can update
     // `entry.flushTimer` in-place — _cleanupAutoFlush reads `entry.flushTimer`
     // to cancel pending timers, so the two MUST share the same object.
-    const entry = { ydoc, text: targetText, observer: null, flushTimer: null, docLevelObserver: null, dirty: false };
+    const entry = { ydoc, text: targetText, observer: null, flushTimer: null, diskFlushTimer: null, docLevelObserver: null, dirty: false, lastDiskWrite: 0 };
 
     const observer = () => {
       // Mark as dirty so writeState / explicit-save knows content changed
       entry.dirty = true;
-      // Update in-memory hash cache (cheap — no I/O)
+
+      // ── 1. Hash cache update (fast, debounced at FLUSH_DEBOUNCE_MS) ──
       if (entry.flushTimer) clearTimeout(entry.flushTimer);
       entry.flushTimer = setTimeout(() => {
         entry.flushTimer = null;
@@ -451,6 +456,33 @@ class ValidatingPersistence {
           console.error(`[Collab AutoFlush] Hash update failed for ${filePath}:`, e.message);
         }
       }, this.FLUSH_DEBOUNCE_MS);
+
+      // ── 2. Disk write (throttled at DISK_FLUSH_THROTTLE_MS) ──────────
+      // Ensures `git status` reflects ongoing edits.  Skipped when an
+      // explicit save already flushed the latest content (dirty === false).
+      if (!entry.diskFlushTimer) {
+        const delay = Math.max(0, DISK_FLUSH_THROTTLE_MS - (Date.now() - entry.lastDiskWrite));
+        entry.diskFlushTimer = setTimeout(async () => {
+          entry.diskFlushTimer = null;
+          // Skip if an explicit save already wrote newer content
+          if (!entry.dirty) return;
+          try {
+            const content = targetText.toString();
+            const effectiveUserId = resolveEffectiveUserForDoc(parsed);
+            if (!effectiveUserId) return;
+            const repoPath = gitService.getEffectiveRepoPath(slug, effectiveUserId);
+            if (!fs.existsSync(repoPath)) return;
+            const fullPath = path.join(repoPath, filePath);
+            await fsPromises.mkdir(path.dirname(fullPath), { recursive: true });
+            await fsPromises.writeFile(fullPath, content, 'utf-8');
+            entry.lastDiskWrite = Date.now();
+            // Also update the hash cache with the content we just wrote
+            fileHashCache.set(docName, { hash: computeHash(content), timestamp: Date.now() });
+          } catch (e) {
+            console.error(`[Collab AutoFlush] Disk write failed for ${filePath}:`, e.message);
+          }
+        }, delay);
+      }
     };
 
     // Observe changes on the text type
@@ -492,6 +524,9 @@ class ValidatingPersistence {
         if (entry.flushTimer) {
           clearTimeout(entry.flushTimer);
         }
+        if (entry.diskFlushTimer) {
+          clearTimeout(entry.diskFlushTimer);
+        }
       } catch (e) {
         console.warn(`[Collab AutoFlush] Cleanup error for ${docName}:`, e.message);
       }
@@ -503,8 +538,9 @@ class ValidatingPersistence {
    * Explicitly flush the current CRDT content for a document to disk and
    * GCS.  Called from the 'sync' action handler when the user saves.
    *
-   * This replaces the old auto-flush behavior — disk/GCS writes now only
-   * happen on demand rather than on every keystroke.
+   * The auto-flush observer writes edits to disk on a debounced schedule
+   * (so git status stays current), but explicit saves also flush to GCS
+   * and broadcast events.
    *
    * @param {string} docName  e.g. "workspace:slug:path/to/file.js"
    */
