@@ -1,0 +1,235 @@
+/**
+ * Synthi Docking Window Manager — Styles
+ *
+ * CSS custom properties for theming are set on .dock-container.
+ * Override these variables to customize the appearance.
+ */
+
+/* ─── Container ──────────────────────────────────────── */
+
+.dock-container {
+  font-family: var(--dock-font, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif);
+  font-size: 13px;
+  line-height: 1.4;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+.dock-container--dragging {
+  cursor: grabbing !important;
+}
+
+.dock-container--dragging * {
+  cursor: grabbing !important;
+}
+
+/* ─── Tab Bar ────────────────────────────────────────── */
+
+.dock-tab-bar__scroll::-webkit-scrollbar {
+  display: none;
+}
+
+.dock-tab-bar__action:hover {
+  background-color: rgba(255, 255, 255, 0.08) !important;
+  opacity: 1 !important;
+}
+
+/* ─── Tabs ───────────────────────────────────────────── */
+
+.dock-tab:hover {
+  color: var(--dock-tab-active-fg, #fff) !important;
+  background-color: rgba(255, 255, 255, 0.04) !important;
+}
+
+.dock-tab:hover .dock-tab__close {
+  opacity: 0.5 !important;
+}
+
+.dock-tab__close:hover {
+  background-color: rgba(255, 255, 255, 0.1) !important;
+  opacity: 1 !important;
+}
+
+.dock-tab--active:hover {
+  background-color: var(--dock-tab-active-bg, #1e1e1e) !important;
+}
+
+.dock-tab--dragging {
+  opacity: 0.4 !important;
+}
+
+/* ─── Splitter ───────────────────────────────────────── */
+
+.dock-splitter:hover .dock-splitter__line {
+  background-color: var(--dock-accent, #007acc) !important;
+  opacity: 0.6;
+}
+
+.dock-splitter--active .dock-splitter__line {
+  background-color: var(--dock-accent, #007acc) !important;
+  opacity: 1 !important;
+}
+
+.dock-splitter:focus-visible {
+  outline: 1px solid var(--dock-accent, #007acc);
+  outline-offset: -1px;
+}
+
+/* Double the hit area on hover for easier grabbing */
+.dock-splitter--vertical:hover {
+  margin: 0 -2px;
+  padding: 0 2px;
+}
+
+.dock-splitter--horizontal:hover {
+  margin: -2px 0;
+  padding: 2px 0;
+}
+
+/* ─── Tab Group ──────────────────────────────────────── */
+
+.dock-tab-group--drag-over {
+  outline: 1px solid rgba(0, 122, 204, 0.4) !important;
+  outline-offset: -1px;
+}
+
+/* ─── Floating Window ────────────────────────────────── */
+
+.dock-floating-window__titlebar:hover {
+  background-color: rgba(255, 255, 255, 0.02) !important;
+}
+
+.dock-floating-window--dragging {
+  opacity: 0.9;
+}
+
+.dock-floating-window button:hover {
+  background-color: rgba(255, 255, 255, 0.1) !important;
+}
+
+/* ─── Drop Overlay ───────────────────────────────────── */
+
+.dock-drop-overlay {
+  animation: dock-fade-in 0.1s ease-out;
+}
+
+@keyframes dock-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.dock-drop-overlay__zone {
+  animation: dock-zone-appear 0.12s ease-out;
+}
+
+@keyframes dock-zone-appear {
+  from {
+    opacity: 0;
+    transform: scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+/* ─── Panel Grip ─────────────────────────────────────── */
+
+.dock-panel-grip:hover {
+  opacity: 0.6 !important;
+}
+
+/* ─── Profile Manager ────────────────────────────────── */
+
+.dock-profile-manager {
+  animation: dock-modal-appear 0.2s ease-out;
+}
+
+@keyframes dock-modal-appear {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1);
+  }
+}
+
+.dock-profile-manager input:focus {
+  border-color: var(--dock-accent, #007acc) !important;
+}
+
+.dock-profile-manager button:hover {
+  filter: brightness(1.1);
+}
+
+/* ─── Drag Ghost ─────────────────────────────────────── */
+
+.dock-drag-active-overlay {
+  animation: dock-pulse 2s ease-in-out infinite;
+}
+
+@keyframes dock-pulse {
+  0%, 100% {
+    outline-color: rgba(0, 122, 204, 0.2);
+  }
+  50% {
+    outline-color: rgba(0, 122, 204, 0.4);
+  }
+}
+
+/* ─── Utilities ──────────────────────────────────────── */
+
+.dock-no-select {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.dock-overflow-hidden {
+  overflow: hidden;
+}
+
+/* ─── Responsive ─────────────────────────────────────── */
+
+@media (max-width: 768px) {
+  .dock-tab {
+    max-width: 120px !important;
+    padding: 0 6px !important;
+    font-size: 11px !important;
+  }
+
+  .dock-tab-bar__actions {
+    display: none !important;
+  }
+}
+
+/* ─── Focus and Accessibility ────────────────────────── */
+
+.dock-tab:focus-visible {
+  outline: 1px solid var(--dock-accent, #007acc);
+  outline-offset: -1px;
+}
+
+.dock-tab-group:focus-within .dock-tab-bar {
+  border-bottom-color: rgba(0, 122, 204, 0.3);
+}
+
+/* High contrast mode */
+@media (forced-colors: active) {
+  .dock-splitter__line {
+    background-color: ButtonText !important;
+  }
+
+  .dock-tab--active {
+    border: 1px solid Highlight !important;
+  }
+
+  .dock-drop-overlay__zone {
+    border-color: Highlight !important;
+  }
+}
