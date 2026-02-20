@@ -41,9 +41,13 @@ export function useCollabNotifications() {
       // ── Guest joins the session ──────────────────────────────────
       collabSessionService.on('guest:joined', (detail) => {
         const name = detail?.displayName || detail?.guest?.displayName || 'A guest';
+        const wasAutoAdmitted = detail?.autoAdmitted;
         toast.success(`${name} joined the session`, {
+          description: wasAutoAdmitted
+            ? 'Auto-admitted via your invitation.'
+            : undefined,
           duration: 4000,
-          icon: '👋',
+          icon: wasAutoAdmitted ? '✅' : '👋',
           action: openPopupAction,
         });
       }),

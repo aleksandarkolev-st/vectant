@@ -2710,13 +2710,14 @@ server.listen(PORT, '0.0.0.0', () => {
     console.log(`[Session] Knock event: guest=${guestId} (${displayName}) → host-only delivery for session ${sessionId}`);
     sendToSessionHost(sessionId, 'knock', { guestId, displayName, avatarUrl });
   });
-  sessionManager.on('session:guestJoined', ({ sessionId, hostId, guest }) => {
+  sessionManager.on('session:guestJoined', ({ sessionId, hostId, guest, autoAdmitted }) => {
     const joinedSession = sessionManager.getSession(sessionId);
     broadcastSessionEvent(sessionId, 'guest:joined', {
       guest,
       hostId: hostId || null,
       hostName: joinedSession?.hostName || null,
       slug: joinedSession?.slug || null,
+      autoAdmitted: !!autoAdmitted,
     });
   });
   sessionManager.on('session:guestRemoved', ({ sessionId, guestId, reason }) => {

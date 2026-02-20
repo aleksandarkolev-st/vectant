@@ -249,12 +249,24 @@ class SessionManager extends EventEmitter {
       session.invitedUsers.delete(guestId); // consume the invite
 
       // Admit directly — bypasses pendingKnocks entirely
+      // Suppress the default guestJoined event — we'll emit our own with autoAdmitted=true
+      this._suppressGuestJoinedEvent = true;
       const entry = this.admitGuest(sessionId, {
         guestId,
         socketId: '',   // will be updated when WS connects
         displayName,
         avatarUrl,
       });
+      this._suppressGuestJoinedEvent = false;
+
+      // Emit with autoAdmitted flag
+      this.emit('session:guestJoined', {
+        sessionId,
+        hostId: session.hostId,
+        guest: this._serializeGuest(entry),
+        autoAdmitted: true,
+      });
+
       return { autoAdmitted: true, guest: this._serializeGuest(entry) }; // Signal auto-admit to caller
     }
 
@@ -311,11 +323,15 @@ class SessionManager extends EventEmitter {
     this.guestIndex.set(guestId, sessionId);
     this.socketIndex.set(socketId, guestId);
 
-    this.emit('session:guestJoined', {
-      sessionId,
-      hostId: session.hostId,
-      guest: this._serializeGuest(entry),
-    });
+    // Skip event if suppressed (e.g., during auto-admit where caller emits its own event)
+    if (!this._suppressGuestJoinedEvent) {
+      this.emit('session:guestJoined', {
+        sessionId,
+        hostId: session.hostId,
+        guest: this._serializeGuest(entry),
+        autoAdmitted: false,
+      });
+    }
 
     return entry;
   }
