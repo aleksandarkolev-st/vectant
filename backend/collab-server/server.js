@@ -2642,6 +2642,27 @@ server.on('upgrade', (request, socket, head) => {
       }
 
       console.log(`[Session] Client connected: user=${ws._userId} session=${ws._sessionId}`);
+
+      // Handle incoming messages from session-events clients
+      ws.on('message', (data) => {
+        try {
+          const msg = JSON.parse(data.toString());
+          if (msg.type === 'identify') {
+            // Client sends identity on (re)connect — update socket mapping
+            const { userId, sessionId, role } = msg;
+            if (userId && sessionId) {
+              ws._userId = userId;
+              ws._sessionId = sessionId;
+              // Re-register guest socket in SessionManager
+              if (role === 'guest') {
+                try { sessionManager.updateGuestSocket(sessionId, userId, ws); } catch (_) {}
+              }
+              console.log(`[Session] Identify: user=${userId} session=${sessionId} role=${role}`);
+            }
+          }
+        } catch (_) {}
+      });
+
       ws.on('close', () => {
         const userId = ws._userId;
         const sessionId = ws._sessionId;

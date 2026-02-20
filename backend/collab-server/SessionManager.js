@@ -353,6 +353,29 @@ class SessionManager extends EventEmitter {
     this.emit('session:knockDenied', { sessionId, guestId });
   }
 
+  /**
+   * Update the socketId for an existing guest (e.g. after WS reconnect).
+   *
+   * @param {string} sessionId
+   * @param {string} guestId
+   * @param {object} ws — The new WebSocket object
+   */
+  updateGuestSocket(sessionId, guestId, ws) {
+    const session = this.sessions.get(sessionId);
+    if (!session || session.status !== 'active') return;
+    const guest = session.guests.get(guestId);
+    if (!guest) return;
+    // Clean up old socket index entry
+    if (guest.socketId && this.socketIndex.has(guest.socketId)) {
+      this.socketIndex.delete(guest.socketId);
+    }
+    // Use a unique identifier for this WS
+    const newSocketId = `ws-${guestId}-${Date.now()}`;
+    guest.socketId = newSocketId;
+    this.socketIndex.set(newSocketId, guestId);
+    console.log(`[SessionManager] updateGuestSocket: guest=${guestId} session=${sessionId} newSocket=${newSocketId}`);
+  }
+
   // ── Invite tracking ─────────────────────────────────────────────────────
 
   /**

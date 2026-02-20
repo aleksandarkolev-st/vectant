@@ -607,6 +607,15 @@ class CollabSessionService extends EventTarget {
     this._ws.onopen = () => {
       // Reset backoff on successful connection
       this._reconnectDelay = 1000;
+      // Send identity message so server can re-associate this socket
+      try {
+        this._ws.send(JSON.stringify({
+          type: 'identify',
+          userId: this._userId,
+          sessionId: this._sessionId,
+          role: this._role,
+        }));
+      } catch (_) {}
     };
 
     this._ws.onmessage = (event) => {
