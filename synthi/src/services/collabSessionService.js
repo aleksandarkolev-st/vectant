@@ -305,6 +305,7 @@ class CollabSessionService extends EventTarget {
     if (this._session) {
       this._session.inviteLink = data.inviteLink;
       this._session.inviteToken = data.inviteToken;
+      if (data.roomCode) this._session.roomCode = data.roomCode;
     }
     this._emit('invite:regenerated', data);
     return data;

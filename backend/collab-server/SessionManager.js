@@ -174,7 +174,7 @@ class SessionManager extends EventEmitter {
   }
 
   /**
-   * Regenerate the invite token (invalidates old links).
+   * Regenerate the invite token AND room code (invalidates old links and codes).
    */
   regenerateToken(sessionId) {
     const session = this._getActiveSession(sessionId);
@@ -185,8 +185,15 @@ class SessionManager extends EventEmitter {
     session.tokenExpiresAt = Date.now() + TOKEN_TTL_MS;
     this.tokenIndex.set(session.inviteToken, sessionId);
 
-    this.emit('session:tokenRegenerated', { sessionId });
-    return session.inviteToken;
+    // Regenerate room code
+    if (session.roomCode) {
+      this.roomCodeIndex.delete(session.roomCode);
+    }
+    session.roomCode = this._generateRoomCode();
+    this.roomCodeIndex.set(session.roomCode, sessionId);
+
+    this.emit('session:tokenRegenerated', { sessionId, roomCode: session.roomCode });
+    return { inviteToken: session.inviteToken, roomCode: session.roomCode };
   }
 
   // ── Guest join / knock flow ──────────────────────────────────────────────

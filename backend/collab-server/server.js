@@ -1802,10 +1802,11 @@ const server = http.createServer(async (req, res) => {
           case 'regenerate-token': {
             // POST /session/regenerate-token/:sessionId
             if (!sessionIdParam) { res.writeHead(400); res.end('Missing sessionId'); return; }
-            const newToken = sessionManager.regenerateToken(sessionIdParam);
+            const regenResult = sessionManager.regenerateToken(sessionIdParam);
             result = {
-              inviteToken: newToken,
-              inviteLink: `${process.env.SYNTHI_APP_URL || 'http://localhost:3000'}/collab/${sessionIdParam}?token=${newToken}`,
+              inviteToken: regenResult.inviteToken,
+              roomCode: regenResult.roomCode,
+              inviteLink: `${process.env.SYNTHI_APP_URL || 'http://localhost:3000'}/collab/${sessionIdParam}?token=${regenResult.inviteToken}`,
             };
             break;
           }
