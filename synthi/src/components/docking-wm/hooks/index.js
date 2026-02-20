@@ -11,3 +11,4 @@ export { usePopout } from './use-popout';
 export { useLayoutPersistence } from './use-layout-persistence';
 export { useKeyboardNavigation, useFocusIndicator } from './use-keyboard-navigation';
 export { useActivityBarDocking } from './use-activity-bar-docking';
+export { useLayoutHistory } from './use-layout-history';
