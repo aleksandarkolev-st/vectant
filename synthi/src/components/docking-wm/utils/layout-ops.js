@@ -184,6 +184,19 @@ export function addTabToGroup(state, tabGroupId, tabId, insertIndex, activate = 
  */
 export function removeTabFromCurrentGroup(state, tabId) {
   const next = cloneState(state);
+  
+  // Remove from floating if it's there
+  const floatKey = `float-${tabId}`;
+  if (next.floating[floatKey]) {
+    delete next.floating[floatKey];
+  }
+  
+  // Remove from popouts if it's there
+  const popKey = `popout-${tabId}`;
+  if (next.popouts[popKey]) {
+    delete next.popouts[popKey];
+  }
+
   const group = findTabGroup(next, tabId);
   if (!group) return next;
 

@@ -10,6 +10,7 @@ import { useSelector } from 'react-redux';
 import { selectTabs } from '../state/layout-slice';
 import { useFloatingWindow } from '../hooks/use-floating-window';
 import { useDocking } from '../hooks/use-docking';
+import { useDragPanel } from '../hooks/use-drag-panel';
 import { PanelContainer } from './PanelContainer';
 import { PanelGrip } from './PanelGrip';
 
@@ -30,6 +31,11 @@ export const FloatingWindow = memo(function FloatingWindow({ floatingWindow }) {
     handleResizeMouseDown,
     handleFocus,
   } = useFloatingWindow({ floatId: id, floatingWindow });
+
+  const { dragProps } = useDragPanel({
+    tabId,
+    tabGroupId: `float-${id}`,
+  });
 
   const panelDef = tab ? registry.get(tab.panelType) : null;
 
@@ -88,7 +94,14 @@ export const FloatingWindow = memo(function FloatingWindow({ floatingWindow }) {
           color: 'var(--dock-tab-active-fg, #fff)',
         }}
       >
-        <PanelGrip orientation="vertical" visible={true} />
+        <div
+          {...dragProps}
+          data-no-drag
+          title="Drag to dock"
+          style={{ cursor: 'grab', display: 'flex', alignItems: 'center' }}
+        >
+          <PanelGrip orientation="vertical" visible={true} />
+        </div>
 
         {/* Icon */}
         {(tab.icon || panelDef?.icon) && (
