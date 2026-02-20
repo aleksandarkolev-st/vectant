@@ -16,6 +16,7 @@ export function useCollabSession() {
   const [session, setSession] = useState(collabSessionService.session);
   const [permissions, setPermissions] = useState(collabSessionService.permissions);
   const [pendingKnocks, setPendingKnocks] = useState(collabSessionService.pendingKnocks);
+  const [pendingSession, setPendingSession] = useState(collabSessionService.pendingSession);
   const [guests, setGuests] = useState([]);
   const [error, setError] = useState(null);
   const [isLoading, setIsLoading] = useState(false);
@@ -32,6 +33,7 @@ export function useCollabSession() {
       setSession(collabSessionService.session);
       setPermissions(collabSessionService.permissions);
       setPendingKnocks(collabSessionService.pendingKnocks);
+      setPendingSession(collabSessionService.pendingSession);
       setHostId(collabSessionService.hostId);
       setEffectiveUserId(collabSessionService.effectiveUserId);
       setWsStatus(collabSessionService.wsStatus);
@@ -255,6 +257,8 @@ export function useCollabSession() {
     session,
     permissions,
     pendingKnocks,
+    pendingSession,
+    hasPendingSession: !!pendingSession,
     guests,
     error,
     isLoading,

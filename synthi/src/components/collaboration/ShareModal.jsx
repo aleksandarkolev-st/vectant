@@ -36,7 +36,7 @@ const PERM_CONFIG = [
 export default function ShareModal({ slug, open, onClose }) {
   const {
     role, isHost, isGuest, isKnocking, isActive, session,
-    guests, pendingKnocks, permissions,
+    guests, pendingKnocks, pendingSession, hasPendingSession, permissions,
     admitGuest, denyKnock, updatePermissions, kickGuest,
     regenerateInvite, terminateSession, leaveSession,
     createSession, joinByCode, requestPermission,
@@ -194,8 +194,8 @@ export default function ShareModal({ slug, open, onClose }) {
           <SessionInfoGuest session={session} permissions={permissions} requestPermission={requestPermission} />
         )}
 
-        {/* ── Pending Knocks (host only, inline) ─────────────────── */}
-        {isHost && pendingKnocks?.length > 0 && (
+        {/* ── Pending Knocks (host or pending-session, inline) ──── */}
+        {(isHost || hasPendingSession) && pendingKnocks?.length > 0 && (
           <PendingKnocksSection
             knocks={pendingKnocks}
             onAdmit={admitGuest}

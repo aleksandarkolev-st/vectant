@@ -50,12 +50,15 @@ export function useCollabNotifications() {
     const unsubs = [
       // ── Host receives a knock ────────────────────────────────────
       collabSessionService.on('knock:received', (detail) => {
-        // Only show the notification to the Host.
-        if (collabSessionService.role !== 'hosting') return;
+        // Show the notification to the Host or when there's a pending session.
+        if (collabSessionService.role !== 'hosting' && !collabSessionService.pendingSession) return;
         const name = detail?.displayName || 'Someone';
+        const description = collabSessionService.pendingSession
+          ? 'Accept to start sharing your workspace.'
+          : 'Click to review pending requests.';
         toast.info(`${name} wants to join your session`, {
           id: `knock-${detail?.guestId || 'unknown'}`,
-          description: 'Click to review pending requests.',
+          description,
           duration: 8000,
           icon: '🔔',
           action: openPopupAction,

@@ -68,6 +68,14 @@ class CollabSessionService extends EventTarget {
     /** @type {Array<{guestId: string, displayName: string, avatarUrl: string}>} */
     this._pendingKnocks = [];
 
+    /**
+     * Pending session created on-demand by the server when a guest
+     * requested to join before the host started sharing. The host
+     * must explicitly accept the first knock before the session activates.
+     * @type {{ sessionId: string, inviteToken: string, slug: string }|null}
+     */
+    this._pendingSession = null;
+
     /** @type {object|null} Most recent incoming collab-invite (persists across modal open/close) */
     this._pendingInvite = null;
 
@@ -97,6 +105,7 @@ class CollabSessionService extends EventTarget {
   get isActive() { return this._role === 'hosting' || this._role === 'guest'; }
   get wsStatus() { return this._wsStatus; }
   get pendingKnocks() { return [...this._pendingKnocks]; }
+  get pendingSession() { return this._pendingSession; }
 
   /** Most recent pending invite — survives UI mount/unmount cycles */
   get pendingInvite() { return this._pendingInvite; }
@@ -194,8 +203,14 @@ class CollabSessionService extends EventTarget {
 
   /**
    * Host admits a knocking guest.
+   * If a pending session exists (auto-created by the server), it is
+   * activated first so the host adopts the hosting role.
    */
   async admitGuest(guestId, { displayName, avatarUrl = '', socketId = '', permsOverride = {} }) {
+    // Activate pending session on first admit
+    if (this._pendingSession && !this.isHost) {
+      this.acceptPendingSession();
+    }
     if (!this.isHost) throw new Error('Only the host can admit guests');
 
     const res = await fetch(`${COLLAB_URL}/session/admit/${this._sessionId}`, {
@@ -218,8 +233,15 @@ class CollabSessionService extends EventTarget {
 
   /**
    * Host denies a knocking guest.
+   * If the session is still pending and all knocks are denied, the
+   * pending session is discarded (the server session will time out).
    */
   async denyKnock(guestId) {
+    // For pending sessions, we need to activate briefly to issue the deny
+    const wasPending = !this.isHost && !!this._pendingSession;
+    if (wasPending) {
+      this.acceptPendingSession();
+    }
     if (!this.isHost) throw new Error('Only the host can deny guests');
 
     await fetch(`${COLLAB_URL}/session/deny/${this._sessionId}`, {
@@ -230,6 +252,12 @@ class CollabSessionService extends EventTarget {
 
     this._pendingKnocks = this._pendingKnocks.filter(k => k.guestId !== guestId);
     this._emit('knock:resolved', { guestId });
+
+    // If we activated a pending session just to deny and there are no more
+    // knocks, terminate the session and go back to idle.
+    if (wasPending && this._pendingKnocks.length === 0) {
+      try { await this.terminateSession(); } catch (_) {}
+    }
   }
 
   /**
@@ -622,17 +650,31 @@ class CollabSessionService extends EventTarget {
   /**
    * Handle the server auto-creating a session for us (someone asked to
    * join our workspace and we didn't have an active session).
-   * Called when the notification WS or session WS receives
-   * 'auto-session-created'.
+   *
+   * Instead of immediately adopting the hosting role, we store the
+   * session as "pending" so the host can decide whether to start sharing.
+   * The host UI will show the incoming knock — upon acceptance the session
+   * is activated via `acceptPendingSession()`.
    */
   _handleAutoSessionCreated({ sessionId, inviteToken, slug }) {
     if (this.isHost || this.isGuest) return; // Already in a session
+    this._pendingSession = { sessionId, inviteToken, slug };
+    this._emit('session:requested', { sessionId, slug });
+  }
+
+  /**
+   * Activate a pending session that was auto-created for us.
+   * Called when the host accepts the first incoming knock.
+   */
+  acceptPendingSession() {
+    if (!this._pendingSession) return;
+    const { sessionId, inviteToken, slug } = this._pendingSession;
     this._role = 'hosting';
     this._sessionId = sessionId;
     this._sessionSlug = slug;
     this._permissions = { ...HOST_PERMISSIONS };
     this._session = { id: sessionId, inviteToken };
-    this._pendingKnocks = [];
+    this._pendingSession = null;
     this._connectWs();
     this._emit('session:created', { sessionId, inviteToken });
   }
@@ -692,28 +734,31 @@ class CollabSessionService extends EventTarget {
   _handleWsMessage(msg) {
     switch (msg.type) {
       case 'knock':
-        // CRITICAL: Only the Host should process knock events.
-        // If this client somehow receives a knock event while not hosting
-        // (e.g. due to broadcast instead of targeted delivery), ignore it.
-        if (this._role !== 'hosting') {
-          console.warn('[CollabSession] Ignoring knock event — not hosting (role=' + this._role + ')');
-          break;
+        // Process knock events if we are the host OR if we have a pending
+        // session that was auto-created for us (waiting for host acceptance).
+        {
+          const isPendingHost = this._pendingSession &&
+            (!msg.sessionId || this._pendingSession.sessionId === msg.sessionId);
+          if (this._role !== 'hosting' && !isPendingHost) {
+            console.warn('[CollabSession] Ignoring knock event — not hosting (role=' + this._role + ')');
+            break;
+          }
+          // Also ignore knock events for our own userId (self-knock)
+          if (msg.guestId === this._userId) {
+            console.warn('[CollabSession] Ignoring knock event — self-knock detected');
+            break;
+          }
+          // Deduplicate: don't add if already in pending list
+          if (this._pendingKnocks.some(k => k.guestId === msg.guestId)) {
+            break;
+          }
+          this._pendingKnocks.push({
+            guestId: msg.guestId,
+            displayName: msg.displayName,
+            avatarUrl: msg.avatarUrl || '',
+          });
+          this._emit('knock:received', msg);
         }
-        // Also ignore knock events for our own userId (self-knock)
-        if (msg.guestId === this._userId) {
-          console.warn('[CollabSession] Ignoring knock event — self-knock detected');
-          break;
-        }
-        // Deduplicate: don't add if already in pending list
-        if (this._pendingKnocks.some(k => k.guestId === msg.guestId)) {
-          break;
-        }
-        this._pendingKnocks.push({
-          guestId: msg.guestId,
-          displayName: msg.displayName,
-          avatarUrl: msg.avatarUrl || '',
-        });
-        this._emit('knock:received', msg);
         break;
 
       case 'guest:joined':
