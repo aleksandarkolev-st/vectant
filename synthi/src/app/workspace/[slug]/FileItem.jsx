@@ -51,8 +51,8 @@ const FileItem = ({
             draw ? (
               <div
                 key={`tree-v-${colIndex}`}
-                className="absolute top-0 bottom-0 w-px bg-[#343434] opacity-100"
-                style={{ left: `${xForCol(colIndex)}px` }}
+                className="absolute top-0 bottom-0 w-px opacity-100"
+                style={{ left: `${xForCol(colIndex)}px`, background: 'var(--border-medium)' }}
               />
             ) : null
           )}
@@ -61,10 +61,11 @@ const FileItem = ({
           <>
             {/* Current column vertical connector */}
             <div
-              className="absolute top-0 w-px bg-[#343434] opacity-100"
+              className="absolute top-0 w-px opacity-100"
               style={{
                 left: `${connectorX}px`,
                 bottom: guideHasNextSibling ? 0 : "50%",
+                background: 'var(--border-medium)',
               }}
             />
           </>
@@ -352,10 +353,15 @@ useEffect(() => {
         data-node-name={item.name}
         draggable
         onDragStart={handleDragStart}
-        className={`file-item relative group flex items-center py-1.5 px-2 rounded-md hover:bg-[#1d2230] cursor-pointer transition-all ${
-          isSelected ? 'bg-[#1f2d4a] border-l-[3px] border-[#7fffe1] shadow-[0_0_0_1px_rgba(127,255,225,0.18)]' : 'border-l-[3px] border-transparent'
+        className={`file-item relative group flex items-center py-1.5 px-2 rounded-md cursor-pointer transition-all ${
+          isSelected ? 'border-l-[3px]' : 'border-l-[3px] border-transparent'
         }`}
-        style={itemStyle}
+        style={{
+          ...itemStyle,
+          ...(isSelected 
+            ? { background: 'color-mix(in srgb, var(--accent-primary) 15%, transparent)', borderColor: 'var(--accent-tertiary)', boxShadow: '0 0 0 1px color-mix(in srgb, var(--accent-tertiary) 18%, transparent)' }
+            : {}),
+        }}
         onClick={handleClick}
         onContextMenu={handleClick}
       >
@@ -384,12 +390,14 @@ useEffect(() => {
             onKeyDown={handleKeyDown}
             onBlur={handleBlur}
             placeholder={item.isFolder ? "Rename folder..." : "Rename file..."}
-            className="w-full bg-transparent border-none outline-none text-[12px] text-[#ffffff] placeholder-[#c7ccda]"
+            className="w-full bg-transparent border-none outline-none text-[12px]"
+            style={{ color: 'var(--text-primary)' }}
           />
         ) : (
           <div className="file-content flex items-center gap-2">
             <span
-              className={`text-[12px] truncate leading-relaxed ${isSelected ? "text-[#ffffff] font-semibold" : "text-[#eef1f7]"}`}
+              className="text-[12px] truncate leading-relaxed"
+              style={isSelected ? { color: 'var(--text-primary)', fontWeight: 600 } : { color: 'var(--text-primary)' }}
             >
               {item.name}
             </span>
@@ -418,7 +426,7 @@ useEffect(() => {
                       );
                     })}
                     {presenceStates.length > 3 && (
-                      <div className="text-[10px] text-gray-300 ml-1">+{presenceStates.length - 3}</div>
+                      <div className="text-[10px] ml-1" style={{ color: 'var(--text-secondary)' }}>+{presenceStates.length - 3}</div>
                     )}
                   </div>
                 )}
@@ -426,12 +434,12 @@ useEffect(() => {
             {/* Hover card for file presence */}
             {hoverPresence && hoverPresence.rect && (
               <div style={{ position: 'fixed', left: hoverPresence.rect.left + hoverPresence.rect.width + 6, top: hoverPresence.rect.top - 6, zIndex: 2000 }} onMouseEnter={() => { if (hoverHideTimeoutRef.current) { clearTimeout(hoverHideTimeoutRef.current); hoverHideTimeoutRef.current = null; } }} onMouseLeave={() => { if (hoverHideTimeoutRef.current) clearTimeout(hoverHideTimeoutRef.current); hoverHideTimeoutRef.current = setTimeout(() => setHoverPresence(null), 140); }}>
-                <div className="bg-[#151515] border border-[#333] rounded-md p-2 text-sm text-gray-200 shadow-lg w-44">
+                <div className="rounded-md p-2 text-sm shadow-lg w-44 border" style={{ background: 'var(--bg-panel)', borderColor: 'var(--border-medium)', color: 'var(--text-primary)' }}>
                   <div className="flex items-center gap-2">
                     <div className="w-7 h-7 rounded-full flex items-center justify-center text-sm text-white" style={{ background: hoverPresence.user.color || '#555' }}>{(hoverPresence.user.name || 'Anonymous').split(' ').map(p => p[0]).slice(0,2).join('').toUpperCase()}</div>
                     <div className="flex flex-col">
                       <div className="font-semibold text-sm">{hoverPresence.user.name || 'Anonymous'}</div>
-                      <div className="text-xs text-gray-400">{hoverPresence.user.id ? `id: ${hoverPresence.user.id}` : 'Anonymous user'}</div>
+                      <div className="text-xs" style={{ color: 'var(--text-muted)' }}>{hoverPresence.user.id ? `id: ${hoverPresence.user.id}` : 'Anonymous user'}</div>
                     </div>
                   </div>
                 </div>

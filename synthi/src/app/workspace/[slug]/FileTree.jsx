@@ -149,7 +149,8 @@ const FileTreeView = ({
     >
       <ContextMenuTrigger asChild>
         <div
-          className="w-full h-full select-none bg-[#0B0E13] text-[#f8f9fb] flex flex-col border-r border-[#252a38]"
+          className="w-full h-full select-none flex flex-col border-r"
+          style={{ background: 'var(--bg-sidebar)', color: 'var(--text-primary)', borderColor: 'var(--border-medium)' }}
           onClick={() => {
             setContextTarget(null);
           }}
@@ -161,12 +162,13 @@ const FileTreeView = ({
             <div className="h-[2px]" style={{ background: 'linear-gradient(90deg, #3b82f6, #60a5fa, #93c5fd, transparent)' }} />
             <div className={`flex items-center gap-2 px-3 py-2 ${isRightSide ? 'flex-row-reverse' : ''}`}>
               <FolderOpen size={14} className="text-blue-400 flex-shrink-0" />
-              <span className="text-sm font-semibold text-[#e4e4e7]">Explorer</span>
+              <span className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>Explorer</span>
               <div className={`${isRightSide ? 'mr-auto' : 'ml-auto'} flex items-center gap-0.5`}>
                 <button
                   onClick={onToggleOrientation}
                   title={isRightSide ? "Move to left" : "Move to right"}
-                  className="p-1.5 rounded-lg transition-all text-[#71717a] hover:text-[#d4d4d8] hover:bg-white/[0.06]"
+                  className="p-1.5 rounded-lg transition-all hover:bg-white/[0.06]"
+                  style={{ color: 'var(--text-muted)' }}
                 >
                   {isRightSide ? (
                     <PanelLeftClose className="w-3.5 h-3.5" strokeWidth={1.5} />
@@ -242,26 +244,26 @@ const FileTreeView = ({
       </ContextMenuTrigger>
 
       {/* Context Menu */}
-      <ContextMenuContent className="w-52 bg-[#14161a] border border-[#252830] text-[#e8eaed] shadow-xl rounded-lg">
+      <ContextMenuContent className="w-52 shadow-xl rounded-lg border" style={{ background: 'var(--bg-panel)', borderColor: 'var(--border-medium)', color: 'var(--text-primary)' }}>
         {contextTarget ? (
           contextTarget.isFolder ? (
             <>
               <ContextMenuItem
                 onClick={() => handleTreeAction("new-file", contextTarget)}
-                className="px-3 py-2.5 text-sm hover:bg-[#252830] hover:text-[#3b82f6] cursor-pointer rounded-md mx-1"
+                className="px-3 py-2.5 text-sm th-dropdown-item cursor-pointer rounded-md mx-1"
               >
                 New File
               </ContextMenuItem>
               <ContextMenuItem
                 onClick={() => handleTreeAction("new-folder", contextTarget)}
-                className="px-3 py-2.5 text-sm hover:bg-[#252830] hover:text-[#3b82f6] cursor-pointer rounded-md mx-1"
+                className="px-3 py-2.5 text-sm th-dropdown-item cursor-pointer rounded-md mx-1"
               >
                 New Folder
               </ContextMenuItem>
-              <ContextMenuSeparator className="bg-[#252830] my-1" />
+              <ContextMenuSeparator className="my-1" style={{ background: 'var(--border-medium)' }} />
               <ContextMenuItem
                 onClick={() => handleTreeAction("rename", contextTarget)}
-                className="px-3 py-2.5 text-sm hover:bg-[#252830] hover:text-[#3b82f6] cursor-pointer rounded-md mx-1"
+                className="px-3 py-2.5 text-sm th-dropdown-item cursor-pointer rounded-md mx-1"
               >
                 Rename
               </ContextMenuItem>
@@ -296,14 +298,14 @@ const FileTreeView = ({
                   // Then load the file
                   onFileSelectHandler(contextTarget);
                 }}
-                className="px-3 py-2.5 text-sm hover:bg-[#252830] hover:text-[#3b82f6] cursor-pointer rounded-md mx-1"
+                className="px-3 py-2.5 text-sm th-dropdown-item cursor-pointer rounded-md mx-1"
               >
                 Open
               </ContextMenuItem>
-              <ContextMenuSeparator className="bg-[#252830] my-1" />
+              <ContextMenuSeparator className="my-1" style={{ background: 'var(--border-medium)' }} />
               <ContextMenuItem
                 onClick={() => handleTreeAction("rename", contextTarget)}
-                className="px-3 py-2.5 text-sm hover:bg-[#252830] hover:text-[#3b82f6] cursor-pointer rounded-md mx-1"
+                className="px-3 py-2.5 text-sm th-dropdown-item cursor-pointer rounded-md mx-1"
               >
                 Rename
               </ContextMenuItem>
@@ -319,13 +321,13 @@ const FileTreeView = ({
           <>
             <ContextMenuItem
               onClick={() => handleTreeAction("new-file-root")}
-              className="px-3 py-2.5 text-sm hover:bg-[#252830] hover:text-[#3b82f6] cursor-pointer rounded-md mx-1"
+              className="px-3 py-2.5 text-sm th-dropdown-item cursor-pointer rounded-md mx-1"
             >
               New File
             </ContextMenuItem>
             <ContextMenuItem
               onClick={() => handleTreeAction("new-folder-root")}
-              className="px-3 py-2.5 text-sm hover:bg-[#252830] hover:text-[#3b82f6] cursor-pointer rounded-md mx-1"
+              className="px-3 py-2.5 text-sm th-dropdown-item cursor-pointer rounded-md mx-1"
             >
               New Folder
             </ContextMenuItem>
