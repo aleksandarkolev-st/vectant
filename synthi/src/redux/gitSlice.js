@@ -7,6 +7,19 @@ import collabClient from '@/services/collabClient';
 // finishes rather than silently dropping the request.
 let _pendingRefetchSlug = null;
 
+/**
+ * Force-refresh git status bypassing the dedup guard.
+ * Used after mutations (stage, unstage, commit…) where we MUST get fresh data.
+ */
+export const forceRefreshGitStatus = createAsyncThunk(
+    'git/forceRefreshStatus',
+    async (slug) => {
+        const status = await gitClient.getStatus(slug);
+        const branches = await gitClient.getBranches(slug);
+        return { status, branches };
+    }
+);
+
 export const fetchGitStatus = createAsyncThunk(
     'git/fetchStatus',
     async (slug, { dispatch }) => {
@@ -138,7 +151,7 @@ export const stageFile = createAsyncThunk(
     'git/stage',
     async ({ slug, filePath }, { dispatch }) => {
         await gitClient.stageFile(slug, filePath);
-        dispatch(fetchGitStatus(slug));
+        dispatch(forceRefreshGitStatus(slug));
     }
 );
 
@@ -146,7 +159,7 @@ export const stageAll = createAsyncThunk(
     'git/stageAll',
     async (slug, { dispatch }) => {
         await gitClient.stageAll(slug);
-        dispatch(fetchGitStatus(slug));
+        dispatch(forceRefreshGitStatus(slug));
     }
 );
 
@@ -154,7 +167,7 @@ export const unstageFile = createAsyncThunk(
     'git/unstage',
     async ({ slug, filePath }, { dispatch }) => {
         await gitClient.unstageFile(slug, filePath);
-        dispatch(fetchGitStatus(slug));
+        dispatch(forceRefreshGitStatus(slug));
     }
 );
 
@@ -162,7 +175,7 @@ export const unstageAll = createAsyncThunk(
     'git/unstageAll',
     async (slug, { dispatch }) => {
         await gitClient.unstageAll(slug);
-        dispatch(fetchGitStatus(slug));
+        dispatch(forceRefreshGitStatus(slug));
     }
 );
 
@@ -428,6 +441,28 @@ const gitSlice = createSlice({
             .addCase(fetchGitStatus.rejected, (state, action) => {
                 state.loading = false;
                 state._statusFetching = false;
+                state.error = action.error.message;
+                state.errorCode = action.error.code || null;
+            })
+            // forceRefreshGitStatus — same reducers, bypasses dedup guard
+            .addCase(forceRefreshGitStatus.pending, (state) => {
+                state.loading = true;
+            })
+            .addCase(forceRefreshGitStatus.fulfilled, (state, action) => {
+                state.loading = false;
+                state.error = null;
+                state.status = action.payload.status;
+                state.branches = action.payload.branches || { local: [], all: [] };
+                if (action.payload.status) {
+                    state.currentBranch = action.payload.status.current;
+                    const stillConflicted = action.payload.status.conflictedFiles ?? [];
+                    if (state.conflictResolverFile && !stillConflicted.includes(state.conflictResolverFile)) {
+                        state.conflictResolverFile = null;
+                    }
+                }
+            })
+            .addCase(forceRefreshGitStatus.rejected, (state, action) => {
+                state.loading = false;
                 state.error = action.error.message;
                 state.errorCode = action.error.code || null;
             });
