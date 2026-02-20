@@ -19,7 +19,8 @@ import {
     closeFile,
     reorderOpenFiles,
     setDiffMode,
-    clearSavedBaselines
+    clearSavedBaselines,
+    markFileSavedRemotely,
 } from '@/redux/workspaceSlice';
 import { selectAutoCompletionEnabled, toggleAutoCompletion, selectPresenceGranularity, startCreate, setCursorPosition, selectAutoSaveEnabled } from '@/redux/uiSlice';
 import { fetchGitStatus, closeConflictResolver } from '@/redux/gitSlice';
@@ -1323,6 +1324,15 @@ const EditorPanel = ({
             reduxSyncTimerRef.current = null;
         }
         dispatch(updateContent(newCode));
+
+        // ── Save-state sync for guests ──────────────────────────────
+        // When remote edits arrive via Yjs (from the host), automatically
+        // align the guest's savedContent so the tab never shows a false
+        // "unsaved" indicator.  The host's edits are the source of truth;
+        // persisting to disk is the host's responsibility.
+        if (remoteApplying && collabRole === 'guest' && activeFile?.path) {
+            dispatch(markFileSavedRemotely(activeFile.path));
+        }
 
         // Skip AI auto-complete and active completion cancel for remote changes
         // — these should only fire on local user edits
