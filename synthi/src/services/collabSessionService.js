@@ -844,8 +844,12 @@ class CollabSessionService extends EventTarget {
 
       case 'session-knock':
         // Fallback knock delivery via notification WS channel.
-        // Only process if we are the host.
-        if (this._role !== 'hosting') break;
+        // Process if we are the host OR if we have a pending auto-created session.
+        {
+          const isPendingHost = this._pendingSession &&
+            (!msg.sessionId || this._pendingSession.sessionId === msg.sessionId);
+          if (this._role !== 'hosting' && !isPendingHost) break;
+        }
         if (msg.guestId === this._userId) break;
         if (this._pendingKnocks.some(k => k.guestId === msg.guestId)) break;
         this._pendingKnocks.push({
