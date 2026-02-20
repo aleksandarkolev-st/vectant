@@ -137,15 +137,21 @@ class MonacoTextBinding {
       if (!this._awareness) return;
       try {
         const sel = ev.selection;
+        // Primary selection range
         const cursorState = {
-          cursor: {
-            anchor: { line: sel.selectionStartLineNumber, column: sel.selectionStartColumn },
-            head: { line: sel.positionLineNumber, column: sel.positionColumn },
-            range: { start: { line: sel.startLineNumber, column: sel.startColumn }, end: { line: sel.endLineNumber, column: sel.endColumn } }
-          }
+          anchor: { line: sel.selectionStartLineNumber, column: sel.selectionStartColumn },
+          head: { line: sel.positionLineNumber, column: sel.positionColumn },
+          range: { start: { line: sel.startLineNumber, column: sel.startColumn }, end: { line: sel.endLineNumber, column: sel.endColumn } },
         };
-        // set only the fields we care about
-        this._awareness.setLocalStateField('cursor', cursorState.cursor);
+        // Also capture secondary selections (multi-cursor)
+        const allSelections = editor.getSelections();
+        if (allSelections && allSelections.length > 1) {
+          cursorState.secondarySelections = allSelections.slice(1).map(s => ({
+            start: { line: s.startLineNumber, column: s.startColumn },
+            end: { line: s.endLineNumber, column: s.endColumn },
+          }));
+        }
+        this._awareness.setLocalStateField('cursor', cursorState);
         try {
           this._awareness.setLocalStateField('lastActive', Date.now());
         } catch (_) {}
@@ -247,10 +253,21 @@ class MonacoTextBinding {
         const userKey = user.id ? String(user.id) : String(cid);
         if (seenUsers.has(userKey)) continue;
 
-        const range = this._toMonacoRange(st.cursor.range || st.cursor);
+        // Support both old format (st.cursor has .range) and new (st.cursor IS the range data)
+        const cursorData = st.cursor;
+        const range = this._toMonacoRange(cursorData.range || cursorData);
         if (!range) continue;
 
-        seenUsers.set(userKey, { clientId: cid, state: st, range, user });
+        // Collect secondary selections if present
+        const secondaryRanges = [];
+        if (Array.isArray(cursorData.secondarySelections)) {
+          for (const sec of cursorData.secondarySelections) {
+            const sr = this._toMonacoRange(sec);
+            if (sr) secondaryRanges.push(sr);
+          }
+        }
+
+        seenUsers.set(userKey, { clientId: cid, state: st, range, secondaryRanges, user });
       }
 
       for (const [, val] of seenUsers.entries()) {
@@ -258,7 +275,7 @@ class MonacoTextBinding {
         const user = val.user || {};
         const range = val.range;
         const color = user.color || '#888';
-        wanted.set(cid, { range, color, name: user.name || 'Anonymous' });
+        wanted.set(cid, { range, secondaryRanges: val.secondaryRanges, color, name: user.name || 'Anonymous' });
       }
 
       // 1. CLEANUP: Remove decorations/widgets for users who left
@@ -282,15 +299,35 @@ class MonacoTextBinding {
         this._ensureStyleForClient(cid, info.color);
 
         const decs = [];
+        // Primary selection
         if (info.range && !info.range.isEmpty()) {
           decs.push({
             range: info.range,
             options: {
-              className: selectionClass, // Selection background
+              className: selectionClass,
               stickiness: 1,
-              zIndex: 10 // Ensure it's visible
+              zIndex: 10,
+              overviewRuler: {
+                color: info.color,
+                position: 2, // Center
+              },
             }
           });
+        }
+        // Secondary selections (multi-cursor)
+        if (info.secondaryRanges) {
+          for (const sr of info.secondaryRanges) {
+            if (sr && !sr.isEmpty()) {
+              decs.push({
+                range: sr,
+                options: {
+                  className: selectionClass,
+                  stickiness: 1,
+                  zIndex: 10,
+                }
+              });
+            }
+          }
         }
 
         const existingDec = this._remoteDecorations.get(cid);
@@ -387,19 +424,23 @@ class MonacoTextBinding {
     
     // Convert color to transparent version for selection
     let selectionColor = color;
+    let borderColor = color;
     if(color.startsWith('#')) {
         // Simple Hex to RGBA conversion
         const r = parseInt(color.substring(1,3), 16);
         const g = parseInt(color.substring(3,5), 16);
         const b = parseInt(color.substring(5,7), 16);
-        selectionColor = `rgba(${r}, ${g}, ${b}, 0.3)`;
+        selectionColor = `rgba(${r}, ${g}, ${b}, 0.25)`;
+        borderColor = `rgba(${r}, ${g}, ${b}, 0.45)`;
     } else if (color.startsWith('hsl')) {
-        selectionColor = color.replace('hsl', 'hsla').replace(')', ', 0.3)');
+        selectionColor = color.replace('hsl', 'hsla').replace(')', ', 0.25)');
+        borderColor = color.replace('hsl', 'hsla').replace(')', ', 0.45)');
     }
 
     style.innerHTML = `
       .collab-selection-${clientId} {
         background-color: ${selectionColor};
+        border: 1px solid ${borderColor};
         border-radius: 2px;
         min-width: 4px;
       }
