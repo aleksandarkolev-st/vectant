@@ -833,7 +833,8 @@ const workspaceSlice = createSlice({
                 (state, action) => {
                     state.status = 'failed';
                     state.error = action.error.message;
-                    window.alert(`Operation Failed: ${action.error.message}`);
+                    // NOTE: Removed window.alert — error is stored in state.error
+                    // and shown via toast in the UI components.
                 }
             )
           .addMatcher(
