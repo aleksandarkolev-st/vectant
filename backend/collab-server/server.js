@@ -781,6 +781,27 @@ if (yWsUtils && typeof yWsUtils.setPersistence === 'function') {
   console.error('[Collab] WARNING: Could not register persistence with y-websocket — setPersistence not available. Auto-flush to disk will NOT work.');
 }
 
+// ── In-memory userId → displayName cache ──────────────────────────────────
+// Populated from Yjs awareness state changes so that REST endpoints can
+// resolve human-readable names in O(1) instead of iterating all docs.
+const userDisplayNameCache = new Map(); // Map<userId, { name: string, avatar: string }>
+
+/**
+ * Update the display name cache from a doc's awareness states.
+ * Called whenever a Yjs doc's awareness changes.
+ */
+function refreshUserNameCache(awareness) {
+  if (!awareness) return;
+  for (const [, state] of awareness.getStates()) {
+    if (state?.user?.id && state.user.name) {
+      userDisplayNameCache.set(String(state.user.id), {
+        name: state.user.name,
+        avatar: state.user.image || '',
+      });
+    }
+  }
+}
+
 /**
  * Invalidate all active Yjs documents for a workspace slug.
  * Called after git operations that modify files on disk (checkout, pull, discard).
@@ -1508,29 +1529,21 @@ const server = http.createServer(async (req, res) => {
         let session = sessionManager.getSessionByHost(targetUserId);
         if (!session) {
           // Resolve a human-readable host name: prefer the name provided by
-          // the joining guest's UI, then search Yjs awareness states for
-          // the target user's display name, and finally fall back to targetUserId.
+          // the joining guest's UI, then check the in-memory display-name
+          // cache (populated from Yjs awareness), and finally fall back to
+          // targetUserId.
           let resolvedHostName = targetUserName || '';
           if (!resolvedHostName) {
-            const prefix = `workspace:${slug}:`;
-            const docsMap = yWsDocs || new Map();
-            for (const [docName, doc] of docsMap) {
-              if (!docName.startsWith(prefix)) continue;
-              const awareness = doc.awareness;
-              if (!awareness) continue;
-              for (const [, state] of awareness.getStates()) {
-                if (state?.user && String(state.user.id) === targetUserId && state.user.name) {
-                  resolvedHostName = state.user.name;
-                  break;
-                }
-              }
-              if (resolvedHostName) break;
+            const cached = userDisplayNameCache.get(targetUserId);
+            if (cached?.name) {
+              resolvedHostName = cached.name;
             }
           }
+          const cachedAvatar = userDisplayNameCache.get(targetUserId)?.avatar || '';
           session = sessionManager.createSession({
             hostId: targetUserId,
             hostName: resolvedHostName || targetUserId,
-            hostAvatar: '',
+            hostAvatar: cachedAvatar,
             slug,
             worktreePath: '',
             defaultPerms: { canEdit: true, canTerminal: false, canGit: false, canFileOps: true },
@@ -2574,6 +2587,19 @@ wss.on('connection', (ws, req) => {
     persistence,
     docName: roomName,
   });
+
+  // Populate the user display name cache from awareness state changes.
+  // The doc is created/retrieved by y-websocket during setupWSConnection,
+  // so we can look it up from the docs map immediately after.
+  if (yWsDocs && yWsDocs.has(roomName)) {
+    const wsDoc = yWsDocs.get(roomName);
+    if (wsDoc.awareness && !wsDoc._userNameCacheWired) {
+      wsDoc._userNameCacheWired = true;
+      const aw = wsDoc.awareness;
+      refreshUserNameCache(aw); // populate with current states
+      aw.on('change', () => refreshUserNameCache(aw));
+    }
+  }
 
   // ── Pin the repo in the cache while this Yjs WS is alive ──────────
   // Without this, a notification WS disconnect (network blip) would
