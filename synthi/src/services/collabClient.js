@@ -119,15 +119,22 @@ class MonacoTextBinding {
     this._awarenessHandler = null;
 
     if (this._awareness) {
-      // Listen for remote presence changes and update decorations
-      this._awarenessHandler = (changes) => {
-        try {
-          // compute current states and update decorations
-          const states = Array.from(this._awareness.getStates().entries()).map(([clientId, state]) => ({ clientId, state }));
-          this._applyAwarenessDecorations(states);
-        } catch (err) {
-          console.warn('[Collab] awareness change handler failed', err?.message || err);
-        }
+      // Listen for remote presence changes and update decorations.
+      // Use requestAnimationFrame to batch multiple rapid awareness changes
+      // into a single decoration update per frame.
+      this._awarenessRafId = null;
+      this._awarenessHandler = () => {
+        if (this._awarenessRafId) return; // already scheduled
+        this._awarenessRafId = requestAnimationFrame(() => {
+          this._awarenessRafId = null;
+          if (this._destroyed) return;
+          try {
+            const states = Array.from(this._awareness.getStates().entries()).map(([clientId, state]) => ({ clientId, state }));
+            this._applyAwarenessDecorations(states);
+          } catch (err) {
+            console.warn('[Collab] awareness change handler failed', err?.message || err);
+          }
+        });
       };
       try { this._awareness.on('change', this._awarenessHandler); } catch (_) { /* ignore if API differs */ }
     }
@@ -231,6 +238,7 @@ class MonacoTextBinding {
     this._destroyed = true;
     if (this._observerTimeout) clearTimeout(this._observerTimeout);
     if (this._cursorThrottleTimer) clearTimeout(this._cursorThrottleTimer);
+    if (this._awarenessRafId) cancelAnimationFrame(this._awarenessRafId);
     try { this.ytext.unobserve(this._yObserver); } catch (_) {}
     try { this._modelListener.dispose(); } catch (_) {}
     try { this._cursorListener?.dispose?.(); } catch (_) {}
