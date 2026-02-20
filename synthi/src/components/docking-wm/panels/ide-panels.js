@@ -100,7 +100,7 @@ export const IDE_PANEL_DEFINITIONS = [
     component: EditorPanelWrapper,
     allowMultiple: true,
     defaultLocation: 'center',
-    closable: true,
+    closable: false,
   },
   {
     panelType: IDE_PANEL.TERMINAL,
