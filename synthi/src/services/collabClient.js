@@ -1271,6 +1271,9 @@ class CollabClient {
       ws.onopen = () => {
         attempt = 0; // Reset backoff on successful connection
         console.log('[Collab] Notification WS connected for slug:', slug);
+        if (typeof handlers.onConnected === 'function') {
+          handlers.onConnected();
+        }
       };
       ws.onmessage = async (ev) => {
         try {

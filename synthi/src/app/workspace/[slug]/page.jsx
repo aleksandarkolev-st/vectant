@@ -371,6 +371,12 @@ export default function EditorPage({ params }) {
     useEffect(() => {
         if (!slug || !authUserId) return;
         const teardown = collabClient.connectNotifications(slug, {
+            onConnected: () => {
+                // Re-fetch git status on (re)connection to ensure we have
+                // fresh data, especially on cold load where the initial fetch
+                // may have fired before auth was ready.
+                dispatch(forceRefreshGitStatus(slug));
+            },
             onFileTreeChanged: () => {
                 dispatch(fetchFilesThunk(slug));
             },
@@ -417,6 +423,23 @@ export default function EditorPage({ params }) {
             },
         }, { userId: authUserId, sessionId: activeSessionId });
         return teardown;
+    }, [slug, dispatch, authUserId, activeSessionId]);
+
+    // ── Re-fetch git status when auth or session becomes available ──────
+    // On cold page load, the initial fetchGitStatus may fire before
+    // getSession() returns auth data (no x-user-id header → wrong repo).
+    // Re-fetch once auth is ready and again when a collab session activates.
+    const prevAuthRef = useRef(null);
+    const prevSessionRef = useRef(null);
+    useEffect(() => {
+        if (!slug) return;
+        const authJustBecameAvailable = authUserId && !prevAuthRef.current;
+        const sessionJustBecameAvailable = activeSessionId && !prevSessionRef.current;
+        prevAuthRef.current = authUserId;
+        prevSessionRef.current = activeSessionId;
+        if (authJustBecameAvailable || sessionJustBecameAvailable) {
+            dispatch(forceRefreshGitStatus(slug));
+        }
     }, [slug, dispatch, authUserId, activeSessionId]);
 
     // 2. Consume global state directly via selectors
