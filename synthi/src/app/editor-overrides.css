@@ -15,31 +15,31 @@
 .monaco-link-hover {
     text-decoration: underline;
     cursor: pointer !important;
-    color: #327464 !important;
+    color: var(--accent-primary) !important;
 }
 
 /* Monaco editor scrollbars - Synthi styled with teal accent */
 .monaco-editor .scrollbar .slider {
-    background: linear-gradient(180deg, rgba(50, 116, 100, 0.4) 0%, rgba(61, 139, 120, 0.3) 100%) !important;
+    background: color-mix(in srgb, var(--accent-primary) 40%, transparent) !important;
     border-radius: 4px !important;
 }
 
 .monaco-editor .scrollbar .slider:hover {
-    background: linear-gradient(180deg, rgba(50, 116, 100, 0.6) 0%, rgba(61, 139, 120, 0.5) 100%) !important;
+    background: color-mix(in srgb, var(--accent-primary) 60%, transparent) !important;
 }
 
 /* Monaco minimap slider - Teal tinted */
 .monaco-editor .minimap-slider .minimap-slider-horizontal {
-    background-color: rgba(50, 116, 100, 0.25) !important;
+    background-color: color-mix(in srgb, var(--accent-primary) 25%, transparent) !important;
 }
 
 /* Monaco editor selection and highlight colors - Teal accent */
 .monaco-editor .selected-text {
-    background-color: rgba(50, 116, 100, 0.3) !important;
+    background-color: color-mix(in srgb, var(--accent-primary) 30%, transparent) !important;
 }
 
 .monaco-editor .selectionHighlight {
-    background-color: rgba(50, 116, 100, 0.15) !important;
+    background-color: color-mix(in srgb, var(--accent-primary) 15%, transparent) !important;
 }
 
 /* Monaco find match highlight - Gold for visibility */
@@ -55,21 +55,21 @@
 
 /* Monaco line highlight - STRONGER active-line background with clear visual anchor */
 .monaco-editor .current-line {
-    background-color: rgba(58, 133, 116, 0.14) !important;
-    border-left: 3px solid rgba(58, 133, 116, 0.7) !important;
-    box-shadow: inset 6px 0 12px -6px rgba(58, 133, 116, 0.15) !important;
+    background-color: color-mix(in srgb, var(--accent-primary) 14%, transparent) !important;
+    border-left: 3px solid color-mix(in srgb, var(--accent-primary) 70%, transparent) !important;
+    box-shadow: inset 6px 0 12px -6px color-mix(in srgb, var(--accent-primary) 15%, transparent) !important;
 }
 
 /* Monaco bracket match - Teal glow */
 .monaco-editor .bracket-match {
-    background-color: rgba(58, 133, 116, 0.25) !important;
-    border: 1px solid #3a8574 !important;
-    box-shadow: 0 0 8px rgba(58, 133, 116, 0.35) !important;
+    background-color: color-mix(in srgb, var(--accent-primary) 25%, transparent) !important;
+    border: 1px solid var(--accent-primary) !important;
+    box-shadow: 0 0 8px color-mix(in srgb, var(--accent-primary) 35%, transparent) !important;
 }
 
 /* Active line number highlight - stronger */
 .monaco-editor .line-numbers.active-line-number {
-    color: #4aba9a !important;
+    color: var(--accent-tertiary) !important;
     font-weight: 600 !important;
 }
 
@@ -184,12 +184,12 @@
    ============================================ */
 
 .synthi-fix-preview-container {
-    background: #1e1e2e;
+    background: var(--bg-panel);
     border: 1px solid rgba(147, 51, 234, 0.5);
     border-radius: 8px;
     padding: 0;
     margin-top: 4px;
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+    box-shadow: var(--shadow-dropdown);
     max-width: 500px;
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
     font-size: 12px;
@@ -205,7 +205,7 @@
     background: linear-gradient(90deg, rgba(147, 51, 234, 0.2), rgba(79, 70, 229, 0.15));
     border-bottom: 1px solid rgba(147, 51, 234, 0.3);
     font-weight: 500;
-    color: #e0e0e0;
+    color: var(--text-primary);
 }
 
 .synthi-fix-preview-icon {
@@ -242,7 +242,7 @@
     text-transform: uppercase;
     letter-spacing: 0.5px;
     margin-bottom: 6px;
-    color: #888;
+    color: var(--text-muted);
 }
 
 .synthi-fix-preview-old .synthi-fix-label {
@@ -261,7 +261,7 @@
     line-height: 1.5;
     white-space: pre-wrap;
     word-break: break-word;
-    color: #d4d4d4;
+    color: var(--text-secondary);
     max-height: 100px;
     overflow-y: auto;
 }
@@ -276,7 +276,7 @@
     align-items: center;
     justify-content: center;
     padding: 0 8px;
-    color: #888;
+    color: var(--text-muted);
     font-size: 16px;
     background: rgba(100, 100, 100, 0.1);
 }
@@ -352,10 +352,10 @@
 
 /* Full Fix Preview Widget */
 .synthi-fix-preview-widget {
-    background: #1e1e2e;
+    background: var(--bg-panel);
     border: 1px solid rgba(147, 51, 234, 0.5);
     border-radius: 8px;
-    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+    box-shadow: var(--shadow-dropdown);
     max-width: 600px;
     min-width: 300px;
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
@@ -372,12 +372,12 @@
     background: linear-gradient(90deg, rgba(147, 51, 234, 0.2), rgba(79, 70, 229, 0.15));
     border-bottom: 1px solid rgba(147, 51, 234, 0.3);
     font-weight: 500;
-    color: #e0e0e0;
+    color: var(--text-primary);
 }
 
 .synthi-fix-preview-widget .synthi-fix-preview-hint {
     font-size: 10px;
-    color: #888;
+    color: var(--text-muted);
     background: rgba(100, 100, 100, 0.3);
     padding: 2px 6px;
     border-radius: 4px;
@@ -414,7 +414,7 @@
     text-transform: uppercase;
     letter-spacing: 0.5px;
     margin-bottom: 6px;
-    color: #888;
+    color: var(--text-muted);
 }
 
 .synthi-fix-preview-widget .synthi-fix-preview-old .synthi-fix-preview-label {
@@ -431,7 +431,7 @@
     line-height: 1.5;
     white-space: pre-wrap;
     word-break: break-word;
-    color: #d4d4d4;
+    color: var(--text-secondary);
     margin: 0;
     max-height: 200px;
     overflow-y: auto;
@@ -447,7 +447,7 @@
     align-items: center;
     justify-content: center;
     padding: 0 8px;
-    color: #888;
+    color: var(--text-muted);
     font-size: 16px;
     background: rgba(100, 100, 100, 0.1);
 }
@@ -518,19 +518,19 @@
     cursor: pointer;
     padding: 4px 8px;
     border-radius: 4px;
-    background: rgba(50, 116, 100, 0.1);
+    background: color-mix(in srgb, var(--accent-primary) 10%, transparent);
     transition: all 0.2s ease;
 }
 
 .monaco-editor .monaco-hover .hover-row .actions .action-container .action-label:hover {
     text-decoration: none !important;
-    background: rgba(50, 116, 100, 0.2);
+    background: color-mix(in srgb, var(--accent-primary) 20%, transparent);
     color: var(--accent-secondary) !important;
 }
 
 /* Scrollbar in hover */
 .monaco-editor .monaco-hover .monaco-scrollable-element > .scrollbar > .slider {
-    background: rgba(50, 116, 100, 0.4) !important;
+    background: color-mix(in srgb, var(--accent-primary) 40%, transparent) !important;
     border-radius: 4px !important;
 }
 
