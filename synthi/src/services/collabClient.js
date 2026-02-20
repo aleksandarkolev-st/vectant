@@ -1184,6 +1184,11 @@ class CollabClient {
               handlers.onGitStatusChanged(msg.filePath || null);
             }
           }
+          if (msg.type === 'file-saved' && msg.slug === slug) {
+            if (typeof handlers.onFileSaved === 'function') {
+              handlers.onFileSaved(msg.filePath || null);
+            }
+          }
           // ── Direct collaboration notifications ──────────────────────
           if (msg.type === 'auto-session-created') {
             // Server auto-created a session for us because someone asked

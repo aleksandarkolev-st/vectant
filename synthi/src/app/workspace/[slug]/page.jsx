@@ -4,7 +4,7 @@ import { use } from 'react';
 import { useSession } from 'next-auth/react';
 import { useRouter } from 'next/navigation';
 import { useAppDispatch, useAppSelector } from '@/redux/hooks';
-import { fetchFilesThunk, selectActiveFile, setSlug, selectFileThunk, selectCurrentContent, selectFileCacheEntries } from '@/redux/workspaceSlice';
+import { fetchFilesThunk, selectActiveFile, setSlug, selectFileThunk, selectCurrentContent, selectFileCacheEntries, markFileSavedRemotely } from '@/redux/workspaceSlice';
 import { fetchGitStatus } from '@/redux/gitSlice';
 import collabClient from '@/services/collabClient';
 import collabSessionService from '@/services/collabSessionService';
@@ -400,6 +400,13 @@ export default function EditorPage({ params }) {
                 // Auto-flush wrote content to disk — refresh git status so
                 // Source Control panel updates without waiting for the poll.
                 dispatch(fetchGitStatus(slug));
+            },
+            onFileSaved: (filePath) => {
+                // Another collaborator saved this file — sync our saved state
+                // so the unsaved indicator clears across all clients.
+                if (filePath) {
+                    dispatch(markFileSavedRemotely(filePath));
+                }
             },
             onCollabInvite: (msg) => {
                 // Forward collab-invite to collabSessionService so UI can

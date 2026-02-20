@@ -573,6 +573,31 @@ const workspaceSlice = createSlice({
                 }
             }
         },
+        /**
+         * Called when another collaborator saves a file.
+         * Syncs this client's savedContent so isUnsaved resets correctly.
+         * If the file is currently active, set savedContent = currentContent.
+         * Also updates the per-file savedContent cache.
+         */
+        markFileSavedRemotely: (state, action) => {
+            const filePath = action.payload;
+            if (!filePath) return;
+            // Update per-file cache so switching tabs later reflects correct state
+            const cached = state.fileContentCache.get(filePath);
+            if (typeof cached === 'string') {
+                if (!state._savedContentByPath) state._savedContentByPath = {};
+                state._savedContentByPath[filePath] = cached;
+            }
+            // If this is the currently active file, sync savedContent
+            if (state.activeFile?.path === filePath) {
+                state.savedContent = state.currentContent;
+            }
+            // Clear isUnsaved flag on the open file tab
+            const idx = state.openFiles.findIndex(f => f.path === filePath);
+            if (idx !== -1 && state.openFiles[idx].isUnsaved) {
+                state.openFiles[idx] = { ...state.openFiles[idx], isUnsaved: false };
+            }
+        },
         hydrateWorkspace: (state, action) => {
             const { openFiles, activeFile } = action.payload;
             if (openFiles) {
@@ -830,7 +855,7 @@ const workspaceSlice = createSlice({
     },
 });
 
-export const { updateContent, renameItemStateUpdate, setSlug, setExternalFileContent, openFile, closeFile, reorderOpenFiles, hydrateWorkspace, clearFileCache, clearSavedBaselines, setDiffMode } = workspaceSlice.actions;
+export const { updateContent, renameItemStateUpdate, setSlug, setExternalFileContent, openFile, closeFile, reorderOpenFiles, hydrateWorkspace, clearFileCache, clearSavedBaselines, setDiffMode, markFileSavedRemotely } = workspaceSlice.actions;
 
 export const refreshWorkspaceThunk = createAsyncThunk(
     'workspace/refresh',

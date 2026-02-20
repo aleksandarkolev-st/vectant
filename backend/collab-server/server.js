@@ -598,6 +598,10 @@ class ValidatingPersistence {
     }
 
     broadcastGitStatusChanged(slug, filePath, { userId: effectiveUserId, sessionId: docSessionId || null });
+
+    // Broadcast file-saved so all collaborators can sync their saved state
+    broadcastFileSaved(slug, filePath, { userId: effectiveUserId, sessionId: docSessionId || null });
+
     console.log(`[Collab Flush] Explicit save: ${filePath} -> disk + GCS (${content.length} chars)`);
   }
 
@@ -928,6 +932,22 @@ function _matchesNotifyScope(ws, scope = {}) {
   // If scope has no filters, broadcast to all
   if (!scope.sessionId && !scope.userId) return true;
   return false;
+}
+
+/**
+ * Broadcast a file-saved event to notification WebSocket clients.
+ * Sent after flushDocToDisk so all collaborators can sync their
+ * saved/unsaved state — the other client's Redux savedContent updates
+ * to match currentContent, clearing the unsaved indicator.
+ */
+function broadcastFileSaved(slug, filePath, scope = {}) {
+  if (!slug || !notifyWss) return;
+  const message = JSON.stringify({ type: 'file-saved', slug, filePath, scope });
+  notifyWss.clients.forEach((ws) => {
+    if (ws.readyState === WebSocket.OPEN && ws._slug === slug && _matchesNotifyScope(ws, scope)) {
+      try { ws.send(message); } catch (_) {}
+    }
+  });
 }
 
 function broadcastGitStatusChanged(slug, filePath, scope = {}, { immediate = false } = {}) {
