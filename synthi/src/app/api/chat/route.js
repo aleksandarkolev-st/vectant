@@ -83,13 +83,26 @@ const DEFAULT_IGNORE = [
     'out/',
     '.cache/',
     '.code_intel/',
+    '.code_intel_backups/',
+    '.synthi/',
     '.turbo/',
 ];
+
+// Filenames that should never be sent as AI context (token waste).
+const IGNORE_FILENAMES = new Set([
+    'package-lock.json',
+    'yarn.lock',
+    'pnpm-lock.yaml',
+    'composer.lock',
+    'Gemfile.lock',
+    'Cargo.lock',
+    'poetry.lock',
+]);
 
 // Code Intelligence Backend
 const CODE_INTEL_BASE = process.env.CODE_INTEL_URL || process.env.AI_ENGINE_URL || 'http://localhost:8000';
 
-const DEFAULT_GEMINI_MODEL = process.env.SYNTHI_AI_MODEL || process.env.GEMINI_MODEL || 'gemini-2.0-flash';
+const DEFAULT_GEMINI_MODEL = process.env.SYNTHI_AI_MODEL || process.env.GEMINI_MODEL || 'gemini-3-flash';
 const UPSTREAM_TIMEOUT_MS = 45_000;
 
 /**
@@ -99,6 +112,7 @@ const UPSTREAM_TIMEOUT_MS = 45_000;
  */
 const MODEL_MAX_OUTPUT_TOKENS = [
     // Gemini family
+    ['gemini-3-flash',       65_536],
     ['gemini-2.5-pro',       65_536],
     ['gemini-2.5-flash',     65_536],
     ['gemini-2.0-flash',      8_192],
@@ -358,7 +372,7 @@ WEB SEARCH GUIDELINES:
  * @param {Array} params.conversationHistory - Previous messages
  * @returns {Promise<Object>} - Context response with sufficiency indicator
  */
-async function fetchCodeIntelContext({ workspacePath, query, maxTokens = 6000, conversationHistory = [] }) {
+async function fetchCodeIntelContext({ workspacePath, query, maxTokens = 30000, conversationHistory = [] }) {
     if (!workspacePath) {
         return { context: '', sufficiency: 'UNKNOWN', sources: [], refusal: null };
     }
@@ -373,9 +387,8 @@ async function fetchCodeIntelContext({ workspacePath, query, maxTokens = 6000, c
                 max_tokens: maxTokens,
                 conversation_history: conversationHistory,
             }),
-            // TTFT optimization: Reduced timeout to 3s - if code intel is slow, skip it
-            // This ensures we don't block streaming for too long
-            signal: AbortSignal.timeout(3000),
+            // RAG micro-navigation needs ~2-3s; give 6s to avoid dropping context
+            signal: AbortSignal.timeout(6000),
         });
         
         if (!response.ok) {
@@ -627,7 +640,9 @@ const fetchCollabFileContent = async (slug, filePath, signal) => {
 
 const shouldIgnorePath = (path = '') => {
     const normalized = String(path || '').replace(/\\/g, '/');
-    return DEFAULT_IGNORE.some((prefix) => normalized.startsWith(prefix));
+    if (DEFAULT_IGNORE.some((prefix) => normalized.startsWith(prefix))) return true;
+    const basename = normalized.split('/').pop() || '';
+    return IGNORE_FILENAMES.has(basename);
 };
 
 const fetchRepoFileList = async (slug, signal) => {
@@ -1385,7 +1400,7 @@ export async function POST(request) {
         // Code intelligence integration
         workspacePath = '',
         useCodeIntel = true, // Enable by default when workspacePath is provided
-        maxContextTokens = 6000,
+        maxContextTokens = 30000,
         conversationHistory = [],
         fullRepoContext = false,
         // Agentic tool-use mode
@@ -1420,6 +1435,52 @@ export async function POST(request) {
         codeIntelPromise,
         hydratePromise,
     ]);
+
+    // ── RAG-driven file hydration ───────────────────────────────────
+    // Extract file paths discovered by the RAG pipeline and hydrate any
+    // that weren't already in the frontend's files[] payload.  This
+    // ensures the LLM sees full file content for RAG-sourced files,
+    // not just the text blob summary.
+    let finalFiles = hydratedFiles;
+    if (codeIntelContext?.sources?.length && workspacePath) {
+        const existingPaths = new Set(
+            (hydratedFiles || []).map((f) => f?.path || f?.name).filter(Boolean)
+        );
+        // Normalise: strip leading slashes so paths match
+        const norm = (p) => String(p || '').replace(/^\/+/, '').replace(/\\/g, '/');
+        const normExisting = new Set([...existingPaths].map(norm));
+
+        const ragPaths = [...new Set(
+            codeIntelContext.sources
+                .map((s) => s?.file)
+                .filter(Boolean)
+                .filter((f) => !NODE_MODULES_PATTERN.test(f))
+        )];
+
+        const ragNewPaths = ragPaths.filter((p) => !normExisting.has(norm(p)));
+        if (ragNewPaths.length > 0) {
+            const ragHydrated = [];
+            for (const ragPath of ragNewPaths.slice(0, 8)) {
+                try {
+                    const content = await fetchCollabFileContent(workspacePath, ragPath, request.signal);
+                    if (typeof content === 'string' && content) {
+                        const trimmed = content.length > MAX_FILE_CHARS ? content.slice(0, MAX_FILE_CHARS) : content;
+                        ragHydrated.push({
+                            path: ragPath,
+                            content: `[RAG-sourced: high relevance]\n${trimmed}`,
+                            ragSource: true,
+                        });
+                    }
+                } catch (_) { /* skip on error */ }
+            }
+            if (ragHydrated.length > 0) {
+                // Prepend RAG files so they appear first (highest relevance)
+                finalFiles = [...ragHydrated, ...hydratedFiles];
+                console.log(`[CodeIntel] RAG-hydrated ${ragHydrated.length} additional files:`,
+                    ragHydrated.map((f) => f.path));
+            }
+        }
+    }
     
     if (codeIntelContext?.context) {
         console.log('[CodeIntel] Context fetched:', {
@@ -1432,7 +1493,7 @@ export async function POST(request) {
     const userContent = buildUserContent({
         prompt,
         code: hydratedCode,
-        files: hydratedFiles,
+        files: finalFiles,
         lang,
         focusPath,
         codeIntelContext,

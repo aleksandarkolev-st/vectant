@@ -312,13 +312,30 @@ class GitService {
             const git = this.getGit(slug);
             const status = await git.status();
             
+            // Filter out AI-generated index directories that shouldn't appear in SCM
+            const AI_INDEX_PREFIXES = ['.synthi/', '.code_intel/', '.code_intel_backups/'];
+            const isAIPath = (filePath) => AI_INDEX_PREFIXES.some(p => filePath.startsWith(p));
+            const filterFiles = (arr) => (arr || []).filter(f => !isAIPath(typeof f === 'string' ? f : f.path || ''));
+            
+            const filteredStatus = {
+                ...status,
+                files: filterFiles(status.files),
+                not_added: (status.not_added || []).filter(f => !isAIPath(f)),
+                created: (status.created || []).filter(f => !isAIPath(f)),
+                deleted: (status.deleted || []).filter(f => !isAIPath(f)),
+                modified: (status.modified || []).filter(f => !isAIPath(f)),
+                renamed: filterFiles(status.renamed),
+                staged: (status.staged || []).filter(f => !isAIPath(f)),
+                conflicted: (status.conflicted || []).filter(f => !isAIPath(f)),
+            };
+            
             // Check for merge conflicts
-            const hasConflicts = status.conflicted && status.conflicted.length > 0;
+            const hasConflicts = filteredStatus.conflicted && filteredStatus.conflicted.length > 0;
             
             return {
-                ...status,
+                ...filteredStatus,
                 hasConflicts,
-                conflictedFiles: status.conflicted || []
+                conflictedFiles: filteredStatus.conflicted || []
             };
         } catch (e) {
             throw this.mapGitError(e, slug);
