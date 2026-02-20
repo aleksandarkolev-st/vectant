@@ -200,6 +200,10 @@ const EditorPanel = ({
     const [collabConnected, setCollabConnected] = useState(false); // Track if collab is actively bound
     const [isPrivateMode, setIsPrivateMode] = useState(false);
     const [remoteUnsaved, setRemoteUnsaved] = useState(false);
+    // Debounce ref for markFileSavedRemotely — on rapid remote edits
+    // (e.g., host typing quickly), this prevents dozens of Redux dispatches
+    // per second, coalescing them into one per animation frame.
+    const remoteSaveRAFRef = useRef(null);
     
     // File-level presence: which remote users are editing which files
     const { presenceByFile } = useFilePresence(slug, authUserId);
@@ -1330,8 +1334,16 @@ const EditorPanel = ({
         // align the guest's savedContent so the tab never shows a false
         // "unsaved" indicator.  The host's edits are the source of truth;
         // persisting to disk is the host's responsibility.
+        // Debounced via requestAnimationFrame to coalesce rapid remote
+        // character edits into a single Redux dispatch per frame.
         if (remoteApplying && collabRole === 'guest' && activeFile?.path) {
-            dispatch(markFileSavedRemotely(activeFile.path));
+            if (!remoteSaveRAFRef.current) {
+                const pathToSync = activeFile.path;
+                remoteSaveRAFRef.current = requestAnimationFrame(() => {
+                    remoteSaveRAFRef.current = null;
+                    dispatch(markFileSavedRemotely(pathToSync));
+                });
+            }
         }
 
         // Skip AI auto-complete and active completion cancel for remote changes
