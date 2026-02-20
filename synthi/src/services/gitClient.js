@@ -1,34 +1,25 @@
-import { getSession } from 'next-auth/react';
 import collabSessionService from '@/services/collabSessionService';
 
 const COLLAB_SERVER_URL = process.env.NEXT_PUBLIC_COLLAB_SERVER_URL || 'http://localhost:1234';
 
+let cachedUserId = null;
+
 export const gitClient = {
+    setUserId(userId) {
+        cachedUserId = userId;
+    },
+
     async request(slug, action, data = {}) {
         const headers = {
             'Content-Type': 'application/json',
         };
 
         // Attach authenticated user id for per-user repo isolation.
-        // Prefer provider-assigned id; fall back to email.
-        // If getSession() returns null (SSR hydration still in progress),
-        // wait briefly and retry once — the NextAuth session cookie may not
-        // be available on the very first render tick.
-        try {
-            let session = await getSession();
-            if (!session) {
-                await new Promise(r => setTimeout(r, 500));
-                session = await getSession();
-            }
-            const userId = session?.user?.id || session?.user?.email;
-            if (userId) {
-                headers['x-user-id'] = userId;
-            }
-            if (collabSessionService?.isActive && collabSessionService.sessionId) {
-                headers['x-session-id'] = collabSessionService.sessionId;
-            }
-        } catch (_) {
-            // Non-fatal — request will fall back to slug-level repo
+        if (cachedUserId) {
+            headers['x-user-id'] = cachedUserId;
+        }
+        if (collabSessionService?.isActive && collabSessionService.sessionId) {
+            headers['x-session-id'] = collabSessionService.sessionId;
         }
 
         const response = await fetch(`${COLLAB_SERVER_URL}/git/${slug}/${action}`, {

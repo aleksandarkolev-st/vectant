@@ -62,6 +62,7 @@ import { AlertCircle } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useCollabNotifications } from '@/hooks/useCollabNotifications';
 import { GuestBanner } from '@/components/collaboration';
+import { gitClient } from '@/services/gitClient';
 
 export default function EditorPage({ params }) {
     const dispatch = useAppDispatch();
@@ -436,6 +437,9 @@ export default function EditorPage({ params }) {
     const prevSessionRef = useRef(null);
     useEffect(() => {
         if (!slug) return;
+        if (authUserId) {
+            gitClient.setUserId(authUserId);
+        }
         const authJustBecameAvailable = authUserId && !prevAuthRef.current;
         const sessionJustBecameAvailable = activeSessionId && !prevSessionRef.current;
         prevAuthRef.current = authUserId;
