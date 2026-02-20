@@ -33,6 +33,8 @@ function buildTreeFromFlatMeta(flatFiles) {
         '.cache/',
         '.turbo/',
         '.code_intel/',
+        '.code_intel_backups/',
+        '.synthi/',
     ];
     const root = { name: 'root', isFolder: true, children: [], path: '' };
     const files = Array.isArray(flatFiles) ? flatFiles : [];

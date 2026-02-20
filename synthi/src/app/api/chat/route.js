@@ -83,6 +83,8 @@ const DEFAULT_IGNORE = [
     'out/',
     '.cache/',
     '.code_intel/',
+    '.code_intel_backups/',
+    '.synthi/',
     '.turbo/',
 ];
 
