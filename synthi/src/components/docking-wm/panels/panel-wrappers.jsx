@@ -14,6 +14,7 @@
 
 import { memo } from 'react';
 import dynamic from 'next/dynamic';
+import { ResizablePanelGroup } from '@/components/ui/resizable';
 import { useWorkspacePanelContext } from '../context/workspace-panel-context';
 
 // ────────────────────────────────────────────────────────
@@ -97,10 +98,13 @@ export const EditorPanelWrapper = memo(function EditorPanelWrapper({ data }) {
       data-panel-type="editor"
       className="h-full w-full min-w-0 overflow-hidden bg-[#18181b]"
     >
-      <EditorPanel
-        {...(ctx?.editorProps || {})}
-        filePath={data?.filePath}
-      />
+      {/* Editor.jsx root return is <ResizablePanel> which requires a parent PanelGroup */}
+      <ResizablePanelGroup direction="horizontal" className="h-full w-full">
+        <EditorPanel
+          {...(ctx?.editorProps || {})}
+          filePath={data?.filePath}
+        />
+      </ResizablePanelGroup>
     </div>
   );
 });
