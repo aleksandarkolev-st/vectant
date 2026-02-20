@@ -132,7 +132,23 @@ class MonacoTextBinding {
       try { this._awareness.on('change', this._awarenessHandler); } catch (_) { /* ignore if API differs */ }
     }
 
-    // Publish local selection/cursor to awareness whenever editor selection changes
+    // Publish local selection/cursor to awareness whenever editor selection changes.
+    // Throttled to 50ms — fast enough to feel real-time but avoids flooding the
+    // Yjs awareness channel on every single keystroke or cursor micro-movement.
+    this._pendingCursorState = null;
+    this._cursorThrottleTimer = null;
+    const CURSOR_THROTTLE_MS = 50;
+
+    const flushCursorState = () => {
+      this._cursorThrottleTimer = null;
+      if (!this._pendingCursorState || !this._awareness) return;
+      try {
+        this._awareness.setLocalStateField('cursor', this._pendingCursorState);
+        try { this._awareness.setLocalStateField('lastActive', Date.now()); } catch (_) {}
+      } catch (_) {}
+      this._pendingCursorState = null;
+    };
+
     this._cursorListener = editor.onDidChangeCursorSelection((ev) => {
       if (!this._awareness) return;
       try {
@@ -151,10 +167,10 @@ class MonacoTextBinding {
             end: { line: s.endLineNumber, column: s.endColumn },
           }));
         }
-        this._awareness.setLocalStateField('cursor', cursorState);
-        try {
-          this._awareness.setLocalStateField('lastActive', Date.now());
-        } catch (_) {}
+        this._pendingCursorState = cursorState;
+        if (!this._cursorThrottleTimer) {
+          this._cursorThrottleTimer = setTimeout(flushCursorState, CURSOR_THROTTLE_MS);
+        }
       } catch (err) {
         // don't let cursor update errors break editing
       }
@@ -214,6 +230,7 @@ class MonacoTextBinding {
   destroy() {
     this._destroyed = true;
     if (this._observerTimeout) clearTimeout(this._observerTimeout);
+    if (this._cursorThrottleTimer) clearTimeout(this._cursorThrottleTimer);
     try { this.ytext.unobserve(this._yObserver); } catch (_) {}
     try { this._modelListener.dispose(); } catch (_) {}
     try { this._cursorListener?.dispose?.(); } catch (_) {}
