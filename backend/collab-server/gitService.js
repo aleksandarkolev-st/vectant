@@ -597,10 +597,47 @@ class GitService {
                 }
             }
 
+            // ── Convert to bare repo + remove working tree ──────────────
+            // The slug-level directory should only contain _upstream.git
+            // (the bare repo) and per-user subdirectories. Working tree
+            // files at the slug level are unnecessary and waste space.
+            const barePath = this.getBarePath(slug);
+            if (!fs.existsSync(barePath)) {
+                try {
+                    const bareGit = simpleGit();
+                    await bareGit.clone(repoPath, barePath, ['--bare', '--no-hardlinks']);
+                    console.log(`[GitService] Created bare repo at ${barePath}`);
+                    // Preserve the clean remote URL on the bare repo
+                    try {
+                        const bGit = simpleGit(barePath);
+                        await bGit.remote(['set-url', 'origin', repoUrl]);
+                    } catch (_) {}
+                } catch (e) {
+                    console.warn(`[GitService] Failed to create bare repo: ${e.message}`);
+                }
+            }
+
+            // Remove the slug-level working tree (keep _upstream.git and
+            // any per-user directories that may already exist).
+            try {
+                const entries = fs.readdirSync(repoPath, { withFileTypes: true });
+                for (const entry of entries) {
+                    if (entry.name === '_upstream.git') continue;
+                    // Don't delete per-user repo directories
+                    if (entry.isDirectory() && entry.name !== '.git' && entry.name !== 'sessions' && !entry.name.startsWith('.')) {
+                        const maybeGit = path.join(repoPath, entry.name, '.git');
+                        if (fs.existsSync(maybeGit)) continue; // per-user repo
+                    }
+                    const fullPath = path.join(repoPath, entry.name);
+                    fs.rmSync(fullPath, { recursive: true, force: true });
+                }
+                console.log(`[GitService] Cleaned slug-level working tree for "${slug}"`);
+            } catch (e) {
+                console.warn(`[GitService] Failed to clean slug-level working tree: ${e.message}`);
+            }
+
             // Archive .git to GCS for fast re-hydration after eviction
             this._archiveGitAsync(slug);
-            // Defense-in-depth: hide internal artifacts from git status
-            this._ensureLocalExcludes(repoPath);
             
             return { success: true, path: repoPath };
         });
@@ -2052,6 +2089,33 @@ class GitService {
 
         // ── Step 5: Write migration marker ────────────────────────────────
         this._writeMigrationMarker(slug);
+
+        // ── Step 6: Clean up slug-level working tree files ────────────────
+        // The slug-level directory should only contain _upstream.git and
+        // per-user subdirectories. Working tree files at the slug level
+        // are unused and waste space.  Remove them now that we have the
+        // bare repo.
+        try {
+            const entries = fs.readdirSync(repoPath, { withFileTypes: true });
+            for (const entry of entries) {
+                // Keep the bare repo
+                if (entry.name === '_upstream.git') continue;
+                // Keep migration marker
+                if (entry.name === '.synthi-migrated') continue;
+                // Keep per-user repo directories (have .git inside)
+                if (entry.isDirectory() && entry.name !== '.git' && entry.name !== 'sessions' && !entry.name.startsWith('.')) {
+                    const maybeGit = path.join(repoPath, entry.name, '.git');
+                    if (fs.existsSync(maybeGit)) continue;
+                }
+                const fullPath = path.join(repoPath, entry.name);
+                fs.rmSync(fullPath, { recursive: true, force: true });
+            }
+            console.log(`[Migration]   Cleaned slug-level working tree files`);
+        } catch (e) {
+            // Non-fatal — files will just take up space
+            console.warn(`[Migration]   Failed to clean slug-level working tree: ${e.message}`);
+        }
+
         console.log(`[Migration] ── Migration complete for "${slug}" ──`);
 
         return { barePath, worktreePath: repoPath };
