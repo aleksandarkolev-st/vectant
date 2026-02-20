@@ -4,6 +4,7 @@ import workspaceReducer, { initialWorkspaceState } from './workspaceSlice';
 import uiReducer, { initialUiState } from './uiSlice';
 import gitReducer from './gitSlice';
 import extensionReducer from './extensionSlice';
+import layoutReducer from '@/components/docking-wm/state/layout-slice';
 
 import { enableMapSet } from 'immer';
 
@@ -135,6 +136,7 @@ export const store = configureStore({
     ui: uiReducer,
     git: gitReducer,
     extensions: extensionReducer,
+    layout: layoutReducer,
   },
   // We need to disable the serializable check for the Map used in fileContentCache
   middleware: (getDefaultMiddleware) =>
