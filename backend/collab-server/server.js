@@ -1731,13 +1731,9 @@ const server = http.createServer(async (req, res) => {
             }
             const guest = sessionManager.admitGuest(sessionIdParam, data);
             result = { success: true, guest };
-            // Notify via the session notification channel (include hostId for guest clients)
-            const admitSession = sessionManager.getSession(sessionIdParam);
-            broadcastSessionEvent(sessionIdParam, 'guest:joined', {
-              guest,
-              hostId: admitSession?.hostId || null,
-              slug: admitSession?.slug || null,
-            });
+            // NOTE: Do NOT broadcastSessionEvent here — admitGuest() emits
+            // 'session:guestJoined' which triggers the listener that broadcasts.
+            // Calling it here too caused doubled "X joined" toasts.
             break;
           }
 
@@ -1767,7 +1763,9 @@ const server = http.createServer(async (req, res) => {
             if (!sessionIdParam) { res.writeHead(400); res.end('Missing sessionId'); return; }
             const perms = sessionManager.updatePermissions(sessionIdParam, data.guestId, data.permissions);
             result = { success: true, permissions: perms };
-            broadcastSessionEvent(sessionIdParam, 'permissions:updated', { guestId: data.guestId, permissions: perms });
+            // NOTE: Do NOT broadcastSessionEvent here — updatePermissions() emits
+            // 'session:permissionsUpdated' which triggers the listener that broadcasts.
+            // Calling it here too caused doubled "permissions updated" toasts.
             break;
           }
 
@@ -1808,7 +1806,9 @@ const server = http.createServer(async (req, res) => {
           case 'terminate': {
             // DELETE /session/terminate/:sessionId
             if (!sessionIdParam) { res.writeHead(400); res.end('Missing sessionId'); return; }
-            broadcastSessionEvent(sessionIdParam, 'session:terminated', {});
+            // NOTE: Do NOT broadcastSessionEvent here — terminateSession() emits
+            // 'session:terminated' which triggers the listener that broadcasts.
+            // Calling it here too caused doubled "session ended" toasts.
             sessionManager.terminateSession(sessionIdParam);
             result = { success: true };
             break;
