@@ -103,28 +103,38 @@ export function useCodeIntelIndex({
     
     /**
      * Index a single file (for incremental updates after edits).
+     * Debounced: rapid saves within 1.5s are coalesced into a single request.
      * @param {string} filePath - Path to file within workspace
      */
-    const indexFile = useCallback(async (filePath) => {
+    const indexFile = useCallback((filePath) => {
         if (!workspaceSlug || !filePath) return;
         
-        try {
-            const response = await fetch(`${CODE_INTEL_URL}/code-intel/index/file`, {
-                method: 'POST',
-                headers: { 'content-type': 'application/json' },
-                body: JSON.stringify({
-                    workspace_path: workspaceSlug,
-                    file_path: filePath,
-                }),
-            });
-            
-            if (response.ok) {
-                console.log(`[CodeIntel] Re-indexed file: ${filePath}`);
-            }
-        } catch (err) {
-            // Silent fail for incremental updates
-            console.debug('[CodeIntel] File index failed:', err.message);
+        // Cancel any pending timer for this file
+        const timers = fileIndexTimersRef.current;
+        if (timers.has(filePath)) {
+            clearTimeout(timers.get(filePath));
         }
+        
+        timers.set(filePath, setTimeout(async () => {
+            timers.delete(filePath);
+            try {
+                const response = await fetch(`${CODE_INTEL_URL}/code-intel/index/file`, {
+                    method: 'POST',
+                    headers: { 'content-type': 'application/json' },
+                    body: JSON.stringify({
+                        workspace_path: workspaceSlug,
+                        file_path: filePath,
+                    }),
+                });
+                
+                if (response.ok) {
+                    console.log(`[CodeIntel] Re-indexed file: ${filePath}`);
+                }
+            } catch (err) {
+                // Silent fail for incremental updates
+                console.debug('[CodeIntel] File index failed:', err.message);
+            }
+        }, 1500));
     }, [workspaceSlug]);
     
     /**
