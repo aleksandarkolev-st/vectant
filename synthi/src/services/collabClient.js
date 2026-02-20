@@ -1014,9 +1014,28 @@ class CollabClient {
       const currentYtext = entry.ytext.toString();
       if (currentYtext.length > 0) {
         // Ytext has content now (from server).
-        // If the binding is already established, let the _yObserver handle
-        // the model update — it uses editor.executeEdits (no isFlush).
-        if (!bindingEstablished && model.getValue() !== currentYtext) {
+        // CRITICAL: Clear the model BEFORE the _yObserver applies the Yjs
+        // delta.  If the model was pre-seeded optimistically, the delta
+        // (an insert for the full content) would be applied ON TOP of the
+        // existing model text, doubling it.  By clearing the model first
+        // inside a transaction, the subsequent _yObserver delta inserts
+        // into an empty model — no doubling.
+        if (bindingEstablished) {
+          const currentModel = model.getValue();
+          if (currentModel.length > 0 && currentModel !== currentYtext) {
+            // Model has optimistic content that differs from ytext.
+            // Replace with ytext content to prevent duplication.
+            try {
+              binding._applyingRemote = true;
+              model.applyEdits([{
+                range: model.getFullModelRange(),
+                text: currentYtext,
+              }]);
+            } finally {
+              binding._applyingRemote = false;
+            }
+          }
+        } else if (model.getValue() !== currentYtext) {
           model.setValue(currentYtext);
         }
         entry._seeded = true;
@@ -1049,18 +1068,20 @@ class CollabClient {
         doSeed();
       }
     } else {
-      // Wait for sync before seeding to avoid racing with server content
+      // Wait for sync before seeding to avoid racing with server content.
+      // NOTE: We intentionally do NOT call model.setValue(providedContent)
+      // optimistically here.  The previous approach pre-seeded the model so
+      // the user sees content immediately, but this created a race: the
+      // Yjs sync delta inserts the full content ON TOP of the optimistic
+      // content, doubling it.  Instead, leave the model empty (or whatever
+      // it had from createModel) and let doSeed() set it correctly once
+      // the provider syncs.  The user sees the editor blank for a brief
+      // moment (<200ms typical) which is preferable to content duplication.
       const syncHandler = () => {
         entry.provider.off('sync', syncHandler);
         doSeed();
       };
       entry.provider.on('sync', syncHandler);
-      
-      // Set model content optimistically so user sees something
-      // but don't write to ytext yet
-      if (model.getValue() !== providedContent && hasProvidedContent) {
-        model.setValue(providedContent);
-      }
     }
     
     // Now set the model on the editor if different

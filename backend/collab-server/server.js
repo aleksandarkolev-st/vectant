@@ -665,12 +665,12 @@ class ValidatingPersistence {
       // stale CRDT state via the sync protocol, which Yjs merges into this
       // doc — causing content duplication.  Install a one-shot update
       // handler that detects unexpected growth and re-resets the doc.
-      // Active for 5 seconds after reset, then auto-removed.
+      // Active for 10 seconds after reset, then auto-removed.
       const resetLength = actualContent.length;
-      const GROWTH_THRESHOLD = 1.5; // Flag if content grows >50% beyond expected
+      const GROWTH_THRESHOLD = 1.3; // Flag if content grows >30% beyond expected
       let guardRemoved = false;
       let reResetCount = 0;
-      const MAX_RE_RESETS = 3; // prevent infinite reset loops
+      const MAX_RE_RESETS = 5; // prevent infinite reset loops
       const staleGuard = () => {
         if (guardRemoved) return;
         try {
@@ -691,7 +691,7 @@ class ValidatingPersistence {
       setTimeout(() => {
         guardRemoved = true;
         try { ydoc.off('update', staleGuard); } catch (_) {}
-      }, 5000);
+      }, 10000);
     } else {
       fileHashCache.set(docName, { hash: actualHash, timestamp: Date.now() });
     }
