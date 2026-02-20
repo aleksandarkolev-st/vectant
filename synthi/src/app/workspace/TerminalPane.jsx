@@ -1,6 +1,7 @@
 'use client';
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { WifiOff, RefreshCw, Terminal, Zap } from 'lucide-react';
+import { useTheme } from '@/components/ThemeProvider';
 
 /**
  * TerminalPane — Renders a single interactive terminal backed by a real PTY
@@ -33,9 +34,11 @@ const TERMINAL_SERVER_URL =
 const RECONNECT_DELAYS = [1000, 2000, 4000, 8000]; // Exponential backoff
 const MAX_RECONNECT_ATTEMPTS = 4;
 
-// ─── Synthi Dark Theme ──────────────────────────────────────────────────────
-
-const SYNTHI_THEME = {
+// ─── Terminal Theme (from ThemeProvider) ───────────────────────────────
+// The `useTheme()` hook provides `terminalTheme` generated from the active
+// theme JSON. The hardcoded SYNTHI_THEME is kept as a static fallback only for
+// the initial render before ThemeProvider hydrates.
+const SYNTHI_THEME_FALLBACK = {
   background: '#0a0b10',
   foreground: '#f0f2f5',
   cursor: '#327464',
@@ -70,11 +73,21 @@ export default function TerminalPane({ terminalId = 'default', paneSide = 'main'
   const reconnectCountRef = useRef(0);
   const mountedRef = useRef(true);
 
+  // Live theme from ThemeProvider
+  const { terminalTheme } = useTheme();
+
   const [state, setState] = useState('connecting'); // connecting | connected | error | closed
   const [shellInfo, setShellInfo] = useState('');
 
   // Stable session key: survives re-renders, unique per terminal tab + pane side
   const sessionKey = `${terminalId}-${paneSide}`;
+
+  // ─── Live terminal theme sync ─────────────────────────────────────────
+  useEffect(() => {
+    if (terminalRef.current?.term && terminalTheme) {
+      terminalRef.current.term.options.theme = terminalTheme;
+    }
+  }, [terminalTheme]);
 
   // ─── Cleanup helper ───────────────────────────────────────────────────
   const cleanup = useCallback(() => {
@@ -121,7 +134,7 @@ export default function TerminalPane({ terminalId = 'default', paneSide = 'main'
         fontFamily: 'ui-monospace, SFMono-Regular, "JetBrains Mono", Menlo, Monaco, Consolas, monospace',
         fontSize: 13,
         lineHeight: 1.4,
-        theme: SYNTHI_THEME,
+        theme: terminalTheme || SYNTHI_THEME_FALLBACK,
         cursorBlink: true,
         cursorStyle: 'bar',
         scrollback: 5000,
