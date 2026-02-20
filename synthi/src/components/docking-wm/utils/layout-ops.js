@@ -359,6 +359,10 @@ export function floatTab(state, tabId, rect) {
     }
   }
 
+  // Remember which group this tab came from before removing it
+  const sourceGroup = findTabGroup(state, tabId);
+  const sourceGroupId = sourceGroup?.id || null;
+
   let next = removeTabFromCurrentGroup(state, tabId);
   next = cloneState(next);
 
@@ -366,6 +370,7 @@ export function floatTab(state, tabId, rect) {
   next.floating[floatKey] = {
     id: floatKey,
     tabId,
+    sourceGroupId,
     x: rect.x,
     y: rect.y,
     width: rect.width,
@@ -389,9 +394,12 @@ export function dockFloat(state, floatId, targetTabGroupId, insertIndex) {
   const fw = state.floating[floatId];
   if (!fw) return state;
 
-  // Resolve null target to the focused group or first available
+  // Resolve target: prefer the group the tab was originally docked in,
+  // then fall back to focused group, then first available
+  const sourceStillExists = fw.sourceGroupId && state.nodes[fw.sourceGroupId]?.type === 'tabgroup';
   const resolvedTarget =
     targetTabGroupId ||
+    (sourceStillExists ? fw.sourceGroupId : null) ||
     state.focusedTabGroupId ||
     findFirstTabGroup(state, state.rootId)?.id;
 
