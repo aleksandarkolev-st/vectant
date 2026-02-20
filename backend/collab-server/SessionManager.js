@@ -106,6 +106,9 @@ class SessionManager extends EventEmitter {
     /** @type {Map<string, string>} inviteToken → sessionId */
     this.tokenIndex = new Map();
 
+    /** @type {Map<string, string>} roomCode → sessionId */
+    this.roomCodeIndex = new Map();
+
     /** @type {Map<string, string>} socketId → guestId (for fast lookup on disconnect) */
     this.socketIndex = new Map();
   }
@@ -152,6 +155,10 @@ class SessionManager extends EventEmitter {
       defaultPerms: { ...DEFAULT_GUEST_PERMISSIONS, ...defaultPerms },
       guests: new Map(),
       pendingKnocks: new Set(),
+      /** @type {Set<string>} — userIds the host has explicitly invited (auto-admit on knock) */
+      invitedUsers: new Set(),
+      /** @type {string|null} — short alphanumeric room code for easy joining */
+      roomCode: this._generateRoomCode(),
       createdAt: new Date().toISOString(),
       status: 'active',
     };
@@ -159,6 +166,7 @@ class SessionManager extends EventEmitter {
     this.sessions.set(id, session);
     this.hostIndex.set(hostId, id);
     this.tokenIndex.set(inviteToken, id);
+    this.roomCodeIndex.set(session.roomCode, id);
 
     this.emit('session:created', { sessionId: id, hostId, slug });
 
@@ -224,9 +232,34 @@ class SessionManager extends EventEmitter {
     const session = this._getActiveSession(sessionId);
 
     // Already a guest? Ignore knock.
-    if (session.guests.has(guestId)) return;
+    if (session.guests.has(guestId)) {
+      console.log(`[SessionManager] knock: ${guestId} already a guest in session ${sessionId}, ignoring`);
+      return;
+    }
+
+    // Already knocking? Ignore duplicate.
+    if (session.pendingKnocks.has(guestId)) {
+      console.log(`[SessionManager] knock: ${guestId} already in pendingKnocks for session ${sessionId}, ignoring`);
+      return;
+    }
+
+    // ── Auto-admit if the host explicitly invited this user ─────────
+    if (session.invitedUsers && session.invitedUsers.has(guestId)) {
+      console.log(`[SessionManager] knock: ${guestId} was invited by host — auto-admitting`);
+      session.invitedUsers.delete(guestId); // consume the invite
+
+      // Admit directly — bypasses pendingKnocks entirely
+      const entry = this.admitGuest(sessionId, {
+        guestId,
+        socketId: '',   // will be updated when WS connects
+        displayName,
+        avatarUrl,
+      });
+      return; // Don't emit a knock event — guest is already in
+    }
 
     session.pendingKnocks.add(guestId);
+    console.log(`[SessionManager] knock: ${guestId} (${displayName}) added to pendingKnocks. Host=${session.hostId}, Session=${sessionId}`);
 
     this.emit('session:knock', {
       sessionId,
@@ -250,6 +283,8 @@ class SessionManager extends EventEmitter {
    */
   admitGuest(sessionId, { guestId, socketId, displayName, avatarUrl = '', permsOverride = {} }) {
     const session = this._getActiveSession(sessionId);
+
+    console.log(`[SessionManager] admitGuest: host=${session.hostId} admitting guest=${guestId} (${displayName}) in session ${sessionId}`);
 
     // Remove from pending if present
     session.pendingKnocks.delete(guestId);
@@ -288,8 +323,24 @@ class SessionManager extends EventEmitter {
    */
   denyKnock(sessionId, guestId) {
     const session = this._getActiveSession(sessionId);
+    console.log(`[SessionManager] denyKnock: host=${session.hostId} denied guest=${guestId} in session ${sessionId}`);
     session.pendingKnocks.delete(guestId);
     this.emit('session:knockDenied', { sessionId, guestId });
+  }
+
+  // ── Invite tracking ─────────────────────────────────────────────────────
+
+  /**
+   * Record that the host has invited a user. When this user knocks,
+   * they are auto-admitted without host confirmation.
+   *
+   * @param {string} sessionId
+   * @param {string} userId — The invited user's id
+   */
+  addInvitedUser(sessionId, userId) {
+    const session = this._getActiveSession(sessionId);
+    session.invitedUsers.add(userId);
+    console.log(`[SessionManager] addInvitedUser: ${userId} added to invitedUsers for session ${sessionId}`);
   }
 
   // ── Permission management ───────────────────────────────────────────────
@@ -518,6 +569,20 @@ class SessionManager extends EventEmitter {
     return result;
   }
 
+  /**
+   * Look up a session by its short room code.
+   *
+   * @param {string} code — 6-character alphanumeric room code
+   * @returns {object|null} Serialized session or null
+   */
+  getSessionByRoomCode(code) {
+    const sessionId = this.roomCodeIndex.get(code?.toUpperCase());
+    if (!sessionId) return null;
+    const session = this.sessions.get(sessionId);
+    if (!session || session.status !== 'active') return null;
+    return this._serializeSession(session);
+  }
+
   // ── Effective user resolution ────────────────────────────────────────────
 
   /**
@@ -574,6 +639,7 @@ class SessionManager extends EventEmitter {
     // Clean all indexes
     this.tokenIndex.delete(session.inviteToken);
     this.hostIndex.delete(session.hostId);
+    if (session.roomCode) this.roomCodeIndex.delete(session.roomCode);
     for (const [guestId, guest] of session.guests) {
       this.guestIndex.delete(guestId);
       if (guest.socketId) this.socketIndex.delete(guest.socketId);
@@ -589,6 +655,7 @@ class SessionManager extends EventEmitter {
       hostName: session.hostName,
       hostAvatar: session.hostAvatar,
       status: session.status,
+      roomCode: session.roomCode || null,
       guestCount: session.guests.size,
       guests: Array.from(session.guests.values()).map(g => this._serializeGuest(g)),
       pendingKnocks: Array.from(session.pendingKnocks),
@@ -606,6 +673,25 @@ class SessionManager extends EventEmitter {
       permissions: { ...guest.permissions },
       joinedAt: guest.joinedAt,
     };
+  }
+
+  /**
+   * Generate a unique 6-character alphanumeric room code (uppercase).
+   * Retries on collision (extremely unlikely with ~2 billion combos).
+   */
+  _generateRoomCode() {
+    const CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // Exclude 0/O/1/I for readability
+    const CODE_LEN = 6;
+    for (let attempt = 0; attempt < 10; attempt++) {
+      let code = '';
+      const bytes = crypto.randomBytes(CODE_LEN);
+      for (let i = 0; i < CODE_LEN; i++) {
+        code += CHARS[bytes[i] % CHARS.length];
+      }
+      if (!this.roomCodeIndex.has(code)) return code;
+    }
+    // Fallback: use full random hex if all attempts collide
+    return crypto.randomBytes(4).toString('hex').toUpperCase();
   }
 }
 

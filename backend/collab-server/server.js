@@ -1377,6 +1377,9 @@ const server = http.createServer(async (req, res) => {
           });
         }
 
+        // Track this user as invited so they are auto-admitted on knock
+        sessionManager.addInvitedUser(session.id, targetUserId);
+
         // Send invite notification to the target user via notification WS
         const inviteMsg = JSON.stringify({
           type: 'collab-invite',
@@ -1401,6 +1404,7 @@ const server = http.createServer(async (req, res) => {
           sessionId: session.id,
           inviteToken: session.inviteToken,
           inviteLink: session.inviteLink,
+          roomCode: session.roomCode || null,
         }));
       } catch (e) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
@@ -1576,6 +1580,7 @@ const server = http.createServer(async (req, res) => {
               sessionId: session.id,
               inviteToken: session.inviteToken,
               worktreePath: session.worktreePath,
+              roomCode: session.roomCode || null,
               inviteLink: `${process.env.SYNTHI_APP_URL || 'http://localhost:3000'}/collab/${session.id}?token=${session.inviteToken}`,
             };
             break;
@@ -1604,6 +1609,19 @@ const server = http.createServer(async (req, res) => {
           case 'admit': {
             // POST /session/admit/:sessionId — Host admits a guest
             if (!sessionIdParam) { res.writeHead(400); res.end('Missing sessionId'); return; }
+            // Verify the requester is the session host
+            const admitCheckSession = sessionManager.getSession(sessionIdParam);
+            if (!admitCheckSession) {
+              res.writeHead(404, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ error: 'Session not found' }));
+              return;
+            }
+            if (data.requesterId && data.requesterId !== admitCheckSession.hostId) {
+              console.warn(`[Session] Non-host user ${data.requesterId} attempted to admit guest in session ${sessionIdParam}`);
+              res.writeHead(403, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ error: 'Only the session host can admit guests' }));
+              return;
+            }
             const guest = sessionManager.admitGuest(sessionIdParam, data);
             result = { success: true, guest };
             // Notify via the session notification channel (include hostId for guest clients)
@@ -1619,6 +1637,19 @@ const server = http.createServer(async (req, res) => {
           case 'deny': {
             // POST /session/deny/:sessionId
             if (!sessionIdParam) { res.writeHead(400); res.end('Missing sessionId'); return; }
+            // Verify the requester is the session host
+            const denyCheckSession = sessionManager.getSession(sessionIdParam);
+            if (!denyCheckSession) {
+              res.writeHead(404, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ error: 'Session not found' }));
+              return;
+            }
+            if (data.requesterId && data.requesterId !== denyCheckSession.hostId) {
+              console.warn(`[Session] Non-host user ${data.requesterId} attempted to deny guest in session ${sessionIdParam}`);
+              res.writeHead(403, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ error: 'Only the session host can deny guests' }));
+              return;
+            }
             sessionManager.denyKnock(sessionIdParam, data.guestId);
             result = { success: true };
             break;
@@ -1636,6 +1667,19 @@ const server = http.createServer(async (req, res) => {
           case 'kick': {
             // POST /session/kick/:sessionId
             if (!sessionIdParam) { res.writeHead(400); res.end('Missing sessionId'); return; }
+            // Verify the requester is the session host
+            const kickCheckSession = sessionManager.getSession(sessionIdParam);
+            if (!kickCheckSession) {
+              res.writeHead(404, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ error: 'Session not found' }));
+              return;
+            }
+            if (data.requesterId && data.requesterId !== kickCheckSession.hostId) {
+              console.warn(`[Session] Non-host user ${data.requesterId} attempted to kick guest in session ${sessionIdParam}`);
+              res.writeHead(403, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ error: 'Only the session host can kick guests' }));
+              return;
+            }
             sessionManager.removeGuest(sessionIdParam, data.guestId, 'kicked');
             result = { success: true };
             broadcastSessionEvent(sessionIdParam, 'guest:kicked', { guestId: data.guestId });
@@ -2265,6 +2309,72 @@ function broadcastSessionEvent(sessionId, eventType, payload) {
   });
 }
 
+/**
+ * Send a session-level event ONLY to the session host.
+ * Used for events that should never reach guests (e.g. knock requests).
+ * Falls back to broadcastSessionEvent if host socket cannot be identified.
+ *
+ * @param {string} sessionId
+ * @param {string} eventType
+ * @param {object} payload
+ */
+function sendToSessionHost(sessionId, eventType, payload) {
+  const session = sessionManager.getSession(sessionId);
+  if (!session) {
+    console.warn(`[Session] sendToSessionHost: session ${sessionId} not found`);
+    return;
+  }
+  const hostUserId = session.hostId;
+  if (!hostUserId) {
+    console.warn(`[Session] sendToSessionHost: no hostId for session ${sessionId}`);
+    return;
+  }
+  const message = JSON.stringify({ type: eventType, sessionId, ...payload });
+  let sent = false;
+  sessionWss.clients.forEach((ws) => {
+    if (ws.readyState === WebSocket.OPEN && ws._sessionId === sessionId && ws._userId === hostUserId) {
+      try { ws.send(message); sent = true; } catch (_) {}
+    }
+  });
+  if (!sent) {
+    console.warn(`[Session] sendToSessionHost: host WS not found for session ${sessionId} (host=${hostUserId}). Attempting notification WS fallback.`);
+    // Fallback: try the notification WS channel so the host still gets alerted
+    if (notifyWss) {
+      const fallbackMsg = JSON.stringify({ type: 'session-knock', sessionId, ...payload });
+      notifyWss.clients.forEach((ws) => {
+        if (ws.readyState === WebSocket.OPEN && ws._userId === hostUserId) {
+          try { ws.send(fallbackMsg); sent = true; } catch (_) {}
+        }
+      });
+    }
+    if (sent) {
+      console.log(`[Session] sendToSessionHost: delivered via notification WS fallback`);
+    } else {
+      console.error(`[Session] sendToSessionHost: FAILED to deliver knock to host ${hostUserId} via any channel`);
+    }
+  } else {
+    console.log(`[Session] sendToSessionHost: delivered '${eventType}' to host ${hostUserId}`);
+  }
+}
+
+/**
+ * Send a session-level event to a SPECIFIC user in the session.
+ * Used for targeted events like knock:denied (only the denied guest needs it).
+ *
+ * @param {string} sessionId
+ * @param {string} targetUserId
+ * @param {string} eventType
+ * @param {object} payload
+ */
+function sendToSessionUser(sessionId, targetUserId, eventType, payload) {
+  const message = JSON.stringify({ type: eventType, sessionId, ...payload });
+  sessionWss.clients.forEach((ws) => {
+    if (ws.readyState === WebSocket.OPEN && ws._sessionId === sessionId && ws._userId === targetUserId) {
+      try { ws.send(message); } catch (_) {}
+    }
+  });
+}
+
 // Track active documents and their content for debugging
 const activeDocuments = new Map(); // docName -> { ydoc, lastContent, clientCount }
 
@@ -2426,10 +2536,21 @@ server.on('upgrade', (request, socket, head) => {
       ws._sessionId = params.get('sessionId') || '';
       ws._userId    = params.get('userId')    || '';
       sessionWss.emit('connection', ws, request);
+
+      // Register the host's socket in SessionManager so that resolveSocket
+      // and other lookups work for the session WS channel too.
+      if (ws._sessionId && ws._userId) {
+        const sessionInfo = sessionManager.getSession(ws._sessionId);
+        if (sessionInfo && sessionInfo.hostId === ws._userId) {
+          try { sessionManager.registerHostSocket(ws._sessionId, ws._userId); } catch (_) {}
+          console.log(`[Session] Host socket registered: user=${ws._userId} session=${ws._sessionId}`);
+        }
+      }
+
       console.log(`[Session] Client connected: user=${ws._userId} session=${ws._sessionId}`);
       ws.on('close', () => {
         sessionManager.handleDisconnect(ws._userId);
-        console.log(`[Session] Client disconnected: user=${ws._userId}`);
+        console.log(`[Session] Client disconnected: user=${ws._userId} session=${ws._sessionId}`);
       });
     });
   } else {
@@ -2460,8 +2581,13 @@ server.listen(PORT, '0.0.0.0', () => {
   console.log(`[Config] GCS sync  = ${config.GCS_SYNC_ON_FLUSH ? 'ON' : 'OFF'}`);
 
   // ── Forward SessionManager events to WebSocket clients ──
-  sessionManager.on('session:knock', ({ sessionId, guestId, displayName, avatarUrl }) => {
-    broadcastSessionEvent(sessionId, 'knock', { guestId, displayName, avatarUrl });
+  sessionManager.on('session:knock', ({ sessionId, hostId, guestId, displayName, avatarUrl }) => {
+    // CRITICAL: Send knock ONLY to the Host — never broadcast to guests.
+    // Broadcasting to all participants is the root cause of the
+    // "Self-Admit Handshake Failure" where the Guest sees the approval
+    // UI intended for the Host.
+    console.log(`[Session] Knock event: guest=${guestId} (${displayName}) → host-only delivery for session ${sessionId}`);
+    sendToSessionHost(sessionId, 'knock', { guestId, displayName, avatarUrl });
   });
   sessionManager.on('session:guestJoined', ({ sessionId, hostId, guest }) => {
     const joinedSession = sessionManager.getSession(sessionId);
@@ -2482,10 +2608,12 @@ server.listen(PORT, '0.0.0.0', () => {
     broadcastSessionEvent(sessionId, 'session:terminated', {});
   });
   sessionManager.on('session:knockDenied', ({ sessionId, guestId }) => {
-    broadcastSessionEvent(sessionId, 'knock:denied', { guestId });
+    // Send denial only to the specific guest who was denied
+    sendToSessionUser(sessionId, guestId, 'knock:denied', { guestId });
   });
   sessionManager.on('session:knockCancelled', ({ sessionId, guestId }) => {
-    broadcastSessionEvent(sessionId, 'knock:cancelled', { guestId });
+    // Send cancellation only to the host so they can update their pending list
+    sendToSessionHost(sessionId, 'knock:cancelled', { guestId });
   });
   // Warn about legacy workspaces.json if it still exists on disk
   const legacyWsFile = path.join(__dirname, 'workspaces.json');
