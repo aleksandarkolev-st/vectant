@@ -347,12 +347,14 @@ class MonacoTextBinding {
         this._ensureStyleForClient(cid, info.color);
 
         const decs = [];
-        // Primary selection
+        // Primary selection — use inlineClassName for character-level
+        // background highlighting (className only affects the line wrapper).
         if (info.range && !info.range.isEmpty()) {
           decs.push({
             range: info.range,
             options: {
               className: selectionClass,
+              inlineClassName: selectionClass,
               stickiness: 1,
               zIndex: 10,
               minimap: {
@@ -395,6 +397,7 @@ class MonacoTextBinding {
                 range: sr,
                 options: {
                   className: selectionClass,
+                  inlineClassName: selectionClass,
                   stickiness: 1,
                   zIndex: 10,
                 }
