@@ -129,6 +129,7 @@ export const FloatingWindow = memo(function FloatingWindow({ floatingWindow }) {
           <DropdownMenuTrigger asChild>
             <button
               data-no-drag
+              onMouseDown={(e) => e.stopPropagation()}
               onClick={(e) => e.stopPropagation()}
               title="Window actions"
               style={{
@@ -152,6 +153,7 @@ export const FloatingWindow = memo(function FloatingWindow({ floatingWindow }) {
             align="end"
             sideOffset={4}
             className="min-w-[140px] bg-[#1e1e1e] border-[#2d2d2d] text-[#ccc]"
+            style={{ zIndex: 99999 }}
           >
             <DropdownMenuItem
               onClick={() => dockFloat(id, null)}

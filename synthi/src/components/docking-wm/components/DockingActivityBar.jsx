@@ -16,11 +16,7 @@ import {
   Puzzle,
   Settings,
   Sparkles,
-  Terminal,
   MessageSquare,
-  AlertCircle,
-  FileText,
-  Globe,
   Box,
 } from 'lucide-react';
 import { useActivityBarDocking } from '../hooks/use-activity-bar-docking';
@@ -54,11 +50,7 @@ const TOP_ITEMS = [
   { id: 'chat',       panelType: IDE_PANEL.CHAT,       label: 'AI Chat',         Icon: MessageSquare },
 ];
 
-const BOTTOM_ITEMS = [
-  { id: 'terminal',   panelType: IDE_PANEL.TERMINAL,   label: 'Terminal',        Icon: Terminal },
-  { id: 'problems',   panelType: IDE_PANEL.PROBLEMS,   label: 'Problems',        Icon: AlertCircle },
-  { id: 'output',     panelType: IDE_PANEL.OUTPUT,     label: 'Output',          Icon: FileText },
-];
+// Bottom items removed — Terminal, Problems, Output are accessed via other means
 
 export const DockingActivityBar = memo(function DockingActivityBar() {
   const handlers = useActivityBarDocking();
@@ -97,9 +89,24 @@ export const DockingActivityBar = memo(function DockingActivityBar() {
         }
       }
     }
-    // Find a sidebar group to open in
+
+    // Find a sidebar group — look for a group that already has sidebar-type tabs
     const groups = Object.entries(nodes).filter(([, n]) => n.type === 'tabgroup');
-    const targetGroupId = groups.length > 0 ? groups[0][0] : null;
+    const SIDEBAR_PANELS = new Set(['explorer', 'search', 'git', 'extensions', 'extension-view', 'chat']);
+    let targetGroupId = null;
+    for (const [groupId, group] of groups) {
+      for (const tId of group.tabs || []) {
+        const t = tabs[tId];
+        if (t && SIDEBAR_PANELS.has(t.panelType)) {
+          targetGroupId = groupId;
+          break;
+        }
+      }
+      if (targetGroupId) break;
+    }
+    // Fallback to first group
+    if (!targetGroupId && groups.length > 0) targetGroupId = groups[0][0];
+
     if (targetGroupId) {
       dispatch(openTab({
         panelType: 'extension-view',
@@ -185,8 +192,6 @@ export const DockingActivityBar = memo(function DockingActivityBar() {
 
       {/* Bottom items */}
       <div className="mt-auto mb-3 flex flex-col items-center w-full">
-        {BOTTOM_ITEMS.map(renderButton)}
-        <div className="mx-3 my-1 border-t border-[#1a1b24]" />
         <button
           type="button"
           aria-label="Settings"
