@@ -525,12 +525,78 @@ const gitSlice = createSlice({
             .addCase(commitChanges.fulfilled, (state) => { state.loading = false; })
             .addCase(commitChanges.rejected, (state, action) => { state.loading = false; state.actionError = action.error.message; state.actionErrorCode = action.error.code || null; });
         
-        // Staging/discard actions
+        // Staging/discard actions — Optimistic UI with rollback
         builder
-            .addCase(stageFile.rejected, (state, action) => { state.actionError = action.error.message; })
-            .addCase(unstageFile.rejected, (state, action) => { state.actionError = action.error.message; })
-            .addCase(stageAll.rejected, (state, action) => { state.actionError = action.error.message; })
-            .addCase(unstageAll.rejected, (state, action) => { state.actionError = action.error.message; })
+            .addCase(stageFile.pending, (state, action) => {
+                if (!state.status?.files) return;
+                state._preStageFiles = JSON.parse(JSON.stringify(state.status.files));
+                const fp = action.meta.arg?.filePath;
+                if (!fp) return;
+                const file = state.status.files.find(f => f.path === fp);
+                if (file) {
+                    if (file.working_dir === '?' || file.index === '?') {
+                        file.index = 'A'; file.working_dir = ' ';
+                    } else if (file.working_dir !== ' ') {
+                        file.index = file.working_dir; file.working_dir = ' ';
+                    }
+                }
+            })
+            .addCase(stageFile.fulfilled, (state) => { delete state._preStageFiles; })
+            .addCase(stageFile.rejected, (state, action) => {
+                if (state._preStageFiles) { state.status.files = state._preStageFiles; delete state._preStageFiles; }
+                state.actionError = action.error.message;
+            })
+            .addCase(unstageFile.pending, (state, action) => {
+                if (!state.status?.files) return;
+                state._preStageFiles = JSON.parse(JSON.stringify(state.status.files));
+                const fp = action.meta.arg?.filePath;
+                if (!fp) return;
+                const file = state.status.files.find(f => f.path === fp);
+                if (file) {
+                    if (file.index === 'A') {
+                        file.index = '?'; file.working_dir = '?';
+                    } else if (file.index !== ' ' && file.index !== '?') {
+                        file.working_dir = file.index; file.index = ' ';
+                    }
+                }
+            })
+            .addCase(unstageFile.fulfilled, (state) => { delete state._preStageFiles; })
+            .addCase(unstageFile.rejected, (state, action) => {
+                if (state._preStageFiles) { state.status.files = state._preStageFiles; delete state._preStageFiles; }
+                state.actionError = action.error.message;
+            })
+            .addCase(stageAll.pending, (state) => {
+                if (!state.status?.files) return;
+                state._preStageFiles = JSON.parse(JSON.stringify(state.status.files));
+                for (const file of state.status.files) {
+                    if (file.working_dir === '?' || file.index === '?') {
+                        file.index = 'A'; file.working_dir = ' ';
+                    } else if (file.working_dir !== ' ') {
+                        file.index = file.working_dir; file.working_dir = ' ';
+                    }
+                }
+            })
+            .addCase(stageAll.fulfilled, (state) => { delete state._preStageFiles; })
+            .addCase(stageAll.rejected, (state, action) => {
+                if (state._preStageFiles) { state.status.files = state._preStageFiles; delete state._preStageFiles; }
+                state.actionError = action.error.message;
+            })
+            .addCase(unstageAll.pending, (state) => {
+                if (!state.status?.files) return;
+                state._preStageFiles = JSON.parse(JSON.stringify(state.status.files));
+                for (const file of state.status.files) {
+                    if (file.index === 'A') {
+                        file.index = '?'; file.working_dir = '?';
+                    } else if (file.index !== ' ' && file.index !== '?') {
+                        file.working_dir = file.index; file.index = ' ';
+                    }
+                }
+            })
+            .addCase(unstageAll.fulfilled, (state) => { delete state._preStageFiles; })
+            .addCase(unstageAll.rejected, (state, action) => {
+                if (state._preStageFiles) { state.status.files = state._preStageFiles; delete state._preStageFiles; }
+                state.actionError = action.error.message;
+            })
             .addCase(discardChange.rejected, (state, action) => { state.actionError = action.error.message; })
             .addCase(discardAll.rejected, (state, action) => { state.actionError = action.error.message; })
             .addCase(stashPush.rejected, (state, action) => { state.actionError = action.error.message; })
