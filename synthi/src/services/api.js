@@ -4,6 +4,21 @@ import { getSession } from 'next-auth/react';
 import SynthiException from "@/components/SynthiException";
 import collabSessionService from '@/services/collabSessionService';
 
+/**
+ * Parse an error response body and extract a human-readable message.
+ * If the body is JSON with a `message` field, return that; otherwise return raw text.
+ */
+function parseErrorText(raw) {
+    if (!raw) return 'Unknown error';
+    try {
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed.message === 'string') {
+            return parsed.message;
+        }
+    } catch (_) { /* not JSON, use raw */ }
+    return raw;
+}
+
 function languageFromExtension(ext) {
     const m = {
         js: 'javascript',
@@ -202,7 +217,7 @@ export class ApiClient {
         });
         if (!res.ok) {
             const errText = await res.text().catch(() => 'Unknown error');
-            throw new SynthiException(`Failed to save file (status ${res.status})`, errText);
+            throw new SynthiException(`Failed to save file (status ${res.status})`, parseErrorText(errText));
         }
         return { ok: true };
     }
@@ -217,7 +232,7 @@ export class ApiClient {
             });
             if (!res.ok) {
                 const errText = await res.text().catch(() => 'Unknown error');
-                throw new SynthiException(`Failed to create directory (status ${res.status})`, errText);
+                throw new SynthiException(`Failed to create directory (status ${res.status})`, parseErrorText(errText));
             }
             return res.json();
         } else {
@@ -229,7 +244,7 @@ export class ApiClient {
             });
             if (!res.ok) {
                 const errText = await res.text().catch(() => 'Unknown error');
-                throw new SynthiException(`Failed to create file (status ${res.status})`, errText);
+                throw new SynthiException(`Failed to create file (status ${res.status})`, parseErrorText(errText));
             }
             return res.json();
         }
@@ -243,7 +258,7 @@ export class ApiClient {
         });
         if (!res.ok) {
             const errText = await res.text().catch(() => 'Unknown error');
-            throw new SynthiException(`Failed to rename item (status ${res.status})`, errText);
+            throw new SynthiException(`Failed to rename item (status ${res.status})`, parseErrorText(errText));
         }
         return res.json();
     }
@@ -259,7 +274,7 @@ export class ApiClient {
         });
         if (!res.ok) {
             const errText = await res.text().catch(() => 'Unknown error');
-            throw new SynthiException(`Failed to delete item (status ${res.status})`, errText);
+            throw new SynthiException(`Failed to delete item (status ${res.status})`, parseErrorText(errText));
         }
         return res.json();
     }
