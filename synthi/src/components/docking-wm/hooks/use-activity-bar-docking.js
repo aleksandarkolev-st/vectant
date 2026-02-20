@@ -16,6 +16,7 @@ import { useDispatch, useSelector } from 'react-redux';
 import {
   openTab,
   closeTabAction,
+  activateTabAction,
   setFocusedTabGroup,
   selectAllTabGroups,
   selectTabs,
@@ -130,10 +131,7 @@ export function useActivityBarDocking() {
         // Focus the group containing this tab
         dispatch(setFocusedTabGroup(existing.groupId));
         // Activate the tab
-        dispatch({
-          type: 'layout/activateTab',
-          payload: { tabId: existing.tabId },
-        });
+        dispatch(activateTabAction({ tabId: existing.tabId }));
         return;
       }
 
