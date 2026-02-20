@@ -1023,7 +1023,7 @@ class CollabClient {
         // existing model text, doubling it.  By clearing the model first
         // inside a transaction, the subsequent _yObserver delta inserts
         // into an empty model — no doubling.
-        if (bindingEstablished) {
+        if (bindingEstablished && binding) {
           const currentModel = model.getValue();
           if (currentModel.length > 0 && currentModel !== currentYtext) {
             // Model has optimistic content that differs from ytext.
