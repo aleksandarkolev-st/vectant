@@ -70,6 +70,9 @@ class CollabSessionService extends EventTarget {
 
     /** @type {object|null} Most recent incoming collab-invite (persists across modal open/close) */
     this._pendingInvite = null;
+
+    /** @type {'disconnected'|'connecting'|'connected'} WS connection status */
+    this._wsStatus = 'disconnected';
   }
 
   // ── Getters ──────────────────────────────────────────────────────────────
@@ -92,6 +95,7 @@ class CollabSessionService extends EventTarget {
   get isHost() { return this._role === 'hosting'; }
   get isGuest() { return this._role === 'guest'; }
   get isActive() { return this._role === 'hosting' || this._role === 'guest'; }
+  get wsStatus() { return this._wsStatus; }
   get pendingKnocks() { return [...this._pendingKnocks]; }
 
   /** Most recent pending invite — survives UI mount/unmount cycles */
@@ -602,11 +606,15 @@ class CollabSessionService extends EventTarget {
     const wsUrl = COLLAB_URL.replace(/^http/, 'ws');
     const url = `${wsUrl}/session-events?sessionId=${this._sessionId}&userId=${this._userId}`;
 
+    this._wsStatus = 'connecting';
+    this._emit('ws:status', { status: 'connecting' });
     this._ws = new WebSocket(url);
 
     this._ws.onopen = () => {
       // Reset backoff on successful connection
       this._reconnectDelay = 1000;
+      this._wsStatus = 'connected';
+      this._emit('ws:status', { status: 'connected' });
       // Send identity message so server can re-associate this socket
       try {
         this._ws.send(JSON.stringify({
@@ -626,6 +634,8 @@ class CollabSessionService extends EventTarget {
     };
 
     this._ws.onclose = () => {
+      this._wsStatus = 'disconnected';
+      this._emit('ws:status', { status: 'disconnected' });
       // Reconnect with exponential backoff if still active
       if (this.isActive || this._role === 'knocking') {
         const delay = this._reconnectDelay || 1000;

@@ -39,7 +39,7 @@ export default function ShareModal({ slug, open, onClose }) {
     admitGuest, denyKnock, updatePermissions, kickGuest,
     regenerateInvite, terminateSession, leaveSession,
     createSession, joinByCode,
-    error, clearError, isLoading,
+    error, clearError, isLoading, wsStatus,
   } = useCollabSession();
 
   const [copied, setCopied] = useState(false);
@@ -153,6 +153,13 @@ export default function ShareModal({ slug, open, onClose }) {
                   <span className="relative inline-flex rounded-full h-1.5 w-1.5" style={{ backgroundColor: T.live }} />
                 </span>
                 LIVE
+              </span>
+            )}
+            {isActive && wsStatus !== 'connected' && (
+              <span className="flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[9px] font-bold"
+                style={{ backgroundColor: 'rgba(251,191,36,0.10)', color: T.amber }}>
+                <Loader2 className="w-2.5 h-2.5 animate-spin" />
+                {wsStatus === 'connecting' ? 'Reconnecting…' : 'Offline'}
               </span>
             )}
             {isKnocking && (

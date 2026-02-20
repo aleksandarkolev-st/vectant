@@ -21,6 +21,7 @@ export function useCollabSession() {
   const [isLoading, setIsLoading] = useState(false);
   const [hostId, setHostId] = useState(collabSessionService.hostId);
   const [effectiveUserId, setEffectiveUserId] = useState(collabSessionService.effectiveUserId);
+  const [wsStatus, setWsStatus] = useState(collabSessionService.wsStatus);
 
   // Sync state on every change event
   useEffect(() => {
@@ -31,6 +32,7 @@ export function useCollabSession() {
       setPendingKnocks(collabSessionService.pendingKnocks);
       setHostId(collabSessionService.hostId);
       setEffectiveUserId(collabSessionService.effectiveUserId);
+      setWsStatus(collabSessionService.wsStatus);
 
       // Fetch full session info for guest list
       if (collabSessionService.isActive) {
@@ -242,6 +244,7 @@ export function useCollabSession() {
     isKnocking: role === 'knocking',
     hostId,
     effectiveUserId,
+    wsStatus,
     sessionSlug: collabSessionService.sessionSlug,
 
     // Host actions
