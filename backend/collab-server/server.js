@@ -2843,8 +2843,21 @@ server.on('upgrade', (request, socket, head) => {
 
         // Check if this user is an admitted guest — if so, use grace period
         const isAdmittedGuest = sessionId && sessionManager.guestIndex?.get(userId) === sessionId;
-        if (isAdmittedGuest) {
-          console.log(`[Session] Guest ${userId} WS closed — starting ${GUEST_DISCONNECT_GRACE_MS}ms grace period`);
+
+        // Also check if the user has a pending knock — they should get a
+        // grace period too so that transient WS disconnects (network blip,
+        // client reconnect) don't cancel the knock and trigger a loop.
+        let isPendingKnocker = false;
+        if (!isAdmittedGuest && sessionId) {
+          const session = sessionManager.sessions?.get(sessionId);
+          if (session && session.pendingKnocks?.has(userId)) {
+            isPendingKnocker = true;
+          }
+        }
+
+        if (isAdmittedGuest || isPendingKnocker) {
+          const label = isAdmittedGuest ? 'Guest' : 'Knocking guest';
+          console.log(`[Session] ${label} ${userId} WS closed — starting ${GUEST_DISCONNECT_GRACE_MS}ms grace period`);
           const timer = setTimeout(() => {
             guestDisconnectTimers.delete(userId);
             // Check if guest reconnected (another WS for same user+session exists)
@@ -2856,15 +2869,15 @@ server.on('upgrade', (request, socket, head) => {
               }
             }
             if (!reconnected) {
-              console.log(`[Session] Grace period expired — removing guest ${userId} from session ${sessionId}`);
+              console.log(`[Session] Grace period expired — removing ${label.toLowerCase()} ${userId} from session ${sessionId}`);
               sessionManager.handleDisconnect(userId);
             } else {
-              console.log(`[Session] Grace period expired but guest ${userId} has already reconnected`);
+              console.log(`[Session] Grace period expired but ${label.toLowerCase()} ${userId} has already reconnected`);
             }
           }, GUEST_DISCONNECT_GRACE_MS);
           guestDisconnectTimers.set(userId, timer);
         } else {
-          // Not an admitted guest — handle immediately (e.g. pending knock, host socket)
+          // Not an admitted guest or pending knocker — handle immediately
           sessionManager.handleDisconnect(userId);
         }
       });
