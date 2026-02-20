@@ -16,3 +16,5 @@ export { DropOverlay } from './DropOverlay';
 export { FloatingWindow } from './FloatingWindow';
 export { PopoutWindowContent } from './PopoutWindow';
 export { WorkspaceProfileManager } from './WorkspaceProfileManager';
+export { ContextMenu, buildTabContextMenu, useContextMenu } from './ContextMenu';
+export { LayoutPresetPicker } from './LayoutPresetPicker';
