@@ -52,6 +52,8 @@ import {
 } from './state/layout-slice';
 import { loadLayoutFromStorage } from './utils/serialization';
 
+import { DockingActivityBar } from './components/DockingActivityBar';
+
 // ────────────────────────────────────────────────────────
 //  Workspace Panel Context (shared module to avoid circular deps)
 // ────────────────────────────────────────────────────────
@@ -169,11 +171,14 @@ export const DockableWorkspace = memo(function DockableWorkspace({
   return (
     <WorkspacePanelContext.Provider value={ctxValue}>
       <DockingProvider workspaceSlug={workspaceSlug}>
-        <div className={`h-full w-full overflow-hidden ${className}`}>
-          <DockableWorkspaceInner
-            workspaceSlug={workspaceSlug}
-            defaultPreset={defaultPreset}
-          />
+        <div className={`h-full w-full overflow-hidden flex flex-row ${className}`}>
+          <DockingActivityBar />
+          <div className="flex-1 min-w-0 h-full overflow-hidden">
+            <DockableWorkspaceInner
+              workspaceSlug={workspaceSlug}
+              defaultPreset={defaultPreset}
+            />
+          </div>
         </div>
       </DockingProvider>
     </WorkspacePanelContext.Provider>
