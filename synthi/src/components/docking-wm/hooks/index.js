@@ -12,3 +12,4 @@ export { useLayoutPersistence } from './use-layout-persistence';
 export { useKeyboardNavigation, useFocusIndicator } from './use-keyboard-navigation';
 export { useActivityBarDocking } from './use-activity-bar-docking';
 export { useLayoutHistory } from './use-layout-history';
+export { useResponsiveLayout, BREAKPOINT } from './use-responsive-layout';
