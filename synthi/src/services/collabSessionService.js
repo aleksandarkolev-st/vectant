@@ -133,7 +133,12 @@ class CollabSessionService extends EventTarget {
     this._userId = hostId;
     this._sessionSlug = slug;
     this._permissions = { ...HOST_PERMISSIONS };
-    this._session = { id: data.sessionId, inviteLink: data.inviteLink, inviteToken: data.inviteToken };
+    this._session = {
+      id: data.sessionId,
+      inviteLink: data.inviteLink,
+      inviteToken: data.inviteToken,
+      roomCode: data.roomCode || null,
+    };
     this._pendingKnocks = [];
 
     this._connectWs();
@@ -183,7 +188,7 @@ class CollabSessionService extends EventTarget {
     const res = await fetch(`${COLLAB_URL}/session/admit/${this._sessionId}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ guestId, displayName, avatarUrl, socketId, permsOverride }),
+      body: JSON.stringify({ guestId, displayName, avatarUrl, socketId, permsOverride, requesterId: this._userId }),
     });
 
     if (!res.ok) {
@@ -207,7 +212,7 @@ class CollabSessionService extends EventTarget {
     await fetch(`${COLLAB_URL}/session/deny/${this._sessionId}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ guestId }),
+      body: JSON.stringify({ guestId, requesterId: this._userId }),
     });
 
     this._pendingKnocks = this._pendingKnocks.filter(k => k.guestId !== guestId);
@@ -238,7 +243,7 @@ class CollabSessionService extends EventTarget {
     await fetch(`${COLLAB_URL}/session/kick/${this._sessionId}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ guestId }),
+      body: JSON.stringify({ guestId, requesterId: this._userId }),
     });
   }
 
@@ -461,11 +466,44 @@ class CollabSessionService extends EventTarget {
       this._userId = hostId;
       this._sessionSlug = slug;
       this._permissions = { ...HOST_PERMISSIONS };
-      this._session = { id: data.sessionId, inviteLink: data.inviteLink, inviteToken: data.inviteToken };
+      this._session = {
+        id: data.sessionId,
+        inviteLink: data.inviteLink,
+        inviteToken: data.inviteToken,
+        roomCode: data.roomCode || null,
+      };
       this._pendingKnocks = [];
       this._connectWs();
       this._emit('session:created', data);
     }
+    return data;
+  }
+
+  /**
+   * Join a session using a short room code.
+   *
+   * @param {{ code: string, guestId: string, displayName: string, avatarUrl?: string }} opts
+   */
+  async joinByCode({ code, guestId, displayName, avatarUrl = '' }) {
+    this._role = 'knocking';
+    this._userId = guestId;
+
+    const res = await fetch(`${COLLAB_URL}/session/join-by-code`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code, guestId, displayName, avatarUrl }),
+    });
+
+    if (!res.ok) {
+      this._role = 'idle';
+      const err = await res.json().catch(() => ({ error: 'Invalid room code' }));
+      throw new Error(err.error || 'Invalid room code');
+    }
+
+    const data = await res.json();
+    this._sessionId = data.sessionId;
+    this._connectWs();
+    this._emit('knock:sent', { sessionId: data.sessionId });
     return data;
   }
 
@@ -527,7 +565,22 @@ class CollabSessionService extends EventTarget {
   _handleWsMessage(msg) {
     switch (msg.type) {
       case 'knock':
-        // Host receives knock notification
+        // CRITICAL: Only the Host should process knock events.
+        // If this client somehow receives a knock event while not hosting
+        // (e.g. due to broadcast instead of targeted delivery), ignore it.
+        if (this._role !== 'hosting') {
+          console.warn('[CollabSession] Ignoring knock event — not hosting (role=' + this._role + ')');
+          break;
+        }
+        // Also ignore knock events for our own userId (self-knock)
+        if (msg.guestId === this._userId) {
+          console.warn('[CollabSession] Ignoring knock event — self-knock detected');
+          break;
+        }
+        // Deduplicate: don't add if already in pending list
+        if (this._pendingKnocks.some(k => k.guestId === msg.guestId)) {
+          break;
+        }
         this._pendingKnocks.push({
           guestId: msg.guestId,
           displayName: msg.displayName,
@@ -603,6 +656,20 @@ class CollabSessionService extends EventTarget {
           this._pendingKnocks = this._pendingKnocks.filter(k => k.guestId !== msg.guestId);
           this._emit('knock:cancelled', msg);
         }
+        break;
+
+      case 'session-knock':
+        // Fallback knock delivery via notification WS channel.
+        // Only process if we are the host.
+        if (this._role !== 'hosting') break;
+        if (msg.guestId === this._userId) break;
+        if (this._pendingKnocks.some(k => k.guestId === msg.guestId)) break;
+        this._pendingKnocks.push({
+          guestId: msg.guestId,
+          displayName: msg.displayName,
+          avatarUrl: msg.avatarUrl || '',
+        });
+        this._emit('knock:received', msg);
         break;
 
       case 'permission:denied':

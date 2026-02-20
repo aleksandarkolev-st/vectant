@@ -205,6 +205,28 @@ export function useCollabSession() {
     }
   }, []);
 
+  /**
+   * Join a session using a short room code.
+   */
+  const joinByCode = useCallback(async (code) => {
+    setIsLoading(true);
+    setError(null);
+    try {
+      const { id: guestId, name: displayName, avatar: avatarUrl } = getCurrentUser();
+      return await collabSessionService.joinByCode({
+        code,
+        guestId,
+        displayName,
+        avatarUrl,
+      });
+    } catch (e) {
+      setError(e.message);
+      throw e;
+    } finally {
+      setIsLoading(false);
+    }
+  }, []);
+
   return {
     // State
     role,
@@ -239,6 +261,7 @@ export function useCollabSession() {
     // Direct collaboration
     joinUser,
     inviteUser,
+    joinByCode,
 
     // Clear error
     clearError: () => setError(null),
