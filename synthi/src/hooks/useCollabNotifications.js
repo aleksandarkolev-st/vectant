@@ -10,6 +10,21 @@ const openPopupAction = {
   onClick: () => collabSessionService.requestOpenPopup(),
 };
 
+/** Map machine-readable action names to user-friendly labels */
+const ACTION_LABELS = {
+  'terminal:input': 'Terminal access',
+  'terminal:resize': 'Terminal access',
+  'file:write': 'File editing',
+  'file:rename': 'File operations',
+  'file:delete': 'File operations',
+  'file:create': 'File operations',
+  'git:stage': 'Git staging',
+  'git:unstage': 'Git unstaging',
+  'git:commit': 'Git commit',
+  'git:push': 'Git push',
+  'git:pull': 'Git pull',
+};
+
 /**
  * useCollabNotifications — Listens to collaboration events and shows
  * toast notifications for key lifecycle events.
@@ -26,11 +41,12 @@ export function useCollabNotifications() {
 
     const unsubs = [
       // ── Host receives a knock ────────────────────────────────────
-      collabSessionService.on('knock:received', (detail) => {        // Only show the notification to the Host.
-        // This is a defense-in-depth check — the backend should already
-        // route knocks exclusively to the host, but we guard here too.
-        if (collabSessionService.role !== 'hosting') return;        const name = detail?.displayName || 'Someone';
+      collabSessionService.on('knock:received', (detail) => {
+        // Only show the notification to the Host.
+        if (collabSessionService.role !== 'hosting') return;
+        const name = detail?.displayName || 'Someone';
         toast.info(`${name} wants to join your session`, {
+          id: `knock-${detail?.guestId || 'unknown'}`,
           description: 'Click to review pending requests.',
           duration: 8000,
           icon: '🔔',
@@ -41,8 +57,10 @@ export function useCollabNotifications() {
       // ── Guest joins the session ──────────────────────────────────
       collabSessionService.on('guest:joined', (detail) => {
         const name = detail?.displayName || detail?.guest?.displayName || 'A guest';
+        const guestId = detail?.guestId || detail?.guest?.guestId || '';
         const wasAutoAdmitted = detail?.autoAdmitted;
         toast.success(`${name} joined the session`, {
+          id: `guest-joined-${guestId}`,
           description: wasAutoAdmitted
             ? 'Auto-admitted via your invitation.'
             : undefined,
@@ -56,6 +74,7 @@ export function useCollabNotifications() {
       collabSessionService.on('guest:removed', (detail) => {
         const name = detail?.displayName || 'A guest';
         toast(`${name} left the session`, {
+          id: `guest-removed-${detail?.guestId || 'unknown'}`,
           duration: 4000,
           icon: '🚪',
         });
@@ -64,6 +83,7 @@ export function useCollabNotifications() {
       // ── Current user got kicked ──────────────────────────────────
       collabSessionService.on('session:kicked', () => {
         toast.error('You were removed from the session', {
+          id: 'session-kicked',
           description: 'The host has removed you.',
           duration: 8000,
           icon: '🚫',
@@ -75,6 +95,7 @@ export function useCollabNotifications() {
         // Only toast for non-hosts (they initiated it)
         if (!collabSessionService.isHost) {
           toast.warning('The session has ended', {
+            id: 'session-terminated',
             description: 'The host stopped sharing.',
             duration: 6000,
             icon: '📡',
@@ -85,6 +106,7 @@ export function useCollabNotifications() {
       // ── Knock denied ─────────────────────────────────────────────
       collabSessionService.on('knock:denied', () => {
         toast.error('Your request to join was denied', {
+          id: 'knock-denied',
           duration: 6000,
           icon: '🚫',
         });
@@ -97,6 +119,7 @@ export function useCollabNotifications() {
           .map(([k]) => k.replace('can', ''))
           .join(', ');
         toast.info('Your permissions were updated', {
+          id: 'permissions-changed',
           description: permsStr ? `Granted: ${permsStr}` : 'All permissions revoked.',
           duration: 5000,
           icon: '🛡️',
@@ -108,6 +131,7 @@ export function useCollabNotifications() {
       collabSessionService.on('session:created', (detail) => {
         const code = detail?.roomCode || collabSessionService.session?.roomCode;
         toast.success('Session is live!', {
+          id: 'session-created',
           description: code
             ? `Room code: ${code} — share it to collaborate.`
             : 'Share your invite link to collaborate.',
@@ -120,6 +144,7 @@ export function useCollabNotifications() {
       collabSessionService.on('collab-invite', (detail) => {
         const name = detail?.hostName || 'Someone';
         toast.info(`${name} invited you to collaborate`, {
+          id: `collab-invite-${detail?.sessionId || 'unknown'}`,
           description: 'Click to accept or decline.',
           duration: 10000,
           icon: '📨',
@@ -129,6 +154,7 @@ export function useCollabNotifications() {
       // ── Joined a session (guest confirmation) ────────────────────
       collabSessionService.on('session:joined', (detail) => {
         toast.success('You joined the session!', {
+          id: 'session-joined',
           description: 'You now have access to the workspace.',
           duration: 4000,
           icon: '✅',
@@ -138,9 +164,11 @@ export function useCollabNotifications() {
 
       // ── Action denied by permission system ───────────────────────
       collabSessionService.on('action:denied', (detail) => {
-        const action = detail?.action || 'This action';
-        toast.warning(`${action} is not permitted`, {
-          description: 'Ask the host to update your permissions.',
+        const rawAction = detail?.action || '';
+        const label = ACTION_LABELS[rawAction] || rawAction.replace(/[:_]/g, ' ') || 'This action';
+        toast.warning(`${label} is not permitted`, {
+          id: `action-denied-${rawAction}`,
+          description: detail?.message || 'Ask the host to update your permissions.',
           duration: 5000,
           icon: '🔒',
         });
