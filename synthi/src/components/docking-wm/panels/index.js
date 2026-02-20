@@ -19,3 +19,17 @@ export {
   createAIAssistedLayout,
   createThreeColumnLayout,
 } from './layout-presets';
+
+export {
+  ExplorerPanelWrapper,
+  EditorPanelWrapper,
+  TerminalPanelWrapper,
+  ChatPanelWrapper,
+  ProblemsPanelWrapper,
+  SearchPanelWrapper,
+  GitPanelWrapper,
+  ExtensionsPanelWrapper,
+  OutputPanelWrapper,
+  PreviewPanelWrapper,
+  PANEL_WRAPPERS,
+} from './panel-wrappers';
