@@ -764,7 +764,7 @@
 
 /* Danger hover */
 .th-btn-danger:hover {
-  background: color-mix(in srgb, var(--status-error) 15%, transparent);
+  background: color-mix(in srgb, var(--accent-danger) 15%, transparent);
 }
 
 /* Container backgrounds (for inline-style-free usage) */

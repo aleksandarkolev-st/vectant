@@ -33,26 +33,26 @@ export default function StatusBar({
     switch (compilerStatus) {
       case 'connected':
         return { 
-          dotStyle: { background: 'var(--status-success)' }, 
+          dotStyle: { background: 'var(--accent-success)' }, 
           text: 'Connected',
-          pillBorder: { borderColor: 'color-mix(in srgb, var(--status-success) 30%, transparent)' },
-          textStyle: { color: 'var(--status-success)' }
+          pillBorder: { borderColor: 'color-mix(in srgb, var(--accent-success) 30%, transparent)' },
+          textStyle: { color: 'var(--accent-success)' }
         };
       case 'connecting':
         return { 
           dotCls: 'animate-pulse', 
-          dotStyle: { background: 'var(--status-warning)' }, 
+          dotStyle: { background: 'var(--accent-warning)' }, 
           text: 'Connecting...',
-          pillBorder: { borderColor: 'color-mix(in srgb, var(--status-warning) 30%, transparent)' },
-          textStyle: { color: 'var(--status-warning)' }
+          pillBorder: { borderColor: 'color-mix(in srgb, var(--accent-warning) 30%, transparent)' },
+          textStyle: { color: 'var(--accent-warning)' }
         };
       case 'error':
         return { 
           dotCls: 'animate-pulse', 
-          dotStyle: { background: 'var(--status-error)' }, 
+          dotStyle: { background: 'var(--accent-danger)' }, 
           text: 'Error',
-          pillBorder: { borderColor: 'color-mix(in srgb, var(--status-error) 30%, transparent)' },
-          textStyle: { color: 'var(--status-error)', fontWeight: 600 }
+          pillBorder: { borderColor: 'color-mix(in srgb, var(--accent-danger) 30%, transparent)' },
+          textStyle: { color: 'var(--accent-danger)', fontWeight: 600 }
         };
       case 'disconnected':
       default:
@@ -85,7 +85,7 @@ export default function StatusBar({
         <div 
           onClick={onProblemsClick}
           className={`flex items-center gap-2 px-2 py-0.5 rounded-md cursor-pointer transition-all`}
-          style={hasProblems ? { background: 'color-mix(in srgb, var(--status-error) 3%, transparent)' } : {}}
+          style={hasProblems ? { background: 'color-mix(in srgb, var(--accent-danger) 3%, transparent)' } : {}}
         >
           {isAnalyzing ? (
             <>
@@ -96,18 +96,18 @@ export default function StatusBar({
             <>
               <AlertCircle 
                 className="w-3.5 h-3.5" 
-                style={{ color: diagnosticSummary.errors > 0 ? 'var(--status-error)' : 'var(--text-disabled)' }}
+                style={{ color: diagnosticSummary.errors > 0 ? 'var(--accent-danger)' : 'var(--text-disabled)' }}
                 strokeWidth={2} 
               />
-              <span style={diagnosticSummary.errors > 0 ? { color: 'var(--status-error)', fontWeight: 600 } : { color: 'var(--text-secondary)' }}>
+              <span style={diagnosticSummary.errors > 0 ? { color: 'var(--accent-danger)', fontWeight: 600 } : { color: 'var(--text-secondary)' }}>
                 {diagnosticSummary.errors}
               </span>
               <AlertTriangle 
                 className="w-3.5 h-3.5" 
-                style={{ color: diagnosticSummary.warnings > 0 ? 'var(--status-warning)' : 'var(--text-disabled)' }}
+                style={{ color: diagnosticSummary.warnings > 0 ? 'var(--accent-warning)' : 'var(--text-disabled)' }}
                 strokeWidth={2} 
               />
-              <span style={diagnosticSummary.warnings > 0 ? { color: 'var(--status-warning)', fontWeight: 600 } : { color: 'var(--text-secondary)' }}>
+              <span style={diagnosticSummary.warnings > 0 ? { color: 'var(--accent-warning)', fontWeight: 600 } : { color: 'var(--text-secondary)' }}>
                 {diagnosticSummary.warnings}
               </span>
             </>
@@ -146,27 +146,27 @@ export default function StatusBar({
             <div
               className={`flex items-center gap-1.5 px-2 py-0.5 rounded-md cursor-default transition-colors`}
               style={vscodeServerState === 'running'
-                ? { background: 'color-mix(in srgb, var(--status-success) 3%, transparent)' }
+                ? { background: 'color-mix(in srgb, var(--accent-success) 3%, transparent)' }
                 : vscodeServerState === 'error'
-                ? { background: 'color-mix(in srgb, var(--status-error) 3%, transparent)' }
+                ? { background: 'color-mix(in srgb, var(--accent-danger) 3%, transparent)' }
                 : {}}
               title={`VS Code Server: ${vscodeServerState}`}
             >
               <div
                 className={`w-2 h-2 rounded-full ${vscodeServerState === 'connecting' ? 'animate-pulse' : ''}`}
                 style={{
-                  background: vscodeServerState === 'running' ? 'var(--status-success)'
-                    : vscodeServerState === 'connecting' ? 'var(--status-warning)'
-                    : vscodeServerState === 'error' ? 'var(--status-error)'
+                  background: vscodeServerState === 'running' ? 'var(--accent-success)'
+                    : vscodeServerState === 'connecting' ? 'var(--accent-warning)'
+                    : vscodeServerState === 'error' ? 'var(--accent-danger)'
                     : 'var(--text-disabled)'
                 }}
               />
               <span
                 className="font-medium text-[11px]"
                 style={{
-                  color: vscodeServerState === 'running' ? 'var(--status-success)'
-                    : vscodeServerState === 'connecting' ? 'var(--status-warning)'
-                    : vscodeServerState === 'error' ? 'var(--status-error)'
+                  color: vscodeServerState === 'running' ? 'var(--accent-success)'
+                    : vscodeServerState === 'connecting' ? 'var(--accent-warning)'
+                    : vscodeServerState === 'error' ? 'var(--accent-danger)'
                     : 'var(--text-disabled)'
                 }}
               >

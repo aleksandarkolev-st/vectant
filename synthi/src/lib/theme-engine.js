@@ -140,6 +140,11 @@ export function generateDerivedVariables(ui) {
     vars.set('--accent-glow', `0 0 20px rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, 0.4)`);
   }
 
+  // ── Disabled text alias (used by several components) ──
+  if (ui.textDim) {
+    vars.set('--text-disabled', ui.textDim);
+  }
+
   return vars;
 }
 

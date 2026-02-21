@@ -85,7 +85,10 @@ export default function TerminalPane({ terminalId = 'default', paneSide = 'main'
   // ─── Live terminal theme sync ─────────────────────────────────────────
   useEffect(() => {
     if (terminalRef.current?.term && terminalTheme) {
-      terminalRef.current.term.options.theme = terminalTheme;
+      const term = terminalRef.current.term;
+      term.options.theme = terminalTheme;
+      // Force an immediate full repaint so colors apply without delay
+      try { term.refresh(0, term.rows - 1); } catch (_) {}
     }
   }, [terminalTheme]);
 

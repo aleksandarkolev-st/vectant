@@ -69,11 +69,8 @@ export default function ThemeProvider({ children }) {
   const allThemes = useAppSelector(selectAllThemes);
   const userOverrides = useAppSelector(selectUserOverrides);
 
-  // Refs that survive re-renders
+  // Ref for Monaco instance (set by Editor on mount)
   const monacoRef = useRef(null);
-  const resolvedRef = useRef(null);
-  const monacoThemeRef = useRef(null);
-  const terminalThemeRef = useRef(null);
 
   // ── Bootstrap: register built-ins + hydrate ───────────
   useEffect(() => {
@@ -88,18 +85,26 @@ export default function ThemeProvider({ children }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // ── Resolve & apply whenever effective theme changes ──
-  const applyCurrentTheme = useCallback(() => {
+  // ── Resolve theme synchronously during render ─────────
+  // This ensures consumers see the new values immediately (not after useEffect)
+  const resolvedTheme = useMemo(() => {
     const theme = resolveTheme(effectiveThemeId, allThemes, userOverrides);
-    if (!theme || !theme.id) return;
-
-    resolvedRef.current = theme;
-    monacoThemeRef.current = generateMonacoTheme(theme);
-    terminalThemeRef.current = generateTerminalTheme(theme);
-
-    // Apply to DOM (CSS vars + optionally Monaco)
-    applyThemeToDOM(theme, monacoRef.current, 'synthi-theme');
+    return (theme && theme.id) ? theme : null;
   }, [effectiveThemeId, allThemes, userOverrides]);
+
+  const monacoTheme = useMemo(() => {
+    return resolvedTheme ? generateMonacoTheme(resolvedTheme) : null;
+  }, [resolvedTheme]);
+
+  const terminalTheme = useMemo(() => {
+    return resolvedTheme ? generateTerminalTheme(resolvedTheme) : null;
+  }, [resolvedTheme]);
+
+  // ── Apply to DOM (CSS vars + Monaco) after render ─────
+  const applyCurrentTheme = useCallback(() => {
+    if (!resolvedTheme) return;
+    applyThemeToDOM(resolvedTheme, monacoRef.current, 'synthi-theme');
+  }, [resolvedTheme]);
 
   useEffect(() => {
     applyCurrentTheme();
@@ -110,14 +115,14 @@ export default function ThemeProvider({ children }) {
     /** Set this ref when Monaco initialises so themes can be applied */
     monacoRef,
     /** The fully resolved theme object */
-    get resolvedTheme() { return resolvedRef.current; },
+    resolvedTheme,
     /** Monaco IStandaloneThemeData for the current theme */
-    get monacoTheme() { return monacoThemeRef.current; },
+    monacoTheme,
     /** xterm.js ITheme for the current terminal */
-    get terminalTheme() { return terminalThemeRef.current; },
+    terminalTheme,
     /** Force re-apply (call after Monaco ref is set, or after hot-edit) */
     reapply: applyCurrentTheme,
-  }), [applyCurrentTheme]);
+  }), [resolvedTheme, monacoTheme, terminalTheme, applyCurrentTheme]);
 
   return (
     <ThemeContext.Provider value={contextValue}>
