@@ -3020,7 +3020,11 @@ const EditorPanel = ({
         if (!container) return;
         const onScroll = () => updateIndicatorRef.current();
         container.addEventListener('scroll', onScroll, { passive: true });
-        const resizeObserver = new ResizeObserver(() => updateIndicatorRef.current());
+        const resizeObserver = new ResizeObserver(() => {
+            window.requestAnimationFrame(() => {
+                updateIndicatorRef.current();
+            });
+        });
         resizeObserver.observe(container);
         return () => {
             container.removeEventListener('scroll', onScroll);

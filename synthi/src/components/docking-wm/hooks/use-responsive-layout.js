@@ -110,10 +110,12 @@ export function useResponsiveLayout(containerRef, options = {}) {
     // Use ResizeObserver for accurate container-level measurement
     if (typeof ResizeObserver !== 'undefined') {
       observerRef.current = new ResizeObserver((entries) => {
-        for (const entry of entries) {
-          const { width, height } = entry.contentRect;
-          updateHints(width, height);
-        }
+        window.requestAnimationFrame(() => {
+          for (const entry of entries) {
+            const { width, height } = entry.contentRect;
+            updateHints(width, height);
+          }
+        });
       });
       observerRef.current.observe(el);
     } else {
