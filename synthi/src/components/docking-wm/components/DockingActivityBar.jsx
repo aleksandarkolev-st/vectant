@@ -191,24 +191,7 @@ export const DockingActivityBar = memo(function DockingActivityBar() {
 
       {/* Bottom items */}
       <div className="mt-auto mb-3 flex flex-col items-center w-full">
-        <button
-          type="button"
-          aria-label="Settings"
-          className="group relative w-full h-11 flex items-center justify-center transition-all duration-150"
-          style={{ color: 'var(--text-disabled)' }}
-        >
-          <Settings
-            className="w-5 h-5 opacity-50 group-hover:opacity-80 transition-all"
-            strokeWidth={1.5}
-          />
-          <div
-            role="tooltip"
-            className="pointer-events-none absolute left-full ml-3 top-1/2 -translate-y-1/2 z-50 whitespace-nowrap rounded-md border px-2 py-1 text-[11px] font-medium opacity-0 group-hover:opacity-100 transition shadow-lg"
-            style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-panel)', color: 'var(--text-primary)' }}
-          >
-            Settings
-          </div>
-        </button>
+        {renderButton({ id: 'settings', panelType: IDE_PANEL.SETTINGS, label: 'Settings', Icon: Settings })}
         <div
           className="w-7 h-7 rounded-lg border flex items-center justify-center cursor-pointer transition-all group mt-2"
           style={{ background: 'color-mix(in srgb, var(--accent-primary) 7%, transparent)', borderColor: 'color-mix(in srgb, var(--accent-primary) 19%, transparent)' }}

@@ -15,6 +15,7 @@
 import { memo } from 'react';
 import dynamic from 'next/dynamic';
 import { useWorkspacePanelContext } from '../context/workspace-panel-context';
+import { SettingsPanelContent } from '@/components/SettingsPanelContent';
 
 // ────────────────────────────────────────────────────────
 //  Lazy component imports (code-split, no SSR)
@@ -279,6 +280,23 @@ export const PreviewPanelWrapper = memo(function PreviewPanelWrapper({ data }) {
 });
 
 // ────────────────────────────────────────────────────────
+//  Settings Panel Wrapper
+// ────────────────────────────────────────────────────────
+
+export const SettingsPanelWrapper = memo(function SettingsPanelWrapper({ data }) {
+  // Settings panel is a simple inline component — no lazy import needed
+  return (
+    <div
+      data-panel-type="settings"
+      className="h-full w-full overflow-y-auto"
+      style={{ background: 'var(--bg-sidebar)' }}
+    >
+      <SettingsPanelContent />
+    </div>
+  );
+});
+
+// ────────────────────────────────────────────────────────
 //  Theme Editor Panel Wrapper
 // ────────────────────────────────────────────────────────
 
@@ -309,5 +327,6 @@ export const PANEL_WRAPPERS = {
   problems:       ProblemsPanelWrapper,
   output:         OutputPanelWrapper,
   preview:        PreviewPanelWrapper,
+  settings:       SettingsPanelWrapper,
   'theme-editor': ThemeEditorPanelWrapper,
 };

@@ -58,6 +58,7 @@ import { cn } from '@/lib/utils';
 import { useExtensions } from '@/hooks/useExtensions';
 import ExtensionSidebar from '@/components/extensions/ExtensionSidebar';
 import ExtensionViewContainer from '@/components/extensions/ExtensionViewContainer';
+import { SettingsPanelContent } from '@/components/SettingsPanelContent';
 
 // ─── New Docking Window Manager ────────────────────────
 import { DockableWorkspace } from '@/components/docking-wm/DockableWorkspace';
@@ -1761,11 +1762,13 @@ export default function EditorPage({ params }) {
     );
 
     const FileTreePanel = (
-        <ResizablePanel defaultSize={20} minSize={12} maxSize={35} className={`${treeOnRight ? 'border-l' : 'border-r'} border-[#27272a] bg-[#09090b]`}>
-            <div className="flex h-full min-w-0">
+        <ResizablePanel defaultSize={20} minSize={12} maxSize={35} className={`${treeOnRight ? 'border-l' : 'border-r'}`} style={{ borderColor: 'var(--border-medium)', background: 'var(--bg-sidebar)' }}>
+            <div className="flex h-full min-w-0 overflow-hidden">
                 <ActivityBar
                     active={sidebarView}
-                    onSelect={(id) => setSidebarView(id === sidebarView ? 'explorer' : id)}
+                    onSelect={(id) => {
+                        setSidebarView(id === sidebarView ? 'explorer' : id);
+                    }}
                     extensionContainers={contributedContainers}
                 />
                 <div className="flex-1 min-w-0 overflow-hidden flex flex-col">
@@ -1806,7 +1809,9 @@ export default function EditorPage({ params }) {
                                 viewsWelcome={extensionViewsWelcome}
                             />
                         );
-                    })() : (
+                    })() : sidebarView === 'settings' ? (
+                        <SettingsPanelContent />
+                    ) : (
                         <div className="flex flex-col h-full min-h-0">
                             <div className="flex-1 min-h-0 overflow-y-auto">
                                 <FileTreeView onToggleOrientation={toggleTreeOrientation} />
@@ -1873,8 +1878,8 @@ export default function EditorPage({ params }) {
 
     return (
     <DockablePanelProvider workspaceId={slug}>
-    <div className="flex flex-col h-screen overflow-hidden bg-[#09090b] text-[#D7DAE0]">
-        <div className="flex flex-col flex-1 bg-[#1e1e1e] text-gray-200">
+    <div className="flex flex-col h-screen overflow-hidden" style={{ background: 'var(--bg-sidebar)', color: 'var(--text-primary)' }}>
+        <div className="flex flex-col flex-1 min-h-0 overflow-hidden" style={{ background: 'var(--bg-editor)', color: 'var(--text-primary)' }}>
             {/* Hydrate workspace-specific tabs from localStorage */}
             <WorkspaceHydrator slug={slug} />
 

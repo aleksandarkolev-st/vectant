@@ -22,6 +22,7 @@ import {
   ExtensionsPanelWrapper,
   OutputPanelWrapper,
   PreviewPanelWrapper,
+  SettingsPanelWrapper,
   ThemeEditorPanelWrapper,
 } from './panel-wrappers';
 
@@ -163,6 +164,16 @@ export const IDE_PANEL_DEFINITIONS = [
     component: PreviewPanelWrapper,
     allowMultiple: false,
     defaultLocation: 'center',
+    closable: true,
+  },
+  {
+    panelType: IDE_PANEL.SETTINGS,
+    displayName: 'Settings',
+    icon: 'settings',
+    category: 'sidebar',
+    component: SettingsPanelWrapper,
+    allowMultiple: false,
+    defaultLocation: 'left',
     closable: true,
   },
   {
