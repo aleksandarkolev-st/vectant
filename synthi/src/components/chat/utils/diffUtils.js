@@ -284,6 +284,126 @@ export const applySearchReplace = (original, blockText) => {
 };
 
 /**
+ * Best-effort partial application of SEARCH/REPLACE blocks.
+ * Unlike applySearchReplace which fails entirely if ANY block doesn't match,
+ * this applies as many blocks as possible and skips the ones that fail.
+ * Also uses a lower subsequence threshold (35% instead of 50%).
+ *
+ * @param {string} original - The original file content
+ * @param {string} blockText - Text containing one or more SEARCH/REPLACE blocks
+ * @returns {{ result: string, applied: number, failed: number, total: number }|false}
+ */
+export const applySearchReplacePartial = (original, blockText) => {
+    if (!blockText) return false;
+    const blockRe = /<<<+\s*SEARCH\s*\n([\s\S]*?)\n?=======\s*\n([\s\S]*?)\n?>>>+\s*REPLACE/gi;
+    let result = original || '';
+    let applied = 0;
+    let failed = 0;
+    let total = 0;
+
+    const normLine = (l) => l.trim().replace(/\s+/g, ' ');
+    let match;
+
+    while ((match = blockRe.exec(blockText)) !== null) {
+        total++;
+        const searchText = match[1];
+        const replaceText = match[2];
+        let found = false;
+
+        // Strategy 1: Exact
+        let idx = result.indexOf(searchText);
+        if (idx !== -1) {
+            result = result.slice(0, idx) + replaceText + result.slice(idx + searchText.length);
+            applied++;
+            continue;
+        }
+
+        // Strategy 2: Trimmed-line
+        const searchLines = searchText.split('\n').map(l => l.trimEnd());
+        const resultLines = result.split('\n');
+        for (let i = 0; i <= resultLines.length - searchLines.length; i++) {
+            let ok = true;
+            for (let j = 0; j < searchLines.length; j++) {
+                if (resultLines[i + j].trimEnd() !== searchLines[j]) { ok = false; break; }
+            }
+            if (ok) {
+                const matchedLines = resultLines.slice(i, i + searchLines.length);
+                const exactOriginal = matchedLines.join('\n');
+                const pos = result.indexOf(exactOriginal);
+                if (pos !== -1) {
+                    result = result.slice(0, pos) + replaceText + result.slice(pos + exactOriginal.length);
+                    applied++;
+                    found = true;
+                    break;
+                }
+            }
+        }
+        if (found) continue;
+
+        // Strategy 3: Normalized whitespace
+        const searchNorm = searchLines.map(normLine).filter(Boolean);
+        if (searchNorm.length > 0) {
+            for (let i = 0; i <= resultLines.length - searchNorm.length; i++) {
+                let ok = true;
+                for (let j = 0; j < searchNorm.length; j++) {
+                    if (normLine(resultLines[i + j]) !== searchNorm[j]) { ok = false; break; }
+                }
+                if (ok) {
+                    const matchedLines = resultLines.slice(i, i + searchNorm.length);
+                    const exactOriginal = matchedLines.join('\n');
+                    const pos = result.indexOf(exactOriginal);
+                    if (pos !== -1) {
+                        result = result.slice(0, pos) + replaceText + result.slice(pos + exactOriginal.length);
+                        applied++;
+                        found = true;
+                        break;
+                    }
+                }
+            }
+        }
+        if (found) continue;
+
+        // Strategy 4: Subsequence with lower threshold (35%)
+        if (searchNorm.length >= 2) {
+            const rLines = result.split('\n');
+            const rNorm = rLines.map(normLine);
+            let bestStart = -1, bestLen = 0;
+            for (let si = 0; si < searchNorm.length; si++) {
+                for (let ri = 0; ri < rNorm.length; ri++) {
+                    if (rNorm[ri] !== searchNorm[si]) continue;
+                    let len = 0;
+                    while (si + len < searchNorm.length && ri + len < rNorm.length
+                           && rNorm[ri + len] === searchNorm[si + len]) {
+                        len++;
+                    }
+                    if (len > bestLen) {
+                        bestLen = len;
+                        bestStart = ri;
+                    }
+                }
+            }
+            if (bestLen >= Math.ceil(searchNorm.length * 0.35) && bestStart !== -1) {
+                const matchedLines = rLines.slice(bestStart, bestStart + bestLen);
+                const exactOriginal = matchedLines.join('\n');
+                const pos = result.indexOf(exactOriginal);
+                if (pos !== -1) {
+                    result = result.slice(0, pos) + replaceText + result.slice(pos + exactOriginal.length);
+                    applied++;
+                    found = true;
+                }
+            }
+        }
+        if (found) continue;
+
+        failed++;
+    }
+
+    if (total === 0) return false;
+    if (applied === 0) return false;
+    return { result, applied, failed, total };
+};
+
+/**
  * Extract REPLACE sections from SEARCH/REPLACE blocks without matching.
  * Used as a last-resort fallback when applySearchReplace fails —
  * shows the intended replacement content so the user can manually apply it.

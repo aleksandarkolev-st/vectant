@@ -62,6 +62,8 @@ from .synthesis.answer_synthesizer import AnswerSynthesizer
 from .synthesis.citation_tracker import CitationTracker
 from .synthesis.confidence_scorer import ConfidenceScorer
 
+from ..gitignore_guard import ensure_gitignore
+
 logger = logging.getLogger("code_intel.rag.pipeline")
 
 
@@ -90,6 +92,9 @@ class RAGPipeline:
         """
         self.config = config or get_rag_config()
         self.workspace_root = Path(workspace_root)
+
+        # Ensure AI index dirs are gitignored in this workspace
+        ensure_gitignore(self.workspace_root)
 
         # Storage directory
         store_dir = self.workspace_root / self.config.store.store_directory

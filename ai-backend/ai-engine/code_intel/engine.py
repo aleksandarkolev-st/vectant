@@ -106,6 +106,9 @@ from .editing.edit_planner import EditPlan
 from .rag.pipeline import RAGPipeline
 from .rag.api import register_rag_routes, set_rag_workspace
 
+# Gitignore guard — prevent AI indexes from flooding SCM
+from .gitignore_guard import ensure_gitignore
+
 
 logger = logging.getLogger("code_intel.engine")
 
@@ -212,6 +215,9 @@ class CodeIntelEngine:
         """Initialize all components lazily."""
         if self._initialized:
             return
+        
+        # Ensure AI index dirs are gitignored in this workspace
+        ensure_gitignore(self.workspace_root)
         
         # Ingestion
         self._file_walker = FileWalker(str(self.workspace_root))

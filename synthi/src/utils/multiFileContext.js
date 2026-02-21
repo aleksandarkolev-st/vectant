@@ -1,17 +1,33 @@
-const MAX_MULTI_FILE_ENTRIES = 5;
-const MAX_ACTIVE_FILE_CONTEXT_CHARS = 12000;
-const MAX_SECONDARY_FILE_CHARS = 3600;
+const MAX_MULTI_FILE_ENTRIES = 11;
+const MAX_ACTIVE_FILE_CONTEXT_CHARS = 16000;
+const MAX_SECONDARY_FILE_CHARS = 10000;
 
 const EXCLUDED_PATH_MARKERS = [
     '/node_modules/',
     '/build/',
 ];
 
+// Files that are never useful as AI context — they waste tokens.
+const EXCLUDED_FILENAMES = [
+    'package-lock.json',
+    'yarn.lock',
+    'pnpm-lock.yaml',
+    'composer.lock',
+    'Gemfile.lock',
+    'Cargo.lock',
+    'poetry.lock',
+    '.DS_Store',
+    'thumbs.db',
+];
+
 const normalizePath = (value = '') => `/${String(value || '').replace(/\\/g, '/').replace(/^\/+/, '')}`;
 
 const isExcludedPath = (value = '') => {
     const normalized = normalizePath(value);
-    return EXCLUDED_PATH_MARKERS.some((marker) => normalized.includes(marker));
+    if (EXCLUDED_PATH_MARKERS.some((marker) => normalized.includes(marker))) return true;
+    const basename = normalized.split('/').pop() || '';
+    if (EXCLUDED_FILENAMES.includes(basename)) return true;
+    return false;
 };
 
 const collapseContent = (value = '', max = MAX_SECONDARY_FILE_CHARS) => {
