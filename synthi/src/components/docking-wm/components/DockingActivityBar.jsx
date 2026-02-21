@@ -135,7 +135,7 @@ export const DockingActivityBar = memo(function DockingActivityBar() {
             ? 'th-bg-panel'
             : 'th-bg-app'
         }`}
-        style={isActive ? { color: 'var(--accent-tertiary)' } : { color: 'var(--text-disabled)' }}
+        style={isActive ? { color: 'var(--accent-tertiary)' } : { color: 'var(--text-muted)' }}
       >
         {/* Active indicator */}
         <div

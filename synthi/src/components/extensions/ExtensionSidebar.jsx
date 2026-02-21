@@ -88,24 +88,24 @@ function ExtensionRow({ ext, onEnable, onDisable, onUninstall, onRestart }) {
           <p className="text-[11px] mb-2" style={{ color: 'var(--text-secondary)' }}>{ext.description || 'No description.'}</p>
           <div className="flex gap-3 text-[10px] mb-2" style={{ color: 'var(--text-muted)' }}>
             <span>State: <span style={{ color: 'var(--text-primary)' }}>{STATE_LABELS[ext.state] || ext.state}</span></span>
-            {ext.crashCount > 0 && <span className="text-red-400">Crashes: {ext.crashCount}</span>}
+            {ext.crashCount > 0 && <span style={{ color: 'var(--accent-danger)' }}>Crashes: {ext.crashCount}</span>}
             <span>Activations: {ext.activationCount || 0}</span>
           </div>
           {ext.state === 'quarantined' && (
-            <div className="bg-red-950/40 border border-red-800/50 rounded px-2 py-1.5 text-[11px] text-red-300 mb-2">
+            <div className="border rounded px-2 py-1.5 text-[11px] mb-2" style={{ background: 'color-mix(in srgb, var(--accent-danger) 10%, transparent)', borderColor: 'color-mix(in srgb, var(--accent-danger) 30%, transparent)', color: 'var(--accent-danger)' }}>
               ⚠ Quarantined: {ext.quarantineReason || 'Repeated failures'}
             </div>
           )}
           <div className="flex gap-1.5">
             {isDisabled ? (
-              <button onClick={() => onEnable(ext.id)} className="px-2 py-1 text-[11px] rounded bg-emerald-700 hover:bg-emerald-600 text-white">Enable</button>
+              <button onClick={() => onEnable(ext.id)} className="px-2 py-1 text-[11px] rounded text-white" style={{ background: 'var(--accent-success)' }}>Enable</button>
             ) : (
               <button onClick={() => onDisable(ext.id)} className="px-2 py-1 text-[11px] rounded transition-colors" style={{ background: 'var(--bg-elevated)', color: 'var(--text-secondary)' }}>Disable</button>
             )}
             {isActive && (
               <button onClick={() => onRestart(ext.id)} className="px-2 py-1 text-[11px] rounded transition-colors" style={{ background: 'var(--bg-elevated)', color: 'var(--text-secondary)' }}>Restart</button>
             )}
-            <button onClick={() => onUninstall(ext.id)} className="px-2 py-1 text-[11px] rounded bg-red-900/40 hover:bg-red-900/70 text-red-300">Uninstall</button>
+            <button onClick={() => onUninstall(ext.id)} className="px-2 py-1 text-[11px] rounded" style={{ background: 'color-mix(in srgb, var(--accent-danger) 15%, transparent)', color: 'var(--accent-danger)' }}>Uninstall</button>
           </div>
         </div>
       )}
@@ -159,7 +159,7 @@ function MarketplaceRow({ ext, installedIds, onMarketplaceInstall }) {
           <div className="flex items-center gap-2 text-[10px]" style={{ color: 'var(--text-dim)' }}>
             <span className="truncate">{ext.namespace}</span>
             {ext.averageRating != null && (
-              <span className="flex items-center gap-0.5 text-yellow-500 shrink-0">
+              <span className="flex items-center gap-0.5 shrink-0" style={{ color: 'var(--accent-warning)' }}>
                 <Star className="w-2.5 h-2.5 fill-current" />
                 {ext.averageRating.toFixed(1)}
               </span>
@@ -173,12 +173,12 @@ function MarketplaceRow({ ext, installedIds, onMarketplaceInstall }) {
           disabled={installing || isInstalled}
           className={`shrink-0 flex items-center gap-1 px-2 py-1 text-[10px] font-medium rounded transition-colors ${
             isInstalled
-              ? 'bg-emerald-900/30 text-emerald-400 cursor-default'
+              ? 'cursor-default'
               : installing
-              ? 'text-[#6b7280]'
+              ? ''
               : ''
           }`}
-          style={!isInstalled && !installing ? { background: 'color-mix(in srgb, var(--accent-secondary) 15%, transparent)', color: 'var(--accent-secondary)' } : installing ? { background: 'var(--bg-elevated)' } : {}}
+          style={!isInstalled && !installing ? { background: 'color-mix(in srgb, var(--accent-secondary) 15%, transparent)', color: 'var(--accent-secondary)' } : installing ? { background: 'var(--bg-elevated)', color: 'var(--text-muted)' } : { background: 'color-mix(in srgb, var(--accent-success) 12%, transparent)', color: 'var(--accent-success)' }}
         >
           {isInstalled ? (
             <><Check className="w-3 h-3" /> Installed</>
@@ -194,7 +194,7 @@ function MarketplaceRow({ ext, installedIds, onMarketplaceInstall }) {
           <p className="text-[11px] mb-2" style={{ color: 'var(--text-secondary)' }}>{ext.description || 'No description.'}</p>
           <div className="flex flex-wrap gap-2 text-[10px]" style={{ color: 'var(--text-muted)' }}>
             <span>v{ext.version}</span>
-            {ext.verified && <span className="text-emerald-400">✓ Verified</span>}
+            {ext.verified && <span style={{ color: 'var(--accent-success)' }}>✓ Verified</span>}
             {ext.reviewCount > 0 && <span>{ext.reviewCount} reviews</span>}
           </div>
           {ext.url && (
@@ -206,12 +206,12 @@ function MarketplaceRow({ ext, installedIds, onMarketplaceInstall }) {
             </a>
           )}
           {/* Web compatibility note */}
-          <div className="mt-2 bg-yellow-950/30 border border-yellow-800/30 rounded px-2 py-1.5 text-[10px] text-yellow-300/80 flex items-start gap-1.5">
+          <div className="mt-2 border rounded px-2 py-1.5 text-[10px] flex items-start gap-1.5" style={{ background: 'color-mix(in srgb, var(--accent-warning) 8%, transparent)', borderColor: 'color-mix(in srgb, var(--accent-warning) 20%, transparent)', color: 'var(--accent-warning)' }}>
             <AlertTriangle className="w-3 h-3 shrink-0 mt-0.5" />
             <span>Declarative contributions (sidebar views, themes, languages, snippets, keybindings) work fully. Extensions requiring Node.js APIs (language servers, debuggers) will run in stub mode.</span>
           </div>
           {installError && (
-            <div className="mt-2 text-[11px] text-red-400 bg-red-950/30 border border-red-800/40 rounded px-2 py-1.5">
+            <div className="mt-2 text-[11px] border rounded px-2 py-1.5" style={{ color: 'var(--accent-danger)', background: 'color-mix(in srgb, var(--accent-danger) 8%, transparent)', borderColor: 'color-mix(in srgb, var(--accent-danger) 25%, transparent)' }}>
               ⚠ {installError}
             </div>
           )}
@@ -541,22 +541,22 @@ module.exports = { activate, deactivate };
         {/* Status row (installed tab) */}
         {tab === 'installed' && (
           <div className="flex items-center gap-3 text-[10px]" style={{ color: 'var(--text-muted)' }}>
-            <span className={hostStatus === 'ready' ? 'text-emerald-400' : hostStatus === 'error' ? 'text-red-400' : 'text-yellow-400'}>
+            <span style={{ color: hostStatus === 'ready' ? 'var(--accent-success)' : hostStatus === 'error' ? 'var(--accent-danger)' : 'var(--accent-warning)' }}>
               {hostStatus === 'ready' ? '● Ready' : hostStatus === 'initializing' ? '◌ Starting…' : hostStatus === 'error' ? '● Error' : '○ Idle'}
             </span>
             {vscodeServerState !== 'disconnected' && (
-              <span className={
-                vscodeServerState === 'running' ? 'text-emerald-400' :
-                vscodeServerState === 'connecting' ? 'text-yellow-400' :
-                vscodeServerState === 'error' ? 'text-red-400' : ''
-              } style={vscodeServerState !== 'running' && vscodeServerState !== 'connecting' && vscodeServerState !== 'error' ? { color: 'var(--text-muted)' } : {}}>
+              <span style={{ color:
+                vscodeServerState === 'running' ? 'var(--accent-success)' :
+                vscodeServerState === 'connecting' ? 'var(--accent-warning)' :
+                vscodeServerState === 'error' ? 'var(--accent-danger)' : 'var(--text-muted)'
+              }}>
                 {vscodeServerState === 'running' ? '● Server' :
                  vscodeServerState === 'connecting' ? '◌ Server…' :
                  vscodeServerState === 'error' ? '● Server ✖' : ''}
               </span>
             )}
             <span>{activeCount} active</span>
-            {issueCount > 0 && <span className="text-red-400">{issueCount} issues</span>}
+            {issueCount > 0 && <span style={{ color: 'var(--accent-danger)' }}>{issueCount} issues</span>}
           </div>
         )}
       </div>

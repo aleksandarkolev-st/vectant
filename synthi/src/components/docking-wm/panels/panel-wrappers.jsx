@@ -57,8 +57,8 @@ const SearchView = dynamic(
   { ssr: false, loading: Placeholder },
 );
 
-const GitSummaryPanel = dynamic(
-  () => import('@/components/git/GitSummaryPanel').then(m => ({ default: m.GitSummaryPanel })),
+const GitStatus = dynamic(
+  () => import('@/components/git/GitStatus').then(m => ({ default: m.GitStatus })),
   { ssr: false, loading: Placeholder },
 );
 
@@ -220,8 +220,8 @@ export const GitPanelWrapper = memo(function GitPanelWrapper({ data }) {
       className="h-full w-full overflow-hidden"
       style={{ background: 'var(--bg-sidebar)' }}
     >
-      <GitSummaryPanel
-        onOpenScm={ctx?.onOpenScm}
+      <GitStatus
+        slug={ctx?.workspaceSlug}
       />
     </div>
   );

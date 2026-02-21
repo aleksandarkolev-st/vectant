@@ -57,10 +57,10 @@ export default function StatusBar({
       case 'disconnected':
       default:
         return { 
-          dotStyle: { background: 'var(--text-disabled)' }, 
+          dotStyle: { background: 'var(--text-muted)' }, 
           text: 'Disconnected',
           pillBorder: { borderColor: 'var(--border-medium)' },
-          textStyle: { color: 'var(--text-disabled)' }
+          textStyle: { color: 'var(--text-muted)' }
         };
     }
   };
@@ -96,7 +96,7 @@ export default function StatusBar({
             <>
               <AlertCircle 
                 className="w-3.5 h-3.5" 
-                style={{ color: diagnosticSummary.errors > 0 ? 'var(--accent-danger)' : 'var(--text-disabled)' }}
+                style={{ color: diagnosticSummary.errors > 0 ? 'var(--accent-danger)' : 'var(--text-muted)' }}
                 strokeWidth={2} 
               />
               <span style={diagnosticSummary.errors > 0 ? { color: 'var(--accent-danger)', fontWeight: 600 } : { color: 'var(--text-secondary)' }}>
@@ -104,7 +104,7 @@ export default function StatusBar({
               </span>
               <AlertTriangle 
                 className="w-3.5 h-3.5" 
-                style={{ color: diagnosticSummary.warnings > 0 ? 'var(--accent-warning)' : 'var(--text-disabled)' }}
+                style={{ color: diagnosticSummary.warnings > 0 ? 'var(--accent-warning)' : 'var(--text-muted)' }}
                 strokeWidth={2} 
               />
               <span style={diagnosticSummary.warnings > 0 ? { color: 'var(--accent-warning)', fontWeight: 600 } : { color: 'var(--text-secondary)' }}>
@@ -158,7 +158,7 @@ export default function StatusBar({
                   background: vscodeServerState === 'running' ? 'var(--accent-success)'
                     : vscodeServerState === 'connecting' ? 'var(--accent-warning)'
                     : vscodeServerState === 'error' ? 'var(--accent-danger)'
-                    : 'var(--text-disabled)'
+                    : 'var(--text-muted)'
                 }}
               />
               <span
@@ -167,7 +167,7 @@ export default function StatusBar({
                   color: vscodeServerState === 'running' ? 'var(--accent-success)'
                     : vscodeServerState === 'connecting' ? 'var(--accent-warning)'
                     : vscodeServerState === 'error' ? 'var(--accent-danger)'
-                    : 'var(--text-disabled)'
+                    : 'var(--text-muted)'
                 }}
               >
                 {vscodeServerState === 'running'
@@ -184,7 +184,7 @@ export default function StatusBar({
         {/* Line/Column - Clearer */}
         <div className="flex items-center gap-1 px-2 py-0.5 rounded-md cursor-pointer transition-colors">
           <span className="font-medium" style={{ color: 'var(--text-secondary)' }}>Ln {position.lineNumber}</span>
-          <span style={{ color: 'var(--text-disabled)' }}>:</span>
+          <span style={{ color: 'var(--text-dim)' }}>:</span>
           <span className="font-medium" style={{ color: 'var(--text-secondary)' }}>Col {position.column}</span>
         </div>
         
