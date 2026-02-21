@@ -46,7 +46,7 @@ export default function ActivityBar({ active = "explorer", onSelect, badges = {}
             ? "th-bg-panel" 
             : "th-bg-app"
         }`}
-        style={isActive ? { color: 'var(--accent-tertiary)' } : { color: 'var(--text-disabled)' }}
+        style={isActive ? { color: 'var(--accent-tertiary)' } : { color: 'var(--text-muted)' }}
       >
         {/* Active indicator - Strong teal accent bar */}
         <div
@@ -61,12 +61,12 @@ export default function ActivityBar({ active = "explorer", onSelect, badges = {}
           <img
             src={extensionIcon}
             alt={label}
-            className={`w-5 h-5 transition-all ${isActive ? 'opacity-100' : 'opacity-50 group-hover:opacity-80'}`}
+            className={`w-5 h-5 transition-all ${isActive ? 'opacity-100' : 'opacity-60 group-hover:opacity-90'}`}
             onError={(e) => { e.target.style.display = 'none'; e.target.nextSibling.style.display = 'block'; }}
           />
         ) : null}
         <Icon
-          className={`w-5 h-5 transition-all ${isActive ? 'opacity-100' : 'opacity-50 group-hover:opacity-80'}`}
+          className={`w-5 h-5 transition-all ${isActive ? 'opacity-100' : 'opacity-60 group-hover:opacity-90'}`}
           strokeWidth={isActive ? 2 : 1.5}
           style={extensionIcon && (extensionIcon.startsWith('http') || extensionIcon.startsWith('data:')) ? { display: 'none' } : {}}
         />

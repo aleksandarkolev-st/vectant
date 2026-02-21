@@ -161,25 +161,19 @@ const TerminalManagerDyn = dynamic(() => import('../../TerminalManager.jsx'), {
 let servicesInitialized = false;
 let servicesInitPromise = null; // serialize concurrent init attempts
 
-// ===== SYNTHI BRAND Design Tokens - Updated for better contrast =====
+// ===== SYNTHI BRAND Design Tokens - Theme-aware via CSS vars =====
 const TAB_TOKENS = {
-    // Active tab matches editor exactly (seamless connection)
-    activeBg: '#0c0d12',      // bg-editor (darker)
-    // Inactive tabs much more faded
-    inactiveBg: '#08090d',    // bg-app (darker)
-    hoverBg: '#101118',       // panel bg
-    // Accent color for focus indicators - TEAL - brighter
-    primary: '#3a8574',       // accent-primary (Synthi teal)
-    primaryGlow: '0 0 14px rgba(58, 133, 116, 0.6)',
-    // Border colors - stronger
-    borderSubtle: '#1a1b24',  // border-subtle
-    borderFocus: '#3a3b52',   // border-focus
-    // Text colors - more contrast
-    textPrimary: '#f4f5f8',   // text-primary
-    textSecondary: '#9ba2b8', // text-secondary
-    textInactive: '#4a5066',  // text for inactive tabs - much dimmer
-    // Status colors
-    unsaved: '#ff6b6b',       // coral red for unsaved
+    activeBg: 'var(--bg-editor, #0c0d12)',
+    inactiveBg: 'var(--bg-app, #08090d)',
+    hoverBg: 'var(--bg-surface, #101118)',
+    primary: 'var(--accent-primary, #3a8574)',
+    primaryGlow: '0 0 14px color-mix(in srgb, var(--accent-primary, #3a8574) 60%, transparent)',
+    borderSubtle: 'var(--border-subtle, #1a1b24)',
+    borderFocus: 'var(--border-focus, #3a3b52)',
+    textPrimary: 'var(--text-primary, #f4f5f8)',
+    textSecondary: 'var(--text-secondary, #9ba2b8)',
+    textInactive: 'var(--text-dim, #4a5066)',
+    unsaved: 'var(--accent-danger, #ff6b6b)',
 };
 
 const EditorPanel = ({
@@ -3114,7 +3108,7 @@ const EditorPanel = ({
                                                         e.preventDefault();
                                                         setTabContext({ visible: true, x: e.clientX, y: e.clientY, file, index: idx });
                                                     }}
-                                                    className={`group flex items-center gap-2 px-3 cursor-pointer select-none transition-all duration-200 ${isActive ? 'text-[#f4f5f8] bg-[#0c0d12]' : 'text-[#4a5066] bg-[#08090d] hover:bg-[#0c0d12] hover:text-[#9ba2b8] opacity-60 hover:opacity-90'}`}
+                                                    className={`group flex items-center gap-2 px-3 cursor-pointer select-none transition-all duration-200`}
                                                     title={file.path}
                                                     style={{
                                                         minWidth: 130,
@@ -3127,30 +3121,34 @@ const EditorPanel = ({
                                                         borderRadius: isActive ? '8px 8px 0 0' : '0',
                                                         marginLeft: '0',
                                                         position: 'relative',
+                                                        background: isActive ? TAB_TOKENS.activeBg : TAB_TOKENS.inactiveBg,
+                                                        color: isActive ? TAB_TOKENS.textPrimary : TAB_TOKENS.textInactive,
+                                                        opacity: isActive ? 1 : 0.6,
                                                     }}
                                                 >
                                                     <span className={`flex-shrink-0 text-sm ${isActive ? 'opacity-90' : 'opacity-50'}`} aria-hidden="true">
-                                                        {loadingFiles.includes(file.path) ? <Loader2 className="w-4 h-4 animate-spin text-[#3a8574]" /> : fileIcon}
+                                                        {loadingFiles.includes(file.path) ? <Loader2 className="w-4 h-4 animate-spin" style={{ color: TAB_TOKENS.primary }} /> : fileIcon}
                                                     </span>
                                                     <div className="flex flex-col min-w-0 overflow-hidden">
-                                                        <span className={`text-[13px] truncate ${isActive ? 'text-[#f4f5f8] font-semibold' : 'text-[#9ba2b8] font-normal'}`}>
+                                                        <span className={`text-[13px] truncate ${isActive ? 'font-semibold' : 'font-normal'}`} style={{ color: isActive ? TAB_TOKENS.textPrimary : TAB_TOKENS.textSecondary }}>
                                                             {file.name}
                                                         </span>
                                                         {/* Breadcrumb path - shows parent folder context - only for active */}
                                                         {parentPath && isActive && (
-                                                            <span className="text-[9px] text-[#5a6178] truncate">
+                                                            <span className="text-[9px] truncate" style={{ color: 'var(--text-muted)' }}>
                                                                 {parentPath}
                                                             </span>
                                                         )}
                                                     </div>
 
                                                     {/* Unsaved marker - coral dot with glow */}
-                                                    <span aria-hidden="true" className={`ml-auto w-2 h-2 rounded-full flex-shrink-0 transition-opacity shadow-[0_0_6px_rgba(255,107,107,0.6)] ${file.isUnsaved || (isActive && remoteUnsaved) ? '' : 'opacity-0'}`} style={{ backgroundColor: '#ff6b6b' }} />
+                                                    <span aria-hidden="true" className={`ml-auto w-2 h-2 rounded-full flex-shrink-0 transition-opacity ${file.isUnsaved || (isActive && remoteUnsaved) ? '' : 'opacity-0'}`} style={{ backgroundColor: TAB_TOKENS.unsaved, boxShadow: `0 0 6px color-mix(in srgb, ${TAB_TOKENS.unsaved} 60%, transparent)` }} />
 
                                                     {/* Close button appears on hover (VSCode behavior) */}
                                                     <button
                                                         onClick={(e) => { e.stopPropagation(); dispatch(closeFile(file.path)); }}
-                                                        className={`flex items-center justify-center w-5 h-5 rounded-full transition-all duration-150 ${isActive ? 'text-[#f4f5f8]/80 hover:text-[#f4f5f8] hover:bg-[#3a857430]' : 'text-[#5a6178] hover:text-[#f4f5f8] hover:bg-[#1a1b24]'}`}
+                                                        className="flex items-center justify-center w-5 h-5 rounded-full transition-all duration-150"
+                                                        style={{ color: isActive ? 'var(--text-primary)' : 'var(--text-muted)' }}
                                                         aria-label={`Close ${file.name}`}
                                                         style={{ opacity: 0 }}
                                                     >
@@ -3167,7 +3165,7 @@ const EditorPanel = ({
                                             </div>
                                         );
                                     }) : (
-                                        <span className="text-[#5a6178] text-xs italic px-3 flex items-center">No file open</span>
+                                        <span className="text-xs italic px-3 flex items-center" style={{ color: 'var(--text-muted)' }}>No file open</span>
                                     )}
                                     </div>
                                     {/* Custom Scrollbar - Synthi accent */}
@@ -3185,9 +3183,9 @@ const EditorPanel = ({
                                         style={{ position: 'fixed', left: tabContext.x, top: tabContext.y, zIndex: 9999 }}
                                         onMouseLeave={() => setTabContext({ visible: false, x: 0, y: 0, file: null, index: -1 })}
                                     >
-                                        <div className="bg-[#0c0d12] border border-[#1a1b24] rounded-lg shadow-lg text-sm text-[#f4f5f8]">
-                                            <div className="px-3 py-2 hover:bg-[#3a857418] hover:text-[#4aba9a] cursor-pointer rounded-t-lg transition-colors" onClick={() => { if (tabContext.file) dispatch(closeFile(tabContext.file.path)); setTabContext({ visible: false, x: 0, y: 0, file: null, index: -1 }); }}>Close</div>
-                                            <div className="px-3 py-2 hover:bg-[#3a857418] hover:text-[#4aba9a] cursor-pointer transition-colors" onClick={() => {
+                                        <div className="rounded-lg shadow-lg text-sm border" style={{ background: TAB_TOKENS.activeBg, borderColor: TAB_TOKENS.borderSubtle, color: TAB_TOKENS.textPrimary }}>
+                                            <div className="px-3 py-2 cursor-pointer rounded-t-lg transition-colors" style={{ ':hover': undefined }} onClick={() => { if (tabContext.file) dispatch(closeFile(tabContext.file.path)); setTabContext({ visible: false, x: 0, y: 0, file: null, index: -1 }); }}>Close</div>
+                                            <div className="px-3 py-2 cursor-pointer transition-colors" onClick={() => {
                                                 if (tabContext.file) {
                                                     const keep = tabContext.file.path;
                                                     const toClose = openFiles.filter(f => f.path !== keep).map(f => f.path);
@@ -3195,7 +3193,7 @@ const EditorPanel = ({
                                                 }
                                                 setTabContext({ visible: false, x: 0, y: 0, file: null, index: -1 });
                                             }}>Close Others</div>
-                                            <div className="px-3 py-2 hover:bg-[#3a857418] hover:text-[#4aba9a] cursor-pointer rounded-b-lg transition-colors" onClick={() => {
+                                            <div className="px-3 py-2 cursor-pointer rounded-b-lg transition-colors" onClick={() => {
                                                 if (tabContext.index >= 0) {
                                                     const toClose = openFiles.slice(tabContext.index + 1).map(f => f.path);
                                                     toClose.forEach(p => dispatch(closeFile(p)));
