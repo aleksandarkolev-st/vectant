@@ -3039,9 +3039,9 @@ const EditorPanel = ({
 
 
     const editorUI = (
-                    <div className="h-full flex flex-col bg-[#0c0d12] rounded-tl-lg rounded-tr-lg overflow-hidden">
+                    <div className="h-full flex flex-col rounded-tl-lg rounded-tr-lg overflow-hidden" style={{ background: 'var(--bg-editor)' }}>
                         {/* Minimal Sleek Header - Synthi Brand Theme */}
-                        <div className="h-10 border-b-2 border-[#1a1b24] bg-[#08090d] flex justify-between select-none shadow-sm">
+                        <div className="h-10 border-b-2 flex justify-between select-none shadow-sm" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-app)' }}>
 
                             {/* Breadcrumbs */}
                                 <div className="h-full flex min-w-0 relative group tabs-container-wrapper">
@@ -3058,8 +3058,8 @@ const EditorPanel = ({
                                                 left: tabIndicator.left,
                                                 width: tabIndicator.width,
                                                 opacity: tabIndicator.visible ? 1 : 0,
-                                                background: 'linear-gradient(90deg, #3a8574, #4aba9a, #3a8574)',
-                                                boxShadow: '0 0 8px rgba(58, 133, 116, 0.5)',
+                                                background: 'linear-gradient(90deg, var(--accent-primary), var(--accent-secondary), var(--accent-primary))',
+                                                boxShadow: '0 0 8px color-mix(in srgb, var(--accent-primary) 50%, transparent)',
                                                 transition: 'left 0.15s cubic-bezier(0.4, 0, 0.2, 1), width 0.15s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.1s ease',
                                                 borderRadius: '2px 2px 0 0',
                                                 willChange: 'left, width',
@@ -3209,13 +3209,14 @@ const EditorPanel = ({
                             {/* Status & Controls */}
                             <div className="flex items-center gap-2 pr-2">
                                 {/* Collaboration presence */}
-                                <div className="flex items-center gap-1 text-[11px] text-[#9ba2b8]">
+                                <div className="flex items-center gap-1 text-[11px]" style={{ color: 'var(--text-secondary)' }}>
                                     <button 
                                         onClick={() => setIsPrivateMode(!isPrivateMode)}
-                                        className={`flex items-center px-1.5 py-0.5 rounded-full transition-all ${isPrivateMode ? 'bg-[#ff575720] text-[#ff5757] border border-[#ff575740]' : 'hover:bg-[#1a1b24]'}`}
+                                        className={`flex items-center px-1.5 py-0.5 rounded-full transition-all`}
+                                        style={isPrivateMode ? { background: 'color-mix(in srgb, var(--accent-danger) 12%, transparent)', color: 'var(--accent-danger)', border: '1px solid color-mix(in srgb, var(--accent-danger) 25%, transparent)' } : {}}
                                         title={isPrivateMode ? "Enable Collaboration" : "Disable Collaboration (Private Mode)"}
                                     >
-                                        {isPrivateMode ? <EyeOff className="w-3 h-3" /> : <div className="text-xs text-[#9ba2b8] h-5">👥</div>}
+                                        {isPrivateMode ? <EyeOff className="w-3 h-3" /> : <div className="text-xs h-5" style={{ color: 'var(--text-secondary)' }}>👥</div>}
                                         {isPrivateMode && <span className="text-[10px] font-bold ml-1">PRIVATE</span>}
                                     </button>
                                     
@@ -3226,7 +3227,7 @@ const EditorPanel = ({
                                             // only show active editors (users with cursor) to avoid many idle/default slots
                                             const allUsers = (presenceGranularity === 'workspace') ? collabClient.getWorkspaceActiveEditors(slug) : collabClient.getActiveEditors(slug, activeFile?.path);
                                             const users = allUsers.filter(u => (showAnonymousPresence ? true : !(u.state?.user?.isAnonymous)));
-                                            if (!users || users.length === 0) return <span className="text-xs text-[#6b7089] px-2 py-0.5 rounded-full bg-[#1c1d26] border border-[#32334a]">Solo</span>;
+                                            if (!users || users.length === 0) return <span className="text-xs px-2 py-0.5 rounded-full border" style={{ color: 'var(--text-muted)', background: 'var(--bg-surface)', borderColor: 'var(--border-medium)' }}>Solo</span>;
                                             return users.slice(0,6).map(u => {
                                                 const user = u.state?.user || {};
                                                 const initials = (user.name || 'U').split(' ').filter(Boolean).map(p => p[0]).slice(0,2).join('').toUpperCase();
@@ -3246,7 +3247,7 @@ const EditorPanel = ({
                                                                 hoverHideTimeoutRef.current = setTimeout(() => setHoverPresence(null), 140);
                                                             }}
                                                             className="w-6 h-6 rounded-full flex items-center justify-center text-xs text-white cursor-default shadow-sm"
-                                                            style={{ border: `2px solid ${user.color || '#327464'}`, background: user.color ? 'rgba(255,255,255,0.05)' : '#12131a' }}
+                                                            style={{ border: `2px solid ${user.color || 'var(--accent-primary)'}`, background: user.color ? 'color-mix(in srgb, var(--text-primary) 5%, transparent)' : 'var(--bg-surface)' }}
                                                         >
                                                             <span style={{ fontSize: 10 }}>{initials}</span>
                                                         </div>
@@ -3260,12 +3261,12 @@ const EditorPanel = ({
 
                                 {/* AI Status Indicator - Shows only when loading */}
                                 <div className={`transition-opacity duration-300 ${(aiCompletionState === 'loading' || aiBusy) ? 'opacity-100' : 'opacity-0'}`}>
-                                    <Sparkles className="w-3.5 h-3.5 text-[#327464] animate-pulse" />
+                                    <Sparkles className="w-3.5 h-3.5 animate-pulse" style={{ color: 'var(--accent-primary)' }} />
                                 </div>
 
                                 {/* Manual Save (Optional since we have auto-save) */}
                                 <button onClick={handleSave} className="opacity-60 hover:opacity-100 transition-opacity px-1">
-                                    <Save className="w-4 h-4 text-[#71717a]" />
+                                    <Save className="w-4 h-4" style={{ color: 'var(--text-muted)' }} />
                                 </button>
                             </div>
                         </div>
@@ -3273,12 +3274,12 @@ const EditorPanel = ({
                         {/* Hover card for presence */}
                         {hoverCardStyle && hoverPresence && hoverPresence.user && (
                             <div style={hoverCardStyle} onMouseEnter={() => { if (hoverHideTimeoutRef.current) { clearTimeout(hoverHideTimeoutRef.current); hoverHideTimeoutRef.current = null; } }} onMouseLeave={() => { if (hoverHideTimeoutRef.current) clearTimeout(hoverHideTimeoutRef.current); hoverHideTimeoutRef.current = setTimeout(() => setHoverPresence(null), 140); }}>
-                                <div className="bg-[#151515] border border-[#333] rounded-md p-2 text-sm text-gray-200 shadow-lg w-56">
+                                <div className="border rounded-md p-2 text-sm shadow-lg w-56" style={{ background: 'var(--bg-elevated)', borderColor: 'var(--border-medium)', color: 'var(--text-primary)' }}>
                                     <div className="flex items-center gap-2">
-                                        <div className="w-8 h-8 rounded-full flex items-center justify-center text-sm text-white" style={{ background: hoverPresence.user.color || '#555' }}>{(hoverPresence.user.name || 'Anonymous').split(' ').map(p => p[0]).slice(0,2).join('').toUpperCase()}</div>
+                                        <div className="w-8 h-8 rounded-full flex items-center justify-center text-sm text-white" style={{ background: hoverPresence.user.color || 'var(--accent-primary)' }}>{(hoverPresence.user.name || 'Anonymous').split(' ').map(p => p[0]).slice(0,2).join('').toUpperCase()}</div>
                                         <div className="flex flex-col">
                                             <div className="font-semibold text-sm">{hoverPresence.user.name || 'Anonymous'}</div>
-                                            <div className="text-xs text-gray-400">{hoverPresence.user.email || (hoverPresence.user.id ? `id: ${hoverPresence.user.id}` : 'Anonymous user')}</div>
+                                            <div className="text-xs" style={{ color: 'var(--text-muted)' }}>{hoverPresence.user.email || (hoverPresence.user.id ? `id: ${hoverPresence.user.id}` : 'Anonymous user')}</div>
                                         </div>
                                         <div className="ml-auto flex items-center gap-2">
                                             <button onClick={() => {
@@ -3290,7 +3291,7 @@ const EditorPanel = ({
                                                     editorInstance.revealPositionInCenter({ lineNumber: pos.line, column: pos.column });
                                                     editorInstance.setSelection(new monaco.Selection(pos.line, pos.column, pos.line, pos.column));
                                                 } catch (_) {}
-                                            }} className="px-2 py-1 rounded bg-[#2b2b2b] text-xs border border-[#3a3a3a]">Jump</button>
+                                            }} className="px-2 py-1 rounded text-xs border" style={{ background: 'var(--bg-surface)', borderColor: 'var(--border-medium)', color: 'var(--text-secondary)' }}>Jump</button>
                                         </div>
                                     </div>
                                 </div>
@@ -3470,7 +3471,7 @@ const EditorPanel = ({
                                         )}
                                     </div>
                                 </ContextMenuTrigger>
-                                <ContextMenuContent className="w-56 bg-[#252526] border-[#454545] text-gray-200">
+                                <ContextMenuContent className="w-56" style={{ background: 'var(--bg-elevated)', borderColor: 'var(--border-medium)', color: 'var(--text-primary)' }}>
                                     <ContextMenuItem onClick={onRun}>Run File</ContextMenuItem>
                                     <ContextMenuItem onClick={() => editorInstance?.getAction('editor.action.formatDocument')?.run()}>
                                         Format Document
@@ -3478,7 +3479,7 @@ const EditorPanel = ({
                                     <ContextMenuItem onClick={() => handleSave()}>
                                         Save
                                     </ContextMenuItem>
-                                    <ContextMenuSeparator className="bg-[#454545]" />
+                                    <ContextMenuSeparator style={{ background: 'var(--border-medium)' }} />
                                     <ContextMenuItem onClick={() => editorInstance?.getAction('actions.find')?.run()}>
                                         Find
                                     </ContextMenuItem>
@@ -3504,7 +3505,7 @@ const EditorPanel = ({
 
                 {showTerminal && (
                     <>
-                        <ResizableHandle className="bg-[#1a1a1e] h-px hover:bg-[#327464]" />
+                        <ResizableHandle className="h-px" style={{ background: 'var(--border-subtle)' }} />
                         <ResizablePanel defaultSize={30} minSize={15}>
                             <TerminalManagerDyn visible={true} onCloseAll={onToggleTerminal} workspaceSlug={slug} />
                         </ResizablePanel>
