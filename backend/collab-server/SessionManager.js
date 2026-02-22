@@ -161,6 +161,8 @@ class SessionManager extends EventEmitter {
       roomCode: this._generateRoomCode(),
       createdAt: new Date().toISOString(),
       status: 'active',
+      /** @type {boolean} — false for auto-created sessions until host explicitly accepts */
+      hostConfirmed: true,
     };
 
     this.sessions.set(id, session);
@@ -304,6 +306,13 @@ class SessionManager extends EventEmitter {
    */
   admitGuest(sessionId, { guestId, socketId, displayName, avatarUrl = '', permsOverride = {} }) {
     const session = this._getActiveSession(sessionId);
+
+    // Mark the session as host-confirmed on first admit — this makes the
+    // session visible in workspace-presence and indicates the host is
+    // actively sharing.
+    if (!session.hostConfirmed) {
+      session.hostConfirmed = true;
+    }
 
     console.log(`[SessionManager] admitGuest: host=${session.hostId} admitting guest=${guestId} (${displayName}) in session ${sessionId}`);
 
@@ -610,7 +619,10 @@ class SessionManager extends EventEmitter {
   getSessionsForSlug(slug) {
     const result = [];
     for (const [, session] of this.sessions) {
-      if (session.slug === slug && session.status === 'active') {
+      // Only include sessions where the host has explicitly confirmed sharing.
+      // Auto-created sessions (from join-user requests) start with
+      // hostConfirmed=false and are excluded until the host admits a guest.
+      if (session.slug === slug && session.status === 'active' && session.hostConfirmed !== false) {
         result.push(this._serializeSession(session));
       }
     }
