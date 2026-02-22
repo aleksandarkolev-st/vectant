@@ -62,7 +62,6 @@ import { AlertCircle } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useCollabNotifications } from '@/hooks/useCollabNotifications';
 import { GuestBanner } from '@/components/collaboration';
-import { gitClient } from '@/services/gitClient';
 
 export default function EditorPage({ params }) {
     const dispatch = useAppDispatch();

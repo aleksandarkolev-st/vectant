@@ -183,6 +183,9 @@ class GitService {
         if (msg.includes('authentication failed') || msg.includes('user cancelled') || msg.includes('could not read username')) {
             return new AuthenticationError('Authentication failed. Please configure credentials or use an access token.');
         }
+        if (msg.includes('requested url returned error: 403') || msg.includes('http 403')) {
+            return new AuthenticationError('Access denied (HTTP 403). Verify token permissions, repository access, and SSO authorization if your org requires it.');
+        }
         // NOTE: merge conflict detection should be handled explicitly by the
         // caller (e.g. pull()) using git status, NOT here.  mapGitError is a
         // generic fallback and doesn't have enough context to enumerate the
@@ -530,6 +533,39 @@ class GitService {
     async cloneRepo(slug, repoUrl, token, userId) {
         const cloneResult = await this.withLock(slug, async () => {
             const repoPath = this.getRepoPath(slug);
+            let cleanRepoUrl = repoUrl;
+            let effectiveToken = token;
+            let parsedCleanUrl = null;
+            let tokenFromUrl = null;
+            let urlUsername = '';
+            let urlHadPassword = false;
+
+            if (typeof cleanRepoUrl === 'string' && cleanRepoUrl.startsWith('https://')) {
+                try {
+                    const parsedUrl = new URL(cleanRepoUrl);
+                    urlUsername = decodeURIComponent(parsedUrl.username || '');
+                    urlHadPassword = Boolean(parsedUrl.password);
+                    if (parsedUrl.password) {
+                        tokenFromUrl = decodeURIComponent(parsedUrl.password);
+                    } else if (parsedUrl.username && parsedUrl.username !== 'oauth2' && parsedUrl.username !== 'x-access-token') {
+                        tokenFromUrl = decodeURIComponent(parsedUrl.username);
+                    }
+
+                    // If URL contains credentials, they are considered the source of truth
+                    // for this clone request (matches user-entered URL semantics).
+                    if (tokenFromUrl) effectiveToken = tokenFromUrl;
+
+                    if (parsedUrl.username || parsedUrl.password) {
+                        parsedUrl.username = '';
+                        parsedUrl.password = '';
+                        cleanRepoUrl = parsedUrl.toString();
+                        console.warn('[GitService] cloneRepo: stripped embedded credentials from repo URL');
+                    }
+                    parsedCleanUrl = parsedUrl;
+                } catch (_) {
+                    // Keep original URL if parsing fails; clone will surface a clear error.
+                }
+            }
 
             // ── Handle existing repo gracefully ───────────────────────────
             if (fs.existsSync(repoPath)) {
@@ -586,25 +622,61 @@ class GitService {
             const git = simpleGit();
             
             // Clone with token using environment variable to avoid exposing in URL
-            if (token && repoUrl.startsWith('https://')) {
+            if (effectiveToken && typeof cleanRepoUrl === 'string' && cleanRepoUrl.startsWith('https://')) {
                 // Use GIT_ASKPASS with a temporary script or extraheader for authentication
                 const cloneOptions = {
-                    '--config': `http.extraheader=Authorization: Bearer ${token}`
+                    '--config': `http.extraheader=Authorization: Bearer ${effectiveToken}`
                 };
                 
                 try {
-                    await git.clone(repoUrl, repoPath, cloneOptions);
+                    await git.clone(cleanRepoUrl, repoPath, cloneOptions);
                 } catch (e) {
-                    // Fallback to URL-based auth if extraheader fails (for GitHub tokens)
-                    const urlWithToken = repoUrl.replace('https://', `https://oauth2:${token}@`);
-                    await git.clone(urlWithToken, repoPath);
+                    // Fallback to URL-based auth if extraheader fails.
+                    const host = (parsedCleanUrl?.hostname || new URL(cleanRepoUrl).hostname || '').toLowerCase();
+                    const fallbackAttempts = [];
+
+                    // 1) Preserve the original URL credential style first when user supplied
+                    //    token as username (https://TOKEN@host/repo.git)
+                    if (tokenFromUrl && !urlHadPassword && urlUsername && urlUsername !== 'oauth2' && urlUsername !== 'x-access-token') {
+                        const styleUrl = new URL(cleanRepoUrl);
+                        styleUrl.username = effectiveToken;
+                        styleUrl.password = '';
+                        fallbackAttempts.push(styleUrl.toString());
+                    }
+
+                    // 2) GitHub canonical PAT style
+                    if (host === 'github.com') {
+                        const ghUrl = new URL(cleanRepoUrl);
+                        ghUrl.username = 'x-access-token';
+                        ghUrl.password = effectiveToken;
+                        fallbackAttempts.push(ghUrl.toString());
+                    }
+
+                    // 3) Generic oauth2 style fallback
+                    const oauthUrl = new URL(cleanRepoUrl);
+                    oauthUrl.username = 'oauth2';
+                    oauthUrl.password = effectiveToken;
+                    fallbackAttempts.push(oauthUrl.toString());
+
+                    let cloneSucceeded = false;
+                    let lastError = e;
+                    for (const candidateUrl of fallbackAttempts) {
+                        try {
+                            await git.clone(candidateUrl, repoPath);
+                            cloneSucceeded = true;
+                            break;
+                        } catch (err) {
+                            lastError = err;
+                        }
+                    }
+                    if (!cloneSucceeded) throw lastError;
                     
                     // Remove token from stored remote URL after clone
                     const repoGit = simpleGit(repoPath);
-                    await repoGit.remote(['set-url', 'origin', repoUrl]);
+                    await repoGit.remote(['set-url', 'origin', cleanRepoUrl]);
                 }
             } else {
-                await git.clone(repoUrl, repoPath);
+                await git.clone(cleanRepoUrl, repoPath);
             }
             
             // Upload cloned files to GCS so frontend can access them
@@ -632,7 +704,7 @@ class GitService {
                     // Preserve the clean remote URL on the bare repo
                     try {
                         const bGit = simpleGit(barePath);
-                        await bGit.remote(['set-url', 'origin', repoUrl]);
+                        await bGit.remote(['set-url', 'origin', cleanRepoUrl]);
                     } catch (_) {}
                 } catch (e) {
                     console.warn(`[GitService] Failed to create bare repo: ${e.message}`);
