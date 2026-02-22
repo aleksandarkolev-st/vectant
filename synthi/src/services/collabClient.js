@@ -34,7 +34,10 @@ class MonacoTextBinding {
         // Quick no-op check: if content already matches, skip
         const newText = this.ytext.toString();
         const current = this.model.getValue();
-        const normalize = (s) => s ? s.replace(/\r\n/g, '\n') : '';
+        // Normalize line-endings AND trim trailing whitespace/newlines so
+        // trivial differences between API and disk content don't cause the
+        // delta to be applied on top of existing model content.
+        const normalize = (s) => s ? s.replace(/\r\n/g, '\n').replace(/\s+$/, '') : '';
         if (normalize(current) === normalize(newText)) return;
 
         // Build incremental Monaco edits from the Yjs delta.
@@ -1059,11 +1062,15 @@ class CollabClient {
       }
     };
     
+    // Normalize helper for comparing content from different sources
+    // (API may include trailing newlines that disk content lacks, etc.)
+    const normalizeContent = (s) => s ? s.replace(/\r\n/g, '\n').replace(/\s+$/, '') : '';
+
     if (isSynced) {
       // Provider already synced, safe to seed now
       if (ytextHasContent) {
         // Ytext is authoritative - sync model to ytext content
-        if (model.getValue() !== ytextContent) {
+        if (normalizeContent(model.getValue()) !== normalizeContent(ytextContent)) {
           model.setValue(ytextContent);
         }
         entry._seeded = true;
@@ -1072,14 +1079,16 @@ class CollabClient {
       }
     } else {
       // Wait for sync before seeding to avoid racing with server content.
-      // NOTE: We intentionally do NOT call model.setValue(providedContent)
-      // optimistically here.  The previous approach pre-seeded the model so
-      // the user sees content immediately, but this created a race: the
-      // Yjs sync delta inserts the full content ON TOP of the optimistic
-      // content, doubling it.  Instead, leave the model empty (or whatever
-      // it had from createModel) and let doSeed() set it correctly once
-      // the provider syncs.  The user sees the editor blank for a brief
-      // moment (<200ms typical) which is preferable to content duplication.
+      // CRITICAL: Clear the model if it was pre-populated by
+      // @monaco-editor/react's defaultValue.  Without this, the Yjs sync
+      // delta (which inserts the full file content) gets applied ON TOP of
+      // the existing model content — causing the text to appear doubled or
+      // tripled after repeated tab switches.  The user sees the editor
+      // blank for a brief moment (<200ms typical) which is preferable to
+      // content duplication.
+      if (model.getValue().length > 0) {
+        model.setValue('');
+      }
       const syncHandler = () => {
         entry.provider.off('sync', syncHandler);
         doSeed();
@@ -1368,6 +1377,15 @@ class CollabClient {
             // Fallback knock delivery via notification WS (when host's
             // session WS was not connected at knock time).  Forward
             // to collabSessionService for processing.
+            const { default: collabSessionService } = await import('@/services/collabSessionService');
+            collabSessionService._handleWsMessage(msg);
+          }
+          // Forward other session events delivered via notification WS
+          // fallback (e.g. permission:requested, knock:cancelled).
+          // The server's sendToSessionHost preserves the original event
+          // type; these events are processed by _handleWsMessage the
+          // same way as if they arrived on the session WS.
+          if (msg.type === 'permission:requested' || msg.type === 'knock:cancelled') {
             const { default: collabSessionService } = await import('@/services/collabSessionService');
             collabSessionService._handleWsMessage(msg);
           }

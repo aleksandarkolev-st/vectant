@@ -2427,6 +2427,7 @@ const EditorPanel = ({
                                                     //  (c) Syncs to Redux on 300ms debounce pause (not every frame)
                                                     //  (d) Triggers AI debounce via handleCodeChangeRef
                                                     // No model.getValue() on every keystroke — only when flushing.
+                                                    let _remoteContentSyncPending = false;
                                                     editor.onDidChangeModelContent((e) => {
                                                         // CRITICAL: Skip model.setValue() calls (isFlush=true).
                                                         // These come from Yjs seeding / doSeed() sync handler
@@ -2437,6 +2438,28 @@ const EditorPanel = ({
                                                         // its _yObserver path, so real remote edits still flow
                                                         // through.  User edits (typing) also don't set isFlush.
                                                         if (e.isFlush) return;
+
+                                                        // CRITICAL: Skip when the collab binding is applying
+                                                        // remote CRDT changes.  During remote apply, the model
+                                                        // may be transiently incorrect (delta inserted on top of
+                                                        // existing content) before the safeguard corrects it.
+                                                        // Dispatching the transient doubled content to Redux
+                                                        // pollutes the file cache and causes accumulating
+                                                        // duplication on subsequent tab switches.  Instead, defer
+                                                        // a single Redux sync to after the synchronous apply
+                                                        // block completes so only the final correct content is
+                                                        // dispatched.
+                                                        if (collabBindingRef.current?.isApplyingRemote?.()) {
+                                                            if (!_remoteContentSyncPending) {
+                                                                _remoteContentSyncPending = true;
+                                                                queueMicrotask(() => {
+                                                                    _remoteContentSyncPending = false;
+                                                                    const v = editor.getModel()?.getValue() ?? '';
+                                                                    if (v) handleCodeChangeRef.current(v);
+                                                                });
+                                                            }
+                                                            return;
+                                                        }
                                                         // (a) P0: Debounce marker clearing — NOT synchronous.
                                                         // Markers are for stale diagnostic snapshots; 200ms delay is fine.
                                                         if (!markerClearTimerRef.current) {
