@@ -344,9 +344,20 @@ async fn run_install(m: &Manifest) -> Result<(), String> {
 
     println!("[LSP-DEPS] Running: {} {} (in {})", program, args.join(" "), m.dir.display());
 
+    // Some tools are installed to non-standard paths (e.g. Dart SDK at
+    // /opt/dart-sdk/bin or /usr/lib/dart/bin).  Extend PATH so the
+    // package manager can find the binary even before the user's shell
+    // profile has been sourced.
+    let current_path = std::env::var("PATH").unwrap_or_default();
+    let extended_path = match m.kind {
+        ManifestKind::DartPub => format!("/opt/dart-sdk/bin:/usr/lib/dart/bin:{}", current_path),
+        _ => current_path,
+    };
+
     let status = Command::new(program)
         .args(&args)
         .current_dir(&m.dir)
+        .env("PATH", &extended_path)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .status()

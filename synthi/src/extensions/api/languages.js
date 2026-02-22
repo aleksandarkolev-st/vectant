@@ -1,9 +1,17 @@
 /**
  * Synthi Extension System - Languages API
  * vscode.languages namespace implementation
+ *
+ * ALL register*Provider calls now emit REGISTER_PROVIDER to the main thread
+ * with a serialized registration.  When Monaco needs results (e.g. user
+ * triggers autocomplete), the main thread sends a PROVIDE_* request back
+ * to the worker, which invokes the provider and returns the result.
  */
 
 import { WorkerToMainMethods } from '../bridge/MessageProtocol.js';
+
+// Provider ID counter (unique within this worker)
+let providerIdCounter = 0;
 
 /**
  * Create languages API
@@ -12,45 +20,49 @@ import { WorkerToMainMethods } from '../bridge/MessageProtocol.js';
  * @returns {object}
  */
 export function createLanguagesAPI(extensionId, host) {
-  // Track registered providers for disposal
   const diagnosticCollections = new Map();
-  
+
+  // Shared provider registry on the host (all extensions share one)
+  if (!host._languageProviders) {
+    host._languageProviders = new Map();
+  }
+
+  /**
+   * Register a provider and notify the main thread.
+   */
+  function registerProvider(providerType, selector, provider, extra = {}) {
+    const providerId = `${extensionId}:${providerType}:${++providerIdCounter}`;
+    host._languageProviders.set(providerId, { type: providerType, selector, provider, extensionId });
+
+    host.emit(WorkerToMainMethods.REGISTER_PROVIDER, providerId, providerType, selector, extra);
+    console.log(`[languages] Registered ${providerType} provider (${providerId}) for ${JSON.stringify(selector)}`);
+
+    return {
+      dispose() {
+        host._languageProviders.delete(providerId);
+        host.emit(WorkerToMainMethods.UNREGISTER_PROVIDER, providerId, providerType);
+      }
+    };
+  }
+
   return {
-    /**
-     * Get languages
-     * @returns {Promise<string[]>}
-     */
     async getLanguages() {
       return [
-        'javascript', 'typescript', 'python', 'java', 'c', 'cpp', 
+        'javascript', 'typescript', 'python', 'java', 'c', 'cpp',
         'csharp', 'go', 'rust', 'html', 'css', 'json', 'markdown',
         'yaml', 'xml', 'sql', 'shell', 'powershell'
       ];
     },
 
-    /**
-     * Match selector against document
-     * @param {any} selector
-     * @param {object} document
-     * @returns {number}
-     */
     match(selector, document) {
       if (!selector || !document) return 0;
-      
       const langId = document.languageId;
-      
-      if (typeof selector === 'string') {
-        return selector === langId ? 10 : 0;
-      }
-      
+      if (typeof selector === 'string') return selector === langId ? 10 : 0;
       if (Array.isArray(selector)) {
         let max = 0;
-        for (const s of selector) {
-          max = Math.max(max, this.match(s, document));
-        }
+        for (const s of selector) max = Math.max(max, this.match(s, document));
         return max;
       }
-      
       if (typeof selector === 'object') {
         let score = 0;
         if (selector.language === langId) score += 10;
@@ -58,393 +70,163 @@ export function createLanguagesAPI(extensionId, host) {
         if (selector.scheme && document.uri?.scheme === selector.scheme) score += 1;
         return score;
       }
-      
       return 0;
     },
 
-    /**
-     * Create diagnostic collection
-     * @param {string} [name]
-     * @returns {object}
-     */
     createDiagnosticCollection(name) {
       const collectionName = name || `${extensionId}.diagnostics.${diagnosticCollections.size}`;
-      
       const diagnosticsMap = new Map();
-      
       const collection = {
         name: collectionName,
-        
         set(uriOrEntries, diagnostics) {
           if (Array.isArray(uriOrEntries)) {
-            // Batch set
             for (const [uri, diags] of uriOrEntries) {
               const key = uri.toString();
-              if (diags && diags.length > 0) {
-                diagnosticsMap.set(key, diags);
-              } else {
-                diagnosticsMap.delete(key);
-              }
+              if (diags && diags.length > 0) diagnosticsMap.set(key, diags);
+              else diagnosticsMap.delete(key);
             }
-            
-            // Emit batch update
-            host.emit(WorkerToMainMethods.SET_DIAGNOSTICS, 
-              Array.from(diagnosticsMap.entries()), 
-              collectionName
-            );
+            host.emit(WorkerToMainMethods.SET_DIAGNOSTICS, Array.from(diagnosticsMap.entries()), collectionName);
           } else {
-            // Single URI
             const key = uriOrEntries.toString();
-            if (diagnostics && diagnostics.length > 0) {
-              diagnosticsMap.set(key, diagnostics);
-            } else {
-              diagnosticsMap.delete(key);
-            }
-            
-            host.emit(WorkerToMainMethods.SET_DIAGNOSTICS, 
-              key, 
-              diagnostics || [],
-              collectionName
-            );
+            if (diagnostics && diagnostics.length > 0) diagnosticsMap.set(key, diagnostics);
+            else diagnosticsMap.delete(key);
+            host.emit(WorkerToMainMethods.SET_DIAGNOSTICS, key, diagnostics || [], collectionName);
           }
         },
-        
         delete(uri) {
-          const key = uri.toString();
-          diagnosticsMap.delete(key);
-          host.emit(WorkerToMainMethods.CLEAR_DIAGNOSTICS, key, collectionName);
+          diagnosticsMap.delete(uri.toString());
+          host.emit(WorkerToMainMethods.CLEAR_DIAGNOSTICS, uri.toString(), collectionName);
         },
-        
         clear() {
           const uris = Array.from(diagnosticsMap.keys());
           diagnosticsMap.clear();
-          for (const uri of uris) {
-            host.emit(WorkerToMainMethods.CLEAR_DIAGNOSTICS, uri, collectionName);
-          }
+          for (const uri of uris) host.emit(WorkerToMainMethods.CLEAR_DIAGNOSTICS, uri, collectionName);
         },
-        
         forEach(callback) {
-          diagnosticsMap.forEach((diags, uri) => {
-            callback({ toString: () => uri }, diags, collection);
-          });
+          diagnosticsMap.forEach((diags, uri) => callback({ toString: () => uri }, diags, collection));
         },
-        
-        get(uri) {
-          return diagnosticsMap.get(uri.toString());
-        },
-        
-        has(uri) {
-          return diagnosticsMap.has(uri.toString());
-        },
-        
-        dispose() {
-          this.clear();
-          diagnosticCollections.delete(collectionName);
-        }
+        get(uri) { return diagnosticsMap.get(uri.toString()); },
+        has(uri) { return diagnosticsMap.has(uri.toString()); },
+        dispose() { this.clear(); diagnosticCollections.delete(collectionName); }
       };
-      
       diagnosticCollections.set(collectionName, collection);
       return collection;
     },
 
-    /**
-     * Register completion provider
-     * @param {any} selector
-     * @param {object} provider
-     * @param {...string} triggerCharacters
-     * @returns {{ dispose(): void }}
-     */
+    // ── Language Providers — all wired through registerProvider() ──
+
     registerCompletionItemProvider(selector, provider, ...triggerCharacters) {
-      // Would need main thread/Monaco integration
-      console.log(`[languages] Registered completion provider for ${JSON.stringify(selector)}`);
-      return { dispose() {} };
+      return registerProvider('completion', selector, provider, { triggerCharacters });
     },
-
-    /**
-     * Register hover provider
-     * @param {any} selector
-     * @param {object} provider
-     * @returns {{ dispose(): void }}
-     */
     registerHoverProvider(selector, provider) {
-      console.log(`[languages] Registered hover provider for ${JSON.stringify(selector)}`);
-      return { dispose() {} };
+      return registerProvider('hover', selector, provider);
     },
-
-    /**
-     * Register definition provider
-     * @param {any} selector
-     * @param {object} provider
-     * @returns {{ dispose(): void }}
-     */
     registerDefinitionProvider(selector, provider) {
-      console.log(`[languages] Registered definition provider for ${JSON.stringify(selector)}`);
-      return { dispose() {} };
+      return registerProvider('definition', selector, provider);
     },
-
-    /**
-     * Register type definition provider
-     * @param {any} selector
-     * @param {object} provider
-     * @returns {{ dispose(): void }}
-     */
     registerTypeDefinitionProvider(selector, provider) {
-      console.log(`[languages] Registered type definition provider for ${JSON.stringify(selector)}`);
-      return { dispose() {} };
+      return registerProvider('typeDefinition', selector, provider);
     },
-
-    /**
-     * Register implementation provider
-     * @param {any} selector
-     * @param {object} provider
-     * @returns {{ dispose(): void }}
-     */
     registerImplementationProvider(selector, provider) {
-      console.log(`[languages] Registered implementation provider for ${JSON.stringify(selector)}`);
-      return { dispose() {} };
+      return registerProvider('implementation', selector, provider);
     },
-
-    /**
-     * Register references provider
-     * @param {any} selector
-     * @param {object} provider
-     * @returns {{ dispose(): void }}
-     */
     registerReferenceProvider(selector, provider) {
-      console.log(`[languages] Registered references provider for ${JSON.stringify(selector)}`);
-      return { dispose() {} };
+      return registerProvider('reference', selector, provider);
     },
-
-    /**
-     * Register document highlight provider
-     * @param {any} selector
-     * @param {object} provider
-     * @returns {{ dispose(): void }}
-     */
     registerDocumentHighlightProvider(selector, provider) {
-      console.log(`[languages] Registered document highlight provider for ${JSON.stringify(selector)}`);
-      return { dispose() {} };
+      return registerProvider('documentHighlight', selector, provider);
     },
-
-    /**
-     * Register document symbol provider
-     * @param {any} selector
-     * @param {object} provider
-     * @returns {{ dispose(): void }}
-     */
     registerDocumentSymbolProvider(selector, provider, metaData) {
-      console.log(`[languages] Registered document symbol provider for ${JSON.stringify(selector)}`);
-      return { dispose() {} };
+      return registerProvider('documentSymbol', selector, provider, { metaData });
     },
-
-    /**
-     * Register workspace symbol provider
-     * @param {object} provider
-     * @returns {{ dispose(): void }}
-     */
     registerWorkspaceSymbolProvider(provider) {
-      console.log(`[languages] Registered workspace symbol provider`);
-      return { dispose() {} };
+      return registerProvider('workspaceSymbol', '*', provider);
     },
-
-    /**
-     * Register code actions provider
-     * @param {any} selector
-     * @param {object} provider
-     * @param {object} [metadata]
-     * @returns {{ dispose(): void }}
-     */
     registerCodeActionsProvider(selector, provider, metadata) {
-      console.log(`[languages] Registered code actions provider for ${JSON.stringify(selector)}`);
-      return { dispose() {} };
+      return registerProvider('codeAction', selector, provider, {
+        providedCodeActionKinds: metadata?.providedCodeActionKinds?.map(k => k.value || k)
+      });
     },
-
-    /**
-     * Register code lens provider
-     * @param {any} selector
-     * @param {object} provider
-     * @returns {{ dispose(): void }}
-     */
     registerCodeLensProvider(selector, provider) {
-      console.log(`[languages] Registered code lens provider for ${JSON.stringify(selector)}`);
-      return { dispose() {} };
+      return registerProvider('codeLens', selector, provider);
     },
-
-    /**
-     * Register document formatting provider
-     * @param {any} selector
-     * @param {object} provider
-     * @returns {{ dispose(): void }}
-     */
     registerDocumentFormattingEditProvider(selector, provider) {
-      console.log(`[languages] Registered document formatting provider for ${JSON.stringify(selector)}`);
-      return { dispose() {} };
+      return registerProvider('documentFormatting', selector, provider);
     },
-
-    /**
-     * Register document range formatting provider
-     * @param {any} selector
-     * @param {object} provider
-     * @returns {{ dispose(): void }}
-     */
     registerDocumentRangeFormattingEditProvider(selector, provider) {
-      console.log(`[languages] Registered document range formatting provider for ${JSON.stringify(selector)}`);
-      return { dispose() {} };
+      return registerProvider('documentRangeFormatting', selector, provider);
     },
-
-    /**
-     * Register on type formatting provider
-     * @param {any} selector
-     * @param {object} provider
-     * @param {string} firstTriggerCharacter
-     * @param {...string} moreTriggerCharacter
-     * @returns {{ dispose(): void }}
-     */
     registerOnTypeFormattingEditProvider(selector, provider, firstTriggerCharacter, ...moreTriggerCharacter) {
-      console.log(`[languages] Registered on type formatting provider for ${JSON.stringify(selector)}`);
-      return { dispose() {} };
+      return registerProvider('onTypeFormatting', selector, provider, {
+        triggerCharacters: [firstTriggerCharacter, ...moreTriggerCharacter]
+      });
     },
-
-    /**
-     * Register signature help provider
-     * @param {any} selector
-     * @param {object} provider
-     * @param {...string} triggerCharacters
-     * @returns {{ dispose(): void }}
-     */
     registerSignatureHelpProvider(selector, provider, ...triggerCharactersOrMetadata) {
-      console.log(`[languages] Registered signature help provider for ${JSON.stringify(selector)}`);
-      return { dispose() {} };
+      let extra = {};
+      if (triggerCharactersOrMetadata.length === 1 && typeof triggerCharactersOrMetadata[0] === 'object' && !Array.isArray(triggerCharactersOrMetadata[0])) {
+        extra = triggerCharactersOrMetadata[0];
+      } else {
+        extra = { triggerCharacters: triggerCharactersOrMetadata };
+      }
+      return registerProvider('signatureHelp', selector, provider, extra);
     },
-
-    /**
-     * Register rename provider
-     * @param {any} selector
-     * @param {object} provider
-     * @returns {{ dispose(): void }}
-     */
     registerRenameProvider(selector, provider) {
-      console.log(`[languages] Registered rename provider for ${JSON.stringify(selector)}`);
-      return { dispose() {} };
+      return registerProvider('rename', selector, provider);
     },
-
-    /**
-     * Register document link provider
-     * @param {any} selector
-     * @param {object} provider
-     * @returns {{ dispose(): void }}
-     */
     registerDocumentLinkProvider(selector, provider) {
-      console.log(`[languages] Registered document link provider for ${JSON.stringify(selector)}`);
-      return { dispose() {} };
+      return registerProvider('documentLink', selector, provider);
     },
-
-    /**
-     * Register color provider
-     * @param {any} selector
-     * @param {object} provider
-     * @returns {{ dispose(): void }}
-     */
     registerColorProvider(selector, provider) {
-      console.log(`[languages] Registered color provider for ${JSON.stringify(selector)}`);
-      return { dispose() {} };
+      return registerProvider('color', selector, provider);
     },
-
-    /**
-     * Register folding range provider
-     * @param {any} selector
-     * @param {object} provider
-     * @returns {{ dispose(): void }}
-     */
     registerFoldingRangeProvider(selector, provider) {
-      console.log(`[languages] Registered folding range provider for ${JSON.stringify(selector)}`);
-      return { dispose() {} };
+      return registerProvider('foldingRange', selector, provider);
     },
-
-    /**
-     * Register selection range provider
-     * @param {any} selector
-     * @param {object} provider
-     * @returns {{ dispose(): void }}
-     */
     registerSelectionRangeProvider(selector, provider) {
-      console.log(`[languages] Registered selection range provider for ${JSON.stringify(selector)}`);
-      return { dispose() {} };
+      return registerProvider('selectionRange', selector, provider);
     },
-
-    /**
-     * Register call hierarchy provider
-     * @param {any} selector
-     * @param {object} provider
-     * @returns {{ dispose(): void }}
-     */
     registerCallHierarchyProvider(selector, provider) {
-      console.log(`[languages] Registered call hierarchy provider for ${JSON.stringify(selector)}`);
-      return { dispose() {} };
+      return registerProvider('callHierarchy', selector, provider);
     },
-
-    /**
-     * Register semantic tokens provider
-     * @param {any} selector
-     * @param {object} provider
-     * @param {object} legend
-     * @returns {{ dispose(): void }}
-     */
     registerDocumentSemanticTokensProvider(selector, provider, legend) {
-      console.log(`[languages] Registered semantic tokens provider for ${JSON.stringify(selector)}`);
-      return { dispose() {} };
+      return registerProvider('semanticTokens', selector, provider, { legend });
     },
-
-    /**
-     * Register document range semantic tokens provider
-     * @param {any} selector
-     * @param {object} provider
-     * @param {object} legend
-     * @returns {{ dispose(): void }}
-     */
     registerDocumentRangeSemanticTokensProvider(selector, provider, legend) {
-      console.log(`[languages] Registered document range semantic tokens provider for ${JSON.stringify(selector)}`);
-      return { dispose() {} };
+      return registerProvider('rangeSemanticTokens', selector, provider, { legend });
     },
-
-    /**
-     * Register inlay hints provider
-     * @param {any} selector
-     * @param {object} provider
-     * @returns {{ dispose(): void }}
-     */
     registerInlayHintsProvider(selector, provider) {
-      console.log(`[languages] Registered inlay hints provider for ${JSON.stringify(selector)}`);
-      return { dispose() {} };
+      return registerProvider('inlayHints', selector, provider);
     },
-
-    /**
-     * Register inline completion provider
-     * @param {any} selector
-     * @param {object} provider
-     * @returns {{ dispose(): void }}
-     */
     registerInlineCompletionItemProvider(selector, provider) {
-      console.log(`[languages] Registered inline completion provider for ${JSON.stringify(selector)}`);
-      return { dispose() {} };
+      return registerProvider('inlineCompletion', selector, provider);
     },
 
-    /**
-     * Set language configuration
-     * @param {string} language
-     * @param {object} configuration
-     * @returns {{ dispose(): void }}
-     */
     setLanguageConfiguration(language, configuration) {
-      console.log(`[languages] Set language configuration for ${language}`);
+      const serialized = {};
+      if (configuration.comments) serialized.comments = configuration.comments;
+      if (configuration.brackets) serialized.brackets = configuration.brackets;
+      if (configuration.wordPattern) serialized.wordPattern = configuration.wordPattern?.source || String(configuration.wordPattern);
+      if (configuration.indentationRules) {
+        serialized.indentationRules = {};
+        for (const [k, v] of Object.entries(configuration.indentationRules)) {
+          serialized.indentationRules[k] = v instanceof RegExp ? v.source : v;
+        }
+      }
+      if (configuration.onEnterRules) {
+        serialized.onEnterRules = configuration.onEnterRules.map(rule => ({
+          beforeText: rule.beforeText instanceof RegExp ? rule.beforeText.source : rule.beforeText,
+          afterText: rule.afterText instanceof RegExp ? rule.afterText?.source : rule.afterText,
+          action: rule.action
+        }));
+      }
+      if (configuration.autoClosingPairs) serialized.autoClosingPairs = configuration.autoClosingPairs;
+      if (configuration.surroundingPairs) serialized.surroundingPairs = configuration.surroundingPairs;
+      if (configuration.folding) serialized.folding = configuration.folding;
+
+      host.emit(WorkerToMainMethods.SET_LANGUAGE_CONFIGURATION, language, serialized);
       return { dispose() {} };
     },
 
-    /**
-     * Get diagnostics for a URI
-     * @param {any} resource
-     * @returns {Array}
-     */
     getDiagnostics(resource) {
       if (resource) {
         const key = resource.toString();
@@ -454,28 +236,17 @@ export function createLanguagesAPI(extensionId, host) {
         }
         return [];
       }
-      
-      // Return all diagnostics
       const result = [];
       for (const collection of diagnosticCollections.values()) {
-        collection.forEach((uri, diags) => {
-          result.push([uri, diags]);
-        });
+        collection.forEach((uri, diags) => result.push([uri, diags]));
       }
       return result;
     },
 
-    /**
-     * Event: diagnostics changed
-     */
     onDidChangeDiagnostics: createNoOpEvent()
   };
 }
 
-/**
- * Create a no-op event
- * @returns {Function}
- */
 function createNoOpEvent() {
   return (listener, thisArgs, disposables) => {
     const disposable = { dispose() {} };

@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState, useCallback, useMemo } from 'react';
-import { Send, X, Plus, ChevronDown, ChevronRight, Sparkles, FileCode, Paperclip } from 'lucide-react';
+import { Send, X, Plus, ChevronDown, ChevronRight, Sparkles, FileCode, Paperclip, Link, Unlink } from 'lucide-react';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
@@ -9,6 +9,7 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover
 import { useAppDispatch, useAppSelector } from '@/redux/hooks';
 import { selectFileThunk } from '@/redux/workspaceSlice';
 import { selectFileCacheEntries } from '@/redux/workspaceSlice';
+import { setShowTerminal } from '@/redux/uiSlice';
 import { findFileInTree } from '@/utils/fileUtils';
 import { useChatSessions } from './hooks/useChatSessions';
 import { useChatInput } from './hooks/useChatInput';
@@ -20,11 +21,49 @@ import { fileSuggestionStatusClasses, fileSuggestionStatusLabel } from './utils/
 import { formatMessageContent } from './utils/formatMessage';
 import MessageContent from './utils/MessageContent';
 import { ThinkingDots } from './ThinkingDots';
+import CommandApprovalCard from './CommandApprovalCard';
 
 const formatTimestamp = (timestamp) => {
     if (!timestamp) return '';
     const date = timestamp instanceof Date ? timestamp : new Date(timestamp);
     return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+};
+
+const buildLanguageMeta = (filename = '') => {
+    const ext = (filename.split('.').pop() || '').toLowerCase();
+    const map = {
+        js: { label: 'JS', color: '#fcd34d' },
+        jsx: { label: 'JSX', color: '#fcd34d' },
+        ts: { label: 'TS', color: '#60a5fa' },
+        tsx: { label: 'TSX', color: '#60a5fa' },
+        json: { label: 'JSON', color: '#c084fc' },
+        md: { label: 'MD', color: '#a78bfa' },
+        txt: { label: 'TXT', color: '#a3a3a3' },
+        py: { label: 'PY', color: '#f59e0b' },
+        rb: { label: 'RB', color: '#ef4444' },
+        go: { label: 'GO', color: '#38bdf8' },
+        rs: { label: 'RS', color: '#f97316' },
+        java: { label: 'JAVA', color: '#ef4444' },
+        cpp: { label: 'C++', color: '#60a5fa' },
+        c: { label: 'C', color: '#60a5fa' },
+        cs: { label: 'C#', color: '#22c55e' },
+        php: { label: 'PHP', color: '#a78bfa' },
+        html: { label: 'HTML', color: '#f97316' },
+        css: { label: 'CSS', color: '#60a5fa' },
+        scss: { label: 'SCSS', color: '#ec4899' },
+        yml: { label: 'YML', color: '#cbd5e1' },
+        yaml: { label: 'YAML', color: '#cbd5e1' },
+        sql: { label: 'SQL', color: '#22c55e' },
+        prisma: { label: 'DB', color: '#22c55e' },
+        sh: { label: 'SH', color: '#4ade80' },
+        bash: { label: 'SH', color: '#4ade80' },
+        toml: { label: 'TOML', color: '#cbd5e1' },
+        xml: { label: 'XML', color: '#f97316' },
+        svg: { label: 'SVG', color: '#f97316' },
+        mjs: { label: 'MJS', color: '#fcd34d' },
+        cjs: { label: 'CJS', color: '#fcd34d' },
+    };
+    return map[ext] || { label: ext ? ext.toUpperCase().slice(0, 4) : 'FILE', color: '#9ba2b8' };
 };
 
 const summarizeLog = (logs = []) => {
@@ -88,8 +127,12 @@ const AIChatWindow = ({
     const [progressLog, setProgressLog] = useState([]);
     const [progressExpanded, setProgressExpanded] = useState(true);
     const [progressStatus, setProgressStatus] = useState('');
-    const [suggestionExpanded, setSuggestionExpanded] = useState(true);
+    const [suggestionExpanded, setSuggestionExpanded] = useState(false);
     const [collapsedFiles, setCollapsedFiles] = useState({});
+    const scrollLockRef = useRef(false);
+    const [agentMenuOpen, setAgentMenuOpen] = useState(false);
+    const [pendingCommands, setPendingCommands] = useState([]); // {id, command, status: 'pending'|'approved'|'rejected'}
+    const [contextFileAttached, setContextFileAttached] = useState(false); // active file NOT auto-attached as context
 
     useEffect(() => {
         try {
@@ -127,6 +170,13 @@ const AIChatWindow = ({
         handleApplyFileSuggestion,
         handleRejectFileSuggestion,
         handlePreviewFileSuggestion,
+        // Agent pipeline
+        agentMode,
+        setAgentMode,
+        activePipeline,
+        cancelPipeline,
+        // Context window
+        contextWindowInfo,
     } = useAISuggestions({
         activeSession,
         chatSessions,
@@ -163,6 +213,10 @@ const AIChatWindow = ({
 
     const { inputValue, setInputValue, handleKeyPress, handleSubmit } = useChatInput((value) => {
         const aborter = new AbortController();
+        // Abort any in-flight request before starting a new one
+        if (controller) {
+            try { controller.abort(); } catch (e) { }
+        }
         thinkingStartRef.current = Date.now();
         setController(aborter);
         setStreamingMessage('');
@@ -170,8 +224,10 @@ const AIChatWindow = ({
         setProgressLog([{ id: Date.now(), text: 'Working…' }]);
         setProgressStatus('Working…');
         setProgressExpanded(true);
-        setSuggestionExpanded(true);
+        setSuggestionExpanded(false);
+        setPendingCommands([]);
         handleSendMessage(value, attachments, {
+            includeActiveFile: contextFileAttached,
             controller: aborter,
             onStreamStart: () => setIsThinking(true),
             onFirstToken: () => {
@@ -208,10 +264,31 @@ const AIChatWindow = ({
                     return [...prev, { id: Date.now() + Math.random(), text: line }];
                 });
             },
+            onCommandPending: (cp) => {
+                setPendingCommands((prev) => [
+                    ...prev,
+                    { id: cp.id, command: cp.command, status: 'pending', timestamp: new Date(), filesCount: cp.filesCount || 0 },
+                ]);
+            },
         });
         clearAttachments();
         setInputValue('');
     });
+
+    // Reset local UI state when switching sessions (fixes new chat showing old state)
+    useEffect(() => {
+        setIsThinking(false);
+        setShowThinking(false);
+        setStreamingMessage('');
+        setController(null);
+        setProgressLog([]);
+        setProgressStatus('');
+        setProgressExpanded(true);
+        setSuggestionExpanded(false);
+        setCollapsedFiles({});
+        setPendingCommands([]);
+        scrollLockRef.current = false;
+    }, [activeSessionId]);
 
     useEffect(() => {
         if (isThinking) {
@@ -231,16 +308,30 @@ const AIChatWindow = ({
         ? { id: 'suggestion-live', role: 'suggestion-live', timestamp: suggestionTimestamp, snapshot: { fileSuggestions, suggestedCode, diffChunks } }
         : null;
     const timeline = liveSuggestionEntry ? [...messages, liveSuggestionEntry] : [...messages];
+    // Inject pending command approval cards into the timeline
+    for (const cmd of pendingCommands) {
+        timeline.push({
+            id: `cmd-approval-${cmd.id}`,
+            role: 'command-approval',
+            command: cmd.command,
+            approvalId: cmd.id,
+            approvalStatus: cmd.status,
+            timestamp: cmd.timestamp,
+            output: cmd.output || null,
+            filesCount: cmd.filesCount || 0,
+        });
+    }
     timeline.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
 
     useEffect(() => {
+        if (scrollLockRef.current) return;
         if (scrollRef.current) {
             const scrollArea = scrollRef.current.querySelector('[data-slot="scroll-area-viewport"], [data-radix-scroll-area-viewport]');
             if (scrollArea) {
                 scrollArea.scrollTo({ top: scrollArea.scrollHeight, behavior: 'smooth' });
             }
         }
-    }, [messages, suggestedCode, fileSuggestions, streamingMessage, showThinking, progressLog, progressExpanded]);
+    }, [messages, streamingMessage, showThinking, progressLog, progressExpanded, pendingCommands]);
 
     const toggleProgressMessage = (id) => {
         if (!activeSession) return;
@@ -250,11 +341,85 @@ const AIChatWindow = ({
         }));
     };
 
+    // ── Command approval handlers ───────────────────────────────────
+    const handleCommandApprove = useCallback(async (approvalId) => {
+        try {
+            // Set to 'running' immediately while we wait for execution
+            setPendingCommands((prev) =>
+                prev.map((c) => (c.id === approvalId ? { ...c, status: 'running' } : c))
+            );
+            const res = await fetch('/api/chat/approve-command', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ id: approvalId, approved: true }),
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) {
+                // Server error (404 = expired/not found, 500 = exec failed)
+                console.error('[CommandApproval] Server error:', res.status, data);
+                setPendingCommands((prev) =>
+                    prev.map((c) => (c.id === approvalId ? { ...c, status: 'failed', output: data?.error || `Server error ${res.status}` } : c))
+                );
+                return;
+            }
+            // For deferred commands, the endpoint executes and returns the result
+            if (data?.deferred && data?.result) {
+                // exitCode === 0 is success. null/undefined means unknown — check for explicit error.
+                const hasExplicitError = Boolean(data.result.error);
+                const exitOk = data.result.exitCode === 0;
+                const exitUnknown = data.result.exitCode == null;
+                const success = exitOk || (exitUnknown && !hasExplicitError);
+                setPendingCommands((prev) =>
+                    prev.map((c) => (c.id === approvalId ? { ...c, status: success ? 'approved' : 'failed', output: data.result.output || data.result.error } : c))
+                );
+                // Open a terminal tab so the user can see the command output
+                if (data.result.sessionId && typeof window !== 'undefined') {
+                    try { dispatch(setShowTerminal(true)); } catch (_) {}
+                    window.dispatchEvent(new CustomEvent('ai-terminal-open', {
+                        detail: { sessionId: data.result.sessionId, command: data.result.command || '' },
+                    }));
+                }
+            } else if (data?.deferred) {
+                // Deferred but no result body
+                setPendingCommands((prev) =>
+                    prev.map((c) => (c.id === approvalId ? { ...c, status: 'approved' } : c))
+                );
+            } else {
+                // Live command — just mark approved (tool loop continues server-side)
+                setPendingCommands((prev) =>
+                    prev.map((c) => (c.id === approvalId ? { ...c, status: 'approved' } : c))
+                );
+            }
+        } catch (e) {
+            console.error('[CommandApproval] Approve failed:', e);
+            setPendingCommands((prev) =>
+                prev.map((c) => (c.id === approvalId ? { ...c, status: 'failed' } : c))
+            );
+        }
+    }, []);
+
+    const handleCommandReject = useCallback(async (approvalId) => {
+        try {
+            await fetch('/api/chat/approve-command', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ id: approvalId, approved: false }),
+            });
+            setPendingCommands((prev) =>
+                prev.map((c) => (c.id === approvalId ? { ...c, status: 'rejected' } : c))
+            );
+        } catch (e) {
+            console.error('[CommandApproval] Reject failed:', e);
+        }
+    }, []);
+
     const toggleFilePreview = (path) => {
+        scrollLockRef.current = true;
         setCollapsedFiles((prev) => ({
             ...prev,
             [path]: !prev[path],
         }));
+        setTimeout(() => { scrollLockRef.current = false; }, 100);
     };
 
     // Build a map from fileCacheEntries for fast lookup
@@ -440,7 +605,7 @@ const AIChatWindow = ({
 
     const containerClass = docked
         ? 'h-full w-full min-w-0 max-w-full bg-transparent flex flex-col min-h-0'
-        : 'fixed top-10 right-0 bottom-0 w-80 bg-[#0a0b10] border-l-2 border-[#1a1b24] shadow-2xl flex flex-col min-h-0 z-40';
+        : 'fixed top-10 right-0 bottom-0 w-[340px] bg-[#08090d] border-l border-[#1c1d26] shadow-[0_0_40px_rgba(0,0,0,0.5)] flex flex-col min-h-0 z-40';
 
     const codeContainerStyle = {
         width: '100%',
@@ -474,89 +639,96 @@ const AIChatWindow = ({
                     </div>
                 </div>
             )}
-            {/* Header - Clear hierarchy with stronger separation */}
-            <div className="flex flex-col border-b-2 border-[#1a1b24] bg-[#08090d]">
-                <div className="flex items-center justify-end px-3 py-2.5 relative">
-                    <div className="flex items-center gap-2">
+            {/* Header */}
+            <div className="flex flex-col border-b border-[#1c1d26] bg-[#08090d]">
+                <div className="flex items-center justify-between px-3.5 py-2.5 relative">
+                    <div className="flex items-center gap-2.5">
+                        <div className="w-6 h-6 rounded-lg bg-gradient-to-br from-[#327464] to-[#4a9e8a] flex items-center justify-center shadow-[0_0_12px_rgba(50,116,100,0.3)]">
+                            <Sparkles className="w-3 h-3 text-white" strokeWidth={2.5} />
+                        </div>
+                        <span className="text-[12px] font-semibold tracking-wide text-[#f0f2f5]">Synthi AI</span>
                         {(suggestedCode || fileSuggestions.length > 0) && (
-                            <div className="text-[10px] font-medium text-[#4aba9a] bg-[#3a857420] px-2 py-0.5 rounded-full">
+                            <div className="text-[9px] font-semibold text-[#4aba9a] bg-[#327464]/15 px-2 py-0.5 rounded-full border border-[#327464]/25">
                                 {fileSuggestions.length > 0 ? `${fileSuggestions.length} file${fileSuggestions.length > 1 ? 's' : ''}` : 'Ready'}
                             </div>
                         )}
-                        <button
-                            onClick={onClose}
-                            className="p-1 hover:bg-[#1a1b24] rounded-md transition-colors"
-                            title="Close chat"
-                        >
-                            <X className="w-4 h-4 text-[#5a6178] hover:text-[#9ba2b8]" strokeWidth={1.5} />
-                        </button>
                     </div>
+                    <button
+                        onClick={onClose}
+                        className="p-1.5 hover:bg-[#14151d] rounded-lg transition-all duration-200"
+                        title="Close chat"
+                    >
+                        <X className="w-3.5 h-3.5 text-[#5a6178] hover:text-[#9ba2b8]" strokeWidth={1.5} />
+                    </button>
                 </div>
 
+                {/* Code Intel */}
                 {isVisible && (
-                    <div className="mx-3 mb-2 rounded-md border border-[#1a1b24] bg-[#0b0c11] px-2.5 py-1.5 text-[10px] text-[#9ba2b8]">
+                    <div className="mx-3 mb-1.5 rounded-lg border border-[#1c1d26] bg-[#0a0b10]/80 px-2.5 py-1.5 text-[10px] text-[#9ba2b8]">
                         <div className="flex items-center justify-between gap-2">
-                            <div className="font-semibold uppercase tracking-[0.2em] text-[9px] text-[#6b7280]">
-                                Code Intel
+                            <div className="flex items-center gap-2">
+                                <span className="w-1.5 h-1.5 rounded-full bg-[#327464] shadow-[0_0_6px_rgba(50,116,100,0.4)]"></span>
+                                <span className="font-semibold uppercase tracking-[0.12em] text-[9px] text-[#5a6178]">Code Intel</span>
                             </div>
                             <button
                                 onClick={refreshMetrics}
-                                className="text-[9px] uppercase tracking-[0.18em] text-[#5a6178] hover:text-[#9ba2b8]"
+                                className="text-[9px] uppercase tracking-[0.12em] text-[#3d4256] hover:text-[#9ba2b8] transition-colors"
                                 title="Refresh metrics"
                             >
                                 Refresh
                             </button>
                         </div>
                         {metricsError && (
-                            <div className="mt-1 text-[10px] text-rose-400">{metricsError}</div>
+                            <div className="mt-1 text-[10px] text-rose-400/80">{metricsError}</div>
                         )}
                         {!metricsError && (
-                            <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1">
-                                <span className="text-[#8b93a7]">p95:</span>
+                            <div className="mt-1 flex flex-wrap gap-x-2.5 gap-y-0.5 text-[9px]">
+                                <span className="text-[#5a6178]">p95:</span>
                                 {Object.entries(codeIntelMetrics?.latency || {}).map(([stage, vals]) => (
-                                    <span key={stage} className="text-[#c7ccd9]">
+                                    <span key={stage} className="text-[#8b93a7]">
                                         {stage} {Math.round(vals?.p95 || 0)}ms
                                     </span>
                                 ))}
-                                <span className="text-[#8b93a7]">counters:</span>
+                                <span className="text-[#5a6178]">counters:</span>
                                 {Object.entries(codeIntelMetrics?.counters || {}).map(([k, v]) => (
-                                    <span key={k} className="text-[#c7ccd9]">
+                                    <span key={k} className="text-[#8b93a7]">
                                         {k}:{v}
                                     </span>
                                 ))}
-                                <span className="text-[#8b93a7]">budgets:</span>
+                                <span className="text-[#5a6178]">budgets:</span>
                                 {Object.entries(codeIntelMetrics?.budgets || {}).map(([k, v]) => (
-                                    <span key={k} className="text-[#c7ccd9]">
+                                    <span key={k} className="text-[#8b93a7]">
                                         {k}:{v}
                                     </span>
                                 ))}
                                 {codeIntelMetrics?.index_generation && (
-                                    <span className="text-[#8b93a7]">gen:{codeIntelMetrics.index_generation}</span>
+                                    <span className="text-[#5a6178]">gen:{codeIntelMetrics.index_generation}</span>
                                 )}
                                 {isMetricsLoading && (
-                                    <span className="text-[#5a6178]">loading…</span>
+                                    <span className="text-[#3d4256]">syncing…</span>
                                 )}
                             </div>
                         )}
                     </div>
                 )}
 
-                <div className="px-2 pb-2 flex items-center gap-1.5 overflow-x-auto">
+                <div className="px-2.5 pb-2 flex items-center gap-1 overflow-x-auto">
                     {chatSessions.map((session) => {
                         const isActive = session.id === activeSession?.id;
                         return (
                             <button
                                 key={session.id}
                                 onClick={() => setActiveSessionId(session.id)}
-                                className={`flex items-center gap-1.5 px-2 py-1 rounded-md text-[11px] border transition-all ${isActive
-                                        ? 'bg-[#3a857418] border-[#3a8574] text-[#4aba9a] font-medium'
-                                        : 'bg-transparent border-[#1a1b24] text-[#5a6178] hover:text-[#9ba2b8] hover:border-[#2a2b38] opacity-60 hover:opacity-100'
+                                className={`relative flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] transition-all duration-200 ${isActive
+                                        ? 'bg-[#327464]/12 text-[#4aba9a] font-semibold border border-[#327464]/20'
+                                        : 'text-[#5a6178] hover:text-[#9ba2b8] hover:bg-[#14151d] opacity-60 hover:opacity-100'
                                     }`}
                             >
-                                <span className="truncate max-w-[100px]">{session.title}</span>
+                                {isActive && <span className="absolute left-0 top-1/2 -translate-y-1/2 w-[2px] h-3 rounded-full bg-gradient-to-b from-[#327464] to-[#4aba9a]"></span>}
+                                <span className="truncate max-w-[80px]">{session.title}</span>
                                 {chatSessions.length > 1 && (
                                     <X
-                                        className="w-2.5 h-2.5 text-[#5a6178] hover:text-[#9ba2b8]"
+                                        className="w-2.5 h-2.5 text-[#5a6178] hover:text-[#9ba2b8] ml-0.5"
                                         onClick={(e) => {
                                             e.stopPropagation();
                                             handleCloseSession(session.id);
@@ -569,79 +741,117 @@ const AIChatWindow = ({
                     })}
                     <button
                         onClick={handleNewSession}
-                        className="flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-md border border-dashed border-[#2a2b38] text-[#5a6178] hover:border-[#3a8574] hover:text-[#4aba9a] transition-colors opacity-60 hover:opacity-100"
+                        className="flex items-center gap-0.5 text-[10px] px-2 py-1 rounded-md text-[#5a6178] hover:text-[#4aba9a] hover:bg-[#327464]/8 transition-all duration-200"
                         title="Start a new chat"
                     >
-                        <Plus className="w-3 h-3" strokeWidth={1.5} />
-                        New
+                        <Plus className="w-2.5 h-2.5" strokeWidth={2} />
                     </button>
                 </div>
             </div>
 
             {/* Messages Area */}
-            <ScrollArea ref={scrollRef} className="flex-1 px-3 py-3 min-h-0 min-w-0 bg-[#08090d]">
-                <div className="space-y-3 min-w-0">
+            <ScrollArea ref={scrollRef} className="flex-1 px-3 py-3 min-h-0 min-w-0 bg-[#08090d] relative overflow-hidden">
+                {/* Subtle ambient glow */}
+                <div className="pointer-events-none absolute top-0 left-1/2 -translate-x-1/2 w-[200px] h-[120px] rounded-full bg-[#327464]/[0.04] blur-[60px] z-0"></div>
+                <div className="space-y-3 min-w-0 relative z-10">
                     {timeline.length === 0 ? (
-                        <div className="flex flex-col items-start justify-center h-40 px-1 pt-4">
-                            <h3 className="text-sm font-semibold text-[#f4f5f8] mb-1.5">What can I help with?</h3>
-                            <p className="text-[11px] text-[#5a6178] leading-relaxed">
-                                Explain code, fix bugs, add features, or refactor.
+                        <div className="relative flex flex-col items-center justify-center h-56 px-4 pt-8">
+                            {/* Big ambient glow behind everything */}
+                            <div className="pointer-events-none absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[280px] h-[200px] rounded-full bg-[#327464]/[0.07] blur-[80px]"></div>
+                            <div className="pointer-events-none absolute top-[35%] left-1/2 -translate-x-1/2 -translate-y-1/2 w-[180px] h-[100px] rounded-full bg-[#4a9e8a]/[0.05] blur-[50px]"></div>
+                            {/* Icon */}
+                            <div className="relative z-10">
+                                <div className="relative w-14 h-14 rounded-2xl bg-gradient-to-br from-[#327464]/25 to-[#4a9e8a]/15 flex items-center justify-center mb-4 border border-[#327464]/20 shadow-[0_0_40px_rgba(50,116,100,0.18)]">
+                                    <Sparkles className="w-6 h-6 text-[#4aba9a]" strokeWidth={1.5} />
+                                </div>
+                            </div>
+                            <h3 className="relative z-10 text-[14px] font-semibold text-[#f0f2f5] mb-1.5">What can I help with?</h3>
+                            <p className="relative z-10 text-[11px] text-[#5a6178] leading-relaxed text-center max-w-[220px]">
+                                Explain code, fix bugs, add features, or refactor your project.
                             </p>
                         </div>
                     ) : (
                         timeline.map((msg) => {
+                            // ── Command Approval Card ────────────────────────
+                            if (msg.role === 'command-approval') {
+                                return (
+                                    <div key={msg.id} className="flex justify-start min-w-0">
+                                        <div className="w-full min-w-0">
+                                            <CommandApprovalCard
+                                                id={msg.approvalId}
+                                                command={msg.command}
+                                                status={msg.approvalStatus}
+                                                output={msg.output}
+                                                filesCount={msg.filesCount}
+                                                onApprove={handleCommandApprove}
+                                                onReject={handleCommandReject}
+                                            />
+                                        </div>
+                                    </div>
+                                );
+                            }
+
                             if (msg.role === 'progress') {
                                 const expanded = msg.expanded === true;
                                 const isFinished = msg.status === 'finished';
                                 const isFailed = msg.status === 'failed';
+                                const isWorking = !isFinished && !isFailed;
                                 const statusLabel = isFinished ? 'Completed' : isFailed ? 'Failed' : 'Working…';
-                                const statusColor = isFinished ? 'text-emerald-400' : isFailed ? 'text-rose-400' : 'text-amber-400';
-                                const iconColor = isFinished ? 'text-emerald-400' : isFailed ? 'text-rose-400' : 'text-amber-400';
+                                const statusColor = isFinished ? 'text-[#4aba9a]' : isFailed ? 'text-rose-400' : 'text-amber-400';
+                                const iconColor = isFinished ? 'text-[#4aba9a]' : isFailed ? 'text-rose-400' : 'text-amber-400';
                                 return (
-                                    <div key={msg.id} className={`text-xs rounded-xl overflow-hidden shadow-lg ${
-                                        isFinished ? 'bg-gradient-to-br from-[#0d1a15] to-[#0a0f0d] border border-emerald-900/40' :
-                                        isFailed ? 'bg-gradient-to-br from-[#1a0d0d] to-[#0f0a0a] border border-rose-900/40' :
-                                        'bg-gradient-to-br from-[#1a1708] to-[#0f0e0a] border border-amber-900/40'
+                                    <div key={msg.id} className={`relative text-xs rounded-xl overflow-hidden ${
+                                        isFinished ? 'bg-gradient-to-b from-[#0c1612] to-[#0a0f0d] border border-[#327464]/25 shadow-[0_0_15px_rgba(50,116,100,0.08)]' :
+                                        isFailed ? 'bg-gradient-to-b from-[#130c0c] to-[#0f0a0a] border border-rose-900/25 shadow-[0_0_12px_rgba(200,50,50,0.06)]' :
+                                        'bg-gradient-to-b from-[#0e0f15] to-[#0b0c11] border border-[#1c1d26]'
                                     }`}>
+                                        {/* Accent bar on left */}
+                                        <div className={`absolute left-0 top-0 bottom-0 w-[2px] ${
+                                            isFinished ? 'bg-gradient-to-b from-[#327464] to-[#4aba9a]' :
+                                            isFailed ? 'bg-gradient-to-b from-rose-700 to-rose-500' :
+                                            'bg-gradient-to-b from-[#3d4256] to-[#2a2d38]'
+                                        }`}></div>
                                         <button
-                                            className="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-white/[0.03] transition-all duration-200"
+                                            className="w-full flex items-center gap-2.5 px-3.5 py-2.5 text-left hover:bg-white/[0.015] transition-all duration-200"
                                             onClick={() => toggleProgressMessage(msg.id)}
                                         >
-                                            <div className={`flex items-center justify-center w-6 h-6 rounded-lg ${
-                                                isFinished ? 'bg-emerald-500/20' :
-                                                isFailed ? 'bg-rose-500/20' :
-                                                'bg-amber-500/20'
+                                            <div className={`flex items-center justify-center w-5 h-5 rounded-md ${
+                                                isFinished ? 'bg-[#327464]/20' :
+                                                isFailed ? 'bg-rose-500/15' :
+                                                'bg-amber-500/15'
                                             }`}>
                                                 {expanded ? 
-                                                    <ChevronDown className={`w-3.5 h-3.5 ${iconColor}`} strokeWidth={2.5} /> : 
-                                                    <ChevronRight className={`w-3.5 h-3.5 ${iconColor}`} strokeWidth={2.5} />
+                                                    <ChevronDown className={`w-3 h-3 ${isFinished ? 'text-[#4aba9a]' : isFailed ? 'text-rose-400' : 'text-amber-400'}`} strokeWidth={2.5} /> : 
+                                                    <ChevronRight className={`w-3 h-3 ${isFinished ? 'text-[#4aba9a]' : isFailed ? 'text-rose-400' : 'text-amber-400'}`} strokeWidth={2.5} />
                                                 }
                                             </div>
                                             <div className="flex items-center gap-2 flex-1 min-w-0">
-                                                <span className={`inline-flex items-center gap-2 text-xs font-semibold ${statusColor}`}>
-                                                    {isFinished && <span className="w-2 h-2 rounded-full bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.5)]"></span>}
-                                                    {isFailed && <span className="w-2 h-2 rounded-full bg-rose-400 shadow-[0_0_8px_rgba(251,113,133,0.5)]"></span>}
-                                                    {!isFinished && !isFailed && <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse shadow-[0_0_8px_rgba(251,191,36,0.5)]"></span>}
+                                                <span className={`inline-flex items-center gap-1.5 text-[10px] font-semibold tracking-wide ${
+                                                    isFinished ? 'text-[#4aba9a]' : isFailed ? 'text-rose-400' : 'text-amber-400'
+                                                }`}>
+                                                    {isFinished && <span className="w-2 h-2 rounded-full bg-[#4aba9a] shadow-[0_0_10px_rgba(50,116,100,0.6)]"></span>}
+                                                    {isFailed && <span className="w-2 h-2 rounded-full bg-rose-400 shadow-[0_0_10px_rgba(251,113,133,0.5)]"></span>}
+                                                    {!isFinished && !isFailed && <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse shadow-[0_0_10px_rgba(245,158,11,0.5)]"></span>}
                                                     {statusLabel}
                                                 </span>
-                                                <span className="text-[11px] text-[#71717a] truncate">{summarizeLog(msg.logs)}</span>
+                                                <span className="text-[10px] text-[#5a6178] truncate">{summarizeLog(msg.logs)}</span>
                                             </div>
                                         </button>
                                         {expanded && (
-                                            <div className={`px-4 pb-3 pt-2 space-y-1.5 border-t ${
-                                                isFinished ? 'border-emerald-900/30 bg-black/20' :
-                                                isFailed ? 'border-rose-900/30 bg-black/20' :
-                                                'border-amber-900/30 bg-black/20'
+                                            <div className={`px-3.5 pb-3 pt-2 space-y-1.5 border-t ${
+                                                isFinished ? 'border-[#327464]/15 bg-[#080d0b]/50' :
+                                                isFailed ? 'border-rose-900/15 bg-[#0d0909]/50' :
+                                                'border-[#1c1d26]/80 bg-[#090a0e]/50'
                                             }`}>
                                                 {(msg.logs || []).map((entry, idx) => {
                                                     return (
-                                                        <div key={`${msg.id}-log-${idx}`} className="flex items-start gap-2 text-[11px] text-[#9ba2b8] font-mono">
-                                                            <span className={`select-none mt-0.5 ${
-                                                                isFinished ? 'text-emerald-600' :
-                                                                isFailed ? 'text-rose-600' :
-                                                                'text-amber-600'
+                                                        <div key={`${msg.id}-log-${idx}`} className="flex items-start gap-2 text-[10px] text-[#8b93a7] font-mono leading-relaxed">
+                                                            <span className={`select-none mt-0.5 text-[9px] ${
+                                                                isFinished ? 'text-[#327464]/70' :
+                                                                isFailed ? 'text-rose-800/70' :
+                                                                'text-[#2a2d38]'
                                                             }`}>›</span>
-                                                            <span className="whitespace-normal break-words leading-relaxed">{entry}</span>
+                                                            <span className="whitespace-normal break-words">{entry}</span>
                                                         </div>
                                                     );
                                                 })}
@@ -655,18 +865,20 @@ const AIChatWindow = ({
                                 const meta = msg.contextMeta || {};
                                 const sources = Array.isArray(meta.sources) ? meta.sources : [];
                                 return (
-                                    <div key={msg.id} className="text-xs rounded-md border border-[#2a2b38] bg-[#0d0d11] px-3 py-2">
+                                    <div key={msg.id} className="text-xs rounded-xl border border-[#1c1d26] bg-[#0d0e14]/80 backdrop-blur-sm px-3 py-2">
                                         <div className="flex items-center justify-between gap-2">
                                             <div className="flex items-center gap-2">
-                                                <FileCode className="w-3.5 h-3.5 text-[#4aba9a]" />
-                                                <span className="text-[11px] uppercase tracking-wide text-[#9ba2b8]">Context used</span>
+                                                <div className="w-5 h-5 rounded-md bg-[#327464]/15 flex items-center justify-center">
+                                                    <FileCode className="w-3 h-3 text-[#4aba9a]" />
+                                                </div>
+                                                <span className="text-[10px] uppercase tracking-[0.12em] font-semibold text-[#5a6178]">Context used</span>
                                             </div>
                                             {meta.traceSummary ? (
-                                                <span className="text-[10px] text-[#71717a] truncate max-w-[220px]">{meta.traceSummary}</span>
+                                                <span className="text-[9px] text-[#3d4256] truncate max-w-[200px] font-mono">{meta.traceSummary}</span>
                                             ) : null}
                                         </div>
                                         {sources.length > 0 && (
-                                            <div className="mt-2 space-y-1">
+                                            <div className="mt-2 space-y-1 pl-7">
                                                 {sources.map((src, idx) => {
                                                     const file = src?.file || 'unknown';
                                                     const symbol = src?.symbol ? ` · ${src.symbol}` : '';
@@ -674,8 +886,8 @@ const AIChatWindow = ({
                                                         ? ` (L${src.start_line}-${src.end_line})`
                                                         : '';
                                                     return (
-                                                        <div key={`${file}-${idx}`} className="text-[11px] text-[#c7c9d1] font-mono truncate">
-                                                            {file}{lineInfo}{symbol}
+                                                        <div key={`${file}-${idx}`} className="text-[10px] text-[#8b93a7] font-mono truncate">
+                                                            <span className="text-[#3d4256] mr-1">›</span>{file}{lineInfo}<span className="text-[#5a6178]">{symbol}</span>
                                                         </div>
                                                     );
                                                 })}
@@ -698,16 +910,29 @@ const AIChatWindow = ({
                                                         const badgeText = `${fileSuggestionStatusLabel(suggestion.status)}`;
                                                         const statsAddText = `+${stats.adds}`;
                                                         const statsRemText = `-${stats.removals}`;
-                                                        const collapsed = collapsedFiles[suggestion.path] === true;
+                                                        const collapsed = collapsedFiles[suggestion.path] !== false;
                                                         return (
                                                             <div
                                                                 key={`${suggestion.path}-${suggestion.status}-${idx}`}
-                                                                className="rounded-lg border border-[#2f2f35] bg-[#0d0d11] overflow-hidden min-w-0 shadow-[0_8px_24px_rgba(0,0,0,0.28)]"
+                                                                className="rounded-lg border border-[#1f1f26] bg-[#0d0d11] overflow-hidden min-w-0 shadow-sm"
                                                                 style={codeContainerStyle}
                                                             >
-                                                                {/* File header - visually dominant */}
-                                                                <div className="flex items-center justify-between gap-3 px-3 py-2 bg-[#141418] border-b border-[#1f1f23]">
-                                                                    <div className="flex items-center gap-3 min-w-0 flex-1">
+                                                                {/* File header - compact */}
+                                                                <div className="flex items-center justify-between gap-2 px-1.5 py-1 bg-[#111116] border-b border-[#1a1a20]">
+                                                                    <div className="flex items-center gap-1.5 min-w-0 flex-1">
+                                                                        {(() => {
+                                                                            const meta = buildLanguageMeta(suggestion.path);
+                                                                            return (
+                                                                                <span
+                                                                                    className="inline-flex items-center justify-center flex-shrink-0 px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wide"
+                                                                                    style={{ color: meta.color, backgroundColor: `${meta.color}25` }}
+                                                                                    title={meta.label}
+                                                                                >
+                                                                                    <FileCode className="w-3 h-3 mr-1" strokeWidth={2} style={{ color: meta.color }} />
+                                                                                    {meta.label}
+                                                                                </span>
+                                                                            );
+                                                                        })()}
                                                                         <button
                                                                             onClick={async () => {
                                                                                 const parts = suggestion.path.split('/');
@@ -753,15 +978,15 @@ const AIChatWindow = ({
                                                                                     }
                                                                                 } catch (e) { }
                                                                             }}
-                                                                            className="text-left font-mono text-[13px] font-semibold text-[#e4e4e7] hover:text-[#4aba9a] truncate transition-colors"
+                                                                            className="text-left font-mono text-[10px] text-[#e4e4e7] hover:text-[#4aba9a] truncate transition-colors"
                                                                             title={suggestion.path}
                                                                         >
                                                                             {suggestion.path}
                                                                         </button>
                                                                         {/* Stats - more prominent */}
-                                                                        <div className="flex items-center gap-1.5 flex-shrink-0">
-                                                                            <span className="font-mono text-xs font-semibold text-emerald-400 bg-emerald-500/15 px-1.5 py-0.5 rounded">{statsAddText}</span>
-                                                                            <span className="font-mono text-xs font-semibold text-rose-400 bg-rose-500/15 px-1.5 py-0.5 rounded">{statsRemText}</span>
+                                                                        <div className="flex items-center gap-1 flex-shrink-0">
+                                                                            <span className="font-mono text-[10px] font-semibold text-emerald-400 bg-emerald-500/15 px-1 py-px rounded">{statsAddText}</span>
+                                                                            <span className="font-mono text-[10px] font-semibold text-rose-400 bg-rose-500/15 px-1 py-px rounded">{statsRemText}</span>
                                                                         </div>
                                                                     </div>
                                                                     {/* Status badge */}
@@ -770,13 +995,14 @@ const AIChatWindow = ({
                                                                     </div>
                                                                 </div>
                                                                 {/* Actions bar */}
-                                                                <div className="flex items-center justify-between gap-2 px-3 py-1.5 bg-[#111116] border-b border-[#1c1c20]">
+                                                                <div className="flex items-center justify-between gap-1.5 px-2 py-1 bg-[#0e0e13] border-b border-[#1a1a20]">
                                                                     <button
-                                                                        className="text-[#71717a] hover:text-[#e4e4e7] text-xs flex items-center gap-1 font-medium transition-colors"
+                                                                        className="text-[#71717a] hover:text-[#e4e4e7] text-[10px] flex items-center gap-0.5 font-medium transition-colors"
                                                                         onClick={() => toggleFilePreview(suggestion.path)}
                                                                     >
-                                                                        {collapsed ? <ChevronRight className="w-3.5 h-3.5" strokeWidth={2} /> : <ChevronDown className="w-3.5 h-3.5" strokeWidth={2} />}
+                                                                        {collapsed ? <ChevronRight className="w-3 h-3" strokeWidth={2} /> : <ChevronDown className="w-3 h-3" strokeWidth={2} />}
                                                                         {collapsed ? 'Show diff' : 'Hide diff'}
+                                                                        {collapsed && <span className="text-[9px] text-[#3d4256] ml-1">(click to expand)</span>}
                                                                     </button>
                                                                     {suggestion.status === 'pending' && msg.role === 'suggestion-live' && (
                                                                         <div className="flex items-center gap-4">
@@ -793,7 +1019,11 @@ const AIChatWindow = ({
                                                                             {/* Reject - neutral */}
                                                                             <button
                                                                                 disabled={suggestion.status !== 'pending'}
-                                                                                onClick={() => handleRejectFileSuggestion(activeSession?.id || activeSessionId, suggestion.path)}
+                                                                                onClick={() => {
+                                                                                    scrollLockRef.current = true;
+                                                                                    handleRejectFileSuggestion(activeSession?.id || activeSessionId, suggestion.path);
+                                                                                    setTimeout(() => { scrollLockRef.current = false; }, 300);
+                                                                                }}
                                                                                 className="text-[11px] font-semibold text-red-500 opacity-75 py-1 rounded-md hover:border-[#3a3b41] bg-transparent hover:-translate-y-1 cursor-pointer hover:underline duration-300 hover:opacity-100 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
                                                                             >
                                                                                 Reject
@@ -801,7 +1031,11 @@ const AIChatWindow = ({
                                                                             {/* Apply - primary (filled, dangerous feel) */}
                                                                             <button
                                                                                 disabled={suggestion.status !== 'pending' || Boolean(suggestion.error)}
-                                                                                onClick={() => handleApplyFileSuggestion(activeSession?.id || activeSessionId, suggestion.path)}
+                                                                                onClick={() => {
+                                                                                    scrollLockRef.current = true;
+                                                                                    handleApplyFileSuggestion(activeSession?.id || activeSessionId, suggestion.path);
+                                                                                    setTimeout(() => { scrollLockRef.current = false; }, 300);
+                                                                                }}
                                                                                 className="text-xs font-semibold text-emerald-400 hover:-translate-y-1 cursor-pointer duration-300 opacity-75 hover:opacity-100 py-1 rounded-md shadow-sm hover:underline transition-all disabled:opacity-40 disabled:cursor-not-allowed disabled:shadow-none"
                                                                             >
                                                                                 Apply
@@ -816,7 +1050,7 @@ const AIChatWindow = ({
                                                                     </div>
                                                                 ) : !collapsed ? (
                                                                     <div
-                                                                        className="max-h-[45vh] min-h-[80px] overflow-auto overflow-x-auto text-xs font-mono bg-[#09090b] ai-diff-code min-w-0 w-full max-w-full"
+                                                                        className="max-h-[35vh] min-h-[60px] overflow-auto overflow-x-auto text-[10px] font-mono bg-[#09090b] ai-diff-code min-w-0 w-full max-w-full"
                                                                         style={codeContainerStyle}
                                                                     >
                                                                         {renderDiffChunkList(suggestion.chunks)}
@@ -827,12 +1061,12 @@ const AIChatWindow = ({
                                                     })}
                                                 </div>
                                             ) : snapshot.suggestedCode ? (
-                                                <div className="rounded-lg border border-[#2f2f35] bg-[#0d0d11] overflow-hidden min-w-0 shadow-[0_8px_24px_rgba(0,0,0,0.28)]">
+                                                <div className="rounded-lg border border-[#1f1f26] bg-[#0d0d11] overflow-hidden min-w-0 shadow-sm">
                                                     {/* Header */}
-                                                    <div className="flex items-center justify-between px-3 py-2 bg-[#141418] border-b border-[#1f1f23]">
-                                                        <div className="flex items-center gap-2">
-                                                            <Sparkles className="w-4 h-4 text-[#4aba9a]" />
-                                                            <span className="text-[13px] font-semibold text-[#e4e4e7]">AI Suggestion</span>
+                                                    <div className="flex items-center justify-between px-2 py-1.5 bg-[#111116] border-b border-[#1a1a20]">
+                                                        <div className="flex items-center gap-1.5">
+                                                            <Sparkles className="w-3.5 h-3.5 text-[#4aba9a]" />
+                                                            <span className="text-[11px] font-semibold text-[#e4e4e7]">AI Suggestion</span>
                                                             {isLoading && (
                                                                 <span className="inline-flex items-center gap-1.5 text-xs text-amber-400">
                                                                     <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse"></span>
@@ -844,14 +1078,14 @@ const AIChatWindow = ({
                                                             <div className="flex items-center gap-2">
                                                                 {/* Reject - neutral */}
                                                                 <button
-                                                                    onClick={() => { setSuggestionExpanded(false); rejectSuggestion(); }}
+                                                                    onClick={() => { scrollLockRef.current = true; setSuggestionExpanded(false); rejectSuggestion(); setTimeout(() => { scrollLockRef.current = false; }, 300); }}
                                                                     className="text-[11px] font-semibold text-red-500 px-2.5 py-1.25 rounded-md border border-[#2f3035] hover:border-[#3a3b41] bg-transparent hover:bg-[#18181f] transition-all"
                                                                 >
                                                                     Reject
                                                                 </button>
                                                                 {/* Apply - primary */}
                                                                 <button
-                                                                    onClick={() => { setSuggestionExpanded(false); applySuggestion(); }}
+                                                                    onClick={() => { scrollLockRef.current = true; setSuggestionExpanded(false); applySuggestion(); setTimeout(() => { scrollLockRef.current = false; }, 300); }}
                                                                     className="text-xs font-semibold px-4 text-emerald-400 py-1.5 rounded-md bg-[#4aba9a] hover:bg-[#3da88a] border border-[#4aba9a] shadow-sm shadow-[#4aba9a]/20 transition-all"
                                                                 >
                                                                     Apply
@@ -860,19 +1094,19 @@ const AIChatWindow = ({
                                                         )}
                                                     </div>
                                                     {/* Toggle bar */}
-                                                    <div className="flex items-center justify-between px-3 py-1.5 bg-[#111116] border-b border-[#1c1c20]">
-                                                        <span className="text-[11px] text-[#71717a] font-medium">Preview diff</span>
+                                                    <div className="flex items-center justify-between px-2 py-1 bg-[#111116] border-b border-[#1c1c20]">
+                                                        <span className="text-[10px] text-[#71717a] font-medium">Preview diff</span>
                                                         <button
-                                                            className="text-[#71717a] hover:text-[#e4e4e7] text-xs flex items-center gap-1 font-medium transition-colors"
+                                                            className="text-[#71717a] hover:text-[#e4e4e7] text-[10px] flex items-center gap-0.5 font-medium transition-colors"
                                                             onClick={() => setSuggestionExpanded((v) => !v)}
                                                         >
-                                                            {suggestionExpanded ? <ChevronDown className="w-3.5 h-3.5" strokeWidth={2} /> : <ChevronRight className="w-3.5 h-3.5" strokeWidth={2} />}
+                                                            {suggestionExpanded ? <ChevronDown className="w-3 h-3" strokeWidth={2} /> : <ChevronRight className="w-3 h-3" strokeWidth={2} />}
                                                             {suggestionExpanded ? 'Hide' : 'Show'}
                                                         </button>
                                                     </div>
                                                     {/* Diff content */}
                                                     {suggestionExpanded && (
-                                                        <div className="max-h-[45vh] min-h-[80px] overflow-auto overflow-x-auto text-xs font-mono ai-diff-code min-w-0 w-full max-w-full bg-[#09090b]">
+                                                        <div className="max-h-[35vh] min-h-[60px] overflow-auto overflow-x-auto text-[10px] font-mono ai-diff-code min-w-0 w-full max-w-full bg-[#09090b]">
                                                             {renderDiffChunkList(snapshot.diffChunks || [])}
                                                         </div>
                                                     )}
@@ -901,7 +1135,7 @@ const AIChatWindow = ({
                                                             className="max-h-48 rounded border border-[#27272a]"
                                                         />
                                                     ) : att.kind === 'text' ? (
-                                                        <pre className="text-[11px] whitespace-pre-wrap max-h-32 overflow-auto bg-[#09090b] rounded p-2">
+                                                        <pre className="text-[10px] whitespace-pre-wrap max-h-24 overflow-auto bg-[#09090b] rounded p-1.5">
                                                             {att.content?.slice(0, 2000) || ''}
                                                         </pre>
                                                     ) : (
@@ -912,12 +1146,12 @@ const AIChatWindow = ({
                                         </div>
                                     )}
                                     <div
-                                        className="break-normal whitespace-normal text-xs leading-relaxed ai-chat-content min-w-0 w-full overflow-hidden"
+                                        className="break-normal whitespace-normal text-[11px] leading-normal ai-chat-content min-w-0 w-full overflow-hidden"
                                         onClick={handleContentNavClick}
                                     >
                                         <MessageContent content={msg.content} enableNavigation={true} />
                                     </div>
-                                    <span className="text-[10px] text-[#52525b] mt-1.5 block">
+                                    <span className="text-[9px] text-[#3d4256] mt-2 block tracking-wide">
                                         {formatTimestamp(msg.timestamp)}
                                     </span>
                                 </>
@@ -937,9 +1171,9 @@ const AIChatWindow = ({
                                     className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
                                 >
                                     <div
-                                        className={`max-w-[80%] px-3 py-2 rounded-lg text-sm ai-chat-message min-w-0 overflow-hidden ${msg.role === 'user'
-                                                ? 'bg-[#3b82f6] text-white'
-                                                : 'bg-[#18181b] text-[#e4e4e7] border border-[#27272a]'
+                                        className={`max-w-[88%] px-3.5 py-2.5 rounded-2xl text-sm ai-chat-message min-w-0 overflow-hidden transition-all duration-200 ${msg.role === 'user'
+                                                ? 'bg-gradient-to-br from-[#1e1535] to-[#1a1230] text-[#e8dff5] border border-[#7c5cbf]/20 rounded-br-md shadow-[0_2px_12px_rgba(124,92,191,0.1)]'
+                                                : 'bg-[#0d0e14] text-[#e4e4e7] border border-[#1c1d26] rounded-bl-md shadow-[0_1px_6px_rgba(0,0,0,0.25)]'
                                             }`}
                                     >
                                         {baseContent}
@@ -949,16 +1183,20 @@ const AIChatWindow = ({
                         })
                     )}
                     {streamingMessage ? (
-                        <div 
-                            className="text-xs text-[#e4e4e7] leading-relaxed ai-chat-content min-w-0 w-full overflow-hidden"
-                            onClick={handleContentNavClick}
-                        >
-                            <MessageContent content={streamingMessage} enableNavigation={true} />
+                        <div className="flex justify-start">
+                            <div className="max-w-[88%] bg-[#0d0e14] border border-[#1c1d26] px-3.5 py-2.5 rounded-2xl rounded-bl-md min-w-0 overflow-hidden shadow-[0_1px_6px_rgba(0,0,0,0.25)]">
+                                <div 
+                                    className="text-[11px] text-[#e4e4e7] leading-normal ai-chat-content min-w-0 w-full overflow-hidden"
+                                    onClick={handleContentNavClick}
+                                >
+                                    <MessageContent content={streamingMessage} enableNavigation={true} />
+                                </div>
+                            </div>
                         </div>
                     ) : null}
                     {showThinking && (
                         <div className="flex justify-start">
-                            <div className={`bg-[#18181b] border border-[#27272a] px-3 py-2 rounded-lg transition-opacity duration-200 ${isThinking ? 'opacity-100' : 'opacity-0'}`}>
+                            <div className={`bg-[#0d0e14] border border-[#1c1d26] px-4 py-3 rounded-2xl rounded-bl-md transition-opacity duration-200 shadow-[0_2px_8px_rgba(0,0,0,0.3)] ${isThinking ? 'opacity-100' : 'opacity-0'}`}>
                                 <ThinkingDots />
                             </div>
                         </div>
@@ -966,8 +1204,8 @@ const AIChatWindow = ({
                 </div>
             </ScrollArea>
 
-            {/* Input Area - Cleaner, less visually heavy */}
-            <div className="px-3 py-2.5 bg-[#08090d] border-t border-[#1a1b24]">
+            {/* Input Area */}
+            <div className="px-3.5 py-2.5 bg-[#08090d] border-t border-[#1c1d26]">
                 <input
                     ref={fileInputRef}
                     type="file"
@@ -979,36 +1217,6 @@ const AIChatWindow = ({
                     }}
                 />
                 {(() => {
-                    const buildLanguageMeta = (filename = '') => {
-                        const ext = (filename.split('.').pop() || '').toLowerCase();
-                        const map = {
-                            js: { label: 'JS', color: '#fcd34d' },
-                            jsx: { label: 'JSX', color: '#fcd34d' },
-                            ts: { label: 'TS', color: '#60a5fa' },
-                            tsx: { label: 'TSX', color: '#60a5fa' },
-                            json: { label: 'JSON', color: '#c084fc' },
-                            md: { label: 'MD', color: '#a78bfa' },
-                            txt: { label: 'TXT', color: '#a3a3a3' },
-                            py: { label: 'PY', color: '#f59e0b' },
-                            rb: { label: 'RB', color: '#ef4444' },
-                            go: { label: 'GO', color: '#38bdf8' },
-                            rs: { label: 'RS', color: '#f97316' },
-                            java: { label: 'JAVA', color: '#ef4444' },
-                            cpp: { label: 'C++', color: '#60a5fa' },
-                            c: { label: 'C', color: '#60a5fa' },
-                            cs: { label: 'C#', color: '#22c55e' },
-                            php: { label: 'PHP', color: '#a78bfa' },
-                            html: { label: 'HTML', color: '#f97316' },
-                            css: { label: 'CSS', color: '#60a5fa' },
-                            scss: { label: 'SCSS', color: '#ec4899' },
-                            yml: { label: 'YML', color: '#cbd5e1' },
-                            yaml: { label: 'YAML', color: '#cbd5e1' },
-                            sql: { label: 'SQL', color: '#22c55e' },
-                            prisma: { label: 'DB', color: '#22c55e' },
-                        };
-                        return map[ext] || { label: ext ? ext.toUpperCase().slice(0, 4) : 'FILE', color: '#9ba2b8' };
-                    };
-
                     const chips = [];
                     if (activeFile && (activeFile.name || activeFile.path)) {
                         chips.push({
@@ -1023,19 +1231,22 @@ const AIChatWindow = ({
                     if (!chips.length) return null;
 
                     return (
-                        <div className="mb-2 grid grid-cols-2 gap-1.5">
+                        <div className="mb-1.5 grid grid-cols-2 gap-1">
                             {chips.map((chip) => {
                                 const meta = buildLanguageMeta(chip.name || '');
                                 const isWorkspaceFile = chip.isWorkspaceFile;
+                                const isDetachedContext = chip.isContext && !contextFileAttached;
                                 return (
                                     <div
                                         key={chip.id}
-                                        className={`flex items-center gap-1.5 border px-2 py-1 rounded text-[10px] min-w-0 ${
-                                            isWorkspaceFile 
-                                                ? 'bg-[#0d1a15] border-[#1a3d2e]' 
-                                                : 'bg-[#101118] border-[#1a1b24]'
+                                        className={`flex items-center gap-1.5 border px-1.5 py-0.5 rounded text-[10px] min-w-0 ${
+                                            isDetachedContext
+                                                ? 'bg-[#0c0d12] border-[#1a1b24] opacity-40'
+                                                : isWorkspaceFile 
+                                                    ? 'bg-[#0c1410] border-[#1a3d2e]/50' 
+                                                    : 'bg-[#0c0d12] border-[#1a1b24]'
                                         }`}
-                                        title={chip.path || chip.name}
+                                        title={chip.isContext ? (contextFileAttached ? `${chip.name} (attached as context — click link to detach)` : `${chip.name} (not attached — click link to attach as context)`) : (chip.path || chip.name)}
                                     >
                                         <span
                                             className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded"
@@ -1045,14 +1256,29 @@ const AIChatWindow = ({
                                             <span className="font-semibold">{meta.label}</span>
                                         </span>
                                         <div className="flex-1 min-w-0">
-                                            <span className="truncate text-[#e4e4e7] block leading-tight">
-                                                {chip.isContext ? <span className="italic">{chip.name}</span> : chip.name}
+                                            <span className={`truncate block leading-tight ${isDetachedContext ? 'text-[#6b7280]' : 'text-[#e4e4e7]'}`}>
+                                                {chip.name}
                                             </span>
                                             {chip.size ? (
                                                 <span className="text-[#5a6178] whitespace-nowrap">{formatBytes(chip.size)}</span>
                                             ) : null}
                                         </div>
-                                        {!chip.isContext ? (
+                                        {chip.isContext ? (
+                                            <button
+                                                type="button"
+                                                onClick={() => setContextFileAttached((prev) => !prev)}
+                                                className={`p-0.5 rounded transition-colors ${
+                                                    contextFileAttached
+                                                        ? 'text-[#4aba9a] hover:text-[#6dd4b8]'
+                                                        : 'text-[#5a6178] hover:text-[#9ba2b8]'
+                                                }`}
+                                                title={contextFileAttached ? 'Detach from context' : 'Attach as context'}
+                                            >
+                                                {contextFileAttached
+                                                    ? <Link className="w-3 h-3" strokeWidth={1.5} />
+                                                    : <Unlink className="w-3 h-3" strokeWidth={1.5} />}
+                                            </button>
+                                        ) : (
                                             <button
                                                 onClick={() => removeAttachment(chip.id)}
                                                 className="p-0.5 text-[#5a6178] hover:text-[#9ba2b8]"
@@ -1060,7 +1286,7 @@ const AIChatWindow = ({
                                             >
                                                 <X className="w-2.5 h-2.5" strokeWidth={1.5} />
                                             </button>
-                                        ) : null}
+                                        )}
                                     </div>
                                 );
                             })}
@@ -1068,7 +1294,7 @@ const AIChatWindow = ({
                     );
                 })()}
                 <div className="flex gap-2">
-                    <div className="flex-1 flex flex-col gap-0 border border-[#2a2b38] rounded-lg bg-[#0c0d12] overflow-hidden focus-within:border-[#3a8574] focus-within:ring-2 focus-within:ring-[#3a8574]/30 transition-[border-color,box-shadow]">
+                    <div className="flex-1 flex flex-col gap-0 border border-[#1c1d26] rounded-xl bg-[#0c0d12] overflow-hidden focus-within:border-[#327464]/50 focus-within:ring-1 focus-within:ring-[#327464]/15 focus-within:shadow-[0_0_12px_rgba(50,116,100,0.08)] transition-all duration-200">
                         <textarea
                             value={inputValue}
                             onChange={(e) => {
@@ -1079,25 +1305,65 @@ const AIChatWindow = ({
                                 e.target.style.height = newHeight + 'px';
                             }}
                             onKeyPress={handleKeyPress}
-                            placeholder="Describe your task..."
+                            placeholder="Ask Synthi anything..."
                             disabled={isLoading || !clientReady}
-                            className="w-full min-h-[38px] max-h-[120px] resize-none overflow-y-auto placeholder:text-[#3d4256] min-w-0 border-none bg-transparent px-3 pt-2 pb-2 text-[13px] text-[#f4f5f8] outline-none disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-50"
+                            className="w-full min-h-[36px] max-h-[120px] resize-none overflow-y-auto placeholder:text-[#3d4256] min-w-0 border-none bg-transparent px-3 pt-2.5 pb-1.5 text-[12px] text-[#f0f2f5] outline-none disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-50"
                             rows={1}
-                            style={{ height: '38px', maxHeight: '120px' }}
+                            style={{ height: '36px', maxHeight: '120px' }}
                         />
-                        <div className="flex items-center px-2 pb-2 relative">
-                            <Button
-                                variant="ghost"
-                                size="sm"
-                                disabled
-                                className="text-xs px-2.5 py-1 h-6 rounded-md bg-transparent border-none text-[#6b7280] hover:text-[#9ba1ab] transition-colors"
-                                title="Agent selection (coming soon)"
-                            >
-                                <span className="flex items-center gap-1.5">
-                                    Agent
-                                    <ChevronDown className="w-3 h-3 transition-transform duration-200 animate-bounce-subtle" />
-                                </span>
-                            </Button>
+                            <div className="flex items-center px-2 pb-1.5 relative">
+                            <Popover open={agentMenuOpen} onOpenChange={setAgentMenuOpen}>
+                                <PopoverTrigger asChild>
+                                    <Button
+                                        variant="ghost"
+                                        size="sm"
+                                        className={`text-xs px-2.5 py-1 h-6 rounded-md bg-transparent border-none transition-colors ${agentMode === 'direct' ? 'text-[#6b7280] hover:text-[#9ba1ab]' : 'text-[#4aba9a] hover:text-[#6dd4b8]'}`}
+                                        title="Agent mode"
+                                    >
+                                        <span className="flex items-center gap-1.5">
+                                            {agentMode === 'direct' ? 'Agent' : agentMode === 'auto' ? 'Auto Agent' : agentMode === 'plan' ? 'Plan Agent' : 'Research'}
+                                            <ChevronDown className={`w-3 h-3 transition-transform duration-300 ${agentMenuOpen ? 'rotate-180' : 'rotate-0'}`} />
+                                        </span>
+                                    </Button>
+                                </PopoverTrigger>
+                                <PopoverContent
+                                    className="w-64 mr-6 bg-[#0e0f14] border border-[#1f1f26] p-2.5 space-y-1.5"
+                                    side="top"
+                                    align="start"
+                                >
+                                    <p className="text-[9px] text-[#6b7280] uppercase tracking-wider mb-1 px-1">Agent Mode</p>
+                                    {[
+                                        { key: 'direct', label: 'Direct', desc: 'Single LLM call, no agents' },
+                                        { key: 'auto', label: 'Auto Agent', desc: 'AI decides when to use sub-agents' },
+                                        { key: 'plan', label: 'Plan & Execute', desc: 'Plan changes, then execute step-by-step' },
+                                        { key: 'research', label: 'Research', desc: 'Multi-step search and file reading' },
+                                    ].map((mode) => (
+                                        <button
+                                            key={mode.key}
+                                            onClick={() => { setAgentMode(mode.key); setAgentMenuOpen(false); }}
+                                            className={`w-full text-left px-2 py-1.5 rounded text-xs transition-colors ${agentMode === mode.key ? 'bg-[#4aba9a]/10 text-[#4aba9a]' : 'text-[#c9cdd4] hover:bg-[#1a1c22]'}`}
+                                        >
+                                            <span className="font-medium">{mode.label}</span>
+                                            <span className="block text-[10px] text-[#5a6178] mt-0.5">{mode.desc}</span>
+                                        </button>
+                                    ))}
+                                    {activePipeline && activePipeline.status !== 'completed' && activePipeline.status !== 'failed' && (
+                                        <button
+                                            onClick={() => { cancelPipeline(); setAgentMenuOpen(false); }}
+                                            className="w-full text-left px-2 py-1.5 rounded text-xs text-red-400 hover:bg-[#1a1c22] transition-colors mt-1"
+                                        >
+                                            Cancel running pipeline
+                                        </button>
+                                    )}
+                                    {contextWindowInfo && (
+                                        <div className="border-t border-[#2a2d35] pt-2 mt-2">
+                                            <p className="text-[10px] text-[#6b7280]">
+                                                Context: {Math.round(contextWindowInfo.availableTokens / 1000)}K tokens available
+                                            </p>
+                                        </div>
+                                    )}
+                                </PopoverContent>
+                            </Popover>
                             <Popover open={modelMenuOpen} onOpenChange={setModelMenuOpen}>
                                 <PopoverTrigger asChild>
                                     <Button
@@ -1116,21 +1382,21 @@ const AIChatWindow = ({
                                     </Button>
                                 </PopoverTrigger>
                                 <PopoverContent
-                                    className="w-72 mr-6 bg-[#14161a] border-none p-3 space-y-3"
+                                    className="w-72 mr-6 bg-[#0e0f14] border border-[#1f1f26] p-2.5 space-y-2.5"
                                     side="top"
                                     align="start"
                                     sideOffset={10}
                                 >
-                                    <div className="text-xs text-[#6b7280] font-semibold uppercase tracking-wider">Model selection</div>
-                                    <div className="flex gap-2 text-xs text-[#e8eaed]">
+                                    <div className="text-[9px] text-[#6b7280] font-semibold uppercase tracking-wider px-1">Model selection</div>
+                                    <div className="flex gap-1.5 text-xs text-[#e8eaed]">
                                         <button
-                                            className={`flex-1 px-3 py-2 rounded-lg border transition-all ${modelChoice === 'gemini' ? 'border-[#8b5cf6] bg-[#8b5cf6]/10 text-[#a78bfa]' : 'border-[#252830] hover:border-[#3d4250] hover:bg-[#1a1d23]'}`}
+                                            className={`flex-1 px-3 py-1.5 rounded-lg border transition-all ${modelChoice === 'gemini' ? 'border-[#4aba9a]/40 bg-[#4aba9a]/8 text-[#4aba9a]' : 'border-[#1f1f26] hover:border-[#3d4250] hover:bg-[#1a1d23]'}`}
                                             onClick={() => setModelChoice('gemini')}
                                         >
                                             Gemini (default)
                                         </button>
                                         <button
-                                            className={`flex-1 px-3 py-2 rounded-lg border transition-all ${modelChoice === 'custom' ? 'border-[#8b5cf6] bg-[#8b5cf6]/10 text-[#a78bfa]' : 'border-[#252830] hover:border-[#3d4250] hover:bg-[#1a1d23]'}`}
+                                            className={`flex-1 px-3 py-1.5 rounded-lg border transition-all ${modelChoice === 'custom' ? 'border-[#4aba9a]/40 bg-[#4aba9a]/8 text-[#4aba9a]' : 'border-[#1f1f26] hover:border-[#3d4250] hover:bg-[#1a1d23]'}`}
                                             onClick={() => setModelChoice('custom')}
                                         >
                                             Custom
@@ -1144,7 +1410,7 @@ const AIChatWindow = ({
                                                     value={customModel}
                                                     onChange={(e) => setCustomModel(e.target.value)}
                                                     placeholder="e.g. gpt-4.1, gemini-1.5-pro"
-                                                    className="text-xs bg-[#0d0f12] border-[#252830] focus:border-[#8b5cf6]"
+                                                    className="text-xs bg-[#0a0b10] border-[#1f1f26] focus:border-[#4aba9a]/40"
                                                 />
                                             </div>
                                             <div>
@@ -1154,7 +1420,7 @@ const AIChatWindow = ({
                                                     value={customApiKey}
                                                     onChange={(e) => setCustomApiKey(e.target.value)}
                                                     placeholder="Enter custom API key"
-                                                    className="text-xs bg-[#0d0f12] border-[#252830] focus:border-[#8b5cf6]"
+                                                    className="text-xs bg-[#0a0b10] border-[#1f1f26] focus:border-[#4aba9a]/40"
                                                 />
                                             </div>
                                             <div className="text-[11px] text-[#6b7280] flex items-center gap-1.5">
@@ -1165,13 +1431,13 @@ const AIChatWindow = ({
                                     )}
                                 </PopoverContent>
                             </Popover>
-                            <div className='inline-block absolute right-2'>
+                            <div className='inline-flex items-center gap-0.5 absolute right-1.5'>
                                 {controller ? (
                                     <Button
                                         variant="ghost"
                                         size="sm"
                                         onClick={handleCancel}
-                                        className="text-xs h-6 px-2"
+                                        className="text-[10px] h-5 px-1.5 text-rose-400/70 hover:text-rose-400"
                                         title="Cancel generation"
                                     >
                                         Cancel
@@ -1181,17 +1447,17 @@ const AIChatWindow = ({
                                     variant="ghost"
                                     size="sm"
                                     onClick={() => fileInputRef.current?.click()}
-                                    className="text-xs h-6 px-2"
+                                    className="h-6 w-6 p-0 text-[#5a6178] hover:text-[#9ba2b8]"
                                     title="Attach files"
                                 >
-                                    <Paperclip className="w-3.5 h-3.5" strokeWidth={2} />
+                                    <Paperclip className="w-3 h-3" strokeWidth={2} />
                                 </Button>
                                 <Button
                                     onClick={handleSubmit}
                                     disabled={!inputValue.trim() || isLoading || !clientReady}
                                     title="Send message (Enter)"
                                     size="sm"
-                                    className="h-6 w-6 p-0 bg-transparent text-[#327464]"
+                                    className="h-6 w-6 p-0 bg-transparent text-[#4aba9a] hover:text-[#6dd4b8] disabled:text-[#2a3d35] disabled:opacity-50"
                                 >
                                     <Send className="w-3.5 h-3.5" strokeWidth={2} />
                                 </Button>

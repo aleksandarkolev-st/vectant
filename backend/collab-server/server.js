@@ -57,6 +57,8 @@ const fsPromises = fs.promises;
 const path = require('path');
 const crypto = require('crypto');
 const gcsSync = require('./gcsSync');
+const { createTerminalWSS, activeSessions: terminalSessions, broadcastToAll: terminalBroadcast } = require('./terminalService');
+const proxyService = require('./proxyService');
 const config = require('./config');
 const gitService = require('./gitService');
 const repoCache = require('./repoCache');
@@ -451,6 +453,17 @@ class ValidatingPersistence {
         entry.flushTimer = null;
         try {
           const content = targetText.toString();
+          const repoPath = path.join(__dirname, 'repos', slug);
+          const fullPath = path.join(repoPath, filePath);
+          
+          // Ensure directory exists
+          const dirPath = path.dirname(fullPath);
+          await fs.mkdir(dirPath, { recursive: true });
+          
+          // Write to disk
+          await fs.writeFile(fullPath, content, 'utf-8');
+          
+          // Update hash cache
           fileHashCache.set(docName, { hash: computeHash(content), timestamp: Date.now() });
         } catch (e) {
           console.error(`[Collab AutoFlush] Hash update failed for ${filePath}:`, e.message);
@@ -686,18 +699,19 @@ class ValidatingPersistence {
         await this.inner.clearDocument(docName);
       }
 
-      // Reset the canonical text type with actual file content
-      // Also clear any ghost content in legacy text type names
-      ydoc.transact(() => {
-        const canonical = ydoc.getText(YTEXT_TYPE);
-        canonical.delete(0, canonical.length);
-        canonical.insert(0, actualContent);
-        // Clear legacy text types to prevent ghost content from older sessions
-        for (const legacy of ['content', 'text', 'codemirror']) {
-          const lt = ydoc.getText(legacy);
-          if (lt.length > 0) lt.delete(0, lt.length);
+      // Reset Yjs document to actual file content
+      // Find the text type and replace its content
+      const textTypes = ['monaco', 'content', 'text', 'codemirror'];
+      for (const name of textTypes) {
+        const text = ydoc.getText(name);
+        if (text) {
+          ydoc.transact(() => {
+            text.delete(0, text.length);
+            text.insert(0, actualContent);
+          });
+          break;
         }
-      });
+      }
 
       // Update hash cache
       fileHashCache.set(docName, { hash: actualHash, timestamp: Date.now() });
@@ -755,6 +769,37 @@ class ValidatingPersistence {
     } else {
       fileHashCache.set(docName, { hash: actualHash, timestamp: Date.now() });
     }
+
+    // ── Post-reset duplicate guard ─────────────────────────────────────
+    // Because y-websocket fires bindState *without* awaiting it, a client
+    // may have already synced its own content into the Y.Doc while we were
+    // performing async I/O above.  If the Y.Doc content is now the file
+    // content repeated (CRDT merge of two independent inserts), fix it.
+    const postContent = getYDocContent(ydoc);
+    if (postContent.length > 0 && actualContent && actualContent.length > 0
+        && postContent.length > actualContent.length
+        && postContent !== actualContent) {
+      // Check if it's an exact N× repetition of the correct content
+      if (postContent.length % actualContent.length === 0) {
+        const repeats = postContent.length / actualContent.length;
+        if (repeats >= 2 && postContent === actualContent.repeat(repeats)) {
+          console.warn(`[Collab] CRDT duplicate detected after bindState for ${filePath} (${repeats}× repeat). Fixing...`);
+          const textTypes2 = ['monaco', 'content', 'text', 'codemirror'];
+          for (const name of textTypes2) {
+            const text = ydoc.getText(name);
+            if (text && text.length > 0) {
+              ydoc.transact(() => {
+                text.delete(0, text.length);
+                text.insert(0, actualContent);
+              }, 'bindState-dedup');
+              break;
+            }
+          }
+          fileHashCache.set(docName, { hash: actualHash, timestamp: Date.now() });
+        }
+      }
+    }
+    // ───────────────────────────────────────────────────────────────────
     
     // Set up auto-flush so all future Y.js changes are written to disk
     // This is critical for Container-First architecture
@@ -792,6 +837,17 @@ class ValidatingPersistence {
 
 // Wrap the base persistence with validation
 const persistence = new ValidatingPersistence(basePersistence);
+
+// CRITICAL: y-websocket uses a module-level persistence variable, NOT the
+// options passed to setupWSConnection. We must call setPersistence() so
+// that getYDoc() → bindState() → auto-flush actually fires.
+try {
+  const { setPersistence } = require('y-websocket/bin/utils');
+  setPersistence(persistence);
+  console.log('[Collab] Persistence registered via setPersistence()');
+} catch (e) {
+  console.warn('[Collab] Could not call setPersistence:', e.message);
+}
 
 const workspaceManager = require('./workspaceManager');
 
@@ -1128,7 +1184,22 @@ const server = http.createServer(async (req, res) => {
     res.end();
     return;
   }
-  
+
+  // ========================================================================
+  // REVERSE PROXY — /port/<N>/... → http://127.0.0.1:<N>/...
+  // Enables in-IDE preview of running dev servers (Next.js, Vite, etc.)
+  // ========================================================================
+  if (req.url.startsWith('/port/')) {
+    proxyService.proxyHttpRequest(req, res);
+    return;
+  }
+
+  // GET /ports — list active dev-server ports
+  if (req.url === '/ports' && req.method === 'GET') {
+    proxyService.handlePortsStatus(req, res);
+    return;
+  }
+
   // Debug endpoint to check collab server state
   if (req.url === '/debug/status' && req.method === 'GET') {
     const status = {
@@ -1242,6 +1313,369 @@ const server = http.createServer(async (req, res) => {
       res.writeHead(500, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Failed to read file', detail: e.message }));
     }
+    return;
+  }
+
+  // ========================================================================
+  // EXEC-TERMINAL ENDPOINT — Execute command in a real PTY terminal
+  // ========================================================================
+  // POST /exec-terminal/:slug  { command: string, timeout?: number }
+  // Creates a real PTY session, executes the command, captures output,
+  // and keeps the PTY alive so the frontend can connect and see it.
+  // Returns: { sessionId, command, output, exitCode, timedOut }
+  if (req.url.startsWith('/exec-terminal/') && req.method === 'POST') {
+    const urlObj = new URL(req.url, `http://${req.headers.host}`);
+    const slug = urlObj.pathname.split('/')[2];
+    if (!slug) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Missing workspace slug' }));
+      return;
+    }
+
+    let body = '';
+    for await (const chunk of req) body += chunk;
+    let parsed;
+    try { parsed = JSON.parse(body); } catch (_) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid JSON body' }));
+      return;
+    }
+
+    const command = (parsed.command || '').trim();
+    if (!command) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Missing command' }));
+      return;
+    }
+
+    const timeoutMs = Math.min(Number(parsed.timeout) || 30000, 60000);
+
+    try {
+      const { createHeadlessSession } = require('./terminalService');
+      const crypto = require('crypto');
+      const sessionId = `ai-${crypto.randomUUID().slice(0, 8)}`;
+
+      // Create a real PTY with a known session ID
+      const { ptyProcess, cwd } = createHeadlessSession(sessionId, slug);
+
+      console.log(`[ExecTerminal] slug=${slug} cwd=${cwd} sessionId=${sessionId} cmd=${command.slice(0, 120)}`);
+
+      // Collect output from the PTY
+      let output = '';
+      const MAX_OUT = 50000;
+      let commandDone = false;
+      let commandSent = false;
+
+      const outputCollector = (data) => {
+        if (output.length < MAX_OUT) output += data;
+      };
+      ptyProcess.onData(outputCollector);
+
+      // Write the command after the shell finishes its banner output.
+      // We detect the shell is ready by waiting for the first prompt.
+      // PowerShell prompt: "PS C:\...>" | Bash prompt: "$" or "#"
+      const isWin = require('os').platform() === 'win32';
+      const promptPattern = isWin ? /PS [^\r\n]*>/ : /[$#]\s*$/;
+      let promptCheckInterval;
+      let promptWaitTimeout;
+
+      function sendCommand() {
+        if (commandSent) return;
+        commandSent = true;
+        if (promptCheckInterval) clearInterval(promptCheckInterval);
+        if (promptWaitTimeout) clearTimeout(promptWaitTimeout);
+        ptyProcess.write(command + '\r');
+        // Start stability checking AFTER the command is sent + a grace period
+        // for the command to start producing output
+        setTimeout(startStabilityCheck, 1500);
+      }
+
+      // Check every 100ms if prompt appeared
+      promptCheckInterval = setInterval(() => {
+        if (promptPattern.test(output)) {
+          sendCommand();
+        }
+      }, 100);
+
+      // Fallback: if prompt never detected, send command anyway after 1s
+      promptWaitTimeout = setTimeout(() => {
+        if (!commandSent) {
+          console.log(`[ExecTerminal] Prompt not detected, sending command anyway`);
+          sendCommand();
+        }
+      }, 1000);
+
+      // Wait for the command to finish by detecting the shell prompt returning
+      // AFTER the command output. Also use a stability fallback.
+      function startStabilityCheck() {
+        let lastOutputLen = output.length;
+        let stableCount = 0;
+        const STABLE_THRESHOLD = 4; // 4 consecutive checks × 500ms = 2s of silence
+        const CHECK_INTERVAL = 500;
+        let promptSeenAfterCmd = false;
+
+        const checkDone = setInterval(() => {
+          // Primary: detect the shell prompt reappearing after command output
+          // This means the command finished and the shell is ready for input
+          if (commandSent && output.length > lastOutputLen) {
+            // Check if the LATEST output chunk contains the prompt
+            const recentOutput = output.slice(lastOutputLen);
+            if (promptPattern.test(recentOutput)) {
+              promptSeenAfterCmd = true;
+            }
+          }
+
+          if (output.length === lastOutputLen) {
+            stableCount++;
+          } else {
+            stableCount = 0;
+            lastOutputLen = output.length;
+          }
+
+          // Done when: prompt returned after command output + output stable for 500ms
+          // OR: output stable for 2s (fallback for commands that don't return to prompt)
+          if ((promptSeenAfterCmd && stableCount >= 1) || stableCount >= STABLE_THRESHOLD || commandDone) {
+            clearInterval(checkDone);
+            clearTimeout(hardTimeout);
+            respond();
+          }
+        }, CHECK_INTERVAL);
+      }
+
+      const hardTimeout = setTimeout(() => {
+        respond();
+      }, timeoutMs);
+
+      let responded = false;
+      function respond() {
+        if (responded) return;
+        responded = true;
+
+        // Extract the command output: find the echoed command and take everything after it
+        // up to (but not including) the next shell prompt
+        let cleanOutput = output;
+
+        // Try to extract just the command output (between echoed command and next prompt)
+        const cmdIndex = output.indexOf(command);
+        if (cmdIndex !== -1) {
+          // Start after the echoed command + newline
+          const afterCmd = output.slice(cmdIndex + command.length).replace(/^\r?\n/, '');
+          // Try to strip the trailing prompt
+          const promptMatch = afterCmd.match(isWin ? /\r?\nPS [^\r\n]*>\s*$/ : /\r?\n[^\r\n]*[$#]\s*$/);
+          cleanOutput = promptMatch
+            ? afterCmd.slice(0, promptMatch.index).trim()
+            : afterCmd.trim();
+        }
+
+        // Try to infer exit code from output (PTY doesn't expose it directly).
+        // Heuristic: check for common error patterns that indicate failure.
+        const looksLikeError = /\b(error|fatal|not recognized|cannot be loaded|is not a valid|denied|failed|abort)\b/i.test(cleanOutput)
+          && !/\b(0 error|no error|fixed|resolved|warning)\b/i.test(cleanOutput);
+        const inferredExitCode = looksLikeError ? 1 : 0;
+
+        console.log(`[ExecTerminal] Done: sessionId=${sessionId} output=${cleanOutput.length}B exitCode=${inferredExitCode}`);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          sessionId,
+          command,
+          output: cleanOutput || '(no output)',
+          exitCode: inferredExitCode,
+          timedOut: false,
+        }));
+      }
+
+      // If the PTY exits before timeout (e.g., single command), respond immediately
+      ptyProcess.onExit(({ exitCode }) => {
+        commandDone = true;
+      });
+
+    } catch (err) {
+      console.error('[ExecTerminal] Error:', err.message);
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: err.message }));
+    }
+
+    return;
+  }
+
+  // ========================================================================
+  // EXEC-PTY ENDPOINT — Execute command and mirror it to user's terminal
+  // ========================================================================
+  // POST /exec-pty/:slug  { command: string, timeout?: number }
+  // Uses child_process.spawn for reliable, clean stdout/stderr capture,
+  // AND writes the command + output to the user's live PTY so they see it.
+  if (req.url.startsWith('/exec-pty/') && req.method === 'POST') {
+    const urlObj = new URL(req.url, `http://${req.headers.host}`);
+    const slug = urlObj.pathname.split('/')[2];
+    if (!slug) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Missing workspace slug' }));
+      return;
+    }
+
+    let body = '';
+    for await (const chunk of req) body += chunk;
+    let parsed;
+    try { parsed = JSON.parse(body); } catch (_) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid JSON body' }));
+      return;
+    }
+
+    const command = (parsed.command || '').trim();
+    if (!command) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Missing command' }));
+      return;
+    }
+
+    const timeoutMs = Math.min(Number(parsed.timeout) || 30000, 60000);
+    const { resolveWorkspaceCwd } = require('./terminalService');
+    const cwd = resolveWorkspaceCwd(slug);
+
+    console.log(`[ExecPTY] slug=${slug} cwd=${cwd} cmd=${command.slice(0, 120)}`);
+
+    // Find active PTY session for this workspace to mirror output
+    let targetSession = null;
+    for (const [, session] of terminalSessions) {
+      if (session.cwd && session.cwd.endsWith(slug) && session.pty) {
+        targetSession = session;
+        break;
+      }
+    }
+
+    // Use child_process.spawn for clean, reliable stdout/stderr capture
+    const { spawn } = require('child_process');
+    const isWin = require('os').platform() === 'win32';
+    const shell = isWin ? 'powershell.exe' : '/bin/bash';
+    const shellArgs = isWin ? ['-NoProfile', '-Command', command] : ['-c', command];
+
+    const child = spawn(shell, shellArgs, {
+      cwd,
+      timeout: timeoutMs,
+      env: { ...process.env, TERM: 'dumb' },
+      windowsHide: true,
+    });
+
+    let stdout = '';
+    let stderr = '';
+    let timedOut = false;
+    const MAX_OUT = 50000;
+
+    child.stdout.on('data', (d) => { if (stdout.length < MAX_OUT) stdout += d.toString(); });
+    child.stderr.on('data', (d) => { if (stderr.length < MAX_OUT) stderr += d.toString(); });
+
+    const timer = setTimeout(() => {
+      timedOut = true;
+      try { child.kill('SIGTERM'); } catch (_) {}
+    }, timeoutMs);
+
+    child.on('close', (exitCode) => {
+      clearTimeout(timer);
+
+      const combinedOutput = stdout + (stderr ? `\n${stderr}` : '');
+
+      // NOTE: Do NOT write output to the PTY via pty.write() — that sends INPUT
+      // which PowerShell/bash interprets as commands, causing errors.
+      // The AI chat UI already displays the command output to the user.
+
+      console.log(`[ExecPTY] Done: exitCode=${exitCode} timedOut=${timedOut} stdout=${stdout.length}B`);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        command,
+        exitCode,
+        stdout,
+        stderr,
+        timedOut,
+        usedPty: Boolean(targetSession),
+      }));
+    });
+
+    child.on('error', (err) => {
+      clearTimeout(timer);
+      console.error('[ExecPTY] Spawn error:', err.message);
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: err.message }));
+    });
+
+    return;
+  }
+
+  // ========================================================================
+  // EXEC ENDPOINT — One-shot command execution for AI tool-calling pipeline
+  // ========================================================================
+  // POST /exec/:slug  { command: string, timeout?: number }
+  if (req.url.startsWith('/exec/') && req.method === 'POST') {
+    const urlObj = new URL(req.url, `http://${req.headers.host}`);
+    const slug = urlObj.pathname.split('/')[2];
+    if (!slug) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Missing workspace slug' }));
+      return;
+    }
+
+    // Read JSON body
+    let body = '';
+    for await (const chunk of req) body += chunk;
+    let parsed;
+    try { parsed = JSON.parse(body); } catch (_) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid JSON body' }));
+      return;
+    }
+
+    const command = (parsed.command || '').trim();
+    if (!command) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Missing command' }));
+      return;
+    }
+
+    const timeoutMs = Math.min(Number(parsed.timeout) || 30000, 60000);
+    const { resolveWorkspaceCwd } = require('./terminalService');
+    const cwd = resolveWorkspaceCwd(slug);
+
+    console.log(`[Exec] slug=${slug} cwd=${cwd} cmd=${command.slice(0, 120)}`);
+
+    const { spawn } = require('child_process');
+    const isWin = require('os').platform() === 'win32';
+    const shell = isWin ? 'powershell.exe' : '/bin/bash';
+    const shellArgs = isWin ? ['-NoProfile', '-Command', command] : ['-c', command];
+
+    const child = spawn(shell, shellArgs, {
+      cwd,
+      timeout: timeoutMs,
+      env: { ...process.env, TERM: 'dumb' },
+      windowsHide: true,
+    });
+
+    let stdout = '';
+    let stderr = '';
+    let timedOut = false;
+    const MAX_OUT = 50000;
+
+    child.stdout.on('data', (d) => { if (stdout.length < MAX_OUT) stdout += d.toString(); });
+    child.stderr.on('data', (d) => { if (stderr.length < MAX_OUT) stderr += d.toString(); });
+
+    const timer = setTimeout(() => {
+      timedOut = true;
+      try { child.kill('SIGTERM'); } catch (_) {}
+    }, timeoutMs);
+
+    child.on('close', (exitCode) => {
+      clearTimeout(timer);
+      console.log(`[Exec] Done: exitCode=${exitCode} timedOut=${timedOut} stdout=${stdout.length}B stderr=${stderr.length}B`);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ exitCode, stdout, stderr, timedOut }));
+    });
+
+    child.on('error', (err) => {
+      clearTimeout(timer);
+      console.error('[Exec] Spawn error:', err.message);
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: err.message }));
+    });
+
     return;
   }
 
@@ -2706,258 +3140,17 @@ wss.on('connection', (ws, req) => {
   });
 });
 
-// ── WebSocket heartbeat ──────────────────────────────────────────────────────
-// Ping every client every 30s. If a client doesn't respond with pong within
-// 10s, terminate the connection. This prevents stale/zombie connections that
-// accumulate behind proxies and load-balancers.
-const WS_PING_INTERVAL = 30_000;
-
-function startHeartbeat(wsServer, label) {
-  return setInterval(() => {
-    for (const ws of wsServer.clients) {
-      if (ws._isAlive === false) {
-        console.log(`[Heartbeat] Terminating unresponsive ${label} client`);
-        ws.terminate();
-        continue;
-      }
-      ws._isAlive = false;
-      ws.ping();
-    }
-  }, WS_PING_INTERVAL);
-}
-
-// Mark clients alive on connect and pong
-for (const wsServer of [wss, notifyWss, sessionWss]) {
-  wsServer.on('connection', (ws) => {
-    ws._isAlive = true;
-    ws.on('pong', () => { ws._isAlive = true; });
-  });
-}
-
-const hbYjs    = startHeartbeat(wss, 'Yjs');
-const hbNotify = startHeartbeat(notifyWss, 'Notify');
-const hbSession = startHeartbeat(sessionWss, 'Session');
-
-// Clean up heartbeat timers on server close
-server.on('close', () => { clearInterval(hbYjs); clearInterval(hbNotify); clearInterval(hbSession); });
-
 server.on('upgrade', (request, socket, head) => {
-  const pathname = request.url ? request.url.split('?')[0] : '';
+  const roomName = request.url ? request.url.slice(1).split('?')[0] : 'unknown';
+  console.log(`[Collab DEBUG] Upgrade request for room: ${roomName}`);
   
-  if (pathname === '/notifications') {
-    // Notification channel – lightweight JSON broadcasts
-    notifyWss.handleUpgrade(request, socket, head, (ws) => {
-      // Extract slug and userId from query string: /notifications?slug=<slug>&userId=<userId>
-      const params = new URLSearchParams((request.url || '').split('?')[1] || '');
-      ws._slug = params.get('slug') || '';
-      ws._userId = params.get('userId') || '';
-      ws._sessionId = params.get('sessionId') || '';
-      notifyWss.emit('connection', ws, request);
-      console.log(`[Collab] Notification client connected for slug: ${ws._slug}, user: ${ws._userId}`);
-      ws.on('close', () => {
-        console.log(`[Collab] Notification client disconnected for slug: ${ws._slug}, user: ${ws._userId}`);
-        // Unpin this user's repo so the LRU cache can evict it when idle.
-        // Only unpin if no other notification clients remain for the same
-        // (slug, userId) pair (e.g. multiple browser tabs).
-        if (ws._slug && ws._userId) {
-          const stillActive = [...notifyWss.clients].some(
-            c => c !== ws && c.readyState === WebSocket.OPEN && c._slug === ws._slug && c._userId === ws._userId
-          );
-          if (!stillActive) {
-            repoCache.unpin(ws._slug, ws._userId);
-          }
-        }
-      });
-    });
-  } else if (pathname === '/session-events') {
-    // Session collaboration channel — real-time events (knock, perms, kick)
-    sessionWss.handleUpgrade(request, socket, head, (ws) => {
-      const params = new URLSearchParams((request.url || '').split('?')[1] || '');
-      ws._sessionId = params.get('sessionId') || '';
-      ws._userId    = params.get('userId')    || '';
-      sessionWss.emit('connection', ws, request);
-
-      // Cancel any pending disconnect grace timer for this user
-      const pendingTimer = guestDisconnectTimers.get(ws._userId);
-      if (pendingTimer) {
-        clearTimeout(pendingTimer);
-        guestDisconnectTimers.delete(ws._userId);
-        console.log(`[Session] Reconnect detected — cancelled disconnect timer for user=${ws._userId}`);
-      }
-
-      // Register the host's socket in SessionManager so that resolveSocket
-      // and other lookups work for the session WS channel too.
-      if (ws._sessionId && ws._userId) {
-        const sessionInfo = sessionManager.getSession(ws._sessionId);
-        if (sessionInfo && sessionInfo.hostId === ws._userId) {
-          try { sessionManager.registerHostSocket(ws._sessionId, ws._userId); } catch (_) {}
-          console.log(`[Session] Host socket registered: user=${ws._userId} session=${ws._sessionId}`);
-        }
-      }
-
-      console.log(`[Session] Client connected: user=${ws._userId} session=${ws._sessionId}`);
-
-      // Handle incoming messages from session-events clients
-      ws.on('message', (data) => {
-        try {
-          const msg = JSON.parse(data.toString());
-          if (msg.type === 'identify') {
-            // Client sends identity on (re)connect — update socket mapping
-            const { userId, sessionId, role } = msg;
-            if (userId && sessionId) {
-              ws._userId = userId;
-              ws._sessionId = sessionId;
-              // Re-register guest socket in SessionManager
-              if (role === 'guest') {
-                try { sessionManager.updateGuestSocket(sessionId, userId, ws); } catch (_) {}
-              }
-              console.log(`[Session] Identify: user=${userId} session=${sessionId} role=${role}`);
-            }
-          } else if (msg.type === 'permission:request') {
-            // Guest is requesting a permission from the host
-            const { permKey, displayName } = msg;
-            const guestId = ws._userId;
-            const sessionId = ws._sessionId;
-            if (!sessionId || !guestId || !permKey) return;
-            // Validate the permission key is legitimate
-            const validKeys = ['canEdit', 'canTerminal', 'canGit', 'canFileOps'];
-            if (!validKeys.includes(permKey)) return;
-            console.log(`[Session] Permission request: guest=${guestId} perm=${permKey} session=${sessionId}`);
-            // Forward to the host
-            sendToSessionHost(sessionId, 'permission:requested', {
-              guestId,
-              displayName: displayName || 'Guest',
-              permKey,
-            });
-          } else if (msg.type === 'permission:request-deny') {
-            // Host denies a permission request — forward to the requesting guest
-            const { guestId, permKey } = msg;
-            const sessionId = ws._sessionId;
-            if (!sessionId || !guestId || !permKey) return;
-            console.log(`[Session] Permission request denied: guest=${guestId} perm=${permKey} session=${sessionId}`);
-            sendToSessionUser(sessionId, guestId, 'permission:request-denied', {
-              permKey,
-            });
-          }
-        } catch (_) {}
-      });
-
-      ws.on('close', () => {
-        const userId = ws._userId;
-        const sessionId = ws._sessionId;
-        console.log(`[Session] Client disconnected: user=${userId} session=${sessionId}`);
-
-        // Check if this user is an admitted guest — if so, use grace period
-        const isAdmittedGuest = sessionId && sessionManager.guestIndex?.get(userId) === sessionId;
-
-        // Also check if the user has a pending knock — they should get a
-        // grace period too so that transient WS disconnects (network blip,
-        // client reconnect) don't cancel the knock and trigger a loop.
-        let isPendingKnocker = false;
-        if (!isAdmittedGuest && sessionId) {
-          const session = sessionManager.sessions?.get(sessionId);
-          if (session && session.pendingKnocks?.has(userId)) {
-            isPendingKnocker = true;
-          }
-        }
-
-        if (isAdmittedGuest || isPendingKnocker) {
-          const label = isAdmittedGuest ? 'Guest' : 'Knocking guest';
-          console.log(`[Session] ${label} ${userId} WS closed — starting ${GUEST_DISCONNECT_GRACE_MS}ms grace period`);
-          const timer = setTimeout(() => {
-            guestDisconnectTimers.delete(userId);
-            // Check if guest reconnected (another WS for same user+session exists)
-            let reconnected = false;
-            for (const client of sessionWss.clients) {
-              if (client.readyState === WebSocket.OPEN && client._userId === userId && client._sessionId === sessionId) {
-                reconnected = true;
-                break;
-              }
-            }
-            if (!reconnected) {
-              console.log(`[Session] Grace period expired — removing ${label.toLowerCase()} ${userId} from session ${sessionId}`);
-              sessionManager.handleDisconnect(userId);
-            } else {
-              console.log(`[Session] Grace period expired but ${label.toLowerCase()} ${userId} has already reconnected`);
-            }
-          }, GUEST_DISCONNECT_GRACE_MS);
-          guestDisconnectTimers.set(userId, timer);
-        } else {
-          // Not an admitted guest or pending knocker — handle immediately
-          sessionManager.handleDisconnect(userId);
-        }
-      });
-    });
-  } else {
-    // Yjs sync protocol – per-document CRDT connections
-    const roomName = pathname.slice(1) || 'unknown';
-    console.log(`[Collab DEBUG] Upgrade request for room: ${roomName}`);
-    const parsed = parseDocName(roomName);
-    const access = validateDocAccess(parsed, getWsQueryParams(request.url || ''));
-    if (!access.ok) {
-      try {
-        socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n');
-      } catch (_) {}
-      try { socket.destroy(); } catch (_) {}
-      return;
-    }
-    wss.handleUpgrade(request, socket, head, (ws) => {
-      wss.emit('connection', ws, request);
-    });
-  }
+  // We accept all WebSocket connections at any path (room name encoded in path)
+  wss.handleUpgrade(request, socket, head, (ws) => {
+    wss.emit('connection', ws, request);
+  });
 });
 
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`Collaboration server (y-websocket) listening on port ${PORT}`);
   console.log(`[Collab DEBUG] Server started with persistence: ${LeveldbPersistence ? 'LevelDB' : 'In-Memory'}`);
-  console.log(`[Config] REPOS_DIR  = ${config.REPOS_DIR}`);
-  console.log(`[Config] LEVELDB   = ${config.LEVELDB_DIR}`);
-  console.log(`[Config] CODE_INTEL = ${config.CODE_INTEL_URL}`);
-  console.log(`[Config] GCS sync  = ${config.GCS_SYNC_ON_FLUSH ? 'ON' : 'OFF'}`);
-
-  // ── Forward SessionManager events to WebSocket clients ──
-  sessionManager.on('session:knock', ({ sessionId, hostId, guestId, displayName, avatarUrl }) => {
-    // CRITICAL: Send knock ONLY to the Host — never broadcast to guests.
-    // Broadcasting to all participants is the root cause of the
-    // "Self-Admit Handshake Failure" where the Guest sees the approval
-    // UI intended for the Host.
-    console.log(`[Session] Knock event: guest=${guestId} (${displayName}) → host-only delivery for session ${sessionId}`);
-    sendToSessionHost(sessionId, 'knock', { guestId, displayName, avatarUrl });
-  });
-  sessionManager.on('session:guestJoined', ({ sessionId, hostId, guest, autoAdmitted }) => {
-    const joinedSession = sessionManager.getSession(sessionId);
-    broadcastSessionEvent(sessionId, 'guest:joined', {
-      guest,
-      hostId: hostId || null,
-      hostName: joinedSession?.hostName || null,
-      slug: joinedSession?.slug || null,
-      autoAdmitted: !!autoAdmitted,
-    });
-  });
-  sessionManager.on('session:guestRemoved', ({ sessionId, guestId, reason }) => {
-    broadcastSessionEvent(sessionId, 'guest:removed', { guestId, reason });
-  });
-  sessionManager.on('session:permissionsUpdated', ({ sessionId, guestId, permissions }) => {
-    broadcastSessionEvent(sessionId, 'permissions:updated', { guestId, permissions });
-  });
-  sessionManager.on('session:terminated', ({ sessionId }) => {
-    broadcastSessionEvent(sessionId, 'session:terminated', {});
-  });
-  sessionManager.on('session:knockDenied', ({ sessionId, guestId }) => {
-    // Send denial only to the specific guest who was denied
-    sendToSessionUser(sessionId, guestId, 'knock:denied', { guestId });
-  });
-  sessionManager.on('session:knockCancelled', ({ sessionId, guestId }) => {
-    // Send cancellation only to the host so they can update their pending list
-    sendToSessionHost(sessionId, 'knock:cancelled', { guestId });
-  });
-  // Warn about legacy workspaces.json if it still exists on disk
-  const legacyWsFile = path.join(__dirname, 'workspaces.json');
-  if (fs.existsSync(legacyWsFile)) {
-    console.warn(
-      '[DEPRECATION] workspaces.json still exists on disk — it is no longer read.\n' +
-      '  Workspace metadata now lives in-memory via workspaceManager.js and the\n' +
-      '  Prisma DB in the main Synthi app. You can safely delete workspaces.json.'
-    );
-  }
 });

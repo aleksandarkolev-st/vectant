@@ -3,8 +3,11 @@ import { applyPatch } from 'diff';
 import { getFileLanguage, findFirstFile } from '@/utils/fileUtils';
 import { buildFilesPayload } from '@/utils/multiFileContext';
 import { api } from '@/services/api';
-import { computeDiffChunks, parseFileDiffBlocks, stripDiffMarkers } from '../utils/diffUtils';
+import { computeDiffChunks, parseFileDiffBlocks, stripDiffMarkers, validateFileDiffBlocks, applySearchReplace, applySearchReplacePartial, extractReplaceContent } from '../utils/diffUtils';
 import { selectFileThunk, setExternalFileContent, fetchFilesThunk } from '@/redux/workspaceSlice';
+import { setShowTerminal } from '@/redux/uiSlice';
+import { useContextWindow } from './useContextWindow';
+import { useAgentPipeline, PIPELINE_MODES } from './useAgentPipeline';
 
 // AI Engine base URL for intent classification
 const AI_ENGINE_BASE = process.env.NEXT_PUBLIC_AI_ENGINE_URL || 'http://localhost:8000';
@@ -18,6 +21,7 @@ const AI_ENGINE_BASE = process.env.NEXT_PUBLIC_AI_ENGINE_URL || 'http://localhos
  * @returns {Promise<{intent: string, needsCodeChanges: boolean, responseMode: string}>}
  */
 const classifyQueryIntent = async (query, context = null) => {
+    let result = null;
     try {
         const response = await fetch(`${AI_ENGINE_BASE}/classify/intent`, {
             method: 'POST',
@@ -28,7 +32,7 @@ const classifyQueryIntent = async (query, context = null) => {
         
         if (response.ok) {
             const data = await response.json();
-            return {
+            result = {
                 intent: data.intent || 'unknown',
                 needsCodeChanges: data.needs_code_changes !== false, // Default to true
                 responseMode: data.response_mode || 'patch',
@@ -38,8 +42,24 @@ const classifyQueryIntent = async (query, context = null) => {
         console.debug('Intent classification fallback to heuristics:', e.message);
     }
     
-    // Fallback to local heuristics if backend is unavailable
-    return fallbackIntentDetection(query);
+    if (!result) {
+        result = fallbackIntentDetection(query);
+    }
+
+    // SAFETY NET: If the backend/fallback classified as 'run' but the prompt clearly
+    // mentions creating/modifying files, override to 'change'. This prevents the AI
+    // from using echo/touch commands instead of proper FILE: blocks.
+    if (result.intent === 'run' || result.intent === 'navigate' || result.intent === 'explain') {
+        const lower = query.toLowerCase();
+        const FILE_CREATION_SIGNALS = /\b(create|make|build|generate|write|implement|add)\b.*\b(file|page|component|module|app|class|function|script|style|html|css|js|ts)\b/i;
+        const FILE_MODIFICATION_SIGNALS = /\b(fix|change|modify|update|edit|refactor|link|connect|integrate|add|remove|move|wrap|hook)\b.*\b(file|code|function|class|component|module|style|page|link|nav|menu|button|header|footer|sidebar)\b/i;
+        const CODE_ACTION_SIGNALS = /\b(link|connect|wire|integrate|attach|hook)\b.*\b(to|into|with|from)\b/i;
+        if (FILE_CREATION_SIGNALS.test(query) || FILE_MODIFICATION_SIGNALS.test(query) || CODE_ACTION_SIGNALS.test(query)) {
+            result = { intent: 'change', needsCodeChanges: true, responseMode: 'patch' };
+        }
+    }
+
+    return result;
 };
 
 // Fallback heuristic-based intent detection (used when backend is unavailable)
@@ -54,23 +74,53 @@ const fallbackIntentDetection = (prompt) => {
         'add', 'remove', 'delete', 'insert', 'create', 'implement', 'write',
         'generate', 'build', 'make', 'replace', 'bug', 'error', 'issue',
         'improve', 'optimize', 'new file', 'new class', 'new function',
+        'link', 'connect', 'wire', 'integrate', 'attach', 'hook up',
+        'move', 'copy', 'merge', 'split', 'wrap', 'style', 'theme',
+        'set up', 'setup', 'configure', 'scaffold', 'bootstrap',
     ];
     
     // Keywords that indicate explanation (NO code changes)
     const EXPLAIN_KEYWORDS = [
         'explain', 'describe', 'what does', 'what is', 'how does', 'how is',
-        'why does', 'why is', 'tell me about', 'understand', 'walk me through',
+        'why does', 'why is', 'tell me about', 'tell me what', 'understand', 'walk me through',
         'help me understand', 'clarify', 'overview', 'summary',
     ];
-    
-    // Check for explain keywords first
-    if (EXPLAIN_KEYWORDS.some(kw => lower.includes(kw))) {
-        return { intent: 'explain', needsCodeChanges: false, responseMode: 'explain' };
-    }
-    
-    // Check for change keywords
-    if (CHANGE_KEYWORDS.some(kw => lower.includes(kw))) {
+
+    // Keywords that indicate running/checking something (informational, may need tools but NOT code changes)
+    const RUN_KEYWORDS = [
+        'run ', 'execute ', 'check version', 'check if', 'what version',
+        'show me the output', 'what\'s installed', 'which version',
+        'npm ls', 'npm list', 'pip list', 'pip freeze',
+        'git status', 'git log', 'git diff', 'git branch', 'git remote',
+        'git commit', 'git push', 'git pull', 'git add', 'git stash',
+        'git checkout', 'git merge', 'git rebase', 'git reset', 'git clone',
+        'commit the', 'commit my', 'commit changes', 'commit to', 
+        'push the', 'push my', 'push changes', 'push to',
+        'pull the', 'pull my', 'pull changes', 'pull from',
+        'deploy', 'publish',
+        'check the', 'check my', 'show the status', 'show status',
+        'list files', 'list packages', 'list dependencies',
+        'stage the', 'stage my', 'stage all', 'stage changes',
+    ];
+
+    const hasChange = CHANGE_KEYWORDS.some(kw => lower.includes(kw));
+    const hasRun = RUN_KEYWORDS.some(kw => lower.includes(kw));
+    const hasExplain = EXPLAIN_KEYWORDS.some(kw => lower.includes(kw));
+
+    // PRIORITY: If the prompt mentions BOTH creating/modifying code AND running commands,
+    // the intent is 'change' (code changes are primary, commands are secondary).
+    // Only classify as 'run' if there are NO code-change keywords.
+    if (hasChange && hasRun) {
         return { intent: 'change', needsCodeChanges: true, responseMode: 'patch' };
+    }
+    if (hasChange) {
+        return { intent: 'change', needsCodeChanges: true, responseMode: 'patch' };
+    }
+    if (hasRun) {
+        return { intent: 'run', needsCodeChanges: false, responseMode: 'explain' };
+    }
+    if (hasExplain) {
+        return { intent: 'explain', needsCodeChanges: false, responseMode: 'explain' };
     }
     
     // Questions are typically explanation requests
@@ -131,6 +181,16 @@ export const useAISuggestions = ({
     const currentCodeRef = useRef(currentCode);
     const fallbackPathRef = useRef(activeFile?.path || activeFile?.name || null);
     const activeFileRef = useRef(activeFile);
+    const chatSessionsRef = useRef(chatSessions);
+
+    // ── Context Window ──────────────────────────────────────────────
+    const {
+        buildContextWindow,
+        formatForAPI,
+        getContextDebugInfo,
+        estimateTokens,
+        availableTokens,
+    } = useContextWindow({ model: aiModel });
 
     // Keep the latest onSuggest callback reference in sync.
     useEffect(() => {
@@ -145,6 +205,10 @@ export const useAISuggestions = ({
     useEffect(() => {
         activeFileRef.current = activeFile;
     }, [activeFile]);
+
+    useEffect(() => {
+        chatSessionsRef.current = chatSessions;
+    }, [chatSessions]);
 
     // Flatten workspace file tree into a simple list of paths for quick lookups.
     const flattenWorkspaceFiles = useMemo(() => {
@@ -182,6 +246,17 @@ export const useAISuggestions = ({
         return walk(rawFiles);
     }, [rawFiles]);
 
+    // Derive the top-level project directory from the active file path.
+    // For multi-project workspaces (e.g. "educational-platform/src/App.jsx"),
+    // this returns "educational-platform". Returns '' for root-level files.
+    const getActiveProjectRoot = useCallback(() => {
+        const activePath = activeFile?.path || activeFile?.name || '';
+        const normalized = String(activePath).replace(/\\/g, '/');
+        const firstSlash = normalized.indexOf('/');
+        if (firstSlash <= 0) return '';
+        return normalized.slice(0, firstSlash);
+    }, [activeFile?.path, activeFile?.name]);
+
     // Normalize and resolve a possibly partial path to a known workspace path.
     const resolveWorkspacePath = useCallback((inputPath) => {
         if (!inputPath) return null;
@@ -197,12 +272,352 @@ export const useAISuggestions = ({
             const matches = flattenWorkspaceFiles.filter((p) => p.endsWith(normalized));
             if (matches.length === 1) return matches[0];
             if (matches.length > 1) {
+                // Prefer files in the same project as the active file.
+                const projectRoot = getActiveProjectRoot();
+                if (projectRoot) {
+                    const sameProject = matches.filter((p) => p.startsWith(`${projectRoot}/`));
+                    if (sameProject.length === 1) return sameProject[0];
+                    if (sameProject.length > 1) {
+                        return sameProject.reduce((shortest, current) =>
+                            current.length < shortest.length ? current : shortest,
+                        sameProject[0]);
+                    }
+                }
                 return matches.reduce((shortest, current) =>
                     current.length < shortest.length ? current : shortest,
                 matches[0]);
             }
         }
         return null;
+    }, [flattenWorkspaceFiles, getActiveProjectRoot]);
+
+    const normalizePathParts = (parts = []) => {
+        const output = [];
+        parts.forEach((part) => {
+            if (!part || part === '.') return;
+            if (part === '..') {
+                output.pop();
+                return;
+            }
+            output.push(part);
+        });
+        return output;
+    };
+
+    const resolveRelativePath = (basePath = '', relativePath = '') => {
+        if (!relativePath) return null;
+        const rel = relativePath.replace(/^\.\/+/, '').trim();
+        if (!rel) return null;
+        if (rel.startsWith('/') || rel.startsWith('\\')) {
+            return rel.replace(/^\/+/, '').replace(/\\/g, '/');
+        }
+        const baseParts = String(basePath || '').replace(/\\/g, '/').split('/');
+        baseParts.pop();
+        const relParts = rel.replace(/\\/g, '/').split('/');
+        const combined = normalizePathParts([...baseParts, ...relParts]);
+        return combined.join('/');
+    };
+
+    const extractReferencedPaths = useCallback((activePath, content = '') => {
+        if (!activePath || !content) return [];
+        const found = new Set();
+        const addPath = (value) => {
+            if (!value) return;
+            const cleaned = value.split('#')[0].split('?')[0].trim();
+            if (!cleaned || /^https?:/i.test(cleaned) || cleaned.startsWith('data:')) return;
+            const resolved = resolveRelativePath(activePath, cleaned);
+            const workspacePath = resolveWorkspacePath(resolved) || resolveWorkspacePath(cleaned);
+            if (workspacePath) found.add(workspacePath);
+        };
+
+        const htmlRefs = [
+            /<script[^>]*\s+src=["']([^"']+)["']/gi,
+            /<link[^>]*\s+href=["']([^"']+)["']/gi,
+            /<img[^>]*\s+src=["']([^"']+)["']/gi,
+            /<source[^>]*\s+src=["']([^"']+)["']/gi,
+        ];
+        htmlRefs.forEach((re) => {
+            let m;
+            while ((m = re.exec(content))) addPath(m[1]);
+        });
+
+        const jsRefs = [
+            /import\s+[^\n]*?from\s+["']([^"']+)["']/gi,
+            /require\(\s*["']([^"']+)["']\s*\)/gi,
+        ];
+        jsRefs.forEach((re) => {
+            let m;
+            while ((m = re.exec(content))) addPath(m[1]);
+        });
+
+        const cssRefs = [
+            /@import\s+["']([^"']+)["']/gi,
+            /url\(\s*["']?([^"')]+)["']?\s*\)/gi,
+        ];
+        cssRefs.forEach((re) => {
+            let m;
+            while ((m = re.exec(content))) addPath(m[1]);
+        });
+
+        return Array.from(found).slice(0, 4);
+    }, [resolveWorkspacePath]);
+
+    // Extract file paths explicitly or implicitly mentioned in the user's chat prompt.
+    // This ensures files the user talks about get fetched even if they aren't open in tabs.
+    const extractPromptMentionedPaths = useCallback((prompt, activePath) => {
+        if (!prompt) return [];
+        const found = new Set();
+
+        // 1) Explicit file paths: match patterns like path/to/file.js, file.html, etc.
+        const FILE_PATH_RE = /\b([\w\-.\/]+\.(?:js|jsx|ts|tsx|html|htm|css|scss|sass|json|py|java|c|cpp|h|rs|go|rb|php|vue|svelte|md|txt|yaml|yml|toml|xml|sql|sh|bat|ps1|mjs|cjs))\b/gi;
+        let m;
+        while ((m = FILE_PATH_RE.exec(prompt))) {
+            const raw = m[1];
+            // Skip common false positives like version numbers (1.0.js won't happen, but e.g. "v2.js" is fine)
+            if (/^\d+\.\d+$/.test(raw)) continue;
+            const resolved = resolveWorkspacePath(raw);
+            if (resolved) {
+                found.add(resolved);
+            } else {
+                // Try resolving relative to active file's directory
+                const relResolved = resolveRelativePath(activePath, raw);
+                const wsResolved = resolveWorkspacePath(relResolved);
+                if (wsResolved) found.add(wsResolved);
+            }
+        }
+
+        // 2) Implicit references: "the main page", "homepage", "landing page", etc.
+        //    Try to find common entry-point files in the workspace.
+        const IMPLICIT_MAIN_RE = /\b(main\s*page|home\s*page|landing\s*page|index\s*page|front\s*page|main\s*file|entry\s*point|the\s*page|the\s*app|the\s*site)\b/i;
+        if (IMPLICIT_MAIN_RE.test(prompt)) {
+            const ENTRY_CANDIDATES = [
+                'index.html', 'index.htm', 'main.js', 'app.js', 'script.js',
+                'index.js', 'main.ts', 'app.ts', 'index.tsx', 'index.jsx',
+                'style.css', 'styles.css', 'main.css',
+            ];
+            // Check in the active file's directory first, then project root
+            const activeDir = activePath ? activePath.replace(/\\/g, '/').split('/').slice(0, -1).join('/') : '';
+            for (const candidate of ENTRY_CANDIDATES) {
+                const inDir = activeDir ? `${activeDir}/${candidate}` : candidate;
+                const resolved = resolveWorkspacePath(inDir) || resolveWorkspacePath(candidate);
+                if (resolved) found.add(resolved);
+            }
+            // Scope to active project instead of searching the entire workspace
+            const projectRoot = getActiveProjectRoot();
+            const scopedFiles = projectRoot
+                ? flattenWorkspaceFiles.filter((p) => p.startsWith(`${projectRoot}/`))
+                : flattenWorkspaceFiles;
+            for (const wsPath of scopedFiles) {
+                const basename = wsPath.split('/').pop() || '';
+                if (ENTRY_CANDIDATES.includes(basename.toLowerCase())) {
+                    found.add(wsPath);
+                }
+            }
+        }
+
+        // 3) If the prompt mentions a directory name, include files from that directory
+        const DIR_RE = /\b([\w\-]+)\/(\w+)/g;
+        while ((m = DIR_RE.exec(prompt))) {
+            const dirHint = m[0]; // e.g. "my-simple-app/main"
+            for (const wsPath of flattenWorkspaceFiles) {
+                if (wsPath.includes(dirHint)) {
+                    found.add(wsPath);
+                }
+            }
+        }
+
+        // Remove active file from results (it's already included separately)
+        if (activePath) found.delete(activePath);
+        return Array.from(found).slice(0, 8);
+    }, [flattenWorkspaceFiles, resolveWorkspacePath, getActiveProjectRoot]);
+
+    const inferSiblingPaths = useCallback((activePath) => {
+        if (!activePath) return [];
+        const normalized = String(activePath).replace(/\\/g, '/');
+        const parts = normalized.split('/');
+        const fileName = parts.pop() || '';
+        const folder = parts.join('/');
+        const ext = fileName.includes('.') ? fileName.split('.').pop().toLowerCase() : '';
+        const folderPrefix = folder ? `${folder}/` : '';
+
+        const htmlExts = new Set(['html', 'htm']);
+        const jsExts = new Set(['js', 'jsx', 'ts', 'tsx', 'mjs']);
+        const cssExts = new Set(['css', 'scss', 'sass']);
+
+        let targetExts = [];
+        if (htmlExts.has(ext)) {
+            targetExts = ['js', 'jsx', 'ts', 'tsx', 'mjs', 'css', 'scss', 'sass'];
+        } else if (jsExts.has(ext)) {
+            targetExts = ['html', 'htm', 'css', 'scss', 'sass'];
+        } else if (cssExts.has(ext)) {
+            targetExts = ['html', 'htm', 'js', 'jsx', 'ts', 'tsx', 'mjs'];
+        } else {
+            return [];
+        }
+
+        const siblings = flattenWorkspaceFiles
+            .filter((path) => path.startsWith(folderPrefix) && path !== normalized)
+            .filter((path) => {
+                const siblingExt = path.includes('.') ? path.split('.').pop().toLowerCase() : '';
+                return targetExts.includes(siblingExt);
+            })
+            .slice(0, 3);
+
+        return siblings;
+    }, [flattenWorkspaceFiles]);
+
+    const extractAgentDiscoveredPaths = useCallback((results = []) => {
+        if (!Array.isArray(results) || results.length === 0) return [];
+        const found = new Set();
+
+        const addPath = (rawPath) => {
+            if (!rawPath || typeof rawPath !== 'string') return;
+            const cleaned = rawPath
+                .trim()
+                .replace(/[)>,;:]+$/, '')
+                .replace(/^['"`]+|['"`]+$/g, '');
+            if (!cleaned) return;
+            const resolved = resolveWorkspacePath(cleaned) || (flattenWorkspaceFiles.includes(cleaned) ? cleaned : null);
+            if (resolved) found.add(resolved);
+        };
+
+        for (const step of results) {
+            if (!step || step.status !== 'completed') continue;
+
+            if (Array.isArray(step.toolCalls)) {
+                for (const call of step.toolCalls) {
+                    addPath(call?.args?.path);
+                    addPath(call?.args?.file);
+                    addPath(call?.args?.filePath);
+                }
+            }
+
+            const output = typeof step.output === 'string' ? step.output : '';
+            if (!output) continue;
+
+            const fileHeaderRe = /^FILE:\s+([^\n(]+).*$/gim;
+            let match;
+            while ((match = fileHeaderRe.exec(output))) {
+                addPath(match[1]);
+            }
+
+            const inlinePathRe = /\b([\w./-]+\.[a-zA-Z0-9]{1,8})\b/g;
+            while ((match = inlinePathRe.exec(output))) {
+                addPath(match[1]);
+            }
+        }
+
+        return Array.from(found).slice(0, 12);
+    }, [flattenWorkspaceFiles, resolveWorkspacePath]);
+
+    // Filenames that should never be included as AI context (token waste).
+    const CONTEXT_EXCLUDED_FILENAMES = useMemo(() => new Set([
+        'package-lock.json', 'yarn.lock', 'pnpm-lock.yaml', 'composer.lock',
+        'Gemfile.lock', 'Cargo.lock', 'poetry.lock', '.DS_Store', 'thumbs.db',
+    ]), []);
+
+    const isContextExcluded = useCallback((path) => {
+        if (!path) return false;
+        const basename = path.split('/').pop() || '';
+        return CONTEXT_EXCLUDED_FILENAMES.has(basename);
+    }, [CONTEXT_EXCLUDED_FILENAMES]);
+
+    const discoverPromptRelevantPaths = useCallback(async (prompt, limit = 10) => {
+        const discovered = new Set();
+        const projectRoot = getActiveProjectRoot();
+
+        const words = String(prompt || '')
+            .toLowerCase()
+            .match(/[a-zA-Z_][a-zA-Z0-9_-]{2,}/g) || [];
+        const stop = new Set(['the', 'and', 'for', 'with', 'from', 'that', 'this', 'then', 'into', 'onto', 'about', 'please', 'update', 'change', 'modify', 'create', 'file', 'files', 'page', 'pages', 'component', 'components', 'code', 'project', 'new', 'add', 'make', 'build', 'also', 'should', 'more', 'look', 'like', 'want', 'need', 'least', 'semi', 'complex', 'greatly', 'functionalities', 'functionality']);
+        const terms = Array.from(new Set(words.filter((w) => !stop.has(w)))).slice(0, 6);
+
+        // Candidate files — prefer same project, exclude lock files etc.
+        const candidateFiles = Array.isArray(flattenWorkspaceFiles) ? flattenWorkspaceFiles.filter((p) => !isContextExcluded(p)) : [];
+
+        if (terms.length > 0 && candidateFiles.length > 0) {
+            const allMatches = candidateFiles.filter((path) => terms.some((term) => path.toLowerCase().includes(term)));
+            // Sort: same-project files first, then by path length (shorter = more relevant)
+            if (projectRoot) {
+                allMatches.sort((a, b) => {
+                    const aInProject = a.startsWith(`${projectRoot}/`) ? 0 : 1;
+                    const bInProject = b.startsWith(`${projectRoot}/`) ? 0 : 1;
+                    if (aInProject !== bInProject) return aInProject - bInProject;
+                    return a.length - b.length;
+                });
+            }
+            allMatches.slice(0, limit).forEach((p) => discovered.add(p));
+        }
+
+        if (workspaceSlug) {
+            try {
+                const query = terms.length ? terms.join(' ') : String(prompt || '').slice(0, 80);
+                const resp = await api.searchIndex(workspaceSlug, query);
+                const results = Array.isArray(resp?.results) ? resp.results : [];
+                for (const r of results.slice(0, limit)) {
+                    const path = r?.file?.path;
+                    if (typeof path === 'string' && path && !isContextExcluded(path)) discovered.add(path);
+                }
+            } catch (_) {
+                // best-effort only
+            }
+        }
+
+        // Fallback for broad prompts when keyword/index lookup is sparse.
+        // Seed with common entry/style files so code-change prompts don't run with empty context.
+        if (discovered.size < 3 && candidateFiles.length > 0) {
+            const COMMON = [
+                '/src/app/page.', '/src/app/layout.', '/src/app/globals.css',
+                '/index.html', '/src/index.', '/src/main.', '/src/App.',
+                '/app/page.', '/app/layout.', '/app/globals.css',
+            ];
+            // Scope fallback seeds to the active project when possible
+            const scopedFiles = projectRoot
+                ? candidateFiles.filter((p) => p.startsWith(`${projectRoot}/`))
+                : candidateFiles;
+            const pool = scopedFiles.length > 0 ? scopedFiles : candidateFiles;
+            const seeded = pool
+                .filter((path) => COMMON.some((needle) => path.includes(needle)))
+                .slice(0, limit);
+            seeded.forEach((p) => discovered.add(p));
+        }
+
+        return Array.from(discovered).slice(0, limit);
+    }, [flattenWorkspaceFiles, workspaceSlug, getActiveProjectRoot, isContextExcluded]);
+
+    const inferDesignCompanionPaths = useCallback((activePath, prompt = '', limit = 8) => {
+        if (!Array.isArray(flattenWorkspaceFiles) || flattenWorkspaceFiles.length === 0) return [];
+        const promptLower = String(prompt || '').toLowerCase();
+        const isDesignTask = /\b(ui|ux|design|style|styled|theme|look|visual|vintage|modern|layout|typography|palette|color|css)\b/i.test(promptLower);
+        if (!isDesignTask) return [];
+
+        // Scope to the same project root when possible (e.g. educational-platform/...)
+        const normalizedActive = String(activePath || '').replace(/\\/g, '/');
+        const projectRoot = normalizedActive.includes('/') ? normalizedActive.split('/')[0] : '';
+        const inScope = flattenWorkspaceFiles.filter((p) => {
+            if (!projectRoot) return true;
+            return p === projectRoot || p.startsWith(`${projectRoot}/`);
+        });
+
+        const score = (path) => {
+            const lower = path.toLowerCase();
+            let s = 0;
+            if (/globals\.(css|scss|sass)$/.test(lower)) s += 10;
+            if (/layout\.(jsx|tsx|js|ts)$/.test(lower)) s += 9;
+            if (/page\.(jsx|tsx|js|ts|html|htm)$/.test(lower)) s += 8;
+            if (/(^|\/)app\.(jsx|tsx|js|ts|css|scss|sass)$/.test(lower)) s += 7;
+            if (/(^|\/)(styles?|theme)\.(css|scss|sass|js|ts)$/.test(lower)) s += 7;
+            if (/(^|\/)(tailwind\.config|postcss\.config)\./.test(lower)) s += 5;
+            if (/(^|\/)(components?|src\/app)\//.test(lower)) s += 2;
+            return s;
+        };
+
+        return inScope
+            .map((p) => ({ path: p, score: score(p) }))
+            .filter((x) => x.score > 0)
+            .sort((a, b) => b.score - a.score)
+            .slice(0, limit)
+            .map((x) => x.path);
     }, [flattenWorkspaceFiles]);
 
     // Clear inline suggestion previews when a clear signal is triggered.
@@ -223,6 +638,7 @@ export const useAISuggestions = ({
     }, [activeSession, clearSignal, mutateSession]);
 
     // Load the current content for a path from editor cache or remote storage.
+    // Tries multiple resolution strategies: exact match → workspace tree → suffix match → raw fetch.
     const getBaseContentForPath = useCallback(async (targetPath) => {
         if (!targetPath) return null;
         const resolvedPath = resolveWorkspacePath(targetPath) || targetPath;
@@ -235,19 +651,90 @@ export const useAISuggestions = ({
         if (cachedFileMap.has(resolvedPath)) {
             return cachedFileMap.get(resolvedPath);
         }
+        // Also check the cache with the original targetPath (before resolution)
+        if (targetPath !== resolvedPath && cachedFileMap.has(targetPath)) {
+            return cachedFileMap.get(targetPath);
+        }
         if (workspaceSlug) {
+            // Try fetching with the resolved path first
             try {
-                return await api.fetchFileContent(workspaceSlug, resolvedPath);
+                const content = await api.fetchFileContent(workspaceSlug, resolvedPath);
+                if (typeof content === 'string') return content;
             } catch (err) {
                 const isNotFound = typeof err?.description === 'string' && err.description.includes('Status: 404');
                 if (!isNotFound) {
                     console.error('Failed to load file content for AI suggestion', err);
                 }
-                return null;
+            }
+            // If resolved path failed and differs from input, try the raw input path
+            if (resolvedPath !== targetPath) {
+                try {
+                    const content = await api.fetchFileContent(workspaceSlug, targetPath);
+                    if (typeof content === 'string') return content;
+                } catch (_) {}
+            }
+            // Fuzzy fallback: find workspace files ending with the target path
+            const normalized = targetPath.replace(/\\/g, '/').replace(/^\.\//,'');
+            const suffixMatches = flattenWorkspaceFiles.filter(p => p.endsWith(normalized) || p.endsWith('/' + normalized));
+            for (const candidate of suffixMatches.slice(0, 3)) {
+                try {
+                    const content = await api.fetchFileContent(workspaceSlug, candidate);
+                    if (typeof content === 'string') return content;
+                } catch (_) {}
             }
         }
         return null;
-    }, [activeFile?.path, cachedFileMap, currentCode, editor, resolveWorkspacePath, workspaceSlug]);
+    }, [activeFile?.path, cachedFileMap, currentCode, editor, flattenWorkspaceFiles, resolveWorkspacePath, workspaceSlug]);
+
+    // ── Agent Pipeline ──────────────────────────────────────────────
+    const {
+        activePipeline,
+        pipelineHistory,
+        currentMode: agentMode,
+        runPipeline,
+        cancelPipeline,
+        setCurrentMode: setAgentMode,
+        shouldUseAgents,
+        PIPELINE_MODES: MODES,
+    } = useAgentPipeline({
+        workspaceSlug,
+        activeFile,
+        currentCode,
+        getBaseContentForPath,
+        flattenWorkspaceFiles,
+        resolveWorkspacePath,
+        onProgress: null, // wired per-request in handleSendMessage
+    });
+
+    // Detect natural language prose explanations that should NOT be treated as code.
+    const looksLikeProseExplanation = useCallback((text = '') => {
+        if (!text || text.length < 80) return false;
+        const trimmed = text.trim();
+        // Count sentence-ending punctuation (period/exclamation/question followed by space, newline, or end)
+        const sentences = (trimmed.match(/[.!?](?:\s|$)/g) || []).length;
+        // Count code-like tokens (braces, semicolons, assignment ops, etc.)
+        const codeTokens = (trimmed.match(/[{}();=<>[\]]/g) || []).length;
+        const codeRatio = codeTokens / trimmed.length;
+        // Strong prose indicators: starts with typical explanation phrases
+        const startsWithProse = /^(The |No |I |This |It |There |These |That |All |However |Note |In |Based |After |Upon |Looking |I've |I\'ve |Your |We )/.test(trimmed);
+        // If it starts with prose language AND has multiple sentences AND very few code tokens, it's prose
+        if (startsWithProse && sentences >= 2 && codeRatio < 0.03) return true;
+        // Many sentences with almost no code tokens
+        if (sentences >= 4 && codeRatio < 0.015) return true;
+        // Check for common explanation phrases deep in the text
+        const explanationPhrases = [
+            'appears to be functional', 'appears to be correct', 'no bugs are apparent',
+            'no issues found', 'no issues were found', 'could not find any bugs',
+            'couldn\'t find any bugs', 'the code is correct', 'working as expected',
+            'functions correctly', 'works as intended', 'no changes are needed',
+            'no changes needed', 'therefore, no bugs', 'no bugs found',
+            'would not prevent', 'correctly sets up', 'are present in the',
+        ];
+        const lowerTrimmed = trimmed.toLowerCase();
+        const hasExplanationPhrase = explanationPhrases.some(p => lowerTrimmed.includes(p));
+        if (hasExplanationPhrase && sentences >= 2) return true;
+        return false;
+    }, []);
 
     // Convert AI diff/plaintext responses into structured multi-file suggestions.
     const buildMultiFileSuggestions = useCallback(async (rawText) => {
@@ -257,7 +744,28 @@ export const useAISuggestions = ({
         const hydrated = [];
         const isNoChangeText = (contentText = '') => {
             const firstLine = (contentText || '').split('\n')[0].trim().toUpperCase();
-            return firstLine.startsWith('NO_CHANGES') || firstLine.startsWith('NO CHANGES') || firstLine.startsWith('NO CHANGE');
+            const fullUpper = (contentText || '').toUpperCase();
+            return (
+                firstLine.startsWith('NO_CHANGES') || firstLine.startsWith('NO CHANGES') || firstLine.startsWith('NO CHANGE')
+                || fullUpper.includes('NO BUGS ARE APPARENT')
+                || fullUpper.includes('NO BUGS FOUND')
+                || fullUpper.includes('NO ISSUES FOUND')
+                || fullUpper.includes('NO ISSUES WERE FOUND')
+                || fullUpper.includes('APPEARS TO BE FUNCTIONAL')
+                || fullUpper.includes('APPEARS TO BE CORRECT')
+                || fullUpper.includes('CODE LOOKS CORRECT')
+                || fullUpper.includes('CODE IS CORRECT')
+                || fullUpper.includes('NO CHANGES ARE NEEDED')
+                || fullUpper.includes('NO CHANGES NEEDED')
+                || fullUpper.includes('NO FIX NEEDED')
+                || fullUpper.includes('NO FIX IS NEEDED')
+                || fullUpper.includes('COULDN\'T FIND ANY BUGS')
+                || fullUpper.includes('COULD NOT FIND ANY BUGS')
+                || fullUpper.includes('WOULD NOT PREVENT')
+                || fullUpper.includes('WORKING AS EXPECTED')
+                || fullUpper.includes('WORKS AS INTENDED')
+                || fullUpper.includes('FUNCTIONS CORRECTLY')
+            );
         };
         const isDeleteInstruction = (contentText = '') => {
             const norm = (contentText || '').trim().toUpperCase();
@@ -266,13 +774,26 @@ export const useAISuggestions = ({
         const isFolderPath = (p = '') => p.endsWith('/') || p.toLowerCase().includes('[folder]');
 
         for (const block of blocks) {
-            const resolvedPath = resolveWorkspacePath(block.path) || block.path;
+            const hasFolderHint = typeof block.path === 'string' && block.path.includes('/');
+            const activeBasePath = activeFileRef.current?.path || activeFileRef.current?.name || '';
+            const relativeCandidate = !hasFolderHint
+                ? resolveRelativePath(activeBasePath, block.path)
+                : null;
+            const resolvedPath = resolveWorkspacePath(relativeCandidate)
+                || resolveWorkspacePath(block.path)
+                || relativeCandidate
+                || block.path;
             const folderFlag = isFolderPath(block.path);
-            const baseContent = folderFlag ? '' : await getBaseContentForPath(resolvedPath);
+            let baseContent = folderFlag ? '' : await getBaseContentForPath(resolvedPath);
+            // If resolved path failed, try the raw block.path itself (AI might use
+            // the exact path it saw in tools output, which differs from our resolution)
+            if (!folderFlag && typeof baseContent !== 'string' && block.path !== resolvedPath) {
+                baseContent = await getBaseContentForPath(block.path);
+            }
             const baseIsMissing = folderFlag ? false : typeof baseContent !== 'string';
             const currentContent = baseIsMissing ? '' : baseContent;
 
-            if (block.contentText && !block.diffText) {
+            if (block.contentText && !block.diffText && !block.searchReplaceText) {
                 if (isDeleteInstruction(block.contentText)) {
                     hydrated.push({
                         path: block.path,
@@ -292,6 +813,119 @@ export const useAISuggestions = ({
                 if (isNoChangeText(block.contentText)) {
                     continue;
                 }
+
+                // ── SAFETY: detect prose explanations that aren't code ──
+                // When the AI returns only a text explanation ("no bugs found", etc.)
+                // without FILE: headers, parseFileDiffBlocks creates a fallback block
+                // using the active file path. We must not treat prose as code.
+                if (looksLikeProseExplanation(block.contentText)) {
+                    console.info('[buildMultiFileSuggestions] Skipping prose explanation for', block.path, '— text starts with:', block.contentText.slice(0, 80));
+                    continue;
+                }
+
+                // ── SAFETY: detect partial/truncated content for existing files ──
+                // When the AI ignores SEARCH/REPLACE instructions and returns raw
+                // content for an existing file, it often returns only a fragment
+                // starting from the edit-point onwards, which would wipe out the
+                // top of the file if applied as a full replacement.
+                //
+                // EXCEPTION: If the new content looks like a COMPLETE file rewrite
+                // (starts the same way or starts with typical file-start patterns),
+                // allow it through as a full replacement — the AI intended to
+                // overwrite the entire file.
+                if (!baseIsMissing && currentContent.length > 200 && block.contentText.length > 100) {
+                    let isPartialContent = false;
+
+                    // First check: does the new content look like a COMPLETE file?
+                    // If it starts with typical file-beginning patterns, it's a
+                    // full rewrite, not a partial fragment.
+                    const trimmedNew = block.contentText.trimStart();
+                    const looksLikeCompleteFile = (
+                        /^<!DOCTYPE/i.test(trimmedNew) ||
+                        /^<html/i.test(trimmedNew) ||
+                        /^<\?xml/i.test(trimmedNew) ||
+                        /^(import |const |let |var |function |class |export |'use |"use |module\.)/.test(trimmedNew) ||
+                        /^(document\.|window\.|\(function|addEventListener)/.test(trimmedNew) ||
+                        /^(#|\*|body|html|:root|@import|@charset)/.test(trimmedNew) ||
+                        /^(package |from |def |class |import |#!|<\?)/.test(trimmedNew) ||
+                        /^\/\//.test(trimmedNew) ||
+                        /^\/\*/.test(trimmedNew)
+                    );
+                    // Also check if the first line of new content matches the first
+                    // line of the original — that suggests a full file replacement
+                    const origFirstLine = currentContent.trimStart().split('\n')[0].trim();
+                    const newFirstLine = trimmedNew.split('\n')[0].trim();
+                    const startsLikeOriginal = origFirstLine.length > 5 && newFirstLine === origFirstLine;
+
+                    // Also check line count similarity — if the new content has a similar
+                    // number of lines, it's likely a full file, not a fragment
+                    const origLineCount = currentContent.split('\n').length;
+                    const newLineCount = block.contentText.split('\n').length;
+                    const lineCountSimilar = newLineCount >= origLineCount * 0.7;
+
+                    // If content looks like a complete file or starts like the original,
+                    // treat it as an intentional full rewrite — skip the guard
+                    if (!looksLikeCompleteFile && !startsLikeOriginal && !lineCountSimilar) {
+                        // Heuristic 1 — beginning of new content is found deep inside
+                        // the original file, meaning the AI returned a tail fragment.
+                        const newSnippet = trimmedNew.slice(0, 120);
+                        if (newSnippet.length > 20) {
+                            const posInOrig = currentContent.indexOf(newSnippet.slice(0, 80));
+                            if (posInOrig > Math.min(currentContent.length * 0.15, 800)) {
+                                isPartialContent = true;
+                                console.warn('[partial-content-guard] New content begins at position', posInOrig, 'of', currentContent.length, 'in', block.path);
+                            }
+                        }
+
+                        // Heuristic 2 — new content is dramatically shorter, suggesting
+                        // the AI truncated the top portion of the file.
+                        if (!isPartialContent) {
+                            if (origLineCount > 50 && newLineCount < origLineCount * 0.3) {
+                                isPartialContent = true;
+                                console.warn('[partial-content-guard] Line count shrank from', origLineCount, 'to', newLineCount, 'in', block.path);
+                            }
+                        }
+                    }
+
+                    if (isPartialContent) {
+                        // Before rejecting, try to salvage: compute a diff between original
+                        // and the "partial" content. If it has meaningful changes, accept it.
+                        const salvageChunks = computeDiffChunks(currentContent, block.contentText);
+                        const salvageStats = salvageChunks.reduce((acc, c) => {
+                            if (c.type === 'add' && c.items) acc.adds += c.items.length;
+                            if (c.type === 'rem' && c.items) acc.removals += c.items.length;
+                            return acc;
+                        }, { adds: 0, removals: 0 });
+
+                        // If there are actual changes (not just wholesale replacement),
+                        // accept as a valid full-file rewrite
+                        if (salvageStats.adds > 0 && salvageStats.adds < origLineCount * 0.8) {
+                            console.info('[partial-content-guard] Salvaged: adds=', salvageStats.adds, 'removals=', salvageStats.removals, 'in', block.path);
+                            hydrated.push({
+                                path: block.path,
+                                resolvedPath,
+                                diffText: null,
+                                originalContent: currentContent,
+                                updatedContent: block.contentText,
+                                isNewFile: false,
+                                isFolder: false,
+                                chunks: salvageChunks,
+                                status: 'pending',
+                            });
+                            continue;
+                        }
+
+                        hydrated.push({
+                            path: block.path,
+                            resolvedPath,
+                            diffText: null,
+                            status: 'error',
+                            error: 'AI returned a partial file fragment instead of SEARCH/REPLACE blocks, which would cause data loss. Please try again.',
+                        });
+                        continue;
+                    }
+                }
+
                 hydrated.push({
                     path: block.path,
                     resolvedPath,
@@ -301,6 +935,82 @@ export const useAISuggestions = ({
                     isNewFile: baseIsMissing && !folderFlag,
                     isFolder: folderFlag,
                     chunks: computeDiffChunks(currentContent, block.contentText),
+                    status: 'pending',
+                });
+                continue;
+            }
+
+            // ── SEARCH/REPLACE blocks ────────────────────────────
+            if (block.searchReplaceText) {
+                const applied = applySearchReplace(currentContent, block.searchReplaceText);
+                if (applied === false) {
+                    // Try partial application: apply as many SEARCH/REPLACE blocks as
+                    // possible (some may fail if the AI hallucinated the search context).
+                    // This preserves the blocks that DO match while gracefully degrading.
+                    const partial = !baseIsMissing
+                        ? applySearchReplacePartial(currentContent, block.searchReplaceText)
+                        : false;
+
+                    if (partial && partial.applied > 0) {
+                        const failNote = partial.failed > 0
+                            ? `${partial.applied}/${partial.total} SEARCH/REPLACE blocks applied successfully. ${partial.failed} block(s) could not be matched — review the diff carefully.`
+                            : undefined;
+                        console.warn(`[SEARCH/REPLACE] Partial apply for ${block.path}: ${partial.applied}/${partial.total} succeeded`);
+                        hydrated.push({
+                            path: block.path,
+                            resolvedPath,
+                            diffText: null,
+                            originalContent: currentContent,
+                            updatedContent: partial.result,
+                            isNewFile: false,
+                            isFolder: false,
+                            chunks: computeDiffChunks(currentContent, partial.result),
+                            status: 'pending',
+                            warning: failNote,
+                        });
+                        continue;
+                    }
+
+                    // Fallback: extract just the REPLACE content and show it
+                    // as a manual-review suggestion instead of a hard error
+                    const replaceOnly = extractReplaceContent(block.searchReplaceText);
+                    if (replaceOnly && replaceOnly.trim()) {
+                        console.warn('[SEARCH/REPLACE] Fuzzy match failed for', block.path, '— falling back to REPLACE content');
+                        hydrated.push({
+                            path: block.path,
+                            resolvedPath,
+                            diffText: null,
+                            originalContent: currentContent,
+                            updatedContent: baseIsMissing ? replaceOnly : currentContent,
+                            isNewFile: baseIsMissing,
+                            isFolder: false,
+                            chunks: baseIsMissing ? computeDiffChunks('', replaceOnly) : [],
+                            status: baseIsMissing ? 'pending' : 'error',
+                            error: baseIsMissing ? undefined : 'SEARCH block did not match current file. The intended replacement is shown below — review carefully before applying.',
+                            intendedContent: replaceOnly,
+                        });
+                    } else {
+                        hydrated.push({
+                            path: block.path,
+                            resolvedPath,
+                            diffText: block.searchReplaceText,
+                            status: 'error',
+                            error: baseIsMissing
+                                ? 'File not found; unable to apply SEARCH/REPLACE.'
+                                : 'Failed to match SEARCH block against current file contents.',
+                        });
+                    }
+                    continue;
+                }
+                hydrated.push({
+                    path: block.path,
+                    resolvedPath,
+                    diffText: null,
+                    originalContent: currentContent,
+                    updatedContent: applied,
+                    isNewFile: false,
+                    isFolder: false,
+                    chunks: computeDiffChunks(currentContent, applied),
                     status: 'pending',
                 });
                 continue;
@@ -364,7 +1074,7 @@ export const useAISuggestions = ({
             });
         }
         return hydrated;
-    }, [getBaseContentForPath, resolveWorkspacePath]);
+    }, [getBaseContentForPath, resolveWorkspacePath, looksLikeProseExplanation]);
 
     // Ensure the requested file is active in the editor, selecting or creating it as needed.
     const openFileByPath = useCallback(async (path) => {
@@ -392,14 +1102,26 @@ export const useAISuggestions = ({
     const applyContentToPath = useCallback((path, newContent, { skipSave = false } = {}) => {
         if (!path || typeof newContent !== 'string') return;
         const resolvedPath = resolveWorkspacePath(path) || path;
-        if (activeFile?.path === resolvedPath && editor) {
+        if (editor) {
+            // Use both the closure activeFile and the ref (which is more up-to-date
+            // after async operations like openFileByPath that change the active file
+            // before React re-renders).
+            const currentActivePath = activeFileRef.current?.path || activeFile?.path;
             const model = editor.getModel ? editor.getModel() : null;
-            if (model && typeof editor.executeEdits === 'function') {
-                const fullRange = model.getFullModelRange();
-                editor.executeEdits('ai-apply', [{ range: fullRange, text: newContent }]);
-                if (typeof editor.pushUndoStop === 'function') editor.pushUndoStop();
-            } else if (typeof editor.setValue === 'function') {
-                editor.setValue(newContent);
+            // Also check the editor model URI directly for cases where the editor
+            // has switched files but React hasn't re-rendered yet.
+            const modelPath = model?.uri?.path || '';
+            const editorMatchesTarget = currentActivePath === resolvedPath
+                || modelPath === resolvedPath
+                || modelPath.endsWith('/' + resolvedPath);
+            if (editorMatchesTarget) {
+                if (model && typeof editor.executeEdits === 'function') {
+                    const fullRange = model.getFullModelRange();
+                    editor.executeEdits('ai-apply', [{ range: fullRange, text: newContent }]);
+                    if (typeof editor.pushUndoStop === 'function') editor.pushUndoStop();
+                } else if (typeof editor.setValue === 'function') {
+                    editor.setValue(newContent);
+                }
             }
         }
         dispatch(setExternalFileContent({ path: resolvedPath, content: newContent }));
@@ -409,7 +1131,10 @@ export const useAISuggestions = ({
     // Apply a pending file suggestion to the workspace and mark its status.
     const handleApplyFileSuggestion = useCallback(async (sessionId, path) => {
         if (!path) return;
-        const session = chatSessions.find((s) => s.id === sessionId);
+        // Read from ref to always get the latest sessions, avoiding stale closure
+        // issues where chatSessions from render time doesn't match current state.
+        const sessions = chatSessionsRef.current;
+        const session = sessions.find((s) => s.id === sessionId);
         const suggestion = session?.fileSuggestions?.find((fs) => fs.path === path);
         if (!suggestion || suggestion.status !== 'pending') return;
         if (suggestion.updatedContent == null) {
@@ -490,18 +1215,6 @@ export const useAISuggestions = ({
             if (workspaceSlug && suggestion.deleteFile) {
                 try {
                     try { if (typeof onBusy === 'function') onBusy(true); } catch (e) {}
-                    const allowedDelete = typeof window !== 'undefined'
-                        ? window.confirm(`Delete file "${targetPath}" from AI suggestion?`)
-                        : true;
-                    if (!allowedDelete) {
-                        mutateSession(sessionId, (s) => ({
-                            ...s,
-                            fileSuggestions: s.fileSuggestions.map((fs) =>
-                                fs.path === path ? { ...fs, status: 'pending' } : fs
-                            ),
-                        }));
-                        return;
-                    }
                     await api.deleteItem(workspaceSlug, targetPath);
                     const result = await dispatch(fetchFilesThunk(workspaceSlug));
                     // If the deleted file was active, pick a fallback (same folder or first file)
@@ -558,11 +1271,16 @@ export const useAISuggestions = ({
                 }
             } else {
                 await openFileByPath(targetPath);
+                // Wait one frame so React can process the file switch and the
+                // editor model updates before we attempt to write into it.
+                await new Promise((r) => requestAnimationFrame(r));
                 // Always persist new files after user approval.
                 applyContentToPath(targetPath, suggestion.updatedContent, { skipSave: false });
                 if (workspaceSlug) {
                     const fileName = targetPath.split('/').pop() || 'file.txt';
                     await api.saveFileContent(workspaceSlug, targetPath, suggestion.updatedContent, fileName);
+                    // Resync file tree so new files / renames appear in the sidebar
+                    await dispatch(fetchFilesThunk(workspaceSlug));
                 }
             }
             mutateSession(sessionId, (s) => ({
@@ -584,7 +1302,7 @@ export const useAISuggestions = ({
             ),
         }));
     }
-    }, [applyContentToPath, chatSessions, mutateSession, openFileByPath, resolveWorkspacePath, workspaceSlug, dispatch, onBusy]);
+    }, [applyContentToPath, mutateSession, openFileByPath, resolveWorkspacePath, workspaceSlug, dispatch, onBusy]);
 
     // Mark a file suggestion as rejected and notify listeners.
     const handleRejectFileSuggestion = useCallback((sessionId, path) => {
@@ -657,13 +1375,14 @@ export const useAISuggestions = ({
     // Open a suggested file and surface its proposed content to the editor preview.
     const handlePreviewFileSuggestion = useCallback(async (sessionId, path) => {
         if (!path || typeof onSuggest !== 'function') return;
-        const session = chatSessions.find((s) => s.id === sessionId);
+        const sessions = chatSessionsRef.current;
+        const session = sessions.find((s) => s.id === sessionId);
         const suggestion = session?.fileSuggestions?.find((fs) => fs.path === path);
         if (!suggestion || suggestion.status === 'error' || suggestion.deleteFile) return;
         const targetPath = suggestion.resolvedPath || resolveWorkspacePath(path) || path;
         await openFileByPath(targetPath);
         onSuggest({ completion: suggestion.updatedContent || '', filePath: targetPath });
-    }, [chatSessions, onSuggest, openFileByPath, resolveWorkspacePath]);
+    }, [onSuggest, openFileByPath, resolveWorkspacePath]);
 
     // Apply a single-file inline suggestion to the editor and archive it to history.
     const applySuggestion = useCallback(() => {
@@ -731,8 +1450,7 @@ export const useAISuggestions = ({
         return attachments.map((att) => {
             const header = `FILE: ${att.name || 'attachment'} (${att.type || 'unknown'}, ${att.size || 0} bytes)`;
             if (att.kind === 'image' && att.content) {
-                const snippet = att.content.length > 4000 ? `${att.content.slice(0, 4000)}\n... [truncated data URI]` : att.content;
-                return `${header}\nImage data (base64 data URI). Extract any visible text/code from the image and use it to satisfy the request.\n\`\`\`\n${snippet}\n\`\`\``;
+                return `${header}\nImage attachment provided. Analyze the image content and identify any issues or anything requested by the user.`;
             }
             if (att.kind === 'text' && att.content) {
                 const snippet = att.content.length > 4000 ? `${att.content.slice(0, 4000)}\n... [truncated]` : att.content;
@@ -756,7 +1474,10 @@ export const useAISuggestions = ({
             onCanceled,
             onError,
             onLog,
+            onCommandPending,
+            includeActiveFile: includeActiveFileOpt,
         } = streamHandlers || {};
+        const includeActiveFile = includeActiveFileOpt !== false; // default true for backwards compat
 
         archiveCurrentSuggestion();
 
@@ -815,30 +1536,119 @@ export const useAISuggestions = ({
         let finalSuggestion = '';
         let buffered = '';
         let firstToken = true;
+        let toolCreatedFiles = null; // Track files created by create_file tool to skip wrong FILE: suggestions
         const abortController = controller || new AbortController();
         let timeoutId = null;
 
         try {
-            const langSource =
-                activeFile?.language ||
-                (activeFile?.name ? getFileLanguage(activeFile.name) : undefined) ||
-                'plaintext';
+            const langSource = includeActiveFile
+                ? (activeFile?.language ||
+                    (activeFile?.name ? getFileLanguage(activeFile.name) : undefined) ||
+                    'plaintext')
+                : 'plaintext';
             const normalizedLang = (langSource || 'plaintext').toLowerCase();
-            const code = currentCode || '';
+            const code = includeActiveFile ? (currentCode || '') : '';
             const userPrompt = inputValue;
             
             // Classify user intent using LLM-based backend (with local fallback)
             // This determines whether the user wants code changes or just an explanation
             appendProgressLog('Classifying intent...');
             const contextSnippet = code ? code.slice(0, 500) : null; // Small snippet for context
-            const { needsCodeChanges, responseMode, intent } = await classifyQueryIntent(userPrompt, contextSnippet);
-            appendProgressLog(`Intent: ${intent} → ${needsCodeChanges ? 'code changes' : 'explanation'}`);
+            const classified = await classifyQueryIntent(userPrompt, contextSnippet);
+            let { needsCodeChanges, responseMode, intent } = classified;
+            // Detect if the run intent also includes a follow-up task (e.g., "check git status and change file")
+            // Pure run = no file context needed; run + task = file context preserved
+            // IMPORTANT: Exclude git/command words from task detection — "git add", "git merge", "commit changes" are run commands, not file edits
+            const GIT_COMMAND_CONTEXT = /\b(git\s+)?(commit|push|pull|add|merge|rebase|checkout|stash|reset|clone|stage|deploy|publish|install|uninstall)\b/i;
+            const TASK_KEYWORDS = /\b(change|modify|fix|update|edit|revert|refactor|rename|create|implement|write|replace|undo|restore|new file|new page|new component)\b/i;
+            // Only flag as follow-up task if task keywords appear AND they aren't just part of a git/run context
+            const taskMatch = intent === 'run' && TASK_KEYWORDS.test(userPrompt);
+            const isAllGitContext = GIT_COMMAND_CONTEXT.test(userPrompt) && !TASK_KEYWORDS.test(userPrompt.replace(GIT_COMMAND_CONTEXT, ''));
+            const hasFollowUpTask = taskMatch && !isAllGitContext;
+            const isRunOnly = intent === 'run' && !hasFollowUpTask;
+            // CRITICAL: Force needsCodeChanges=false for run-only requests
+            // This prevents FILE: block parsing and partial content errors
+            if (isRunOnly) {
+                needsCodeChanges = false;
+                responseMode = 'explain';
+            }
+            appendProgressLog(`Intent: ${intent}${hasFollowUpTask ? ' + task' : ''} → ${intent === 'run' ? (hasFollowUpTask ? 'run & code changes' : 'run command') : needsCodeChanges ? 'code changes' : 'explanation'}`);
+            
+            // ── Agent Pipeline ──────────────────────────────────────
+            // Run sub-agents if the prompt warrants it (complex queries, multi-file, search, etc.)
+            // Skip for pure run intent — no need for agents when just executing commands
+            // Keep agents for run+task (e.g., "check git status and revert file")
+            let agentContext = '';
+            let agentResults = [];
+            const useAgents = !isRunOnly && shouldUseAgents(userPrompt);
+            
+            if (useAgents) {
+                appendProgressLog('Running agent pipeline...');
+                onLog?.('Dispatching sub-agents');
+                try {
+                    const pipelineResult = await runPipeline(userPrompt, {
+                        referencedFilesLoaded: false,
+                    }, {
+                        mode: agentMode === PIPELINE_MODES.DIRECT ? PIPELINE_MODES.AUTO : agentMode,
+                        signal: abortController.signal,
+                        onStepStart: (step) => {
+                            appendProgressLog(`${step.agentName}: starting...`);
+                            onLog?.(`Agent: ${step.agentName}`);
+                        },
+                        onStepComplete: (result) => {
+                            const status = result.status === 'completed' ? '✓' : '✗';
+                            appendProgressLog(`${status} ${result.agentName}: ${result.status}`);
+                        },
+                        onPlanReady: (plan) => {
+                            appendProgressLog(`Plan: ${plan.steps.length} steps — ${plan.reasoning}`);
+                        },
+                    });
+                    agentContext = pipelineResult.agentContext || '';
+                    agentResults = pipelineResult.results || [];
+                    if (agentResults.length > 0) {
+                        appendProgressLog(`Agent pipeline: ${agentResults.filter(r => r.status === 'completed').length}/${agentResults.length} steps completed`);
+                    }
+                } catch (agentErr) {
+                    appendProgressLog(`Agent pipeline error: ${agentErr.message}. Continuing without agents.`);
+                    agentContext = '';
+                    agentResults = [];
+                }
+            }
+
+            // ── Context Window ──────────────────────────────────────
+            // Build a token-budgeted context window with all gathered information
             
             // Build different prompts based on classified intent
             let requestPrompt;
             let requestMode = responseMode;
             
-            if (!needsCodeChanges) {
+            if (isRunOnly) {
+                // Pure run/check/execute — no file changes at all
+                requestPrompt = `${userPrompt}
+
+You MUST use the run_command tool to execute this request. Do NOT just explain what the command does — actually RUN it and show the real output.
+
+If the user asks to "check" something, "run" something, or asks about git status/version/etc., call run_command with the appropriate command immediately.
+
+IMPORTANT RULES:
+- After getting the result, present the output clearly to the user.
+- Do NOT generate FILE: blocks, SEARCH/REPLACE blocks, or code changes under any circumstances.
+- Do NOT return raw file content or code snippets meant to replace file content.
+- Your response should ONLY contain the command output and a brief explanation.
+- If the command fails, explain what went wrong and suggest fixes.
+
+Stream at least two short progress updates wrapped in <progress>...</progress> as you reason.`;
+            } else if (hasFollowUpTask) {
+                // Run command AND then modify files based on the result
+                requestPrompt = `${userPrompt}
+
+This request involves BOTH running a command AND making code changes.
+
+1. First, use the run_command tool to execute the relevant command(s).
+2. Then, based on the output, make the requested code changes using FILE: blocks with SEARCH/REPLACE format.
+
+Stream at least three short progress updates wrapped in <progress>...</progress> as you reason.`;
+            } else if (!needsCodeChanges) {
                 // For explanation/question queries, use a simpler prompt that doesn't ask for FILE: blocks
                 requestPrompt = `${userPrompt}
 
@@ -852,32 +1662,130 @@ Stream at least two short progress updates wrapped in <progress>...</progress> a
                 // For code change requests, use the full patch prompt
                 requestPrompt = `${userPrompt}
 
-If the user asks for a new file, you may create it in the requested folder/path within the workspace. If the user asks to delete a file, you may delete it when they provide a path; return an empty content block or the literal text DELETE to mark deletion. Otherwise, prefer modifying the active file or files explicitly mentioned. Always respect the workspace tree when creating or deleting files.
+CRITICAL — "CREATE NEW" vs "MODIFY EXISTING":
+- When the user says "create", "make", "build", "add new", or "generate" files: you MUST create files at NEW paths that DO NOT already exist in the workspace. Choose unique, descriptive file names. Do NOT modify or overwrite any existing files shown in the context — those are reference only.
+- When the user says "fix", "change", "update", "modify", or "edit" existing files: use SEARCH/REPLACE blocks on those existing files.
+- If the request involves BOTH creating new files AND modifying an existing file (e.g., "create new pages and link them from index.html"), create the new files with full content AND use SEARCH/REPLACE on the existing file to add navigation links.
 
-Start with a brief (6-7 sentences) summary of the change. Stream at least three short progress updates wrapped in <progress>...</progress> as you reason (no code inside progress). Emit the summary before any FILE sections. After the summary, return one or more sections in this exact format:
-FILE: <path>
+BUG-FIX THOROUGHNESS (CRITICAL — prevents incomplete fixes):
+- When fixing "X doesn't work" bugs, TRACE THE FULL CODE PATH from event listener → handler → state update → DOM update. Fix ALL broken links in the chain, not just one line.
+- If a handler calls a function (e.g., updateDisplay()), and that function doesn't work correctly, fix the FUNCTION — don't just add a line in the handler.
+- ALWAYS include SEARCH/REPLACE blocks that show the actual broken code being replaced with working code. A fix that only adds one line (+1 -0) is almost always incomplete.
+- After writing your fix, mentally step through: "If the user clicks X, does Variable get set? Does the update function read Variable? Does it change the DOM?" If any step fails, your fix is incomplete.
+- Check: event listeners attached? Correct selectors? Correct variable names? Functions return values? CSS classes applied? All must work for the fix to be complete.
+
+FORMAT FOR CREATING NEW FILES (full content, no SEARCH/REPLACE):
+FILE: path/to/brand-new-file.ext
 \`\`\`
-<full updated file content only; no diff markers, no +/-, no @@, no ---/+++>
+[complete file content here]
 \`\`\`
 
-Do not include any other commentary. Do not restate the user's request or any instructions; only describe what you changed/created/deleted. Preserve all code outside the requested change. Do not add speculative comments or boilerplate. If unclear, return FILE: <path> then NO_CHANGES and a brief clarifying question.
+FORMAT FOR MODIFYING EXISTING FILES (SEARCH/REPLACE blocks):
+FILE: path/to/existing-file.ext
+\`\`\`
+${'<'.repeat(7)} SEARCH
+exact lines from the current file (2-3 lines of context before and after the change)
+${'='.repeat(7)}
+replacement lines (the fixed/updated version)
+${'>'.repeat(7)} REPLACE
+\`\`\`
 
-If image attachments are present, read/ocr the images and extract any text or code they contain. Use the extracted content to fulfill the request, rewriting it as needed into the target file(s).`;
+CRITICAL RULES:
+- ALWAYS wrap changes in ${'<'.repeat(7)} SEARCH / ${'='.repeat(7)} / ${'>'.repeat(7)} REPLACE markers. The system parser REQUIRES these exact markers.
+- The SEARCH section must match the file EXACTLY (same whitespace, indentation, symbols).
+- Include 2-3 unchanged lines before and after the changed lines for safe anchoring.
+- You can include MULTIPLE ${'<'.repeat(7)} SEARCH / ${'>'.repeat(7)} REPLACE blocks in a single FILE: block.
+- NEVER return raw file content without these markers for existing files — it causes data loss.
+- NEVER return just the bottom half or a fragment of an existing file.
+- Each file gets EXACTLY ONE FILE: block. Never repeat the same file path.
+
+If the user asks to delete a file, return the literal text DELETE in the code block. Always respect the workspace tree when creating or deleting files.
+
+For modifications to existing files, modify only the files the user mentions or that are relevant to the change.
+
+Start with a brief (6-7 sentences) summary of the change. Stream at least three short progress updates wrapped in <progress>...</progress> as you reason (no code inside progress). Emit the summary before any FILE sections.
+
+Do not include any other commentary after FILE sections. Do not restate the user's request. Preserve all code outside the requested change. Do not insert HTML into JS files (or vice versa). If unclear, return FILE: <path> then NO_CHANGES and a brief clarifying question.
+
+If image attachments are present, read/ocr the images and extract any text or code they contain. Use the extracted content to fulfill the request.`;
             }
             
-            const filesPayloadRaw = buildFilesPayload({
-                activeFile,
-                fullDocument: code,
-                cacheEntries: fileCacheEntries,
+            // ── Skip file context for pure run/execute intents (saves tokens) ──
+            // run+task still needs context so the AI can modify files after executing
+            // Also skip when user has detached the active file from context
+
+            const activePath = includeActiveFile ? (activeFile?.path || activeFile?.name || '') : '';
+            const skipFileContext = isRunOnly;
+            const referencedPaths = skipFileContext ? [] : extractReferencedPaths(activePath, code);
+            const siblingPaths = skipFileContext ? [] : (referencedPaths.length === 0 ? inferSiblingPaths(activePath) : []);
+            // Also extract files mentioned in the user's chat prompt (e.g., "fix main.js", "the main page")
+            const promptMentionedPaths = skipFileContext ? [] : extractPromptMentionedPaths(userPrompt, activePath);
+            const agentDiscoveredPaths = skipFileContext ? [] : extractAgentDiscoveredPaths(agentResults);
+            const promptDiscoveredPaths = skipFileContext
+                ? []
+                : await discoverPromptRelevantPaths(userPrompt, 10);
+            const designCompanionPaths = skipFileContext
+                ? []
+                : inferDesignCompanionPaths(activePath, userPrompt, 8);
+            const relatedPaths = Array.from(new Set([
+                ...referencedPaths,
+                ...siblingPaths,
+                ...promptMentionedPaths,
+                ...agentDiscoveredPaths,
+                ...promptDiscoveredPaths,
+                ...designCompanionPaths,
+            ])).filter((p) => !isContextExcluded(p)).slice(0, 16);
+            const referencedEntries = relatedPaths.length
+                ? await Promise.all(relatedPaths.map(async (path) => [path, await getBaseContentForPath(path)]))
+                : [];
+            const referencedCacheEntries = referencedEntries.filter((entry) => entry[0] && typeof entry[1] === 'string');
+            const cacheEntryMap = new Map(skipFileContext ? [] : fileCacheEntries);
+            referencedCacheEntries.forEach(([path, content]) => {
+                if (!cacheEntryMap.has(path)) cacheEntryMap.set(path, content);
             });
-            const mentionsOtherFile = /\b[a-zA-Z0-9_-]+\.[a-zA-Z0-9]{1,5}\b/.test(userPrompt) || /other file|another file|files/i.test(userPrompt) || /delete\s+\w+/i.test(userPrompt) || /remove\s+\w+/i.test(userPrompt) || /create\s+\w+/i.test(userPrompt) || /new file/i.test(userPrompt);
-            const filesPayload = mentionsOtherFile
-                ? filesPayloadRaw
-                : filesPayloadRaw.filter((f) => f.path === (activeFile?.path || activeFile?.name));
+            const mergedCacheEntries = Array.from(cacheEntryMap.entries());
+
+            if (!skipFileContext && useAgents) {
+                appendProgressLog(`Agent discovered files: ${relatedPaths.length}`);
+            }
+
+            const filesPayloadRaw = skipFileContext ? [] : buildFilesPayload({
+                activeFile: includeActiveFile ? activeFile : null,
+                fullDocument: code,
+                cacheEntries: mergedCacheEntries,
+            });
+            const mentionsOtherFile = skipFileContext ? false : (promptMentionedPaths.length > 0 || /\b[a-zA-Z0-9_-]+\.[a-zA-Z0-9]{1,5}\b/.test(userPrompt) || /other file|another file|files/i.test(userPrompt) || /delete\s+\w+/i.test(userPrompt) || /remove\s+\w+/i.test(userPrompt) || /create\s+\w+/i.test(userPrompt) || /new file/i.test(userPrompt) || /\b(main\s*page|home\s*page|the\s*page|the\s*app)/i.test(userPrompt));
+            const includeRelatedFiles = relatedPaths.length > 0;
+            const wantsFullRepo = skipFileContext ? false : /\b(full repo|entire repo|whole repo|entire project|all files|full context)\b/i.test(userPrompt);
+            const filesPayload = skipFileContext
+                ? []
+                : mentionsOtherFile
+                    ? filesPayloadRaw
+                    : includeRelatedFiles
+                        ? filesPayloadRaw
+                        : filesPayloadRaw.filter((f) => f.path === (activeFile?.path || activeFile?.name));
             // Disable fallback to active file when prompt targets other files (creates/deletes) to avoid hijacking the active file.
-            fallbackPathRef.current = mentionsOtherFile ? null : (activeFile?.path || activeFile?.name || null);
-            if (filesPayload.length > 1 || mentionsOtherFile) {
-                requestPrompt = `${requestPrompt}\n\nAdditional workspace files are attached. Reference them by their path when relevant.`;
+            // Also disable when active file is detached from context.
+            fallbackPathRef.current = (!includeActiveFile || mentionsOtherFile) ? null : (activeFile?.path || activeFile?.name || null);
+
+            // ── Inject existing file list so the AI knows which names are taken ──
+            // This prevents the AI from "creating" files that already exist
+            const wantsToCreate = /\b(create|make|build|generate|add|new)\b/i.test(userPrompt) && /\b(file|page|component|module|script|style|app)s?\b/i.test(userPrompt);
+            if (wantsToCreate && needsCodeChanges) {
+                const existingPaths = filesPayload.map(f => f.path).filter(Boolean);
+                // Also include all known workspace file paths from the cache
+                const allKnownPaths = Array.from(new Set([
+                    ...existingPaths,
+                    ...Array.from(cachedFileMap.keys()),
+                    ...flattenWorkspaceFiles,
+                ]));
+                if (allKnownPaths.length > 0) {
+                    requestPrompt = `${requestPrompt}\n\nEXISTING FILES IN WORKSPACE (DO NOT reuse these names for new files — pick unique names):\n${allKnownPaths.map(p => `- ${p}`).join('\n')}`;
+                }
+            }
+
+            if (filesPayload.length > 1 || mentionsOtherFile || includeRelatedFiles) {
+                requestPrompt = `${requestPrompt}\n\nAdditional workspace files are attached for reference. These are EXISTING files — use them as style/structure reference. If you need to modify an existing file (e.g. to add navigation links), use SEARCH/REPLACE blocks. For NEW files the user asked you to create, choose NEW paths not in the list above.`;
             }
             const attachmentText = buildAttachmentText(attachments);
             if (attachmentText) {
@@ -888,18 +1796,64 @@ If image attachments are present, read/ocr the images and extract any text or co
             }
             appendProgressLog(filesPayload.length ? `Context files: ${filesPayload.length}` : 'Context files: 0');
 
+            // ── Build Context Window ────────────────────────────────
+            // Use the context window manager to fit everything within token budget
+            const sessionMessages = activeSession?.messages?.filter(m => m.role === 'user' || m.role === 'assistant') || [];
+            const contextWindow = buildContextWindow({
+                currentMessage: userPrompt,
+                messages: sessionMessages,
+                activeFile: includeActiveFile ? activeFile : null,
+                currentCode: code,
+                referencedFiles: referencedCacheEntries,
+                relatedFiles: [],
+                codeIntelContext: null, // will be fetched server-side
+                agentResults: agentResults.filter(r => r.status === 'completed'),
+            });
+            const contextDebug = getContextDebugInfo(contextWindow);
+            appendProgressLog(`Context window: ${contextDebug.utilization} used (${contextDebug.includedEntries} entries, ${contextDebug.excludedEntries} excluded${contextDebug.hasSummary ? ', with summary' : ''})`);
+            onLog?.(`Context: ${contextDebug.utilization}`);
+            
+            // Inject agent-gathered context into the prompt
+            if (agentContext) {
+                requestPrompt = `${requestPrompt}\n\n=== AGENT-GATHERED CONTEXT ===\nThe following context was gathered by specialized sub-agents analyzing your workspace:\n${agentContext}\n=== END AGENT CONTEXT ===`;
+                appendProgressLog('Agent context injected into prompt');
+            }
+            
+            // If we have a conversation summary from context window, inject it
+            const { contextPrefix } = formatForAPI(contextWindow);
+            if (contextPrefix) {
+                requestPrompt = `${contextPrefix}\n\n${requestPrompt}`;
+            }
+
             try { if (typeof onBusy === 'function') onBusy(true); } catch (e) {}
 
             onStreamStart?.();
             onLog?.('Preparing request');
 
             // Safety timeout so UI doesn't hang forever if the backend never responds
-            timeoutId = setTimeout(() => {
-                try { abortController.abort('timeout'); } catch (e) {}
-            }, 60_000);
+            // Uses a rolling approach: resets each time we receive data from the stream.
+            // Extended automatically when a command is pending user approval.
+            const IDLE_TIMEOUT_MS = 90_000; // 90s idle timeout
+            const resetIdleTimeout = () => {
+                if (timeoutId) clearTimeout(timeoutId);
+                timeoutId = setTimeout(() => {
+                    try { abortController.abort('timeout'); } catch (e) {}
+                }, IDLE_TIMEOUT_MS);
+            };
+            resetIdleTimeout();
 
             onLog?.('Analyzing prompt and files');
             appendProgressLog('Analyzing prompt and files');
+            const serializedAttachments = Array.isArray(attachments)
+                ? attachments.map((att) => ({
+                    name: att?.name || '',
+                    type: att?.type || '',
+                    size: att?.size || 0,
+                    kind: att?.kind || '',
+                    content: typeof att?.content === 'string' ? att.content : '',
+                }))
+                : [];
+
             const resp = await fetch('/api/chat', {
                 method: 'POST',
                 signal: abortController.signal,
@@ -910,14 +1864,23 @@ If image attachments are present, read/ocr the images and extract any text or co
                     prompt: requestPrompt,
                     mode: requestMode,
                     files: filesPayload,
-                    focusPath: activeFile?.path || activeFile?.name || null,
+                    attachments: serializedAttachments,
+                    focusPath: includeActiveFile ? (activeFile?.path || activeFile?.name || null) : null,
                     model: aiModel,
                     apiKey: aiApiKey,
                     // Code intelligence integration
                     workspacePath: workspaceSlug || null,
-                    useCodeIntel: true,
-                    maxContextTokens: 6000,
-                    fullRepoContext: true,
+                    useCodeIntel: !isRunOnly,
+                    maxContextTokens: isRunOnly ? 0 : Math.min(30000, Math.floor(availableTokens * 0.3)),
+                    fullRepoContext: wantsFullRepo,
+                    // Context window conversation history for multi-turn coherence
+                    conversationHistory: formatForAPI(contextWindow).conversationHistory,
+                    // Agent pipeline metadata
+                    agentMode: useAgents ? agentMode : 'direct',
+                    agentStepCount: agentResults.length,
+                    // Agentic tool-calling — always let server auto-detect complexity
+                    // (tools like run_command are useful even for explanation queries)
+                    useTools: 'auto',
                 }),
             });
 
@@ -1028,6 +1991,8 @@ If image attachments are present, read/ocr the images and extract any text or co
                 const { done, value } = await reader.read();
                 if (done) break;
                 if (!value) continue;
+                // Reset idle timeout on every chunk received from the stream
+                resetIdleTimeout();
                 await new Promise((resolve) => setTimeout(resolve, 60)); // slow streaming slightly
                 buffered += value;
                 const lines = buffered.split('\n');
@@ -1038,6 +2003,110 @@ If image attachments are present, read/ocr the images and extract any text or co
                     try {
                         parsed = JSON.parse(line);
                     } catch (e) {
+                        continue;
+                    }
+                    // Skip validation errors — they are metadata, not content
+                    if (parsed?.validationFailed) {
+                        console.warn('[AI Chat] Validation:', parsed.validationError || 'format issue');
+                        continue;
+                    }
+                    // ── Handle structured file blocks (from intercepted create_file) ──
+                    // These arrive as a reliable structured event, independent of
+                    // the text delta stream that may fail to parse FILE: markers.
+                    if (parsed?.fileBlocks && Array.isArray(parsed.fileBlocks) && parsed.fileBlocks.length > 0) {
+                        appendProgressLog(`Received ${parsed.fileBlocks.length} file suggestion(s)`);
+                        onLog?.(`Processing ${parsed.fileBlocks.length} file suggestion(s)`);
+                        try {
+                            const fbSuggestions = [];
+                            for (const fb of parsed.fileBlocks) {
+                                const resolvedPath = resolveWorkspacePath(fb.path) || fb.path;
+                                let baseContent = await getBaseContentForPath(resolvedPath);
+                                if (typeof baseContent !== 'string' && fb.path !== resolvedPath) {
+                                    baseContent = await getBaseContentForPath(fb.path);
+                                }
+                                const baseIsMissing = typeof baseContent !== 'string';
+                                const currentContent = baseIsMissing ? '' : baseContent;
+                                fbSuggestions.push({
+                                    path: fb.path,
+                                    resolvedPath,
+                                    diffText: null,
+                                    originalContent: currentContent,
+                                    updatedContent: fb.content,
+                                    isNewFile: baseIsMissing,
+                                    isFolder: false,
+                                    chunks: computeDiffChunks(currentContent, fb.content),
+                                    status: 'pending',
+                                });
+                            }
+                            if (fbSuggestions.length > 0) {
+                                mutateSession(activeSession.id, (session) => ({
+                                    ...session,
+                                    fileSuggestions: [
+                                        ...(session.fileSuggestions || []),
+                                        ...fbSuggestions,
+                                    ],
+                                    showDiff: true,
+                                    suggestionTimestamp: Date.now(),
+                                }));
+                                lastSuggestionSnapshotRef.current = {
+                                    fileSuggestions: fbSuggestions,
+                                    suggestedCode: null,
+                                    diffChunks: [],
+                                    timestamp: new Date(),
+                                };
+                                // Mark that structured file blocks were received so
+                                // post-stream finalization knows suggestions exist
+                                if (!toolCreatedFiles) toolCreatedFiles = new Set();
+                                for (const fb of fbSuggestions) toolCreatedFiles.add(fb.path);
+                            }
+                        } catch (fbErr) {
+                            console.error('[AI Chat] Failed to process fileBlocks:', fbErr);
+                        }
+                        continue;
+                    }
+                    // ── Handle command approval requests ─────────────────
+                    if (parsed?.commandPending) {
+                        const cp = parsed.commandPending;
+                        const cmdLabel = `Command pending approval: ${(cp.command || '').slice(0, 80)}`;
+                        appendProgressLog(cmdLabel);
+                        onLog?.(cmdLabel);
+                        // Pause the idle timeout while waiting for user to approve/reject
+                        // (the stream is paused server-side until the user responds)
+                        if (timeoutId) clearTimeout(timeoutId);
+                        // Notify parent via onCommandPending callback, which adds a
+                        // CommandApprovalCard to the chat timeline.
+                        onCommandPending?.(cp);
+                        continue;
+                    }
+                    // Handle agentic tool-call events as progress indicators
+                    if (parsed?.toolCall) {
+                        const tc = parsed.toolCall;
+                        const label = tc.tool === 'read_file' ? `Reading ${tc.args?.path || 'file'}…`
+                            : tc.tool === 'search_workspace' ? `Searching for "${tc.args?.query || '…'}"…`
+                            : tc.tool === 'list_directory' ? `Listing ${tc.args?.path || 'directory'}…`
+                            : tc.tool === 'run_command' ? (tc.status === 'declined' ? `Command declined: ${(tc.args?.command || '').slice(0, 60)}` : `Running: ${(tc.args?.command || '').slice(0, 60)}${(tc.args?.command || '').length > 60 ? '…' : ''}`)
+                            : tc.tool === 'create_file' ? `Creating ${tc.args?.path || 'file'}…`
+                            : tc.tool === 'create_directory' ? `Creating directory: ${tc.args?.path || ''}…`
+                            : `Tool: ${tc.tool}`;
+                        appendProgressLog(label);
+                        onLog?.(label);
+
+                        // Track file creation via create_file tool (now intercepted as 'collected')
+                        if (tc.tool === 'create_file' && (tc.status === 'done' || tc.status === 'collected') && tc.args?.path) {
+                            if (!toolCreatedFiles) toolCreatedFiles = new Set();
+                            toolCreatedFiles.add(tc.args.path);
+                        }
+
+                        // If the run_command result includes a sessionId, open the terminal
+                        if (tc.tool === 'run_command' && tc.sessionId && typeof window !== 'undefined') {
+                            // Ensure terminal panel is visible (setShowTerminal is idempotent)
+                            try { dispatch(setShowTerminal(true)); } catch (_) {}
+                            // Dispatch custom event for TerminalManager to create AI terminal tab
+                            window.dispatchEvent(new CustomEvent('ai-terminal-open', {
+                                detail: { sessionId: tc.sessionId, command: tc.args?.command || '' },
+                            }));
+                            appendProgressLog(`Terminal opened: ${tc.sessionId}`);
+                        }
                         continue;
                     }
                     const delta = parsed?.delta || parsed?.text || '';
@@ -1147,6 +2216,16 @@ If image attachments are present, read/ocr the images and extract any text or co
             }
             onDone?.();
 
+            // Refresh file tree if files were created via create_file tool
+            if (toolCreatedFiles && toolCreatedFiles.size > 0 && workspaceSlug) {
+                try {
+                    await dispatch(fetchFilesThunk(workspaceSlug));
+                    appendProgressLog(`File tree refreshed (${toolCreatedFiles.size} file(s) created)`);
+                } catch (e) {
+                    console.warn('[AI Chat] Failed to refresh file tree after create_file:', e);
+                }
+            }
+
             const suggestion = finalSuggestion || summaryBuffer || '';
             const summaryText = (() => {
                 const parts = suggestion.split(/FILE:/i);
@@ -1155,19 +2234,54 @@ If image attachments are present, read/ocr the images and extract any text or co
             })();
 
             // IMPORTANT: Skip diff parsing entirely when in explain mode
-            // This prevents the explanation text from being treated as code changes
+            // UNLESS the response actually contains FILE: blocks (e.g. from intercepted create_file tool calls)
+            const responseHasFileBlocks = /\bFILE:\s*\S/i.test(suggestion);
             let multiFileSuggestions = [];
-            if (needsCodeChanges) {
+            if (needsCodeChanges || responseHasFileBlocks) {
                 try {
                     multiFileSuggestions = await buildMultiFileSuggestions(suggestion || '');
+                    
+                    // Validate before displaying to user
+                    if (multiFileSuggestions.length > 0) {
+                        const validation = validateFileDiffBlocks(multiFileSuggestions.map((s) => ({
+                            path: s.path,
+                            contentText: s.updatedContent || '',
+                            diffText: s.diffText || '',
+                        })));
+                        
+                        if (!validation.isValid && validation.errors.length > 0) {
+                            console.warn('[Validation] Multi-file suggestions failed validation:', validation.errors);
+                            // Log to user
+                            appendProgressLog(`⚠️ Suggestion validation failed: ${validation.errors[0]}`);
+                            
+                            // Reject bad suggestions - show error instead
+                            multiFileSuggestions = [];
+                            displayedContent = `⚠️ AI response was malformed or contained contradictory changes:\n${validation.errors.slice(0, 2).join('\n')}\n\nPlease try again or provide more specific instructions.`;
+                        } else if (validation.warnings.length > 0) {
+                            // Log warnings but allow suggestions to pass
+                            validation.warnings.forEach(w => console.warn('[Validation Warning]', w));
+                        }
+                    }
                 } catch (e) {
+                    console.error('[buildMultiFileSuggestions]', e);
                     multiFileSuggestions = [];
                 }
             }
             const hasMultiFileSuggestions = multiFileSuggestions.length > 0;
 
+            // Check if structured fileBlocks already populated suggestions during streaming
+            const existingFileSuggestions = (() => {
+                try {
+                    const session = chatSessionsRef.current?.find(s => s.id === activeSession.id);
+                    return session?.fileSuggestions || [];
+                } catch (_) { return []; }
+            })();
+            const hasStructuredFileSuggestions = existingFileSuggestions.length > 0 && !hasMultiFileSuggestions;
+
             let codeOnly = null;
-            let displayedContent = suggestion || 'No response received';
+            let displayedContent = suggestion || (hasStructuredFileSuggestions
+                ? `AI suggested changes for ${existingFileSuggestions.length} file${existingFileSuggestions.length > 1 ? 's' : ''}. Review them below.`
+                : 'No response received');
             const isPlaceholderText = (text = '') => {
                 const normalized = text.toLowerCase();
                 return (
@@ -1198,6 +2312,11 @@ If image attachments are present, read/ocr the images and extract any text or co
                 } catch (e) {}
                 const prefix = summaryText ? `${summaryText}\n\n` : '';
                 displayedContent = `${prefix}AI suggested changes for ${multiFileSuggestions.length} file${multiFileSuggestions.length > 1 ? 's' : ''}. Review them below.`;
+            } else if (hasStructuredFileSuggestions) {
+                // Structured fileBlocks already populated suggestions during streaming.
+                // Don't clear them — just set the display content.
+                const prefix = summaryText ? `${summaryText}\n\n` : '';
+                displayedContent = `${prefix}AI suggested changes for ${existingFileSuggestions.length} file${existingFileSuggestions.length > 1 ? 's' : ''}. Review them below.`;
             } else {
                 // Clear any existing suggestions
                 mutateSession(activeSession.id, (session) => ({
@@ -1341,7 +2460,7 @@ If image attachments are present, read/ocr the images and extract any text or co
             setIsLoading(false);
             try { if (typeof onBusy === 'function') onBusy(false); } catch(e){}
         }
-    }, [activeSession, activeFile, appendMessagesToSession, archiveCurrentSuggestion, buildMultiFileSuggestions, currentCode, fileCacheEntries, mutateSession, onBusy, onSuggest, aiApiKey, aiModel]);
+    }, [activeSession, activeFile, appendMessagesToSession, archiveCurrentSuggestion, buildMultiFileSuggestions, currentCode, fileCacheEntries, mutateSession, onBusy, onSuggest, aiApiKey, aiModel, buildContextWindow, formatForAPI, getContextDebugInfo, availableTokens, shouldUseAgents, runPipeline, agentMode, extractPromptMentionedPaths, flattenWorkspaceFiles, extractAgentDiscoveredPaths, discoverPromptRelevantPaths, inferDesignCompanionPaths, isContextExcluded]);
 
     const suggestedCode = activeSession?.suggestedCode ?? null;
     const fileSuggestions = activeSession?.fileSuggestions ?? [];
@@ -1363,5 +2482,13 @@ If image attachments are present, read/ocr the images and extract any text or co
         handleApplyFileSuggestion,
         handleRejectFileSuggestion,
         handlePreviewFileSuggestion,
+        // Agent pipeline
+        agentMode,
+        setAgentMode,
+        activePipeline,
+        pipelineHistory,
+        cancelPipeline,
+        // Context window
+        contextWindowInfo: { availableTokens, estimateTokens },
     };
 };

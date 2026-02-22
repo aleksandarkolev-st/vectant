@@ -932,12 +932,14 @@ class CollabClient {
   }
 
   // Subscribe to awareness change events for a room and receive current states
-  addAwarenessListener(slug, path, cb) {
+  addAwarenessListener(slug, path, cb, options = {}) {
     if (typeof cb !== 'function') return () => {};
-    const entry = this.ensureDoc(slug, path);
+    const shouldConnect = options?.connect !== false;
+    const key = this._roomKey(slug, path);
+    const entry = shouldConnect ? this.ensureDoc(slug, path) : this.docs.get(key);
     if (!entry || !entry.provider || !entry.provider.awareness) return () => {};
 
-    const key = entry.key;
+    const roomKey = entry.key || key;
     const wrapped = (changes) => {
       try {
         const states = this.getAwarenessStates(slug, path);
@@ -948,8 +950,8 @@ class CollabClient {
     };
 
     // save wrapper reference so it can be removed
-    if (!this._awarenessListeners.has(key)) this._awarenessListeners.set(key, new Map());
-    this._awarenessListeners.get(key).set(cb, wrapped);
+    if (!this._awarenessListeners.has(roomKey)) this._awarenessListeners.set(roomKey, new Map());
+    this._awarenessListeners.get(roomKey).set(cb, wrapped);
     try { entry.provider.awareness.on('change', wrapped); } catch (_) {}
 
     // return unsubscribe helper
@@ -1004,6 +1006,7 @@ class CollabClient {
     if (!entry._seeded) {
       entry._seeded = false;
     }
+<<<<<<< HEAD
     
     // Flag: set to true once the MonacoTextBinding is created below.
     // When the binding exists, Yjs → model sync is handled by the binding's
@@ -1013,10 +1016,29 @@ class CollabClient {
     // the provider sync event.
     let bindingEstablished = false;
     
+=======
+
+    // ── Seed Strategy ────────────────────────────────────────────────
+    // The server's bindState is the sole authority for initial seeding
+    // of existing files (it reads from disk).  Because y-websocket
+    // fires bindState WITHOUT awaiting it, the initial sync may
+    // complete before the server has inserted content.  If we insert
+    // independently here the CRDT merge would duplicate the text.
+    //
+    // Strategy:
+    //   1. If ytext already has content → use it (server or peer seeded)
+    //   2. Otherwise set Monaco model for display only and WAIT for
+    //      server content to arrive via Y.js observer.
+    //   3. Only if ytext is STILL empty after a generous timeout
+    //      (file doesn't exist on disk) → client seeds.
+    // ─────────────────────────────────────────────────────────────────
+    const SEED_WAIT_MS = 1500; // allow server bindState to complete
+
+>>>>>>> 4333b750f3b10dc22a93381c88e9ed2cbb0e6b4c
     const doSeed = () => {
       // Only seed once per doc lifecycle
       if (entry._seeded) return;
-      
+
       const currentYtext = entry.ytext.toString();
       if (currentYtext.length > 0) {
         // Ytext has content now (from server).
@@ -1045,29 +1067,76 @@ class CollabClient {
           model.setValue(currentYtext);
         }
         entry._seeded = true;
-      } else if (hasProvidedContent) {
-        // Ytext is truly empty after sync, seed with provided content
-        entry.doc.transact(() => {
-          if (entry.ytext.length > 0) {
-            entry.ytext.delete(0, entry.ytext.length);
+        return;
+      }
+
+      // Ytext is still empty — wait for server to seed via bindState.
+      // Set up a Y.Text observer + timeout so we react as soon as
+      // server content arrives, or fall back to client-seeding for
+      // truly new (no file on disk) documents.
+      if (!hasProvidedContent) return;
+
+      let settled = false;
+      let seedTimer = null;
+      let seedObserver = null;
+
+      const commit = () => {
+        if (settled || entry._seeded) return;
+        settled = true;
+        if (seedTimer) clearTimeout(seedTimer);
+        if (seedObserver) {
+          try { entry.ytext.unobserve(seedObserver); } catch (_) {}
+        }
+
+        const content = entry.ytext.toString();
+        if (content.length > 0) {
+          // Server seeded while we waited — use it
+          if (model.getValue() !== content) {
+            model.setValue(content);
           }
+        } else {
+          // Timeout: file likely doesn't exist on server — client seeds
+          entry.doc.transact(() => {
+            if (entry.ytext.length > 0) {
+              entry.ytext.delete(0, entry.ytext.length);
+            }
+            entry.ytext.insert(0, providedContent);
+          });
+          if (model.getValue() !== providedContent) {
+            model.setValue(providedContent);
+          }
+<<<<<<< HEAD
           entry.ytext.insert(0, providedContent);
         });
         // Writing to Yjs triggers _yObserver which updates the model.
         // Only call model.setValue() if the binding isn't established yet.
         if (!bindingEstablished && model.getValue() !== providedContent) {
           model.setValue(providedContent);
+=======
+>>>>>>> 4333b750f3b10dc22a93381c88e9ed2cbb0e6b4c
         }
         entry._seeded = true;
-      }
+      };
+
+      // React immediately when server content arrives
+      seedObserver = () => {
+        if (entry.ytext.length > 0) commit();
+      };
+      entry.ytext.observe(seedObserver);
+
+      // Fallback timeout for truly new documents
+      seedTimer = setTimeout(commit, SEED_WAIT_MS);
     };
+<<<<<<< HEAD
     
     // Normalize helper for comparing content from different sources
     // (API may include trailing newlines that disk content lacks, etc.)
     const normalizeContent = (s) => s ? s.replace(/\r\n/g, '\n').replace(/\s+$/, '') : '';
+=======
+>>>>>>> 4333b750f3b10dc22a93381c88e9ed2cbb0e6b4c
 
     if (isSynced) {
-      // Provider already synced, safe to seed now
+      // Provider already synced, safe to check now
       if (ytextHasContent) {
         // Ytext is authoritative - sync model to ytext content
         if (normalizeContent(model.getValue()) !== normalizeContent(ytextContent)) {
@@ -1075,9 +1144,14 @@ class CollabClient {
         }
         entry._seeded = true;
       } else if (hasProvidedContent && !entry._seeded) {
+        // Set model for display first, then wait for server
+        if (model.getValue() !== providedContent) {
+          model.setValue(providedContent);
+        }
         doSeed();
       }
     } else {
+<<<<<<< HEAD
       // Wait for sync before seeding to avoid racing with server content.
       // CRITICAL: Clear the model if it was pre-populated by
       // @monaco-editor/react's defaultValue.  Without this, the Yjs sync
@@ -1089,11 +1163,23 @@ class CollabClient {
       if (model.getValue().length > 0) {
         model.setValue('');
       }
+=======
+      // Wait for sync before checking
+>>>>>>> 4333b750f3b10dc22a93381c88e9ed2cbb0e6b4c
       const syncHandler = () => {
         entry.provider.off('sync', syncHandler);
         doSeed();
       };
       entry.provider.on('sync', syncHandler);
+<<<<<<< HEAD
+=======
+
+      // Set model content optimistically so user sees something
+      // but don't write to ytext yet
+      if (model.getValue() !== providedContent && hasProvidedContent) {
+        model.setValue(providedContent);
+      }
+>>>>>>> 4333b750f3b10dc22a93381c88e9ed2cbb0e6b4c
     }
     
     // Now set the model on the editor if different
@@ -1254,7 +1340,25 @@ class CollabClient {
     
     // Only seed if truly empty and not already seeded
     if (entry._seeded) return;
-    if (entry.ytext.length === 0 && typeof initialContent === 'string' && initialContent.length > 0) {
+    if (entry.ytext.length > 0) {
+      // Server already seeded via bindState
+      entry._seeded = true;
+      return;
+    }
+
+    // Ytext is empty after sync — wait a bit longer for the server's
+    // bindState to complete (it runs async and may not have finished
+    // by the time the initial WebSocket sync fires).
+    await new Promise(resolve => setTimeout(resolve, 1500));
+
+    if (entry._seeded) return;
+    if (entry.ytext.length > 0) {
+      entry._seeded = true;
+      return;
+    }
+
+    // Still empty — file likely doesn't exist on disk, client seeds
+    if (typeof initialContent === 'string' && initialContent.length > 0) {
       entry.doc.transact(() => {
         // Double-check length inside transaction
         if (entry.ytext.length === 0) {

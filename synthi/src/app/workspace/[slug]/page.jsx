@@ -50,6 +50,7 @@ import { DraggableVideoWidget } from '@/components/DraggableVideoWidget';
 import { useHMR } from '@/hooks/useHMR';
 import ErrorOverlay from '@/components/ErrorOverlay';
 import { GitStatus } from '@/components/git/GitStatus';
+import { GitSummaryPanel } from '@/components/git/GitSummaryPanel';
 import ActivityBar from '../ActivityBar.jsx';
 import SearchView from './SearchView.jsx';
 import FloatingEmulatorWindow from '@/components/emulator/FloatingEmulatorWindow';
@@ -62,6 +63,16 @@ import { AlertCircle } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useCollabNotifications } from '@/hooks/useCollabNotifications';
 import { GuestBanner } from '@/components/collaboration';
+import { useExtensions } from '@/hooks/useExtensions';
+import ExtensionSidebar from '@/components/extensions/ExtensionSidebar';
+import ExtensionViewContainer from '@/components/extensions/ExtensionViewContainer';
+
+// ─── New Docking Window Manager ────────────────────────
+import { DockableWorkspace } from '@/components/docking-wm/DockableWorkspace';
+
+// Feature flag: set to true to enable the new docking layout.
+// When false, the existing rigid ResizablePanelGroup layout is used.
+const USE_DOCKING_WM = true;
 
 export default function EditorPage({ params }) {
     const dispatch = useAppDispatch();
@@ -108,6 +119,32 @@ export default function EditorPage({ params }) {
     const { analyzeCode, analyzeProactive, analyzeContainer, analyzeUnified, lastResult, isAnalyzing: isAnalyzingGateway, connectionMeta } = useAnalyzerGateway();
     const { client, compile, mediaStream, cancelMobileJob, isCompiling, status: compilerStatus } = useCompiler();
     useHMR();
+
+    // ─── Extension system ──────────────────────────────────
+    const {
+        ready: extensionsReady,
+        hostStatus: extensionHostStatus,
+        extensions: installedExtensions,
+        errors: extensionErrors,
+        install: installExtension,
+        enable: enableExtension,
+        disable: disableExtension,
+        uninstall: uninstallExtension,
+        restart: restartExtension,
+        executeCommand: executeExtensionCommand,
+        dismissError: dismissExtensionError,
+        contributedContainers,
+        contributedViews,
+        webviewPanels: extensionWebviewPanels,
+        treeDataMap: extensionTreeDataMap,
+        webviewManager: extensionWebviewManager,
+        statusBarItems: extensionStatusBarItems,
+        vscodeServerState,
+        vscodeServerWorkspaceDir,
+        vscodeTunnelService: extensionTunnelService,
+        requestTreeRefresh,
+        viewsWelcome: extensionViewsWelcome,
+    } = useExtensions({ editor, workspaceId: slug });
     
     // Collaboration event toast notifications
     useCollabNotifications();
@@ -119,6 +156,8 @@ export default function EditorPage({ params }) {
         filesIndexed: codeIntelFilesIndexed,
         indexWorkspace: triggerCodeIntelIndex,
         indexFile: triggerCodeIntelFileIndex,
+        deleteFile: triggerCodeIntelDeleteFile,
+        renameFile: triggerCodeIntelRenameFile,
     } = useCodeIntelIndex({
         workspaceSlug: slug,
         autoIndex: true, // Auto-index when workspace opens
@@ -246,6 +285,36 @@ export default function EditorPage({ params }) {
             }
         };
     }, []);
+
+    // ── CodeIntel CRUD event listeners ──────────────────────────────────
+    // Redux thunks (workspaceSlice) emit CustomEvents for file create/delete/rename.
+    // We listen here so we can call the hook-based CodeIntel functions.
+    useEffect(() => {
+        if (typeof window === 'undefined') return;
+
+        const onIndexFile = (e) => {
+            const { filePath } = e.detail || {};
+            if (filePath && triggerCodeIntelFileIndex) triggerCodeIntelFileIndex(filePath);
+        };
+        const onDeleteFile = (e) => {
+            const { filePath } = e.detail || {};
+            if (filePath && triggerCodeIntelDeleteFile) triggerCodeIntelDeleteFile(filePath);
+        };
+        const onRenameFile = (e) => {
+            const { oldPath, newPath } = e.detail || {};
+            if (oldPath && newPath && triggerCodeIntelRenameFile) triggerCodeIntelRenameFile(oldPath, newPath);
+        };
+
+        window.addEventListener('synthi:codeintel-index-file', onIndexFile);
+        window.addEventListener('synthi:codeintel-delete-file', onDeleteFile);
+        window.addEventListener('synthi:codeintel-rename-file', onRenameFile);
+
+        return () => {
+            window.removeEventListener('synthi:codeintel-index-file', onIndexFile);
+            window.removeEventListener('synthi:codeintel-delete-file', onDeleteFile);
+            window.removeEventListener('synthi:codeintel-rename-file', onRenameFile);
+        };
+    }, [triggerCodeIntelFileIndex, triggerCodeIntelDeleteFile, triggerCodeIntelRenameFile]);
 
     // Helper to dispatch GUI events to the backend via CompilerClient middleware
     const sendGuiEvent = (eventPayload) => {
@@ -1728,6 +1797,10 @@ export default function EditorPage({ params }) {
         const source = typeof currentContent === 'string' ? currentContent : '';
         const filename = activeFile?.path || activeFile?.name || 'main';
 
+        // Note: CodeIntel re-index is triggered by saveFileContentThunk
+        // (via synthi:codeintel-index-file event) so both manual and auto-save
+        // paths are covered. No need to trigger it again here.
+
         // Check if language is supported for compilation to avoid errors
         const ext = (filename.split('.').pop() || '').toLowerCase();
         const supportedExts = ['cpp', 'cc', 'cxx', 'hpp', 'h', 'rs', 'ts', 'tsx'];
@@ -1764,7 +1837,7 @@ export default function EditorPage({ params }) {
         }
     }, [activeFile, currentContent, rawFiles, slug, compile]);
 
-    const handleEditorMount = (editorInstance) => {
+    const handleEditorMount = useCallback((editorInstance) => {
         setEditor(editorInstance);
         // Wait until file is loaded, then capture snapshot
         if (activeFile && !hasInitialSnapshot) {
@@ -1772,7 +1845,7 @@ export default function EditorPage({ params }) {
             setInitialContent(currentValue);
             setHasInitialSnapshot(true);
         }
-    };
+    }, [activeFile, hasInitialSnapshot]);
 
     const handleToggleChat = useCallback(() => {
         setChatVisible((v) => !v);
@@ -1823,22 +1896,57 @@ export default function EditorPage({ params }) {
             <div className="flex h-full min-w-0">
                 <ActivityBar
                     active={sidebarView}
-                    onSelect={(id) => setSidebarView(id === 'search' ? 'search' : 'explorer')}
+                    onSelect={(id) => setSidebarView(id === sidebarView ? 'explorer' : id)}
+                    extensionContainers={contributedContainers}
                 />
-                <div className="flex-1 min-w-0">
-                    <ResizablePanelGroup direction="vertical">
-                        <ResizablePanel defaultSize={65} minSize={20}>
-                            {sidebarView === 'search' ? (
-                                <SearchView slug={slug} onToggleOrientation={toggleTreeOrientation} />
-                            ) : (
+                <div className="flex-1 min-w-0 overflow-hidden flex flex-col">
+                    {sidebarView === 'scm' ? (
+                        <GitStatus slug={slug} />
+                    ) : sidebarView === 'search' ? (
+                        <SearchView slug={slug} onToggleOrientation={toggleTreeOrientation} />
+                    ) : sidebarView === 'extensions' ? (
+                        <ExtensionSidebar
+                            extensions={installedExtensions}
+                            errors={extensionErrors}
+                            ready={extensionsReady}
+                            hostStatus={extensionHostStatus}
+                            vscodeServerState={vscodeServerState}
+                            onInstall={installExtension}
+                            onEnable={enableExtension}
+                            onDisable={disableExtension}
+                            onUninstall={uninstallExtension}
+                            onRestart={restartExtension}
+                            onDismissError={dismissExtensionError}
+                            onExecuteCommand={executeExtensionCommand}
+                        />
+                    ) : sidebarView.startsWith('ext:') ? (() => {
+                        const containerId = sidebarView.replace('ext:', '');
+                        const container = contributedContainers.find(c => c.id === containerId);
+
+                        return (
+                            <ExtensionViewContainer
+                                containerId={containerId}
+                                container={container}
+                                views={contributedViews[containerId] || []}
+                                treeDataMap={extensionTreeDataMap}
+                                webviewPanels={extensionWebviewPanels}
+                                webviewManager={extensionWebviewManager}
+                                extensions={installedExtensions}
+                                onExecuteCommand={executeExtensionCommand}
+                                onRequestTreeRefresh={requestTreeRefresh}
+                                viewsWelcome={extensionViewsWelcome}
+                            />
+                        );
+                    })() : (
+                        <div className="flex flex-col h-full min-h-0">
+                            <div className="flex-1 min-h-0 overflow-y-auto">
                                 <FileTreeView onToggleOrientation={toggleTreeOrientation} />
-                            )}
-                        </ResizablePanel>
-                        <ResizableHandle />
-                        <ResizablePanel defaultSize={7} minSize={7}>
-                            <GitStatus slug={slug} />
-                        </ResizablePanel>
-                    </ResizablePanelGroup>
+                            </div>
+                            <div className="flex-shrink-0">
+                                <GitSummaryPanel onOpenScm={() => setSidebarView('scm')} />
+                            </div>
+                        </div>
+                    )}
                 </div>
             </div>
         </ResizablePanel>
@@ -1873,9 +1981,15 @@ export default function EditorPage({ params }) {
                 // Cancel the running mobile job on the worker
                 if (emulatorSessionId) {
                     cancelMobileJob(emulatorSessionId);
-                }
-                if (client?.reconnect) {
-                    client.reconnect();
+                    // Only hard-reset when an emulator was actually running;
+                    // this clears GStreamer/runner state on the worker.
+                    if (client?.reconnect) {
+                        client.reconnect();
+                    }
+                } else if (client?.softReconnect) {
+                    // No emulator session — soft reconnect preserves
+                    // vscode-server-manager and LSP processes.
+                    client.softReconnect();
                 }
                 dispatch(setEmulatorPreviewVisible(false));
                 setEmulatorSessionId(null);
@@ -1944,6 +2058,41 @@ export default function EditorPage({ params }) {
                 sendGuiEvent={sendGuiEvent}
             />
 
+            {/* ─── Layout: either new docking WM or legacy rigid panels ─── */}
+            {USE_DOCKING_WM ? (
+                <div className="flex-1 min-h-0">
+                    <DockableWorkspace
+                        workspaceSlug={slug}
+                        defaultPreset="classic"
+                        panelProps={{
+                            editor,
+                            activeFile,
+                            currentCode: currentContent,
+                            diagnostics: mergedDiagnostics,
+                            diagnosticSummary,
+                            isAnalyzing: isAnalyzingProactive || isWorkspaceAnalyzing,
+                            onSuggest: (s) => setLatestCompletion(s),
+                            onBusy: (b) => setAiBusy(Boolean(b)),
+                            clearSignal: completionClearSignal,
+                            onCloseProblems: () => setShowProblemsPanel(false),
+                            onToggleOrientation: toggleTreeOrientation,
+                            onOpenScm: () => setSidebarView('scm'),
+                            editorProps: {
+                                innerRef: setEditor,
+                                slug,
+                                showTerminal,
+                                analyzeCode,
+                                analyzeUnified,
+                                lastResult,
+                                isAnalyzing: isAnalyzingGateway,
+                                connectionMeta,
+                                latestCompletion,
+                                completionClearSignal,
+                            },
+                        }}
+                    />
+                </div>
+            ) : (
             <ResizablePanelGroup direction="vertical" className="flex-1 min-h-0">
                 <ResizablePanel defaultSize={showProblemsPanel ? 75 : 100} minSize={20}>
                     <ResizablePanelGroup
@@ -2016,6 +2165,7 @@ export default function EditorPage({ params }) {
                     </>
                 )}
             </ResizablePanelGroup>
+            )}
 
         </div>
 
@@ -2095,6 +2245,8 @@ export default function EditorPage({ params }) {
             diagnosticSummary={diagnosticSummary}
             isAnalyzing={isAnalyzingProactive || isWorkspaceAnalyzing}
             onProblemsClick={() => setShowProblemsPanel(prev => !prev)}
+            extensionStatusBarItems={extensionStatusBarItems}
+            vscodeServerState={vscodeServerState}
         />
 
         {/* Error Overlay */}

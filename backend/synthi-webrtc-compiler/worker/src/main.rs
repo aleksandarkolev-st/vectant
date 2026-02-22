@@ -191,6 +191,86 @@ fn extract_fingerprint(sdp: &str) -> Option<String> {
     None
 }
 
+/// Send data on a DataChannel with SCTP backpressure.
+/// Waits for `buffered_amount()` to drop below the threshold before sending,
+/// and retries on transient errors instead of breaking the forwarding loop.
+const DC_BUFFER_THRESHOLD: usize = 256 * 1024; // 256 KB
+const DC_BACKPRESSURE_POLL_MS: u64 = 10;
+const DC_SEND_MAX_RETRIES: u32 = 5;
+
+async fn dc_send_with_backpressure(
+    dc: &Arc<RTCDataChannel>,
+    data: &Bytes,
+    label: &str,
+) -> anyhow::Result<()> {
+    // Wait for the SCTP send buffer to drain below the threshold
+    let mut waited = 0u32;
+    while dc.buffered_amount().await > DC_BUFFER_THRESHOLD {
+        tokio::time::sleep(std::time::Duration::from_millis(DC_BACKPRESSURE_POLL_MS)).await;
+        waited += 1;
+        if waited % 100 == 0 {
+            eprintln!("[{}] backpressure: waited {}ms for DC buffer to drain (buffered={})",
+                label, waited as u64 * DC_BACKPRESSURE_POLL_MS, dc.buffered_amount().await);
+        }
+        // Safety valve: after 10s of waiting, give up
+        if waited > 1000 {
+            eprintln!("[{}] backpressure timeout after 10s, attempting send anyway", label);
+            break;
+        }
+    }
+
+    // Retry send on transient errors
+    let mut retries = 0u32;
+    loop {
+        match dc.send(data).await {
+            Ok(_) => return Ok(()),
+            Err(e) => {
+                retries += 1;
+                if retries > DC_SEND_MAX_RETRIES {
+                    eprintln!("[{}] send failed after {} retries: {}", label, DC_SEND_MAX_RETRIES, e);
+                    return Err(anyhow::anyhow!("{}", e));
+                }
+                eprintln!("[{}] send error (retry {}/{}): {}", label, retries, DC_SEND_MAX_RETRIES, e);
+                // Exponential backoff: 20ms, 40ms, 80ms, 160ms, 320ms
+                tokio::time::sleep(std::time::Duration::from_millis(20 * (1 << (retries - 1)))).await;
+            }
+        }
+    }
+}
+
+async fn dc_send_text_with_backpressure(
+    dc: &Arc<RTCDataChannel>,
+    text: String,
+    label: &str,
+) -> anyhow::Result<()> {
+    // Wait for buffer to drain
+    let mut waited = 0u32;
+    while dc.buffered_amount().await > DC_BUFFER_THRESHOLD {
+        tokio::time::sleep(std::time::Duration::from_millis(DC_BACKPRESSURE_POLL_MS)).await;
+        waited += 1;
+        if waited > 1000 {
+            eprintln!("[{}] backpressure timeout after 10s, attempting send_text anyway", label);
+            break;
+        }
+    }
+
+    let mut retries = 0u32;
+    loop {
+        match dc.send_text(text.clone()).await {
+            Ok(_) => return Ok(()),
+            Err(e) => {
+                retries += 1;
+                if retries > DC_SEND_MAX_RETRIES {
+                    eprintln!("[{}] send_text failed after {} retries: {}", label, DC_SEND_MAX_RETRIES, e);
+                    return Err(anyhow::anyhow!("{}", e));
+                }
+                eprintln!("[{}] send_text error (retry {}/{}): {}", label, retries, DC_SEND_MAX_RETRIES, e);
+                tokio::time::sleep(std::time::Duration::from_millis(20 * (1 << (retries - 1)))).await;
+            }
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     eprintln!("=== WORKER BUILD 2026-02-06-LSP-DEBUG ===");
@@ -359,6 +439,11 @@ async fn main() -> Result<()> {
     // Simple in-memory cache for tracking compiled lib paths (legacy, used alongside IncrementalCache)
     let compile_cache: Arc<Mutex<HashMap<String, (u64, String)>>> =
         Arc::new(Mutex::new(HashMap::new()));
+
+    // VS Code Server Manager: holds kill sender
+    // for the vscode-server-manager.js process.
+    let vscode_server_kill_tx: Arc<Mutex<Option<(mpsc::UnboundedSender<()>, tokio::time::Instant)>>> =
+        Arc::new(Mutex::new(None));
 
     // Content-addressable incremental compilation cache (persists across sessions)
     // Uses /dev/shm on Linux for fast RAM-based caching
@@ -583,6 +668,7 @@ async fn main() -> Result<()> {
         metrics_aggregator.clone(),
         restart_controller.clone(),
         ipc_config.clone(),
+        vscode_server_kill_tx.clone(),
     ).await?;
 
     let mut current_remote_fingerprint: Option<String> = None;
@@ -642,6 +728,7 @@ async fn main() -> Result<()> {
                                     metrics_aggregator.clone(),
                                     restart_controller.clone(),
                                     ipc_config.clone(),
+                                    vscode_server_kill_tx.clone(),
                                 )
                                 .await?;
                                 pc = new_pc;
@@ -718,6 +805,14 @@ async fn main() -> Result<()> {
                      let mut guard = sdl_input_store.lock().await;
                      guard.clear();
                 }
+                // Kill any running VS Code Server manager process
+                {
+                    let mut guard = vscode_server_kill_tx.lock().await;
+                    if let Some((tx, _)) = guard.take() {
+                        eprintln!("[WebRTC-signal] Killing vscode-server-manager process during reset...");
+                        let _ = tx.send(());
+                    }
+                }
 
                 // 4. Create a fresh PeerConnection
                 match create_peer(signal_tx.clone()).await {
@@ -738,6 +833,7 @@ async fn main() -> Result<()> {
                              metrics_aggregator.clone(),
                              restart_controller.clone(),
                              ipc_config.clone(),
+                             vscode_server_kill_tx.clone(),
                          ).await?;
                          pc = new_pc;
                          eprintln!("[WebRTC-signal] Soft reset complete. New PeerConnection ready.");
@@ -989,6 +1085,7 @@ async fn wire_peer_channels(
     metrics_aggregator: Arc<tokio::sync::Mutex<MetricsAggregator>>,
     restart_controller: Arc<tokio::sync::Mutex<RestartController>>,
     ipc_config: Arc<IpcConfig>,
+    vscode_server_kill_tx: Arc<Mutex<Option<(mpsc::UnboundedSender<()>, tokio::time::Instant)>>>,
 ) -> Result<()> {
     let pc = pc.clone();
     let build_log_dc = pc
@@ -1022,6 +1119,7 @@ async fn wire_peer_channels(
     let restart_controller_for_callback = restart_controller.clone();
     let ipc_config_for_callback = ipc_config.clone();
     let sdl_input_store_for_callback = sdl_input_store.clone();
+    let vscode_server_kill_tx_for_callback = vscode_server_kill_tx.clone();
     pc.on_data_channel(Box::new(move |dc: Arc<RTCDataChannel>| {
         let store = compile_store.clone();
         let term_store = term_store.clone();
@@ -1039,6 +1137,7 @@ async fn wire_peer_channels(
         let metrics_aggregator_outer = metrics_aggregator_for_callback.clone();
         let restart_controller_outer = restart_controller_for_callback.clone();
         let ipc_config_outer = ipc_config_for_callback.clone();
+        let vscode_server_kill_tx_outer = vscode_server_kill_tx_for_callback.clone();
         async move {
             let label = dc.label();
             eprintln!("[on_data_channel] Received data channel: label='{}', id={}", label, dc.id());
@@ -1580,13 +1679,27 @@ async fn wire_peer_channels(
                     // Running them concurrently shaves seconds off first-load.
                     // Both are idempotent (marker-file cached) so subsequent
                     // connections for other languages are near-instant.
-                    let (_, lsp_result) = tokio::join!(
-                        infra::dep_installer::install_all_deps(&workspace_path, &lang, false),
-                        infra::lsp_installer::ensure_lsp_installed(&lang, &workspace_path),
-                    );
+                    //
+                    // EXCEPTION: For Dart, we sequence the installs because
+                    // dep_installer needs the `dart` binary to run `dart pub get`,
+                    // and the binary may only become available after lsp_installer
+                    // finishes installing the Dart SDK.
+                    let lsp_result = if lang == "dart" {
+                        // Sequential: install dart binary first, then run deps
+                        let result = infra::lsp_installer::ensure_lsp_installed(&lang, &workspace_path).await;
+                        infra::dep_installer::install_all_deps(&workspace_path, &lang, false).await;
+                        result
+                    } else {
+                        // Parallel: independent install steps
+                        let (_, lsp_res) = tokio::join!(
+                            infra::dep_installer::install_all_deps(&workspace_path, &lang, false),
+                            infra::lsp_installer::ensure_lsp_installed(&lang, &workspace_path),
+                        );
+                        lsp_res
+                    };
                     match lsp_result {
                         Ok(bin) => println!("[LSP] Server binary ready: {}", bin),
-                        Err(e) => eprintln!("[LSP] Server install warning: {}", e),
+                        Err(ref e) => eprintln!("[LSP] Server install warning: {}", e),
                     }
 
                     // ── Generate minimal LSP config for standalone files ─────
@@ -1596,16 +1709,49 @@ async fn wire_peer_channels(
                     // even for a single file without a project manifest.
                     ensure_lsp_config(&workspace_path, &lang);
 
+                    // Detect rust-src path BEFORE constructing the RA command.
+                    // This path is:
+                    //  1. Set as RUST_SRC_PATH env on the RA process (belt-and-suspenders)
+                    //  2. Injected into initializationOptions.cargo.sysrootSrc
+                    // Both tell RA where to find stdlib source (Vec::new, etc.)
+                    // even if RA's own sysroot auto-detection points elsewhere.
+                    let (rust_sysroot_src, rust_sysroot): (Option<String>, Option<String>) = if lang == "rust" {
+                        let (src, root) = find_rust_sysroot_info();
+                        match &src {
+                            Some(p) => println!("[LSP] Detected rust sysroot_src for injection: {}", p),
+                            None => println!("[LSP] WARNING: rust-src not found — Vec:: completions may not work"),
+                        }
+                        if let Some(ref r) = root {
+                            println!("[LSP] Detected rust sysroot root: {}", r);
+                        }
+                        (src, root)
+                    } else {
+                        (None, None)
+                    };
+
                     println!("Starting LSP for language: {}", lang);
                     let mut cmd = match lang.as_str() {
                         "cpp" | "c" => {
                             // Create compile_flags.txt to enforce C++17
                             let flags_path = workspace_path.join("compile_flags.txt");
-                            if let Ok(mut file) = std::fs::File::create(flags_path) {
+                            if let Ok(mut file) = std::fs::File::create(&flags_path) {
                                 use std::io::Write;
                                 let _ = writeln!(file, "-std=c++17");
                                 // Force C++ mode to ensure headers are treated correctly
                                 let _ = writeln!(file, "-xc++");
+                            }
+
+                            // Create .clang-tidy to disable the include-cleaner check.
+                            // clang-tidy's misc-include-cleaner aggressively flags newly
+                            // added includes as "unused" before the TU is fully re-indexed,
+                            // which is confusing in an interactive editor.
+                            let clang_tidy_path = workspace_path.join(".clang-tidy");
+                            if !clang_tidy_path.exists() {
+                                if let Ok(mut f) = std::fs::File::create(&clang_tidy_path) {
+                                    use std::io::Write;
+                                    let _ = f.write_all(b"Checks: '-misc-include-cleaner'\n");
+                                    println!("[LSP-CONFIG] Created .clang-tidy (disabled include-cleaner)");
+                                }
                             }
 
                             let mut c = system_command("clangd");
@@ -1618,12 +1764,74 @@ async fn wire_peer_channels(
                             c.arg("--query-driver=*");
                             c
                         },
-                        "rust" => system_command("rust-analyzer"),
+                        "rust" => {
+                            if cfg!(target_os = "windows") {
+                                // On Windows, system_command wraps in `wsl`. But env vars
+                                // set via .env() only affect wsl.exe, NOT the Linux process
+                                // inside WSL.  Instead, launch RA through bash with explicit
+                                // env so CARGO_HOME/RUSTUP_HOME/PATH propagate correctly.
+                                //
+                                // Also inject RUST_SRC_PATH if we detected it, so RA can
+                                // find stdlib source even if its sysroot auto-detection fails.
+                                let src_env = rust_sysroot_src.as_ref()
+                                    .map(|p| format!("export RUST_SRC_PATH='{}'; ", p))
+                                    .unwrap_or_default();
+                                let script = format!(
+                                    "export CARGO_HOME=\"${{CARGO_HOME:-$HOME/.cargo}}\"; \
+                                     export RUSTUP_HOME=\"${{RUSTUP_HOME:-$HOME/.rustup}}\"; \
+                                     unset RUSTUP_TOOLCHAIN; \
+                                     export PATH=\"$CARGO_HOME/bin:$PATH\"; \
+                                     {}exec rust-analyzer",
+                                    src_env
+                                );
+                                let mut c = Command::new("wsl");
+                                c.arg("bash").arg("-lc").arg(&script);
+                                c
+                            } else {
+                                let mut c = system_command("rust-analyzer");
+                                // Ensure rust-analyzer can find cargo/rustc.
+                                // In containers, rustup installs to /root/.cargo and /root/.rustup.
+                                // If CARGO_HOME / RUSTUP_HOME aren't set, try common locations.
+                                let cargo_home = std::env::var("CARGO_HOME")
+                                    .unwrap_or_else(|_| "/root/.cargo".to_string());
+                                let rustup_home = std::env::var("RUSTUP_HOME")
+                                    .unwrap_or_else(|_| "/root/.rustup".to_string());
+                                c.env("CARGO_HOME", &cargo_home);
+                                c.env("RUSTUP_HOME", &rustup_home);
+                                // Clear RUSTUP_TOOLCHAIN — if the container has a bare
+                                // system rustc at /usr, RA auto-detects sysroot as /usr
+                                // and sets RUSTUP_TOOLCHAIN="/usr" which breaks cargo.
+                                c.env_remove("RUSTUP_TOOLCHAIN");
+                                // Prepend cargo/rustup bin dirs to PATH so rust-analyzer
+                                // can invoke `cargo metadata`, `rustc`, etc.
+                                let current_path = std::env::var("PATH").unwrap_or_default();
+                                let new_path = format!(
+                                    "{}/bin:{}",
+                                    cargo_home, current_path
+                                );
+                                c.env("PATH", new_path);
+                                // Set RUST_SRC_PATH as a belt-and-suspenders fallback
+                                // so RA can find stdlib source even if its sysroot
+                                // auto-detection points to a toolchain without rust-src.
+                                if let Some(ref src_path) = rust_sysroot_src {
+                                    c.env("RUST_SRC_PATH", src_path);
+                                }
+                                c
+                            }
+                        },
                         "python" | "py" => system_command("pylsp"),
-                        "typescript" | "ts" | "javascript" | "js" => {
+                        "typescript" | "ts" => {
                              let mut c = system_command("typescript-language-server");
                              c.arg("--stdio");
                              c
+                        },
+                        "javascript" | "js" => {
+                            // Use typescript-language-server for JavaScript — provides
+                            // full IntelliSense (completions, go-to-def, hover, references)
+                            // via the TypeScript language service, which natively supports JS.
+                            let mut c = system_command("typescript-language-server");
+                            c.arg("--stdio");
+                            c
                         },
                         "java" => {
                             // Eclipse JDT Language Server
@@ -1670,9 +1878,49 @@ async fn wire_peer_channels(
                         },
                         "dart" => {
                             // Dart SDK language server
-                            let mut c = system_command("dart");
-                            c.arg("language-server");
-                            c.arg("--protocol=lsp");
+                            // The Dart SDK may be installed to /opt/dart-sdk/bin or
+                            // /usr/lib/dart/bin which are not on the default PATH.
+                            // Prepend these well-known locations so the spawn succeeds.
+                            let current_path = std::env::var("PATH").unwrap_or_default();
+                            let dart_path = format!(
+                                "/opt/dart-sdk/bin:/usr/lib/dart/bin:{}",
+                                current_path
+                            );
+                            let mut c = if cfg!(target_os = "windows") {
+                                let mut cmd = Command::new("wsl");
+                                cmd.arg("bash").arg("-lc").arg(
+                                    "export PATH=\"/opt/dart-sdk/bin:/usr/lib/dart/bin:$PATH\"; exec dart language-server --protocol=lsp"
+                                );
+                                cmd
+                            } else {
+                                let mut cmd = Command::new("dart");
+                                cmd.arg("language-server");
+                                cmd.arg("--protocol=lsp");
+                                cmd.env("PATH", &dart_path);
+                                cmd
+                            };
+                            // If dart is not on default PATH, try the well-known locations directly
+                            if !cfg!(target_os = "windows") {
+                                let dart_on_path = std::process::Command::new("which")
+                                    .arg("dart")
+                                    .stdout(Stdio::null())
+                                    .stderr(Stdio::null())
+                                    .status()
+                                    .map(|s| s.success())
+                                    .unwrap_or(false);
+                                if !dart_on_path {
+                                    for candidate in &["/opt/dart-sdk/bin/dart", "/usr/lib/dart/bin/dart", "/usr/local/bin/dart"] {
+                                        if std::path::Path::new(candidate).exists() {
+                                            c = Command::new(candidate);
+                                            c.arg("language-server");
+                                            c.arg("--protocol=lsp");
+                                            c.env("PATH", &dart_path);
+                                            println!("[LSP] Using dart binary at: {}", candidate);
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
                             c
                         },
                         "lua" => {
@@ -1692,14 +1940,71 @@ async fn wire_peer_channels(
                             c
                         },
                         "css" | "scss" | "less" => {
-                            // VSCode CSS/SCSS/LESS language server
-                            let mut c = system_command("css-languageserver");
+                            // VSCode CSS/SCSS/LESS language server (vscode-langservers-extracted)
+                            let mut c = system_command("vscode-css-language-server");
                             c.arg("--stdio");
                             c
                         },
                         "html" => {
-                            // VSCode HTML language server
-                            let mut c = system_command("html-languageserver");
+                            // VSCode HTML language server (vscode-langservers-extracted)
+                            let mut c = system_command("vscode-html-language-server");
+                            c.arg("--stdio");
+                            c
+                        },
+                        "prisma" => {
+                            // Prisma Language Server (Node.js based)
+                            // Installed via: npm i -g @prisma/language-server
+                            let mut c = system_command("prisma-language-server");
+                            c.arg("--stdio");
+                            c
+                        },
+                        "tailwindcss" => {
+                            // Tailwind CSS Language Server
+                            // Installed via: npm i -g @tailwindcss/language-server
+                            let mut c = system_command("tailwindcss-language-server");
+                            c.arg("--stdio");
+                            c
+                        },
+                        "eslint" => {
+                            // ESLint Language Server (vscode-langservers-extracted)
+                            let mut c = system_command("vscode-eslint-language-server");
+                            c.arg("--stdio");
+                            c
+                        },
+                        "yaml" => {
+                            // YAML Language Server
+                            // Installed via: npm i -g yaml-language-server
+                            let mut c = system_command("yaml-language-server");
+                            c.arg("--stdio");
+                            c
+                        },
+                        "toml" => {
+                            // Taplo TOML Language Server
+                            // Installed via: cargo install taplo-cli --features lsp
+                            let mut c = system_command("taplo");
+                            c.arg("lsp");
+                            c.arg("stdio");
+                            c
+                        },
+                        "json" | "jsonc" => {
+                            // VSCode JSON language server (vscode-langservers-extracted)
+                            let mut c = system_command("vscode-json-language-server");
+                            c.arg("--stdio");
+                            c
+                        },
+                        "graphql" => {
+                            // GraphQL Language Server
+                            // Installed via: npm i -g graphql-language-service-cli
+                            let mut c = system_command("graphql-lsp");
+                            c.arg("server");
+                            c.arg("-m");
+                            c.arg("stream");
+                            c
+                        },
+                        "dockerfile" => {
+                            // Dockerfile Language Server
+                            // Installed via: npm i -g dockerfile-language-server-nodejs
+                            let mut c = system_command("docker-langserver");
                             c.arg("--stdio");
                             c
                         },
@@ -1713,6 +2018,45 @@ async fn wire_peer_channels(
                     cmd.stdin(Stdio::piped());
                     cmd.stdout(Stdio::piped());
                     cmd.stderr(Stdio::piped());
+
+                    // Pre-spawn check: verify the binary is actually executable.
+                    // This prevents cryptic "Permission denied" errors from spawn()
+                    // when a previous install left a non-executable file on disk.
+                    let binary_name = cmd.as_std().get_program().to_string_lossy().to_string();
+                    let pre_check = if cfg!(target_os = "windows") {
+                        Command::new("wsl")
+                            .args(["test", "-x", &format!("$(which {} 2>/dev/null || echo /nonexistent)", binary_name)])
+                            .stdout(Stdio::null())
+                            .stderr(Stdio::null())
+                            .status()
+                            .await
+                    } else {
+                        Command::new("sh")
+                            .args(["-c", &format!(
+                                "BIN=$(which {} 2>/dev/null) && test -x \"$BIN\"",
+                                binary_name
+                            )])
+                            .stdout(Stdio::null())
+                            .stderr(Stdio::null())
+                            .status()
+                            .await
+                    };
+                    if !matches!(pre_check, Ok(s) if s.success()) {
+                        eprintln!("[LSP] Pre-spawn check: {} is not executable or not found — attempting chmod fix", binary_name);
+                        // Try to fix permissions on well-known install locations
+                        let fix_cmd = format!(
+                            "BIN=$(which {bin} 2>/dev/null || echo /usr/local/bin/{bin}); \
+                             test -f \"$BIN\" && chmod +x \"$BIN\" 2>/dev/null || true",
+                            bin = binary_name
+                        );
+                        if cfg!(target_os = "windows") {
+                            let _ = Command::new("wsl").args(["bash", "-lc", &fix_cmd])
+                                .status().await;
+                        } else {
+                            let _ = Command::new("bash").args(["-lc", &fix_cmd])
+                                .status().await;
+                        }
+                    }
 
                     match cmd.spawn() {
                         Ok(mut child) => {
@@ -1752,12 +2096,15 @@ async fn wire_peer_channels(
                             let state = Arc::new(Mutex::new(LspSessionState {
                                 client_root_uri: None,
                                 server_root_uri: server_root_uri.clone(),
+                                doc_versions: std::collections::HashMap::new(),
                             }));
 
                             // Process incoming messages (buffered + new)
                             let state_for_incoming = state.clone();
                             let workspace_path_for_incoming = workspace_path.clone();
                             let stdin_tx_clone = stdin_tx.clone();
+                            let rust_sysroot_src_for_incoming = rust_sysroot_src.clone();
+                            let rust_sysroot_for_incoming = rust_sysroot.clone();
 
                             tokio::spawn(async move {
                                 while let Some(msg) = incoming_rx.recv().await {
@@ -1776,6 +2123,15 @@ async fn wire_peer_channels(
 
                                     // Try to parse and process
                                     let mut processed = false;
+                                    // Deferred version update: store (uri, version) AFTER
+                                    // forwarding so we don't record a version the server
+                                    // never received.
+                                    let mut deferred_version_update: Option<(String, i64)> = None;
+                                    // When an out-of-order didChange is detected, we skip
+                                    // forwarding the stale message and instead send a
+                                    // full-text resync from disk.
+                                    let mut skip_forward = false;
+                                    let mut deferred_resync: Option<(Vec<u8>, String, i64)> = None;
 
                                     if let Ok(mut json_val) = serde_json::from_slice::<serde_json::Value>(json_bytes) {
                                         let mut guard = state.lock().await;
@@ -1808,6 +2164,145 @@ async fn wire_peer_channels(
                                                 println!("Client root URI not found in initialize, defaulting to file:///");
                                                 guard.client_root_uri = Some("file:///".to_string());
                                             }
+
+                                            // Inject rust-analyzer configuration for stdlib resolution.
+                                            //
+                                            // Three mechanisms (belt-and-suspenders):
+                                            //  1. cargo.sysrootSrc — tells RA where stdlib source is
+                                            //  2. cargo.sysroot — explicit sysroot path (avoids "discover" running cargo)
+                                            //  3. linkedProjects — inline project definition that bypasses
+                                            //     `cargo metadata` entirely, giving RA a complete crate graph
+                                            //     with sysroot.  Without this, RA can autocomplete type *names*
+                                            //     (Vec, String) but NOT associated items (Vec::new, Vec::push).
+                                            if let Some(ref src_path) = rust_sysroot_src_for_incoming {
+                                                if let Some(params) = json_val.get_mut("params") {
+                                                    let init_opts = params
+                                                        .as_object_mut()
+                                                        .and_then(|p| p.entry("initializationOptions")
+                                                            .or_insert_with(|| serde_json::json!({}))
+                                                            .as_object_mut());
+                                                    if let Some(opts) = init_opts {
+                                                        // Derive sysroot root from the sysroot_for_incoming
+                                                        // or from the sysroot_src path.
+                                                        let sysroot_root = rust_sysroot_for_incoming.clone()
+                                                            .or_else(|| {
+                                                                // Derive from sysroot_src: strip /lib/rustlib/src/rust/library
+                                                                src_path.strip_suffix("/lib/rustlib/src/rust/library")
+                                                                    .or_else(|| src_path.strip_suffix("/lib/rustlib/src/rust"))
+                                                                    .map(|s| s.to_string())
+                                                            });
+
+                                                        // 1. Configure cargo settings
+                                                        {
+                                                            let cargo = opts
+                                                                .entry("cargo")
+                                                                .or_insert_with(|| serde_json::json!({}));
+                                                            if let Some(cargo_obj) = cargo.as_object_mut() {
+                                                                cargo_obj.insert(
+                                                                    "sysrootSrc".to_string(),
+                                                                    serde_json::Value::String(src_path.clone()),
+                                                                );
+                                                                // Override "discover" with explicit sysroot path.
+                                                                // "discover" causes RA to run `cargo metadata` for
+                                                                // sysroot resolution, which fails without cargo.
+                                                                if let Some(ref root) = sysroot_root {
+                                                                    cargo_obj.insert(
+                                                                        "sysroot".to_string(),
+                                                                        serde_json::Value::String(root.clone()),
+                                                                    );
+                                                                }
+                                                            }
+                                                        }
+                                                        println!("[LSP] Injected cargo.sysrootSrc={}, cargo.sysroot={:?}", src_path, sysroot_root);
+
+                                                        // 2. Inject linkedProjects with inline project.
+                                                        //    Skip when Cargo.toml has real [dependencies].
+                                                        let cargo_toml = workspace_path.join("Cargo.toml");
+                                                        let has_real_deps = cargo_toml.exists()
+                                                            && std::fs::read_to_string(&cargo_toml)
+                                                                .map(|c| {
+                                                                    if let Some(idx) = c.find("[dependencies]") {
+                                                                        let after = &c[idx + "[dependencies]".len()..];
+                                                                        for line in after.lines() {
+                                                                            let trimmed = line.trim();
+                                                                            if trimmed.is_empty() || trimmed.starts_with('#') {
+                                                                                continue;
+                                                                            }
+                                                                            if trimmed.starts_with('[') {
+                                                                                break;
+                                                                            }
+                                                                            return true;
+                                                                        }
+                                                                    }
+                                                                    false
+                                                                })
+                                                                .unwrap_or(false);
+
+                                                        if has_real_deps {
+                                                            println!("[LSP] Cargo.toml has [dependencies] — using cargo discovery, skipping linkedProjects");
+                                                        } else {
+                                                            let mut rs_crates: Vec<serde_json::Value> = Vec::new();
+                                                            if let Ok(entries) = std::fs::read_dir(&workspace_path) {
+                                                                for entry in entries.flatten() {
+                                                                    let p = entry.path();
+                                                                    if p.extension().map_or(false, |e| e == "rs") {
+                                                                        let p_str = if cfg!(target_os = "windows") {
+                                                                            let s = p.to_string_lossy().replace("\\", "/");
+                                                                            if let Some(ci) = s.find(':') {
+                                                                                let drive = s[..ci].to_lowercase();
+                                                                                let rest = &s[ci+1..];
+                                                                                format!("/mnt/{}{}", drive, rest)
+                                                                            } else {
+                                                                                s.to_string()
+                                                                            }
+                                                                        } else {
+                                                                            p.to_string_lossy().to_string()
+                                                                        };
+                                                                        rs_crates.push(serde_json::json!({
+                                                                            "root_module": p_str,
+                                                                            "edition": "2021",
+                                                                            "deps": []
+                                                                        }));
+                                                                    }
+                                                                }
+                                                            }
+                                                            if rs_crates.is_empty() {
+                                                                let fallback = workspace_path.join("main.rs");
+                                                                let fb_str = fallback.to_string_lossy().to_string();
+                                                                rs_crates.push(serde_json::json!({
+                                                                    "root_module": fb_str,
+                                                                    "edition": "2021",
+                                                                    "deps": []
+                                                                }));
+                                                            }
+                                                            let num_crates = rs_crates.len();
+                                                            // Build the project JSON with both sysroot and sysroot_src.
+                                                            // sysroot = root path (e.g., /usr) — needed for compiled libs
+                                                            // sysroot_src = source path (e.g., /usr/lib/rustlib/src/rust/library)
+                                                            let mut project_json = serde_json::json!({
+                                                                "sysroot_src": src_path,
+                                                                "crates": rs_crates,
+                                                            });
+                                                            if let Some(ref root) = sysroot_root {
+                                                                project_json.as_object_mut().unwrap().insert(
+                                                                    "sysroot".to_string(),
+                                                                    serde_json::Value::String(root.clone()),
+                                                                );
+                                                            }
+                                                            opts.insert(
+                                                                "linkedProjects".to_string(),
+                                                                serde_json::json!([project_json]),
+                                                            );
+                                                            println!("[LSP] Injected linkedProjects with {} crate(s), sysroot_src={}, sysroot={:?}", num_crates, src_path, sysroot_root);
+                                                        }
+
+                                                        // Log the full initializationOptions for debugging
+                                                        if let Ok(opts_json) = serde_json::to_string_pretty(&serde_json::Value::Object(opts.clone())) {
+                                                            println!("[LSP] Full initializationOptions for RA:\n{}", opts_json);
+                                                        }
+                                                    }
+                                                }
+                                            }
                                         }
 
                                         // 2. Rewrite URIs (Client -> Server)
@@ -1817,6 +2312,16 @@ async fn wire_peer_channels(
                                         if json_val.get("method").and_then(|m| m.as_str()) == Some("textDocument/didOpen") {
                                             if let Some(params) = json_val.get("params") {
                                                 if let Some(doc) = params.get("textDocument") {
+                                                    // Initialize version tracking from didOpen.
+                                                    // This seeds the monotonic version for this URI
+                                                    // so subsequent didChange can be ordered correctly.
+                                                    if let Some(uri) = doc.get("uri").and_then(|s| s.as_str()) {
+                                                        let open_version = doc.get("version")
+                                                            .and_then(|v| v.as_i64())
+                                                            .unwrap_or(0); // default to 0 if null/missing
+                                                        guard.doc_versions.insert(uri.to_string(), open_version);
+                                                    }
+
                                                     if let (Some(uri), Some(text)) = (doc.get("uri").and_then(|s| s.as_str()), doc.get("text").and_then(|s| s.as_str())) {
                                                         if !text.is_empty() {
                                                             if let Some(rel) = uri.strip_prefix(&guard.server_root_uri) {
@@ -1836,91 +2341,164 @@ async fn wire_peer_channels(
                                         }
 
                                         // 4. Handle didChange file writing (full sync AND incremental)
+                                        // Track document versions to reject out-of-order changes.
                                         if json_val.get("method").and_then(|m| m.as_str()) == Some("textDocument/didChange") {
                                             if let Some(params) = json_val.get("params") {
                                                 if let Some(changes) = params.get("contentChanges").and_then(|c| c.as_array()) {
                                                     if let Some(doc) = params.get("textDocument") {
                                                         if let Some(uri) = doc.get("uri").and_then(|s| s.as_str()) {
-                                                            if let Some(rel) = uri.strip_prefix(&guard.server_root_uri) {
-                                                                let rel = rel.trim_start_matches('/');
-                                                                let file_path = workspace_path.join(rel);
-
-                                                                if changes.len() == 1 && changes[0].get("range").is_none() {
-                                                                    // Full sync: single change without range = entire file content
-                                                                    if let Some(text) = changes[0].get("text").and_then(|s| s.as_str()) {
-                                                                        if let Err(e) = tokio::fs::write(&file_path, text).await {
-                                                                            eprintln!("Failed to update file {}: {}", file_path.display(), e);
-                                                                        }
-                                                                    }
-                                                                } else {
-                                                                    // Incremental sync: changes have range fields.
-                                                                    // Read current file, apply each change, write back.
-                                                                    let current = tokio::fs::read_to_string(&file_path).await.unwrap_or_default();
-                                                                    let mut lines: Vec<String> = current.split('\n').map(|s| s.to_string()).collect();
-
-                                                                    // Apply changes in reverse order so earlier positions stay valid
-                                                                    let mut sorted_changes = changes.clone();
-                                                                    sorted_changes.sort_by(|a, b| {
-                                                                        let a_start = a.get("range").and_then(|r| r.get("start"));
-                                                                        let b_start = b.get("range").and_then(|r| r.get("start"));
-                                                                        let a_line = a_start.and_then(|s| s.get("line")).and_then(|l| l.as_u64()).unwrap_or(0);
-                                                                        let b_line = b_start.and_then(|s| s.get("line")).and_then(|l| l.as_u64()).unwrap_or(0);
-                                                                        let a_char = a_start.and_then(|s| s.get("character")).and_then(|c| c.as_u64()).unwrap_or(0);
-                                                                        let b_char = b_start.and_then(|s| s.get("character")).and_then(|c| c.as_u64()).unwrap_or(0);
-                                                                        b_line.cmp(&a_line).then(b_char.cmp(&a_char))
-                                                                    });
-
-                                                                    for change in &sorted_changes {
-                                                                        if let (Some(range), Some(text)) = (change.get("range"), change.get("text").and_then(|t| t.as_str())) {
-                                                                            let start_line = range.get("start").and_then(|s| s.get("line")).and_then(|l| l.as_u64()).unwrap_or(0) as usize;
-                                                                            let start_char = range.get("start").and_then(|s| s.get("character")).and_then(|c| c.as_u64()).unwrap_or(0) as usize;
-                                                                            let end_line = range.get("end").and_then(|e| e.get("line")).and_then(|l| l.as_u64()).unwrap_or(0) as usize;
-                                                                            let end_char = range.get("end").and_then(|e| e.get("character")).and_then(|c| c.as_u64()).unwrap_or(0) as usize;
-
-                                                                            // Clamp to valid line range
-                                                                            let sl = start_line.min(lines.len().saturating_sub(1));
-                                                                            let el = end_line.min(lines.len().saturating_sub(1));
-
-                                                                            // Build the prefix (before the edit) and suffix (after the edit)
-                                                                            let prefix = if sl < lines.len() {
-                                                                                let line_content = &lines[sl];
-                                                                                let sc = start_char.min(line_content.len());
-                                                                                line_content[..sc].to_string()
-                                                                            } else {
-                                                                                String::new()
-                                                                            };
-                                                                            let suffix = if el < lines.len() {
-                                                                                let line_content = &lines[el];
-                                                                                let ec = end_char.min(line_content.len());
-                                                                                line_content[ec..].to_string()
-                                                                            } else {
-                                                                                String::new()
-                                                                            };
-
-                                                                            // Split the replacement text into lines
-                                                                            let new_text_lines: Vec<&str> = text.split('\n').collect();
-
-                                                                            // Build replacement lines
-                                                                            let mut replacement = Vec::new();
-                                                                            if new_text_lines.len() == 1 {
-                                                                                replacement.push(format!("{}{}{}", prefix, new_text_lines[0], suffix));
-                                                                            } else {
-                                                                                replacement.push(format!("{}{}", prefix, new_text_lines[0]));
-                                                                                for mid in &new_text_lines[1..new_text_lines.len()-1] {
-                                                                                    replacement.push(mid.to_string());
-                                                                                }
-                                                                                replacement.push(format!("{}{}", new_text_lines[new_text_lines.len()-1], suffix));
+                                                            // Version check: reject out-of-order didChange.
+                                                            // Handle null/missing version gracefully — treat as 0
+                                                            // (some clients may omit it).
+                                                            let incoming_version = doc.get("version")
+                                                                .and_then(|v| if v.is_null() { None } else { v.as_i64() })
+                                                                .unwrap_or(0);
+                                                            let last_version = guard.doc_versions.get(uri).copied();
+                                                            // Out-of-order check:
+                                                            // - If no prior version tracked (None), always accept.
+                                                            // - If prior version exists, incoming must be strictly greater.
+                                                            let is_out_of_order = match last_version {
+                                                                Some(last) => incoming_version <= last,
+                                                                None => false, // first change for this URI, always accept
+                                                            };
+                                                            if is_out_of_order {
+                                                                eprintln!("[LSP] Rejecting out-of-order didChange for {} (version {} <= {:?}), triggering full resync from disk", uri, incoming_version, last_version);
+                                                                // Do NOT forward stale message. Read current disk
+                                                                // content and send a synthetic full-text didChange
+                                                                // so the server re-syncs to the true file state.
+                                                                skip_forward = true;
+                                                                if let Some(rel) = uri.strip_prefix(&guard.server_root_uri) {
+                                                                    let rel = rel.trim_start_matches('/');
+                                                                    let file_path = workspace_path.join(rel);
+                                                                    if let Ok(disk_content) = tokio::fs::read_to_string(&file_path).await {
+                                                                        let resync_version = last_version.unwrap_or(0) + 1;
+                                                                        let resync_msg = serde_json::json!({
+                                                                            "jsonrpc": "2.0",
+                                                                            "method": "textDocument/didChange",
+                                                                            "params": {
+                                                                                "textDocument": {
+                                                                                    "uri": uri,
+                                                                                    "version": resync_version
+                                                                                },
+                                                                                "contentChanges": [{ "text": disk_content }]
                                                                             }
-
-                                                                            // Splice the lines array
-                                                                            let remove_end = (el + 1).min(lines.len());
-                                                                            lines.splice(sl..remove_end, replacement);
+                                                                        });
+                                                                        if let Ok(content) = serde_json::to_vec(&resync_msg) {
+                                                                            let header = format!("Content-Length: {}\r\n\r\n", content.len());
+                                                                            let mut msg_bytes = Vec::with_capacity(header.len() + content.len());
+                                                                            msg_bytes.extend_from_slice(header.as_bytes());
+                                                                            msg_bytes.extend_from_slice(&content);
+                                                                            deferred_resync = Some((msg_bytes, uri.to_string(), resync_version));
                                                                         }
+                                                                    } else {
+                                                                        eprintln!("[LSP] Resync failed: could not read {} from disk", file_path.display());
                                                                     }
+                                                                }
+                                                            } else {
+                                                                // Defer version update until after forward to LSP stdin
+                                                                deferred_version_update = Some((uri.to_string(), incoming_version));
 
-                                                                    let new_content = lines.join("\n");
-                                                                    if let Err(e) = tokio::fs::write(&file_path, &new_content).await {
-                                                                        eprintln!("Failed to update file {}: {}", file_path.display(), e);
+                                                                if let Some(rel) = uri.strip_prefix(&guard.server_root_uri) {
+                                                                    let rel = rel.trim_start_matches('/');
+                                                                    let file_path = workspace_path.join(rel);
+
+                                                                    if changes.len() == 1 && changes[0].get("range").is_none() {
+                                                                        // Full sync: single change without range = entire file content
+                                                                        // Use atomic write: write to temp file, then rename
+                                                                        if let Some(text) = changes[0].get("text").and_then(|s| s.as_str()) {
+                                                                            let tmp_path = file_path.with_extension("lsp_tmp");
+                                                                            if let Some(parent) = tmp_path.parent() {
+                                                                                let _ = tokio::fs::create_dir_all(parent).await;
+                                                                            }
+                                                                            match tokio::fs::write(&tmp_path, text).await {
+                                                                                Ok(_) => {
+                                                                                    if let Err(e) = tokio::fs::rename(&tmp_path, &file_path).await {
+                                                                                        eprintln!("Failed to rename temp file {}: {}", file_path.display(), e);
+                                                                                        // Fallback: direct write
+                                                                                        let _ = tokio::fs::write(&file_path, text).await;
+                                                                                    }
+                                                                                }
+                                                                                Err(e) => eprintln!("Failed to write temp file {}: {}", tmp_path.display(), e),
+                                                                            }
+                                                                        }
+                                                                    } else {
+                                                                        // Incremental sync: changes have range fields.
+                                                                        // Read current file, apply each change, write back atomically.
+                                                                        let current = tokio::fs::read_to_string(&file_path).await.unwrap_or_default();
+                                                                        let mut lines: Vec<String> = current.split('\n').map(|s| s.to_string()).collect();
+
+                                                                        // Apply changes in reverse order so earlier positions stay valid
+                                                                        let mut sorted_changes = changes.clone();
+                                                                        sorted_changes.sort_by(|a, b| {
+                                                                            let a_start = a.get("range").and_then(|r| r.get("start"));
+                                                                            let b_start = b.get("range").and_then(|r| r.get("start"));
+                                                                            let a_line = a_start.and_then(|s| s.get("line")).and_then(|l| l.as_u64()).unwrap_or(0);
+                                                                            let b_line = b_start.and_then(|s| s.get("line")).and_then(|l| l.as_u64()).unwrap_or(0);
+                                                                            let a_char = a_start.and_then(|s| s.get("character")).and_then(|c| c.as_u64()).unwrap_or(0);
+                                                                            let b_char = b_start.and_then(|s| s.get("character")).and_then(|c| c.as_u64()).unwrap_or(0);
+                                                                            b_line.cmp(&a_line).then(b_char.cmp(&a_char))
+                                                                        });
+
+                                                                        for change in &sorted_changes {
+                                                                            if let (Some(range), Some(text)) = (change.get("range"), change.get("text").and_then(|t| t.as_str())) {
+                                                                                let start_line = range.get("start").and_then(|s| s.get("line")).and_then(|l| l.as_u64()).unwrap_or(0) as usize;
+                                                                                let start_char = range.get("start").and_then(|s| s.get("character")).and_then(|c| c.as_u64()).unwrap_or(0) as usize;
+                                                                                let end_line = range.get("end").and_then(|e| e.get("line")).and_then(|l| l.as_u64()).unwrap_or(0) as usize;
+                                                                                let end_char = range.get("end").and_then(|e| e.get("character")).and_then(|c| c.as_u64()).unwrap_or(0) as usize;
+
+                                                                                // Clamp to valid line range
+                                                                                let sl = start_line.min(lines.len().saturating_sub(1));
+                                                                                let el = end_line.min(lines.len().saturating_sub(1));
+
+                                                                                // Build the prefix (before the edit) and suffix (after the edit)
+                                                                                let prefix = if sl < lines.len() {
+                                                                                    let line_content = &lines[sl];
+                                                                                    let sc = start_char.min(line_content.len());
+                                                                                    line_content[..sc].to_string()
+                                                                                } else {
+                                                                                    String::new()
+                                                                                };
+                                                                                let suffix = if el < lines.len() {
+                                                                                    let line_content = &lines[el];
+                                                                                    let ec = end_char.min(line_content.len());
+                                                                                    line_content[ec..].to_string()
+                                                                                } else {
+                                                                                    String::new()
+                                                                                };
+
+                                                                                // Split the replacement text into lines
+                                                                                let new_text_lines: Vec<&str> = text.split('\n').collect();
+
+                                                                                // Build replacement lines
+                                                                                let mut replacement = Vec::new();
+                                                                                if new_text_lines.len() == 1 {
+                                                                                    replacement.push(format!("{}{}{}", prefix, new_text_lines[0], suffix));
+                                                                                } else {
+                                                                                    replacement.push(format!("{}{}", prefix, new_text_lines[0]));
+                                                                                    for mid in &new_text_lines[1..new_text_lines.len()-1] {
+                                                                                        replacement.push(mid.to_string());
+                                                                                    }
+                                                                                    replacement.push(format!("{}{}", new_text_lines[new_text_lines.len()-1], suffix));
+                                                                                }
+
+                                                                                // Splice the lines array
+                                                                                let remove_end = (el + 1).min(lines.len());
+                                                                                lines.splice(sl..remove_end, replacement);
+                                                                            }
+                                                                        }
+
+                                                                        let new_content = lines.join("\n");
+                                                                        // Atomic write: temp file + rename
+                                                                        let tmp_path = file_path.with_extension("lsp_tmp");
+                                                                        match tokio::fs::write(&tmp_path, &new_content).await {
+                                                                            Ok(_) => {
+                                                                                if let Err(e) = tokio::fs::rename(&tmp_path, &file_path).await {
+                                                                                    eprintln!("Failed to rename temp file {}: {}", file_path.display(), e);
+                                                                                    let _ = tokio::fs::write(&file_path, &new_content).await;
+                                                                                }
+                                                                            }
+                                                                            Err(e) => eprintln!("Failed to write temp file {}: {}", tmp_path.display(), e),
+                                                                        }
                                                                     }
                                                                 }
                                                             }
@@ -1953,7 +2531,25 @@ async fn wire_peer_channels(
                                         data = new_msg;
                                     }
 
-                                    let _ = tx.send(data);
+                                    // Forward message (or resync) to LSP server stdin.
+                                    if skip_forward {
+                                        // Out-of-order detected: send resync instead of stale msg
+                                        if let Some((resync_bytes, uri, version)) = deferred_resync {
+                                            let _ = tx.send(resync_bytes);
+                                            let mut guard = state.lock().await;
+                                            guard.doc_versions.insert(uri, version);
+                                        }
+                                        // else: resync could not be built, message is simply dropped
+                                    } else {
+                                        let _ = tx.send(data);
+
+                                        // Apply deferred version update now that the message
+                                        // has been queued for forwarding to the LSP server.
+                                        if let Some((uri, version)) = deferred_version_update {
+                                            let mut guard = state.lock().await;
+                                            guard.doc_versions.insert(uri, version);
+                                        }
+                                    }
                                 }
                             });
 
@@ -1998,15 +2594,27 @@ async fn wire_peer_channels(
                                             Ok(_) => {
                                                 if let Ok(mut json_val) = serde_json::from_slice::<serde_json::Value>(&buf) {
                                                     // Log initialize response capabilities (for debugging)
-                                                    // NOTE: We no longer force textDocumentSync to Full(1).
-                                                    // The worker's didChange handler now supports both full
-                                                    // and incremental sync modes, applying range-based edits
-                                                    // to the file on disk when ranges are present.
-                                                    if let Some(result) = json_val.get("result") {
-                                                        if let Some(caps) = result.get("capabilities") {
+                                                    // Force textDocumentSync to Full(1) so the client always
+                                                    // sends the entire file content on every change.  This
+                                                    // avoids the incremental-sync disk-write codepath which
+                                                    // has UTF-16-vs-byte-offset bugs that cause the worker's
+                                                    // on-disk copy to diverge from the LSP server's in-memory
+                                                    // state, leading to stale diagnostics (e.g. "header not
+                                                    // used" right after adding an #include).
+                                                    if let Some(result) = json_val.get_mut("result") {
+                                                        if let Some(caps) = result.get_mut("capabilities") {
                                                             if let Some(sync) = caps.get("textDocumentSync") {
-                                                                println!("[LSP] Server textDocumentSync capability: {}", sync);
+                                                                println!("[LSP] Server textDocumentSync capability (original): {}", sync);
                                                             }
+                                                            // Override to Full(1)
+                                                            caps.as_object_mut().map(|m| {
+                                                                m.insert("textDocumentSync".to_string(), serde_json::json!({
+                                                                    "openClose": true,
+                                                                    "change": 1,
+                                                                    "save": { "includeText": true }
+                                                                }));
+                                                            });
+                                                            println!("[LSP] Forced textDocumentSync to Full(1)");
                                                         }
                                                     }
 
@@ -2021,15 +2629,15 @@ async fn wire_peer_channels(
                                                             let chunks = make_chunks(&new_content, msg_id);
                                                             for chunk in chunks {
                                                                 let data = Bytes::from(chunk);
-                                                                if let Err(e) = dc_out.send(&data).await {
-                                                                    eprintln!("Failed to send chunk: {}", e);
+                                                                if let Err(e) = dc_send_with_backpressure(&dc_out, &data, "lsp").await {
+                                                                    eprintln!("[lsp] Failed to send chunk: {}", e);
                                                                     break;
                                                                 }
                                                             }
                                                         } else {
                                                             let data = Bytes::copy_from_slice(&new_content);
-                                                            if let Err(e) = dc_out.send(&data).await {
-                                                                eprintln!("Failed to send to WebRTC: {}", e);
+                                                            if let Err(e) = dc_send_with_backpressure(&dc_out, &data, "lsp").await {
+                                                                eprintln!("[lsp] Failed to send to WebRTC: {}", e);
                                                                 break;
                                                             }
                                                         }
@@ -2038,8 +2646,8 @@ async fn wire_peer_channels(
                                                     // Failed to parse JSON — send raw body
                                                     eprintln!("[LSP] Failed to parse JSON from stdout, forwarding raw bytes");
                                                     let data = Bytes::copy_from_slice(&buf);
-                                                    if let Err(e) = dc_out.send(&data).await {
-                                                        eprintln!("Failed to send raw bytes to WebRTC: {}", e);
+                                                    if let Err(e) = dc_send_with_backpressure(&dc_out, &data, "lsp").await {
+                                                        eprintln!("[lsp] Failed to send raw bytes to WebRTC: {}", e);
                                                         break;
                                                     }
                                                 }
@@ -2059,6 +2667,9 @@ async fn wire_peer_channels(
                                     match reader.read_line(&mut line).await {
                                         Ok(0) => break,
                                         Ok(_) => {
+                                            // Always print RA stderr to worker logs for diagnostics
+                                            // (sysroot errors, cargo metadata failures, etc.)
+                                            eprint!("[LSP-ERR/{}] {}", lang, line);
                                             let log_dc = { log_store_clone.lock().await.clone() };
                                             if let Some(ldc) = log_dc {
                                                 let payload = serde_json::json!({
@@ -2067,8 +2678,6 @@ async fn wire_peer_channels(
                                                     "line": line
                                                 });
                                                 let _ = ldc.send_text(serde_json::to_string(&payload).unwrap_or_default()).await;
-                                            } else {
-                                                print!("[LSP-ERR] {}", line);
                                             }
                                         }
                                         Err(_) => break,
@@ -2079,7 +2688,25 @@ async fn wire_peer_channels(
                             let _ = child.wait().await;
                         }
                         Err(e) => {
+                            // Build helpful diagnostic info for the error message
+                            let path_info = std::env::var("PATH").unwrap_or_else(|_| "<unavailable>".to_string());
+                            let binary_hint = match lang.as_str() {
+                                "dart" => {
+                                    let paths = ["/opt/dart-sdk/bin/dart", "/usr/lib/dart/bin/dart", "/usr/local/bin/dart"];
+                                    let found: Vec<&str> = paths.iter().filter(|p| std::path::Path::new(p).exists()).copied().collect();
+                                    if found.is_empty() {
+                                        "Dart SDK not found in any well-known location. Install via: apt-get install dart or download from dart.dev".to_string()
+                                    } else {
+                                        format!("Dart binary found at: {} — but not on PATH", found.join(", "))
+                                    }
+                                }
+                                _ => String::new(),
+                            };
                             eprintln!("Failed to spawn LSP for {}: {}", lang, e);
+                            if !binary_hint.is_empty() {
+                                eprintln!("[LSP] Hint: {}", binary_hint);
+                            }
+                            eprintln!("[LSP] Current PATH: {}", path_info);
                             // Send an LSP-shaped error response back so the frontend
                             // doesn't hang forever waiting for `initialize` to respond.
                             let error_response = serde_json::json!({
@@ -2242,6 +2869,350 @@ async fn wire_peer_channels(
                     }
                     .boxed()
                 }));
+            }
+            // ── Remote Extension Host (DEPRECATED) ─────────────────
+            // The legacy ext-host DataChannel used to spawn remote-ext-host.js
+            // directly.  This has been replaced by the vscode-server DataChannel
+            // which manages a real VS Code Server (code-server) with
+            // ext-host-preload.js injected via NODE_OPTIONS for full API
+            // compatibility.  If a browser still requests this DC, send back
+            // a deprecation error so it knows to use vscode-server instead.
+            else if label.starts_with("ext-host") {
+                let dc_clone = dc.clone();
+                eprintln!(
+                    "[ext-host] DEPRECATED: ext-host DataChannel requested — \
+                     use vscode-server DC instead.  Sending deprecation error."
+                );
+                tokio::spawn(async move {
+                    let err = serde_json::json!({
+                        "id": 0,
+                        "type": "event",
+                        "method": "error",
+                        "args": ["ext-host DataChannel is deprecated. Use the vscode-server DataChannel instead."],
+                        "generation": 0
+                    });
+                    let _ = dc_clone.send_text(
+                        serde_json::to_string(&err).unwrap_or_default()
+                    ).await;
+                });
+            }
+            // ── VS Code Server Manager ───────────────────────────────
+            // Spawns vscode-server-manager.js which downloads/starts a
+            // real VS Code Server (code-server) with a genuine Extension
+            // Host.  Same stdin/stdout JSON-RPC pattern as ext-host.
+            else if label.starts_with("vscode-server") {
+                let slug_opt = if let Some((_prefix, slug)) = label.split_once("?slug=") {
+                    Some(slug.to_string())
+                } else {
+                    None
+                };
+
+                let dc_clone = dc.clone();
+
+                // Deduplication: ignore if spawned recently (< 10s)
+                {
+                    let guard = vscode_server_kill_tx_outer.lock().await;
+                    if let Some((_tx, spawned_at)) = guard.as_ref() {
+                        let age = spawned_at.elapsed();
+                        if age < std::time::Duration::from_secs(10) {
+                            println!(
+                                "[vscode-server] Ignoring duplicate DC (current process only {}ms old)",
+                                age.as_millis()
+                            );
+                            drop(guard);
+                            return;
+                        }
+                    }
+                }
+
+                // Kill any previously running vscode-server-manager process
+                {
+                    let mut guard = vscode_server_kill_tx_outer.lock().await;
+                    if let Some((old_tx, _)) = guard.take() {
+                        println!("[vscode-server] Killing previous vscode-server-manager process");
+                        let _ = old_tx.send(());
+                    }
+                }
+
+                // Create a kill channel for THIS instance
+                let (kill_tx, mut kill_rx) = mpsc::unbounded_channel::<()>();
+                {
+                    let mut guard = vscode_server_kill_tx_outer.lock().await;
+                    *guard = Some((kill_tx, tokio::time::Instant::now()));
+                }
+
+                // Buffer incoming messages
+                let (incoming_tx, mut incoming_rx) = mpsc::unbounded_channel::<webrtc::data_channel::data_channel_message::DataChannelMessage>();
+                let incoming_tx_clone = incoming_tx.clone();
+                dc.on_message(Box::new(move |msg| {
+                    let tx = incoming_tx_clone.clone();
+                    async move { let _ = tx.send(msg); }.boxed()
+                }));
+
+                println!("[on_data_channel] vscode-server branch matched, spawning vscode-server-manager.js...");
+
+                // Signal when DC opens
+                let (dc_open_tx, dc_open_rx) = tokio::sync::oneshot::channel::<()>();
+                let dc_open_tx = std::sync::Mutex::new(Some(dc_open_tx));
+                dc.on_open(Box::new(move || {
+                    println!("[vscode-server] DataChannel is now open");
+                    if let Some(tx) = dc_open_tx.lock().unwrap().take() {
+                        let _ = tx.send(());
+                    }
+                    async {}.boxed()
+                }));
+
+                tokio::spawn(async move {
+                    // Locate the script — same directory as the binary
+                    let manager_script = {
+                        let exe_dir = std::env::current_exe()
+                            .ok()
+                            .and_then(|p| p.parent().map(|d| d.to_path_buf()));
+                        let candidates = vec![
+                            exe_dir.as_ref().map(|d| d.join("vscode-server-manager.js")),
+                            Some(std::path::PathBuf::from("vscode-server-manager.js")),
+                            Some(std::path::PathBuf::from("../vscode-server-manager.js")),
+                        ];
+                        let mut found = None;
+                        for c in candidates.into_iter().flatten() {
+                            if c.exists() {
+                                found = Some(c);
+                                break;
+                            }
+                        }
+                        match found {
+                            Some(p) => p,
+                            None => {
+                                eprintln!("[vscode-server] vscode-server-manager.js not found");
+                                let err = serde_json::json!({
+                                    "id": 0, "type": "event", "method": "error",
+                                    "args": ["vscode-server-manager.js not found on worker"],
+                                    "generation": 0
+                                });
+                                let _ = dc_clone.send_text(serde_json::to_string(&err).unwrap_or_default()).await;
+                                return;
+                            }
+                        }
+                    };
+
+                    println!("[vscode-server] Using script: {}", manager_script.display());
+
+                    let mut cmd = Command::new("node");
+                    cmd.arg(&manager_script);
+                    cmd.stdin(Stdio::piped());
+                    cmd.stdout(Stdio::piped());
+                    cmd.stderr(Stdio::piped());
+
+                    match cmd.spawn() {
+                        Ok(mut child) => {
+                            let mut stdin = child.stdin.take().expect("[vscode-server] Failed to open stdin");
+                            let stdout = child.stdout.take().expect("[vscode-server] Failed to open stdout");
+                            let stderr = child.stderr.take().expect("[vscode-server] Failed to open stderr");
+
+                            // DC → stdin
+                            let (stdin_tx, mut stdin_rx) = mpsc::unbounded_channel::<Vec<u8>>();
+                            let stdin_tx_clone = stdin_tx.clone();
+                            tokio::spawn(async move {
+                                while let Some(msg) = incoming_rx.recv().await {
+                                    let mut line = msg.data.to_vec();
+                                    if !line.ends_with(b"\n") { line.push(b'\n'); }
+                                    let _ = stdin_tx_clone.send(line);
+                                }
+                            });
+                            tokio::spawn(async move {
+                                while let Some(data) = stdin_rx.recv().await {
+                                    if stdin.write_all(&data).await.is_err() { break; }
+                                    if stdin.flush().await.is_err() { break; }
+                                }
+                            });
+
+                            // stdout → DC (wait for DC open first)
+                            let dc_out = dc_clone.clone();
+                            tokio::spawn(async move {
+                                match tokio::time::timeout(
+                                    std::time::Duration::from_secs(15),
+                                    dc_open_rx,
+                                ).await {
+                                    Err(_) => { eprintln!("[vscode-server] Timed out waiting for DC open"); return; }
+                                    Ok(Err(_)) => { eprintln!("[vscode-server] DC open signal dropped"); return; }
+                                    Ok(Ok(())) => {}
+                                }
+                                println!("[vscode-server] DC open, starting stdout→DC forwarding");
+                                let mut reader = BufReader::new(stdout);
+                                let mut line = String::new();
+                                loop {
+                                    line.clear();
+                                    match reader.read_line(&mut line).await {
+                                        Ok(0) => break,
+                                        Ok(_) => {
+                                            let trimmed = line.trim();
+                                            if trimmed.is_empty() { continue; }
+
+
+                                            // Chunk large messages (>60KB) for WebRTC SCTP
+                                            let data_bytes = trimmed.as_bytes();
+                                            if data_bytes.len() > 60000 {
+                                                let msg_id = (std::time::SystemTime::now()
+                                                    .duration_since(std::time::UNIX_EPOCH)
+                                                    .unwrap().as_nanos() % 0xFFFFFFFF) as u32;
+                                                let chunks = make_chunks(data_bytes, msg_id);
+                                                println!("[vscode-server] Chunking large message: {} bytes → {} chunks", data_bytes.len(), chunks.len());
+                                                for chunk in chunks {
+                                                    let data = Bytes::from(chunk);
+                                                    if let Err(e) = dc_send_with_backpressure(&dc_out, &data, "vscode-server").await {
+                                                        eprintln!("[vscode-server] chunk send failed permanently: {}", e);
+                                                        // Don't break the outer loop — just skip this message
+                                                        break;
+                                                    }
+                                                }
+                                            } else {
+                                                if let Err(e) = dc_send_text_with_backpressure(&dc_out, trimmed.to_string(), "vscode-server").await {
+                                                    eprintln!("[vscode-server] send failed permanently: {}", e);
+                                                    // Don't break — continue trying with next messages
+                                                }
+                                            }
+                                        }
+                                        Err(e) => { eprintln!("[vscode-server] stdout read error: {}", e); break; }
+                                    }
+                                }
+                                println!("[vscode-server] stdout reader exited");
+                            });
+
+                            // stderr → logs
+                            tokio::spawn(async move {
+                                let mut reader = BufReader::new(stderr);
+                                let mut line = String::new();
+                                loop {
+                                    line.clear();
+                                    match reader.read_line(&mut line).await {
+                                        Ok(0) => break,
+                                        Ok(_) => { eprint!("[vscode-server] {}", line); }
+                                        Err(_) => break,
+                                    }
+                                }
+                            });
+
+                            let _ = tokio::select! {
+                                status = child.wait() => {
+                                    println!("[vscode-server] Manager process exited: {:?}", status);
+                                    status
+                                }
+                                _ = kill_rx.recv() => {
+                                    println!("[vscode-server] Received kill signal, terminating manager");
+                                    let _ = child.kill().await;
+                                    child.wait().await
+                                }
+                            };
+                            println!("[vscode-server] Manager process cleanup complete");
+                        }
+                        Err(e) => {
+                            eprintln!("[vscode-server] Failed to spawn Node.js: {}", e);
+                            let err = serde_json::json!({
+                                "id": 0, "type": "event", "method": "error",
+                                "args": [format!("Failed to spawn vscode-server-manager: {}", e)],
+                                "generation": 0
+                            });
+                            let _ = dc_clone.send_text(serde_json::to_string(&err).unwrap_or_default()).await;
+                        }
+                    }
+                });
+            }
+            // ── VS Code Server WebSocket Tunnel ──────────────────────
+            // Bridges a DataChannel to the VS Code Server's TCP port so
+            // the browser can establish a WebSocket connection to the real
+            // Extension Host through the WebRTC transport.
+            //
+            // Label format: "vscode-ws-tunnel?port=18000"
+            // Data flows bidirectionally: DC ↔ TCP (127.0.0.1:<port>)
+            else if label.starts_with("vscode-ws-tunnel") {
+                let port: u16 = label
+                    .split_once("?port=")
+                    .and_then(|(_, p)| p.parse().ok())
+                    .unwrap_or(18000);
+
+                let dc_clone = dc.clone();
+
+                // Buffer incoming DC messages
+                let (incoming_tx, mut incoming_rx) = mpsc::unbounded_channel::<webrtc::data_channel::data_channel_message::DataChannelMessage>();
+                let incoming_tx_clone = incoming_tx.clone();
+                dc.on_message(Box::new(move |msg| {
+                    let tx = incoming_tx_clone.clone();
+                    async move { let _ = tx.send(msg); }.boxed()
+                }));
+
+                // Wait for DC to open, then connect TCP
+                let (dc_open_tx, dc_open_rx) = tokio::sync::oneshot::channel::<()>();
+                let dc_open_tx = std::sync::Mutex::new(Some(dc_open_tx));
+                dc.on_open(Box::new(move || {
+                    println!("[vscode-ws-tunnel] DataChannel opened, port={}", port);
+                    if let Some(tx) = dc_open_tx.lock().unwrap().take() {
+                        let _ = tx.send(());
+                    }
+                    async {}.boxed()
+                }));
+
+                tokio::spawn(async move {
+                    // Wait for DC open
+                    if dc_open_rx.await.is_err() {
+                        eprintln!("[vscode-ws-tunnel] DC open signal dropped");
+                        return;
+                    }
+
+                    // Connect to the VS Code Server's TCP port
+                    let addr = format!("127.0.0.1:{}", port);
+                    let tcp_stream = match tokio::net::TcpStream::connect(&addr).await {
+                        Ok(s) => s,
+                        Err(e) => {
+                            eprintln!("[vscode-ws-tunnel] Failed to connect to {}: {}", addr, e);
+                            let err = serde_json::json!({
+                                "id": 0, "type": "event", "method": "error",
+                                "args": [format!("TCP connect failed: {}", e)],
+                                "generation": 0
+                            });
+                            let _ = dc_clone.send_text(serde_json::to_string(&err).unwrap_or_default()).await;
+                            return;
+                        }
+                    };
+                    println!("[vscode-ws-tunnel] TCP connected to {}", addr);
+
+                    let (tcp_read, mut tcp_write) = tcp_stream.into_split();
+
+                    // DC → TCP: forward DataChannel binary data to TCP socket
+                    let dc_to_tcp = tokio::spawn(async move {
+                        while let Some(msg) = incoming_rx.recv().await {
+                            if tcp_write.write_all(&msg.data).await.is_err() { break; }
+                        }
+                        println!("[vscode-ws-tunnel] DC→TCP forwarder exited");
+                    });
+
+                    // TCP → DC: forward TCP data back to DataChannel
+                    let dc_for_tcp = dc_clone.clone();
+                    let tcp_to_dc = tokio::spawn(async move {
+                        let mut reader = tokio::io::BufReader::new(tcp_read);
+                        let mut buf = vec![0u8; 64 * 1024];
+                        loop {
+                            match reader.read(&mut buf).await {
+                                Ok(0) => break, // EOF
+                                Ok(n) => {
+                                    let data = Bytes::copy_from_slice(&buf[..n]);
+                                    if dc_for_tcp.send(&data).await.is_err() { break; }
+                                }
+                                Err(e) => {
+                                    eprintln!("[vscode-ws-tunnel] TCP read error: {}", e);
+                                    break;
+                                }
+                            }
+                        }
+                        println!("[vscode-ws-tunnel] TCP→DC forwarder exited");
+                    });
+
+                    // Wait for either direction to finish
+                    tokio::select! {
+                        _ = dc_to_tcp => {}
+                        _ = tcp_to_dc => {}
+                    }
+                    println!("[vscode-ws-tunnel] Tunnel closed for port {}", port);
+                });
             }
         }
         .boxed()
@@ -4284,6 +5255,110 @@ fn system_command(program: &str) -> Command {
     }
 }
 
+/// Find the Rust sysroot and standard library source paths.
+///
+/// Uses the **same PATH** that rust-analyzer will use (with `$CARGO_HOME/bin`
+/// prepended) so the sysroot matches what RA actually detects at runtime.
+/// Falls back to system locations if the primary sysroot check fails.
+///
+/// Returns `(sysroot_src, sysroot)` — either or both may be None.
+fn find_rust_sysroot_info() -> (Option<String>, Option<String>) {
+    if cfg!(target_os = "windows") {
+        // On Windows, RA runs inside WSL — query WSL for the sysroot
+        let wsl_sysroot = std::process::Command::new("wsl")
+            .args(["bash", "-lc", "rustc --print sysroot 2>/dev/null || echo /usr"])
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .filter(|s| !s.is_empty());
+        let check_script = r#"
+            SYSROOT=$(rustc --print sysroot 2>/dev/null || echo /usr);
+            for d in \
+                "$SYSROOT/lib/rustlib/src/rust/library" \
+                "/usr/lib/rustlib/src/rust/library" \
+                "$SYSROOT/lib/rustlib/src/rust"; do
+                [ -d "$d" ] && echo "$d" && exit 0;
+            done;
+            # Try Debian-style /usr/src/rustc-*/library
+            for d in /usr/src/rustc-*/library; do
+                [ -d "$d" ] && echo "$d" && exit 0;
+            done
+        "#;
+        let src = std::process::Command::new("wsl")
+            .args(["bash", "-lc", check_script])
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .filter(|s| !s.is_empty());
+        return (src, wsl_sysroot);
+    }
+
+    // Linux: build the same PATH that rust-analyzer will use
+    let cargo_home = std::env::var("CARGO_HOME")
+        .unwrap_or_else(|_| "/root/.cargo".to_string());
+    let current_path = std::env::var("PATH").unwrap_or_default();
+    let ra_path = format!("{}/bin:{}", cargo_home, current_path);
+
+    // Ask rustc (with RA's PATH) for its sysroot
+    let sysroot = std::process::Command::new("rustc")
+        .args(["--print", "sysroot"])
+        .env("PATH", &ra_path)
+        .env_remove("RUSTUP_TOOLCHAIN")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_else(|| "/usr".to_string());
+
+    // Also check what the DEFAULT rustc (without RA PATH) reports —
+    // helps diagnose sysroot mismatches between system and rustup.
+    let system_sysroot = std::process::Command::new("rustc")
+        .args(["--print", "sysroot"])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_default();
+
+    println!("[LSP] RA sysroot (with CARGO_HOME/bin in PATH): {}", sysroot);
+    if !system_sysroot.is_empty() && system_sysroot != sysroot {
+        println!("[LSP] System sysroot (default PATH): {} — MISMATCH! This is likely the cause of missing Vec:: completions", system_sysroot);
+    }
+
+    // Check candidate locations in priority order
+    let candidates = [
+        format!("{}/lib/rustlib/src/rust/library", sysroot),
+        // System rustc sysroot (may differ from rustup)
+        "/usr/lib/rustlib/src/rust/library".to_string(),
+        format!("{}/lib/rustlib/src/rust", sysroot),
+    ];
+
+    for candidate in &candidates {
+        if std::path::Path::new(candidate).exists() {
+            return (Some(candidate.clone()), Some(sysroot));
+        }
+    }
+
+    // Debian/Ubuntu system packages: /usr/src/rustc-*/library
+    if let Ok(entries) = std::fs::read_dir("/usr/src") {
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let n = name.to_string_lossy();
+            if n.starts_with("rustc-") && entry.path().join("library").exists() {
+                return (Some(entry.path().join("library").to_string_lossy().to_string()), Some(sysroot));
+            }
+        }
+    }
+
+    (None, Some(sysroot))
+}
+
 /// Generate minimal LSP configuration files for standalone workspaces.
 ///
 /// When a user has a single `main.py` or `index.js` without a project
@@ -4296,19 +5371,21 @@ fn ensure_lsp_config(workspace: &std::path::Path, lang: &str) {
 
     match lang {
         "javascript" | "js" => {
-            // typescript-language-server needs a jsconfig.json to treat the
-            // workspace as a JS project and resolve node_modules imports.
+            // typescript-language-server uses jsconfig.json for JavaScript projects.
+            // Create a sensible default so the LSP provides IntelliSense
+            // (completions, go-to-def, hover) for standalone JS files.
             let config_path = workspace.join("jsconfig.json");
             if !config_path.exists() && !workspace.join("tsconfig.json").exists() {
                 if let Ok(mut f) = std::fs::File::create(&config_path) {
                     let _ = f.write_all(br#"{
   "compilerOptions": {
-    "checkJs": true,
-    "module": "commonjs",
     "target": "es2020",
+    "module": "commonjs",
     "moduleResolution": "node",
+    "checkJs": true,
     "esModuleInterop": true,
     "resolveJsonModule": true,
+    "skipLibCheck": true,
     "baseUrl": "."
   },
   "include": ["**/*.js", "**/*.jsx"],
@@ -4353,30 +5430,320 @@ fn ensure_lsp_config(workspace: &std::path::Path, lang: &str) {
             }
         }
         "rust" => {
-            // rust-analyzer needs a Cargo.toml to index the project.
-            let cargo_toml = workspace.join("Cargo.toml");
-            if !cargo_toml.exists() {
-                // Find the main .rs file name for the binary target
-                let bin_name = std::fs::read_dir(workspace)
-                    .ok()
-                    .and_then(|entries| {
-                        entries.flatten()
-                            .find(|e| e.path().extension().map_or(false, |ext| ext == "rs"))
-                            .map(|e| e.file_name().to_string_lossy().trim_end_matches(".rs").to_string())
-                    })
-                    .unwrap_or_else(|| "main".to_string());
+            // rust-analyzer needs a project manifest to index the workspace.
+            // If cargo is available, use Cargo.toml.  Otherwise, create a
+            // rust-project.json so RA can work in "detached files" mode
+            // without needing cargo (which may not be installed in the container).
+            //
+            // IMPORTANT: On Windows, rust-analyzer runs inside WSL (via
+            // system_command), so we must check for cargo/rustup in WSL,
+            // not on the Windows host.  The old code ran these checks on
+            // Windows, found cargo there, installed rust-src on Windows,
+            // and ran cargo metadata on Windows — but RA in WSL couldn't
+            // use any of that.
+            let has_cargo = if cfg!(target_os = "windows") {
+                std::process::Command::new("wsl")
+                    .args(["bash", "-lc", "command -v cargo"])
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .status()
+                    .map(|s| s.success())
+                    .unwrap_or(false)
+            } else {
+                std::process::Command::new("cargo")
+                    .arg("--version")
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .status()
+                    .map(|s| s.success())
+                    .unwrap_or(false)
+            };
 
-                if let Ok(mut f) = std::fs::File::create(&cargo_toml) {
-                    let _ = write!(f, r#"[package]
+            if has_cargo {
+                // Ensure rust-src is installed — needed for RA to resolve
+                // stdlib types like Vec, String, HashMap, etc.
+                // Without rust-src, RA can complete type *names* from the
+                // prelude but cannot index their impl blocks (Vec::new,
+                // Vec::push, etc.).
+                //
+                // IMPORTANT: Use the same PATH that RA will use ($CARGO_HOME/bin
+                // prepended) so rust-src gets installed for the correct toolchain.
+                // On Windows, install in WSL since that's where RA runs.
+                if cfg!(target_os = "windows") {
+                    let _ = std::process::Command::new("wsl")
+                        .args(["bash", "-lc",
+                            ". \"$HOME/.cargo/env\" 2>/dev/null; rustup component add rust-src 2>/dev/null || true"])
+                        .stdout(std::process::Stdio::null())
+                        .stderr(std::process::Stdio::null())
+                        .status();
+                } else {
+                    let cargo_home_cfg = std::env::var("CARGO_HOME")
+                        .unwrap_or_else(|_| "/root/.cargo".to_string());
+                    let current_path_cfg = std::env::var("PATH").unwrap_or_default();
+                    let ra_path_cfg = format!("{}/bin:{}", cargo_home_cfg, current_path_cfg);
+                    let _ = std::process::Command::new("bash")
+                        .args(["-lc", ". \"$HOME/.cargo/env\" 2>/dev/null; rustup component add rust-src 2>/dev/null || true"])
+                        .env("PATH", &ra_path_cfg)
+                        .stdout(std::process::Stdio::null())
+                        .stderr(std::process::Stdio::null())
+                        .status();
+                }
+
+                let cargo_toml = workspace.join("Cargo.toml");
+                let created_toml = if !cargo_toml.exists() {
+                    // Collect ALL .rs files so rust-analyzer indexes everything
+                    let mut rs_files: Vec<String> = std::fs::read_dir(workspace)
+                        .ok()
+                        .map(|entries| {
+                            entries.flatten()
+                                .filter(|e| e.path().extension().map_or(false, |ext| ext == "rs"))
+                                .map(|e| e.file_name().to_string_lossy().to_string())
+                                .collect()
+                        })
+                        .unwrap_or_else(|| vec!["main.rs".to_string()]);
+
+                    if rs_files.is_empty() {
+                        rs_files.push("main.rs".to_string());
+                    }
+
+                    // Sort so main.rs comes first (if present)
+                    rs_files.sort_by(|a, b| {
+                        if a == "main.rs" { std::cmp::Ordering::Less }
+                        else if b == "main.rs" { std::cmp::Ordering::Greater }
+                        else { a.cmp(b) }
+                    });
+
+                    if let Ok(mut f) = std::fs::File::create(&cargo_toml) {
+                        let _ = write!(f, r#"[package]
 name = "synthi-workspace"
 version = "0.1.0"
 edition = "2021"
-
+"#);
+                        for rs_file in &rs_files {
+                            let bin_name = rs_file.trim_end_matches(".rs");
+                            let _ = write!(f, r#"
 [[bin]]
 name = "{}"
-path = "{}.rs"
-"#, bin_name, bin_name);
-                    println!("[LSP-CONFIG] Created Cargo.toml for standalone Rust workspace");
+path = "{}"
+"#, bin_name, rs_file);
+                        }
+                        println!("[LSP-CONFIG] Created Cargo.toml with {} bin targets for standalone Rust workspace", rs_files.len());
+                    }
+                    true
+                } else {
+                    false
+                };
+
+                // Run `cargo metadata` to generate Cargo.lock and warm the
+                // metadata cache.  rust-analyzer calls `cargo metadata` on
+                // startup to discover the project structure, sysroot, and
+                // crate graph.  If we pre-warm this, RA starts with a hot
+                // cache and can resolve stdlib immediately (Vec::new etc.).
+                // Only run if we created the Cargo.toml or there's no Cargo.lock.
+                let cargo_lock = workspace.join("Cargo.lock");
+                if created_toml || !cargo_lock.exists() {
+                    println!("[LSP-CONFIG] Running cargo metadata to warm RA cache...");
+
+                    if cfg!(target_os = "windows") {
+                        // Run inside WSL where rust-analyzer lives.
+                        // Convert Windows path to WSL /mnt/ path.
+                        let ws_str = workspace.to_string_lossy().replace("\\", "/");
+                        let wsl_ws = if let Some(colon_idx) = ws_str.find(':') {
+                            let drive = ws_str[..colon_idx].to_lowercase();
+                            let rest = &ws_str[colon_idx+1..];
+                            format!("/mnt/{}{}", drive, rest)
+                        } else {
+                            ws_str.to_string()
+                        };
+                        let script = format!(
+                            ". \"$HOME/.cargo/env\" 2>/dev/null; cd '{}' && cargo metadata --format-version=1 --no-deps 2>&1",
+                            wsl_ws
+                        );
+                        let meta_status = std::process::Command::new("wsl")
+                            .args(["bash", "-lc", &script])
+                            .stdout(std::process::Stdio::null())
+                            .stderr(std::process::Stdio::piped())
+                            .status();
+                        match meta_status {
+                            Ok(s) if s.success() => println!("[LSP-CONFIG] cargo metadata (WSL) succeeded — Cargo.lock ready"),
+                            Ok(s) => eprintln!("[LSP-CONFIG] cargo metadata (WSL) exited with {}", s),
+                            Err(e) => eprintln!("[LSP-CONFIG] cargo metadata (WSL) failed: {}", e),
+                        }
+                    } else {
+                        // Resolve CARGO_HOME/RUSTUP_HOME so cargo finds the
+                        // right toolchain (mirrors the env set on the RA process).
+                        let cargo_home = std::env::var("CARGO_HOME")
+                            .unwrap_or_else(|_| "/root/.cargo".to_string());
+                        let current_path = std::env::var("PATH").unwrap_or_default();
+                        let cargo_path = format!("{}/bin:{}", cargo_home, current_path);
+
+                        let meta_status = std::process::Command::new("cargo")
+                            .args(["metadata", "--format-version=1", "--no-deps"])
+                            .current_dir(workspace)
+                            .env("PATH", &cargo_path)
+                            .env("CARGO_HOME", &cargo_home)
+                            .env_remove("RUSTUP_TOOLCHAIN")
+                            .stdout(std::process::Stdio::null())
+                            .stderr(std::process::Stdio::piped())
+                            .status();
+                        match meta_status {
+                            Ok(s) if s.success() => println!("[LSP-CONFIG] cargo metadata succeeded — Cargo.lock ready"),
+                            Ok(s) => eprintln!("[LSP-CONFIG] cargo metadata exited with {}", s),
+                            Err(e) => eprintln!("[LSP-CONFIG] cargo metadata failed: {}", e),
+                        }
+                    }
+                }
+            } else {
+                // No cargo — create rust-project.json for RA's non-cargo mode.
+                // This lets RA provide completions, hover, go-to-def without cargo.
+                let rp_json = workspace.join("rust-project.json");
+                if !rp_json.exists() {
+                    // Try to install rust-src — on Windows run in WSL since
+                    // that's where rust-analyzer runs.
+                    if cfg!(target_os = "windows") {
+                        let _ = std::process::Command::new("wsl")
+                            .args(["bash", "-lc",
+                                ". \"$HOME/.cargo/env\" 2>/dev/null; rustup component add rust-src 2>/dev/null || true"])
+                            .stdout(std::process::Stdio::null())
+                            .stderr(std::process::Stdio::null())
+                            .status();
+                    } else {
+                        let _ = std::process::Command::new("rustup")
+                            .args(["component", "add", "rust-src"])
+                            .stdout(std::process::Stdio::null())
+                            .stderr(std::process::Stdio::null())
+                            .status();
+                    }
+
+                    // Try to find sysroot_src from rustc.
+                    // On Windows, query WSL's rustc since RA runs there.
+                    // Check multiple known locations — system rustc (apt) installs
+                    // rust-src to different paths than rustup.
+                    let sysroot_src = {
+                        // 1. Ask rustc for its sysroot
+                        let sysroot_output = if cfg!(target_os = "windows") {
+                            std::process::Command::new("wsl")
+                                .args(["bash", "-lc", ". \"$HOME/.cargo/env\" 2>/dev/null; rustc --print sysroot"])
+                                .output()
+                        } else {
+                            std::process::Command::new("rustc")
+                                .args(["--print", "sysroot"])
+                                .output()
+                        };
+                        let sysroot = sysroot_output
+                            .ok()
+                            .and_then(|o| {
+                                if o.status.success() {
+                                    Some(String::from_utf8_lossy(&o.stdout).trim().to_string())
+                                } else {
+                                    None
+                                }
+                            })
+                            .unwrap_or_else(|| "/usr".to_string());
+
+                        // 2. Check common library source locations.
+                        // On Windows, filesystem checks must go through WSL
+                        // since the sysroot paths are Linux paths.
+                        let mut found: Option<String> = None;
+
+                        if cfg!(target_os = "windows") {
+                            // Check inside WSL using a single shell command
+                            let check_script = format!(
+                                "if [ -d '{sysroot}/lib/rustlib/src/rust/library' ]; then \
+                                   echo '{sysroot}/lib/rustlib/src/rust/library'; \
+                                 elif ls -d /usr/src/rustc-*/library 2>/dev/null | head -1 | grep -q .; then \
+                                   ls -d /usr/src/rustc-*/library 2>/dev/null | head -1; \
+                                 elif [ -d '{sysroot}/lib/rustlib/src/rust' ]; then \
+                                   echo '{sysroot}/lib/rustlib/src/rust'; \
+                                 fi",
+                                sysroot = sysroot
+                            );
+                            if let Ok(output) = std::process::Command::new("wsl")
+                                .args(["bash", "-lc", &check_script])
+                                .output()
+                            {
+                                if output.status.success() {
+                                    let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                                    if !path.is_empty() {
+                                        found = Some(path);
+                                    }
+                                }
+                            }
+                        } else {
+                            let candidates = [
+                                format!("{}/lib/rustlib/src/rust/library", sysroot),
+                                // Debian/Ubuntu system rust-src package
+                                "/usr/src/rustc-*/library".to_string(),
+                                format!("{}/lib/rustlib/src/rust", sysroot),
+                            ];
+
+                            for candidate in &candidates {
+                                if candidate.contains('*') {
+                                    // Glob expansion for system packages
+                                    if let Ok(mut entries) = std::fs::read_dir("/usr/src") {
+                                        if let Some(entry) = entries.flatten().find(|e| {
+                                            let name = e.file_name();
+                                            let n = name.to_string_lossy();
+                                            n.starts_with("rustc-") && e.path().join("library").exists()
+                                        }) {
+                                            found = Some(entry.path().join("library").to_string_lossy().to_string());
+                                            break;
+                                        }
+                                    }
+                                } else {
+                                    let p = std::path::PathBuf::from(candidate);
+                                    if p.exists() {
+                                        found = Some(p.to_string_lossy().to_string());
+                                        break;
+                                    }
+                                }
+                            }
+
+                            if found.is_none() {
+                                println!("[LSP-CONFIG] rust-src not found at any known location, RA will have no stdlib completions");
+                                let candidates_display = [
+                                    format!("{}/lib/rustlib/src/rust/library", sysroot),
+                                    "/usr/src/rustc-*/library".to_string(),
+                                    format!("{}/lib/rustlib/src/rust", sysroot),
+                                ];
+                                println!("[LSP-CONFIG] Searched: {:?}", candidates_display);
+                            }
+                        }
+                        found
+                    };
+
+                    // Collect all .rs files as crate root modules
+                    let rs_files: Vec<String> = std::fs::read_dir(workspace)
+                        .ok()
+                        .map(|entries| {
+                            entries.flatten()
+                                .filter(|e| e.path().extension().map_or(false, |ext| ext == "rs"))
+                                .map(|e| e.file_name().to_string_lossy().to_string())
+                                .collect()
+                        })
+                        .unwrap_or_else(|| vec!["main.rs".to_string()]);
+
+                    let sysroot_line = match &sysroot_src {
+                        Some(path) => format!(r#"  "sysroot_src": "{}""#, path),
+                        None => r#"  "sysroot_src": null"#.to_string(),
+                    };
+
+                    let crates: Vec<String> = rs_files.iter().map(|f| {
+                        format!(
+                            r#"    {{
+      "root_module": "{}",
+      "edition": "2021",
+      "deps": []
+    }}"#,
+                            f
+                        )
+                    }).collect();
+
+                    if let Ok(mut f) = std::fs::File::create(&rp_json) {
+                        let _ = write!(f, "{{\n{},\n  \"crates\": [\n{}\n  ]\n}}\n",
+                            sysroot_line, crates.join(",\n"));
+                        println!("[LSP-CONFIG] Created rust-project.json for standalone Rust workspace (no cargo)");
+                    }
                 }
             }
         }
@@ -4386,6 +5753,38 @@ path = "{}.rs"
                 if let Ok(mut f) = std::fs::File::create(&pubspec) {
                     let _ = f.write_all(b"name: synthi_workspace\nenvironment:\n  sdk: '>=3.0.0 <4.0.0'\n");
                     println!("[LSP-CONFIG] Created pubspec.yaml for standalone Dart workspace");
+
+                    // Run 'dart pub get' so the Dart analysis server can resolve packages.
+                    // Use the extended PATH that includes well-known Dart SDK locations.
+                    let current_path = std::env::var("PATH").unwrap_or_default();
+                    let dart_path = format!("/opt/dart-sdk/bin:/usr/lib/dart/bin:{}", current_path);
+                    let pub_result = std::process::Command::new("dart")
+                        .args(["pub", "get"])
+                        .current_dir(workspace)
+                        .env("PATH", &dart_path)
+                        .stdout(std::process::Stdio::piped())
+                        .stderr(std::process::Stdio::piped())
+                        .status();
+                    match pub_result {
+                        Ok(s) if s.success() => println!("[LSP-CONFIG] dart pub get succeeded"),
+                        Ok(s) => eprintln!("[LSP-CONFIG] dart pub get exited with code {:?}", s.code()),
+                        Err(e) => {
+                            // Try well-known paths if dart is not on PATH
+                            for candidate in &["/opt/dart-sdk/bin/dart", "/usr/lib/dart/bin/dart"] {
+                                if std::path::Path::new(candidate).exists() {
+                                    let _ = std::process::Command::new(candidate)
+                                        .args(["pub", "get"])
+                                        .current_dir(workspace)
+                                        .stdout(std::process::Stdio::piped())
+                                        .stderr(std::process::Stdio::piped())
+                                        .status();
+                                    println!("[LSP-CONFIG] Ran dart pub get via {}", candidate);
+                                    break;
+                                }
+                            }
+                            eprintln!("[LSP-CONFIG] dart pub get failed: {}", e);
+                        }
+                    }
                 }
             }
         }
@@ -4405,9 +5804,32 @@ path = "{}.rs"
                 }
             }
         }
+        "prisma" => {
+            // Prisma Language Server works with .prisma files directly.
+            // No extra config needed — it reads schema.prisma from the workspace.
+            let schema = workspace.join("prisma/schema.prisma");
+            if !schema.exists() {
+                // Check root level too
+                let root_schema = workspace.join("schema.prisma");
+                if root_schema.exists() {
+                    println!("[LSP-CONFIG] Prisma schema found at root level");
+                }
+            } else {
+                println!("[LSP-CONFIG] Prisma schema found at prisma/schema.prisma");
+            }
+        }
+        "json" | "jsonc" => {
+            // vscode-json-language-server works out of the box.
+            // Optionally, we could provide schema associations.
+        }
+        "yaml" => {
+            // yaml-language-server works out of the box.
+            // Could provide schema associations via settings.
+        }
         // Python: pylsp/pyright works well for standalone files without extra config.
         // C/C++: compile_flags.txt is created in the cmd match arm below.
         // Java: jdtls creates .jdtls-data itself.
+        // TOML, GraphQL, Dockerfile, Tailwind, ESLint: work without extra config.
         _ => {}
     }
 }

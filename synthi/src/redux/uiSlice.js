@@ -30,6 +30,9 @@ const uiSlice = createSlice({
         toggleTerminal: (state) => {
             state.showTerminal = !state.showTerminal;
         },
+        setShowTerminal: (state, action) => {
+            state.showTerminal = !!action.payload;
+        },
         toggleEmulatorPreview: (state) => {
             state.showEmulatorPreview = !state.showEmulatorPreview;
         },
@@ -98,6 +101,7 @@ const uiSlice = createSlice({
 
 export const {
     toggleTerminal,
+    setShowTerminal,
     toggleEmulatorPreview,
     setEmulatorPreviewVisible,
     setTreeOrientation,

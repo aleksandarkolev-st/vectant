@@ -105,6 +105,9 @@ export const SYNTHI_THEME = {
         
         // Gutter
         'editorGutter.background': '#0d0e14',
+        'editorGutter.addedBackground': '#3def3a',
+        'editorGutter.modifiedBackground': '#1871d0',
+        'editorGutter.deletedBackground': '#ff6b6b',
         
         // Minimap - Styled
         'minimap.background': '#0a0b10',

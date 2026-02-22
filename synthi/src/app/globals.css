@@ -189,14 +189,14 @@
   max-width: 100%;
   display: inline-block;
   vertical-align: top;
-  padding: 0.15rem 0.4rem;
-  margin: 0 0.1rem;
+  padding: 0.1rem 0.3rem;
+  margin: 0 0.05rem;
   background: #1a1d23;
   border: 1px solid #252830;
-  border-radius: 6px;
+  border-radius: 4px;
   font-family: 'JetBrains Mono', 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
-  font-size: 12px;
-  line-height: 1.5;
+  font-size: 11px;
+  line-height: 1.4;
   color: #e8eaed;
 }
 
@@ -309,12 +309,12 @@
   overflow-x: auto;
   overflow-y: auto;
   background: #0d0e12;
-  border-radius: 8px;
-  padding: 12px 14px;
+  border-radius: 6px;
+  padding: 8px 10px;
   margin: 0;
   font-family: 'JetBrains Mono', 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  font-size: 12px;
-  line-height: 1.6;
+  font-size: 11px;
+  line-height: 1.45;
 }
 
 .ai-chat-message pre.ai-code-block code.ai-code-block,
@@ -335,8 +335,8 @@
 /* Code block wrapper with language label */
 .ai-code-wrapper {
   position: relative;
-  margin: 8px 0;
-  border-radius: 10px;
+  margin: 5px 0;
+  border-radius: 6px;
   overflow: hidden;
   border: 1px solid #1e2028;
   background: #0d0e12;
@@ -348,14 +348,14 @@
   position: absolute;
   top: 0;
   right: 0;
-  padding: 4px 10px;
-  font-size: 10px;
+  padding: 2px 7px;
+  font-size: 9px;
   font-weight: 500;
   text-transform: uppercase;
-  letter-spacing: 0.5px;
+  letter-spacing: 0.4px;
   color: #71717a;
   background: rgba(30, 32, 40, 0.8);
-  border-bottom-left-radius: 6px;
+  border-bottom-left-radius: 4px;
   user-select: none;
   z-index: 1;
 }
@@ -420,12 +420,12 @@
   word-break: normal;
   overflow-wrap: normal;
   text-wrap: nowrap;
-  border-radius: 8px;
-  padding: 12px 14px;
+  border-radius: 6px;
+  padding: 8px 10px;
   margin: 0;
   font-family: 'JetBrains Mono', 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  font-size: 12px;
-  line-height: 1.6;
+  font-size: 11px;
+  line-height: 1.45;
 }
 
 .shiki-container code {

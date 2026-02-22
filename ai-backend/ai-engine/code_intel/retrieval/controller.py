@@ -138,10 +138,20 @@ class RetrievalController:
         self.max_chunks_per_file = 10
         self.max_tokens_per_file = 3000
         self.max_test_files = 3  # Tests are low priority
+
+        # Hard exclusions to keep noise out of chat context.
+        self._blocked_path_markers = [
+            "/node_modules/",
+            "/build/",
+        ]
         
         # Module-level budgets to prevent graph explosion
         self.module_budgets: Dict[str, ModuleBudget] = {}
         self.default_module_budget = ModuleBudget()
+
+    def _is_blocked_path(self, file_path: str) -> bool:
+        normalized = f"/{file_path.replace('\\', '/').lstrip('/')}"
+        return any(marker in normalized for marker in self._blocked_path_markers)
     
     def decide(
         self,
@@ -199,6 +209,12 @@ class RetrievalController:
             symbol_name = chunk.metadata.symbol_name
             module = self._get_module(file_path)
             chunk_tokens = chunk.metadata.token_count
+
+            # Block noisy vendor/build paths from entering context.
+            if self._is_blocked_path(file_path):
+                excluded.append(chunk)
+                exclusion_reasons[chunk.id] = "blocked_path"
+                continue
             
             # Check hard limits
             

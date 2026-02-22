@@ -44,6 +44,7 @@ export function useCodeIntelIndex({
     
     const indexingRef = useRef(false);
     const hasAutoIndexedRef = useRef(false);
+    const fileIndexTimersRef = useRef(new Map()); // debounce per file path
     
     /**
      * Trigger workspace indexing.
@@ -102,28 +103,38 @@ export function useCodeIntelIndex({
     
     /**
      * Index a single file (for incremental updates after edits).
+     * Debounced: rapid saves within 1.5s are coalesced into a single request.
      * @param {string} filePath - Path to file within workspace
      */
-    const indexFile = useCallback(async (filePath) => {
+    const indexFile = useCallback((filePath) => {
         if (!workspaceSlug || !filePath) return;
         
-        try {
-            const response = await fetch(`${CODE_INTEL_URL}/code-intel/index/file`, {
-                method: 'POST',
-                headers: { 'content-type': 'application/json' },
-                body: JSON.stringify({
-                    workspace_path: workspaceSlug,
-                    file_path: filePath,
-                }),
-            });
-            
-            if (response.ok) {
-                console.log(`[CodeIntel] Re-indexed file: ${filePath}`);
-            }
-        } catch (err) {
-            // Silent fail for incremental updates
-            console.debug('[CodeIntel] File index failed:', err.message);
+        // Cancel any pending timer for this file
+        const timers = fileIndexTimersRef.current;
+        if (timers.has(filePath)) {
+            clearTimeout(timers.get(filePath));
         }
+        
+        timers.set(filePath, setTimeout(async () => {
+            timers.delete(filePath);
+            try {
+                const response = await fetch(`${CODE_INTEL_URL}/code-intel/index/file`, {
+                    method: 'POST',
+                    headers: { 'content-type': 'application/json' },
+                    body: JSON.stringify({
+                        workspace_path: workspaceSlug,
+                        file_path: filePath,
+                    }),
+                });
+                
+                if (response.ok) {
+                    console.log(`[CodeIntel] Re-indexed file: ${filePath}`);
+                }
+            } catch (err) {
+                // Silent fail for incremental updates
+                console.debug('[CodeIntel] File index failed:', err.message);
+            }
+        }, 1500));
     }, [workspaceSlug]);
     
     /**
@@ -140,6 +151,58 @@ export function useCodeIntelIndex({
             return false;
         }
     }, []);
+    
+    /**
+     * Notify backend that a file was deleted so all indexes are cleaned up.
+     * @param {string} filePath - Relative path of the deleted file
+     */
+    const deleteFile = useCallback(async (filePath) => {
+        if (!workspaceSlug || !filePath) return;
+        
+        try {
+            const response = await fetch(`${CODE_INTEL_URL}/code-intel/index/file/delete`, {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({
+                    workspace_path: workspaceSlug,
+                    file_path: filePath,
+                }),
+            });
+            
+            if (response.ok) {
+                console.log(`[CodeIntel] Cleaned up deleted file: ${filePath}`);
+            }
+        } catch (err) {
+            console.debug('[CodeIntel] Delete cleanup failed:', err.message);
+        }
+    }, [workspaceSlug]);
+    
+    /**
+     * Notify backend that a file was renamed so indexes are updated atomically.
+     * @param {string} oldPath - Previous relative file path
+     * @param {string} newPath - New relative file path
+     */
+    const renameFile = useCallback(async (oldPath, newPath) => {
+        if (!workspaceSlug || !oldPath || !newPath) return;
+        
+        try {
+            const response = await fetch(`${CODE_INTEL_URL}/code-intel/index/file/rename`, {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({
+                    workspace_path: workspaceSlug,
+                    old_path: oldPath,
+                    new_path: newPath,
+                }),
+            });
+            
+            if (response.ok) {
+                console.log(`[CodeIntel] Renamed file in indexes: ${oldPath} -> ${newPath}`);
+            }
+        } catch (err) {
+            console.debug('[CodeIntel] Rename cleanup failed:', err.message);
+        }
+    }, [workspaceSlug]);
     
     // Auto-index on mount if enabled
     useEffect(() => {
@@ -186,6 +249,8 @@ export function useCodeIntelIndex({
         ...status,
         indexWorkspace,
         indexFile,
+        deleteFile,
+        renameFile,
         checkBackendHealth,
     };
 }

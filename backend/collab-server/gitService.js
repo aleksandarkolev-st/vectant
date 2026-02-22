@@ -19,6 +19,8 @@ const BINARY_EXTENSIONS = new Set([
 
 const VENDOR_DIRS = new Set(['node_modules','vendor','third_party','external','.yarn','.pnpm']);
 const GENERATED_DIRS = new Set(['dist','build','out','coverage','.next','.nuxt','target']);
+// Directories to ALWAYS skip when listing files (never descend)
+const SKIP_DIRS = new Set(['.git', 'node_modules', '.synthi', '.code_intel', '__pycache__', '.next', '.venv', 'venv', '.tox', '.mypy_cache', '.pytest_cache', '.turbo', '.cache', '.parcel-cache']);
 
 function isBinaryExtension(ext) {
     return BINARY_EXTENSIONS.has(String(ext || '').toLowerCase());
@@ -763,13 +765,30 @@ class GitService {
             const git = this.getGit(slug, userId);
             const status = await git.status();
             
+            // Filter out AI-generated index directories that shouldn't appear in SCM
+            const AI_INDEX_PREFIXES = ['.synthi/', '.code_intel/', '.code_intel_backups/'];
+            const isAIPath = (filePath) => AI_INDEX_PREFIXES.some(p => filePath.startsWith(p));
+            const filterFiles = (arr) => (arr || []).filter(f => !isAIPath(typeof f === 'string' ? f : f.path || ''));
+            
+            const filteredStatus = {
+                ...status,
+                files: filterFiles(status.files),
+                not_added: (status.not_added || []).filter(f => !isAIPath(f)),
+                created: (status.created || []).filter(f => !isAIPath(f)),
+                deleted: (status.deleted || []).filter(f => !isAIPath(f)),
+                modified: (status.modified || []).filter(f => !isAIPath(f)),
+                renamed: filterFiles(status.renamed),
+                staged: (status.staged || []).filter(f => !isAIPath(f)),
+                conflicted: (status.conflicted || []).filter(f => !isAIPath(f)),
+            };
+            
             // Check for merge conflicts
-            const hasConflicts = status.conflicted && status.conflicted.length > 0;
+            const hasConflicts = filteredStatus.conflicted && filteredStatus.conflicted.length > 0;
             
             return {
-                ...status,
+                ...filteredStatus,
                 hasConflicts,
-                conflictedFiles: status.conflicted || []
+                conflictedFiles: filteredStatus.conflicted || []
             };
         } catch (e) {
             // Gracefully handle repos that have no commits yet (orphan branch).
@@ -1686,7 +1705,7 @@ class GitService {
 
             for await (const dirent of dh) {
                 const name = dirent.name;
-                if (name === '.git') continue;
+                if (SKIP_DIRS.has(name)) continue;
                 const full = path.join(dir, name);
                 if (dirent.isDirectory()) {
                     // Include folder markers so the tree can represent empty dirs
@@ -1725,12 +1744,8 @@ class GitService {
                     const ext = (path.extname(rel).replace('.', '') || '').toLowerCase();
                     const isText = TEXT_EXTENSIONS.has(ext) || ext === '';
                     const isBinary = !isText && isBinaryExtension(ext);
-                    let contentHash = '';
-                    try {
-                        contentHash = await hashFile(full);
-                    } catch (_) {
-                        contentHash = '';
-                    }
+                    // Skip expensive per-file hashing for the tree listing.
+                    // Hash is only needed for VFS validation (file-hash endpoint).
                     out.push({
                         path: rel,
                         size: st.size,
@@ -1741,7 +1756,7 @@ class GitService {
                         is_binary: isBinary,
                         is_vendor: isVendorPath(rel),
                         is_generated: isGeneratedPath(rel),
-                        content_hash: contentHash,
+                        content_hash: '',
                         last_author: null,
                         last_commit: null,
                     });

@@ -102,6 +102,13 @@ from .eviction.context_pinner import ContextPinner
 from .editing.edit_session import EditSession, EditSessionManager
 from .editing.edit_planner import EditPlan
 
+# RAG (4-step retrieval-augmented generation)
+from .rag.pipeline import RAGPipeline
+from .rag.api import register_rag_routes, set_rag_workspace
+
+# Gitignore guard — prevent AI indexes from flooding SCM
+from .gitignore_guard import ensure_gitignore
+
 
 logger = logging.getLogger("code_intel.engine")
 
@@ -114,6 +121,11 @@ class EngineStats:
     chunks_indexed: int = 0
     symbols_tracked: int = 0
     summaries_generated: int = 0
+    
+    # RAG pipeline stats
+    rag_documents: int = 0
+    rag_sections: int = 0
+    rag_summaries: int = 0
     
     # Memory usage
     vector_index_size_mb: float = 0.0
@@ -165,6 +177,9 @@ class CodeIntelEngine:
         self._context_stabilizer: Optional[ContextStabilizer] = None
         
         self._edit_session_manager: Optional[EditSessionManager] = None
+
+        # RAG (4-step retrieval-augmented generation)
+        self._rag_pipeline: Optional[RAGPipeline] = None
         
         # State
         self._initialized = False
@@ -200,6 +215,9 @@ class CodeIntelEngine:
         """Initialize all components lazily."""
         if self._initialized:
             return
+        
+        # Ensure AI index dirs are gitignored in this workspace
+        ensure_gitignore(self.workspace_root)
         
         # Ingestion
         self._file_walker = FileWalker(str(self.workspace_root))
@@ -278,6 +296,27 @@ class CodeIntelEngine:
         
         # Editing
         self._edit_session_manager = EditSessionManager(str(self.workspace_root))
+
+        # RAG pipeline (4-step retrieval-augmented generation)
+        if self.config.enable_rag:
+            try:
+                from .rag.config import RAGConfig as _RAGConfig
+                rag_config = _RAGConfig()
+                # Propagate API key from engine config if set explicitly
+                if self.config.gemini_api_key:
+                    rag_config.embedding_api_key = self.config.gemini_api_key
+                    rag_config.micro.routing_api_key = self.config.gemini_api_key
+                    rag_config.synthesis.synthesis_api_key = self.config.gemini_api_key
+
+                self._rag_pipeline = RAGPipeline(
+                    workspace_root=str(self.workspace_root),
+                    config=rag_config,
+                )
+                set_rag_workspace(str(self.workspace_root))
+                logger.info("RAG pipeline initialized")
+            except Exception as e:
+                logger.warning(f"RAG pipeline initialization failed: {e}")
+                self._rag_pipeline = None
         
         self._initialized = True
         logger.info(f"CodeIntelEngine initialized for: {self.workspace_root}")
@@ -310,9 +349,9 @@ class CodeIntelEngine:
             if getattr(self._dual_indexer, "_rebuild_required", False):
                 result = await self._dual_indexer.index_repository_async()
             else:
-                result = self._dual_indexer.reindex_changed()
-            files_count = result.get("files_updated", 0)
-            chunks_count = result.get("chunks_updated", 0)
+                result = await asyncio.to_thread(self._dual_indexer.reindex_changed)
+            files_count = result.get("files_updated", result.get("files", 0))
+            chunks_count = result.get("chunks_updated", result.get("chunks", 0))
         else:
             # Full reindex
             result = await self._dual_indexer.index_repository_async()
@@ -334,32 +373,67 @@ class CodeIntelEngine:
         
         logger.info(f"Indexed {self._stats.chunks_indexed} chunks in {self._stats.last_index_time_ms:.0f}ms")
 
-        # Sync summaries and facts store
+        # Sync summaries and facts store in a worker thread so event loop stays responsive.
         try:
-            if self._summary_manager:
-                file_hashes = self._file_walker.get_all_hashes()
-                file_chunks = {}
-                for file_path in file_hashes.keys():
-                    chunk_ids = self._structural_index.get_chunks_for_file(file_path)
-                    chunks = []
-                    for cid in chunk_ids:
-                        chunk = self._vector_index.get_chunk(cid)
-                        if chunk:
-                            chunks.append(chunk)
-                    if not chunks:
-                        try:
-                            file_obj = self._file_walker.get_file(file_path)
-                            if file_obj:
-                                chunks = self._dual_indexer.extractor.extract(file_obj)
-                        except Exception:
-                            chunks = []
-                    if chunks:
-                        file_chunks[file_path] = chunks
-                self._summary_manager.sync(file_hashes=file_hashes, file_chunks=file_chunks)
+            await asyncio.to_thread(self._sync_summaries_after_index)
         except Exception as e:
             logger.warning(f"Summary sync failed: {e}")
         
+        # Sync RAG pipeline stores in a background thread so it doesn't
+        # block the HTTP response for index_workspace.
+        if self._rag_pipeline:
+            import threading
+
+            def _rag_ingest_background():
+                try:
+                    rag_stats = self._rag_pipeline.ingest_directory(
+                        str(self.workspace_root)
+                    )
+                    self._stats.rag_documents = rag_stats.get('documents_processed', 0)
+                    self._stats.rag_sections = rag_stats.get('total_sections', 0)
+                    self._stats.rag_summaries = rag_stats.get('documents_processed', 0)
+                    logger.info(
+                        f"RAG ingestion complete: {self._stats.rag_documents} docs, "
+                        f"{self._stats.rag_sections} sections"
+                    )
+                except Exception as e:
+                    logger.warning(f"RAG background ingestion failed: {e}")
+
+            thread = threading.Thread(
+                target=_rag_ingest_background,
+                name="rag-ingest",
+                daemon=True,
+            )
+            thread.start()
+            logger.info("RAG ingestion started in background thread")
+        
         return self._stats
+
+    def _sync_summaries_after_index(self) -> None:
+        """Build and persist summary/fact metadata after indexing."""
+        if not self._summary_manager:
+            return
+
+        file_hashes = self._file_walker.get_all_hashes()
+        file_chunks = {}
+        for file_path in file_hashes.keys():
+            chunk_ids = self._structural_index.get_chunks_for_file(file_path)
+            chunks = []
+            for cid in chunk_ids:
+                chunk = self._vector_index.get_chunk(cid)
+                if chunk:
+                    chunks.append(chunk)
+            if not chunks:
+                try:
+                    file_obj = self._file_walker.get_file(file_path)
+                    if file_obj:
+                        chunks = self._dual_indexer.extractor.extract(file_obj)
+                except Exception:
+                    chunks = []
+            if chunks:
+                file_chunks[file_path] = chunks
+
+        self._summary_manager.sync(file_hashes=file_hashes, file_chunks=file_chunks)
     
     async def index_file(self, file_path: str) -> int:
         """
@@ -416,7 +490,105 @@ class CodeIntelEngine:
         except Exception as e:
             logger.debug(f"Index-file summary update failed: {e}")
         
+        # Sync single file into RAG stores
+        try:
+            if self._rag_pipeline:
+                abs_path = str(self.workspace_root / file_path)
+                self._rag_pipeline.ingest_file(abs_path)
+        except Exception as e:
+            logger.debug(f"RAG single-file ingest failed for {file_path}: {e}")
+        
         return len(chunks)
+    
+    async def delete_file(self, file_path: str) -> Dict[str, Any]:
+        """
+        Remove a file from all indexes and stores.
+        
+        Called when a file is deleted from the workspace so that stale data
+        is purged from the dual-index, summaries, facts, and RAG stores.
+        
+        Args:
+            file_path: Path to file (relative to workspace)
+            
+        Returns:
+            Dict summarising what was cleaned up
+        """
+        self._initialize_components()
+        
+        cleaned: Dict[str, Any] = {"file": file_path}
+        
+        # 1. Dual indexer (vector + structural + lexical)
+        try:
+            self._dual_indexer.remove_file(file_path)
+            cleaned["dual_index"] = True
+        except Exception as e:
+            logger.warning(f"DualIndexer remove failed for {file_path}: {e}")
+            cleaned["dual_index"] = False
+        
+        # 2. Summary store
+        try:
+            if self._summary_store:
+                self._summary_store.remove_file_summary(file_path)
+                self._summary_store.remove_file_hash(file_path)
+            cleaned["summaries"] = True
+        except Exception as e:
+            logger.warning(f"Summary removal failed for {file_path}: {e}")
+            cleaned["summaries"] = False
+        
+        # 3. Facts store
+        try:
+            if self._facts_store:
+                self._facts_store.remove_facts_for_file(file_path)
+            cleaned["facts"] = True
+        except Exception as e:
+            logger.warning(f"Facts removal failed for {file_path}: {e}")
+            cleaned["facts"] = False
+        
+        # 4. RAG stores
+        try:
+            if self._rag_pipeline:
+                abs_path = str(self.workspace_root / file_path)
+                self._rag_pipeline.remove_file(abs_path)
+            cleaned["rag"] = True
+        except Exception as e:
+            logger.warning(f"RAG removal failed for {file_path}: {e}")
+            cleaned["rag"] = False
+        
+        logger.info(f"Deleted file from indexes: {file_path} -> {cleaned}")
+        return cleaned
+    
+    async def rename_file(
+        self, old_path: str, new_path: str,
+    ) -> Dict[str, Any]:
+        """
+        Atomically rename a file across all indexes.
+        
+        Implemented as delete-old + index-new so every store is consistent.
+        
+        Args:
+            old_path: Previous file path (relative to workspace)
+            new_path: New file path (relative to workspace)
+            
+        Returns:
+            Dict with cleanup and re-index results
+        """
+        result: Dict[str, Any] = {"old_path": old_path, "new_path": new_path}
+        
+        # Remove old entries
+        cleanup = await self.delete_file(old_path)
+        result["cleanup"] = cleanup
+        
+        # Re-index under the new path
+        try:
+            chunks = await self.index_file(new_path)
+            result["chunks_indexed"] = chunks
+        except Exception as e:
+            logger.warning(f"Re-index after rename failed for {new_path}: {e}")
+            result["chunks_indexed"] = 0
+            result["error"] = str(e)
+        
+        logger.info(f"Renamed file in indexes: {old_path} -> {new_path}")
+        return result
     
     # =========================================================================
     # Context Retrieval API
@@ -432,7 +604,8 @@ class CodeIntelEngine:
         Get relevant context for a query.
         
         This is the main API for context assembly.
-        Uses deterministic controller to decide what context to include.
+        Uses the RAG pipeline (Steps 2+3: Macro-Retrieval + Micro-Navigation)
+        when available. Falls back to the old retrieval pipeline otherwise.
         
         Args:
             query: User query or intent
@@ -444,7 +617,102 @@ class CodeIntelEngine:
         """
         self._initialize_components()
         
-        # Create budget
+        # ── Try RAG pipeline first (superior retrieval) ──────────────────
+        if self._rag_pipeline and self._rag_pipeline.document_store.count() > 0:
+            return await self._get_context_via_rag(query, max_tokens)
+        
+        # ── Fallback: old retrieval pipeline ─────────────────────────────
+        return await self._get_context_via_old_pipeline(query, max_tokens)
+
+    async def _get_context_via_rag(
+        self,
+        query: str,
+        max_tokens: int,
+    ) -> RetrievalResult:
+        """
+        Context retrieval using the new 4-step RAG pipeline (Steps 2+3 only).
+        
+        Runs Macro-Retrieval → Micro-Navigation → ContextBuilder.
+        No heavy LLM call — the frontend's Gemini call handles synthesis.
+        """
+        import asyncio
+        
+        budget = ContextBudget(max_tokens=max_tokens)
+        
+        loop = asyncio.get_event_loop()
+        rag_ctx = await loop.run_in_executor(
+            None,
+            lambda: self._rag_pipeline.retrieve_context(query, max_tokens=max_tokens)
+        )
+        
+        context_text = rag_ctx.get("context_text", "")
+        sources = rag_ctx.get("sources", [])
+        tokens_used = rag_ctx.get("tokens_used", 0)
+        timing = rag_ctx.get("timing", {})
+        trace = rag_ctx.get("trace", [])
+        sufficiency_str = rag_ctx.get("sufficiency", "UNKNOWN")
+        
+        # Map RAG sufficiency string to controller enum
+        sufficiency = ContextSufficiency.SUFFICIENT
+        refusal = None
+        if sufficiency_str == "EMPTY":
+            sufficiency = ContextSufficiency.INSUFFICIENT
+            refusal = RefusalReason.NO_RESULTS
+        elif sufficiency_str == "INSUFFICIENT":
+            sufficiency = ContextSufficiency.INSUFFICIENT
+            refusal = RefusalReason.TOPIC_NOT_FOUND
+        elif sufficiency_str == "PARTIAL":
+            sufficiency = ContextSufficiency.PARTIAL
+        
+        # Build grounding spans from RAG sources
+        grounding_spans = [
+            {
+                "file": s.get("file", ""),
+                "start_line": s.get("start_line", 0),
+                "end_line": s.get("end_line", 0),
+                "symbol": s.get("symbol", ""),
+                "score": s.get("score", 0.0),
+                "citation_id": s.get("citation_id", ""),
+                "breadcrumb": s.get("breadcrumb", ""),
+            }
+            for s in sources
+        ]
+        
+        retrieval_result = RetrievalResult(
+            chunks=[],
+            file_summaries=[],
+            repo_summary=None,
+            query=query,
+            total_tokens=tokens_used,
+            budget=budget,
+            assembled_context=context_text,
+            trace=trace,
+            debug={
+                "timings_ms": timing,
+                "pipeline": "rag",
+                "documents_searched": rag_ctx.get("documents_searched", 0),
+                "documents_selected": rag_ctx.get("documents_selected", 0),
+                "sections_used": rag_ctx.get("sections_used", 0),
+            },
+            grounding_spans=grounding_spans,
+            sufficiency=sufficiency,
+            refusal_reason=refusal,
+        )
+        
+        return retrieval_result
+
+    async def _get_context_via_old_pipeline(
+        self,
+        query: str,
+        max_tokens: int,
+    ) -> RetrievalResult:
+        """
+        Context retrieval using the legacy retrieval pipeline.
+        
+        Used as fallback when RAG stores are empty.
+        """
+        import asyncio
+        
         budget = ContextBudget(max_tokens=max_tokens)
 
         # Refresh summaries for retrieval
@@ -471,7 +739,6 @@ class CodeIntelEngine:
             logger.debug(f"Failed to update summaries for retrieval: {e}")
         
         # Run retrieval pipeline (synchronous, so run in executor)
-        import asyncio
         loop = asyncio.get_event_loop()
         pipeline_result = await loop.run_in_executor(
             None,
@@ -508,6 +775,7 @@ class CodeIntelEngine:
                     "assembly": pipeline_result.assembly_time_ms,
                     "total": pipeline_result.total_time_ms,
                 },
+                "pipeline": "legacy",
                 "counters": self._last_metrics(),
             },
             grounding_spans=pipeline_result.grounding_spans,
@@ -706,6 +974,58 @@ class CodeIntelEngine:
         """Get an existing edit session."""
         self._initialize_components()
         return self._edit_session_manager.get_session(session_id)
+    
+    # =========================================================================
+    # RAG API (4-Step Retrieval-Augmented Generation)
+    # =========================================================================
+    
+    def rag_query(self, query: str, **kwargs) -> Dict[str, Any]:
+        """
+        Execute a RAG query through the 4-step pipeline.
+        
+        Steps: Macro-Retrieval → Micro-Navigation → Synthesis → Cited Answer.
+        
+        Args:
+            query: User question.
+            **kwargs: Override RAGQuery defaults.
+            
+        Returns:
+            RAGResult as a dictionary.
+        """
+        self._initialize_components()
+        if not self._rag_pipeline:
+            return {"error": "RAG pipeline not available", "answer": ""}
+        result = self._rag_pipeline.query(query, **kwargs)
+        return result.to_dict()
+    
+    def rag_ingest(
+        self,
+        directory: Optional[str] = None,
+        file_path: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Ingest documents into the RAG pipeline.
+        
+        Args:
+            directory: Directory to ingest. Defaults to workspace root.
+            file_path: Single file to ingest.
+            
+        Returns:
+            Ingestion statistics.
+        """
+        self._initialize_components()
+        if not self._rag_pipeline:
+            return {"error": "RAG pipeline not available"}
+        if file_path:
+            return self._rag_pipeline.ingest_file(file_path)
+        return self._rag_pipeline.ingest_directory(directory)
+    
+    def rag_stats(self) -> Dict[str, Any]:
+        """Get RAG pipeline statistics."""
+        self._initialize_components()
+        if not self._rag_pipeline:
+            return {"error": "RAG pipeline not available"}
+        return self._rag_pipeline.get_stats()
     
     # =========================================================================
     # Persistence API

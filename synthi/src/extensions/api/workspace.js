@@ -150,15 +150,41 @@ export function createWorkspaceAPI(extensionId, host) {
      * @returns {object}
      */
     createFileSystemWatcher(globPattern, ignoreCreateEvents, ignoreChangeEvents, ignoreDeleteEvents) {
-      // Return no-op watcher
+      // Create a watcher with real event emitter arrays
+      // Main thread will push FILE_WATCHER_EVENT messages when remote FS changes
+      const onCreateListeners = [];
+      const onChangeListeners = [];
+      const onDeleteListeners = [];
+
+      const watcherId = `fsw_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+      const pattern = typeof globPattern === 'string' ? globPattern : globPattern?.pattern;
+
+      // Register watcher in host so main thread events can reach it
+      if (!host._fileWatchers) host._fileWatchers = new Map();
+      host._fileWatchers.set(watcherId, {
+        pattern,
+        ignoreCreateEvents: !!ignoreCreateEvents,
+        ignoreChangeEvents: !!ignoreChangeEvents,
+        ignoreDeleteEvents: !!ignoreDeleteEvents,
+        fire(type, uri) {
+          const listeners = type === 'create' ? onCreateListeners : type === 'change' ? onChangeListeners : onDeleteListeners;
+          for (const l of listeners) { try { l(uri); } catch (e) { console.error('[fsWatcher]', e); } }
+        }
+      });
+
       return {
         ignoreCreateEvents: !!ignoreCreateEvents,
         ignoreChangeEvents: !!ignoreChangeEvents,
         ignoreDeleteEvents: !!ignoreDeleteEvents,
-        onDidCreate: createNoOpEvent(),
-        onDidChange: createNoOpEvent(),
-        onDidDelete: createNoOpEvent(),
-        dispose() {}
+        onDidCreate: createEvent(onCreateListeners),
+        onDidChange: createEvent(onChangeListeners),
+        onDidDelete: createEvent(onDeleteListeners),
+        dispose() {
+          host._fileWatchers?.delete(watcherId);
+          onCreateListeners.length = 0;
+          onChangeListeners.length = 0;
+          onDeleteListeners.length = 0;
+        }
       };
     },
 
@@ -344,8 +370,11 @@ function createConfigurationProxy(section) {
     },
 
     async update(key, value, configurationTarget, overrideInLanguage) {
-      // No-op - configuration is read-only
-      console.warn('[workspace.getConfiguration] update() not supported');
+      const fullKey = section ? `${section}.${key}` : key;
+      config[fullKey] = value;
+      try {
+        host.emit(WorkerToMainMethods.CONFIG_UPDATE, fullKey, value, configurationTarget);
+      } catch { /* best effort */ }
     }
   };
 }
@@ -356,39 +385,66 @@ function createConfigurationProxy(section) {
  * @returns {object}
  */
 function createFileSystemAPI(host) {
+  function uriStr(uri) {
+    return typeof uri === 'string' ? uri : (uri.toString?.() || uri.fsPath || uri.path);
+  }
+
   return {
     async stat(uri) {
-      // Would need main thread support
-      throw new Error('Not implemented');
+      const result = await host.request(WorkerToMainMethods.FS_STAT, [uriStr(uri)]);
+      return result; // { type, ctime, mtime, size }
     },
 
     async readDirectory(uri) {
-      throw new Error('Not implemented');
+      const result = await host.request(WorkerToMainMethods.FS_READ_DIR, [uriStr(uri)]);
+      return result || []; // Array<[string, FileType]>
     },
 
     async readFile(uri) {
-      throw new Error('Not implemented');
+      const result = await host.request(WorkerToMainMethods.FS_READ_FILE, [uriStr(uri)]);
+      if (typeof result === 'string') {
+        // Base64 → Uint8Array
+        const binary = atob(result);
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+        return bytes;
+      }
+      return new Uint8Array(result || []);
     },
 
     async writeFile(uri, content) {
-      // Disabled
-      throw new Error('File write not supported');
+      // Convert Uint8Array to base64
+      let b64;
+      if (content instanceof Uint8Array) {
+        let binary = '';
+        for (let i = 0; i < content.length; i++) binary += String.fromCharCode(content[i]);
+        b64 = btoa(binary);
+      } else {
+        b64 = btoa(content);
+      }
+      await host.request(WorkerToMainMethods.FS_WRITE_FILE, [uriStr(uri), b64]);
     },
 
-    async delete(uri) {
-      throw new Error('File delete not supported');
+    async delete(uri, options) {
+      await host.request(WorkerToMainMethods.FS_DELETE, [uriStr(uri), options]);
     },
 
-    async rename(oldUri, newUri) {
-      throw new Error('File rename not supported');
+    async rename(oldUri, newUri, options) {
+      await host.request(WorkerToMainMethods.FS_RENAME, [uriStr(oldUri), uriStr(newUri), options]);
     },
 
-    async copy(source, destination) {
-      throw new Error('File copy not supported');
+    async copy(source, destination, options) {
+      // Read then write as fallback
+      const data = await this.readFile(source);
+      await this.writeFile(destination, data);
     },
 
     async createDirectory(uri) {
-      throw new Error('Directory creation not supported');
+      await host.request(WorkerToMainMethods.FS_WRITE_FILE, [uriStr(uri), null, { isDirectory: true }]);
+    },
+
+    isWritableFileSystem(scheme) {
+      return scheme === 'file' ? true : false;
     }
   };
 }
