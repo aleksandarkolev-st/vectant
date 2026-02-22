@@ -20,6 +20,14 @@ import { perfMeasureToConsole, perfOnce } from '@/services/perfMarkers';
 
 // --- Initial State and Utilities ---
 
+/**
+ * Normalize trailing newlines/carriage returns for content comparison.
+ * Yjs sync can add/remove trailing newlines, so we strip them to avoid
+ * false unsaved states.  Defined once at module level to avoid repeated
+ * inline re-definitions (DRY).
+ */
+const normalizeTrailing = (s) => (typeof s === 'string' ? s.replace(/[\r\n]+$/, '') : '');
+
 export const initialWorkspaceState = {
     slug: null,
     rawFiles: [],
@@ -33,12 +41,19 @@ export const initialWorkspaceState = {
     diffMode: false,     // Toggle diff view
     fileContentCache: new Map(), // Deprecated (hybrid cache is in services/fileCache)
     loadingFiles: [],    // Tracks files currently being fetched
+    _filesFetching: false, // Dedup guard for fetchFilesThunk
     isLoading: false,
     status: 'idle',
     error: null,
+    // Per-file savedContent cache — preserves the "last saved" baseline
+    // across tab switches so the unsaved dot survives the auto-flush.
+    _savedContentByPath: {},
 };
 
 // --- ASYNC THUNKS (Side Effects and Persistence) ---
+
+// Track queued re-fetch for fetchFilesThunk (mirrors fetchGitStatus dedup pattern)
+let _pendingFilesFetchSlug = null;
 
 // 1. Fetch Files (Read)
 export const fetchFilesThunk = createAsyncThunk(
@@ -65,8 +80,25 @@ export const fetchFilesThunk = createAsyncThunk(
             }
         }
 
+        // If another fetch was queued while we were in-flight, re-dispatch
+        if (_pendingFilesFetchSlug) {
+            const queuedSlug = _pendingFilesFetchSlug;
+            _pendingFilesFetchSlug = null;
+            queueMicrotask(() => dispatch(fetchFilesThunk(queuedSlug)));
+        }
+
         // Return files and potential file to select for the reducer
         return { files, fileToSelect };
+    },
+    {
+        // Prevent redundant concurrent fetches — queue a re-fetch instead
+        condition: (slug, { getState }) => {
+            const { workspace } = getState();
+            if (workspace._filesFetching) {
+                _pendingFilesFetchSlug = slug;
+                return false;
+            }
+        },
     }
 );
 
@@ -81,44 +113,40 @@ export const saveFileContentThunk = createAsyncThunk(
             return;
         }
 
-        // Determine the authoritative content to save:
-        // 1. If a collab doc exists for this file, use the CRDT content (most up-to-date)
-        // 2. Otherwise fall back to Redux currentContent
+        // Determine the authoritative content to save.
+        // Use Redux editor content as the source of truth; CRDT snapshots can
+        // momentarily lag during high-frequency edits and cause stale writes.
         let contentToSave = currentContent;
-        let usedCrdt = false;
-        
-        try {
-            // Build the key the same way collabClient does
-            const safePath = activeFile.path.replace(/[^a-zA-Z0-9_.\-\/]/g, '_');
-            const key = `workspace:${slug}:${safePath}`;
-            const entry = collabClient.docs.get(key);
-            
-            if (entry && entry.ytext) {
-                const crdtText = entry.ytext.toString();
-                if (crdtText && crdtText.length > 0) {
-                    contentToSave = crdtText;
-                    usedCrdt = true;
-                }
-            }
-        } catch (e) {
-            console.warn('[Save] Failed to get CRDT content, using Redux content', e);
-        }
-        
-        // Skip save if content hasn't changed
-        if (contentToSave === state.savedContent) {
-            return contentToSave; // Return content to ensure reducer still marks as saved
+
+        // Skip ONLY when content truly hasn't changed (after normalization).
+        // When content is the same, still refresh git status so the Source
+        // Control panel picks up any out-of-band changes (e.g. from Yjs auto-
+        // flush or terminal-level edits).
+        if (normalizeTrailing(contentToSave) === normalizeTrailing(state.savedContent)) {
+            dispatch(fetchGitStatus(slug));
+            return contentToSave; // fulfilled reducer marks as saved
         }
 
         try {
-            await api.saveFileContent(slug, activeFile.path, contentToSave, activeFile.name);
-            
-            // Sync to Git
-            dispatch(syncFileToGit({ slug, filePath: activeFile.path, content: contentToSave }));
+            // Single write through collab-server (writes to disk, GCS sync handled by auto-flush)
+            await dispatch(syncFileToGit({ slug, filePath: activeFile.path, content: contentToSave })).unwrap();
+            // Refresh git status AFTER the disk write completes so Source
+            // Control reflects the newly saved content immediately.
             dispatch(fetchGitStatus(slug));
 
         } catch (e) {
-            console.error('[Save] Failed to save file', e);
-            throw e; // Re-throw so the thunk is rejected
+            // Retry once on transient failures (network hiccup, auth race).
+            // If the first attempt failed because auth wasn't ready, the
+            // auth-ready guard in gitClient.request() will have resolved
+            // the userId by now.
+            console.warn('[Save] First sync attempt failed, retrying once…', e.message || e);
+            try {
+                await dispatch(syncFileToGit({ slug, filePath: activeFile.path, content: contentToSave })).unwrap();
+                dispatch(fetchGitStatus(slug));
+            } catch (retryErr) {
+                console.error('[Save] Retry also failed', retryErr);
+                throw retryErr;
+            }
         }
         
         // Notify CodeIntel/RAG to re-index this file (covers both auto-save and manual save)
@@ -240,6 +268,28 @@ export const selectFileThunk = createAsyncThunk(
         return { file, content, fromCache: false };
     }
 );
+
+// Helper: check if a live Yjs document has content that should be used as
+// the authoritative baseline for savedContent.  When the user switches tabs,
+// the CRDT may already hold edits that haven't been flushed back to the
+// server response yet — using server content as savedContent would make
+// isUnsaved stale.  Returns the CRDT text if it exists and differs from
+// `serverContent`, otherwise returns null.
+function getCrdtBaselineIfNewer(slug, filePath, serverContent) {
+    try {
+        const key = collabClient.getRoomKey(slug, filePath);
+        const entry = collabClient.docs.get(key);
+        if (!entry?.ytext) return null;
+        const crdtText = entry.ytext.toString();
+        if (!crdtText || crdtText.length === 0) return null;
+        // Only use CRDT if it actually differs (avoids false-positive churn)
+        const norm = (s) => s ? s.replace(/[\r\n]+$/, '') : '';
+        if (norm(crdtText) === norm(serverContent)) return null;
+        return crdtText;
+    } catch (_) {
+        return null;
+    }
+}
 
 // 4. Create Item (Mutation)
 export const handleCreateItemThunk = createAsyncThunk(
@@ -413,10 +463,25 @@ export const openDiffThunk = createAsyncThunk(
         const slug = state.slug;
 
         // 1. Fetch current content (working copy)
+        // Priority order:
+        //   a) If this is the currently active file, use Redux currentContent
+        //      (reflects live edits, not stale cache).
+        //   b) Check the live Yjs CRDT for this file (has unsaved edits from
+        //      the collaboration layer).
+        //   c) Fall back to fileCache or server fetch.
         let currentContent = '';
-        const cachedContent = fileCache.get(file.path);
-        if (cachedContent !== undefined) currentContent = cachedContent;
-        else currentContent = await loadScheduler.requestFileContent(slug, file.path, { priority: 'high', background: false });
+        if (state.activeFile && state.activeFile.path === file.path) {
+            currentContent = state.currentContent || '';
+        } else {
+            const crdtContent = getCrdtBaselineIfNewer(slug, file.path, '');
+            if (crdtContent !== null) {
+                currentContent = crdtContent;
+            } else {
+                const cachedContent = fileCache.get(file.path);
+                if (cachedContent !== undefined) currentContent = cachedContent;
+                else currentContent = await loadScheduler.requestFileContent(slug, file.path, { priority: 'high', background: false });
+            }
+        }
 
         // 2. Fetch original content (HEAD)
         let originalContent = '';
@@ -449,8 +514,6 @@ const workspaceSlice = createSlice({
                 if (state.activeFile && state.activeFile.path) {
                     state.fileContentCache.set(state.activeFile.path, newContent);
                     const activePath = state.activeFile.path;
-                    // Normalize trailing newlines for comparison to prevent false unsaved states from Yjs sync
-                    const normalizeTrailing = (s) => s ? s.replace(/[\r\n]+$/, '') : '';
                     const isUnsaved = normalizeTrailing(newContent) !== normalizeTrailing(state.savedContent);
                     const idx = state.openFiles.findIndex(f => f.path === activePath);
                     if (idx !== -1) {
@@ -548,6 +611,52 @@ const workspaceSlice = createSlice({
             try { fileCache.clear(); } catch (_) {}
             try { loadScheduler.cancelBackground(); } catch (_) {}
         },
+        // Clear stale saved baselines after a revert/pull/checkout.
+        // Accepts { paths: string[] } or { all: true }.
+        // Must be dispatched BEFORE selectFileThunk so the fulfilled handler
+        // doesn't re-apply the old savedContent from _savedContentByPath.
+        clearSavedBaselines: (state, action) => {
+            const { paths, all } = action.payload || {};
+            if (all) {
+                state._savedContentByPath = {};
+                state.openFiles = state.openFiles.map(f =>
+                    f.isUnsaved ? { ...f, isUnsaved: false } : f
+                );
+            } else if (Array.isArray(paths)) {
+                for (const p of paths) {
+                    delete state._savedContentByPath?.[p];
+                    const idx = state.openFiles.findIndex(f => f.path === p);
+                    if (idx !== -1 && state.openFiles[idx].isUnsaved) {
+                        state.openFiles[idx] = { ...state.openFiles[idx], isUnsaved: false };
+                    }
+                }
+            }
+        },
+        /**
+         * Called when another collaborator saves a file.
+         * Syncs this client's savedContent so isUnsaved resets correctly.
+         * If the file is currently active, set savedContent = currentContent.
+         * Also updates the per-file savedContent cache.
+         */
+        markFileSavedRemotely: (state, action) => {
+            const filePath = action.payload;
+            if (!filePath) return;
+            // Update per-file cache so switching tabs later reflects correct state
+            const cached = state.fileContentCache.get(filePath);
+            if (typeof cached === 'string') {
+                if (!state._savedContentByPath) state._savedContentByPath = {};
+                state._savedContentByPath[filePath] = cached;
+            }
+            // If this is the currently active file, sync savedContent
+            if (state.activeFile?.path === filePath) {
+                state.savedContent = state.currentContent;
+            }
+            // Clear isUnsaved flag on the open file tab
+            const idx = state.openFiles.findIndex(f => f.path === filePath);
+            if (idx !== -1 && state.openFiles[idx].isUnsaved) {
+                state.openFiles[idx] = { ...state.openFiles[idx], isUnsaved: false };
+            }
+        },
         hydrateWorkspace: (state, action) => {
             const { openFiles, activeFile } = action.payload;
             if (openFiles) {
@@ -571,12 +680,14 @@ const workspaceSlice = createSlice({
         builder
           .addCase(fetchFilesThunk.pending, (state) => {
                 state.isLoading = true;
+                state._filesFetching = true;
                 state.status = 'pending';
                 state.error = null;
             })
           .addCase(fetchFilesThunk.fulfilled, (state, action) => {
                 state.rawFiles = action.payload.files;
                 state.isLoading = false;
+                state._filesFetching = false;
                 state.status = 'succeeded';
                 
                 // If the thunk recommended auto-selection, perform it here
@@ -587,6 +698,7 @@ const workspaceSlice = createSlice({
             })
           .addCase(fetchFilesThunk.rejected, (state, action) => {
                 state.isLoading = false;
+                state._filesFetching = false;
                 state.status = 'failed';
                 state.error = action.error.message;
             });
@@ -607,9 +719,15 @@ const workspaceSlice = createSlice({
             })
             .addCase(openDiffThunk.fulfilled, (state, action) => {
                 const { file, currentContent, originalContent } = action.payload;
+
+                // Preserve the saved baseline if re-opening the same file in diff.
+                // Only reset savedContent when switching to a different file.
+                const isSameFile = state.activeFile && state.activeFile.path === file.path;
                 state.activeFile = file;
                 state.currentContent = currentContent;
-                state.savedContent = currentContent; // Assuming saved on disk matches current for now
+                if (!isSameFile) {
+                    state.savedContent = currentContent;
+                }
                 state.originalContent = originalContent;
                 state.diffMode = true;
                 
@@ -631,18 +749,48 @@ const workspaceSlice = createSlice({
                 }
                 
                 // Cache unsaved content of OLD active file before switching
-                // Use normalized comparison to handle trailing newline differences from Yjs sync
-                // Only strip newlines, not spaces/tabs, so whitespace changes are still detected
-                const normalizeTrailing = (s) => s ? s.replace(/[\r\n]+$/, '') : '';
                 if (state.activeFile && state.activeFile.path && normalizeTrailing(state.currentContent) !== normalizeTrailing(state.savedContent)) {
+                    // Persist the per-file savedContent so switching back later
+                    // doesn't lose the unsaved baseline.
+                    if (!state._savedContentByPath) state._savedContentByPath = {};
+                    state._savedContentByPath[state.activeFile.path] = state.savedContent;
                     state.fileContentCache.set(state.activeFile.path, state.currentContent);
                 }
 
                 // Switch to new file
                 state.activeFile = file;
                 state.currentContent = content;
-                state.savedContent = content;
                 state.diffMode = false; // Disable diff mode
+
+                // Check if this file was previously open with unsaved changes.
+                // The Yjs auto-flush writes edits to disk immediately, so the
+                // server content already matches the CRDT.  Without this
+                // check, savedContent would be set to the (already-flushed)
+                // server content, erasing the unsaved indicator.
+                const existingTab = state.openFiles.find(f => f.path === file.path);
+                const wasUnsaved = existingTab?.isUnsaved === true;
+                const previousSaved = state._savedContentByPath?.[file.path];
+
+                if (wasUnsaved && previousSaved !== undefined) {
+                    // Restore the original savedContent baseline so the
+                    // unsaved dot reappears when switching back to this tab.
+                    const crdtBaseline = getCrdtBaselineIfNewer(state.slug, file.path, content);
+                    state.currentContent = crdtBaseline ?? content;
+                    state.savedContent = previousSaved;
+                } else {
+                    // Fresh file or already saved — use server content as baseline
+                    const crdtBaseline = getCrdtBaselineIfNewer(state.slug, file.path, content);
+                    if (crdtBaseline !== null) {
+                        state.currentContent = crdtBaseline;
+                        state.savedContent = content; // server version is the "last saved" baseline
+                    } else {
+                        state.savedContent = content;
+                    }
+                    // Clean up stale per-file savedContent
+                    if (state._savedContentByPath) {
+                        delete state._savedContentByPath[file.path];
+                    }
+                }
                 
                 // Update cache if content was newly fetched (and not from cache)
                 if (!fromCache) {
@@ -651,21 +799,49 @@ const workspaceSlice = createSlice({
 
                 // Ensure the file appears in the open tabs list
                 try {
-                    const exists = state.openFiles.find(f => f.path === file.path);
-                    const entry = { ...file, isUnsaved: false };
-                    if (!exists) state.openFiles.push(entry);
+                    const hasUnsaved = wasUnsaved || getCrdtBaselineIfNewer(state.slug, file.path, content) !== null;
+                    const entry = { ...file, isUnsaved: hasUnsaved };
+                    if (!existingTab) state.openFiles.push(entry);
+                    else if (existingTab.isUnsaved !== hasUnsaved) {
+                        const idx = state.openFiles.indexOf(existingTab);
+                        state.openFiles[idx] = { ...existingTab, isUnsaved: hasUnsaved };
+                    }
                 } catch (e) { /* ignore */ }
             });
 
         // --- SAVE CONTENT ---
         builder
+          .addCase(saveFileContentThunk.pending, (state) => {
+                // Optimistic: immediately mark the file as saved so the UI feels instant.
+                // If the thunk rejects, the rejected handler restores isUnsaved.
+                try {
+                    if (state.activeFile && state.activeFile.path) {
+                        const idx = state.openFiles.findIndex(f => f.path === state.activeFile.path);
+                        if (idx !== -1) {
+                            state.openFiles[idx] = { ...state.openFiles[idx], isUnsaved: false };
+                        }
+                        // Cache the current savedContent so we can revert on failure
+                        state._preSaveSavedContent = state.savedContent;
+                        // Optimistically update savedContent to currentContent
+                        state.savedContent = state.currentContent;
+                    }
+                } catch (e) { /* ignore */ }
+            })
           .addCase(saveFileContentThunk.fulfilled, (state, action) => {
+                // Clean up the revert cache
+                delete state._preSaveSavedContent;
                 if (action.payload) {
                     state.savedContent = action.payload;
                     if (state.activeFile && state.activeFile.path) {
                         state.fileContentCache.set(state.activeFile.path, action.payload);
+                        // Clear the per-file savedContent cache — the file
+                        // is now explicitly saved so tab-switching should use
+                        // the new baseline, not the stale one.
+                        if (state._savedContentByPath) {
+                            delete state._savedContentByPath[state.activeFile.path];
+                        }
                     }
-                    // Mark active tab as saved
+                    // Mark active tab as saved (also handled in pending, but confirm here)
                     try {
                         if (state.activeFile && state.activeFile.path) {
                             const idx = state.openFiles.findIndex(f => f.path === state.activeFile.path);
@@ -673,6 +849,19 @@ const workspaceSlice = createSlice({
                         }
                     } catch (e) { /* ignore */ }
                 }
+            })
+          .addCase(saveFileContentThunk.rejected, (state) => {
+                // Rollback: restore the pre-save state so the unsaved dot reappears
+                try {
+                    if (state._preSaveSavedContent !== undefined) {
+                        state.savedContent = state._preSaveSavedContent;
+                        delete state._preSaveSavedContent;
+                    }
+                    if (state.activeFile && state.activeFile.path) {
+                        const idx = state.openFiles.findIndex(f => f.path === state.activeFile.path);
+                        if (idx !== -1) state.openFiles[idx] = { ...state.openFiles[idx], isUnsaved: true };
+                    }
+                } catch (e) { /* ignore */ }
             });
 
         // --- DELETE ITEM ---
@@ -706,7 +895,8 @@ const workspaceSlice = createSlice({
                 (state, action) => {
                     state.status = 'failed';
                     state.error = action.error.message;
-                    window.alert(`Operation Failed: ${action.error.message}`);
+                    // NOTE: Removed window.alert — error is stored in state.error
+                    // and shown via toast in the UI components.
                 }
             )
           .addMatcher(
@@ -759,7 +949,7 @@ const workspaceSlice = createSlice({
     },
 });
 
-export const { updateContent, renameItemStateUpdate, setSlug, setExternalFileContent, openFile, closeFile, reorderOpenFiles, hydrateWorkspace, clearFileCache } = workspaceSlice.actions;
+export const { updateContent, renameItemStateUpdate, setSlug, setExternalFileContent, openFile, closeFile, reorderOpenFiles, hydrateWorkspace, clearFileCache, clearSavedBaselines, setDiffMode, markFileSavedRemotely } = workspaceSlice.actions;
 
 export const refreshWorkspaceThunk = createAsyncThunk(
     'workspace/refresh',

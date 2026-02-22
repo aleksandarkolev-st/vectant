@@ -466,27 +466,48 @@
 
 .synthi-cursor-widget {
   position: absolute;
-  width: 1px !important;
-  height: 20px !important; /* Standard line height approx */
+  width: 2px !important;
+  height: 20px !important;
   pointer-events: none;
   z-index: 2000;
-  transition: top 0.1s ease-out, left 0.1s ease-out;
+  transition: top 80ms ease-out, left 80ms ease-out;
+  animation: cursor-fade-in 0.2s ease-out;
+  border-radius: 1px;
+}
+
+@keyframes cursor-fade-in {
+  from { opacity: 0; transform: scaleY(0.4); }
+  to { opacity: 1; transform: scaleY(1); }
 }
 
 /* The name tag */
 .synthi-cursor-label {
   position: absolute;
-  top: -18px; /* Move above the cursor */
-  left: -2px; /* Align with bar */
-  padding: 2px 6px;
-  border-radius: 4px;
+  top: -20px;
+  left: -2px;
+  padding: 2px 8px;
+  border-radius: 4px 4px 4px 0;
   font-size: 10px;
-  font-weight: bold;
-  color: white;
+  font-weight: 600;
+  font-family: var(--font-ui, system-ui, -apple-system, sans-serif);
+  line-height: 14px;
+  letter-spacing: 0.01em;
+  color: #fff;
   white-space: nowrap;
   pointer-events: none;
-  box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.35);
   z-index: 2001;
+  animation: label-fade-in 0.25s ease-out;
+  opacity: 0.9;
+}
+
+.synthi-cursor-label:hover {
+  opacity: 1;
+}
+
+@keyframes label-fade-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 0.9; transform: translateY(0); }
 }
 
 /* ===== SYNTHI BRAND CUSTOM STYLES ===== */
