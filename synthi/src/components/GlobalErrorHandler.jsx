@@ -12,6 +12,12 @@ export default function GlobalErrorHandler() {
             return;
         }
 
+        // Ignore benign ResizeObserver errors
+        const msg = error?.message || (typeof error === 'string' ? error : '');
+        if (msg.includes('ResizeObserver loop limit exceeded') || msg.includes('ResizeObserver loop completed with undelivered notifications')) {
+            return;
+        }
+
         if (error && (error.name === "SynthiException" || (error.title && error.description))) {
           toast.error(error.title, {
             description: error.description,

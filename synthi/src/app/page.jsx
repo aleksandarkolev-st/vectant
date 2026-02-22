@@ -47,9 +47,17 @@ export default function Dashboard() {
             // Extract repo name from URL for display
             const name = repoUrl.split('/').pop().replace('.git', '');
             
+            // Resolve a stable user identifier for per-user repo isolation.
+            // Prefer the provider-assigned id; fall back to email which is
+            // always present after authentication.
+            const userId = session?.user?.id || session?.user?.email;
+
             const res = await fetch(`${COLLAB_SERVER_URL}/git/${slug}/clone`, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: {
+                    'Content-Type': 'application/json',
+                    'x-user-id': userId,
+                },
                 body: JSON.stringify({ 
                     repoUrl,
                     token: session?.accessToken,

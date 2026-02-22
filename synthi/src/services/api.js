@@ -1,6 +1,23 @@
 // src/services/api.js
 
+import { getSession } from 'next-auth/react';
 import SynthiException from "@/components/SynthiException";
+import collabSessionService from '@/services/collabSessionService';
+
+/**
+ * Parse an error response body and extract a human-readable message.
+ * If the body is JSON with a `message` field, return that; otherwise return raw text.
+ */
+function parseErrorText(raw) {
+    if (!raw) return 'Unknown error';
+    try {
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed.message === 'string') {
+            return parsed.message;
+        }
+    } catch (_) { /* not JSON, use raw */ }
+    return raw;
+}
 
 function languageFromExtension(ext) {
     const m = {
@@ -86,60 +103,60 @@ function buildTreeFromFlatMeta(flatFiles) {
     return root.children;
 }
 
+// Centralized collab-server URL — the single source of truth for file data.
+// All file reads/writes go through the collab-server to prevent dual-source
+// inconsistencies between GCS and disk.
+const COLLAB_SERVER_URL = process.env.NEXT_PUBLIC_COLLAB_SERVER_URL || 'http://localhost:1234';
+
 export class ApiClient {
-    constructor(baseUrl = '/api/workspace') {
-        this.baseUrl = baseUrl;
+    constructor() {
+        // All methods use the module-level COLLAB_SERVER_URL constant
     }
 
-    async _handleResponse(response) {
-        if (!response.ok) {
-            let errorData = {};
-            try {
-                errorData = await response.json();
-            } catch (e) {
-                // Ignore if response isn't JSON
+    /**
+     * Build common headers for collab-server requests.
+     * Attaches x-user-id so the server routes to the per-user repo.
+     */
+    async _headers(extra = {}) {
+        const base = { ...extra };
+        try {
+            const session = await getSession();
+            const userId = session?.user?.id || session?.user?.email;
+            if (userId) base['x-user-id'] = userId;
+            if (collabSessionService?.isActive && collabSessionService.sessionId) {
+                base['x-session-id'] = collabSessionService.sessionId;
             }
-            throw new SynthiException(errorData.error || `API Error: ${response.statusText}`, `Status: ${response.status}`);
+        } catch (_) {
+            // Non-fatal — server falls back to slug-level repo
         }
-        return response;
+        return base;
     }
 
     // READ
     async fetchFiles(slug) {
-        const COLLAB_SERVER_URL = process.env.NEXT_PUBLIC_COLLAB_SERVER_URL || 'http://localhost:1234';
-
-        // Prefer collab-server metadata (disk-backed, fast, no contents)
-        try {
-            const res = await fetch(`${COLLAB_SERVER_URL}/git/${slug}/files-meta`);
-            if (res.ok) {
-                const data = await res.json();
-                const tree = buildTreeFromFlatMeta(data.files);
-                // Ensure index build in background (non-blocking)
-                try { this.ensureIndex(slug); } catch (_) {}
-                return tree;
-            }
-        } catch (e) {
-            // fall back to storage
+        // Always fetch from collab-server (disk-backed, authoritative source).
+        // No GCS fallback — if collab-server is down, surface the error so the
+        // user knows the system is unavailable rather than showing stale data.
+        const res = await fetch(`${COLLAB_SERVER_URL}/git/${slug}/files-meta`, {
+            headers: await this._headers(),
+        });
+        if (!res.ok) {
+            throw new SynthiException(
+                `Failed to load workspace files (status ${res.status})`,
+                'The collaboration server may be unavailable. Please try again.'
+            );
         }
-
-        const response = await fetch(`${this.baseUrl}/${slug}`);
-        const data = await this._handleResponse(response).then(r => r.json());
+        const data = await res.json();
+        const tree = buildTreeFromFlatMeta(data.files);
+        // Ensure index build in background (non-blocking)
         try { this.ensureIndex(slug); } catch (_) {}
-        return data.files;
+        return tree;
     }
 
     async ensureIndex(slug) {
         try {
-            const COLLAB_SERVER_URL = process.env.NEXT_PUBLIC_COLLAB_SERVER_URL || 'http://localhost:1234';
             // Fire and forget; must not block UI.
-            fetch(`${COLLAB_SERVER_URL}/git/${slug}/index-ensure`).catch(() => {});
-        } catch (_) {
-            // ignore
-        }
-
-        // Same-origin fallback index (works even if collab-server is not running)
-        try {
-            fetch(`${this.baseUrl}/${slug}/index/ensure`).catch(() => {});
+            this._headers().then(h => fetch(`${COLLAB_SERVER_URL}/git/${slug}/index-ensure`, { headers: h })).catch(() => {});
         } catch (_) {
             // ignore
         }
@@ -148,49 +165,38 @@ export class ApiClient {
     async searchIndex(slug, query, options = {}) {
         const q = String(query || '');
 
-        // 1) Prefer collab-server index when available
+        // Prefer collab-server index
         try {
-            const COLLAB_SERVER_URL = process.env.NEXT_PUBLIC_COLLAB_SERVER_URL || 'http://localhost:1234';
             const url = `${COLLAB_SERVER_URL}/git/${slug}/search?q=${encodeURIComponent(q)}`;
-            const res = await fetch(url, { signal: options.signal });
+            const res = await fetch(url, { headers: await this._headers(), signal: options.signal });
             if (res.ok) return await res.json();
         } catch (_) {
             // fall back
         }
 
-        // 2) Same-origin index fallback (never throws network errors to UI)
-        try {
-            const res2 = await fetch(`${this.baseUrl}/${slug}/search?q=${encodeURIComponent(q)}`, { signal: options.signal });
-            if (!res2.ok) return { status: 'error', results: [] };
-            return await res2.json();
-        } catch (_) {
-            return { status: 'error', results: [] };
-        }
+        return { status: 'error', results: [] };
     }
 
     async fetchFileContent(slug, filePath, options = {}) {
-        // Try fetching from Collab Server first (Source of Truth for Git)
-        try {
-             const COLLAB_SERVER_URL = process.env.NEXT_PUBLIC_COLLAB_SERVER_URL || 'http://localhost:1234';
-             const res = await fetch(`${COLLAB_SERVER_URL}/git/${slug}/file?path=${encodeURIComponent(filePath)}`, { signal: options.signal });
-             if (res.ok) {
-                 const data = await res.json();
-                 if (typeof data.content === 'string') {
-                     return data.content;
-                 }
-             }
-        } catch (e) {
-            console.warn("Failed to fetch from collab server, falling back to storage", e);
+        // Always fetch from collab-server (authoritative disk source).
+        // No GCS fallback — prevents dual-source inconsistency.
+        const res = await fetch(`${COLLAB_SERVER_URL}/git/${slug}/file?path=${encodeURIComponent(filePath)}`, { headers: await this._headers(), signal: options.signal });
+        if (!res.ok) {
+            throw new SynthiException(
+                `Failed to load file content (status ${res.status})`,
+                `Could not read ${filePath} from the collaboration server.`
+            );
         }
-
-        const response = await fetch(`${this.baseUrl}/${slug}/item?filePath=${encodeURIComponent(filePath)}`, { signal: options.signal });
-        return this._handleResponse(response).then(r => r.text());
+        const data = await res.json();
+        if (typeof data.content === 'string') {
+            return data.content;
+        }
+        throw new SynthiException('Invalid response', 'File content response was not a string.');
     }
 
     async fetchFileImports(slug, filePath, options = {}) {
         try {
-            const COLLAB_SERVER_URL = process.env.NEXT_PUBLIC_COLLAB_SERVER_URL || 'http://localhost:1234';
-            const res = await fetch(`${COLLAB_SERVER_URL}/git/${slug}/imports?path=${encodeURIComponent(filePath)}`, { signal: options.signal });
+            const res = await fetch(`${COLLAB_SERVER_URL}/git/${slug}/imports?path=${encodeURIComponent(filePath)}`, { headers: await this._headers(), signal: options.signal });
             if (res.ok) return await res.json();
         } catch (_) {
             // fall back
@@ -198,154 +204,81 @@ export class ApiClient {
         return { status: 'error', file: filePath, imports: [], resolved: [] };
     }
 
-    // READ (Storage only; skips collab server)
-    async fetchFileContentStorageOnly(slug, filePath, options = {}) {
-        const response = await fetch(
-            `${this.baseUrl}/${slug}/item?filePath=${encodeURIComponent(filePath)}`,
-            { signal: options.signal }
-        );
-        return this._handleResponse(response).then(r => r.text());
-    }
-
     // MUTATIONS (Write Operations)
     async saveFileContent(slug, filePath, content, fileName) {
-        const COLLAB_SERVER_URL = process.env.NEXT_PUBLIC_COLLAB_SERVER_URL || 'http://localhost:1234';
-
-        // Try collab-server first (source of truth for local filesystem / file tree)
-        try {
-            const collabRes = await fetch(`${COLLAB_SERVER_URL}/git/${slug}/write-file`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ path: filePath, content }),
-            });
-            if (collabRes.ok) {
-                // Also save to GCS in background for persistence
-                (async () => {
-                    try {
-                        const formData = new FormData();
-                        const blob = new Blob([content], { type: 'text/plain' });
-                        formData.append('file', blob, fileName);
-                        formData.append('filePath', filePath);
-                        await fetch(`${this.baseUrl}/${slug}/item/`, { method: 'POST', body: formData });
-                    } catch (_) {}
-                })();
-                return { ok: true };
-            }
-        } catch (e) {
-            console.warn('[saveFileContent] Collab-server write failed, using GCS:', e.message);
+        // Write through the collab-server which handles:
+        // 1. Writing to disk (repos/{slug}/{filePath})
+        // 2. Auto-flushing to GCS (if configured)
+        // 3. Keeping Yjs state consistent
+        // This replaces the old fire-and-forget GCS upload pattern that caused
+        // dual-source inconsistency.
+        const res = await fetch(`${COLLAB_SERVER_URL}/git/${slug}/sync`, {
+            method: 'POST',
+            headers: await this._headers({ 'Content-Type': 'application/json' }),
+            body: JSON.stringify({ filePath, content }),
+        });
+        if (!res.ok) {
+            const errText = await res.text().catch(() => 'Unknown error');
+            throw new SynthiException(`Failed to save file (status ${res.status})`, parseErrorText(errText));
         }
-
-        // Fallback to GCS
-        const formData = new FormData();
-        const blob = new Blob([content], { type: 'text/plain' });
-        formData.append('file', blob, fileName);
-        formData.append('filePath', filePath);
-      
-        // This runs in background, returning an early positive -> IIFE
-        (async () => {
-          try {
-            const res = await fetch(`${this.baseUrl}/${slug}/item/`, {
-              method: 'POST',
-              body: formData,
-            });
-            await this._handleResponse(res);
-          } catch (err) {
-            console.error('Background save failed:', err);
-          }
-        })();
-        return { ok: true, optimistic: true };
+        return { ok: true };
     }
 
     async createItem(slug, fullPath, isFolder) {
-        const COLLAB_SERVER_URL = process.env.NEXT_PUBLIC_COLLAB_SERVER_URL || 'http://localhost:1234';
-
-        // Try collab-server first (source of truth for local filesystem / file tree)
-        try {
-            if (isFolder) {
-                const collabRes = await fetch(`${COLLAB_SERVER_URL}/git/${slug}/create-directory`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ path: fullPath }),
-                });
-                if (collabRes.ok) return await collabRes.json();
-            } else {
-                const collabRes = await fetch(`${COLLAB_SERVER_URL}/git/${slug}/write-file`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ path: fullPath, content: '' }),
-                });
-                if (collabRes.ok) return await collabRes.json();
+        if (isFolder) {
+            // Create directory via collab-server
+            const res = await fetch(`${COLLAB_SERVER_URL}/git/${slug}/create-directory`, {
+                method: 'POST',
+                headers: await this._headers({ 'Content-Type': 'application/json' }),
+                body: JSON.stringify({ path: fullPath }),
+            });
+            if (!res.ok) {
+                const errText = await res.text().catch(() => 'Unknown error');
+                throw new SynthiException(`Failed to create directory (status ${res.status})`, parseErrorText(errText));
             }
-        } catch (e) {
-            console.warn('[createItem] Collab-server failed, falling back to GCS:', e.message);
+            return res.json();
+        } else {
+            // Create an empty file via the write-file endpoint
+            const res = await fetch(`${COLLAB_SERVER_URL}/git/${slug}/write-file`, {
+                method: 'POST',
+                headers: await this._headers({ 'Content-Type': 'application/json' }),
+                body: JSON.stringify({ path: fullPath, content: '' }),
+            });
+            if (!res.ok) {
+                const errText = await res.text().catch(() => 'Unknown error');
+                throw new SynthiException(`Failed to create file (status ${res.status})`, parseErrorText(errText));
+            }
+            return res.json();
         }
-
-        // Fallback to GCS storage
-        const formData = new FormData();
-        const fileName = fullPath.split('/').pop();
-        const blob = new Blob([''], { type: 'text/plain' });
-        formData.append('file', blob, fileName);
-        formData.append('filePath', isFolder ? `${fullPath}/` : fullPath);
-
-        const response = await fetch(`${this.baseUrl}/${slug}/item`, {
-            method: 'POST',
-            body: formData,
-        });
-        return this._handleResponse(response);
     }
 
-    async renameItem(slug, itemPath, newPath) {
-        const response = await fetch(`${this.baseUrl}/${slug}/item`, {
-            method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ itemPath, newPath }),
+    async renameItem(slug, oldPath, newPath) {
+        const res = await fetch(`${COLLAB_SERVER_URL}/git/${slug}/rename-item`, {
+            method: 'POST',
+            headers: await this._headers({ 'Content-Type': 'application/json' }),
+            body: JSON.stringify({ oldPath, newPath }),
         });
-        return this._handleResponse(response);
+        if (!res.ok) {
+            const errText = await res.text().catch(() => 'Unknown error');
+            throw new SynthiException(`Failed to rename item (status ${res.status})`, parseErrorText(errText));
+        }
+        return res.json();
     }
 
     async deleteItem(slug, itemPath) {
-        const COLLAB_SERVER_URL = process.env.NEXT_PUBLIC_COLLAB_SERVER_URL || 'http://localhost:1234';
-        
         // Clean the path - remove trailing slash for collab-server
         const cleanPath = itemPath.endsWith('/') ? itemPath.slice(0, -1) : itemPath;
-        
-        console.log('[api.deleteItem] Trying collab-server first:', slug, cleanPath);
-        
-        // Try collab-server first (handles local files from worker)
-        try {
-            const collabRes = await fetch(`${COLLAB_SERVER_URL}/git/${slug}/delete-item`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ path: cleanPath }),
-            });
-            console.log('[api.deleteItem] Collab-server response status:', collabRes.status);
-            
-            if (collabRes.ok) {
-                const result = await collabRes.json();
-                console.log('[api.deleteItem] Collab-server result:', result);
-                if (result.deleted > 0) {
-                    return result;
-                }
-                // If deleted === 0 and not an error, the file wasn't on collab-server
-                // Fall through to try GCS
-            } else {
-                const errText = await collabRes.text();
-                console.warn('[api.deleteItem] Collab-server error:', collabRes.status, errText);
-            }
-        } catch (e) {
-            // Collab-server unavailable, fall through to GCS
-            console.warn('[api.deleteItem] Collab-server request failed:', e.message);
-        }
-        
-        console.log('[api.deleteItem] Falling back to GCS for:', itemPath);
-        
-        // Fall back to GCS storage
-        const response = await fetch(`${this.baseUrl}/${slug}/item`, {
-            method: 'DELETE',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ itemPath }),
+
+        const res = await fetch(`${COLLAB_SERVER_URL}/git/${slug}/delete-item`, {
+            method: 'POST',
+            headers: await this._headers({ 'Content-Type': 'application/json' }),
+            body: JSON.stringify({ path: cleanPath }),
         });
-        return this._handleResponse(response);
+        if (!res.ok) {
+            const errText = await res.text().catch(() => 'Unknown error');
+            throw new SynthiException(`Failed to delete item (status ${res.status})`, parseErrorText(errText));
+        }
+        return res.json();
     }
 }
 

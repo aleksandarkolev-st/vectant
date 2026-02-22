@@ -5,16 +5,17 @@
 const { Storage } = require('@google-cloud/storage');
 const fs = require('fs');
 const path = require('path');
+const config = require('./config');
 
-// GCS configuration - use environment variables in production
+// GCS configuration — driven entirely by the centralized config module
 const GCS_CONFIG = {
-    projectId: process.env.GCP_PROJECT_ID || 'overview-synti',
-    bucketName: process.env.GCS_BUCKET_NAME || 'synthi-cloud-storage',
-    credentials: process.env.GCP_CREDENTIALS ? JSON.parse(process.env.GCP_CREDENTIALS) : {
-        client_email: process.env.GCP_CLIENT_EMAIL || 'file-uploader-service@overview-synti.iam.gserviceaccount.com',
-        private_key: (process.env.GCP_PRIVATE_KEY || '').replace(/\\n/g, '\n'),
-    }
+    projectId: config.GCS_PROJECT_ID,
+    bucketName: config.GCS_BUCKET_NAME,
+    credentials: config.GCS_CREDENTIALS,
 };
+
+/** Prefix inside the GCS bucket under which workspace files are stored. */
+const GCS_PREFIX = config.GCS_WORKSPACE_PREFIX;
 
 let storage = null;
 let bucket = null;
@@ -114,8 +115,10 @@ async function uploadRepoToGcs(repoPath, slug, options = {}) {
         return { success: false, reason: 'GCS not configured' };
     }
 
-    const { onProgress, excludePatterns = ['.git'] } = options;
-    const gcsPrefix = `workspaces/${slug}/`;
+    const { onProgress, excludePatterns = ['.git'], userId } = options;
+    const gcsPrefix = userId
+        ? `${GCS_PREFIX}/${slug}/${userId}/`
+        : `${GCS_PREFIX}/${slug}/`;
     
     // Collect all files to upload
     const filesToUpload = [];
@@ -212,16 +215,25 @@ async function downloadGcsToRepo(slug, repoPath, options = {}) {
         return { success: false, reason: 'GCS not configured' };
     }
 
-    const { onProgress } = options;
-    const gcsPrefix = `workspaces/${slug}/`;
+    const { onProgress, userId } = options;
+    const gcsPrefix = userId
+        ? `${GCS_PREFIX}/${slug}/${userId}/`
+        : `${GCS_PREFIX}/${slug}/`;
     
     // List all files in GCS
     const files = await listFiles(gcsPrefix);
     
-    // Filter out folder markers and the prefix itself
+    // Filter out folder markers, the prefix itself, and internal artifacts
+    // that should never appear in the working tree
+    const INTERNAL_ARTIFACTS = new Set(['.git-archive.tar.gz']);
     const filesToDownload = files.filter(f => {
         const relativePath = f.name.substring(gcsPrefix.length);
-        return relativePath && !relativePath.endsWith('/') && f.size > 0;
+        if (!relativePath || relativePath.endsWith('/') || f.size === 0) return false;
+        // Skip internal GCS-only blobs that are not user files
+        if (INTERNAL_ARTIFACTS.has(relativePath)) return false;
+        // Skip anything inside .git/ — restored separately via restoreGitFromGcs
+        if (relativePath === '.git' || relativePath.startsWith('.git/')) return false;
+        return true;
     });
     
     console.log(`[GCS] Downloading ${filesToDownload.length} files from GCS for slug: ${slug}`);
@@ -282,35 +294,57 @@ async function downloadGcsToRepo(slug, repoPath, options = {}) {
 }
 
 /**
- * Sync a single file change to GCS (for real-time sync)
+ * Sync a single file change to GCS (for real-time sync) with retry logic.
+ * Retries up to 3 times with exponential backoff on transient failures.
  */
-async function syncFileToGcs(slug, relativePath, content) {
+async function syncFileToGcs(slug, relativePath, content, userId) {
     if (!isGcsConfigured()) {
         return { success: false, reason: 'GCS not configured' };
     }
 
-    const gcsPath = `workspaces/${slug}/${relativePath}`;
-    const { bucket } = getStorage();
-    const file = bucket.file(gcsPath);
-    
-    await file.save(content, {
-        resumable: false,
-        contentType: 'application/octet-stream',
-        metadata: { cacheControl: 'no-cache' }
-    });
-    
-    return { success: true, path: gcsPath };
+    const gcsPath = userId
+        ? `${GCS_PREFIX}/${slug}/${userId}/${relativePath}`
+        : `${GCS_PREFIX}/${slug}/${relativePath}`;
+    const MAX_RETRIES = 3;
+    let lastError = null;
+
+    for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+        try {
+            const { bucket } = getStorage();
+            const file = bucket.file(gcsPath);
+
+            await file.save(content, {
+                resumable: false,
+                contentType: 'application/octet-stream',
+                metadata: { cacheControl: 'no-cache' }
+            });
+
+            return { success: true, path: gcsPath };
+        } catch (e) {
+            lastError = e;
+            if (attempt < MAX_RETRIES) {
+                const delay = Math.min(500 * Math.pow(2, attempt - 1), 4000);
+                console.warn(`[GCS] syncFileToGcs attempt ${attempt} failed for ${gcsPath}: ${e.message}. Retrying in ${delay}ms...`);
+                await new Promise(r => setTimeout(r, delay));
+            }
+        }
+    }
+
+    console.error(`[GCS] syncFileToGcs failed after ${MAX_RETRIES} attempts for ${gcsPath}:`, lastError?.message);
+    throw lastError;
 }
 
 /**
  * Delete a file from GCS
  */
-async function deleteFileFromGcs(slug, relativePath) {
+async function deleteFileFromGcs(slug, relativePath, userId) {
     if (!isGcsConfigured()) {
         return { success: false, reason: 'GCS not configured' };
     }
 
-    const gcsPath = `workspaces/${slug}/${relativePath}`;
+    const gcsPath = userId
+        ? `${GCS_PREFIX}/${slug}/${userId}/${relativePath}`
+        : `${GCS_PREFIX}/${slug}/${relativePath}`;
     const { bucket } = getStorage();
     const file = bucket.file(gcsPath);
     
@@ -319,6 +353,105 @@ async function deleteFileFromGcs(slug, relativePath) {
         return { success: true, path: gcsPath };
     } catch (e) {
         console.error(`[GCS] Failed to delete ${gcsPath}:`, e.message);
+        return { success: false, error: e.message };
+    }
+}
+
+/**
+ * Archive the .git directory as a tarball and upload to GCS.
+ * Used for fast re-hydration when a working tree is materialised.
+ *
+ * The tarball is stored at `<GCS_PREFIX>/<slug>/.git-archive.tar.gz`.
+ *
+ * @param {string} slug
+ * @param {string} repoPath - local working tree root
+ */
+async function archiveGitToGcs(slug, repoPath, userId) {
+    if (!isGcsConfigured()) return { success: false, reason: 'GCS not configured' };
+
+    const gitDir = path.join(repoPath, '.git');
+    if (!fs.existsSync(gitDir)) {
+        return { success: false, reason: '.git directory does not exist' };
+    }
+
+    const { createGzip } = require('zlib');
+    const tar = require('tar');
+
+    const gcsPath = userId
+        ? `${GCS_PREFIX}/${slug}/${userId}/.git-archive.tar.gz`
+        : `${GCS_PREFIX}/${slug}/.git-archive.tar.gz`;
+
+    try {
+        const { bucket } = getStorage();
+        const file = bucket.file(gcsPath);
+
+        // Stream tar.gz directly to GCS (no temp file)
+        await new Promise((resolve, reject) => {
+            const uploadStream = file.createWriteStream({
+                resumable: false,
+                contentType: 'application/gzip',
+                metadata: { cacheControl: 'no-cache' },
+            });
+
+            tar.create(
+                { gzip: true, cwd: repoPath },
+                ['.git']
+            )
+            .pipe(uploadStream)
+            .on('error', reject)
+            .on('finish', resolve);
+        });
+
+        console.log(`[GCS] Archived .git for ${slug} → ${gcsPath}`);
+        return { success: true, path: gcsPath };
+    } catch (e) {
+        console.error(`[GCS] Failed to archive .git for ${slug}:`, e.message);
+        return { success: false, error: e.message };
+    }
+}
+
+/**
+ * Restore a .git tarball from GCS into a working tree.
+ *
+ * @param {string} slug
+ * @param {string} repoPath - local working tree root
+ * @returns {{ success: boolean }}
+ */
+async function restoreGitFromGcs(slug, repoPath, userId) {
+    if (!isGcsConfigured()) return { success: false, reason: 'GCS not configured' };
+
+    const tar = require('tar');
+
+    const gcsPath = userId
+        ? `${GCS_PREFIX}/${slug}/${userId}/.git-archive.tar.gz`
+        : `${GCS_PREFIX}/${slug}/.git-archive.tar.gz`;
+
+    try {
+        const { bucket } = getStorage();
+        const file = bucket.file(gcsPath);
+
+        const [exists] = await file.exists();
+        if (!exists) {
+            return { success: false, reason: 'No .git archive found in GCS' };
+        }
+
+        // Ensure target dir exists
+        if (!fs.existsSync(repoPath)) {
+            fs.mkdirSync(repoPath, { recursive: true });
+        }
+
+        // Stream download + extract
+        await new Promise((resolve, reject) => {
+            file.createReadStream()
+                .pipe(tar.extract({ cwd: repoPath }))
+                .on('error', reject)
+                .on('finish', resolve);
+        });
+
+        console.log(`[GCS] Restored .git for ${slug} from ${gcsPath}`);
+        return { success: true };
+    } catch (e) {
+        console.error(`[GCS] Failed to restore .git for ${slug}:`, e.message);
         return { success: false, error: e.message };
     }
 }
@@ -332,4 +465,6 @@ module.exports = {
     uploadFile,
     downloadFile,
     listFiles,
+    archiveGitToGcs,
+    restoreGitFromGcs,
 };

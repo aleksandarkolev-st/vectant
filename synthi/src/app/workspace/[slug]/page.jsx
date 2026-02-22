@@ -1,8 +1,14 @@
 'use client';
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { use } from 'react';
+import { useSession } from 'next-auth/react';
+import { useRouter } from 'next/navigation';
 import { useAppDispatch, useAppSelector } from '@/redux/hooks';
-import { fetchFilesThunk, selectActiveFile, setSlug, selectFileThunk, selectCurrentContent, selectFileCacheEntries } from '@/redux/workspaceSlice';
+import { fetchFilesThunk, selectActiveFile, setSlug, selectFileThunk, selectCurrentContent, selectFileCacheEntries, markFileSavedRemotely } from '@/redux/workspaceSlice';
+import { fetchGitStatus, forceRefreshGitStatus } from '@/redux/gitSlice';
+import collabClient from '@/services/collabClient';
+import collabSessionService from '@/services/collabSessionService';
+import { USER_ID_KEY, USER_NAME_KEY, USER_AVATAR_KEY } from '@/services/userIdentity';
 import { 
     selectShowTerminal, 
     selectShowEmulatorPreview,
@@ -55,6 +61,8 @@ import { ProblemsPanel } from '@/components/analysis';
 import { DockablePanel, DockablePanelProvider, PANEL_STATE, DOCK_POSITION } from '@/components/docking';
 import { AlertCircle } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { useCollabNotifications } from '@/hooks/useCollabNotifications';
+import { GuestBanner } from '@/components/collaboration';
 import { useExtensions } from '@/hooks/useExtensions';
 import ExtensionSidebar from '@/components/extensions/ExtensionSidebar';
 import ExtensionViewContainer from '@/components/extensions/ExtensionViewContainer';
@@ -68,6 +76,32 @@ const USE_DOCKING_WM = true;
 
 export default function EditorPage({ params }) {
     const dispatch = useAppDispatch();
+    const { data: authSession, status: authStatus } = useSession();
+    const router = useRouter();
+    
+    // ── Auth guard: redirect unauthenticated users to the home page ─────
+    useEffect(() => {
+        if (authStatus === 'unauthenticated') {
+            router.replace('/');
+        }
+    }, [authStatus, router]);
+
+    // ── Persist auth identity into localStorage so getCurrentUser() works ──
+    // Guest pages set this for guest users; workspace pages must do the same
+    // for authenticated users so components like WorkspaceUsersPanel can
+    // identify the current user and filter them from the list, prevent
+    // self-blocking, etc.
+    useEffect(() => {
+        if (authSession?.user) {
+            const { id, name, email, image } = authSession.user;
+            if (id || email)  localStorage.setItem(USER_ID_KEY, id || email);
+            // Persist a human-readable name — prefer display name, then email
+            // local part, to avoid leaking opaque database IDs into the UI.
+            const displayName = name || (email ? email.split('@')[0] : null);
+            if (displayName)  localStorage.setItem(USER_NAME_KEY, displayName);
+            if (image)        localStorage.setItem(USER_AVATAR_KEY, image);
+        }
+    }, [authSession]);
     
     // 1. Consume the slug parameter first (needed by hooks below)
     const { slug } = use(params);
@@ -111,6 +145,9 @@ export default function EditorPage({ params }) {
         requestTreeRefresh,
         viewsWelcome: extensionViewsWelcome,
     } = useExtensions({ editor, workspaceId: slug });
+    
+    // Collaboration event toast notifications
+    useCollabNotifications();
     
     // Code Intelligence - auto-index workspace for AI context retrieval
     const { 
@@ -305,6 +342,15 @@ export default function EditorPage({ params }) {
     // Workspace state
     const [workspaceMissing, setWorkspaceMissing] = useState(false);
     const [workspaceMissingMessage, setWorkspaceMissingMessage] = useState('');
+    const [activeSessionId, setActiveSessionId] = useState(collabSessionService?.isActive ? collabSessionService.sessionId : null);
+    const [collabHostId, setCollabHostId] = useState(collabSessionService?.hostId || null);
+
+    useEffect(() => {
+        return collabSessionService.onChange(() => {
+            setActiveSessionId(collabSessionService?.isActive ? collabSessionService.sessionId : null);
+            setCollabHostId(collabSessionService?.hostId || null);
+        });
+    }, []);
 
     useEffect(() => {
         if (slug) {
@@ -386,6 +432,90 @@ export default function EditorPage({ params }) {
             init();
         }
     }, [slug, dispatch]);
+
+    // Subscribe to server-side file-tree-changed notifications so
+    // all connected clients stay in sync when any teammate mutates the tree.
+    const authUserId = authSession?.user?.id || authSession?.user?.email || null;
+    useEffect(() => {
+        collabClient.setIdentity({ userId: authUserId, sessionId: activeSessionId, hostId: collabHostId });
+    }, [authUserId, activeSessionId, collabHostId]);
+
+    useEffect(() => {
+        if (!slug || !authUserId) return;
+        const teardown = collabClient.connectNotifications(slug, {
+            onConnected: () => {
+                // Re-fetch git status on (re)connection to ensure we have
+                // fresh data, especially on cold load where the initial fetch
+                // may have fired before auth was ready.
+                dispatch(forceRefreshGitStatus(slug));
+            },
+            onFileTreeChanged: () => {
+                dispatch(fetchFilesThunk(slug));
+            },
+            onFileReverted: (filePaths) => {
+                try {
+                    // Invalidate fileCache for reverted files so stale cached
+                    // content isn't served to openDiffThunk or other consumers.
+                    if (!filePaths || filePaths.length === 0) {
+                        fileCache.clear();
+                    } else {
+                        filePaths.forEach(fp => fileCache.delete(fp));
+                    }
+                    // Dispatch a DOM custom event so the Editor can react without
+                    // prop-drilling. The Editor listens for 'synthi:file-reverted'
+                    // and resets its Monaco model + Yjs binding for the affected files.
+                    window.dispatchEvent(new CustomEvent('synthi:file-reverted', {
+                        detail: { slug, filePaths },
+                    }));
+                } catch (e) {
+                    console.warn('[Page] Error in onFileReverted handler:', e);
+                }
+                // Refresh git status even if the above threw — always try to
+                // reflect the latest state in Source Control.
+                dispatch(fetchGitStatus(slug));
+            },
+            onGitStatusChanged: () => {
+                // Server broadcast (stage/unstage/commit etc.) — force refresh
+                // bypassing the dedup guard to guarantee fresh data.
+                dispatch(forceRefreshGitStatus(slug));
+            },
+            onFileSaved: (filePath) => {
+                // Another collaborator saved this file — sync our saved state
+                // so the unsaved indicator clears across all clients.
+                if (filePath) {
+                    dispatch(markFileSavedRemotely(filePath));
+                }
+            },
+            onCollabInvite: (msg) => {
+                // Forward collab-invite to collabSessionService so UI can
+                // show accept/decline prompt in WorkspaceUsersPanel.
+                import('@/services/collabSessionService').then(({ default: svc }) => {
+                    svc._emit('collab-invite', msg);
+                });
+            },
+        }, { userId: authUserId, sessionId: activeSessionId });
+        return teardown;
+    }, [slug, dispatch, authUserId, activeSessionId]);
+
+    // ── Re-fetch git status when auth or session becomes available ──────
+    // On cold page load, the initial fetchGitStatus may fire before
+    // getSession() returns auth data (no x-user-id header → wrong repo).
+    // Re-fetch once auth is ready and again when a collab session activates.
+    const prevAuthRef = useRef(null);
+    const prevSessionRef = useRef(null);
+    useEffect(() => {
+        if (!slug) return;
+        if (authUserId) {
+            gitClient.setUserId(authUserId);
+        }
+        const authJustBecameAvailable = authUserId && !prevAuthRef.current;
+        const sessionJustBecameAvailable = activeSessionId && !prevSessionRef.current;
+        prevAuthRef.current = authUserId;
+        prevSessionRef.current = activeSessionId;
+        if (authJustBecameAvailable || sessionJustBecameAvailable) {
+            dispatch(forceRefreshGitStatus(slug));
+        }
+    }, [slug, dispatch, authUserId, activeSessionId]);
 
     // 2. Consume global state directly via selectors
     const activeFile = useAppSelector(selectActiveFile);
@@ -1757,6 +1887,7 @@ export default function EditorPage({ params }) {
             aiBusy={aiBusy}
             onClearCompletion={handleClearLatestCompletion}
             chatVisible={chatVisible}
+            collabHostId={collabHostId}
         />
     );
 
@@ -1871,6 +2002,11 @@ export default function EditorPage({ params }) {
         return <WorkspaceNotFoundModal slug={slug} message={workspaceMissingMessage} open={true} />;
     }
 
+    // While auth is loading or redirect is pending, show nothing
+    if (authStatus !== 'authenticated') {
+        return null;
+    }
+
     return (
     <DockablePanelProvider workspaceId={slug}>
     <div className="flex flex-col h-screen overflow-hidden bg-[#09090b] text-[#D7DAE0]">
@@ -1899,6 +2035,9 @@ export default function EditorPage({ params }) {
                 onMoveLineDown={handleMoveLineDown}
                 onDuplicateSelection={handleDuplicateSelection}
             />
+
+            {/* Collaboration: guest banner when viewing another user's session */}
+            <GuestBanner />
 
             {buildLogs.length > 0 && (
                 <div className="border-b border-[#1a1a1e] bg-[#09090b] px-3 py-2 text-xs font-mono text-[#D7DAE0] max-h-28 overflow-auto">

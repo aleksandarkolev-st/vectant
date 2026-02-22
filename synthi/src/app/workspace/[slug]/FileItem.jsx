@@ -1,6 +1,6 @@
 // src/app/FileItem.jsx
 "use client";
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, memo } from "react";
 import collabClient from '@/services/collabClient';
 import { useAppSelector } from "@/redux/hooks";
 import { selectExpandedFolders, toggleFolderExpansion } from "@/redux/uiSlice";
@@ -8,7 +8,7 @@ import { ChevronIcon } from "./Icons";
 import { getFileIcon, FolderIcon } from "@/utils/fileIcons";
 import { setUiActionName } from "@/redux/uiSlice";
 
-const FileItem = ({
+const FileItem = memo(({
   item,
   level = 0,
   ancestorHasNext = [],
@@ -399,6 +399,7 @@ useEffect(() => {
                     {presenceStates.slice(0,3).map((p) => {
                       const name = p.state?.user?.name || 'U';
                       const initials = name.split(' ').filter(Boolean).map(p => p[0]).slice(0,2).join('').toUpperCase();
+                      const userImage = p.state?.user?.image || null;
                       return (
                         <div key={`pres-${p.clientId}`} className="relative">
                           <div
@@ -409,10 +410,13 @@ useEffect(() => {
                             }}
                             onMouseLeave={() => { if (hoverHideTimeoutRef.current) clearTimeout(hoverHideTimeoutRef.current); hoverHideTimeoutRef.current = setTimeout(() => setHoverPresence(null), 140); }}
                             title={p.state?.user?.name || 'User'}
-                            className="w-6 h-6 rounded-full flex items-center justify-center text-xs text-white cursor-default"
+                            className="w-6 h-6 rounded-full flex items-center justify-center text-xs text-white cursor-default overflow-hidden"
                             style={{ border: `2px solid ${p.state?.user?.color || '#0b0b0b'}`, background: p.state?.user?.color ? 'rgba(255,255,255,0.03)' : '#111' }}
                           >
-                            {initials}
+                            {userImage
+                              ? <img src={userImage} alt="" className="w-full h-full rounded-full object-cover" referrerPolicy="no-referrer" />
+                              : initials
+                            }
                           </div>
                         </div>
                       );
@@ -428,7 +432,10 @@ useEffect(() => {
               <div style={{ position: 'fixed', left: hoverPresence.rect.left + hoverPresence.rect.width + 6, top: hoverPresence.rect.top - 6, zIndex: 2000 }} onMouseEnter={() => { if (hoverHideTimeoutRef.current) { clearTimeout(hoverHideTimeoutRef.current); hoverHideTimeoutRef.current = null; } }} onMouseLeave={() => { if (hoverHideTimeoutRef.current) clearTimeout(hoverHideTimeoutRef.current); hoverHideTimeoutRef.current = setTimeout(() => setHoverPresence(null), 140); }}>
                 <div className="bg-[#151515] border border-[#333] rounded-md p-2 text-sm text-gray-200 shadow-lg w-44">
                   <div className="flex items-center gap-2">
-                    <div className="w-7 h-7 rounded-full flex items-center justify-center text-sm text-white" style={{ background: hoverPresence.user.color || '#555' }}>{(hoverPresence.user.name || 'Anonymous').split(' ').map(p => p[0]).slice(0,2).join('').toUpperCase()}</div>
+                    {hoverPresence.user.image
+                      ? <img src={hoverPresence.user.image} alt="" className="w-7 h-7 rounded-full object-cover" referrerPolicy="no-referrer" />
+                      : <div className="w-7 h-7 rounded-full flex items-center justify-center text-sm text-white" style={{ background: hoverPresence.user.color || '#555' }}>{(hoverPresence.user.name || 'Anonymous').split(' ').map(p => p[0]).slice(0,2).join('').toUpperCase()}</div>
+                    }
                     <div className="flex flex-col">
                       <div className="font-semibold text-sm">{hoverPresence.user.name || 'Anonymous'}</div>
                       <div className="text-xs text-gray-400">{hoverPresence.user.id ? `id: ${hoverPresence.user.id}` : 'Anonymous user'}</div>
@@ -514,5 +521,5 @@ useEffect(() => {
       )}
     </>
   );
-};
+});
 export default FileItem;
