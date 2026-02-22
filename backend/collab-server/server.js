@@ -1589,7 +1589,11 @@ const server = http.createServer(async (req, res) => {
             worktreePath: '',
             defaultPerms: { canEdit: true, canTerminal: false, canGit: false, canFileOps: true },
           });
-          console.log(`[Session] Auto-created session ${session.id} for host ${targetUserId} (on demand)`);
+          // Auto-created sessions are unconfirmed until the host explicitly
+          // accepts the first guest.  This prevents the session from showing
+          // as "LIVE" in workspace-presence before the host is aware of it.
+          session.hostConfirmed = false;
+          console.log(`[Session] Auto-created session ${session.id} for host ${targetUserId} (on demand, unconfirmed)`);
 
           // Notify the target user that a session was auto-created for them
           const autoHostMsg = JSON.stringify({
@@ -2557,9 +2561,13 @@ function sendToSessionHost(sessionId, eventType, payload) {
   });
   if (!sent) {
     console.warn(`[Session] sendToSessionHost: host WS not found for session ${sessionId} (host=${hostUserId}). Attempting notification WS fallback.`);
-    // Fallback: try the notification WS channel so the host still gets alerted
+    // Fallback: try the notification WS channel so the host still gets alerted.
+    // Preserve the original event type so that permission:requested, knock:cancelled,
+    // etc. are delivered with the correct type — not rewritten to session-knock.
+    // Only actual knock events use 'session-knock' as their fallback type.
     if (notifyWss) {
-      const fallbackMsg = JSON.stringify({ type: 'session-knock', sessionId, ...payload });
+      const fallbackType = eventType === 'knock' ? 'session-knock' : eventType;
+      const fallbackMsg = JSON.stringify({ type: fallbackType, sessionId, ...payload });
       notifyWss.clients.forEach((ws) => {
         if (ws.readyState === WebSocket.OPEN && ws._userId === hostUserId) {
           try { ws.send(fallbackMsg); sent = true; } catch (_) {}
