@@ -7,11 +7,12 @@ let cachedUserId = null;
 // Resolvers that will be called when userId becomes available.
 let _userIdReadyResolvers = [];
 
-// Actions exempt from the userId requirement (read-only or bootstrapping).
-const READ_ONLY_ACTIONS = new Set([
-    'status', 'branches', 'log', 'diff', 'file-content', 'blame',
-    'unpushed', 'incoming', 'init', 'clone', 'remotes',
-]);
+// Actions that truly cannot wait for authentication (bootstrapping).
+// All other actions (including reads like status, remotes, log) MUST wait
+// for userId so the server resolves the correct per-user repo — otherwise
+// operations fall back to the slug-level directory which may have stale or
+// phantom data (e.g., a single "Initial commit" with no origin).
+const AUTH_EXEMPT_ACTIONS = new Set(['init', 'clone']);
 
 /**
  * Wait for cachedUserId to be set (up to timeoutMs).
@@ -44,10 +45,10 @@ export const gitClient = {
     },
 
     async request(slug, action, data = {}) {
-        // For mutating actions, wait briefly for auth to be available.
-        // This prevents 401 errors when saves fire before the React
-        // lifecycle has called setUserId() (e.g., rapid Ctrl+S on load).
-        if (!cachedUserId && !READ_ONLY_ACTIONS.has(action)) {
+        // Wait for auth before dispatching.  Without userId the server
+        // falls back to the slug-level repo which produces wrong results.
+        // Only truly bootstrapping actions (init, clone) are exempt.
+        if (!cachedUserId && !AUTH_EXEMPT_ACTIONS.has(action)) {
             await _waitForUserId(3000);
         }
 

@@ -2029,13 +2029,11 @@ const server = http.createServer(async (req, res) => {
                 }));
                 return;
               }
-            } else if (action !== 'status' && action !== 'branches' && action !== 'log'
-                        && action !== 'diff' && action !== 'file-content' && action !== 'blame'
-                        && action !== 'unpushed' && action !== 'incoming'
-                        && action !== 'init' && action !== 'clone') {
-              // For mutating actions, require a userId.
-              // Read-only actions and init/clone are allowed without a session
-              // (for SSR/initial load and workspace creation).
+            } else if (action !== 'init' && action !== 'clone') {
+              // Require userId for ALL actions (except bootstrapping).
+              // Without a userId the server falls back to the slug-level
+              // directory which may not be a valid git repo (migrated
+              // repos only have _upstream.git and per-user directories).
               if (!effectiveUserId) {
                 res.writeHead(401, { 'Content-Type': 'application/json' });
                 res.end(JSON.stringify({

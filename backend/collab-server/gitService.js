@@ -481,6 +481,28 @@ class GitService {
                 }
             }
 
+            // ── Skip slug-level git init for migrated repos ──────────
+            // After migration the slug-level directory only contains
+            // _upstream.git and per-user subdirectories.  There is no
+            // worktree at the slug level, so creating a .git here is
+            // wrong and produces phantom "1 initial commit" with no
+            // origin when read-only requests fall back to it.
+            if (this.isMigratedRepo(slug) || fs.existsSync(this.getBarePath(slug))) {
+                // Clean up any spurious .git that a previous run created
+                const spuriousGit = path.join(repoPath, '.git');
+                if (fs.existsSync(spuriousGit)) {
+                    try {
+                        const stat = fs.statSync(spuriousGit);
+                        if (stat.isDirectory()) {
+                            fs.rmSync(spuriousGit, { recursive: true, force: true });
+                            console.log(`[GitService] initRepo: removed spurious .git dir at slug level for "${slug}"`);
+                        }
+                    } catch (_) { /* non-fatal */ }
+                }
+                console.log(`[GitService] initRepo: skipping slug-level git init for migrated repo "${slug}"`);
+                return { success: true, path: repoPath };
+            }
+
             if (!fs.existsSync(path.join(repoPath, '.git'))) {
                 const git = simpleGit(repoPath);
                 await git.init();
@@ -2544,11 +2566,27 @@ class GitService {
                 // the original upstream URL (if any) rather than the local path.
                 const userGit = simpleGit(userRepoPath);
                 try {
-                    const sourceGit = simpleGit(cloneSource);
-                    const remotes = await sourceGit.getRemotes(true);
-                    const origin = remotes.find(r => r.name === 'origin');
-                    if (origin && origin.refs && origin.refs.fetch) {
-                        await userGit.remote(['set-url', 'origin', origin.refs.fetch]);
+                    let resolvedUrl = null;
+
+                    // Try getting origin from the clone source first
+                    try {
+                        const sourceGit = simpleGit(cloneSource);
+                        const remotes = await sourceGit.getRemotes(true);
+                        const origin = remotes.find(r => r.name === 'origin');
+                        if (origin?.refs?.fetch) {
+                            resolvedUrl = origin.refs.fetch;
+                        }
+                    } catch (_) { /* non-fatal */ }
+
+                    // If the resolved URL looks like a local path rather than
+                    // a real remote URL, try harder to resolve the actual remote.
+                    if (!resolvedUrl || !resolvedUrl.includes('://')) {
+                        const betterUrl = await this._resolveRemoteUrl(slug);
+                        if (betterUrl) resolvedUrl = betterUrl;
+                    }
+
+                    if (resolvedUrl) {
+                        await userGit.remote(['set-url', 'origin', resolvedUrl]);
                     }
                 } catch (_) {
                     // Non-fatal — local clone is still functional
