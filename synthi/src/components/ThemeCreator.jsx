@@ -460,9 +460,37 @@ function ThemeCreatorOverlay({ onClose }) {
       className="fixed inset-0 z-[9998] flex items-center justify-center"
       style={{ background: 'rgba(0,0,0,0.5)', backdropFilter: 'blur(3px)' }}
     >
+      {/*
+       * Scoped CSS variable overrides — pin the overlay to a known dark
+       * palette so it stays readable regardless of the live theme preview
+       * being applied to :root behind it.
+       */}
       <div
         className="w-[720px] max-h-[80vh] flex flex-col rounded-lg overflow-hidden"
         style={{
+          /* ── Pinned overlay palette ─────────────────── */
+          '--bg-app':          '#08090d',
+          '--bg-editor':       '#0c0d12',
+          '--bg-sidebar':      '#070810',
+          '--bg-panel':        '#101118',
+          '--bg-surface':      '#14151d',
+          '--bg-elevated':     '#1a1b24',
+          '--border-subtle':   '#1a1b24',
+          '--border-medium':   '#2a2b38',
+          '--border-focus':    '#3a3b52',
+          '--border-strong':   '#42445a',
+          '--text-primary':    '#f4f5f8',
+          '--text-secondary':  '#9ba2b8',
+          '--text-muted':      '#5a6178',
+          '--text-dim':        '#3d4256',
+          '--accent-primary':  '#327464',
+          '--accent-secondary':'#3d8b78',
+          '--accent-tertiary': '#4a9e8a',
+          '--accent-danger':   '#ff5757',
+          '--accent-success':  '#4ade80',
+          '--accent-warning':  '#fbbf24',
+          '--shadow-dropdown': '0 4px 16px rgba(0, 0, 0, 0.7)',
+          /* ── Standard styling ──────────────────────── */
           background: 'var(--bg-elevated)',
           border: '1px solid var(--border-medium)',
           boxShadow: 'var(--shadow-dropdown)',
