@@ -190,7 +190,7 @@ function PresenceAvatars({ users }) {
 
   if (users.length === 0) {
     return (
-      <span className="text-[11px] text-[#6b7089] px-2.5 py-1 rounded-full bg-[#0d0e14] border border-[#1c1d26]">
+      <span className="text-[11px] px-2.5 py-1 rounded-full border" style={{ color: 'var(--text-muted)', background: 'var(--bg-panel)', borderColor: 'var(--border-subtle)' }}>
         Solo
       </span>
     );
@@ -204,8 +204,9 @@ function PresenceAvatars({ users }) {
       {overflow > 0 && (
         <span
           className="flex items-center justify-center w-7 h-7 rounded-full
-                     bg-[#0d0e14] text-[10px] font-semibold text-[#9ba2b8]
-                     border-2 border-[#1c1d26] ml-0.5 select-none z-10"
+                     text-[10px] font-semibold
+                     border-2 ml-0.5 select-none z-10"
+          style={{ color: 'var(--text-secondary)', background: 'var(--bg-panel)', borderColor: 'var(--border-subtle)' }}
           title={`${overflow} more user${overflow > 1 ? 's' : ''}`}
         >
           +{overflow}
@@ -224,8 +225,8 @@ function AvatarCircle({ user, size = 'sm' }) {
   return (
     <div className="relative group flex-shrink-0" title={name}>
       <div
-        className={`${dim} rounded-full flex items-center justify-center border-2 overflow-hidden bg-[#0d0e14]`}
-        style={{ borderColor: color || '#327464' }}
+        className={`${dim} rounded-full flex items-center justify-center border-2 overflow-hidden`}
+        style={{ borderColor: color || '#327464', background: 'var(--bg-panel)' }}
       >
         {image ? (
           <img
@@ -247,9 +248,9 @@ function AvatarCircle({ user, size = 'sm' }) {
       <div
         className="pointer-events-none absolute bottom-full left-1/2 -translate-x-1/2
                    mb-2 px-2 py-1 rounded text-[10px] font-medium whitespace-nowrap
-                   bg-[#1a1b24] text-[#e0e2ea] border border-[#2a2b38]
-                   opacity-0 group-hover:opacity-100 transition-opacity z-50
+                   border opacity-0 group-hover:opacity-100 transition-opacity z-50
                    shadow-lg"
+        style={{ background: 'var(--bg-elevated)', color: 'var(--text-primary)', borderColor: 'var(--border-medium)' }}
       >
         {name}
       </div>
@@ -264,10 +265,8 @@ function ShareButton({ onClick }) {
     <button
       onClick={onClick}
       className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg
-                 bg-[#0d0e14] border border-[#1c1d26]
-                 hover:border-[#3a8574] hover:bg-[#3a857410]
-                 text-[#9ba2b8] hover:text-[#e0e4ec]
-                 transition-all text-[11px] font-medium"
+                 border transition-all text-[11px] font-medium"
+      style={{ background: 'var(--bg-panel)', borderColor: 'var(--border-subtle)', color: 'var(--text-secondary)' }}
       title="Start a collaboration session (Ctrl+Shift+K)"
     >
       <Share2 className="w-3.5 h-3.5" />
@@ -294,8 +293,8 @@ function KnockBadge({ knocks, onAdmit, onDeny }) {
         </button>
       </PopoverTrigger>
       <PopoverContent
-        className="w-[280px] bg-[#0d0e14] border-[#1c1d26] p-3 shadow-xl rounded-xl"
-        style={{ backgroundColor: '#0d0e14' }}
+        className="w-[280px] p-3 shadow-xl rounded-xl border"
+        style={{ backgroundColor: 'var(--bg-elevated)', borderColor: 'var(--border-medium)' }}
         align="end"
       >
         <div className="text-xs text-[#fbbf24] font-semibold mb-2 flex items-center gap-1.5">
@@ -306,17 +305,18 @@ function KnockBadge({ knocks, onAdmit, onDeny }) {
           {knocks.map((knock) => (
             <div
               key={knock.guestId}
-              className="flex items-center justify-between p-2 bg-[#fbbf2408] border border-[#fbbf2420] rounded-lg"
+              className="flex items-center justify-between p-2 border rounded-lg"
+              style={{ background: 'var(--bg-surface)', borderColor: 'var(--border-subtle)' }}
             >
               <div className="flex items-center gap-2">
                 {knock.avatarUrl ? (
                   <img src={knock.avatarUrl} alt="" className="w-6 h-6 rounded-full" />
                 ) : (
-                  <div className="w-6 h-6 rounded-full bg-[#fbbf24] flex items-center justify-center text-[#0d0e14] text-[10px] font-bold">
+                  <div className="w-6 h-6 rounded-full bg-[#fbbf24] flex items-center justify-center text-[10px] font-bold" style={{ color: 'var(--bg-app)' }}>
                     {knock.displayName?.[0]?.toUpperCase() || '?'}
                   </div>
                 )}
-                <span className="text-xs text-[#e0e4ec] font-medium">{knock.displayName}</span>
+                <span className="text-xs font-medium" style={{ color: 'var(--text-primary)' }}>{knock.displayName}</span>
               </div>
               <div className="flex items-center gap-1">
                 <button

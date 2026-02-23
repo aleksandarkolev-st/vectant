@@ -3662,15 +3662,16 @@ const EditorPanel = ({
                                         {diffModeEverActive && (
                                             <div className="h-full w-full relative flex flex-col" style={{ display: diffMode ? 'flex' : 'none' }}>
                                                 {/* Diff view header with close button */}
-                                                <div className="flex items-center justify-between px-3 py-1 bg-[#0d0e14] border-b border-[#1e1f2e] text-xs shrink-0 select-none" style={{ height: 32 }}>
+                                                <div className="flex items-center justify-between px-3 py-1 border-b text-xs shrink-0 select-none" style={{ height: 32, background: 'var(--bg-panel)', borderColor: 'var(--border-subtle)' }}>
                                                     <div className="flex items-center gap-2 min-w-0">
-                                                        <span className="text-[#e8eaf0] font-medium truncate">{activeFile?.name || 'Unknown'}</span>
-                                                        <span className="text-[#4d5168]">•</span>
-                                                        <span className="text-[#7c80a0] whitespace-nowrap">Working Copy ↔ HEAD</span>
+                                                        <span className="font-medium truncate" style={{ color: 'var(--text-primary)' }}>{activeFile?.name || 'Unknown'}</span>
+                                                        <span style={{ color: 'var(--text-dim, var(--text-muted))' }}>•</span>
+                                                        <span className="whitespace-nowrap" style={{ color: 'var(--text-secondary)' }}>Working Copy ↔ HEAD</span>
                                                     </div>
                                                     <button
                                                         onClick={() => dispatch(setDiffMode(false))}
-                                                        className="flex items-center justify-center w-6 h-6 rounded hover:bg-[#1e1f2e] text-[#7c80a0] hover:text-[#e8eaf0] transition-colors shrink-0"
+                                                        className="flex items-center justify-center w-6 h-6 rounded transition-colors shrink-0"
+                                                        style={{ color: 'var(--text-secondary)' }}
                                                         title="Close diff view (Esc)"
                                                         aria-label="Close diff view"
                                                     >

@@ -10,6 +10,7 @@ import { selectActiveFile, selectFilesTree, selectFileThunk } from '@/redux/work
 import { getFileIcon } from '@/utils/fileIcons';
 import { toast } from 'sonner';
 import CollabToolbar from '@/components/collaboration/CollabToolbar';
+import { useTheme } from '@/components/ThemeProvider';
 
 export default function TopNav({ 
   title, 
@@ -63,6 +64,9 @@ export default function TopNav({
     return files;
   }, [filesTree]);
 
+  const { resolvedTheme } = useTheme();
+  const isLightTheme = resolvedTheme?.type === 'light';
+
   const searchResults = useMemo(() => {
     if (!searchText.trim()) return [];
     const lower = searchText.toLowerCase();
@@ -78,7 +82,7 @@ export default function TopNav({
   return (
     <div className="flex items-center h-9 px-2 border-b space-x-4 shadow-sm font-[var(--font-ui)]" style={{ background: 'var(--bg-app)', borderColor: 'var(--border-subtle)' }}>
       <div className="flex items-center h-full">
-          <img src="/synthi-logo.svg" alt="Synthi" className="h-22 w-auto" />
+          <img src={isLightTheme ? '/synthi-dark-logo.svg' : '/synthi-logo.svg'} alt="Synthi" className="h-22 w-auto" />
       </div>
       <div className="relative transition-all duration-200" 
            style={{ width: searchOpen ? '400px' : '200px' }}>
