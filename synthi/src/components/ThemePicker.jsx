@@ -23,11 +23,13 @@ import { useAppDispatch, useAppSelector } from '@/redux/hooks';
 import {
   selectThemeList,
   selectActiveThemeId,
+  selectUserThemes,
   setActiveTheme,
   previewTheme,
   clearPreview,
+  deleteUserTheme,
 } from '@/redux/themeSlice';
-import { Palette, Check, Sun, Moon, MonitorSmartphone, Plus } from 'lucide-react';
+import { Palette, Check, Sun, Moon, MonitorSmartphone, Plus, Pencil, Trash2 } from 'lucide-react';
 import { useThemeCreator } from '@/components/ThemeCreator';
 
 // ─── Context for open/close ──────────────────────────────────
@@ -109,6 +111,7 @@ function ThemePickerOverlay({ onClose }) {
   const dispatch = useAppDispatch();
   const themeList = useAppSelector(selectThemeList);
   const activeThemeId = useAppSelector(selectActiveThemeId);
+  const userThemes = useAppSelector(selectUserThemes);
   const { openCreator } = useThemeCreator();
 
   const [query, setQuery] = useState('');
@@ -274,7 +277,7 @@ function ThemePickerOverlay({ onClose }) {
                 key={theme.id}
                 data-theme-item
                 className={cn(
-                  'flex items-center gap-2 px-3 py-1.5 cursor-pointer text-sm transition-colors duration-75',
+                  'group flex items-center gap-2 px-3 py-1.5 cursor-pointer text-sm transition-colors duration-75',
                   isSelected && 'ring-1 ring-inset'
                 )}
                 style={{
@@ -317,6 +320,43 @@ function ThemePickerOverlay({ onClose }) {
                   >
                     user
                   </span>
+                )}
+
+                {/* Edit / Delete buttons for user themes */}
+                {theme.source === 'user' && (
+                  <div className="flex items-center gap-0.5 shrink-0">
+                    <button
+                      className="p-1 rounded transition-colors"
+                      style={{ color: 'var(--text-muted)' }}
+                      title="Edit theme"
+                      onMouseEnter={(e) => { e.currentTarget.style.color = 'var(--text-primary)'; e.currentTarget.style.background = 'color-mix(in srgb, var(--accent-primary) 15%, transparent)'; }}
+                      onMouseLeave={(e) => { e.currentTarget.style.color = 'var(--text-muted)'; e.currentTarget.style.background = 'transparent'; }}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        dispatch(clearPreview());
+                        onClose();
+                        const fullTheme = userThemes[theme.id];
+                        if (fullTheme) {
+                          setTimeout(() => openCreator(fullTheme), 50);
+                        }
+                      }}
+                    >
+                      <Pencil className="h-3.5 w-3.5" />
+                    </button>
+                    <button
+                      className="p-1 rounded transition-colors"
+                      style={{ color: 'var(--text-muted)' }}
+                      title="Delete theme"
+                      onMouseEnter={(e) => { e.currentTarget.style.color = 'var(--accent-danger, #ff5757)'; e.currentTarget.style.background = 'color-mix(in srgb, var(--accent-danger, #ff5757) 12%, transparent)'; }}
+                      onMouseLeave={(e) => { e.currentTarget.style.color = 'var(--text-muted)'; e.currentTarget.style.background = 'transparent'; }}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        dispatch(deleteUserTheme(theme.id));
+                      }}
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
                 )}
 
                 {/* Active checkmark */}

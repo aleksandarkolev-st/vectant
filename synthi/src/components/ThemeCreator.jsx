@@ -113,9 +113,16 @@ export function useThemeCreator() {
 
 export function ThemeCreatorProvider({ children }) {
   const [isCreatorOpen, setIsCreatorOpen] = useState(false);
+  const [editingTheme, setEditingTheme] = useState(null);
 
-  const openCreator = useCallback(() => setIsCreatorOpen(true), []);
-  const closeCreator = useCallback(() => setIsCreatorOpen(false), []);
+  const openCreator = useCallback((themeToEdit = null) => {
+    setEditingTheme(themeToEdit);
+    setIsCreatorOpen(true);
+  }, []);
+  const closeCreator = useCallback(() => {
+    setIsCreatorOpen(false);
+    setEditingTheme(null);
+  }, []);
 
   const ctx = useMemo(
     () => ({ openCreator, isCreatorOpen }),
@@ -125,7 +132,9 @@ export function ThemeCreatorProvider({ children }) {
   return (
     <ThemeCreatorContext.Provider value={ctx}>
       {children}
-      {isCreatorOpen && <ThemeCreatorOverlay onClose={closeCreator} />}
+      {isCreatorOpen && (
+        <ThemeCreatorOverlay onClose={closeCreator} editingTheme={editingTheme} />
+      )}
     </ThemeCreatorContext.Provider>
   );
 }
@@ -236,18 +245,20 @@ function SectionBadge({ filled, total }) {
 
 // ─── Main Overlay ───────────────────────────────────────────
 
-function ThemeCreatorOverlay({ onClose }) {
+function ThemeCreatorOverlay({ onClose, editingTheme = null }) {
   const dispatch = useAppDispatch();
   const activeThemeId = useAppSelector(selectActiveThemeId);
   const allThemes = useAppSelector(selectAllThemes);
   const userOverrides = useAppSelector(selectUserOverrides);
   const { monacoRef, reapply } = useTheme();
 
+  const isEditing = !!editingTheme;
+
   // ── State ─────────────────────────────────────────────
-  const [themeType, setThemeType] = useState('dark');
+  const [themeType, setThemeType] = useState(editingTheme?.type || 'dark');
   const [activeSection, setActiveSection] = useState('general');
-  const [uiColors, setUiColors] = useState({});
-  const [themeName, setThemeName] = useState('');
+  const [uiColors, setUiColors] = useState(editingTheme?.ui || {});
+  const [themeName, setThemeName] = useState(editingTheme?.name || '');
   const [nameError, setNameError] = useState(null);
   const [saveAttempted, setSaveAttempted] = useState(false);
   const [showUnfilled, setShowUnfilled] = useState(false);
@@ -425,22 +436,25 @@ function ThemeCreatorOverlay({ onClose }) {
     }
 
     // Build the final theme object
-    const themeId = `user-${Date.now()}-${Math.random().toString(36).substring(2, 8)}`;
+    const themeId = isEditing
+      ? editingTheme.id
+      : `user-${Date.now()}-${Math.random().toString(36).substring(2, 8)}`;
     const parentId = themeType === 'light' ? 'synthi-light' : 'synthi-dark';
-    const newTheme = {
+    const updatedTheme = {
+      ...(isEditing ? editingTheme : {}),
       id: themeId,
       name: themeName.trim(),
       type: themeType,
       source: 'user',
       parentThemeId: parentId,
       ui: { ...uiColors },
-      editor: {},
-      terminal: {},
-      tokenColors: [],
-      semanticTokenColors: {},
+      editor: isEditing ? (editingTheme.editor || {}) : {},
+      terminal: isEditing ? (editingTheme.terminal || {}) : {},
+      tokenColors: isEditing ? (editingTheme.tokenColors || []) : [],
+      semanticTokenColors: isEditing ? (editingTheme.semanticTokenColors || {}) : {},
     };
 
-    dispatch(saveUserTheme(newTheme));
+    dispatch(saveUserTheme(updatedTheme));
     dispatch(setActiveTheme(themeId));
     onClose();
   }, [themeName, themeType, uiColors, dispatch, onClose]);
@@ -569,7 +583,7 @@ function ThemeCreatorOverlay({ onClose }) {
         >
           <Palette className="h-5 w-5" style={{ color: 'var(--accent-primary)' }} />
           <span className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>
-            Create Your Own Theme
+            {isEditing ? 'Edit Theme' : 'Create Your Own Theme'}
           </span>
 
           {/* AI Generate button */}
@@ -1010,7 +1024,7 @@ function ThemeCreatorOverlay({ onClose }) {
               onClick={handleSave}
             >
               <Save className="h-3.5 w-3.5" />
-              Save Theme
+              {isEditing ? 'Update Theme' : 'Save Theme'}
             </button>
           </div>
         </div>
