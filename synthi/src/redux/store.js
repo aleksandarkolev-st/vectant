@@ -180,6 +180,8 @@ if (typeof window !== 'undefined') {
 
   // Track theme for persistence
   let lastThemeId = '';
+  let lastUserThemes = '{}';
+  let lastUserOverrides = '{}';
 
   store.subscribe(() => {
     try {
@@ -201,13 +203,26 @@ if (typeof window !== 'undefined') {
         }
       } catch (_) {}
 
-      // Persist active theme ID
+      // Persist active theme ID + user themes + overrides
       try {
         const themeId = state?.theme?.activeThemeId || '';
-        if (themeId && themeId !== lastThemeId) {
+        const userThemes = state?.theme?.userThemes || {};
+        const userOverrides = state?.theme?.userOverrides || {};
+        const userThemesSnapshot = JSON.stringify(userThemes);
+        const userOverridesSnapshot = JSON.stringify(userOverrides);
+        // Write when anything has changed
+        if (
+          (themeId && themeId !== lastThemeId) ||
+          userThemesSnapshot !== (lastUserThemes || '{}') ||
+          userOverridesSnapshot !== (lastUserOverrides || '{}')
+        ) {
           lastThemeId = themeId;
+          lastUserThemes = userThemesSnapshot;
+          lastUserOverrides = userOverridesSnapshot;
           localStorage.setItem(THEME_STORAGE_KEY, JSON.stringify({
             activeThemeId: themeId,
+            userThemes,
+            userOverrides,
           }));
         }
       } catch (_) {}

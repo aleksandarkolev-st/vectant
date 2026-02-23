@@ -758,31 +758,59 @@ function ThemeCreatorOverlay({ onClose }) {
             <label className="text-xs font-medium shrink-0" style={{ color: 'var(--text-primary)' }}>
               Theme Name
             </label>
-            <input
-              type="text"
-              value={themeName}
-              onChange={(e) => {
-                setThemeName(e.target.value);
-                if (nameError) {
-                  const result = validateThemeName(e.target.value);
-                  setNameError(result.valid ? null : result.reason);
-                }
-              }}
-              placeholder="My Awesome Theme"
-              className="flex-1 px-2 py-1 text-xs rounded border outline-none transition-colors"
-              style={{
-                background: 'var(--bg-editor)',
-                borderColor: nameError ? 'var(--accent-danger)' : 'var(--border-subtle)',
-                color: 'var(--text-primary)',
-                caretColor: 'var(--accent-primary)',
-              }}
-              spellCheck={false}
-              maxLength={48}
-            />
+            <div className="flex-1 relative">
+              <input
+                type="text"
+                value={themeName}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  setThemeName(val);
+                  // Real-time AI name validation
+                  if (val.trim().length > 0) {
+                    const result = validateThemeName(val);
+                    setNameError(result.valid ? null : result.reason);
+                  } else {
+                    setNameError(null);
+                  }
+                }}
+                placeholder="My Awesome Theme"
+                className="w-full px-2 py-1 text-xs rounded border outline-none transition-colors pr-7"
+                style={{
+                  background: 'var(--bg-editor)',
+                  borderColor: nameError
+                    ? 'var(--accent-danger)'
+                    : themeName.trim() && !nameError
+                      ? 'var(--accent-success)'
+                      : 'var(--border-subtle)',
+                  color: 'var(--text-primary)',
+                  caretColor: 'var(--accent-primary)',
+                }}
+                spellCheck={false}
+                maxLength={48}
+              />
+              {/* Validation indicator */}
+              {themeName.trim().length > 0 && (
+                <span className="absolute right-2 top-1/2 -translate-y-1/2">
+                  {nameError ? (
+                    <X className="h-3 w-3" style={{ color: 'var(--accent-danger)' }} />
+                  ) : (
+                    <Check className="h-3 w-3" style={{ color: 'var(--accent-success)' }} />
+                  )}
+                </span>
+              )}
+            </div>
           </div>
           {nameError && (
-            <p className="text-[10px] mt-1 ml-[84px]" style={{ color: 'var(--accent-danger)' }}>
-              {nameError}
+            <div className="flex items-center gap-1.5 mt-1 ml-[84px]">
+              <AlertTriangle className="h-3 w-3 shrink-0" style={{ color: 'var(--accent-danger)' }} />
+              <p className="text-[10px]" style={{ color: 'var(--accent-danger)' }}>
+                {nameError}
+              </p>
+            </div>
+          )}
+          {themeName.trim().length > 0 && !nameError && (
+            <p className="text-[10px] mt-1 ml-[84px]" style={{ color: 'var(--accent-success)' }}>
+              Name approved by content filter
             </p>
           )}
         </div>
