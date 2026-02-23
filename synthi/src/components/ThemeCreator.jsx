@@ -341,6 +341,55 @@ function ThemeCreatorOverlay({ onClose }) {
     return map;
   }, [uiColors]);
 
+  // Per-section warning counts
+  const sectionWarnings = useMemo(() => {
+    const map = {};
+    for (const section of CREATOR_SECTIONS) {
+      let count = 0;
+      for (const key of section.keys) {
+        if (contrastWarnings[key]) count++;
+      }
+      if (count > 0) map[section.id] = count;
+    }
+    return map;
+  }, [contrastWarnings]);
+
+  // Full contrast report for the Contrast panel
+  const contrastReport = useMemo(() => {
+    const items = [];
+    for (const pair of CONTRAST_PAIRS) {
+      const bgVal = uiColors[pair.bg];
+      const fgVal = uiColors[pair.fg];
+      if (!bgVal || !fgVal) continue;
+      if (SHADOW_KEYS.has(pair.bg) || SHADOW_KEYS.has(pair.fg)) continue;
+
+      const ratio = contrastRatio(bgVal, fgVal);
+      if (ratio === null) continue;
+
+      const level = getWcagLevel(ratio);
+      const bgMeta = getKeyMeta(pair.bg);
+      const fgMeta = getKeyMeta(pair.fg);
+      items.push({
+        bg: pair.bg,
+        fg: pair.fg,
+        bgLabel: bgMeta?.label || pair.bg,
+        fgLabel: fgMeta?.label || pair.fg,
+        bgColor: bgVal,
+        fgColor: fgVal,
+        ratio,
+        level,
+        min: pair.min,
+        pass: ratio >= pair.min,
+      });
+    }
+    // Sort: failures first, then by ratio ascending
+    items.sort((a, b) => {
+      if (a.pass !== b.pass) return a.pass ? 1 : -1;
+      return a.ratio - b.ratio;
+    });
+    return items;
+  }, [uiColors]);
+
   // ── Cancel ────────────────────────────────────────────
   const handleCancel = useCallback(() => {
     // Revert the DOM to the previously active theme
@@ -497,6 +546,7 @@ function ThemeCreatorOverlay({ onClose }) {
               const IconComponent = ICON_MAP[section.icon];
               const isActive = section.id === activeSection;
               const sc = sectionCompletion[section.id] || { filled: 0, total: 0 };
+              const sectionWarnCount = sectionWarnings[section.id] || 0;
 
               return (
                 <button
@@ -521,15 +571,156 @@ function ThemeCreatorOverlay({ onClose }) {
                     />
                   )}
                   <span className="flex-1 truncate">{section.label}</span>
+                  {sectionWarnCount > 0 && (
+                    <AlertTriangle
+                      className="h-3 w-3 shrink-0"
+                      style={{ color: 'var(--accent-warning)' }}
+                      title={`${sectionWarnCount} contrast warning(s)`}
+                    />
+                  )}
                   <SectionBadge filled={sc.filled} total={sc.total} />
                 </button>
               );
             })}
+
+            {/* Contrast summary section */}
+            <div
+              className="mt-1 pt-1"
+              style={{ borderTop: '1px solid var(--border-subtle)' }}
+            >
+              <button
+                className={cn(
+                  'w-full flex items-center gap-2 px-3 py-2 text-left text-xs transition-colors',
+                  activeSection === '__contrast__' && 'font-medium',
+                )}
+                style={{
+                  color: activeSection === '__contrast__' ? 'var(--text-primary)' : 'var(--text-secondary)',
+                  background: activeSection === '__contrast__'
+                    ? 'color-mix(in srgb, var(--accent-primary) 10%, transparent)'
+                    : 'transparent',
+                  borderLeft: activeSection === '__contrast__'
+                    ? '2px solid var(--accent-primary)'
+                    : '2px solid transparent',
+                }}
+                onClick={() => setActiveSection('__contrast__')}
+              >
+                <AlertTriangle
+                  className="h-3.5 w-3.5 shrink-0"
+                  style={{
+                    color: activeSection === '__contrast__'
+                      ? 'var(--accent-primary)'
+                      : warningCount > 0
+                        ? 'var(--accent-warning)'
+                        : 'var(--text-muted)',
+                  }}
+                />
+                <span className="flex-1 truncate">Contrast</span>
+                {warningCount > 0 && (
+                  <span
+                    className="text-[9px] tabular-nums px-1 py-0.5 rounded"
+                    style={{
+                      background: 'color-mix(in srgb, var(--accent-danger) 15%, transparent)',
+                      color: 'var(--accent-danger)',
+                    }}
+                  >
+                    {warningCount}
+                  </span>
+                )}
+                {warningCount === 0 && contrastReport.length > 0 && (
+                  <Check
+                    className="h-3 w-3 shrink-0"
+                    style={{ color: 'var(--accent-success)' }}
+                  />
+                )}
+              </button>
+            </div>
           </div>
 
-          {/* Right panel — colour inputs */}
+          {/* Right panel — colour inputs or contrast report */}
           <div className="flex-1 overflow-y-auto">
-            {currentSection && (
+            {activeSection === '__contrast__' ? (
+              /* ─── Contrast Summary Panel ─────────────── */
+              <div className="p-3">
+                <div className="mb-3">
+                  <h3 className="text-xs font-semibold" style={{ color: 'var(--text-primary)' }}>
+                    Contrast Warnings
+                  </h3>
+                  <p className="text-[10px] mt-0.5" style={{ color: 'var(--text-muted)' }}>
+                    WCAG 2.1 contrast checks between background and text colour pairs.
+                    Set both colours in a pair to see the evaluation.
+                  </p>
+                </div>
+
+                {contrastReport.length === 0 && (
+                  <div className="text-xs py-6 text-center" style={{ color: 'var(--text-muted)' }}>
+                    Fill in colour pairs to see contrast evaluations.
+                  </div>
+                )}
+
+                <div className="space-y-1">
+                  {contrastReport.map((item, i) => (
+                    <div
+                      key={`${item.bg}-${item.fg}-${i}`}
+                      className="flex items-center gap-2 px-2 py-1.5 rounded text-[11px]"
+                      style={{
+                        background: item.pass
+                          ? 'transparent'
+                          : 'color-mix(in srgb, var(--accent-danger) 5%, transparent)',
+                      }}
+                    >
+                      {/* Colour swatches */}
+                      <div className="flex shrink-0 -space-x-1">
+                        <span
+                          className="w-4 h-4 rounded border"
+                          style={{ background: item.bgColor, borderColor: 'var(--border-medium)' }}
+                        />
+                        <span
+                          className="w-4 h-4 rounded border"
+                          style={{ background: item.fgColor, borderColor: 'var(--border-medium)' }}
+                        />
+                      </div>
+
+                      {/* Labels */}
+                      <span className="flex-1 truncate" style={{ color: 'var(--text-secondary)' }}>
+                        {item.bgLabel} / {item.fgLabel}
+                      </span>
+
+                      {/* Ratio */}
+                      <span
+                        className="tabular-nums font-mono shrink-0"
+                        style={{
+                          color: item.pass ? 'var(--accent-success)' : 'var(--accent-danger)',
+                        }}
+                      >
+                        {formatRatio(item.ratio)}
+                      </span>
+
+                      {/* Level badge */}
+                      <span
+                        className="text-[9px] uppercase px-1 py-0.5 rounded font-medium shrink-0"
+                        style={{
+                          background: item.pass
+                            ? 'color-mix(in srgb, var(--accent-success) 15%, transparent)'
+                            : 'color-mix(in srgb, var(--accent-danger) 15%, transparent)',
+                          color: item.pass ? 'var(--accent-success)' : 'var(--accent-danger)',
+                        }}
+                      >
+                        {item.level}
+                      </span>
+
+                      {/* Min required */}
+                      <span
+                        className="text-[9px] shrink-0"
+                        style={{ color: 'var(--text-dim)' }}
+                      >
+                        min {item.min}:1
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : currentSection ? (
+              /* ─── Normal colour inputs ──────────────── */
               <div className="p-3">
                 {/* Section header */}
                 <div className="mb-3">
@@ -554,7 +745,7 @@ function ThemeCreatorOverlay({ onClose }) {
                   ))}
                 </div>
               </div>
-            )}
+            ) : null}
           </div>
         </div>
 
