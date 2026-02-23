@@ -1,5 +1,6 @@
 "use client"
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
+import { toast } from 'sonner';
 import { useAppDispatch, useAppSelector } from '@/redux/hooks';
 import { 
     selectFilesTree, 
@@ -86,7 +87,7 @@ const FileTreeView = ({
     }, [isCreating, target]);
 
     // Dispatcher for context menu items
-    const handleTreeAction = (action, item = null) => {
+    const handleTreeAction = async (action, item = null) => {
         if (action === 'new-file' || action === 'new-folder') {
             dispatch(startCreate({ type: action === 'new-file' ? 'file' : 'folder', target: item }));
         } else if (action === 'new-file-root' || action === 'new-folder-root') {
@@ -94,31 +95,43 @@ const FileTreeView = ({
         } else if (action === 'rename') {
             dispatch(startRename(item));
         } else if (action === 'delete') {
-            dispatch(deleteItemThunk(item));
+            const res = await dispatch(deleteItemThunk(item));
+            if (deleteItemThunk.rejected.match(res)) {
+                toast.error(`Delete failed: ${res.error?.message || 'Unknown error'}`);
+            }
         }
     };
     
     // Action handlers passed down to FileItem
-    const handleKeyDown = (e) => {
+    const handleKeyDown = async (e) => {
         if (e.key === 'Enter') {
             if (isCreating) {
-                dispatch(handleCreateItemThunk());
+                const res = await dispatch(handleCreateItemThunk());
+                if (handleCreateItemThunk.rejected.match(res)) {
+                    toast.error(`Create failed: ${res.error?.message || 'Unknown error'}`);
+                }
             } else if (isRenaming) {
-                dispatch(handleRenameItemThunk());
+                const res = await dispatch(handleRenameItemThunk());
+                if (handleRenameItemThunk.rejected.match(res)) {
+                    toast.error(`Rename failed: ${res.error?.message || 'Unknown error'}`);
+                }
             }
         } else if (e.key === 'Escape') {
             dispatch(cancelUiAction());
         }
     };
     
-    const handleBlur = () => {
+    const handleBlur = async () => {
         if (isCreating) {
             // For creation, blur acts as cancellation
             dispatch(cancelUiAction());
         } else if (isRenaming) {
             // For renaming, execute thunk or cancel
             if (name.trim() && target && name !== target.name) {
-                dispatch(handleRenameItemThunk());
+                const res = await dispatch(handleRenameItemThunk());
+                if (handleRenameItemThunk.rejected.match(res)) {
+                    toast.error(`Rename failed: ${res.error?.message || 'Unknown error'}`);
+                }
             } else {
                 dispatch(cancelUiAction());
             }
@@ -136,9 +149,9 @@ const FileTreeView = ({
     };
 
     // Handler for FileItem clicks
-    const onFileSelectHandler = (item) => {
+    const onFileSelectHandler = useCallback((item) => {
         dispatch(selectFileThunk(item));
-    };
+    }, [dispatch]);
 
     return (
     <ContextMenu
@@ -204,9 +217,7 @@ const FileTreeView = ({
                 onFileSelect={onFileSelectHandler}
                 activeFile={activeFile}
                 onAction={handleTreeAction}
-                onRightMouseButtonClick={(item) => {
-                  setContextTarget(item);
-                }}
+                onRightMouseButtonClick={setContextTarget}
                 uiActionState={uiActionState}
                 dispatch={dispatch}
                 handleKeyDown={handleKeyDown}

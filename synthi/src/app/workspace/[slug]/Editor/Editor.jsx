@@ -17,10 +17,14 @@ import {
     selectLoadingFiles,
     selectFileThunk,
     closeFile,
-    reorderOpenFiles
+    reorderOpenFiles,
+    setDiffMode,
+    clearSavedBaselines,
+    markFileSavedRemotely,
 } from '@/redux/workspaceSlice';
-import { selectAutoSaveEnabled, selectAutoCompletionEnabled, toggleAutoCompletion, selectShowAnonymousPresence, selectPresenceGranularity, toggleShowAnonymousPresence, setPresenceGranularity, startCreate, setCursorPosition } from '@/redux/uiSlice';
-import { Circle, Save, Sparkles, EyeOff, Loader2 } from 'lucide-react'; // Added Sparkles, EyeOff
+import { selectAutoCompletionEnabled, toggleAutoCompletion, selectPresenceGranularity, startCreate, setCursorPosition, selectAutoSaveEnabled } from '@/redux/uiSlice';
+import { fetchGitStatus, closeConflictResolver } from '@/redux/gitSlice';
+import { Circle, Save, Sparkles, Loader2, X } from 'lucide-react';
 import { getFileIcon } from '@/utils/fileIcons';
 import {
     ResizableHandle,
@@ -50,6 +54,8 @@ import { takeLastChars, useCustomScrollbar } from './utils';
 import { SYNTHI_THEME } from './theme';
 import { useTheme } from '@/components/ThemeProvider';
 import { ConflictBanner } from './ConflictBanner';
+import MergeConflictEditor from '@/components/git/MergeConflictEditor';
+import { useSessionPermissions } from '@/hooks/useCollabSession';
 import { initSynthiFileSystem, updateFile as updateVirtualFile, disposeSynthiFileSystem } from './SynthiFileSystemProvider';
 import { registerMonarchTokenizers } from './languageTokenizers';
 import * as monaco from '@codingame/monaco-vscode-editor-api';
@@ -127,6 +133,7 @@ import { gitClient } from '@/services/gitClient';
 import { useSession } from 'next-auth/react';
 import { useCompiler } from '@/hooks/useCompiler';
 import { CompilerStatus } from '@/services/compilerClient';
+import { useFilePresence } from '@/hooks/useFilePresence';
 
 // Configure Monaco workers
 if (typeof window !== 'undefined') {
@@ -189,6 +196,7 @@ const EditorPanel = ({
     aiBusy = false,
     onClearCompletion = null,
     chatVisible = false,
+    collabHostId = null,
     dockingMode = false,
 }) => {
     const dispatch = useAppDispatch();
@@ -205,13 +213,20 @@ const EditorPanel = ({
     const showTerminalRedux = useAppSelector(state => state.ui.showTerminal);
     const showTerminal = dockingMode ? false : showTerminalRedux;
     const autoSaveEnabled = useAppSelector(selectAutoSaveEnabled);
+    const savedContent = useAppSelector(state => state.workspace.savedContent);
     const aiAutoEnabled = useAppSelector(selectAutoCompletionEnabled);
-    const showAnonymousPresence = useAppSelector(selectShowAnonymousPresence);
     const presenceGranularity = useAppSelector(selectPresenceGranularity);
+    const diffMode = useAppSelector(state => state.workspace.diffMode);
+    const originalContent = useAppSelector(state => state.workspace.originalContent);
     
     // Git status for conflict detection
     const gitStatus = useAppSelector(state => state.git?.status);
     const conflictedFiles = gitStatus?.conflictedFiles || [];
+    const conflictResolverFile = useAppSelector(state => state.git?.conflictResolverFile);
+
+    // Collaboration permissions — enforce read-only for guests without canEdit
+    const { canEdit: collabCanEdit, role: collabRole } = useSessionPermissions();
+    const isCollabReadOnly = collabRole === 'guest' && !collabCanEdit;
 
     // Theme context — provides monacoRef for live theme switching
     const { monacoRef: themeMonacoRef, reapply: reapplyTheme } = useTheme();
@@ -220,6 +235,9 @@ const EditorPanel = ({
     const [position, setPosition] = useState({ lineNumber: 1, column: 1 });
     const [editorInstance, setEditorInstance] = useState(null);
     const [monacoInstance, setMonacoInstance] = useState(null);
+    // Track whether the DiffEditor has ever been activated — once true, we keep
+    // it mounted (hidden) to avoid React unmount crash in passive effects.
+    const [diffModeEverActive, setDiffModeEverActive] = useState(false);
     const latestCodeRef = useRef(code);
     const pendingContentFrameRef = useRef(null);
     const pendingPositionFrameRef = useRef(null);
@@ -242,13 +260,20 @@ const EditorPanel = ({
     fileCacheEntriesRef.current = fileCacheEntries;
     rawFilesRef.current = rawFiles;
     const session = useSession();
+    // Derive authenticated user id from the session — used as a guard for
+    // collab binding so we never open Yjs docs before identity is set.
+    const authUserId = session?.data?.user?.id || session?.data?.user?.email || null;
     const collabBindingRef = useRef(null);
     const [collabConnected, setCollabConnected] = useState(false); // Track if collab is actively bound
-    const [hoverPresence, setHoverPresence] = useState(null); // { user, clientId, rect }
-    // small timeout ref used to keep the hover card alive while moving the pointer
-    const hoverHideTimeoutRef = useRef(null);
     const [isPrivateMode, setIsPrivateMode] = useState(false);
     const [remoteUnsaved, setRemoteUnsaved] = useState(false);
+    // Debounce ref for markFileSavedRemotely — on rapid remote edits
+    // (e.g., host typing quickly), this prevents dozens of Redux dispatches
+    // per second, coalescing them into one per animation frame.
+    const remoteSaveRAFRef = useRef(null);
+    
+    // File-level presence: which remote users are editing which files
+    const { presenceByFile } = useFilePresence(slug, authUserId);
     
     // Track which file path the editor is currently bound to
     // This prevents stale onChange handlers from writing to the wrong file
@@ -281,22 +306,6 @@ const EditorPanel = ({
     const [tabIndicator, setTabIndicator] = useState({ left: 0, width: 0, visible: false });
     const [hoveredTabPath, setHoveredTabPath] = useState(null);
     const tabRefs = useRef({});
-
-    // Precompute hover-card style so JSX stays clean and well-formed
-    const hoverCardStyle = (hoverPresence && hoverPresence.rect && typeof window !== 'undefined') ? (() => {
-        const cardW = 224; const cardH = 76;
-        // tighten the horizontal gap a bit to avoid an unreachable gap between
-        // avatar and popover (which previously made it hard to move the mouse)
-        let left = hoverPresence.rect.left + hoverPresence.rect.width + 6;
-        let top = hoverPresence.rect.top - 6;
-        // Keep popover on screen
-        if (left + cardW > window.innerWidth) {
-            left = Math.max(8, hoverPresence.rect.left - cardW - 6);
-        }
-        if (top + cardH > window.innerHeight) top = Math.max(8, window.innerHeight - cardH - 8);
-        if (top < 8) top = 8;
-        return { position: 'fixed', left, top, zIndex: 2000 };
-    })() : null;
 
     const { client: compilerClient, status: compilerStatus } = useCompiler();
     const languageClientsRef = useRef(new Map());
@@ -2091,11 +2100,29 @@ const EditorPanel = ({
 
     }, [monacoInstance, compilerClient, compilerStatus, activeFile, editorInstance, servicesReady]);
 
+    // Dynamically sync read-only state when collab permissions change mid-session
+    useEffect(() => {
+        if (!editorInstance) return;
+        editorInstance.updateOptions({ readOnly: isCollabReadOnly });
+    }, [editorInstance, isCollabReadOnly]);
+
     // Hook up Yjs-based collaboration when an editor and activeFile are present.
     useEffect(() => {
         if (!editorInstance || !monacoInstance || !activeFile || !slug || isPrivateMode) {
             // Clear collab connected state if dependencies are missing
             setCollabConnected(false);
+            boundFilePathRef.current = null;
+            return;
+        }
+
+        // CRITICAL: Wait for authenticated user id before opening Yjs docs.
+        // Without this guard the collab binding can fire before setIdentity()
+        // has been called on the singleton collabClient, causing legacy room
+        // names (workspace:<slug>:<path>) that bypass per-user isolation.
+        if (!authUserId) {
+            console.debug('[Collab] Waiting for authenticated user id before binding');
+            setCollabConnected(false);
+            boundFilePathRef.current = null;
             return;
         }
 
@@ -2108,6 +2135,7 @@ const EditorPanel = ({
             // Destroy any existing collab doc for this file to ensure fresh content
             try { collabClient.destroyDocument(slug, activeFile.path); } catch (e) { /* ignore */ }
             setCollabConnected(false);
+            boundFilePathRef.current = null;
             return;
         }
 
@@ -2116,10 +2144,11 @@ const EditorPanel = ({
         if (!model) {
             console.warn('[Collab] Editor model not available, skipping collab binding');
             setCollabConnected(false);
+            boundFilePathRef.current = null;
             return;
         }
 
-        const user = (session?.data?.user) ? { id: session.data.user.id || session.data.user.email || session.data.user.name, name: session.data.user.name || session.data.user.email, email: session.data.user.email || null, isAnonymous: false } : { id: null, name: 'Anonymous', email: null, isAnonymous: true };
+        const user = (session?.data?.user) ? { id: session.data.user.id || session.data.user.email || session.data.user.name, name: session.data.user.name || (session.data.user.email ? session.data.user.email.split('@')[0] : null) || 'Anonymous', email: session.data.user.email || null, image: session.data.user.image || null, isAnonymous: false } : { id: null, name: 'Anonymous', email: null, image: null, isAnonymous: true };
 
         // Attach the editor to the collaboration binding
         // IMPORTANT: Get content from file cache for THIS specific file path
@@ -2144,6 +2173,16 @@ const EditorPanel = ({
             boundFilePathRef.current = activeFile.path; // Track which file we're bound to
             setCollabConnected(true); // Mark collab as connected
             
+            // CRITICAL: After the binding is established, the model content
+            // may differ from Redux (e.g. Yjs has unsaved edits from a
+            // previous session that were seeded via model.setValue, which
+            // our isFlush guard intentionally skips).  Do a one-time sync
+            // so Redux currentContent matches what the user sees.
+            const modelContent = editorInstance.getModel()?.getValue() ?? '';
+            if (modelContent && modelContent !== code) {
+                dispatch(updateContent(modelContent));
+            }
+            
             // Sync initial unsaved state
             bindingHandle.updateLocalUnsaved(isUnsaved);
 
@@ -2159,6 +2198,9 @@ const EditorPanel = ({
         } catch (e) {
             console.warn('[Collab] Failed to attach editor to collaborative session', e);
             setCollabConnected(false);
+            // Critical: if binding failed, clear stale path guard so local edits
+            // still propagate to Redux/save pipeline.
+            boundFilePathRef.current = null;
         }
 
         return () => {
@@ -2169,7 +2211,93 @@ const EditorPanel = ({
             setCollabConnected(false);
             setRemoteUnsaved(false);
         };
-    }, [editorInstance, monacoInstance, activeFile, slug, session, presenceGranularity, isPrivateMode, conflictedFiles]);
+    }, [editorInstance, monacoInstance, activeFile, slug, session, authUserId, presenceGranularity, isPrivateMode, conflictedFiles, collabHostId]);
+
+    // ── Ghost-revert fix ─────────────────────────────────────────────────
+    // Listen for server-side 'file-reverted' events (emitted after discard,
+    // pull, checkout, or any operation that changes files on disk).
+    // When the active file was reverted:
+    //   1. Tear down the Yjs binding so stale dirty content can't re-flush
+    //   2. Re-fetch the clean content via selectFileThunk (which reads disk)
+    //   3. Reset the Monaco model to the clean content
+    // A revert lock prevents CRDT content from being applied during the
+    // transition window, eliminating brief content duplication on pull.
+    const revertLockRef = useRef(false);
+    useEffect(() => {
+        const handler = async (ev) => {
+            const { slug: evSlug, filePaths } = ev.detail || {};
+            if (evSlug !== slug) return;
+
+            const allFiles = !filePaths || filePaths.length === 0;
+            const affectsActive = allFiles
+                || (activeFile && filePaths.includes(activeFile.path));
+
+            if (!affectsActive || !activeFile) return;
+
+            console.log('[Editor] file-reverted received for', activeFile.path, '— resetting editor');
+
+            // ── Revert lock: prevent stale CRDT content from being applied
+            // during the transition.  The lock is checked by handleCodeChange
+            // and the collab binding observer.
+            revertLockRef.current = true;
+
+            // 1. Cancel any pending Redux sync timer (prevent stale content from being dispatched)
+            if (reduxSyncTimerRef.current) {
+                clearTimeout(reduxSyncTimerRef.current);
+                reduxSyncTimerRef.current = null;
+            }
+
+            // 2. Tear down the local binding reference.
+            //    Note: The Yjs doc/provider are already destroyed by
+            //    collabClient.connectNotifications (which fires first and
+            //    calls destroyDocument/destroyAllForSlug).  We only need
+            //    to clear the local ref + awareness subscription.
+            try { collabBindingRef.current?._awarenessUnsub?.(); } catch (_) {}
+            try { collabBindingRef.current?.dispose(); } catch (_) {}
+            collabBindingRef.current = null;
+
+            // 3. Close diff view if open — reverted content invalidates it
+            if (diffMode) {
+                dispatch(setDiffMode(false));
+            }
+
+            // 3b. Clear stale saved-content baselines so selectFileThunk
+            //     doesn't re-apply the old savedContent from _savedContentByPath.
+            //     Without this, the tab would still show an unsaved dot after revert.
+            dispatch(clearSavedBaselines(
+                allFiles ? { all: true } : { paths: filePaths }
+            ));
+
+            // 4. Yield to microtask queue so collabClient.destroyAllForSlug
+            //    (fired by the notification handler) finishes before we
+            //    re-create a fresh provider. No artificial delay needed —
+            //    the destroy already ran synchronously in the notification
+            //    handler before this DOM event was dispatched.
+            await new Promise(r => queueMicrotask(r));
+
+            // 5. Re-select the file — this fetches clean content from the
+            //    server and updates Redux (savedContent, currentContent).
+            //    It also triggers the collab binding effect to re-run, which
+            //    will create a fresh Yjs provider seeded from disk content.
+            await dispatch(selectFileThunk(activeFile));
+
+            // 6. Force-set the Monaco model to the clean content so the editor
+            //    doesn't flash stale text before the binding kicks in.
+            try {
+                const model = editorInstance?.getModel?.();
+                if (model) {
+                    const cleanContent = model.getValue();
+                    latestCodeRef.current = cleanContent;
+                }
+            } catch (_) {}
+
+            // 7. Release the revert lock after a brief settling period
+            setTimeout(() => { revertLockRef.current = false; }, 200);
+        };
+
+        window.addEventListener('synthi:file-reverted', handler);
+        return () => window.removeEventListener('synthi:file-reverted', handler);
+    }, [slug, activeFile, editorInstance, dispatch, diffMode]);
 
     // Sync local unsaved state to awareness
     useEffect(() => {
@@ -2373,33 +2501,60 @@ const EditorPanel = ({
     }, [dispatch]);
 
     const handleCodeChange = useCallback((newCode) => {
+
         // CRITICAL: Only process changes if we're bound to the correct file
         // This prevents stale onChange handlers from writing content to the wrong file
         // during file transitions.
-        if (activeFile && boundFilePathRef.current && boundFilePathRef.current !== activeFile.path) {
-            return;
-        }
-        
-        // Skip Redux update if collab is applying remote changes to prevent feedback loop
-        // This is critical: when remote Yjs changes come in, collabClient applies them via
-        // executeEdits which triggers onChange. If we push to Redux, it would cause the 
-        // value prop to change, triggering another setValue, conflicting with LSP versioning.
-        if (collabBindingRef.current?.isApplyingRemote?.()) {
-            latestCodeRef.current = newCode;
+        if (activeFile && collabConnected && boundFilePathRef.current && boundFilePathRef.current !== activeFile.path) {
+            console.warn('[Editor] Skipping — boundFilePathRef mismatch:', boundFilePathRef.current, '!==', activeFile.path);
             return;
         }
 
-        cancelActiveCompletion({ resetSuggestion: true, reason: 'edit' });
+        // Suppress content changes during revert/pull to prevent brief
+        // duplication from stale CRDT merges.
+        if (revertLockRef.current) return;
+        
+        // Always track latest content for flush-on-unmount and save
         latestCodeRef.current = newCode;
 
-        // P0: Debounce Redux sync — only dispatch to Redux after 300ms pause.
-        // Monaco holds the source of truth; Redux only needs eventual consistency
-        // for save, tab bar, file explorer, etc.
-        if (reduxSyncTimerRef.current) clearTimeout(reduxSyncTimerRef.current);
-        reduxSyncTimerRef.current = setTimeout(() => {
+        // Check if collab is applying remote changes
+        const remoteApplying = !!collabBindingRef.current?.isApplyingRemote?.();
+
+
+        // P0: ALWAYS dispatch to Redux immediately — no debounce.
+        // The unsaved indicator, save flow, and tab dot all depend on Redux
+        // currentContent being up-to-date.  Debouncing this caused the unsaved
+        // dot to appear seconds after the first keystroke.  The updateContent
+        // reducer already short-circuits when content hasn't changed, so
+        // dispatching on every keystroke is cheap.
+        if (reduxSyncTimerRef.current) {
+            clearTimeout(reduxSyncTimerRef.current);
             reduxSyncTimerRef.current = null;
-            dispatch(updateContent(latestCodeRef.current));
-        }, 300);
+        }
+        dispatch(updateContent(newCode));
+
+        // ── Save-state sync for guests ──────────────────────────────
+        // When remote edits arrive via Yjs (from the host), automatically
+        // align the guest's savedContent so the tab never shows a false
+        // "unsaved" indicator.  The host's edits are the source of truth;
+        // persisting to disk is the host's responsibility.
+        // Debounced via requestAnimationFrame to coalesce rapid remote
+        // character edits into a single Redux dispatch per frame.
+        if (remoteApplying && collabRole === 'guest' && activeFile?.path) {
+            if (!remoteSaveRAFRef.current) {
+                const pathToSync = activeFile.path;
+                remoteSaveRAFRef.current = requestAnimationFrame(() => {
+                    remoteSaveRAFRef.current = null;
+                    dispatch(markFileSavedRemotely(pathToSync));
+                });
+            }
+        }
+
+        // Skip AI auto-complete and active completion cancel for remote changes
+        // — these should only fire on local user edits
+        if (remoteApplying) return;
+
+        cancelActiveCompletion({ resetSuggestion: true, reason: 'edit' });
 
         // Debounce AI Auto-Complete (The "Cursor" experience)
         if (aiDebounceTimerRef.current) clearTimeout(aiDebounceTimerRef.current);
@@ -2409,7 +2564,7 @@ const EditorPanel = ({
                 requestAiCompletion(true, latestCodeRef.current, { reason: 'pause', pauseTrigger: true, recentEditSnippet: takeLastChars(latestCodeRef.current, 512) });
             }
         }, 900);
-    }, [activeFile, aiAutoEnabled, activeDiffCheck, cancelActiveCompletion, dispatch, requestAiCompletion]);
+    }, [activeFile, aiAutoEnabled, activeDiffCheck, cancelActiveCompletion, dispatch, requestAiCompletion, collabConnected]);
 
     // Keep a ref to the latest handleCodeChange to avoid stale closures in the editor onMount listener
     const handleCodeChangeRef = useRef(handleCodeChange);
@@ -2418,13 +2573,18 @@ const EditorPanel = ({
     }, [handleCodeChange]);
 
     const handleSave = useCallback(() => {
-        // P0: Flush pending Redux debounce before save so latest content is in state
-        if (reduxSyncTimerRef.current) {
-            clearTimeout(reduxSyncTimerRef.current);
-            reduxSyncTimerRef.current = null;
-            dispatch(updateContent(latestCodeRef.current));
+        // Ensure Redux has the absolute latest content before saving.
+        // Since updateContent is now dispatched synchronously in handleCodeChange,
+        // this is a safety net for edge cases (e.g. rapid save before React tick).
+        dispatch(updateContent(latestCodeRef.current));
+        if (activeFile) {
+            // Always dispatch — the thunk uses getState() to read the latest
+            // currentContent vs savedContent and skips the network call when
+            // content is already saved.  This avoids the race where the closure
+            // `isUnsaved` is stale (false) because the debounced updateContent
+            // just ran but React hasn't re-rendered yet.
+            dispatch(saveFileContentThunk());
         }
-        if (activeFile && isUnsaved) dispatch(saveFileContentThunk());
         // ── Push saved content to worker disk via file-sync channel ──
         // This ensures the worker's filesystem (used by the LSP server for
         // cross-file indexing) always has the latest content.
@@ -2457,14 +2617,47 @@ const EditorPanel = ({
         }
         // Trigger HMR/Compilation on save
         if (onSave) onSave();
-    }, [activeFile, isUnsaved, dispatch, onSave, compilerClient, code]);
+    }, [activeFile, dispatch, onSave, compilerClient, code, slug]);
 
-    // Auto-save
+    // Auto-save mode: persist edits after a short idle period.
+    // Flush the pending Redux debounce first (same as handleSave does for
+    // Ctrl+S) so saveFileContentThunk reads the absolute latest content.
     useEffect(() => {
-        if (!autoSaveEnabled || !isUnsaved || !activeFile) return;
-        const t = setTimeout(() => dispatch(saveFileContentThunk()), 500);
-        return () => clearTimeout(t);
-    }, [code, autoSaveEnabled, isUnsaved, activeFile, dispatch]);
+        if (!autoSaveEnabled || !activeFile) return;
+        const normalizeTrailing = (s) => (typeof s === 'string' ? s.replace(/[\r\n]+$/, '') : '');
+        if (normalizeTrailing(code) === normalizeTrailing(savedContent)) return;
+        const timer = setTimeout(() => {
+            // Safety: ensure Redux has the absolute latest content
+            dispatch(updateContent(latestCodeRef.current));
+            dispatch(saveFileContentThunk());
+        }, 400);
+        return () => clearTimeout(timer);
+    }, [autoSaveEnabled, activeFile, dispatch, code, savedContent, slug]);
+
+    // Latch diffModeEverActive so the DiffEditor stays mounted (hidden) once
+    // the user first opens it — avoids React passive-unmount crash.
+    useEffect(() => {
+        if (diffMode) setDiffModeEverActive(true);
+    }, [diffMode]);
+
+    // Git status refresh — in manual-save mode, status updates after explicit save.
+    // In auto-save mode, status updates after each debounced autosave write.
+    // Git status is refreshed:
+    //  1. On explicit save (Ctrl/Cmd+S)
+    //  2. On debounced autosave when enabled
+    //  2. Via the 5-second poll (existing setInterval in the workspace page)
+    //  3. When the server broadcasts git-status-changed (after explicit flush)
+
+    // ── Direct disk-write fallback (REMOVED) ───────────────────────────────
+    // Previously, this effect wrote content via HTTP (syncFileToGit) on a 1.5s
+    // debounce on EVERY keystroke, regardless of the autosave setting.  This
+    // meant changes were persisted to disk/GCS even when the user expected
+    // "editor-only" (unsaved) behavior.
+    //
+    // Content is now ONLY written to disk on explicit save (Ctrl+S / the save
+    // button) via handleSave → saveFileContentThunk.  The Yjs auto-flush still
+    // keeps the CRDT document in memory for real-time collab, but disk/GCS
+    // persistence is controlled separately (see server-side _setupAutoFlush).
 
     // Key bindings (Ctrl+S, Alt+F)
     useEffect(() => {
@@ -2480,6 +2673,11 @@ const EditorPanel = ({
             if ((e.ctrlKey || e.metaKey) && (e.key === 's' || e.key === 'S')) {
                 e.preventDefault();
                 handleSave();
+            }
+            // Escape: close diff view
+            if (e.key === 'Escape' && diffMode) {
+                e.preventDefault();
+                dispatch(setDiffMode(false));
             }
             // Format: Alt+F
             if (e.altKey && (e.key === 'f' || e.key === 'F')) {
@@ -2518,7 +2716,7 @@ const EditorPanel = ({
         };
         window.addEventListener('keydown', handleKeyDown, { capture: true });
         return () => window.removeEventListener('keydown', handleKeyDown, { capture: true });
-    }, [handleSave, editorInstance, requestAiCompletion, cancelActiveCompletion, dispatch, activeFile, aiCompletionState, applyAiCompletionText]);
+    }, [handleSave, editorInstance, requestAiCompletion, cancelActiveCompletion, dispatch, activeFile, aiCompletionState, applyAiCompletionText, diffMode]);
 
     // Ensure disabling auto AI clears any pending/computed suggestions
     useEffect(() => {
@@ -2980,11 +3178,6 @@ const EditorPanel = ({
         }
     }, [latestCompletion, editorInstance, code, activeLanguage]);
 
-
-
-    const diffMode = useAppSelector(state => state.workspace.diffMode);
-    const originalContent = useAppSelector(state => state.workspace.originalContent);
-
     // --- Custom Scrollbar Logic ---
     const {
         tabsContainerRef,
@@ -3027,7 +3220,11 @@ const EditorPanel = ({
         if (!container) return;
         const onScroll = () => updateIndicatorRef.current();
         container.addEventListener('scroll', onScroll, { passive: true });
-        const resizeObserver = new ResizeObserver(() => updateIndicatorRef.current());
+        const resizeObserver = new ResizeObserver(() => {
+            window.requestAnimationFrame(() => {
+                updateIndicatorRef.current();
+            });
+        });
         resizeObserver.observe(container);
         return () => {
             container.removeEventListener('scroll', onScroll);
@@ -3141,26 +3338,87 @@ const EditorPanel = ({
                                                         )}
                                                     </div>
 
-                                                    {/* Unsaved marker - coral dot with glow */}
-                                                    <span aria-hidden="true" className={`ml-auto w-2 h-2 rounded-full flex-shrink-0 transition-opacity ${file.isUnsaved || (isActive && remoteUnsaved) ? '' : 'opacity-0'}`} style={{ backgroundColor: TAB_TOKENS.unsaved, boxShadow: `0 0 6px color-mix(in srgb, ${TAB_TOKENS.unsaved} 60%, transparent)` }} />
+                                                 {/* Presence avatars — small colored dots/avatars for remote users on this file */}
+                                                {(() => {
+                                                    const fileUsers = presenceByFile[file.path];
+                                                    if (!fileUsers || fileUsers.length === 0) return null;
+                                                    return (
+                                                        <div 
+                                                            className="flex items-center -space-x-1 flex-shrink-0 group-hover:hidden" 
+                                                            title={fileUsers.map(u => u.name).join(', ')}
+                                                        >
+                                                            {fileUsers.slice(0, 3).map((u) => (
+                                                                u.image ? (
+                                                                    <img
+                                                                        key={u.userId}
+                                                                        src={u.image}
+                                                                        alt={u.name}
+                                                                        style={{
+                                                                            width: 14, height: 14,
+                                                                            borderRadius: '50%',
+                                                                            border: `1.5px solid ${u.color}`,
+                                                                            objectFit: 'cover',
+                                                                        }}
+                                                                    />
+                                                                ) : (
+                                                                    <span
+                                                                        key={u.userId}
+                                                                        style={{
+                                                                            width: 10, height: 10,
+                                                                            borderRadius: '50%',
+                                                                            backgroundColor: u.color,
+                                                                            display: 'inline-block',
+                                                                            border: '1.5px solid var(--bg-primary, #0c0d12)',
+                                                                            flexShrink: 0,
+                                                                        }}
+                                                                    />
+                                                                )
+                                                            ))}
+                                                            {fileUsers.length > 3 && (
+                                                                <span style={{
+                                                                    fontSize: 8, 
+                                                                    color: 'var(--text-muted)', 
+                                                                    marginLeft: 2,
+                                                                    fontWeight: 600, 
+                                                                    lineHeight: 1,
+                                                                }}>+{fileUsers.length - 3}</span>
+                                                            )}
+                                                        </div>
+                                                    );
+                                                })()}
 
-                                                    {/* Close button appears on hover (VSCode behavior) */}
+                                                {/* VSCode-style: unsaved dot and close button share the same slot. */}
+                                                <div className="ml-auto w-5 h-5 flex-shrink-0 flex items-center justify-center relative">
+                                                    {/* Unsaved dot — using TAB_TOKENS for theme-adaptive coloring.
+                                                        Logic: Only show if (Manual Save + Local Unsaved) OR (Remote Unsaved).
+                                                    */}
+                                                    {((!autoSaveEnabled && (file.isUnsaved || (isActive && isUnsaved))) || (isActive && remoteUnsaved)) && (
+                                                        <span 
+                                                            aria-hidden="true" 
+                                                            className="w-2 h-2 rounded-full flex-shrink-0 transition-opacity group-hover:hidden" 
+                                                            style={{ 
+                                                                backgroundColor: TAB_TOKENS.unsaved, 
+                                                                boxShadow: `0 0 6px color-mix(in srgb, ${TAB_TOKENS.unsaved} 60%, transparent)` 
+                                                            }} 
+                                                        />
+                                                    )}
+
+                                                    {/* Close button — uses theme variables for text and hover backgrounds */}
                                                     <button
                                                         onClick={(e) => { e.stopPropagation(); dispatch(closeFile(file.path)); }}
-                                                        className="flex items-center justify-center w-5 h-5 rounded-full transition-all duration-150"
-                                                        style={{ color: isActive ? 'var(--text-primary)' : 'var(--text-muted)' }}
+                                                        className={`absolute inset-0 items-center justify-center rounded-full transition-all duration-150 hidden group-hover:flex 
+                                                            ${isActive 
+                                                                ? 'text-[var(--text-primary)] opacity-80 hover:opacity-100 hover:bg-[var(--hover-bg-active)]' 
+                                                                : 'text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--hover-bg-inactive)]'
+                                                            }`}
                                                         aria-label={`Close ${file.name}`}
-                                                        style={{ opacity: 0 }}
                                                     >
                                                         <svg width="10" height="10" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" className="pointer-events-none">
                                                             <path d="M18 6L6 18" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
                                                             <path d="M6 6L18 18" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
                                                         </svg>
                                                     </button>
-
-                                                    <style jsx>{`
-                                                            .group:hover button { opacity: 1 !important; }
-                                                        `}</style>
+                                                  </div>
                                                 </div>
                                             </div>
                                         );
@@ -3295,9 +3553,27 @@ const EditorPanel = ({
                                         </div>
                                     </div>
                                 </div>
+                        {/* Merge Conflict Resolver — overlays the editor when active.
+                            Kept as a sibling (not a conditional replacement) so the Monaco
+                            editor stays mounted and its passive-unmount effects don't throw
+                            during the React reconciliation (commitPassiveUnmountOnFiber). */}
+                        {conflictResolverFile && (
+                            <div className="flex-1 overflow-hidden relative">
+                                <MergeConflictEditor
+                                    slug={slug}
+                                    filePath={conflictResolverFile}
+                                    onClose={() => dispatch(closeConflictResolver())}
+                                    onResolved={() => {
+                                        dispatch(closeConflictResolver());
+                                        dispatch(fetchGitStatus(slug));
+                                        toast.success('Conflict resolved');
+                                    }}
+                                />
                             </div>
                         )}
 
+                        {/* Normal editor area — hidden (not unmounted) when conflict resolver is active */}
+                        <div style={{ display: conflictResolverFile ? 'none' : 'contents' }}>
                         {/* Merge Conflict Banner */}
                         {activeFile && (
                             <ConflictBanner
@@ -3305,6 +3581,19 @@ const EditorPanel = ({
                                 filePath={activeFile.path}
                                 slug={slug}
                                 onContentChange={async (newContent) => {
+                                    // Apply resolved content to the Monaco model directly.
+                                    // The model is bound to Yjs via MonacoBinding, so
+                                    // model.setValue() propagates to the CRDT → server.
+                                    // Without this, only Redux is updated but the Monaco
+                                    // model (from Yjs) still shows conflict markers.
+                                    const model = editorInstance?.getModel?.();
+                                    if (model) {
+                                        const fullRange = model.getFullModelRange();
+                                        editorInstance.executeEdits('conflict-resolve', [{
+                                            range: fullRange,
+                                            text: newContent,
+                                        }]);
+                                    }
                                     dispatch(updateContent(newContent));
                                     // Also write to git filesystem to persist resolution
                                     try {
@@ -3322,27 +3611,55 @@ const EditorPanel = ({
                             <ContextMenu>
                                 <ContextMenuTrigger asChild>
                                     <div className="h-full w-full">
-                                        {!servicesReady ? (
-                                            <div className="flex items-center justify-center h-full w-full" style={{ background: TAB_TOKENS.activeBg }}>
-                                                <Loader2 className="animate-spin" style={{ color: TAB_TOKENS.textSecondary }} size={24} />
+                                        {/* DiffEditor — kept mounted (display:none) once activated
+                                            to prevent React unmount crash in
+                                            recursivelyTraversePassiveUnmountEffects.
+                                            Monaco DiffEditor's internal useEffect cleanup can throw
+                                            during React passive unmount; keeping it in the DOM and
+                                            hiding via CSS avoids the disposal race entirely. */}
+                                        {diffModeEverActive && (
+                                            <div className="h-full w-full relative flex flex-col" style={{ display: diffMode ? 'flex' : 'none' }}>
+                                                {/* Diff view header with close button */}
+                                                <div className="flex items-center justify-between px-3 py-1 bg-[#0d0e14] border-b border-[#1e1f2e] text-xs shrink-0 select-none" style={{ height: 32 }}>
+                                                    <div className="flex items-center gap-2 min-w-0">
+                                                        <span className="text-[#e8eaf0] font-medium truncate">{activeFile?.name || 'Unknown'}</span>
+                                                        <span className="text-[#4d5168]">•</span>
+                                                        <span className="text-[#7c80a0] whitespace-nowrap">Working Copy ↔ HEAD</span>
+                                                    </div>
+                                                    <button
+                                                        onClick={() => dispatch(setDiffMode(false))}
+                                                        className="flex items-center justify-center w-6 h-6 rounded hover:bg-[#1e1f2e] text-[#7c80a0] hover:text-[#e8eaf0] transition-colors shrink-0"
+                                                        title="Close diff view (Esc)"
+                                                        aria-label="Close diff view"
+                                                    >
+                                                        <X className="w-4 h-4" />
+                                                    </button>
+                                                </div>
+                                                <div className="flex-1 min-h-0">
+                                                    <DiffEditor
+                                                        height="100%"
+                                                        original={originalContent || ''}
+                                                        modified={code ?? ''}
+                                                        language={activeLanguage}
+                                                        theme="synthi-theme"
+                                                        originalModelPath={activeFile ? `inmemory://synthi/diff/original/${activeFile.path}` : undefined}
+                                                        modifiedModelPath={activeFile ? `inmemory://synthi/diff/modified/${activeFile.path}` : undefined}
+                                                        keepCurrentOriginalModel={true}
+                                                        keepCurrentModifiedModel={true}
+                                                        options={{
+                                                            ...EDITOR_OPTIONS,
+                                                            readOnly: true,
+                                                            renderSideBySide: true
+                                                        }}
+                                                        beforeMount={(monaco) => {
+                                                            monaco.editor.defineTheme('synthi-theme', SYNTHI_THEME);
+                                                        }}
+                                                    />
+                                                </div>
                                             </div>
-                                        ) : diffMode ? (
-                                            <DiffEditor
-                                                height="100%"
-                                                original={originalContent}
-                                                modified={code ?? ''}
-                                                language={activeLanguage}
-                                                theme="synthi-theme"
-                                                options={{
-                                                    ...EDITOR_OPTIONS,
-                                                    readOnly: true, // Diff view is usually read-only for now
-                                                    renderSideBySide: true
-                                                }}
-                                                beforeMount={(monaco) => {
-                                                    monaco.editor.defineTheme('synthi-theme', SYNTHI_THEME);
-                                                }}
-                                            />
-                                        ) : (
+                                        )}
+                                        {/* Regular Editor — hidden when diff is active */}
+                                        <div className="h-full w-full" style={{ display: diffMode ? 'none' : undefined }}>
                                             <Editor
                                                 key={activeFileIdentity}
                                                 height="100%"
@@ -3354,7 +3671,11 @@ const EditorPanel = ({
                                                 theme="synthi-theme"
                                                 options={{
                                                     ...EDITOR_OPTIONS,
-                                                    semanticHighlighting: { enabled: true }
+                                                    semanticHighlighting: { enabled: true },
+                                                    readOnly: isCollabReadOnly,
+                                                    readOnlyMessage: isCollabReadOnly
+                                                        ? { value: 'You have view-only access in this session. Ask the host to grant edit permission.' }
+                                                        : undefined,
                                                 }}
                                                 beforeMount={(monaco) => {
                                                     monaco.editor.defineTheme('synthi-theme', SYNTHI_THEME);
@@ -3424,7 +3745,39 @@ const EditorPanel = ({
                                                     //  (c) Syncs to Redux on 300ms debounce pause (not every frame)
                                                     //  (d) Triggers AI debounce via handleCodeChangeRef
                                                     // No model.getValue() on every keystroke — only when flushing.
-                                                    editor.onDidChangeModelContent(() => {
+                                                    let _remoteContentSyncPending = false;
+                                                    editor.onDidChangeModelContent((e) => {
+                                                        // CRITICAL: Skip model.setValue() calls (isFlush=true).
+                                                        // These come from Yjs seeding / doSeed() sync handler
+                                                        // and should NOT propagate to Redux via handleCodeChange,
+                                                        // because they carry server/CRDT content that may reset
+                                                        // isUnsaved to false.  The Yjs binding uses
+                                                        // editor.executeEdits() (which does NOT set isFlush) for
+                                                        // its _yObserver path, so real remote edits still flow
+                                                        // through.  User edits (typing) also don't set isFlush.
+                                                        if (e.isFlush) return;
+
+                                                        // CRITICAL: Skip when the collab binding is applying
+                                                        // remote CRDT changes.  During remote apply, the model
+                                                        // may be transiently incorrect (delta inserted on top of
+                                                        // existing content) before the safeguard corrects it.
+                                                        // Dispatching the transient doubled content to Redux
+                                                        // pollutes the file cache and causes accumulating
+                                                        // duplication on subsequent tab switches.  Instead, defer
+                                                        // a single Redux sync to after the synchronous apply
+                                                        // block completes so only the final correct content is
+                                                        // dispatched.
+                                                        if (collabBindingRef.current?.isApplyingRemote?.()) {
+                                                            if (!_remoteContentSyncPending) {
+                                                                _remoteContentSyncPending = true;
+                                                                queueMicrotask(() => {
+                                                                    _remoteContentSyncPending = false;
+                                                                    const v = editor.getModel()?.getValue() ?? '';
+                                                                    if (v) handleCodeChangeRef.current(v);
+                                                                });
+                                                            }
+                                                            return;
+                                                        }
                                                         // (a) P0: Debounce marker clearing — NOT synchronous.
                                                         // Only clear SYNTHI-owned markers. LSP-published diagnostics
                                                         // (from the language server) are left intact so red/yellow
@@ -3468,7 +3821,7 @@ const EditorPanel = ({
                                                     }, 100);
                                                 }}
                                             />
-                                        )}
+                                        </div>
                                     </div>
                                 </ContextMenuTrigger>
                                 <ContextMenuContent className="w-56" style={{ background: 'var(--bg-elevated)', borderColor: 'var(--border-medium)', color: 'var(--text-primary)' }}>
@@ -3488,6 +3841,7 @@ const EditorPanel = ({
                                     </ContextMenuItem>
                                 </ContextMenuContent>
                             </ContextMenu>
+                        </div>
                         </div>
                     </div>
     );

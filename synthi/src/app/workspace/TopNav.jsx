@@ -9,6 +9,7 @@ import { toggleAutoSave, selectAutoSaveEnabled, toggleAutoCompletion, selectAuto
 import { selectActiveFile, selectFilesTree, selectFileThunk } from '@/redux/workspaceSlice';
 import { getFileIcon } from '@/utils/fileIcons';
 import { toast } from 'sonner';
+import CollabToolbar from '@/components/collaboration/CollabToolbar';
 
 export default function TopNav({ 
   title, 
@@ -115,6 +116,10 @@ export default function TopNav({
         )}
       </div>
       <div className="flex-1" />
+
+        {/* Collaboration — avatars, session share, knocks */}
+        {slug && <CollabToolbar slug={slug} />}
+
         <div className="flex items-center gap-2">
         {/* Terminal Toggle - Icon Only */}
         <Button 

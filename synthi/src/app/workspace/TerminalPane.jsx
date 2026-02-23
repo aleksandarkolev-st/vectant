@@ -1,7 +1,8 @@
 'use client';
 import React, { useEffect, useRef, useState, useCallback } from 'react';
-import { WifiOff, RefreshCw, Terminal, Zap } from 'lucide-react';
+import { WifiOff, RefreshCw, Terminal, AlertCircle, Zap, EyeOff } from 'lucide-react';
 import { useTheme } from '@/components/ThemeProvider';
+import { useSessionPermissions } from '@/hooks/useCollabSession';
 
 /**
  * TerminalPane — Renders a single interactive terminal backed by a real PTY
@@ -68,6 +69,20 @@ export default function TerminalPane({ terminalId = 'default', paneSide = 'main'
   const containerRef = useRef(null);
   const terminalRef = useRef(null);   // { term, fitAddon, dispose() }
   const wsRef = useRef(null);
+  const currentSessionIdRef = useRef(null);
+  const inputBufferRef = useRef('');
+  const initializedRef = useRef(false);
+  const [connectionState, setConnectionState] = useState('connecting'); // 'connecting' | 'connected' | 'error' | 'closed'
+  const [errorMessage, setErrorMessage] = useState('');
+  const reconnectAttemptsRef = useRef(0);
+  const { canTerminal, role } = useSessionPermissions();
+  const canTerminalRef = useRef(canTerminal);
+  canTerminalRef.current = canTerminal;
+  const isGuest = role === 'guest';
+  // Use the same SIGNAL URL as compilerClient when available, fallback to localhost
+  const MACHINE_WS = typeof process !== 'undefined' && process?.env?.NEXT_PUBLIC_COMPILE_SIGNAL_URL
+    ? process.env.NEXT_PUBLIC_COMPILE_SIGNAL_URL
+    : 'https://lumpish-undevoutly-sonja.ngrok-free.dev/';
   const sessionIdRef = useRef(null);
   const reconnectTimerRef = useRef(null);
   const reconnectCountRef = useRef(0);
@@ -220,6 +235,23 @@ export default function TerminalPane({ terminalId = 'default', paneSide = 'main'
       ws.binaryType = 'arraybuffer';
       wsRef.current = ws;
 
+      // Send user input to backend and forward to WebRTC path.
+      // Also provide a local-echo fallback when no backend is connected so
+      // the user sees their keystrokes while offline/disconnected.
+      term.onData((data) => {
+        if (isResizing) return;
+
+        // ── Session permission gate ──────────────────────────────────
+        // When the user is a Guest without terminal permission, block
+        // all keyboard input. The terminal remains view-only.
+        if (!canTerminalRef.current && canTerminalRef.current !== undefined) {
+          // Still in a session context and terminal is denied
+          // Check if we're actually in a guest role (not solo/idle)
+          // canTerminalRef will be true for solo users (idle role)
+          return;
+        }
+
+        const wsLocal = wsRef.current;
       ws.onopen = () => {
         if (disposed) return;
         reconnectCountRef.current = 0;
@@ -363,6 +395,27 @@ export default function TerminalPane({ terminalId = 'default', paneSide = 'main'
   // ─── Render ───────────────────────────────────────────────────────────
   return (
     <div className="h-full w-full overflow-hidden relative" style={{ background: 'var(--bg-app)' }}>
+      <div ref={containerRef} className="h-full w-full" />
+
+      {/* Session: View-only terminal overlay for guests without canTerminal */}
+      {isGuest && !canTerminal && connectionState === 'connected' && (
+        <div className="absolute bottom-0 left-0 right-0 flex items-center justify-center px-4 py-1.5 bg-[#fbbf2415] border-t border-[#fbbf2430] z-10">
+          <div className="flex items-center gap-2">
+            <EyeOff className="w-3.5 h-3.5 text-[#fbbf24]" />
+            <span className="text-xs text-[#fbbf24] font-medium">
+              Terminal is view-only — Ask the host for terminal access
+            </span>
+          </div>
+        </div>
+      )}
+      
+      {/* Synthi Branded Error Overlay */}
+      {(connectionState === 'error' || connectionState === 'closed') && (
+        <div className="absolute inset-0 bg-[#0a0b10]/98 backdrop-blur-md flex items-center justify-center z-10">
+          <div className="flex flex-col items-center gap-4 p-8 max-w-md text-center">
+            {/* Title with gradient */}
+            <h3 className="text-xl font-bold bg-gradient-to-r from-[#f0f2f5] to-[#a8adc0] bg-clip-text text-transparent">
+              Terminal Disconnected
       {/* xterm container */}
       <div
         ref={containerRef}

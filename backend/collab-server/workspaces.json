@@ -4,9 +4,6 @@
     "repoUrl": "https://github.com/aleksandurkolev80-a11y/TEST-GITHUB",
     "owner": "aleksandurkolev80@gmail.com",
     "name": "TEST-GITHUB",
-<<<<<<< lsp-fix
-    "createdAt": "2026-02-16T10:52:44.532Z"
-=======
     "createdAt": "2026-02-08T22:16:29.300Z"
   },
   {
@@ -22,6 +19,5 @@
     "owner": "aleksandar.georgiev@synthi.app",
     "name": "terminal-test",
     "createdAt": "2026-02-10T12:31:28.611Z"
->>>>>>> dev
   }
 ]

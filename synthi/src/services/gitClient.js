@@ -1,12 +1,72 @@
+import collabSessionService from '@/services/collabSessionService';
+
 const COLLAB_SERVER_URL = process.env.NEXT_PUBLIC_COLLAB_SERVER_URL || 'http://localhost:1234';
 
+let cachedUserId = null;
+
+// Resolvers that will be called when userId becomes available.
+let _userIdReadyResolvers = [];
+
+// Actions that truly cannot wait for authentication (bootstrapping).
+// All other actions (including reads like status, remotes, log) MUST wait
+// for userId so the server resolves the correct per-user repo — otherwise
+// operations fall back to the slug-level directory which may have stale or
+// phantom data (e.g., a single "Initial commit" with no origin).
+const AUTH_EXEMPT_ACTIONS = new Set(['init', 'clone']);
+
+/**
+ * Wait for cachedUserId to be set (up to timeoutMs).
+ * Resolves immediately if already set.
+ */
+function _waitForUserId(timeoutMs = 3000) {
+    if (cachedUserId) return Promise.resolve(cachedUserId);
+    return new Promise((resolve) => {
+        const timer = setTimeout(() => {
+            // Remove this resolver from the queue
+            _userIdReadyResolvers = _userIdReadyResolvers.filter(r => r !== onReady);
+            resolve(null); // timed out — proceed without userId
+        }, timeoutMs);
+        const onReady = (uid) => {
+            clearTimeout(timer);
+            resolve(uid);
+        };
+        _userIdReadyResolvers.push(onReady);
+    });
+}
+
 export const gitClient = {
+    setUserId(userId) {
+        cachedUserId = userId;
+        // Wake up any pending requests that were waiting for auth.
+        if (userId && _userIdReadyResolvers.length > 0) {
+            const resolvers = _userIdReadyResolvers.splice(0);
+            resolvers.forEach(r => r(userId));
+        }
+    },
+
     async request(slug, action, data = {}) {
+        // Wait for auth before dispatching.  Without userId the server
+        // falls back to the slug-level repo which produces wrong results.
+        // Only truly bootstrapping actions (init, clone) are exempt.
+        if (!cachedUserId && !AUTH_EXEMPT_ACTIONS.has(action)) {
+            await _waitForUserId(3000);
+        }
+
+        const headers = {
+            'Content-Type': 'application/json',
+        };
+
+        // Attach authenticated user id for per-user repo isolation.
+        if (cachedUserId) {
+            headers['x-user-id'] = cachedUserId;
+        }
+        if (collabSessionService?.isActive && collabSessionService.sessionId) {
+            headers['x-session-id'] = collabSessionService.sessionId;
+        }
+
         const response = await fetch(`${COLLAB_SERVER_URL}/git/${slug}/${action}`, {
             method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
+            headers,
             body: JSON.stringify(data),
         });
         let body = null;
@@ -17,10 +77,12 @@ export const gitClient = {
         }
         if (!response.ok) {
             // Handle structured error responses
-            const error = new Error((body && (body.error || body.message)) || response.statusText || 'Unknown git error');
-            error.code = body?.code || 'UNKNOWN';
+            // Prefer body.message (human-readable) over body.error (machine key like "permission_denied")
+            const error = new Error((body && (body.message || body.error)) || response.statusText || 'Unknown git error');
+            error.code = body?.error || body?.code || 'UNKNOWN';
             error.details = body?.details || null;
             error.statusCode = response.status;
+            error.required = body?.required || null;
             throw error;
         }
         return body;
