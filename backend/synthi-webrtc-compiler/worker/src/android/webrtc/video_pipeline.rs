@@ -2,18 +2,18 @@ use anyhow::{anyhow, Context, Result};
 use gstreamer as gst;
 use gstreamer::prelude::{Cast, ElementExt, GstBinExt, GstObjectExt, ObjectExt};
 use gstreamer_app as gst_app;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, AtomicU32, Ordering};
 use std::str::FromStr;
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::Arc;
 use tokio::sync::mpsc;
-use webrtc::rtp::packet::Packet;
-use webrtc::track::track_local::track_local_static_rtp::TrackLocalStaticRTP;
-use webrtc::track::track_local::TrackLocalWriter;
-use webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecCapability;
-use webrtc::rtp_transceiver::RTCPFeedback;
-use webrtc::rtp::header::Header;
 use webrtc::rtp::extension::audio_level_extension::AudioLevelExtension;
 use webrtc::rtp::extension::HeaderExtension;
+use webrtc::rtp::header::Header;
+use webrtc::rtp::packet::Packet;
+use webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecCapability;
+use webrtc::rtp_transceiver::RTCPFeedback;
+use webrtc::track::track_local::track_local_static_rtp::TrackLocalStaticRTP;
+use webrtc::track::track_local::TrackLocalWriter;
 use webrtc_util::Unmarshal;
 
 #[derive(Debug, Clone, Copy)]
@@ -212,22 +212,33 @@ fn pipeline_string(cfg: &EmulatorVideoConfig) -> String {
     // 1) If we have an XID, capture that window directly (avoids scaling the whole X11 root).
     // 2) Else capture the full X11 root window for the display, optionally with region crop.
     // NOTE: we force use-damage=0 to avoid missed updates on some drivers.
-    
+
     // Build region properties if set (for root capture)
     let region = if cfg.x11_xid.is_none() {
         let mut r = String::new();
-        if let Some(x) = cfg.startx { r.push_str(&format!(" startx={}", x)); }
-        if let Some(y) = cfg.starty { r.push_str(&format!(" starty={}", y)); }
-        if let Some(x) = cfg.endx { r.push_str(&format!(" endx={}", x)); }
-        if let Some(y) = cfg.endy { r.push_str(&format!(" endy={}", y)); }
+        if let Some(x) = cfg.startx {
+            r.push_str(&format!(" startx={}", x));
+        }
+        if let Some(y) = cfg.starty {
+            r.push_str(&format!(" starty={}", y));
+        }
+        if let Some(x) = cfg.endx {
+            r.push_str(&format!(" endx={}", x));
+        }
+        if let Some(y) = cfg.endy {
+            r.push_str(&format!(" endy={}", y));
+        }
         r
     } else {
         String::new()
     };
-    
+
     let src = if let Some(xid) = cfg.x11_xid {
         if cfg.x11_display.trim().is_empty() {
-            format!("ximagesrc use-damage=0 show-pointer=false{} xid={} ! ", shm_arg, xid)
+            format!(
+                "ximagesrc use-damage=0 show-pointer=false{} xid={} ! ",
+                shm_arg, xid
+            )
         } else {
             format!(
                 "ximagesrc use-damage=0 show-pointer=false{} display-name={} xid={} ! ",
@@ -236,7 +247,10 @@ fn pipeline_string(cfg: &EmulatorVideoConfig) -> String {
         }
     } else if cfg.x11_display.trim().is_empty() {
         // Explicit xid=0 to force root capture (some builds do nothing if xid is unset).
-        format!("ximagesrc use-damage=0 show-pointer=false{}{} xid=0 ! ", shm_arg, region)
+        format!(
+            "ximagesrc use-damage=0 show-pointer=false{}{} xid=0 ! ",
+            shm_arg, region
+        )
     } else {
         // Explicit xid=0 to force root capture (some builds do nothing if xid is unset).
         format!(
@@ -252,10 +266,13 @@ fn pipeline_string(cfg: &EmulatorVideoConfig) -> String {
         .ok()
         .and_then(|v| v.parse::<u32>().ok())
         .unwrap_or(cfg.crop_right);
-    
+
     let crop_toolbar = if crop_right_px > 0 {
         if gst::ElementFactory::find("videocrop").is_some() {
-            eprintln!("[video-pipeline] Cropping {} pixels from right side (SDK toolbar) using videocrop", crop_right_px);
+            eprintln!(
+                "[video-pipeline] Cropping {} pixels from right side (SDK toolbar) using videocrop",
+                crop_right_px
+            );
             format!("videoconvert ! videocrop right={} ! ", crop_right_px)
         } else {
             // Fallback: use videobox if videocrop isn't available
@@ -285,7 +302,7 @@ fn pipeline_string(cfg: &EmulatorVideoConfig) -> String {
     } else {
         String::new()
     };
-    
+
     // Build the processing pipeline: crop first, then scale to output dimensions
     // Use leaky queues to drop frames if processing is too slow (prevent lag buildup)
     let caps = if crop_toolbar.is_empty() {
@@ -310,7 +327,10 @@ fn pipeline_string(cfg: &EmulatorVideoConfig) -> String {
             // Use hardware acceleration if available
             let encoder = get_h264_encoder_string();
             // config-interval=1 sends SPS/PPS with every keyframe (essential for WebRTC join/recovery)
-            format!("{} ! rtph264pay pt={} config-interval=-1 aggregate-mode=zero-latency mtu=1200", encoder, cfg.payload_type)
+            format!(
+                "{} ! rtph264pay pt={} config-interval=-1 aggregate-mode=zero-latency mtu=1200",
+                encoder, cfg.payload_type
+            )
         }
     };
 
@@ -333,7 +353,10 @@ fn appsrc_pipeline_string(cfg: &EmulatorAppSrcConfig) -> String {
             // Use hardware acceleration if available
             let encoder = get_h264_encoder_string();
             // config-interval=1 sends SPS/PPS with every keyframe
-            format!("{} ! rtph264pay pt={} config-interval=-1 aggregate-mode=zero-latency mtu=1200", encoder, cfg.payload_type)
+            format!(
+                "{} ! rtph264pay pt={} config-interval=-1 aggregate-mode=zero-latency mtu=1200",
+                encoder, cfg.payload_type
+            )
         }
     };
 
@@ -388,7 +411,15 @@ impl EmulatorVideoPipeline {
             .downcast::<gst::Pipeline>()
             .map_err(|_| anyhow!("Expected gst::Pipeline"))?;
 
-        Self::finalize_pipeline(pipeline, cfg.codec, cfg.payload_type, None, true, cfg.width, cfg.height)
+        Self::finalize_pipeline(
+            pipeline,
+            cfg.codec,
+            cfg.payload_type,
+            None,
+            true,
+            cfg.width,
+            cfg.height,
+        )
     }
 
     pub fn start_appsrc(cfg: EmulatorAppSrcConfig) -> Result<Self> {
@@ -445,11 +476,18 @@ impl EmulatorVideoPipeline {
                 cfg.fps.max(1)
             )
         };
-        let caps = gst::Caps::from_str(&caps_str)
-            .context("Failed to build appsrc caps")?;
+        let caps = gst::Caps::from_str(&caps_str).context("Failed to build appsrc caps")?;
         appsrc.set_caps(Some(&caps));
 
-        Self::finalize_pipeline(pipeline, cfg.codec, cfg.payload_type, Some(appsrc), false, cfg.width, cfg.height)
+        Self::finalize_pipeline(
+            pipeline,
+            cfg.codec,
+            cfg.payload_type,
+            Some(appsrc),
+            false,
+            cfg.width,
+            cfg.height,
+        )
     }
 
     fn finalize_pipeline(
@@ -470,7 +508,7 @@ impl EmulatorVideoPipeline {
         // Counter for samples received in the appsink callback (for diagnostics)
         let appsink_sample_count = Arc::new(AtomicU64::new(0));
         let appsink_sample_count_cb = appsink_sample_count.clone();
-        
+
         let (rtp_tx, mut rtp_rx) = mpsc::unbounded_channel::<Vec<u8>>();
         appsink.set_callbacks(
             gst_app::AppSinkCallbacks::builder()
@@ -489,7 +527,11 @@ impl EmulatorVideoPipeline {
                     })?;
                     let count = appsink_sample_count_cb.fetch_add(1, Ordering::Relaxed) + 1;
                     if count <= 5 || count % 100 == 0 {
-                        eprintln!("[video-pipeline] appsink sample #{} size={}", count, map.len());
+                        eprintln!(
+                            "[video-pipeline] appsink sample #{} size={}",
+                            count,
+                            map.len()
+                        );
                     }
                     if rtp_tx.send(map.to_vec()).is_err() {
                         eprintln!("[video-pipeline] rtp_tx.send failed (receiver dropped?)");
@@ -531,17 +573,32 @@ impl EmulatorVideoPipeline {
                     errors.join(" | ")
                 ));
             }
-            eprintln!("[video-pipeline] Initial verification: {} samples in first 500ms", initial_samples);
+            eprintln!(
+                "[video-pipeline] Initial verification: {} samples in first 500ms",
+                initial_samples
+            );
         }
 
         let track = Arc::new(TrackLocalStaticRTP::new(
             RTCRtpCodecCapability {
                 mime_type: track_mime_type(codec),
                 rtcp_feedback: vec![
-                    RTCPFeedback { typ: "transport-cc".to_string(), parameter: "".to_string() },
-                    RTCPFeedback { typ: "ccm".to_string(), parameter: "fir".to_string() },
-                    RTCPFeedback { typ: "nack".to_string(), parameter: "".to_string() },
-                    RTCPFeedback { typ: "nack".to_string(), parameter: "pli".to_string() },
+                    RTCPFeedback {
+                        typ: "transport-cc".to_string(),
+                        parameter: "".to_string(),
+                    },
+                    RTCPFeedback {
+                        typ: "ccm".to_string(),
+                        parameter: "fir".to_string(),
+                    },
+                    RTCPFeedback {
+                        typ: "nack".to_string(),
+                        parameter: "".to_string(),
+                    },
+                    RTCPFeedback {
+                        typ: "nack".to_string(),
+                        parameter: "pli".to_string(),
+                    },
                 ],
                 ..Default::default()
             },
@@ -557,7 +614,7 @@ impl EmulatorVideoPipeline {
         let rtp_task = tokio::spawn(async move {
             let mut last_log_time = std::time::Instant::now();
             let mut last_packet_count = 0u64;
-            
+
             let target_bitrate = match codec {
                 VideoCodec::Vp8 => "auto",
                 VideoCodec::H264 => "2000k",
@@ -570,30 +627,30 @@ impl EmulatorVideoPipeline {
                     // automatic stamping if the extension is negotiated.
                     // But if packets_sent=0 in stats, it might imply the interceptor isn't seeing the packets
                     // or isn't associating them with the SSRC.
-                    
+
                     // Cleanup any GStreamer junk extensions
-                    packet.header.extensions.clear(); 
+                    packet.header.extensions.clear();
 
                     // Force SSRC if configured
                     let ssrc = forced_ssrc_clone.load(Ordering::Relaxed);
                     if ssrc != 0 {
                         packet.header.ssrc = ssrc;
                     }
-                    
+
                     // Force Payload Type (Negotiated)
                     if payload_type != 0 {
-                         packet.header.payload_type = payload_type;
+                        packet.header.payload_type = payload_type;
                     }
 
                     let _ = track_clone.write_rtp(&packet).await;
                     let count = rtp_packet_count_clone.fetch_add(1, Ordering::Relaxed) + 1;
-                    
+
                     // Log telemetry every ~2s
                     let elapsed = last_log_time.elapsed();
                     if elapsed >= std::time::Duration::from_secs(2) {
                         let packets_since = count - last_packet_count;
                         let pps = (packets_since as f64 / elapsed.as_secs_f64()) as u64;
-                        
+
                         eprintln!(
                             "[perf telemetry] res={}x{} codec={:?} target_br={} pps={} total_packets={}",
                             width, height, codec, target_bitrate, pps, count
@@ -605,7 +662,10 @@ impl EmulatorVideoPipeline {
                 }
             }
             let final_count = rtp_packet_count_clone.load(Ordering::Relaxed);
-            eprintln!("[video-pipeline] RTP task ended, total packets written: {}", final_count);
+            eprintln!(
+                "[video-pipeline] RTP task ended, total packets written: {}",
+                final_count
+            );
         });
 
         eprintln!("[video-pipeline] Pipeline started successfully, track attached");
@@ -697,17 +757,25 @@ impl EmulatorVideoPipeline {
                 // vp8enc uses bits per second (target-bitrate)
                 let bitrate_bps = (bitrate_kbits * 1000) as i32;
                 if encoder.has_property("target-bitrate", None) {
-                   encoder.set_property("target-bitrate", bitrate_bps);
-                   eprintln!("[video-pipeline] Updated VP8 bitrate to {} bps", bitrate_bps);
+                    encoder.set_property("target-bitrate", bitrate_bps);
+                    eprintln!(
+                        "[video-pipeline] Updated VP8 bitrate to {} bps",
+                        bitrate_bps
+                    );
                 } else {
-                   eprintln!("[video-pipeline] WARNING: VP8 encoder does not support 'target-bitrate'");
+                    eprintln!(
+                        "[video-pipeline] WARNING: VP8 encoder does not support 'target-bitrate'"
+                    );
                 }
             }
             VideoCodec::H264 => {
                 // x264enc, nvh264enc, vaapih264enc use kbit/sec for 'bitrate'
                 if encoder.has_property("bitrate", None) {
                     encoder.set_property("bitrate", bitrate_kbits);
-                    eprintln!("[video-pipeline] Updated H.264 bitrate to {} kbps", bitrate_kbits);
+                    eprintln!(
+                        "[video-pipeline] Updated H.264 bitrate to {} kbps",
+                        bitrate_kbits
+                    );
                 } else {
                     eprintln!("[video-pipeline] WARNING: H.264 encoder does not support 'bitrate'");
                 }

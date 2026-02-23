@@ -32,7 +32,6 @@ use crate::hmr::binary_state::{MsgPackState, SchemaMigrationResult};
 use crate::hmr::fast_refresh::{
     BoundaryCheckResult, BoundaryChecker, BoundaryViolationEvent, RefreshAction,
 };
-use crate::runtime::plugin_contract::ModuleSlot;
 use crate::hmr::reload_manager::{
     AsyncTaskRegistry, ReloadChanges, ReloadClass, ReloadClassifier, ReloadSnapshot,
     SnapshotManager,
@@ -46,6 +45,7 @@ use crate::infra::observability::{
     StructuredLogger,
 };
 use crate::runtime::loader::{LoadResult, ModuleLoader};
+use crate::runtime::plugin_contract::ModuleSlot;
 use crate::runtime::supervisor::{CrashSupervisor, RecoveryAction, SupervisorConfig};
 use crate::safety::boundary::{Boundary, BoundaryId, BoundaryManifest, ReloadPlan};
 use crate::safety::quiescence::{QuiescenceConfig, QuiescenceManager};

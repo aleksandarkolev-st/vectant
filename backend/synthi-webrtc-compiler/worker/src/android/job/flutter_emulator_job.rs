@@ -10,23 +10,23 @@
 // ============================================================
 
 use anyhow::{bail, Context, Result};
+use gstreamer as gst;
 use serde_json::json;
 use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use gstreamer as gst;
+use tokio::process::Command;
 use tokio::sync::mpsc;
 use tokio::sync::watch;
 use tokio::sync::Mutex;
-use tokio::process::Command;
 use tokio::time::sleep;
 use webrtc::data_channel::RTCDataChannel;
-use webrtc::peer_connection::RTCPeerConnection;
 use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
+use webrtc::peer_connection::RTCPeerConnection;
 use webrtc::rtp_transceiver::rtp_codec::RTPCodecType;
-use webrtc::track::track_local::TrackLocal;
 use webrtc::stats::StatsReportType;
+use webrtc::track::track_local::TrackLocal;
 
 async fn wait_for_cancel(session_id: &str) {
     loop {
@@ -39,21 +39,21 @@ async fn wait_for_cancel(session_id: &str) {
 
 use crate::android::emulator::{
     acquire_emulator_daemon, detect_kvm, ensure_emulator_ready, EmulatorConfig, EnsureReadyResult,
-    LogcatEntry, LogLevel,
+    LogLevel, LogcatEntry,
 };
-use crate::android::webrtc::{input as emulator_input};
-use crate::android::webrtc::video_pipeline;
 use crate::android::emulator_grpc;
 use crate::android::flutter::{
-    build_flutter_apk, check_flutter_sdk, detect_flutter_project, BuildVariant, FlutterBuildConfig,
-    derive_app_id, generate_android_scaffold, needs_android_scaffold,
+    build_flutter_apk, check_flutter_sdk, derive_app_id, detect_flutter_project,
+    generate_android_scaffold, needs_android_scaffold, BuildVariant, FlutterBuildConfig,
 };
-use crate::android::webrtc::input::{clear_cancelled_session, is_session_cancelled};
-use crate::android::webrtc::{send_log, send_logcat, send_mobile_capabilities, send_status};
-use crate::android::webrtc::{EmulatorStreamConfig, EmulatorStreamMode};
 use crate::android::fs::{
     reconcile_and_stream_with_rules, take_snapshot_with_rules, ReconcileConfig, SyncRules,
 };
+use crate::android::webrtc::input as emulator_input;
+use crate::android::webrtc::input::{clear_cancelled_session, is_session_cancelled};
+use crate::android::webrtc::video_pipeline;
+use crate::android::webrtc::{send_log, send_logcat, send_mobile_capabilities, send_status};
+use crate::android::webrtc::{EmulatorStreamConfig, EmulatorStreamMode};
 
 /// Job handler version for tracking deployed binaries
 const JOB_HANDLER_VERSION: &str = "flutter-v1-2025-02";
@@ -95,7 +95,10 @@ pub async fn handle_flutter_emulator_job(
     send_log(
         &log_dc,
         &session_id,
-        &format!("[worker] Flutter job handler version: {}", JOB_HANDLER_VERSION),
+        &format!(
+            "[worker] Flutter job handler version: {}",
+            JOB_HANDLER_VERSION
+        ),
         "worker",
     )
     .await;
@@ -170,41 +173,58 @@ pub async fn handle_flutter_emulator_job(
 
         // Prepare for sync: Calculate relative path for android/
         let android_path = project_path.join("android");
-        let (snapshot, rules, cfg) = if let Ok(rel_project) = project_path.strip_prefix(&workspace_path) {
-            let rel_project = rel_project.to_string_lossy().replace('\\', "/");
-            let rel_project = rel_project.trim().trim_matches('/');
-            let android_rel = if rel_project.is_empty() {
-                "android".to_string()
+        let (snapshot, rules, cfg) =
+            if let Ok(rel_project) = project_path.strip_prefix(&workspace_path) {
+                let rel_project = rel_project.to_string_lossy().replace('\\', "/");
+                let rel_project = rel_project.trim().trim_matches('/');
+                let android_rel = if rel_project.is_empty() {
+                    "android".to_string()
+                } else {
+                    format!("{}/android", rel_project)
+                };
+
+                let rules = SyncRules::default().with_prefix(&android_rel);
+                let cfg = ReconcileConfig::from_env();
+
+                // Take snapshot of MISSING directory (empty state) ensures everything counts as "New"
+                // and CreateOnly policies don't block upload.
+                let snap = match take_snapshot_with_rules(&workspace_path, rules.clone()).await {
+                    Ok(s) => Some(s),
+                    Err(e) => {
+                        eprintln!("Snapshot failed: {}", e);
+                        None
+                    }
+                };
+                (snap, Some(rules), Some(cfg))
             } else {
-                format!("{}/android", rel_project)
+                (None, None, None)
             };
-
-            let rules = SyncRules::default().with_prefix(&android_rel);
-            let cfg = ReconcileConfig::from_env();
-
-            // Take snapshot of MISSING directory (empty state) ensures everything counts as "New"
-            // and CreateOnly policies don't block upload.
-            let snap = match take_snapshot_with_rules(&workspace_path, rules.clone()).await {
-                Ok(s) => Some(s),
-                Err(e) => {
-                    eprintln!("Snapshot failed: {}", e);
-                    None
-                }
-            };
-            (snap, Some(rules), Some(cfg))
-        } else {
-            (None, None, None)
-        };
 
         // Generate Android scaffold
-        let app_id = project_info.app_id.clone()
-            .unwrap_or_else(|| derive_app_id(project_info.project_name.as_deref().unwrap_or("flutter_app")));
-        let project_name = project_info.project_name.clone().unwrap_or_else(|| "Flutter App".to_string());
-        
+        let app_id = project_info.app_id.clone().unwrap_or_else(|| {
+            derive_app_id(
+                project_info
+                    .project_name
+                    .as_deref()
+                    .unwrap_or("flutter_app"),
+            )
+        });
+        let project_name = project_info
+            .project_name
+            .clone()
+            .unwrap_or_else(|| "Flutter App".to_string());
+
         // Try to find Flutter SDK path early for scaffold generation
         let flutter_sdk_path = find_flutter_sdk_path().await;
 
-        if let Err(e) = generate_android_scaffold(&project_path, &app_id, &project_name, flutter_sdk_path.as_deref()).await {
+        if let Err(e) = generate_android_scaffold(
+            &project_path,
+            &app_id,
+            &project_name,
+            flutter_sdk_path.as_deref(),
+        )
+        .await
+        {
             send_status(
                 &log_dc,
                 &session_id,
@@ -223,7 +243,7 @@ pub async fn handle_flutter_emulator_job(
             "system",
         )
         .await;
-        
+
         // reconcile generated files back to workspace
         if let (Some(snapshot), Some(rules), Some(cfg)) = (snapshot, rules, cfg) {
             send_log(
@@ -233,7 +253,7 @@ pub async fn handle_flutter_emulator_job(
                 "system",
             )
             .await;
-            
+
             if let Err(e) = reconcile_and_stream_with_rules(
                 log_dc.clone(),
                 &session_id,
@@ -241,8 +261,10 @@ pub async fn handle_flutter_emulator_job(
                 snapshot,
                 rules,
                 cfg,
-            ).await {
-                 send_log(
+            )
+            .await
+            {
+                send_log(
                     &log_dc,
                     &session_id,
                     &format!("Warning: Failed to sync scaffold: {}", e),
@@ -250,7 +272,7 @@ pub async fn handle_flutter_emulator_job(
                 )
                 .await;
             } else {
-                 send_log(
+                send_log(
                     &log_dc,
                     &session_id,
                     "Scaffold synced to workspace",
@@ -259,7 +281,6 @@ pub async fn handle_flutter_emulator_job(
                 .await;
             }
         }
-
     } else {
         // Check if existing Android setup needs updating (v1 embedding -> v2)
         if needs_android_scaffold(&project_path).await {
@@ -273,7 +294,7 @@ pub async fn handle_flutter_emulator_job(
 
             // Prepare for sync: Calculate relative path for android/
             let android_path = project_path.join("android");
-            
+
             // CRITICAL: We want to force overwrite of broken files.
             // Remove the directory LOCALLY so the snapshot sees it as "Missing".
             // This ensures "CreateOnly" rules in SyncRules don't prevent us from uploading the fixed files.
@@ -283,7 +304,9 @@ pub async fn handle_flutter_emulator_job(
                 }
             }
 
-            let (snapshot, rules, cfg) = if let Ok(rel_project) = project_path.strip_prefix(&workspace_path) {
+            let (snapshot, rules, cfg) = if let Ok(rel_project) =
+                project_path.strip_prefix(&workspace_path)
+            {
                 let rel_project = rel_project.to_string_lossy().replace('\\', "/");
                 let rel_project = rel_project.trim().trim_matches('/');
                 let android_rel = if rel_project.is_empty() {
@@ -307,14 +330,30 @@ pub async fn handle_flutter_emulator_job(
                 (None, None, None)
             };
 
-            let app_id = project_info.app_id.clone()
-                .unwrap_or_else(|| derive_app_id(project_info.project_name.as_deref().unwrap_or("flutter_app")));
-            let project_name = project_info.project_name.clone().unwrap_or_else(|| "Flutter App".to_string());
-            
+            let app_id = project_info.app_id.clone().unwrap_or_else(|| {
+                derive_app_id(
+                    project_info
+                        .project_name
+                        .as_deref()
+                        .unwrap_or("flutter_app"),
+                )
+            });
+            let project_name = project_info
+                .project_name
+                .clone()
+                .unwrap_or_else(|| "Flutter App".to_string());
+
             // Try to find Flutter SDK path for scaffold generation
             let flutter_sdk_path = find_flutter_sdk_path().await;
 
-            if let Err(e) = generate_android_scaffold(&project_path, &app_id, &project_name, flutter_sdk_path.as_deref()).await {
+            if let Err(e) = generate_android_scaffold(
+                &project_path,
+                &app_id,
+                &project_name,
+                flutter_sdk_path.as_deref(),
+            )
+            .await
+            {
                 send_log(
                     &log_dc,
                     &session_id,
@@ -331,7 +370,7 @@ pub async fn handle_flutter_emulator_job(
                     "system",
                 )
                 .await;
-                
+
                 // reconcile generated files back to workspace
                 if let (Some(snapshot), Some(rules), Some(cfg)) = (snapshot, rules, cfg) {
                     send_log(
@@ -341,7 +380,7 @@ pub async fn handle_flutter_emulator_job(
                         "system",
                     )
                     .await;
-                    
+
                     if let Err(e) = reconcile_and_stream_with_rules(
                         log_dc.clone(),
                         &session_id,
@@ -349,8 +388,10 @@ pub async fn handle_flutter_emulator_job(
                         snapshot,
                         rules,
                         cfg,
-                    ).await {
-                         send_log(
+                    )
+                    .await
+                    {
+                        send_log(
                             &log_dc,
                             &session_id,
                             &format!("Warning: Failed to sync updated scaffold: {}", e),
@@ -358,7 +399,7 @@ pub async fn handle_flutter_emulator_job(
                         )
                         .await;
                     } else {
-                         send_log(
+                        send_log(
                             &log_dc,
                             &session_id,
                             "Updated scaffold synced to workspace",
@@ -376,8 +417,7 @@ pub async fn handle_flutter_emulator_job(
         &session_id,
         &format!(
             "Project type: Flutter (Kotlin: {}, Swift: {})",
-            project_info.uses_kotlin,
-            project_info.uses_swift
+            project_info.uses_kotlin, project_info.uses_swift
         ),
         "worker",
     )
@@ -484,7 +524,9 @@ pub async fn handle_flutter_emulator_job(
             grpc_gpu,
         ]);
         if stream_config.grpc.use_token {
-            emulator_config.extra_args.push("-grpc-use-token".to_string());
+            emulator_config
+                .extra_args
+                .push("-grpc-use-token".to_string());
         }
     }
 
@@ -498,7 +540,11 @@ pub async fn handle_flutter_emulator_job(
             "[kvm] exists={} accessible={} -> accel {}",
             kvm.exists,
             kvm.accessible,
-            if emulator_config.use_hw_accel { "on" } else { "off" }
+            if emulator_config.use_hw_accel {
+                "on"
+            } else {
+                "off"
+            }
         ),
         "emulator",
     )
@@ -550,7 +596,10 @@ pub async fn handle_flutter_emulator_job(
 
     // Check for cancellation before build
     if is_session_cancelled(&session_id) {
-        eprintln!("[flutter-job] Session {} cancelled before build", session_id);
+        eprintln!(
+            "[flutter-job] Session {} cancelled before build",
+            session_id
+        );
         clear_cancelled_session(&session_id);
         // Do not abort prewarm - let it finish for reuse
         bail!("Session cancelled by user");
@@ -570,7 +619,14 @@ pub async fn handle_flutter_emulator_job(
     }
 
     // Step 3: Build APK
-    send_status(&log_dc, &session_id, "building", "Building Flutter APK...", None).await;
+    send_status(
+        &log_dc,
+        &session_id,
+        "building",
+        "Building Flutter APK...",
+        None,
+    )
+    .await;
 
     send_log(
         &log_dc,
@@ -655,7 +711,7 @@ pub async fn handle_flutter_emulator_job(
 
     if !build_result.success {
         // Do not abort prewarm - user might fix and restart immediately
-        
+
         let error_summary = {
             let buf = recent_lines.lock().await;
             buf.iter()
@@ -741,7 +797,11 @@ pub async fn handle_flutter_emulator_job(
         &log_dc,
         &session_id,
         "emulator-ready",
-        if emulator_result.reused { "Emulator reused" } else { "Emulator booted" },
+        if emulator_result.reused {
+            "Emulator reused"
+        } else {
+            "Emulator booted"
+        },
         Some(json!({
              "serial": emulator_result.serial,
              "boot_time_ms": 0,
@@ -758,7 +818,8 @@ pub async fn handle_flutter_emulator_job(
         "ready",
         "Emulator ready for interaction",
         None,
-    ).await;
+    )
+    .await;
 
     // --- Video Pipeline Initialization ---
     // Added to support emulator video streaming for Flutter
@@ -786,27 +847,32 @@ pub async fn handle_flutter_emulator_job(
         app_cfg.format = "RGB".to_string();
 
         {
-             let transceivers = pc.get_transceivers().await;
-             for t in transceivers {
-                 if t.kind() == RTPCodecType::Video {
-                     let sender = t.sender().await;
-                     let params = sender.get_parameters().await;
-                     for codec in params.rtp_parameters.codecs {
-                         let mime = codec.capability.mime_type.to_lowercase();
-                         if mime.contains("h264") {
-                             eprintln!("[mobile-job] Found negotiated codec {} with PT {} fmtp={}", codec.capability.mime_type, codec.payload_type, codec.capability.sdp_fmtp_line);
-                             app_cfg.payload_type = codec.payload_type;
-                             break;
-                         }
-                     }
-                 }
-             }
+            let transceivers = pc.get_transceivers().await;
+            for t in transceivers {
+                if t.kind() == RTPCodecType::Video {
+                    let sender = t.sender().await;
+                    let params = sender.get_parameters().await;
+                    for codec in params.rtp_parameters.codecs {
+                        let mime = codec.capability.mime_type.to_lowercase();
+                        if mime.contains("h264") {
+                            eprintln!(
+                                "[mobile-job] Found negotiated codec {} with PT {} fmtp={}",
+                                codec.capability.mime_type,
+                                codec.payload_type,
+                                codec.capability.sdp_fmtp_line
+                            );
+                            app_cfg.payload_type = codec.payload_type;
+                            break;
+                        }
+                    }
+                }
+            }
         }
-        
+
         if let Ok((w, h)) = emulator_input::query_device_size(&adb_path, &emulator_serial).await {
             if w > 0 && h > 0 {
                 if w > 720 {
-                    // High-res device: request 1/2 scale from the emulator to reduce bandwidth 
+                    // High-res device: request 1/2 scale from the emulator to reduce bandwidth
                     stream_config.grpc.target_width = Some(w / 2);
                     stream_config.grpc.target_height = Some(h / 2);
                     app_cfg.width = w / 2;
@@ -859,7 +925,12 @@ pub async fn handle_flutter_emulator_job(
             .appsrc_clone()
             .context("gRPC pipeline missing appsrc")?;
 
-        adaptation_task = Some(spawn_video_bitrate_adaptation(pc.clone(), pipeline.clone(), log_dc.clone(), session_id.clone()));
+        adaptation_task = Some(spawn_video_bitrate_adaptation(
+            pc.clone(),
+            pipeline.clone(),
+            log_dc.clone(),
+            session_id.clone(),
+        ));
 
         // Wake mechanism
         let adb_path_clone = adb_path.clone();
@@ -867,164 +938,174 @@ pub async fn handle_flutter_emulator_job(
         tokio::spawn(async move {
             tokio::time::sleep(Duration::from_millis(1500)).await;
             let _ = tokio::process::Command::new(&adb_path_clone)
-                .arg("-s").arg(&serial_clone)
-                .arg("shell").arg("input").arg("keyevent").arg("KEYCODE_WAKEUP")
-                .output().await;
+                .arg("-s")
+                .arg(&serial_clone)
+                .arg("shell")
+                .arg("input")
+                .arg("keyevent")
+                .arg("KEYCODE_WAKEUP")
+                .output()
+                .await;
             tokio::time::sleep(Duration::from_millis(500)).await;
             let _ = tokio::process::Command::new(&adb_path_clone)
-                .arg("-s").arg(&serial_clone)
-                .arg("shell").arg("input").arg("keyevent").arg("82")
-                .output().await;
+                .arg("-s")
+                .arg(&serial_clone)
+                .arg("shell")
+                .arg("input")
+                .arg("keyevent")
+                .arg("82")
+                .output()
+                .await;
         });
 
-    let log_dc_for_grpc = log_dc.clone();
-    let session_id_for_grpc = session_id.clone();
-    let expected_w = app_cfg.width;
-    let expected_h = app_cfg.height;
-    let expected_format = app_cfg.format.clone();
-    
-    // We used to have `mut frame_rx` in logic above, but in the `match` block it returns `rx` which is `mpsc::Receiver`.
-    // We need to move it into the spawn.
-    let mut frame_rx_moved = frame_rx;
+        let log_dc_for_grpc = log_dc.clone();
+        let session_id_for_grpc = session_id.clone();
+        let expected_w = app_cfg.width;
+        let expected_h = app_cfg.height;
+        let expected_format = app_cfg.format.clone();
 
-    grpc_frame_task = Some(tokio::spawn(async move {
-        let mut frames: u64 = 0;
-        let mut dropped: u64 = 0;
-        let mut last_log = Instant::now();
-        let mut last_frame_at = Instant::now();
-        let mut mismatch_logged = false;
-        let mut last_frame_size: Option<(u32, u32)> = None;
-        let mut interval = tokio::time::interval(Duration::from_secs(5));
-        let mut last_push_buffer: Option<gst::Buffer> = None;
+        // We used to have `mut frame_rx` in logic above, but in the `match` block it returns `rx` which is `mpsc::Receiver`.
+        // We need to move it into the spawn.
+        let mut frame_rx_moved = frame_rx;
 
-        loop {
-            tokio::select! {
-                _ = interval.tick() => {
-                    let elapsed = last_frame_at.elapsed();
-                    if frames == 0 {
-                        send_log(
-                            &log_dc_for_grpc,
-                            &session_id_for_grpc,
-                            "[grpc] no frames received yet (display may be inactive)",
-                            "emulator",
-                        )
-                        .await;
-                    } else if elapsed >= Duration::from_secs(10) {
-                            if elapsed.as_secs() % 30 < 5 {
+        grpc_frame_task = Some(tokio::spawn(async move {
+            let mut frames: u64 = 0;
+            let mut dropped: u64 = 0;
+            let mut last_log = Instant::now();
+            let mut last_frame_at = Instant::now();
+            let mut mismatch_logged = false;
+            let mut last_frame_size: Option<(u32, u32)> = None;
+            let mut interval = tokio::time::interval(Duration::from_secs(5));
+            let mut last_push_buffer: Option<gst::Buffer> = None;
+
+            loop {
+                tokio::select! {
+                    _ = interval.tick() => {
+                        let elapsed = last_frame_at.elapsed();
+                        if frames == 0 {
+                            send_log(
+                                &log_dc_for_grpc,
+                                &session_id_for_grpc,
+                                "[grpc] no frames received yet (display may be inactive)",
+                                "emulator",
+                            )
+                            .await;
+                        } else if elapsed >= Duration::from_secs(10) {
+                                if elapsed.as_secs() % 30 < 5 {
+                                send_log(
+                                    &log_dc_for_grpc,
+                                    &session_id_for_grpc,
+                                    &format!(
+                                        "[grpc] display idle: last update {}s ago (heartbeat active)",
+                                        elapsed.as_secs()
+                                    ),
+                                    "emulator",
+                                )
+                                .await;
+                                }
+                        }
+                    }
+                    _ = tokio::time::sleep(Duration::from_millis(100)) => {
+                        if let Some(buf) = &last_push_buffer {
+                            let _ = appsrc.push_buffer(buf.clone());
+                        }
+                    }
+                    maybe = frame_rx_moved.recv() => {
+                        let Some(frame) = maybe else {
+                            send_log(
+                                &log_dc_for_grpc,
+                                &session_id_for_grpc,
+                                "[grpc] frame stream closed by emulator",
+                                "emulator",
+                            )
+                            .await;
+                            break;
+                        };
+                        frames += 1;
+                        last_frame_at = Instant::now();
+
+                        if frame.width > 0 && frame.height > 0 {
+                            let size = (frame.width, frame.height);
+                            if last_frame_size != Some(size) {
+                                emulator_input::update_grpc_frame_size(
+                                    &session_id_for_grpc,
+                                    frame.width,
+                                    frame.height,
+                                );
+                                last_frame_size = Some(size);
+                            }
+                        }
+
+                        if !mismatch_logged
+                            && (frame.width != expected_w
+                                || frame.height != expected_h
+                                || frame.format != expected_format)
+                        {
+                            mismatch_logged = true;
                             send_log(
                                 &log_dc_for_grpc,
                                 &session_id_for_grpc,
                                 &format!(
-                                    "[grpc] display idle: last update {}s ago (heartbeat active)",
-                                    elapsed.as_secs()
+                                    "[grpc] frame format mismatch: stream={}x{} {} expected={}x{} {}",
+                                    frame.width,
+                                    frame.height,
+                                    frame.format,
+                                    expected_w,
+                                    expected_h,
+                                    expected_format
                                 ),
                                 "emulator",
                             )
                             .await;
-                            }
-                    }
-                }
-                _ = tokio::time::sleep(Duration::from_millis(100)) => {
-                    if let Some(buf) = &last_push_buffer {
-                        let _ = appsrc.push_buffer(buf.clone());
-                    }
-                }
-                maybe = frame_rx_moved.recv() => {
-                    let Some(frame) = maybe else {
-                        send_log(
-                            &log_dc_for_grpc,
-                            &session_id_for_grpc,
-                            "[grpc] frame stream closed by emulator",
-                            "emulator",
-                        )
-                        .await;
-                        break;
-                    };
-                    frames += 1;
-                    last_frame_at = Instant::now();
-                    
-                    if frame.width > 0 && frame.height > 0 {
-                        let size = (frame.width, frame.height);
-                        if last_frame_size != Some(size) {
-                            emulator_input::update_grpc_frame_size(
-                                &session_id_for_grpc,
-                                frame.width,
-                                frame.height,
-                            );
-                            last_frame_size = Some(size);
                         }
-                    }
 
-                    if !mismatch_logged
-                        && (frame.width != expected_w
-                            || frame.height != expected_h
-                            || frame.format != expected_format)
-                    {
-                        mismatch_logged = true;
-                        send_log(
-                            &log_dc_for_grpc,
-                            &session_id_for_grpc,
-                            &format!(
-                                "[grpc] frame format mismatch: stream={}x{} {} expected={}x{} {}",
-                                frame.width,
-                                frame.height,
-                                frame.format,
-                                expected_w,
-                                expected_h,
-                                expected_format
-                            ),
-                            "emulator",
-                        )
-                        .await;
-                    }
+                        if frame.format != expected_format {
+                            dropped += 1;
+                            continue;
+                        }
 
-                    if frame.format != expected_format {
-                        dropped += 1;
-                        continue;
-                    }
+                        let buffer = gst::Buffer::from_slice(frame.data);
+                        last_push_buffer = Some(buffer.clone());
 
-                    let buffer = gst::Buffer::from_slice(frame.data);
-                    last_push_buffer = Some(buffer.clone());
+                        if appsrc.push_buffer(buffer).is_err() {
+                            dropped += 1;
+                        }
 
-                    if appsrc.push_buffer(buffer).is_err() {
-                        dropped += 1;
-                    }
-
-                    if last_log.elapsed() >= Duration::from_secs(5) {
-                        send_log(
-                            &log_dc_for_grpc,
-                            &session_id_for_grpc,
-                            &format!(
-                                "[grpc] frames={} dropped={} expected={}x{} {}",
-                                frames, dropped, expected_w, expected_h, expected_format
-                            ),
-                            "emulator",
-                        )
-                        .await;
-                        last_log = Instant::now();
+                        if last_log.elapsed() >= Duration::from_secs(5) {
+                            send_log(
+                                &log_dc_for_grpc,
+                                &session_id_for_grpc,
+                                &format!(
+                                    "[grpc] frames={} dropped={} expected={}x{} {}",
+                                    frames, dropped, expected_w, expected_h, expected_format
+                                ),
+                                "emulator",
+                            )
+                            .await;
+                            last_log = Instant::now();
+                        }
                     }
                 }
             }
-        }
-    }));
+        }));
 
-    (
-        pipeline,
-        format!(
-            "grpc://{}:{}",
-            stream_config.grpc.host, stream_config.grpc.port
-        ),
-    )
+        (
+            pipeline,
+            format!(
+                "grpc://{}:{}",
+                stream_config.grpc.host, stream_config.grpc.port
+            ),
+        )
     } else {
         // Use the same X11 display as the emulator session.
         let session_display = {
-             let d = daemon.session_mut().core.x11_display.lock().await.clone();
-             d
+            let d = daemon.session_mut().core.x11_display.lock().await.clone();
+            d
         };
 
         let mut cfg = video_pipeline::EmulatorVideoConfig::default();
         cfg.codec = video_pipeline::VideoCodec::H264;
-        
+
         if !session_display.trim().is_empty() {
             cfg.x11_display = session_display;
         } else if let Ok(d) = std::env::var("DISPLAY") {
@@ -1041,7 +1122,9 @@ pub async fn handle_flutter_emulator_job(
         let mut emulator_geom: Option<(i32, i32, i32, i32)> = None;
         if !cfg!(target_os = "windows") {
             if let Some((xid, _w, _h)) = find_emulator_x11_window(&cfg.x11_display).await {
-                if let Some((x, y, w, h)) = xdotool_window_geometry_xywh(&cfg.x11_display, xid).await {
+                if let Some((x, y, w, h)) =
+                    xdotool_window_geometry_xywh(&cfg.x11_display, xid).await
+                {
                     emulator_geom = Some((x, y, w, h));
                     if let Some((sw, sh)) = parse_xvfb_resolution() {
                         let offscreen = x >= sw || y >= sh || (x + w) <= 0 || (y + h) <= 0;
@@ -1071,11 +1154,18 @@ pub async fn handle_flutter_emulator_job(
         if capture_xid {
             if let Some((xid, w, h)) = find_emulator_x11_window(&cfg.x11_display).await {
                 cfg.x11_xid = Some(xid);
-                let extra = if w > 0 && h > 0 { format!(" ({}x{})", w, h) } else { String::new() };
+                let extra = if w > 0 && h > 0 {
+                    format!(" ({}x{})", w, h)
+                } else {
+                    String::new()
+                };
                 send_log(
                     &log_dc,
                     &session_id,
-                    &format!("[video] capturing emulator X11 window xid={}{} on DISPLAY={}", xid, extra, cfg.x11_display),
+                    &format!(
+                        "[video] capturing emulator X11 window xid={}{} on DISPLAY={}",
+                        xid, extra, cfg.x11_display
+                    ),
                     "emulator",
                 )
                 .await;
@@ -1084,77 +1174,90 @@ pub async fn handle_flutter_emulator_job(
             // Use root capture with region crop
             if let Some((x, y, w, h)) = emulator_geom {
                 let left_pad = std::env::var("SYNTHI_ANDROID_LEFT_PAD_PX")
-                    .ok().and_then(|v| v.parse::<i32>().ok()).unwrap_or(24);
+                    .ok()
+                    .and_then(|v| v.parse::<i32>().ok())
+                    .unwrap_or(24);
                 cfg.startx = Some((x - left_pad).max(0));
                 cfg.starty = Some(y.max(0));
                 cfg.endx = Some(x + w);
                 cfg.endy = Some(y + h);
-                
+
                 let mut toolbar_width = std::env::var("SYNTHI_ANDROID_TOOLBAR_WIDTH")
-                    .ok().and_then(|v| v.parse::<u32>().ok()).map(|v| v as i32).unwrap_or(72);
-                
+                    .ok()
+                    .and_then(|v| v.parse::<u32>().ok())
+                    .map(|v| v as i32)
+                    .unwrap_or(72);
+
                 if std::env::var("SYNTHI_ANDROID_TOOLBAR_WIDTH").is_err() {
                     // Try to infer toolbar width
-                    if let Ok((device_w, device_h)) = emulator_input::query_device_size(&adb_path, &emulator_serial).await {
-                         if device_w > 0 && device_h > 0 && h > 0 {
-                             let scale = (h as f64) / (device_h as f64);
-                             let expected_w = (device_w as f64) * scale;
-                             let extra = (w as f64 - expected_w).round() as i32;
-                             if extra > 0 {
-                                 toolbar_width = extra + 120; 
-                             }
-                         }
+                    if let Ok((device_w, device_h)) =
+                        emulator_input::query_device_size(&adb_path, &emulator_serial).await
+                    {
+                        if device_w > 0 && device_h > 0 && h > 0 {
+                            let scale = (h as f64) / (device_h as f64);
+                            let expected_w = (device_w as f64) * scale;
+                            let extra = (w as f64 - expected_w).round() as i32;
+                            if extra > 0 {
+                                toolbar_width = extra + 120;
+                            }
+                        }
                     }
                 }
                 cfg.crop_right = toolbar_width.max(0) as u32;
                 cfg.width = (w - toolbar_width).max(100) as u32;
                 cfg.height = h as u32;
-                
+
                 send_log(
                     &log_dc,
                     &session_id,
-                    &format!("[video] crop region: x={} y={} w={} h={} (toolbar={})", 
-                        cfg.startx.unwrap_or(0), 
-                        cfg.starty.unwrap_or(0), 
-                        cfg.width, 
+                    &format!(
+                        "[video] crop region: x={} y={} w={} h={} (toolbar={})",
+                        cfg.startx.unwrap_or(0),
+                        cfg.starty.unwrap_or(0),
+                        cfg.width,
                         cfg.height,
                         toolbar_width
                     ),
-                    "emulator"
-                ).await;
+                    "emulator",
+                )
+                .await;
             }
         }
-        
+
         if cfg.startx.is_none() {
-             if let Ok((w, h)) = emulator_input::query_device_size(&adb_path, &emulator_serial).await {
-                 if w > 0 && h > 0 {
-                     cfg.width = w;
-                     cfg.height = h;
-                 }
-             }
+            if let Ok((w, h)) = emulator_input::query_device_size(&adb_path, &emulator_serial).await
+            {
+                if w > 0 && h > 0 {
+                    cfg.width = w;
+                    cfg.height = h;
+                }
+            }
         }
 
         {
-             let transceivers = pc.get_transceivers().await;
-             for t in transceivers {
-                 if t.kind() == RTPCodecType::Video {
-                     let sender = t.sender().await;
-                     let params = sender.get_parameters().await;
-                     for codec in params.rtp_parameters.codecs {
-                         let mime = codec.capability.mime_type.to_lowercase();
-                         if mime.contains("h264") {
-                             cfg.payload_type = codec.payload_type;
-                             break;
-                         }
-                     }
-                 }
-             }
+            let transceivers = pc.get_transceivers().await;
+            for t in transceivers {
+                if t.kind() == RTPCodecType::Video {
+                    let sender = t.sender().await;
+                    let params = sender.get_parameters().await;
+                    for codec in params.rtp_parameters.codecs {
+                        let mime = codec.capability.mime_type.to_lowercase();
+                        if mime.contains("h264") {
+                            cfg.payload_type = codec.payload_type;
+                            break;
+                        }
+                    }
+                }
+            }
         }
 
         send_log(
             &log_dc,
             &session_id,
-            &format!("[video] starting pipeline: {}", video_pipeline::EmulatorVideoPipeline::debug_pipeline_string(&cfg)),
+            &format!(
+                "[video] starting pipeline: {}",
+                video_pipeline::EmulatorVideoPipeline::debug_pipeline_string(&cfg)
+            ),
             "emulator",
         )
         .await;
@@ -1162,16 +1265,22 @@ pub async fn handle_flutter_emulator_job(
         let pipeline = match video_pipeline::EmulatorVideoPipeline::start(cfg.clone()) {
             Ok(p) => Arc::new(p),
             Err(e) => {
-                 // Fallback to basic root capture
-                 cfg.x11_xid = None;
-                 send_log(&log_dc, &session_id, "[video] retrying with basic root capture", "emulator").await;
-                 match video_pipeline::EmulatorVideoPipeline::start(cfg.clone()) {
-                     Ok(p) => Arc::new(p),
-                     Err(e2) => {
-                         let _ = emulator_input::unregister_session_sync(&session_id);
-                         bail!("Failed to start video pipeline: {}", e2);
-                     }
-                 }
+                // Fallback to basic root capture
+                cfg.x11_xid = None;
+                send_log(
+                    &log_dc,
+                    &session_id,
+                    "[video] retrying with basic root capture",
+                    "emulator",
+                )
+                .await;
+                match video_pipeline::EmulatorVideoPipeline::start(cfg.clone()) {
+                    Ok(p) => Arc::new(p),
+                    Err(e2) => {
+                        let _ = emulator_input::unregister_session_sync(&session_id);
+                        bail!("Failed to start video pipeline: {}", e2);
+                    }
+                }
             }
         };
 
@@ -1185,7 +1294,12 @@ pub async fn handle_flutter_emulator_job(
             if t.kind() == RTPCodecType::Video {
                 let sender = t.sender().await;
                 eprintln!("[flutter-job] Attaching video track to transceiver...");
-                match sender.replace_track(Some(Arc::clone(&pipeline.track) as Arc<dyn TrackLocal + Send + Sync>)).await {
+                match sender
+                    .replace_track(Some(
+                        Arc::clone(&pipeline.track) as Arc<dyn TrackLocal + Send + Sync>
+                    ))
+                    .await
+                {
                     Ok(_) => {
                         eprintln!("[flutter-job] Video track attached successfully");
                         let params = sender.get_parameters().await;
@@ -1196,15 +1310,15 @@ pub async fn handle_flutter_emulator_job(
                                 pipeline.set_ssrc(ssrc);
                             }
                         }
-                        
+
                         let rtcp_sender = sender.clone();
                         tokio::spawn(async move {
                             let mut buf = vec![0u8; 1500];
-                             // Assuming RTCRtpSender impls something that allows reading RTCP or we need to use a different mechanism.
-                             // In webrtc-rs, Sender.read reads RTCP packets.
-                             while let Ok((_, _)) = rtcp_sender.read(&mut buf).await {}
+                            // Assuming RTCRtpSender impls something that allows reading RTCP or we need to use a different mechanism.
+                            // In webrtc-rs, Sender.read reads RTCP packets.
+                            while let Ok((_, _)) = rtcp_sender.read(&mut buf).await {}
                         });
-                    },
+                    }
                     Err(e) => eprintln!("Failed to replace track: {}", e),
                 }
             }
@@ -1224,7 +1338,7 @@ pub async fn handle_flutter_emulator_job(
 
     let serial_wake = emulator_result.serial.clone();
     let adb_path_wake = adb_path.clone();
-    
+
     // Step 4b: Stream logcat (START EARLY)
     // We start logcat before install so we can see what's happening on the device
     // during the potentially long install process.
@@ -1240,21 +1354,29 @@ pub async fn handle_flutter_emulator_job(
             &log_dc_for_logcat,
             &session_id_for_logcat,
             &device_for_logcat,
-        ).await {
-            Ok(_) => {},
+        )
+        .await
+        {
+            Ok(_) => {}
             Err(e) => eprintln!("[flutter-job] Early logcat streaming error: {}", e),
         }
     });
 
     // Wake up device immediately (so user sees screen during install)
-    send_log(&log_dc, &session_id, "Waking up device (and disabling sleep)...", "system").await;
-    
+    send_log(
+        &log_dc,
+        &session_id,
+        "Waking up device (and disabling sleep)...",
+        "system",
+    )
+    .await;
+
     // Wait for boot completion before trying to wake/install
     if let Err(_) = tokio::select! {
         res = wait_for_boot_completion(&adb_path_wake, &serial_wake, &log_dc, &session_id) => res,
         _ = wait_for_cancel(&session_id) => {
              // Just break out, subsequent steps will check cancellation
-             Ok(()) 
+             Ok(())
         }
     } {
         // Log warning but continue
@@ -1262,8 +1384,12 @@ pub async fn handle_flutter_emulator_job(
 
     if is_session_cancelled(&session_id) {
         logcat_task.abort();
-        if let Some(task) = &grpc_frame_task { task.abort(); }
-        if let Some(task) = &adaptation_task { task.abort(); }
+        if let Some(task) = &grpc_frame_task {
+            task.abort();
+        }
+        if let Some(task) = &adaptation_task {
+            task.abort();
+        }
         let _ = daemon.session_mut().stop_logcat().await;
         daemon.release_keepalive().await;
         emulator_input::unregister_session_sync(&session_id);
@@ -1273,21 +1399,38 @@ pub async fn handle_flutter_emulator_job(
 
     // Disable sleep
     let _ = Command::new(&adb_path_wake)
-        .arg("-s").arg(&serial_wake)
-        .arg("shell").arg("settings").arg("put").arg("system").arg("screen_off_timeout").arg("2147483647")
-        .output().await;
+        .arg("-s")
+        .arg(&serial_wake)
+        .arg("shell")
+        .arg("settings")
+        .arg("put")
+        .arg("system")
+        .arg("screen_off_timeout")
+        .arg("2147483647")
+        .output()
+        .await;
 
     // Wake up
     let _ = Command::new(&adb_path_wake)
-        .arg("-s").arg(&serial_wake)
-        .arg("shell").arg("input").arg("keyevent").arg("KEYCODE_WAKEUP")
-        .output().await;
+        .arg("-s")
+        .arg(&serial_wake)
+        .arg("shell")
+        .arg("input")
+        .arg("keyevent")
+        .arg("KEYCODE_WAKEUP")
+        .output()
+        .await;
 
     // Unlock (Menu key often helps dismiss lock screen on emulator)
     let _ = Command::new(&adb_path_wake)
-        .arg("-s").arg(&serial_wake)
-        .arg("shell").arg("input").arg("keyevent").arg("82") // MENU
-        .output().await;
+        .arg("-s")
+        .arg(&serial_wake)
+        .arg("shell")
+        .arg("input")
+        .arg("keyevent")
+        .arg("82") // MENU
+        .output()
+        .await;
 
     // Step 5: Install APK
     send_status(&log_dc, &session_id, "ready", "Installing APK...", None).await;
@@ -1324,14 +1467,24 @@ pub async fn handle_flutter_emulator_job(
 
     // Wake up again after install (in case install was slow and device slept)
     let _ = Command::new(&adb_path_wake)
-        .arg("-s").arg(&serial_wake)
-        .arg("shell").arg("input").arg("keyevent").arg("KEYCODE_WAKEUP")
-        .output().await;
+        .arg("-s")
+        .arg(&serial_wake)
+        .arg("shell")
+        .arg("input")
+        .arg("keyevent")
+        .arg("KEYCODE_WAKEUP")
+        .output()
+        .await;
     let _ = Command::new(&adb_path_wake)
-        .arg("-s").arg(&serial_wake)
-        .arg("shell").arg("input").arg("keyevent").arg("82")
-        .output().await;
-    
+        .arg("-s")
+        .arg(&serial_wake)
+        .arg("shell")
+        .arg("input")
+        .arg("keyevent")
+        .arg("82")
+        .output()
+        .await;
+
     // Step 6: Launch app
     let app_id = build_result
         .app_id
@@ -1360,7 +1513,7 @@ pub async fn handle_flutter_emulator_job(
              Err(anyhow::anyhow!("Session cancelled by user"))
         }
     };
-    
+
     if let Err(e) = &launch_result {
         send_log(
             &log_dc,
@@ -1384,21 +1537,15 @@ pub async fn handle_flutter_emulator_job(
     .await;
 
     // Step 7: Stream logcat
-    send_log(
-        &log_dc,
-        &session_id,
-        "Starting logcat stream...",
-        "system",
-    )
-    .await;
+    send_log(&log_dc, &session_id, "Starting logcat stream...", "system").await;
 
     // Start logcat streaming in background (FILTERED FOR APP)
-    // We cancel the global one first if we want, or we keep it? 
+    // We cancel the global one first if we want, or we keep it?
     // Actually, capturing only app logs is cleaner if we can.
     // But `stream_logcat` uses `pidof` which needs the app to be running.
     // So we'll let the system logcat run until we have the app PID, then maybe switch?
     // For simplicity, let's just abort the system logcat task and start the app-specific one.
-    logcat_task.abort(); 
+    logcat_task.abort();
 
     let log_dc_for_logcat = log_dc.clone();
     let session_id_for_logcat = session_id.clone();
@@ -1419,7 +1566,9 @@ pub async fn handle_flutter_emulator_job(
 
     // Register input session (mouse/keyboard) and keep alive
     let adb_path_for_input = if cfg!(windows) {
-        emulator_config.android_sdk_root.join("platform-tools/adb.exe")
+        emulator_config
+            .android_sdk_root
+            .join("platform-tools/adb.exe")
     } else {
         emulator_config.android_sdk_root.join("platform-tools/adb")
     };
@@ -1428,8 +1577,16 @@ pub async fn handle_flutter_emulator_job(
         adb_path_for_input,
         device_serial.to_string(),
         stream_config.clone(),
-    ).await {
-         send_log(&log_dc, &session_id, &format!("Input registration failed: {}", e), "system").await;
+    )
+    .await
+    {
+        send_log(
+            &log_dc,
+            &session_id,
+            &format!("Input registration failed: {}", e),
+            "system",
+        )
+        .await;
     }
 
     // Keep the job alive until cancelled
@@ -1465,7 +1622,10 @@ pub async fn handle_flutter_emulator_job(
 }
 
 /// Finds the Flutter project root by searching up from start_path
-async fn find_flutter_project_root(start_path: &PathBuf, workspace_path: &PathBuf) -> Result<PathBuf> {
+async fn find_flutter_project_root(
+    start_path: &PathBuf,
+    workspace_path: &PathBuf,
+) -> Result<PathBuf> {
     let mut current = start_path.clone();
 
     loop {
@@ -1501,20 +1661,23 @@ async fn install_apk(apk_path: &PathBuf, device_serial: &str) -> Result<()> {
 
     let mut cmd = Command::new("adb");
     cmd.args(["-s", device_serial, "install", "-r", "-t"])
-       .arg(apk_path);
+        .arg(apk_path);
 
-    // Ensure kill_on_drop behavior if using child handle directly, 
-    // but .output() manages the child. If we drop the future returned by .output(), 
+    // Ensure kill_on_drop behavior if using child handle directly,
+    // but .output() manages the child. If we drop the future returned by .output(),
     // tokio::process::Command usually leaves it running.
     // To support cancellation, we should spawn and wait.
-    
+
     cmd.kill_on_drop(true);
     // Suppress output unless error
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::piped());
-    
+
     let child = cmd.spawn().context("Failed to spawn adb install")?;
-    let output = child.wait_with_output().await.context("Failed to wait for adb install")?;
+    let output = child
+        .wait_with_output()
+        .await
+        .context("Failed to wait for adb install")?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -1532,19 +1695,20 @@ async fn launch_app(app_id: &str, device_serial: &str) -> Result<()> {
     // Use monkey to launch the app (works for most apps)
     let mut cmd = Command::new("adb");
     cmd.args([
-            "-s",
-            device_serial,
-            "shell",
-            "monkey",
-            "-p",
-            app_id,
-            "-c",
-            "android.intent.category.LAUNCHER",
-            "1",
-        ]);
+        "-s",
+        device_serial,
+        "shell",
+        "monkey",
+        "-p",
+        app_id,
+        "-c",
+        "android.intent.category.LAUNCHER",
+        "1",
+    ]);
     cmd.kill_on_drop(true);
-    
-    let output = cmd.output()
+
+    let output = cmd
+        .output()
         .await
         .context("Failed to run adb shell monkey")?;
 
@@ -1623,10 +1787,10 @@ async fn get_app_pid(app_id: &str, device_serial: &str) -> Result<String> {
 fn parse_logcat_line(line: &str) -> LogcatEntry {
     // Logcat format with -v time: "MM-DD HH:MM:SS.mmm D/Tag(PID): Message"
     // Try to parse, fall back to raw line as message
-    
+
     let level_char = line.chars().nth(18).unwrap_or('I');
     let level = LogLevel::from_char(level_char);
-    
+
     // Extract tag and message if possible
     let (tag, message) = if let Some(slash_pos) = line.find('/') {
         if let Some(colon_pos) = line[slash_pos..].find(':') {
@@ -1659,32 +1823,34 @@ fn parse_logcat_line(line: &str) -> LogcatEntry {
 /// This is needed for Gradle to find Flutter when building.
 async fn ensure_local_properties(project_root: &Path, flutter_sdk: &Path) -> Result<()> {
     let local_props_path = project_root.join("android/local.properties");
-    
+
     // Get the Flutter SDK directory (parent of bin/flutter)
     let flutter_sdk_dir = flutter_sdk
         .parent() // bin
         .and_then(|p| p.parent()) // flutter root
         .unwrap_or(flutter_sdk);
-    
+
     let flutter_sdk_str = flutter_sdk_dir.display().to_string();
-    
+
     // Read existing content or start fresh
     let existing = if local_props_path.exists() {
-        tokio::fs::read_to_string(&local_props_path).await.unwrap_or_default()
+        tokio::fs::read_to_string(&local_props_path)
+            .await
+            .unwrap_or_default()
     } else {
         String::new()
     };
-    
+
     // Check if flutter.sdk is already set correctly
-    let has_flutter_sdk = existing.lines().any(|line| {
-        line.trim().starts_with("flutter.sdk=")
-    });
-    
+    let has_flutter_sdk = existing
+        .lines()
+        .any(|line| line.trim().starts_with("flutter.sdk="));
+
     if has_flutter_sdk {
         // Already has flutter.sdk, don't modify
         return Ok(());
     }
-    
+
     // Append flutter.sdk
     let new_content = if existing.is_empty() {
         format!("flutter.sdk={}\n", flutter_sdk_str)
@@ -1693,15 +1859,15 @@ async fn ensure_local_properties(project_root: &Path, flutter_sdk: &Path) -> Res
     } else {
         format!("{}\nflutter.sdk={}\n", existing, flutter_sdk_str)
     };
-    
+
     // Ensure android directory exists
     let android_dir = project_root.join("android");
     if !android_dir.exists() {
         tokio::fs::create_dir_all(&android_dir).await?;
     }
-    
+
     tokio::fs::write(&local_props_path, new_content).await?;
-    
+
     Ok(())
 }
 
@@ -1717,14 +1883,14 @@ async fn find_flutter_sdk_path() -> Option<String> {
         Some("/opt/flutter".to_string()),
         Some("/usr/local/flutter".to_string()),
     ];
-    
+
     for candidate in candidates.into_iter().flatten() {
         let path = std::path::Path::new(&candidate);
         if path.join("bin/flutter").exists() {
             return Some(candidate);
         }
     }
-    
+
     // Try to find via PATH by running `which flutter`
     if let Ok(output) = tokio::process::Command::new("which")
         .arg("flutter")
@@ -1736,13 +1902,14 @@ async fn find_flutter_sdk_path() -> Option<String> {
             // flutter_bin is /path/to/flutter/bin/flutter, we want /path/to/flutter
             if let Some(sdk) = std::path::Path::new(&flutter_bin)
                 .parent() // bin
-                .and_then(|p| p.parent()) // flutter
+                .and_then(|p| p.parent())
+            // flutter
             {
                 return Some(sdk.display().to_string());
             }
         }
     }
-    
+
     // Try scanning home directories
     if let Ok(entries) = std::fs::read_dir("/home") {
         for entry in entries.flatten() {
@@ -1752,7 +1919,7 @@ async fn find_flutter_sdk_path() -> Option<String> {
             }
         }
     }
-    
+
     None
 }
 
@@ -1812,12 +1979,17 @@ async fn xdotool_window_geometry(display: &str, xid: u64) -> Option<(u32, u32)> 
 
 fn parse_xvfb_resolution() -> Option<(i32, i32)> {
     // Keep in sync with emulator lifecycle defaults.
-    let raw = std::env::var("SYNTHI_ANDROID_XVFB_RESOLUTION").unwrap_or_else(|_| "1440x2960".to_string());
+    let raw =
+        std::env::var("SYNTHI_ANDROID_XVFB_RESOLUTION").unwrap_or_else(|_| "1440x2960".to_string());
     let s = raw.trim();
     let (w, h) = s.split_once('x')?;
     let w = w.trim().parse::<i32>().ok()?;
     let h = h.trim().parse::<i32>().ok()?;
-    if w > 0 && h > 0 { Some((w, h)) } else { None }
+    if w > 0 && h > 0 {
+        Some((w, h))
+    } else {
+        None
+    }
 }
 
 async fn xdotool_window_geometry_xywh(display: &str, xid: u64) -> Option<(i32, i32, i32, i32)> {
@@ -1906,19 +2078,36 @@ async fn find_emulator_x11_window(display: &str) -> Option<(u64, u32, u32)> {
 }
 
 /// Be patient for boot completion
-async fn wait_for_boot_completion(adb_path: &PathBuf, device_serial: &str, log_dc: &Arc<RTCDataChannel>, session_id: &str) -> Result<()> {
+async fn wait_for_boot_completion(
+    adb_path: &PathBuf,
+    device_serial: &str,
+    log_dc: &Arc<RTCDataChannel>,
+    session_id: &str,
+) -> Result<()> {
     use tokio::process::Command;
     let start = Instant::now();
     let timeout = Duration::from_secs(60); // Max wait 60s (it says prewarm complete so should be fast)
 
     loop {
         if start.elapsed() > timeout {
-            send_log(log_dc, session_id, "Warning: Specific boot check timed out (proceeding anyway)", "system").await;
+            send_log(
+                log_dc,
+                session_id,
+                "Warning: Specific boot check timed out (proceeding anyway)",
+                "system",
+            )
+            .await;
             break;
         }
 
         let output = Command::new(adb_path)
-            .args(["-s", device_serial, "shell", "getprop", "sys.boot_completed"])
+            .args([
+                "-s",
+                device_serial,
+                "shell",
+                "getprop",
+                "sys.boot_completed",
+            ])
             .output()
             .await;
 
@@ -1926,16 +2115,22 @@ async fn wait_for_boot_completion(adb_path: &PathBuf, device_serial: &str, log_d
             Ok(o) => {
                 let s = String::from_utf8_lossy(&o.stdout);
                 if s.trim() == "1" {
-                     send_log(log_dc, session_id, "Device boot verification success", "system").await;
-                     break;
+                    send_log(
+                        log_dc,
+                        session_id,
+                        "Device boot verification success",
+                        "system",
+                    )
+                    .await;
+                    break;
                 }
-            },
+            }
             Err(_) => {}
         }
-        
+
         sleep(Duration::from_millis(1000)).await;
         if start.elapsed().as_secs() % 5 == 0 {
-             send_log(log_dc, session_id, "Waiting for device boot...", "system").await;
+            send_log(log_dc, session_id, "Waiting for device boot...", "system").await;
         }
     }
     Ok(())
@@ -1957,7 +2152,7 @@ async fn stream_system_logcat(
             "logcat",
             "-v",
             "time",
-             // Don't filter by PID yet
+            // Don't filter by PID yet
         ])
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
@@ -1972,8 +2167,8 @@ async fn stream_system_logcat(
             break;
         }
         // Send as raw log or parsed
-         let entry = parse_logcat_line(&line);
-         send_logcat(log_dc, session_id, &entry).await;
+        let entry = parse_logcat_line(&line);
+        send_logcat(log_dc, session_id, &entry).await;
     }
 
     let _ = child.kill().await;
@@ -1993,14 +2188,18 @@ fn spawn_video_bitrate_adaptation(
         loop {
             interval.tick().await;
 
-            if pc.connection_state() == RTCPeerConnectionState::Closed ||
-               pc.connection_state() == RTCPeerConnectionState::Failed {
+            if pc.connection_state() == RTCPeerConnectionState::Closed
+                || pc.connection_state() == RTCPeerConnectionState::Failed
+            {
                 break;
             }
 
             // Check if cancelled
             if crate::android::webrtc::input::is_session_cancelled(&session_id) {
-                eprintln!("[webrtc-adapt] Session {} cancelled, stopping adaptation loop", session_id);
+                eprintln!(
+                    "[webrtc-adapt] Session {} cancelled, stopping adaptation loop",
+                    session_id
+                );
                 break;
             }
 
@@ -2010,45 +2209,52 @@ fn spawn_video_bitrate_adaptation(
 
             for (_, stat) in &stats.reports {
                 if let StatsReportType::CandidatePair(cp) = stat {
-                     // Check if this pair is actually sending packets.
-                     if cp.packets_sent > 0 && cp.available_outgoing_bitrate > 0.0 {
+                    // Check if this pair is actually sending packets.
+                    if cp.packets_sent > 0 && cp.available_outgoing_bitrate > 0.0 {
                         available_bitrate = Some(cp.available_outgoing_bitrate);
                         break;
-                     }
+                    }
                 }
             }
-            
+
             if let Some(avail_bits) = available_bitrate {
-                 let avail_kbps = (avail_bits / 1000.0) as u32;
-                 
-                 // Apply conservative factor (80%)
-                 let target_kbps = (avail_kbps as f64 * 0.8) as u32;
-                 
-                 // Smoothing: New = 0.7 * Current + 0.3 * Target
-                 let new_bitrate = (0.7 * current_bitrate as f64 + 0.3 * target_kbps as f64) as u32;
-                 
-                 // Clamp (500kbps - 6000kbps)
-                 let clamped_bitrate = new_bitrate.max(500).min(6000);
-                 
-                 // Threshold > 10% change to avoid spam
-                 let diff = (clamped_bitrate as i32 - current_bitrate as i32).abs();
-                 // ALWAYS log for now to see what's happening
-                 if diff > (current_bitrate as i32 / 10) {
-                     eprintln!("[webrtc-adapt] est={} kbps -> target={} kbps (current={})", avail_kbps, clamped_bitrate, current_bitrate);
-                     if diff > (current_bitrate as i32 / 10) { 
-                         if let Err(e) = pipeline.set_target_bitrate(clamped_bitrate) {
-                             eprintln!("[webrtc-adapt] set_target_bitrate failed: {}", e);
-                         } else {
-                             current_bitrate = clamped_bitrate;
-                             crate::android::webrtc::send_log(
-                                 &log_dc, 
-                                 &session_id, 
-                                 &format!("[adapt] Bitrate adjusted to {} kbps (est available: {} kbps)", clamped_bitrate, avail_kbps),
-                                 "system"
-                             ).await;
-                         }
-                     }
-                 }
+                let avail_kbps = (avail_bits / 1000.0) as u32;
+
+                // Apply conservative factor (80%)
+                let target_kbps = (avail_kbps as f64 * 0.8) as u32;
+
+                // Smoothing: New = 0.7 * Current + 0.3 * Target
+                let new_bitrate = (0.7 * current_bitrate as f64 + 0.3 * target_kbps as f64) as u32;
+
+                // Clamp (500kbps - 6000kbps)
+                let clamped_bitrate = new_bitrate.max(500).min(6000);
+
+                // Threshold > 10% change to avoid spam
+                let diff = (clamped_bitrate as i32 - current_bitrate as i32).abs();
+                // ALWAYS log for now to see what's happening
+                if diff > (current_bitrate as i32 / 10) {
+                    eprintln!(
+                        "[webrtc-adapt] est={} kbps -> target={} kbps (current={})",
+                        avail_kbps, clamped_bitrate, current_bitrate
+                    );
+                    if diff > (current_bitrate as i32 / 10) {
+                        if let Err(e) = pipeline.set_target_bitrate(clamped_bitrate) {
+                            eprintln!("[webrtc-adapt] set_target_bitrate failed: {}", e);
+                        } else {
+                            current_bitrate = clamped_bitrate;
+                            crate::android::webrtc::send_log(
+                                &log_dc,
+                                &session_id,
+                                &format!(
+                                    "[adapt] Bitrate adjusted to {} kbps (est available: {} kbps)",
+                                    clamped_bitrate, avail_kbps
+                                ),
+                                "system",
+                            )
+                            .await;
+                        }
+                    }
+                }
             }
         }
     })

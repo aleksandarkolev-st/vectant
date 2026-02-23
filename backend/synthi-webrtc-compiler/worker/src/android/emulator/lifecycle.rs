@@ -89,11 +89,7 @@ impl EmulatorSession {
         *self.core.x11_display.lock().await = display.clone();
 
         // Build emulator command
-        let emulator_path = self
-            .core
-            .config
-            .android_sdk_root
-            .join("emulator/emulator");
+        let emulator_path = self.core.config.android_sdk_root.join("emulator/emulator");
 
         let mut cmd = Command::new(&emulator_path);
         // GPU mode: ximagesrc capture requires the emulator to render into the X11 window.
@@ -102,18 +98,15 @@ impl EmulatorSession {
         // -gpu guest = software rendering inside Android VM, renders to standard X11 window
         // For video streaming with ximagesrc, -gpu guest is most compatible.
         let default_gpu_mode = if cfg!(target_os = "windows") {
-            std::env::var("SYNTHI_ANDROID_EMULATOR_GPU").unwrap_or_else(|_| "swiftshader_indirect".to_string())
+            std::env::var("SYNTHI_ANDROID_EMULATOR_GPU")
+                .unwrap_or_else(|_| "swiftshader_indirect".to_string())
         } else {
             std::env::var("SYNTHI_ANDROID_EMULATOR_GPU").unwrap_or_else(|_| {
                 // Use guest mode for X11 capture compatibility
                 "guest".to_string()
             })
         };
-        let gpu_override = self
-            .core
-            .config
-            .android_sdk_root
-            .join("emulator/emulator");
+        let gpu_override = self.core.config.android_sdk_root.join("emulator/emulator");
 
         let mut cmd = Command::new(&emulator_path);
         // GPU mode: ximagesrc capture requires the emulator to render into the X11 window.
@@ -122,7 +115,8 @@ impl EmulatorSession {
         // -gpu guest = software rendering inside Android VM, renders to standard X11 window
         // For video streaming with ximagesrc, -gpu guest is most compatible.
         let default_gpu_mode = if cfg!(target_os = "windows") {
-            std::env::var("SYNTHI_ANDROID_EMULATOR_GPU").unwrap_or_else(|_| "swiftshader_indirect".to_string())
+            std::env::var("SYNTHI_ANDROID_EMULATOR_GPU")
+                .unwrap_or_else(|_| "swiftshader_indirect".to_string())
         } else {
             std::env::var("SYNTHI_ANDROID_EMULATOR_GPU").unwrap_or_else(|_| {
                 // Use guest mode for X11 capture compatibility
@@ -138,7 +132,10 @@ impl EmulatorSession {
             .and_then(|idx| self.core.config.extra_args.get(idx + 1))
             .cloned();
         let gpu_mode = gpu_override.clone().unwrap_or_else(|| default_gpu_mode);
-        eprintln!("[emulator] Starting with -gpu {} on DISPLAY={}", gpu_mode, display);
+        eprintln!(
+            "[emulator] Starting with -gpu {} on DISPLAY={}",
+            gpu_mode, display
+        );
         cmd.args([
             "-avd",
             &self.core.config.avd_name,
@@ -148,11 +145,11 @@ impl EmulatorSession {
             &self.core.config.ram_mb.to_string(),
             "-cores",
             &self.core.config.cores.to_string(),
-            "-read-only",        // Don't modify system image
+            "-read-only", // Don't modify system image
             // "-no-snapshot-save", // Allow snapshot saving for faster future boots
             // Enable quick boot (re-enable snapshot load)
-            // "-no-snapshot-load", 
-            "-no-skin",          // Disable device skin/frame (removes side toolbar)
+            // "-no-snapshot-load",
+            "-no-skin", // Disable device skin/frame (removes side toolbar)
         ]);
         if gpu_override.is_none() {
             cmd.args(["-gpu", &gpu_mode]);
@@ -189,7 +186,7 @@ impl EmulatorSession {
                 while let Ok(Some(line)) = reader.next_line().await {
                     // Log all stderr output for debugging boot failures
                     eprintln!("[emulator-err] {}", line);
-                    
+
                     // If emulator output indicates crash, mark state
                     if line.contains("panic") || line.contains("FATAL") {
                         *state.lock().await = EmulatorState::Failed;
@@ -215,16 +212,19 @@ impl EmulatorSession {
                 let adb = self.core.config.android_sdk_root.join("platform-tools/adb");
                 let size_out = Command::new(&adb)
                     .args(["-s", &serial, "shell", "wm", "size"])
-                    .output().await;
+                    .output()
+                    .await;
                 let density_out = Command::new(&adb)
                     .args(["-s", &serial, "shell", "wm", "density"])
-                    .output().await;
-                    
+                    .output()
+                    .await;
+
                 if let (Ok(s), Ok(d)) = (size_out, density_out) {
-                     eprintln!("[boot] Verified display: {} | {}", 
+                    eprintln!(
+                        "[boot] Verified display: {} | {}",
                         String::from_utf8_lossy(&s.stdout).trim(),
                         String::from_utf8_lossy(&d.stdout).trim()
-                     );
+                    );
                 }
 
                 Ok(EmulatorBootResult {
@@ -283,14 +283,17 @@ impl EmulatorSession {
             {
                 let state = self.core.state.lock().await;
                 if matches!(*state, EmulatorState::Failed) {
-                     bail!("Emulator process failed (crashed or exited prematurely) while waiting for ADB");
+                    bail!("Emulator process failed (crashed or exited prematurely) while waiting for ADB");
                 }
-                
+
                 // Also check if process exited without setting state (e.g. clean exit or unknown error)
                 let mut proc_guard = self.core.emulator_process.lock().await;
                 if let Some(child) = proc_guard.as_mut() {
                     if let Ok(Some(status)) = child.try_wait() {
-                        bail!("Emulator process exited unexpectedly with status: {:?}", status);
+                        bail!(
+                            "Emulator process exited unexpectedly with status: {:?}",
+                            status
+                        );
                     }
                 }
             }

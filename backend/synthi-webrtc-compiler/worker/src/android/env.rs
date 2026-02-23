@@ -63,7 +63,10 @@ static LOAD_ANDROID_ENV_ONCE: Once = Once::new();
 pub fn load_android_env_file() {
     LOAD_ANDROID_ENV_ONCE.call_once(|| {
         let manifest_dir = env!("CARGO_MANIFEST_DIR");
-        let path = Path::new(manifest_dir).join("src").join("android").join(".env");
+        let path = Path::new(manifest_dir)
+            .join("src")
+            .join("android")
+            .join(".env");
         if !path.exists() {
             return;
         }

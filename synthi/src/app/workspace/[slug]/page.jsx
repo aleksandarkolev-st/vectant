@@ -170,7 +170,7 @@ export default function EditorPage({ params }) {
     const [latestCompletion, setLatestCompletion] = useState(null);
     const [completionClearSignal, setCompletionClearSignal] = useState(0);
     const [buildLogs, setBuildLogs] = useState([]);
-    const [useAiSplit, setUseAiSplit] = useState(false);
+    const [hmrEnabled, setHmrEnabled] = useState(true);
     const [emulatorRunNonce, setEmulatorRunNonce] = useState(0);
     const [emulatorSessionId, setEmulatorSessionId] = useState(null);
     const [emulatorForcedError, setEmulatorForcedError] = useState('');
@@ -1710,7 +1710,6 @@ export default function EditorPage({ params }) {
                 filename,
                 source,
                 files: additionalFiles,
-                useAiSplit,
                 isGui: runInGuiMode,
                 target,
                 projectRoot,
@@ -1734,7 +1733,7 @@ export default function EditorPage({ params }) {
                 setEmulatorForcedError(msg);
             }
         }
-    }, [activeFile, currentContent, appendBuildLog, dispatch, showTerminal, rawFiles, slug, compile, detectReactNativeProject, detectReactNativeInSource, useAiSplit, emulatorSessionId, cancelMobileJob]);
+    }, [activeFile, currentContent, appendBuildLog, dispatch, showTerminal, rawFiles, slug, compile, detectReactNativeProject, detectReactNativeInSource, runInGuiMode, emulatorSessionId, cancelMobileJob]);
 
     const handleStop = useCallback(async () => {
         const activeSessionId = client?.getActiveSessionId?.();
@@ -1787,6 +1786,12 @@ export default function EditorPage({ params }) {
     const handleSave = useCallback(async () => {
         if (!activeFile) return;
 
+        // If HMR is disabled, skip recompilation on save
+        if (!hmrEnabled) {
+            console.log('[HMR] HMR disabled — skipping recompilation on save');
+            return;
+        }
+
         // Dispatch optimistic "compiling" status immediately for fast feedback
         if (typeof window !== 'undefined') {
             window.dispatchEvent(new CustomEvent('synthi:hmr-status', {
@@ -1825,18 +1830,31 @@ export default function EditorPage({ params }) {
         }
 
         try {
-            console.log('[HMR] Triggering silent compile for save...');
+            // HMR mode: stop the currently running app and re-run it
+            // This ensures a clean restart with the latest code
+            console.log('[HMR] Stopping current app and re-running with latest code...');
+            const activeSessionId = client?.getActiveSessionId?.();
+            if (activeSessionId) {
+                try {
+                    await client.cancelBuild(activeSessionId);
+                } catch (e) {
+                    console.debug('[HMR] Cancel previous build failed (may already be stopped):', e.message);
+                }
+                // Brief pause to let the runner process clean up
+                await new Promise(r => setTimeout(r, 200));
+            }
+
             await compile({
                 filename,
                 source,
                 files: additionalFiles,
-                // We don't attach onLog here to avoid spamming the build log on every save
-                // unless we want to see HMR logs.
+                isGui: runInGuiMode,
             });
+            console.log('[HMR] Re-run succeeded after save');
         } catch (err) {
-            console.error('[HMR] Silent compile failed', err);
+            console.error('[HMR] HMR re-run failed', err);
         }
-    }, [activeFile, currentContent, rawFiles, slug, compile]);
+    }, [activeFile, currentContent, rawFiles, slug, compile, hmrEnabled, runInGuiMode, client]);
 
     const handleEditorMount = useCallback((editorInstance) => {
         setEditor(editorInstance);
@@ -2024,8 +2042,8 @@ export default function EditorPage({ params }) {
                 onRun={handleRun}
                 runInGuiMode={runInGuiMode}
                 setRunInGuiMode={setRunInGuiMode}
-                useAiSplit={useAiSplit}
-                setUseAiSplit={setUseAiSplit}
+                hmrEnabled={hmrEnabled}
+                setHmrEnabled={setHmrEnabled}
                 onStop={handleStop}
                 onReload={handleRestart}
                 isRunning={isCompiling}

@@ -1,44 +1,44 @@
 use anyhow::{bail, Context, Result};
+use gstreamer as gst;
 use serde_json::json;
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use gstreamer as gst;
+use tokio::net::TcpStream;
+use tokio::process::Command;
 use tokio::sync::mpsc;
 use tokio::sync::watch;
 use tokio::sync::Mutex;
 use tokio::time::{sleep, timeout};
-use tokio::process::Command;
-use tokio::net::TcpStream;
-use webrtc::data_channel::RTCDataChannel;
 use webrtc::data_channel::data_channel_state::RTCDataChannelState;
+use webrtc::data_channel::RTCDataChannel;
 
-use crate::android::fs::{
-    reconcile_and_stream_with_rules, take_snapshot_with_rules, ReconcileConfig, SyncRules,
-};
-use crate::android::webrtc::{send_log, send_logcat, send_mobile_capabilities, send_status};
-use crate::android::webrtc::{EmulatorStreamConfig, EmulatorStreamMode};
-use crate::android::webrtc::input::{is_session_cancelled, clear_cancelled_session};
-use crate::android::emulator_grpc;
 use crate::android::emulator::{
     acquire_emulator_daemon, detect_kvm, ensure_emulator_ready, EmulatorConfig, EnsureReadyResult,
     LogcatEntry,
+};
+use crate::android::emulator_grpc;
+use crate::android::fs::{
+    reconcile_and_stream_with_rules, take_snapshot_with_rules, ReconcileConfig, SyncRules,
 };
 use crate::android::react_native::{
     build_apk_for_emulator, check_android_sdk, detect_react_native_project, BuildVariant,
     EmulatorBuildConfig,
 };
-use crate::android::webrtc::{input as emulator_input};
+use crate::android::webrtc::input as emulator_input;
+use crate::android::webrtc::input::{clear_cancelled_session, is_session_cancelled};
 use crate::android::webrtc::video_pipeline;
+use crate::android::webrtc::{send_log, send_logcat, send_mobile_capabilities, send_status};
+use crate::android::webrtc::{EmulatorStreamConfig, EmulatorStreamMode};
 
 use super::project_detection::find_react_native_project_root;
 
-use webrtc::peer_connection::RTCPeerConnection;
 use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
+use webrtc::peer_connection::RTCPeerConnection;
 use webrtc::rtp_transceiver::rtp_codec::RTPCodecType;
-use webrtc::track::track_local::TrackLocal;
 use webrtc::stats::StatsReportType;
+use webrtc::track::track_local::TrackLocal;
 
 async fn wait_for_cancel(session_id: &str) {
     loop {
@@ -103,12 +103,17 @@ async fn xdotool_window_geometry(display: &str, xid: u64) -> Option<(u32, u32)> 
 
 fn parse_xvfb_resolution() -> Option<(i32, i32)> {
     // Keep in sync with emulator lifecycle defaults.
-    let raw = std::env::var("SYNTHI_ANDROID_XVFB_RESOLUTION").unwrap_or_else(|_| "1440x2960".to_string());
+    let raw =
+        std::env::var("SYNTHI_ANDROID_XVFB_RESOLUTION").unwrap_or_else(|_| "1440x2960".to_string());
     let s = raw.trim();
     let (w, h) = s.split_once('x')?;
     let w = w.trim().parse::<i32>().ok()?;
     let h = h.trim().parse::<i32>().ok()?;
-    if w > 0 && h > 0 { Some((w, h)) } else { None }
+    if w > 0 && h > 0 {
+        Some((w, h))
+    } else {
+        None
+    }
 }
 
 async fn xdotool_window_geometry_xywh(display: &str, xid: u64) -> Option<(i32, i32, i32, i32)> {
@@ -201,7 +206,11 @@ async fn wait_for_grpc_ready(host: &str, port: u16, total_timeout: Duration) -> 
     let start = Instant::now();
     loop {
         if start.elapsed() >= total_timeout {
-            bail!("gRPC port {} not reachable within {:?}", addr, total_timeout);
+            bail!(
+                "gRPC port {} not reachable within {:?}",
+                addr,
+                total_timeout
+            );
         }
 
         let attempt = timeout(Duration::from_millis(500), TcpStream::connect(&addr)).await;
@@ -231,8 +240,11 @@ pub async fn handle_react_native_emulator_job(
 ) -> Result<()> {
     // Version marker to identify deployed binary - this helps detect stale binaries
     const JOB_HANDLER_VERSION: &str = "v2-webrtc-video-2025-01-18";
-    eprintln!("[mobile-job] Starting handle_react_native_emulator_job version={}", JOB_HANDLER_VERSION);
-    
+    eprintln!(
+        "[mobile-job] Starting handle_react_native_emulator_job version={}",
+        JOB_HANDLER_VERSION
+    );
+
     // Determine starting path for project detection
     let start_path = if let Some(root) = &project_root {
         let cleaned = root.trim_start_matches('/');
@@ -249,7 +261,10 @@ pub async fn handle_react_native_emulator_job(
     send_log(
         &log_dc,
         &session_id,
-        &format!("[worker] Job handler version: {} (webrtc_video=true, no screenshot fallback)", JOB_HANDLER_VERSION),
+        &format!(
+            "[worker] Job handler version: {} (webrtc_video=true, no screenshot fallback)",
+            JOB_HANDLER_VERSION
+        ),
         "worker",
     )
     .await;
@@ -408,17 +423,17 @@ pub async fn handle_react_native_emulator_job(
     if stream_config.mode == EmulatorStreamMode::Grpc {
         let grpc_gpu = std::env::var("SYNTHI_ANDROID_EMULATOR_GPU")
             .unwrap_or_else(|_| "swiftshader_indirect".to_string());
-        emulator_config
-            .extra_args
-            .extend(vec![
-                "-no-window".to_string(),
-                "-grpc".to_string(),
-                stream_config.grpc.port.to_string(),
-                "-gpu".to_string(),
-                grpc_gpu,
-            ]);
+        emulator_config.extra_args.extend(vec![
+            "-no-window".to_string(),
+            "-grpc".to_string(),
+            stream_config.grpc.port.to_string(),
+            "-gpu".to_string(),
+            grpc_gpu,
+        ]);
         if stream_config.grpc.use_token {
-            emulator_config.extra_args.push("-grpc-use-token".to_string());
+            emulator_config
+                .extra_args
+                .push("-grpc-use-token".to_string());
         }
     }
 
@@ -1059,7 +1074,14 @@ pub async fn handle_react_native_emulator_job(
     .await;
 
     // Step 7: Start logcat streaming (best-effort; may be chatty).
-    send_status(&log_dc, &session_id, "streaming", "Starting device logs...", None).await;
+    send_status(
+        &log_dc,
+        &session_id,
+        "streaming",
+        "Starting device logs...",
+        None,
+    )
+    .await;
 
     let (logcat_tx, mut logcat_rx) = mpsc::unbounded_channel::<LogcatEntry>();
     let logcat_started = daemon
@@ -1113,8 +1135,8 @@ pub async fn handle_react_native_emulator_job(
         let mut app_cfg = video_pipeline::EmulatorAppSrcConfig::default();
         // Use H.264
         app_cfg.codec = video_pipeline::VideoCodec::H264;
-        
-        // Use RGB (scaled to 540x1140 typically). 
+
+        // Use RGB (scaled to 540x1140 typically).
         // Note: The emulator returns RGB even if we ask for RGBA, so we must expect RGB here.
         app_cfg.format = "RGB".to_string();
 
@@ -1122,43 +1144,48 @@ pub async fn handle_react_native_emulator_job(
         // DYNAMIC PAYLOAD TYPE DETECTION
         // -------------------------
         {
-             let transceivers = pc.get_transceivers().await;
-             for t in transceivers {
-                 if t.kind() == RTPCodecType::Video {
-                     let sender = t.sender().await;
-                     let params = sender.get_parameters().await;
-                     for codec in params.rtp_parameters.codecs {
-                         // Check if this codec matches our selected codec
-                         let mime = codec.capability.mime_type.to_lowercase();
-                         let match_found = match app_cfg.codec {
-                             video_pipeline::VideoCodec::H264 => mime.contains("h264"),
-                             video_pipeline::VideoCodec::Vp8 => mime.contains("vp8"),
-                         };
-                         
-                         if match_found {
-                             eprintln!("[mobile-job] Found negotiated codec {} with PT {} fmtp={}", codec.capability.mime_type, codec.payload_type, codec.capability.sdp_fmtp_line);
-                             app_cfg.payload_type = codec.payload_type;
-                             break;
-                         }
-                     }
-                 }
-             }
+            let transceivers = pc.get_transceivers().await;
+            for t in transceivers {
+                if t.kind() == RTPCodecType::Video {
+                    let sender = t.sender().await;
+                    let params = sender.get_parameters().await;
+                    for codec in params.rtp_parameters.codecs {
+                        // Check if this codec matches our selected codec
+                        let mime = codec.capability.mime_type.to_lowercase();
+                        let match_found = match app_cfg.codec {
+                            video_pipeline::VideoCodec::H264 => mime.contains("h264"),
+                            video_pipeline::VideoCodec::Vp8 => mime.contains("vp8"),
+                        };
+
+                        if match_found {
+                            eprintln!(
+                                "[mobile-job] Found negotiated codec {} with PT {} fmtp={}",
+                                codec.capability.mime_type,
+                                codec.payload_type,
+                                codec.capability.sdp_fmtp_line
+                            );
+                            app_cfg.payload_type = codec.payload_type;
+                            break;
+                        }
+                    }
+                }
+            }
         }
-        
+
         if let Ok((w, h)) = emulator_input::query_device_size(&adb_path, &emulator_serial).await {
             if w > 0 && h > 0 {
                 if w > 720 {
-                    // High-res device: request 1/2 scale from the emulator to reduce bandwidth 
+                    // High-res device: request 1/2 scale from the emulator to reduce bandwidth
                     stream_config.grpc.target_width = Some(w / 2);
                     stream_config.grpc.target_height = Some(h / 2);
-                    
+
                     app_cfg.width = w / 2;
                     app_cfg.height = h / 2;
                 } else {
                     // Already low-res (native 540p/720p): use as is
                     stream_config.grpc.target_width = Some(w);
                     stream_config.grpc.target_height = Some(h);
-                    
+
                     app_cfg.width = w;
                     app_cfg.height = h;
                 }
@@ -1179,12 +1206,12 @@ pub async fn handle_react_native_emulator_job(
 
         // REMOVED REDUNDANT PIPELINE START
 
-        // Note: we must update the stream config passed to stream_frames, 
+        // Note: we must update the stream config passed to stream_frames,
         // effectively using the updated width/height set above.
-        // Start the pipeline BEFORE gRPC simply to ensure caps are ready? 
+        // Start the pipeline BEFORE gRPC simply to ensure caps are ready?
         // Actually, logic order: start gRPC stream (to get frames), then start main pipeline?
         // Let's keep original order: gRPC first, then pipeline, but stream_frames needs updated config.
-        
+
         let mut frame_rx = match emulator_grpc::stream_frames(&stream_config.grpc).await {
             Ok(rx) => rx,
             Err(e) => {
@@ -1213,28 +1240,43 @@ pub async fn handle_react_native_emulator_job(
             .context("gRPC pipeline missing appsrc")?;
 
         // Start bitrate adaptation
-        adaptation_task = Some(spawn_video_bitrate_adaptation(pc.clone(), pipeline.clone(), log_dc.clone(), session_id.clone()));
+        adaptation_task = Some(spawn_video_bitrate_adaptation(
+            pc.clone(),
+            pipeline.clone(),
+            log_dc.clone(),
+            session_id.clone(),
+        ));
 
         // Wait a bit and then try to interact with the device to wake it up
         let adb_path_clone = adb_path.clone();
         let serial_clone = emulator_serial.clone();
-        
+
         tokio::spawn(async move {
             tokio::time::sleep(Duration::from_millis(1500)).await;
-            
+
             // Wake up
             let _ = tokio::process::Command::new(&adb_path_clone)
-                .arg("-s").arg(&serial_clone)
-                .arg("shell").arg("input").arg("keyevent").arg("KEYCODE_WAKEUP")
-                .output().await;
+                .arg("-s")
+                .arg(&serial_clone)
+                .arg("shell")
+                .arg("input")
+                .arg("keyevent")
+                .arg("KEYCODE_WAKEUP")
+                .output()
+                .await;
 
             tokio::time::sleep(Duration::from_millis(500)).await;
 
             // Unlock (Menu key often helps dismiss lock screen on emulator)
             let _ = tokio::process::Command::new(&adb_path_clone)
-                .arg("-s").arg(&serial_clone)
-                .arg("shell").arg("input").arg("keyevent").arg("82") // MENU
-                .output().await;
+                .arg("-s")
+                .arg(&serial_clone)
+                .arg("shell")
+                .arg("input")
+                .arg("keyevent")
+                .arg("82") // MENU
+                .output()
+                .await;
         });
 
         let log_dc_for_grpc = log_dc.clone();
@@ -1300,7 +1342,7 @@ pub async fn handle_react_native_emulator_job(
 
                         frames += 1;
                         last_frame_at = Instant::now();
-                        
+
                         if frame.width > 0 && frame.height > 0 {
                             let size = (frame.width, frame.height);
                             if last_frame_size != Some(size) {
@@ -1384,7 +1426,7 @@ pub async fn handle_react_native_emulator_job(
         let mut cfg = video_pipeline::EmulatorVideoConfig::default();
         // Use H.264
         cfg.codec = video_pipeline::VideoCodec::H264;
-        
+
         if !session_display.trim().is_empty() {
             cfg.x11_display = session_display;
         } else if let Ok(d) = std::env::var("DISPLAY") {
@@ -1408,7 +1450,9 @@ pub async fn handle_react_native_emulator_job(
         let mut emulator_geom: Option<(i32, i32, i32, i32)> = None;
         if !cfg!(target_os = "windows") {
             if let Some((xid, _w, _h)) = find_emulator_x11_window(&cfg.x11_display).await {
-                if let Some((x, y, w, h)) = xdotool_window_geometry_xywh(&cfg.x11_display, xid).await {
+                if let Some((x, y, w, h)) =
+                    xdotool_window_geometry_xywh(&cfg.x11_display, xid).await
+                {
                     emulator_geom = Some((x, y, w, h));
                     if let Some((sw, sh)) = parse_xvfb_resolution() {
                         let offscreen = x >= sw || y >= sh || (x + w) <= 0 || (y + h) <= 0;
@@ -1457,7 +1501,10 @@ pub async fn handle_react_native_emulator_job(
                 send_log(
                     &log_dc,
                     &session_id,
-                    &format!("[video] capturing emulator X11 window xid={}{} on DISPLAY={}", xid, extra, cfg.x11_display),
+                    &format!(
+                        "[video] capturing emulator X11 window xid={}{} on DISPLAY={}",
+                        xid, extra, cfg.x11_display
+                    ),
                     "emulator",
                 )
                 .await;
@@ -1484,7 +1531,7 @@ pub async fn handle_react_native_emulator_job(
                 cfg.starty = Some(y.max(0));
                 cfg.endx = Some(x + w);
                 cfg.endy = Some(y + h);
-                
+
                 // Crop the SDK toolbar/right padding.
                 // Override via SYNTHI_ANDROID_TOOLBAR_WIDTH, else infer from device size vs window width.
                 let mut toolbar_width = std::env::var("SYNTHI_ANDROID_TOOLBAR_WIDTH")
@@ -1504,19 +1551,20 @@ pub async fn handle_react_native_emulator_job(
                                 let pad = std::env::var("SYNTHI_ANDROID_TOOLBAR_PAD_PX")
                                     .ok()
                                     .and_then(|v| v.parse::<u32>().ok())
-                                    .unwrap_or(120) as i32;
+                                    .unwrap_or(120)
+                                    as i32;
                                 toolbar_width = extra + pad; // extra padding to fully remove toolbar gutter
                             }
                         }
                     }
                 }
                 cfg.crop_right = toolbar_width.max(0) as u32;
-                
+
                 // Use the capture region size MINUS the crop as output size (don't distort aspect ratio)
                 // The actual video will be (w - toolbar_width) x h after cropping
                 cfg.width = (w - toolbar_width).max(100) as u32;
                 cfg.height = h as u32;
-                
+
                 send_log(
                     &log_dc,
                     &session_id,
@@ -1543,7 +1591,8 @@ pub async fn handle_react_native_emulator_job(
         // The device resolution query is only used when we have no better size info.
         if cfg.startx.is_none() {
             // Only override dimensions if not using region capture
-            if let Ok((w, h)) = emulator_input::query_device_size(&adb_path, &emulator_serial).await {
+            if let Ok((w, h)) = emulator_input::query_device_size(&adb_path, &emulator_serial).await
+            {
                 if w > 0 && h > 0 {
                     cfg.width = w;
                     cfg.height = h;
@@ -1553,30 +1602,33 @@ pub async fn handle_react_native_emulator_job(
 
         // Detect negotiated payload type to ensure GStreamer matches the SDP
         {
-             let transceivers = pc.get_transceivers().await;
-             for t in transceivers {
-                 if t.kind() == RTPCodecType::Video {
-                     let sender = t.sender().await;
-                     let params = sender.get_parameters().await;
-                     for codec in params.rtp_parameters.codecs {
-                         // Check if this codec matches our selected codec
-                         let mime = codec.capability.mime_type.to_lowercase();
-                         let match_found = match cfg.codec {
-                             video_pipeline::VideoCodec::H264 => mime.contains("h264"),
-                             video_pipeline::VideoCodec::Vp8 => mime.contains("vp8"),
-                         };
-                         
-                         if match_found {
-                             eprintln!("[mobile-job] Found negotiated codec {} with PT {}", codec.capability.mime_type, codec.payload_type);
-                             cfg.payload_type = codec.payload_type;
-                             
-                             // If H.264, try to find packetization mode if it matters (usually 1)
-                             // But PT is the most critical match.
-                             break;
-                         }
-                     }
-                 }
-             }
+            let transceivers = pc.get_transceivers().await;
+            for t in transceivers {
+                if t.kind() == RTPCodecType::Video {
+                    let sender = t.sender().await;
+                    let params = sender.get_parameters().await;
+                    for codec in params.rtp_parameters.codecs {
+                        // Check if this codec matches our selected codec
+                        let mime = codec.capability.mime_type.to_lowercase();
+                        let match_found = match cfg.codec {
+                            video_pipeline::VideoCodec::H264 => mime.contains("h264"),
+                            video_pipeline::VideoCodec::Vp8 => mime.contains("vp8"),
+                        };
+
+                        if match_found {
+                            eprintln!(
+                                "[mobile-job] Found negotiated codec {} with PT {}",
+                                codec.capability.mime_type, codec.payload_type
+                            );
+                            cfg.payload_type = codec.payload_type;
+
+                            // If H.264, try to find packetization mode if it matters (usually 1)
+                            // But PT is the most critical match.
+                            break;
+                        }
+                    }
+                }
+            }
         }
 
         send_log(
@@ -1623,7 +1675,9 @@ pub async fn handle_react_native_emulator_job(
                         Ok(p) => Arc::new(p),
                         Err(e2) => {
                             emulator_input::unregister_session_sync(&session_id);
-                            return Err(e2).context("failed to start emulator video pipeline (root capture retry)");
+                            return Err(e2).context(
+                                "failed to start emulator video pipeline (root capture retry)",
+                            );
                         }
                     }
                 } else {
@@ -1645,16 +1699,18 @@ pub async fn handle_react_native_emulator_job(
             let sender = t.sender().await;
             eprintln!("[mobile-job] Attaching video track to transceiver...");
             match sender
-                .replace_track(Some(Arc::clone(&pipeline.track) as Arc<dyn TrackLocal + Send + Sync>))
+                .replace_track(Some(
+                    Arc::clone(&pipeline.track) as Arc<dyn TrackLocal + Send + Sync>
+                ))
                 .await
             {
                 Ok(_) => {
                     eprintln!("[mobile-job] Video track attached successfully");
-                    
+
                     // Critical: Retrieve the negotiated SSRC from the sender
                     // and inject it into the video pipeline.
                     let params = sender.get_parameters().await;
-                    
+
                     if !params.encodings.is_empty() {
                         let ssrc = params.encodings[0].ssrc;
                         eprintln!("[mobile-job] Found Sender SSRC: {}", ssrc);
@@ -1735,11 +1791,20 @@ pub async fn handle_react_native_emulator_job(
     loop {
         // Check if the session was cancelled by the user
         if is_session_cancelled(&session_id) {
-            eprintln!("[mobile-job] Session {} cancelled by user, stopping...", session_id);
-            send_log(&log_dc, &session_id, "[video] Session cancelled by user", "emulator").await;
+            eprintln!(
+                "[mobile-job] Session {} cancelled by user, stopping...",
+                session_id
+            );
+            send_log(
+                &log_dc,
+                &session_id,
+                "[video] Session cancelled by user",
+                "emulator",
+            )
+            .await;
             break;
         }
-        
+
         if Instant::now() >= stream_until {
             break;
         }
@@ -1750,7 +1815,7 @@ pub async fn handle_react_native_emulator_job(
             RTCPeerConnectionState::Connected | RTCPeerConnectionState::Connecting => {}
             _ => break,
         }
-        
+
         // Periodically log RTP packet count to help diagnose video streaming issues
         if last_rtp_log.elapsed() >= Duration::from_secs(5) {
             let rtp_count = pipeline.get_rtp_packet_count();
@@ -1758,20 +1823,24 @@ pub async fn handle_react_native_emulator_job(
             let gst_state = pipeline.get_pipeline_state();
             let errors = pipeline.drain_errors();
             let packets_per_sec = (rtp_count - last_rtp_count) / 5;
-            
+
             let mut msg = format!(
                 "[video-rtp] worker stats: rtp={} appsink={} pps={} gst={} pc={:?}",
-                rtp_count, appsink_count, packets_per_sec, gst_state, pc.connection_state()
+                rtp_count,
+                appsink_count,
+                packets_per_sec,
+                gst_state,
+                pc.connection_state()
             );
             if !errors.is_empty() {
                 msg.push_str(&format!(" errors=[{}]", errors.join(", ")));
             }
-            
+
             send_log(&log_dc, &session_id, &msg, "emulator").await;
             last_rtp_count = rtp_count;
             last_rtp_log = Instant::now();
         }
-        
+
         sleep(Duration::from_millis(250)).await;
     }
 
@@ -1838,14 +1907,18 @@ fn spawn_video_bitrate_adaptation(
         loop {
             interval.tick().await;
 
-            if pc.connection_state() == RTCPeerConnectionState::Closed ||
-               pc.connection_state() == RTCPeerConnectionState::Failed {
+            if pc.connection_state() == RTCPeerConnectionState::Closed
+                || pc.connection_state() == RTCPeerConnectionState::Failed
+            {
                 break;
             }
 
             // Check if cancelled
             if crate::android::webrtc::input::is_session_cancelled(&session_id) {
-                eprintln!("[webrtc-adapt] Session {} cancelled, stopping adaptation loop", session_id);
+                eprintln!(
+                    "[webrtc-adapt] Session {} cancelled, stopping adaptation loop",
+                    session_id
+                );
                 break;
             }
 
@@ -1855,13 +1928,13 @@ fn spawn_video_bitrate_adaptation(
 
             for (_, stat) in &stats.reports {
                 if let StatsReportType::CandidatePair(cp) = stat {
-                     // Check if this pair is actually sending packets.
-                     if cp.packets_sent > 0 && cp.available_outgoing_bitrate > 0.0 {
+                    // Check if this pair is actually sending packets.
+                    if cp.packets_sent > 0 && cp.available_outgoing_bitrate > 0.0 {
                         // available_bitrate = Some(cp.available_outgoing_bitrate);
                         // eprintln!("[webrtc-adapt] Active pair found: available_outgoing_bitrate={}", cp.available_outgoing_bitrate);
                         available_bitrate = Some(cp.available_outgoing_bitrate);
                         break;
-                     }
+                    }
                 } else if let StatsReportType::OutboundRTP(_out) = stat {
                     // Also check outbound RTP stats for diagnostics
                     /* if out.packets_sent > 0 {
@@ -1869,43 +1942,50 @@ fn spawn_video_bitrate_adaptation(
                     } */
                 }
             }
-            
+
             if let Some(avail_bits) = available_bitrate {
-                 let avail_kbps = (avail_bits / 1000.0) as u32;
-                 // eprintln!("[webrtc-adapt] Found bandwidth estimate: {} kbps", avail_kbps); // DEBUG LOG
-                 
-                 // Apply conservative factor (80%)
-                 let target_kbps = (avail_kbps as f64 * 0.8) as u32;
-                 
-                 // Smoothing: New = 0.7 * Current + 0.3 * Target
-                 let new_bitrate = (0.7 * current_bitrate as f64 + 0.3 * target_kbps as f64) as u32;
-                 
-                 // Clamp (500kbps - 6000kbps)
-                 let clamped_bitrate = new_bitrate.max(500).min(6000);
-                 
-                 // Threshold > 10% change to avoid spam
-                 let diff = (clamped_bitrate as i32 - current_bitrate as i32).abs();
-                 // ALWAYS log for now to see what's happening
-                 if diff > (current_bitrate as i32 / 10) {
-                 // if true {
-                     eprintln!("[webrtc-adapt] est={} kbps -> target={} kbps (current={})", avail_kbps, clamped_bitrate, current_bitrate);
-                     if diff > (current_bitrate as i32 / 10) { 
-                         if let Err(e) = pipeline.set_target_bitrate(clamped_bitrate) {
-                             eprintln!("[webrtc-adapt] set_target_bitrate failed: {}", e);
-                         } else {
-                             current_bitrate = clamped_bitrate;
-                             crate::android::webrtc::send_log(
-                                 &log_dc, 
-                                 &session_id, 
-                                 &format!("[adapt] Bitrate adjusted to {} kbps (est available: {} kbps)", clamped_bitrate, avail_kbps),
-                                 "system"
-                             ).await;
-                         }
-                     }
-                 }
+                let avail_kbps = (avail_bits / 1000.0) as u32;
+                // eprintln!("[webrtc-adapt] Found bandwidth estimate: {} kbps", avail_kbps); // DEBUG LOG
+
+                // Apply conservative factor (80%)
+                let target_kbps = (avail_kbps as f64 * 0.8) as u32;
+
+                // Smoothing: New = 0.7 * Current + 0.3 * Target
+                let new_bitrate = (0.7 * current_bitrate as f64 + 0.3 * target_kbps as f64) as u32;
+
+                // Clamp (500kbps - 6000kbps)
+                let clamped_bitrate = new_bitrate.max(500).min(6000);
+
+                // Threshold > 10% change to avoid spam
+                let diff = (clamped_bitrate as i32 - current_bitrate as i32).abs();
+                // ALWAYS log for now to see what's happening
+                if diff > (current_bitrate as i32 / 10) {
+                    // if true {
+                    eprintln!(
+                        "[webrtc-adapt] est={} kbps -> target={} kbps (current={})",
+                        avail_kbps, clamped_bitrate, current_bitrate
+                    );
+                    if diff > (current_bitrate as i32 / 10) {
+                        if let Err(e) = pipeline.set_target_bitrate(clamped_bitrate) {
+                            eprintln!("[webrtc-adapt] set_target_bitrate failed: {}", e);
+                        } else {
+                            current_bitrate = clamped_bitrate;
+                            crate::android::webrtc::send_log(
+                                &log_dc,
+                                &session_id,
+                                &format!(
+                                    "[adapt] Bitrate adjusted to {} kbps (est available: {} kbps)",
+                                    clamped_bitrate, avail_kbps
+                                ),
+                                "system",
+                            )
+                            .await;
+                        }
+                    }
+                }
             } else {
-                 // Simplified fallback logging
-                 if stats.reports.len() > 0 {
+                // Simplified fallback logging
+                if stats.reports.len() > 0 {
                     // Only log every 10th failure to reduce spam, or just log simplified info
                     let mut found_succeeded = false;
                     for (id, stat) in &stats.reports {
@@ -1919,7 +1999,7 @@ fn spawn_video_bitrate_adaptation(
                     if !found_succeeded {
                         eprintln!("[webrtc-adapt] No SUCCEEDED CandidatePair found yet...");
                     }
-                 }
+                }
             }
         }
     })

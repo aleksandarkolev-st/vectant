@@ -34,8 +34,9 @@ impl BuildTarget {
     pub fn required_os(&self) -> RequiredOS {
         match self {
             // Android emulators require Linux (headless, software rendering)
-            BuildTarget::ReactNativeAndroidEmulator
-            | BuildTarget::FlutterAndroidEmulator => RequiredOS::Linux,
+            BuildTarget::ReactNativeAndroidEmulator | BuildTarget::FlutterAndroidEmulator => {
+                RequiredOS::Linux
+            }
             // Everything else can run on any supported OS
             _ => RequiredOS::Any,
         }
@@ -47,8 +48,7 @@ impl BuildTarget {
             BuildTarget::CppNative | BuildTarget::Typescript | BuildTarget::Python => 2,
             BuildTarget::RustNative => 4,
             // Emulator requires 6GB (emulator process + app + build tools)
-            BuildTarget::ReactNativeAndroidEmulator
-            | BuildTarget::FlutterAndroidEmulator => 6,
+            BuildTarget::ReactNativeAndroidEmulator | BuildTarget::FlutterAndroidEmulator => 6,
         }
     }
 
@@ -90,8 +90,9 @@ impl BuildTarget {
             ],
 
             // Emulator execution requires the emulator capability class
-            BuildTarget::ReactNativeAndroidEmulator
-            | BuildTarget::FlutterAndroidEmulator => &[CapabilityClass::LinuxReactNativeEmulator],
+            BuildTarget::ReactNativeAndroidEmulator | BuildTarget::FlutterAndroidEmulator => {
+                &[CapabilityClass::LinuxReactNativeEmulator]
+            }
         }
     }
 

@@ -13,11 +13,11 @@ use crate::runtime::hot_reload::v2::{get_module_abi_version, validate_state_magi
 use crate::runtime::runner::validator;
 
 // Host KV
-use crate::infra::host_kv::{
-    module_slot_to_u32, read_schema_table, HostKvApiV1, HostKvSchemaEvent,
-    SynthiHostContextV1, KV_STORE,
-};
 use crate::compiler::plugin_contract::ModuleSlot as CompilerModuleSlot;
+use crate::infra::host_kv::{
+    module_slot_to_u32, read_schema_table, HostKvApiV1, HostKvSchemaEvent, SynthiHostContextV1,
+    KV_STORE,
+};
 
 fn to_compiler_slot(slot: ModuleSlot) -> CompilerModuleSlot {
     match slot {
@@ -80,11 +80,7 @@ pub unsafe fn process_load_command(
             // Generate a simple hash for tracking (real hash from file)
             let content_hash = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
 
-            match module_loader.load(
-                std::path::Path::new(path),
-                module_slot,
-                content_hash,
-            ) {
+            match module_loader.load(std::path::Path::new(path), module_slot, content_hash) {
                 LoadResult::Success {
                     module_id,
                     abi_version,
@@ -259,11 +255,8 @@ pub unsafe fn process_load_command(
                 };
 
                 // Use orchestrator for unified save (binary-first with JSON fallback)
-                saved_state = Some(orchestrator.save_module_state(
-                    module_slot,
-                    &old_lib,
-                    state_to_save,
-                ));
+                saved_state =
+                    Some(orchestrator.save_module_state(module_slot, &old_lib, state_to_save));
 
                 if let Some(ref ss) = saved_state {
                     if ss.was_binary {
@@ -375,8 +368,7 @@ pub unsafe fn process_load_command(
 
             if let Some(ref ss) = saved_state {
                 // Get template JSON for field-level diffing (if JSON path needed)
-                let template_json =
-                    orchestrator.get_template_json(module_slot, &new_lib);
+                let template_json = orchestrator.get_template_json(module_slot, &new_lib);
 
                 // Use orchestrator to load state
                 let loaded = orchestrator.load_module_state(
@@ -454,11 +446,8 @@ pub unsafe fn process_load_command(
                     );
 
                     // Register schemas and handle any resets
-                    let host_kv_events = KV_STORE.register_schemas(
-                        sid,
-                        module_slot_to_u32(module_slot),
-                        &schemas,
-                    );
+                    let host_kv_events =
+                        KV_STORE.register_schemas(sid, module_slot_to_u32(module_slot), &schemas);
 
                     // Emit HMR status for schema events
                     for event in &host_kv_events {
@@ -660,10 +649,8 @@ pub unsafe fn process_load_command(
             // ============================================================
             if has_host_kv_support && session_id.is_some() {
                 let sid = session_id.as_ref().unwrap();
-                let preserved_namespaces = KV_STORE.get_preserved_namespaces(
-                    sid,
-                    module_slot_to_u32(module_slot),
-                );
+                let preserved_namespaces =
+                    KV_STORE.get_preserved_namespaces(sid, module_slot_to_u32(module_slot));
                 if !preserved_namespaces.is_empty() {
                     let status = HmrStatus::host_kv_preserved(name, preserved_namespaces);
                     eprintln!("[Runner] [HMR-STATUS] {}", status.to_json());

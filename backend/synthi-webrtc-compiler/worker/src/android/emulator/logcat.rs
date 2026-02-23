@@ -31,7 +31,8 @@ impl EmulatorSession {
 
         // Logcat can be extremely verbose; default to warnings+ to reduce noise.
         // Override with SYNTHI_ANDROID_LOGCAT_FILTER (e.g. "*:I" or "MyTag:D *:S").
-        let filter = std::env::var("SYNTHI_ANDROID_LOGCAT_FILTER").unwrap_or_else(|_| "*:W".to_string());
+        let filter =
+            std::env::var("SYNTHI_ANDROID_LOGCAT_FILTER").unwrap_or_else(|_| "*:W".to_string());
 
         // Filter by package if specified
         if let Some(pkg) = package_name {

@@ -169,14 +169,20 @@ pub fn apply_core_guardrails(content: &str, _shared_content: &str, allow_gui: bo
         // IMPORTANT: The regex must consume the entire expression INCLUDING the
         // semicolon.  A char class like [({};)] would eat only one char (e.g. '(')
         // and leave a dangling ')' producing invalid C++.
-        let re_new_app = Regex::new(r"AppState\*\s+state\s*=\s*new\s+AppState\s*(?:\(\)|\{[^}]*\})?\s*;").unwrap();
+        let re_new_app =
+            Regex::new(r"AppState\*\s+state\s*=\s*new\s+AppState\s*(?:\(\)|\{[^}]*\})?\s*;")
+                .unwrap();
         result = re_new_app.replace_all(&result, "AppState* state = (prev_state) ? (AppState*)prev_state : &app_state; // [Guardrail] Fixed new->static").to_string();
 
-        let re_new_core = Regex::new(r"CoreState\*\s+state\s*=\s*new\s+CoreState\s*(?:\(\)|\{[^}]*\})?\s*;").unwrap();
+        let re_new_core =
+            Regex::new(r"CoreState\*\s+state\s*=\s*new\s+CoreState\s*(?:\(\)|\{[^}]*\})?\s*;")
+                .unwrap();
         result = re_new_core.replace_all(&result, "CoreState* state = (prev_state) ? (CoreState*)prev_state : &core_state; // [Guardrail] Fixed new->static").to_string();
 
         // calloc patterns:  (AppState*)calloc(1, sizeof(AppState))
-        let re_calloc = Regex::new(r"AppState\*\s+state\s*=\s*\(AppState\*\)\s*calloc\s*\([^)]*\)\s*;").unwrap();
+        let re_calloc =
+            Regex::new(r"AppState\*\s+state\s*=\s*\(AppState\*\)\s*calloc\s*\([^)]*\)\s*;")
+                .unwrap();
         result = re_calloc.replace_all(&result, "AppState* state = (prev_state) ? (AppState*)prev_state : &app_state; // [Guardrail] Fixed calloc->static").to_string();
 
         // if (!prev_state) { state = (AppState*)malloc... } blocks
@@ -192,10 +198,9 @@ pub fn apply_core_guardrails(content: &str, _shared_content: &str, allow_gui: bo
             .to_string();
 
         // if (!prev_state) { state = new AppState... } blocks
-        let re_if_new = Regex::new(
-            r"if\s*\(\s*!prev_state\s*\)\s*\{\s*state\s*=\s*new\s+AppState[^}]+\}",
-        )
-        .unwrap();
+        let re_if_new =
+            Regex::new(r"if\s*\(\s*!prev_state\s*\)\s*\{\s*state\s*=\s*new\s+AppState[^}]+\}")
+                .unwrap();
         result = re_if_new
             .replace_all(
                 &result,
@@ -208,7 +213,10 @@ pub fn apply_core_guardrails(content: &str, _shared_content: &str, allow_gui: bo
     if result.contains("delete state") {
         let re_delete = Regex::new(r"delete\s+state\s*;").unwrap();
         result = re_delete
-            .replace_all(&result, "// delete state; // [Guardrail] Commented - runner manages state")
+            .replace_all(
+                &result,
+                "// delete state; // [Guardrail] Commented - runner manages state",
+            )
             .to_string();
     }
 
@@ -327,37 +335,39 @@ pub fn apply_core_guardrails(content: &str, _shared_content: &str, allow_gui: bo
     if !result.contains("core_on_load") && !result.contains("on_load") {
         let re_main_no_args = Regex::new(r"\bint\s+main\s*\(\s*(void)?\s*\)").unwrap();
         let re_main_args = Regex::new(r"\bint\s+main\s*\(").unwrap();
-        
+
         let mut handled = false;
 
         if re_main_no_args.is_match(&result) {
-             // Case 1: int main()
-             result = re_main_no_args.replace(&result, "int user_main()").to_string();
-             
-             result.push_str("\n\n// [Guardrail] Injected main() adapter (no-args)\n");
-             result.push_str("#include <pthread.h>\n");
-             result.push_str("int user_main();\n"); 
-             result.push_str("extern \"C\" {\n");
-             result.push_str("    static void* main_thread_func(void* arg) {\n");
-             result.push_str("        user_main();\n");
-             result.push_str("        return NULL;\n");
-             result.push_str("    }\n");
-             handled = true;
+            // Case 1: int main()
+            result = re_main_no_args
+                .replace(&result, "int user_main()")
+                .to_string();
+
+            result.push_str("\n\n// [Guardrail] Injected main() adapter (no-args)\n");
+            result.push_str("#include <pthread.h>\n");
+            result.push_str("int user_main();\n");
+            result.push_str("extern \"C\" {\n");
+            result.push_str("    static void* main_thread_func(void* arg) {\n");
+            result.push_str("        user_main();\n");
+            result.push_str("        return NULL;\n");
+            result.push_str("    }\n");
+            handled = true;
         } else if re_main_args.is_match(&result) {
-             // Case 2: int main(argc, argv) or similar
-             result = re_main_args.replace(&result, "int user_main(").to_string();
-             
-             result.push_str("\n\n// [Guardrail] Injected main() adapter (with-args)\n");
-             result.push_str("#include <pthread.h>\n");
-             result.push_str("int user_main(int argc, char** argv);\n");
-             result.push_str("extern \"C\" {\n");
-             result.push_str("    static void* main_thread_func(void* arg) {\n");
-             result.push_str("        char* app_name = (char*)\"app\";\n");
-             result.push_str("        char* argv[] = {app_name, NULL};\n");
-             result.push_str("        user_main(1, argv);\n");
-             result.push_str("        return NULL;\n");
-             result.push_str("    }\n");
-             handled = true;
+            // Case 2: int main(argc, argv) or similar
+            result = re_main_args.replace(&result, "int user_main(").to_string();
+
+            result.push_str("\n\n// [Guardrail] Injected main() adapter (with-args)\n");
+            result.push_str("#include <pthread.h>\n");
+            result.push_str("int user_main(int argc, char** argv);\n");
+            result.push_str("extern \"C\" {\n");
+            result.push_str("    static void* main_thread_func(void* arg) {\n");
+            result.push_str("        char* app_name = (char*)\"app\";\n");
+            result.push_str("        char* argv[] = {app_name, NULL};\n");
+            result.push_str("        user_main(1, argv);\n");
+            result.push_str("        return NULL;\n");
+            result.push_str("    }\n");
+            handled = true;
         }
 
         if handled {
@@ -672,14 +682,20 @@ pub fn apply_gui_guardrails(content: &str, shared_content: &str) -> String {
         result = re_malloc2.replace_all(&result, "GuiState* state = (prev_state) ? (GuiState*)prev_state : &gui_state; // [Guardrail] Fixed malloc->static").to_string();
 
         // C++ new patterns — match full expression through semicolon
-        let re_new_app = Regex::new(r"AppState\*\s+state\s*=\s*new\s+AppState\s*(?:\(\)|\{[^}]*\})?\s*;").unwrap();
+        let re_new_app =
+            Regex::new(r"AppState\*\s+state\s*=\s*new\s+AppState\s*(?:\(\)|\{[^}]*\})?\s*;")
+                .unwrap();
         result = re_new_app.replace_all(&result, "AppState* state = (prev_state) ? (AppState*)prev_state : &gui_app_state; // [Guardrail] Fixed new->static").to_string();
 
-        let re_new_gui = Regex::new(r"GuiState\*\s+state\s*=\s*new\s+GuiState\s*(?:\(\)|\{[^}]*\})?\s*;").unwrap();
+        let re_new_gui =
+            Regex::new(r"GuiState\*\s+state\s*=\s*new\s+GuiState\s*(?:\(\)|\{[^}]*\})?\s*;")
+                .unwrap();
         result = re_new_gui.replace_all(&result, "GuiState* state = (prev_state) ? (GuiState*)prev_state : &gui_state; // [Guardrail] Fixed new->static").to_string();
 
         // calloc patterns
-        let re_calloc = Regex::new(r"AppState\*\s+state\s*=\s*\(AppState\*\)\s*calloc\s*\([^)]*\)\s*;").unwrap();
+        let re_calloc =
+            Regex::new(r"AppState\*\s+state\s*=\s*\(AppState\*\)\s*calloc\s*\([^)]*\)\s*;")
+                .unwrap();
         result = re_calloc.replace_all(&result, "AppState* state = (prev_state) ? (AppState*)prev_state : &gui_app_state; // [Guardrail] Fixed calloc->static").to_string();
     }
 
@@ -693,7 +709,10 @@ pub fn apply_gui_guardrails(content: &str, shared_content: &str) -> String {
     if result.contains("delete state") {
         let re_delete = Regex::new(r"delete\s+state\s*;").unwrap();
         result = re_delete
-            .replace_all(&result, "// delete state; // [Guardrail] Commented - runner manages state")
+            .replace_all(
+                &result,
+                "// delete state; // [Guardrail] Commented - runner manages state",
+            )
             .to_string();
     }
 

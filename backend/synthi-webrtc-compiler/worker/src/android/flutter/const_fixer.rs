@@ -46,18 +46,18 @@ const NON_CONST_PATTERNS: &[&str] = &[
     "onDismissed:",
     "onEnd:",
     "onStatusChanged:",
-    "controller:",      // AnimationController etc. are runtime objects
-    "onPressed: ()",    // explicit lambda
-    "=> ",              // arrow functions in const scope
-    "setState(",        // definitely not const
-    "Navigator.",       // navigation calls
+    "controller:",   // AnimationController etc. are runtime objects
+    "onPressed: ()", // explicit lambda
+    "=> ",           // arrow functions in const scope
+    "setState(",     // definitely not const
+    "Navigator.",    // navigation calls
     "ScaffoldMessenger.",
     "onSelected:",
     "onExpansionChanged:",
     "onReorder:",
     "onWillPop:",
     "onPopInvoked:",
-    "itemBuilder:",     // builder callbacks
+    "itemBuilder:", // builder callbacks
     "builder:",
     "onGenerateRoute:",
 ];
@@ -174,7 +174,9 @@ fn fix_const_pass(source: &str) -> (String, usize) {
                     }
                 };
 
-                if let Some(close_pos) = find_matching_close(&chars, open_pos, open_char, close_char) {
+                if let Some(close_pos) =
+                    find_matching_close(&chars, open_pos, open_char, close_char)
+                {
                     // Extract the scope content
                     let scope: String = chars[open_pos..=close_pos].iter().collect();
 
@@ -274,7 +276,12 @@ fn find_opening_bracket(chars: &[char], start: usize) -> Option<usize> {
 }
 
 /// Finds the matching close bracket, respecting nesting and string literals.
-fn find_matching_close(chars: &[char], open: usize, open_char: char, close_char: char) -> Option<usize> {
+fn find_matching_close(
+    chars: &[char],
+    open: usize,
+    open_char: char,
+    close_char: char,
+) -> Option<usize> {
     let mut depth = 0;
     let mut i = open;
     let len = chars.len();

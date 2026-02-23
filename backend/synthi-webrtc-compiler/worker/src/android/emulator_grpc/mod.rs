@@ -55,10 +55,12 @@ impl EmulatorGrpcClients {
     pub fn display_client(
         &self,
     ) -> Result<generated::emulator_controller_client::EmulatorControllerClient<Channel>> {
-        Ok(generated::emulator_controller_client::EmulatorControllerClient::new(
-            self.channel.clone(),
+        Ok(
+            generated::emulator_controller_client::EmulatorControllerClient::new(
+                self.channel.clone(),
+            )
+            .max_decoding_message_size(16 * 1024 * 1024),
         )
-        .max_decoding_message_size(16 * 1024 * 1024))
     }
 
     #[cfg(synthi_no_protoc)]
@@ -70,10 +72,12 @@ impl EmulatorGrpcClients {
     pub fn input_client(
         &self,
     ) -> Result<generated::emulator_controller_client::EmulatorControllerClient<Channel>> {
-        Ok(generated::emulator_controller_client::EmulatorControllerClient::new(
-            self.channel.clone(),
+        Ok(
+            generated::emulator_controller_client::EmulatorControllerClient::new(
+                self.channel.clone(),
+            )
+            .max_decoding_message_size(16 * 1024 * 1024),
         )
-        .max_decoding_message_size(16 * 1024 * 1024))
     }
 
     #[cfg(synthi_no_protoc)]
@@ -100,19 +104,21 @@ async fn connect_controller(
         let _ = read_grpc_token(cfg)?;
     }
 
-    Ok(generated::emulator_controller_client::EmulatorControllerClient::new(channel)
-        .max_decoding_message_size(16 * 1024 * 1024))
+    Ok(
+        generated::emulator_controller_client::EmulatorControllerClient::new(channel)
+            .max_decoding_message_size(16 * 1024 * 1024),
+    )
 }
 
 #[cfg(synthi_no_protoc)]
-async fn connect_controller(
-    _cfg: &EmulatorGrpcConfig,
-) -> Result<generated::Placeholder> {
+async fn connect_controller(_cfg: &EmulatorGrpcConfig) -> Result<generated::Placeholder> {
     bail!("emulator gRPC codegen unavailable (protoc missing)");
 }
 
 #[cfg(not(synthi_no_protoc))]
-pub async fn stream_frames(cfg: &EmulatorGrpcConfig) -> Result<mpsc::UnboundedReceiver<EmulatorFrame>> {
+pub async fn stream_frames(
+    cfg: &EmulatorGrpcConfig,
+) -> Result<mpsc::UnboundedReceiver<EmulatorFrame>> {
     let token = read_grpc_token(cfg)?;
     let mut client = connect_controller(cfg).await?;
 
@@ -144,7 +150,7 @@ pub async fn stream_frames(cfg: &EmulatorGrpcConfig) -> Result<mpsc::UnboundedRe
 
     tokio::spawn(async move {
         // Start with a small flush to ensure no stale data in channel? Not needed as it is new.
-        eprintln!("[grpc] stream_frames task started"); 
+        eprintln!("[grpc] stream_frames task started");
 
         let mut last_seq: Option<u32> = None;
         loop {
@@ -154,7 +160,10 @@ pub async fn stream_frames(cfg: &EmulatorGrpcConfig) -> Result<mpsc::UnboundedRe
                     if let Some(s) = if seq > 0 { Some(seq) } else { None } {
                         if let Some(prev) = last_seq {
                             if s > prev + 1 {
-                                eprintln!("[grpc] screenshot stream dropped frames: prev={} current={}", prev, s);
+                                eprintln!(
+                                    "[grpc] screenshot stream dropped frames: prev={} current={}",
+                                    prev, s
+                                );
                             }
                         }
                         last_seq = Some(s);
@@ -174,8 +183,12 @@ pub async fn stream_frames(cfg: &EmulatorGrpcConfig) -> Result<mpsc::UnboundedRe
                         match generated::image_format::ImgFormat::from_i32(fmt.format)
                             .unwrap_or(generated::image_format::ImgFormat::Png)
                         {
-                            generated::image_format::ImgFormat::Rgba8888 => format = "RGBA".to_string(),
-                            generated::image_format::ImgFormat::Rgb888 => format = "RGB".to_string(),
+                            generated::image_format::ImgFormat::Rgba8888 => {
+                                format = "RGBA".to_string()
+                            }
+                            generated::image_format::ImgFormat::Rgb888 => {
+                                format = "RGB".to_string()
+                            }
                             // Some emulators return generic "Raw" or other types, but if width*height*3 == size, it's RGB.
                             // We will default to RGB if it's ambiguous but size matches.
                             generated::image_format::ImgFormat::Png => format = "PNG".to_string(),
@@ -238,7 +251,9 @@ pub async fn stream_frames(cfg: &EmulatorGrpcConfig) -> Result<mpsc::UnboundedRe
 }
 
 #[cfg(synthi_no_protoc)]
-pub async fn stream_frames(_cfg: &EmulatorGrpcConfig) -> Result<mpsc::UnboundedReceiver<EmulatorFrame>> {
+pub async fn stream_frames(
+    _cfg: &EmulatorGrpcConfig,
+) -> Result<mpsc::UnboundedReceiver<EmulatorFrame>> {
     bail!("emulator gRPC codegen unavailable (protoc missing)");
 }
 
@@ -462,7 +477,10 @@ fn read_grpc_token(cfg: &EmulatorGrpcConfig) -> Result<Option<String>> {
         let home = std::env::var("HOME")
             .or_else(|_| std::env::var("USERPROFILE"))
             .ok()?;
-        Some(format!("{}/.emulator_console_auth_token", home.trim_end_matches('/')))
+        Some(format!(
+            "{}/.emulator_console_auth_token",
+            home.trim_end_matches('/')
+        ))
     });
 
     let Some(path) = token_path else {

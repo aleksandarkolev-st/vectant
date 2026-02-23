@@ -12,7 +12,7 @@ use std::time::Instant;
 
 use super::const_fixer::fix_const_errors;
 use super::detection::{detect_flutter_project, FlutterProjectInfo};
-use super::flutter_runner::{run_flutter_build_apk, run_pub_get, run_flutter_clean};
+use super::flutter_runner::{run_flutter_build_apk, run_flutter_clean, run_pub_get};
 use super::LogCallback;
 use crate::android::routing::Diagnostic;
 
@@ -83,8 +83,10 @@ pub async fn build_flutter_apk(
     }
 
     if let Some(ref cb) = log_callback {
-        cb(format!("Detected Flutter project: {}", 
-            project_info.project_name.as_deref().unwrap_or("unknown")));
+        cb(format!(
+            "Detected Flutter project: {}",
+            project_info.project_name.as_deref().unwrap_or("unknown")
+        ));
         if let Some(ref version) = project_info.flutter_version {
             cb(format!("Flutter version constraint: {}", version));
         }
@@ -112,7 +114,10 @@ pub async fn build_flutter_apk(
         Err(e) => {
             // Non-fatal: log and continue, the build will surface the real error.
             if let Some(ref cb) = log_callback {
-                cb(format!("[const-fixer] Warning: auto-fix scan failed: {}", e));
+                cb(format!(
+                    "[const-fixer] Warning: auto-fix scan failed: {}",
+                    e
+                ));
             }
         }
         _ => {} // No fixes needed
@@ -135,7 +140,8 @@ pub async fn build_flutter_apk(
             cb("Running flutter pub get...".to_string());
         }
 
-        let pub_result = run_pub_get(&config.project_root, log_callback.as_ref(), Some(300)).await?;
+        let pub_result =
+            run_pub_get(&config.project_root, log_callback.as_ref(), Some(300)).await?;
 
         if !pub_result.success {
             return Ok(FlutterBuildResult {
@@ -153,27 +159,33 @@ pub async fn build_flutter_apk(
     let (release, apk_path) = match config.variant {
         BuildVariant::Debug => (
             false,
-            config.project_root.join("build/app/outputs/flutter-apk/app-debug.apk"),
+            config
+                .project_root
+                .join("build/app/outputs/flutter-apk/app-debug.apk"),
         ),
         BuildVariant::Release => (
             true,
-            config.project_root.join("build/app/outputs/flutter-apk/app-release.apk"),
+            config
+                .project_root
+                .join("build/app/outputs/flutter-apk/app-release.apk"),
         ),
         BuildVariant::Profile => (
             false, // Profile uses debug-like build but with profile optimizations
-            config.project_root.join("build/app/outputs/flutter-apk/app-profile.apk"),
+            config
+                .project_root
+                .join("build/app/outputs/flutter-apk/app-profile.apk"),
         ),
     };
 
     // Build extra args
     let mut extra_args: Vec<&str> = config.extra_args.iter().map(|s| s.as_str()).collect();
-    
+
     // Add offline mode for faster builds if deps are ready, but this can be risky if
     // project has conditional dependencies or we missed something in detection.
     // Safe option: rely on Gradle build cache.
     // However, if we skipped pub_get, we imply we trust the environment state.
     if config.skip_pub_get {
-         extra_args.push("--no-pub");
+        extra_args.push("--no-pub");
     }
 
     if matches!(config.variant, BuildVariant::Profile) {
@@ -181,7 +193,8 @@ pub async fn build_flutter_apk(
     }
 
     if let Some(ref cb) = log_callback {
-        cb(format!("Building {} APK...", 
+        cb(format!(
+            "Building {} APK...",
             match config.variant {
                 BuildVariant::Debug => "debug",
                 BuildVariant::Release => "release",
@@ -209,7 +222,11 @@ pub async fn build_flutter_apk(
         Some(apk_path)
     } else {
         // Try to find APK in alternative locations
-        find_flutter_apk(&config.project_root, matches!(config.variant, BuildVariant::Release)).await
+        find_flutter_apk(
+            &config.project_root,
+            matches!(config.variant, BuildVariant::Release),
+        )
+        .await
     };
 
     Ok(FlutterBuildResult {
@@ -223,10 +240,7 @@ pub async fn build_flutter_apk(
 }
 
 /// Cleans Flutter build outputs
-pub async fn clean_flutter(
-    project_root: &Path,
-    log_callback: Option<LogCallback>,
-) -> Result<()> {
+pub async fn clean_flutter(project_root: &Path, log_callback: Option<LogCallback>) -> Result<()> {
     run_flutter_clean(project_root, log_callback.as_ref()).await?;
     Ok(())
 }
@@ -234,7 +248,7 @@ pub async fn clean_flutter(
 /// Searches for Flutter APK in common output locations
 async fn find_flutter_apk(project_root: &Path, release: bool) -> Option<PathBuf> {
     let variant = if release { "release" } else { "debug" };
-    
+
     let possible_paths = [
         // Standard Flutter APK output
         format!("build/app/outputs/flutter-apk/app-{}.apk", variant),
@@ -265,10 +279,10 @@ async fn find_flutter_apk(project_root: &Path, release: bool) -> Option<PathBuf>
 /// Recursively searches for APK files
 async fn find_apk_recursive(dir: &Path, variant: &str) -> Result<PathBuf> {
     let mut entries = tokio::fs::read_dir(dir).await?;
-    
+
     while let Some(entry) = entries.next_entry().await? {
         let path = entry.path();
-        
+
         if path.is_dir() {
             if let Ok(found) = Box::pin(find_apk_recursive(&path, variant)).await {
                 return Ok(found);

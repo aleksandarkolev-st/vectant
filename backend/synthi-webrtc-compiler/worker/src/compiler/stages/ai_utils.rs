@@ -1,6 +1,6 @@
 use crate::infra::messages::CompileRequest;
 use crate::infra::utils::get_wsl_host_ip;
-use anyhow::{Result};
+use anyhow::Result;
 use regex::Regex;
 use reqwest;
 use serde_json;
@@ -668,8 +668,8 @@ pub async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value>
 
         // Strategy: find the LAST ```json (or ```) fenced block in the text.
         // LLMs often emit explanation prose before the JSON code fence.
-        let json_str = if let Some(fence_start) = cleaned.rfind("```json")
-            .or_else(|| cleaned.rfind("```\n{"))
+        let json_str = if let Some(fence_start) =
+            cleaned.rfind("```json").or_else(|| cleaned.rfind("```\n{"))
         {
             // Skip past the opening fence line (```json\n)
             let after_fence = &cleaned[fence_start..];
@@ -711,7 +711,11 @@ pub async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value>
                 parsed
             }
             Err(e) => {
-                eprintln!("[AI Split] Failed to parse LLM JSON from result: {}. Raw prefix: {}", e, &result_str[..result_str.len().min(300)]);
+                eprintln!(
+                    "[AI Split] Failed to parse LLM JSON from result: {}. Raw prefix: {}",
+                    e,
+                    &result_str[..result_str.len().min(300)]
+                );
                 anyhow::bail!("AI split returned unparseable result: {}", e);
             }
         }
@@ -720,7 +724,10 @@ pub async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value>
         eprintln!("[AI Split] Response already in structured format (no wrapper)");
         raw_response
     } else {
-        eprintln!("[AI Split] Unexpected response format: {}", &raw_response.to_string()[..raw_response.to_string().len().min(200)]);
+        eprintln!(
+            "[AI Split] Unexpected response format: {}",
+            &raw_response.to_string()[..raw_response.to_string().len().min(200)]
+        );
         anyhow::bail!("AI split returned unexpected response format");
     };
 
