@@ -27,7 +27,8 @@ import {
   previewTheme,
   clearPreview,
 } from '@/redux/themeSlice';
-import { Palette, Check, Sun, Moon, MonitorSmartphone } from 'lucide-react';
+import { Palette, Check, Sun, Moon, MonitorSmartphone, Plus } from 'lucide-react';
+import { useThemeCreator } from '@/components/ThemeCreator';
 
 // ─── Context for open/close ──────────────────────────────────
 
@@ -108,6 +109,7 @@ function ThemePickerOverlay({ onClose }) {
   const dispatch = useAppDispatch();
   const themeList = useAppSelector(selectThemeList);
   const activeThemeId = useAppSelector(selectActiveThemeId);
+  const { openCreator } = useThemeCreator();
 
   const [query, setQuery] = useState('');
   const [selectedIdx, setSelectedIdx] = useState(-1);
@@ -326,7 +328,7 @@ function ThemePickerOverlay({ onClose }) {
           })}
         </div>
 
-        {/* Footer hint */}
+        {/* Footer hint + Create Theme button */}
         <div
           className="flex items-center justify-between px-3 py-1.5 text-[10px]"
           style={{
@@ -335,6 +337,24 @@ function ThemePickerOverlay({ onClose }) {
           }}
         >
           <span>↑↓ Navigate &middot; Enter Confirm &middot; Esc Cancel</span>
+          <button
+            className="flex items-center gap-1 px-2 py-0.5 rounded transition-colors"
+            style={{
+              color: 'var(--accent-primary)',
+              background: 'color-mix(in srgb, var(--accent-primary) 8%, transparent)',
+            }}
+            onClick={() => {
+              // Close the picker, then open the creator
+              dispatch(clearPreview());
+              onClose();
+              // Small delay so picker unmounts before creator mounts
+              setTimeout(() => openCreator(), 50);
+            }}
+            title="Create a brand-new custom theme"
+          >
+            <Plus className="h-3 w-3" />
+            Create Your Own Theme
+          </button>
           <span>Ctrl+K Ctrl+T</span>
         </div>
       </div>
