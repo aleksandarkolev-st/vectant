@@ -29,10 +29,12 @@ impl EmulatorSession {
 
         let avd_list = String::from_utf8_lossy(&output.stdout);
         let avd_list = String::from_utf8_lossy(&output.stdout);
-        let exists = avd_list.lines().any(|l| l.trim() == self.core.config.avd_name);
-        
+        let exists = avd_list
+            .lines()
+            .any(|l| l.trim() == self.core.config.avd_name);
+
         if !exists {
-             // Create AVD.
+            // Create AVD.
             // avdmanager may prompt (e.g. "Do you wish to create a custom hardware profile?"),
             // so provide a default "no".
             let mut cmd = Command::new(&avdmanager);
@@ -73,90 +75,105 @@ impl EmulatorSession {
                 );
             }
         }
-        
+
         // Ensure config.ini has the correct native resolution
         self.ensure_avd_config().await?;
 
         Ok(())
     }
-    
+
     /// Updates AVD config.ini to match native resolution settings
     async fn ensure_avd_config(&self) -> Result<()> {
-        let avdmanager = self.core.config.android_sdk_root.join("cmdline-tools/latest/bin/avdmanager");
-        
+        let avdmanager = self
+            .core
+            .config
+            .android_sdk_root
+            .join("cmdline-tools/latest/bin/avdmanager");
+
         let output = Command::new(&avdmanager)
             .args(["list", "avd"])
             .output()
             .await
             .context("Failed to list AVDs for config lookup")?;
-            
+
         let stdout = String::from_utf8_lossy(&output.stdout);
-        
+
         // Find the Path: line for our AVD
         let mut found_name = false;
         let mut avd_path: Option<std::path::PathBuf> = None;
-        
+
         for line in stdout.lines() {
             let trimmed = line.trim();
             if let Some(name) = trimmed.strip_prefix("Name: ") {
                 found_name = name.trim() == self.core.config.avd_name;
             } else if found_name {
-                 if let Some(path_str) = trimmed.strip_prefix("Path: ") {
-                     avd_path = Some(std::path::PathBuf::from(path_str.trim()));
-                     break;
-                 }
+                if let Some(path_str) = trimmed.strip_prefix("Path: ") {
+                    avd_path = Some(std::path::PathBuf::from(path_str.trim()));
+                    break;
+                }
             }
         }
-        
-        let avd_path = avd_path.ok_or_else(|| anyhow::anyhow!("Could not determine path for AVD {}", self.core.config.avd_name))?;
+
+        let avd_path = avd_path.ok_or_else(|| {
+            anyhow::anyhow!(
+                "Could not determine path for AVD {}",
+                self.core.config.avd_name
+            )
+        })?;
         let config_ini_path = avd_path.join("config.ini");
-        
+
         if !config_ini_path.exists() {
-             // On some systems/versions, the path might report differently or file might not exist yet?
-             // But if we just created it, it should be there.
-             return Ok(());
+            // On some systems/versions, the path might report differently or file might not exist yet?
+            // But if we just created it, it should be there.
+            return Ok(());
         }
-        
+
         let content = tokio::fs::read_to_string(&config_ini_path)
             .await
             .context("Failed to read config.ini")?;
-            
+
         let mut lines: Vec<String> = content.lines().map(|s| s.to_string()).collect();
-        
+
         // Helper to update or append a key-value pair
         let mut update_or_append = |key: &str, value: String| {
             let mut found = false;
             for line in &mut lines {
                 if line.starts_with(key) && line.contains('=') {
-                     // Check if it's the key we want (exact match before =)
-                     let parts: Vec<&str> = line.splitn(2, '=').collect();
-                     if parts[0].trim() == key {
-                         *line = format!("{}={}", key, value);
-                         found = true;
-                         break;
-                     }
+                    // Check if it's the key we want (exact match before =)
+                    let parts: Vec<&str> = line.splitn(2, '=').collect();
+                    if parts[0].trim() == key {
+                        *line = format!("{}={}", key, value);
+                        found = true;
+                        break;
+                    }
                 }
             }
             if !found {
                 lines.push(format!("{}={}", key, value));
             }
         };
-        
+
         update_or_append("hw.lcd.width", self.core.config.native_width.to_string());
         update_or_append("hw.lcd.height", self.core.config.native_height.to_string());
-        update_or_append("hw.lcd.density", self.core.config.native_density.to_string());
-        
+        update_or_append(
+            "hw.lcd.density",
+            self.core.config.native_density.to_string(),
+        );
+
         // Use resolution as skin name to avoid mismatch errors (e.g. 540x960)
-        let res_skin = format!("{}x{}", self.core.config.native_width, self.core.config.native_height);
+        let res_skin = format!(
+            "{}x{}",
+            self.core.config.native_width, self.core.config.native_height
+        );
         update_or_append("skin.name", res_skin.clone());
         // Set skin.path to same value or "no-skin" to indicate generic
         update_or_append("skin.path", "no-skin".to_string());
-        
+
         let new_content = lines.join("\n");
         tokio::fs::write(&config_ini_path, new_content)
             .await
             .context("Failed to write config.ini")?;
-            
+
         Ok(())
     }
 

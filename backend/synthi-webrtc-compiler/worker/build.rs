@@ -8,7 +8,9 @@ fn main() {
     }
 
     println!("cargo:rerun-if-changed=proto");
-    println!("cargo:rerun-if-changed=proto/services/emulator-controller/proto/emulator_controller.proto");
+    println!(
+        "cargo:rerun-if-changed=proto/services/emulator-controller/proto/emulator_controller.proto"
+    );
 
     let protoc_from_env = env::var("PROTOC").ok();
     if let Some(ref protoc_path) = protoc_from_env {

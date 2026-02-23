@@ -72,18 +72,22 @@ pub async fn detect_flutter_project(project_root: &Path) -> Result<FlutterProjec
         .await
         .context("Failed to read pubspec.yaml")?;
 
-    let pubspec: PubspecYaml = serde_yaml::from_str(&pubspec_content)
-        .context("Failed to parse pubspec.yaml")?;
+    let pubspec: PubspecYaml =
+        serde_yaml::from_str(&pubspec_content).context("Failed to parse pubspec.yaml")?;
 
     // Check for flutter dependency (indicates it's a Flutter project)
-    let is_flutter = pubspec.flutter.is_some() || 
-        pubspec.dependencies.as_ref().map(|deps| {
-            if let serde_yaml::Value::Mapping(map) = deps {
-                map.contains_key(&serde_yaml::Value::String("flutter".to_string()))
-            } else {
-                false
-            }
-        }).unwrap_or(false);
+    let is_flutter = pubspec.flutter.is_some()
+        || pubspec
+            .dependencies
+            .as_ref()
+            .map(|deps| {
+                if let serde_yaml::Value::Mapping(map) = deps {
+                    map.contains_key(&serde_yaml::Value::String("flutter".to_string()))
+                } else {
+                    false
+                }
+            })
+            .unwrap_or(false);
 
     if !is_flutter {
         return Ok(FlutterProjectInfo {
@@ -118,7 +122,8 @@ pub async fn detect_flutter_project(project_root: &Path) -> Result<FlutterProjec
     };
 
     // Extract Flutter SDK version constraint
-    let flutter_version = pubspec.environment
+    let flutter_version = pubspec
+        .environment
         .as_ref()
         .and_then(|env| env.flutter.clone());
 
@@ -131,7 +136,9 @@ pub async fn detect_flutter_project(project_root: &Path) -> Result<FlutterProjec
 
     // Extract min/target SDK from build.gradle
     let (min_sdk, target_sdk) = if has_android {
-        extract_android_sdk_versions(&android_dir).await.unwrap_or((None, None))
+        extract_android_sdk_versions(&android_dir)
+            .await
+            .unwrap_or((None, None))
     } else {
         (None, None)
     };
@@ -226,7 +233,7 @@ async fn extract_android_app_id(android_dir: &Path) -> Result<String> {
 fn parse_application_id(content: &str) -> Option<String> {
     for line in content.lines() {
         let trimmed = line.trim();
-        
+
         // Match: applicationId "com.example.app" or applicationId = "com.example.app"
         if trimmed.starts_with("applicationId") {
             let parts: Vec<&str> = trimmed.split('"').collect();

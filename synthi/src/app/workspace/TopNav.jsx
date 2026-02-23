@@ -17,8 +17,8 @@ export default function TopNav({
   onRun, 
   runInGuiMode,
   setRunInGuiMode,
-  useAiSplit,
-  setUseAiSplit,
+  hmrEnabled,
+  setHmrEnabled,
   onStop,
   onReload,
   isRunning,
@@ -160,15 +160,15 @@ export default function TopNav({
           {runInGuiMode ? "GUI" : "Console"}
         </Button>
 
-        {/* AI Split Toggle */}
+        {/* HMR Toggle - auto-recompile on save */}
         <Button
           variant="ghost"
           size="sm"
-          className={`h-8 px-2 text-xs font-medium transition-colors rounded-lg cursor-pointer duration-300 hover:-translate-y-0.5 transition-all th-btn-ghost ${useAiSplit ? 'th-btn-active' : ''}`}
-          onClick={() => setUseAiSplit(!useAiSplit)}
-          title={useAiSplit ? "AI HMR Enabled" : "AI HMR Disabled"}
+          className={`h-8 px-2 text-xs font-medium transition-colors rounded-lg cursor-pointer duration-300 hover:-translate-y-0.5 transition-all th-btn-ghost ${hmrEnabled ? 'th-btn-active' : ''}`}
+          onClick={() => setHmrEnabled(!hmrEnabled)}
+          title={hmrEnabled ? "HMR Enabled — app restarts on save" : "HMR Disabled — save does not restart app"}
         >
-          {useAiSplit ? "AI HMR" : "Std HMR"}
+          {hmrEnabled ? "HMR" : "No HMR"}
         </Button>
 
         {isRunning ? (

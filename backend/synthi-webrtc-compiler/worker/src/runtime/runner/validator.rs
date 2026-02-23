@@ -1,6 +1,4 @@
-use crate::runtime::plugin_contract::{
-    ModuleSlot,
-};
+use crate::runtime::plugin_contract::ModuleSlot;
 use libloading::{Library, Symbol};
 use std::ffi::{c_uint, c_void};
 

@@ -1,3 +1,5 @@
+use super::stream_config::{EmulatorStreamConfig, EmulatorStreamMode};
+use crate::android::emulator_grpc;
 use anyhow::{Context, Result};
 use lazy_static::lazy_static;
 use regex::Regex;
@@ -7,12 +9,10 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
-use tokio::process::Command;
-use tokio::sync::Mutex as TokioMutex;
 use tokio::io::AsyncWriteExt;
+use tokio::process::Command;
 use tokio::process::{Child, ChildStdin};
-use crate::android::emulator_grpc;
-use super::stream_config::{EmulatorStreamConfig, EmulatorStreamMode};
+use tokio::sync::Mutex as TokioMutex;
 
 /// Global store of cancelled mobile job session IDs.
 /// When a job is cancelled, its session_id is added here.
@@ -88,7 +88,7 @@ impl PersistentShell {
             .stderr(std::process::Stdio::null())
             .spawn()
             .context("failed to spawn persistent adb shell")?;
-        
+
         let stdin = child.stdin.take().context("failed to get stdin")?;
         Ok(Self { stdin, child })
     }
@@ -134,11 +134,14 @@ pub async fn register_session(
     stream_config: EmulatorStreamConfig,
 ) -> Result<()> {
     let (w, h) = query_device_size(&adb, &serial).await?;
-    
+
     // Create a persistent shell for low-latency input
     let shell_proc = match PersistentShell::new(&adb, &serial).await {
         Ok(shell) => {
-            eprintln!("[input.rs] Created persistent shell for session {}", session_id);
+            eprintln!(
+                "[input.rs] Created persistent shell for session {}",
+                session_id
+            );
             Some(Arc::new(TokioMutex::new(shell)))
         }
         Err(e) => {
@@ -146,7 +149,7 @@ pub async fn register_session(
             None
         }
     };
-    
+
     let mut g = SESSIONS.lock().expect("SESSIONS lock");
     g.insert(
         session_id.to_string(),
@@ -193,7 +196,10 @@ pub async fn handle_input_message(msg: EmulatorInputMessage) -> Result<()> {
 
     if session.stream_config.mode == EmulatorStreamMode::Grpc {
         if let Err(err) = handle_input_grpc(&msg, &session).await {
-            eprintln!("[input.rs] gRPC input failed; falling back to ADB: {:#}", err);
+            eprintln!(
+                "[input.rs] gRPC input failed; falling back to ADB: {:#}",
+                err
+            );
             handle_input_adb(&msg, &session).await?;
         }
         return Ok(());
@@ -243,7 +249,10 @@ async fn handle_input_grpc(
     Ok(())
 }
 
-async fn handle_input_adb(msg: &EmulatorInputMessage, session: &EmulatorInputSession) -> Result<()> {
+async fn handle_input_adb(
+    msg: &EmulatorInputMessage,
+    session: &EmulatorInputSession,
+) -> Result<()> {
     // Use persistent shell for low-latency input when available
     let use_persistent = session.shell_proc.is_some();
 
@@ -295,8 +304,12 @@ async fn handle_input_adb(msg: &EmulatorInputMessage, session: &EmulatorInputSes
                 .keycode
                 .as_deref()
                 .context("key event missing keycode")?;
-            let kc = if kc.starts_with("KEYCODE_") { kc.to_string() } else { format!("KEYCODE_{}", kc) };
-            
+            let kc = if kc.starts_with("KEYCODE_") {
+                kc.to_string()
+            } else {
+                format!("KEYCODE_{}", kc)
+            };
+
             // Force ADB for keys to avoid gRPC silent failures (especially DEL/ENTER)
             // This ensures reliability over speed for control keys.
             let cmd = format!("input keyevent {}", kc);
@@ -337,12 +350,29 @@ async fn handle_input_adb(msg: &EmulatorInputMessage, session: &EmulatorInputSes
 async fn rotate_device(adb: &PathBuf, serial: &str) -> Result<()> {
     // Best-effort rotation: lock rotation (disable accelerometer) and advance user_rotation.
     // 0=0°, 1=90°, 2=180°, 3=270°
-    let cur = adb_shell_output(adb, serial, &["settings", "get", "system", "user_rotation"]).await?;
+    let cur =
+        adb_shell_output(adb, serial, &["settings", "get", "system", "user_rotation"]).await?;
     let cur = cur.trim().parse::<i32>().unwrap_or(0).rem_euclid(4);
     let next = (cur + 1).rem_euclid(4);
 
-    adb_shell(adb, serial, &["settings", "put", "system", "accelerometer_rotation", "0"]).await?;
-    adb_shell(adb, serial, &["settings", "put", "system", "user_rotation", &next.to_string()]).await?;
+    adb_shell(
+        adb,
+        serial,
+        &["settings", "put", "system", "accelerometer_rotation", "0"],
+    )
+    .await?;
+    adb_shell(
+        adb,
+        serial,
+        &[
+            "settings",
+            "put",
+            "system",
+            "user_rotation",
+            &next.to_string(),
+        ],
+    )
+    .await?;
     Ok(())
 }
 
@@ -368,10 +398,16 @@ fn map_xy(
     // Default assumption if client doesn't send geometry:
     // coordinates are already in device pixels.
     let Some(view_w) = msg.view_w else {
-        return Ok((x.round().clamp(0.0, target_w as f64) as u32, y.round().clamp(0.0, target_h as f64) as u32));
+        return Ok((
+            x.round().clamp(0.0, target_w as f64) as u32,
+            y.round().clamp(0.0, target_h as f64) as u32,
+        ));
     };
     let Some(view_h) = msg.view_h else {
-        return Ok((x.round().clamp(0.0, target_w as f64) as u32, y.round().clamp(0.0, target_h as f64) as u32));
+        return Ok((
+            x.round().clamp(0.0, target_w as f64) as u32,
+            y.round().clamp(0.0, target_h as f64) as u32,
+        ));
     };
 
     let video_w = msg.video_w.unwrap_or(target_w as f64).max(1.0);

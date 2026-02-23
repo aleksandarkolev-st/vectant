@@ -15,11 +15,11 @@ unsafe impl Sync for SendVoidPtr {}
 #[cfg(target_os = "linux")]
 use std::process::Command;
 #[cfg(target_os = "linux")]
+use worker::runtime::platform::sdl_defs::*;
+#[cfg(target_os = "linux")]
 use x11rb::connection::Connection;
 #[cfg(target_os = "linux")]
 use x11rb::protocol::shm::ConnectionExt as ShmConnectionExt;
-#[cfg(target_os = "linux")]
-use worker::runtime::platform::sdl_defs::*;
 
 use worker::runtime::runner_logic;
 // use worker::compiler::abi_version;
@@ -56,7 +56,7 @@ use worker::safety::hardened_ipc::{read_frame_validated, write_frame_with_checks
 
 use worker::compiler::plugin_contract::ModuleSlot as CompilerModuleSlot;
 use worker::runtime::plugin_contract::{
-    ModuleSlot, 
+    ModuleSlot,
     // HotApi, HotGetApiFn, RunnerApi, CORE_STATE_MAGIC, GUI_STATE_MAGIC, LOG_ERROR,
     // LOG_INFO, LOG_WARN, MAX_STATE_ALIGNMENT, RUNNER_API_VERSION, SYNTHI_CORE_ABI_VERSION,
     // SYNTHI_GUI_ABI_VERSION,
@@ -69,20 +69,20 @@ fn to_compiler_slot(slot: ModuleSlot) -> CompilerModuleSlot {
         ModuleSlot::Main => CompilerModuleSlot::Main,
     }
 }
-use capability::{HmrStatus}; // Removed detect_capabilities
+use capability::HmrStatus; // Removed detect_capabilities
 
 use crash_recovery::{
-    generate_crash_report, install_crash_handlers, set_current_lib_path,
-    HmrCrashStatus, execute_with_protection,
+    execute_with_protection, generate_crash_report, install_crash_handlers, set_current_lib_path,
+    HmrCrashStatus,
 };
 
-use hmr_orchestrator::{HmrOrchestrator}; // Removed SavedState
+use hmr_orchestrator::HmrOrchestrator; // Removed SavedState
 
 use host_kv::{
     create_kv_api, // Removed module_slot_to_u32, read_schema_table, KV_STORE, HostKvSchemaEvent, SynthiHostContextV1
 };
 
-use loader::{ModuleLoader}; // Removed LoadResult
+use loader::ModuleLoader; // Removed LoadResult
 
 use state_manager::StateManager;
 use supervisor::{CrashSupervisor, RecoveryAction, SupervisorConfig};
@@ -182,7 +182,10 @@ fn main() {
                 eprintln!("[Runner] Supervisor event loop completed, exiting");
                 std::process::exit(0);
             } else {
-                eprintln!("[Runner] Running as supervised worker process (PID: {})", std::process::id());
+                eprintln!(
+                    "[Runner] Running as supervised worker process (PID: {})",
+                    std::process::id()
+                );
                 // v2.1: Verify we are receiving the correct environment
                 if let Ok(parent_pid) = std::env::var("SYNTHI_SUPERVISOR_PID") {
                     eprintln!("[Runner] Managed by supervisor PID: {}", parent_pid);
@@ -236,7 +239,8 @@ fn main() {
     #[cfg(target_os = "linux")]
     let (shm_seg, shm_ptr) = if let Some(ref conn) = x11_conn {
         let size = 800 * 600 * 4;
-        let (id, ptr) = worker::runtime::runner::capture::create_shm_segment(size).expect("Failed to create SHM");
+        let (id, ptr) = worker::runtime::runner::capture::create_shm_segment(size)
+            .expect("Failed to create SHM");
         let seg = conn.generate_id().unwrap();
         conn.shm_attach(seg, id as u32, false).unwrap();
         (seg, ptr)
@@ -1041,16 +1045,16 @@ fn main() {
 
         #[cfg(target_os = "linux")]
         if let Some(ref conn) = x11_conn {
-             worker::runtime::runner::capture::capture_frame(
-                 conn,
-                 x11_root,
-                 shm_seg,
-                 shm_ptr,
-                 &frame_tx,
-                 &mut frame_count,
-                 &mut frames_sent,
-                 &mut last_frame_log
-             );
+            worker::runtime::runner::capture::capture_frame(
+                conn,
+                x11_root,
+                shm_seg,
+                shm_ptr,
+                &frame_tx,
+                &mut frame_count,
+                &mut frames_sent,
+                &mut last_frame_log,
+            );
         }
 
         // Cap at ~60 FPS

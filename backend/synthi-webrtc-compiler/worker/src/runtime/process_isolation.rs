@@ -449,10 +449,16 @@ impl ProcessSupervisor {
         self.apply_unix_limits(&mut cmd);
 
         // Spawn
-        eprintln!("[Supervisor] Spawning worker binary at: {:?}", self.config.worker_binary);
-        let mut child = cmd
-            .spawn()
-            .map_err(|e| format!("Failed to spawn worker at {:?}: {}", self.config.worker_binary, e))?;
+        eprintln!(
+            "[Supervisor] Spawning worker binary at: {:?}",
+            self.config.worker_binary
+        );
+        let mut child = cmd.spawn().map_err(|e| {
+            format!(
+                "Failed to spawn worker at {:?}: {}",
+                self.config.worker_binary, e
+            )
+        })?;
 
         let pid = child.id();
         let stdin = child.stdin.take().ok_or("Failed to get stdin")?;
@@ -587,12 +593,18 @@ impl ProcessSupervisor {
             if let Some(worker) = self.worker.as_mut() {
                 if let Ok(Some(status)) = worker.child.try_wait() {
                     let code = status.code().unwrap_or(-1);
-                    eprintln!("[Supervisor] FATAL: Worker exited during startup. Code: {}", code);
+                    eprintln!(
+                        "[Supervisor] FATAL: Worker exited during startup. Code: {}",
+                        code
+                    );
                     #[cfg(unix)]
                     {
                         use std::os::unix::process::ExitStatusExt;
                         if let Some(signal) = status.signal() {
-                            eprintln!("[Supervisor] Worker killed by signal: {} (SIGSEGV=11, SIGABRT=6)", signal);
+                            eprintln!(
+                                "[Supervisor] Worker killed by signal: {} (SIGSEGV=11, SIGABRT=6)",
+                                signal
+                            );
                         }
                     }
                     return Err(format!("Worker exited prematurely: {}", status));
@@ -606,13 +618,14 @@ impl ProcessSupervisor {
                         eprintln!("[Supervisor] Worker ready");
                         return Ok(());
                     }
-                },
-                Ok(None) => {}, // Timeout, loop again
+                }
+                Ok(None) => {} // Timeout, loop again
                 Err(e) => {
                     // Possible race: Pipe closed but process table not yet updated.
                     // Retry wait() for a short period to catch the exit code/signal.
                     if let Some(worker) = self.worker.as_mut() {
-                        for i in 0..10 { // Try for 100ms
+                        for i in 0..10 {
+                            // Try for 100ms
                             if let Ok(Some(status)) = worker.child.try_wait() {
                                 let _code = status.code().unwrap_or(-1);
                                 eprintln!("[Supervisor] FATAL: Worker exited during msg recv (attempt {}): {} (Error: {})", i, status, e);
@@ -1223,7 +1236,10 @@ impl ProcessSupervisor {
                             if let Some(worker) = self.worker.as_mut() {
                                 match worker.child.try_wait() {
                                     Ok(Some(status)) => {
-                                        eprintln!("[Supervisor] Worker process exited with: {}", status);
+                                        eprintln!(
+                                            "[Supervisor] Worker process exited with: {}",
+                                            status
+                                        );
                                         if let Some(code) = status.code() {
                                             eprintln!("[Supervisor] Worker exit code: {}", code);
                                         }
@@ -1232,7 +1248,10 @@ impl ProcessSupervisor {
                                         // Process hasn't exited yet, or OS hasn't reported it
                                     }
                                     Err(err) => {
-                                        eprintln!("[Supervisor] Failed to check worker status: {}", err);
+                                        eprintln!(
+                                            "[Supervisor] Failed to check worker status: {}",
+                                            err
+                                        );
                                     }
                                 }
                             }

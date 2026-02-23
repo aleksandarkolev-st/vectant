@@ -16,16 +16,40 @@
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use tokio::process::Command;
 use std::process::Stdio;
+use tokio::process::Command;
 
 /// Directories we never descend into.
 const SKIP_DIRS: &[&str] = &[
-    "node_modules", ".git", "__pycache__", "target", "build", "dist",
-    ".gradle", ".idea", "bin", "obj", ".dart_tool", "_build", "deps",
-    ".elixir_ls", ".jdtls-data", "zig-cache", ".next", "vendor",
-    "zig-out", ".zig-cache", "coverage", ".nyc_output", ".tox",
-    "venv", ".venv", "env", ".env", ".mypy_cache", ".pytest_cache",
+    "node_modules",
+    ".git",
+    "__pycache__",
+    "target",
+    "build",
+    "dist",
+    ".gradle",
+    ".idea",
+    "bin",
+    "obj",
+    ".dart_tool",
+    "_build",
+    "deps",
+    ".elixir_ls",
+    ".jdtls-data",
+    "zig-cache",
+    ".next",
+    "vendor",
+    "zig-out",
+    ".zig-cache",
+    "coverage",
+    ".nyc_output",
+    ".tox",
+    "venv",
+    ".venv",
+    "env",
+    ".env",
+    ".mypy_cache",
+    ".pytest_cache",
 ];
 
 const MAX_DEPTH: usize = 4;
@@ -48,7 +72,10 @@ pub async fn scan_and_install(workspace: &Path, lang: &str, force: bool) -> usiz
         return 0;
     }
 
-    println!("[IMPORT-SCAN] Scanning source files for imports (lang={})...", lang);
+    println!(
+        "[IMPORT-SCAN] Scanning source files for imports (lang={})...",
+        lang
+    );
     let packages = scan_imports(workspace, lang);
 
     if packages.is_empty() {
@@ -57,13 +84,23 @@ pub async fn scan_and_install(workspace: &Path, lang: &str, force: bool) -> usiz
         return 0;
     }
 
-    println!("[IMPORT-SCAN] Detected {} third-party package(s): {:?}",
-        packages.len(), packages.iter().take(20).collect::<Vec<_>>());
+    println!(
+        "[IMPORT-SCAN] Detected {} third-party package(s): {:?}",
+        packages.len(),
+        packages.iter().take(20).collect::<Vec<_>>()
+    );
 
     let ok_count = install_packages(workspace, lang, &packages).await;
 
-    println!("[IMPORT-SCAN] Installed {}/{} packages.", ok_count, packages.len());
-    let _ = std::fs::write(&marker, format!("installed {} of {}", ok_count, packages.len()));
+    println!(
+        "[IMPORT-SCAN] Installed {}/{} packages.",
+        ok_count,
+        packages.len()
+    );
+    let _ = std::fs::write(
+        &marker,
+        format!("installed {} of {}", ok_count, packages.len()),
+    );
     ok_count
 }
 
@@ -87,7 +124,8 @@ fn scan_imports(root: &Path, lang: &str) -> Vec<String> {
 
     // Filter out known stdlib modules and local imports
     let stdlib = stdlib_modules(lang);
-    imports.into_iter()
+    imports
+        .into_iter()
         .filter(|pkg| !stdlib.contains(pkg.as_str()))
         .filter(|pkg| !is_likely_local(pkg))
         .collect()
@@ -155,7 +193,9 @@ fn extract_imports(content: &str, lang: &str, imports: &mut HashSet<String>) {
         let trimmed = line.trim();
         match lang {
             "python" | "py" => extract_python_imports(trimmed, imports),
-            "javascript" | "js" | "typescript" | "ts" | "svelte" => extract_js_imports(trimmed, imports),
+            "javascript" | "js" | "typescript" | "ts" | "svelte" => {
+                extract_js_imports(trimmed, imports)
+            }
             "go" => extract_go_imports(trimmed, imports),
             "rust" => extract_rust_imports(trimmed, imports),
             "java" | "kotlin" | "kt" => extract_java_imports(trimmed, imports),
@@ -408,7 +448,7 @@ fn extract_elixir_imports(line: &str, imports: &mut HashSet<String>) {
 
 fn extract_lua_imports(line: &str, imports: &mut HashSet<String>) {
     // `local http = require("socket.http")` → "socket"
-    // `require("lfs")` → "lfs"  
+    // `require("lfs")` → "lfs"
     if line.contains("require") {
         if let Some(start) = line.find(|c: char| c == '\'' || c == '"') {
             let rest = &line[start + 1..];
@@ -430,86 +470,340 @@ fn stdlib_modules(lang: &str) -> HashSet<&'static str> {
         "python" | "py" => {
             // Python stdlib top-level modules (comprehensive but not exhaustive)
             [
-                "abc", "aifc", "argparse", "array", "ast", "asynchat", "asyncio",
-                "asyncore", "atexit", "audioop", "base64", "bdb", "binascii",
-                "binhex", "bisect", "builtins", "bz2", "calendar", "cgi", "cgitb",
-                "chunk", "cmath", "cmd", "code", "codecs", "codeop", "collections",
-                "colorsys", "compileall", "concurrent", "configparser", "contextlib",
-                "contextvars", "copy", "copyreg", "cProfile", "crypt", "csv",
-                "ctypes", "curses", "dataclasses", "datetime", "dbm", "decimal",
-                "difflib", "dis", "distutils", "doctest", "email", "encodings",
-                "enum", "errno", "faulthandler", "fcntl", "filecmp", "fileinput",
-                "fnmatch", "formatter", "fractions", "ftplib", "functools", "gc",
-                "getopt", "getpass", "gettext", "glob", "grp", "gzip", "hashlib",
-                "heapq", "hmac", "html", "http", "idlelib", "imaplib", "imghdr",
-                "imp", "importlib", "inspect", "io", "ipaddress", "itertools",
-                "json", "keyword", "lib2to3", "linecache", "locale", "logging",
-                "lzma", "mailbox", "mailcap", "marshal", "math", "mimetypes",
-                "mmap", "modulefinder", "multiprocessing", "netrc", "nis", "nntplib",
-                "numbers", "operator", "optparse", "os", "ossaudiodev", "parser",
-                "pathlib", "pdb", "pickle", "pickletools", "pipes", "pkgutil",
-                "platform", "plistlib", "poplib", "posix", "posixpath", "pprint",
-                "profile", "pstats", "pty", "pwd", "py_compile", "pyclbr",
-                "pydoc", "queue", "quopri", "random", "re", "readline", "reprlib",
-                "resource", "rlcompleter", "runpy", "sched", "secrets", "select",
-                "selectors", "shelve", "shlex", "shutil", "signal", "site",
-                "smtpd", "smtplib", "sndhdr", "socket", "socketserver", "sqlite3",
-                "ssl", "stat", "statistics", "string", "stringprep", "struct",
-                "subprocess", "sunau", "symtable", "sys", "sysconfig", "syslog",
-                "tabnanny", "tarfile", "telnetlib", "tempfile", "termios", "test",
-                "textwrap", "threading", "time", "timeit", "tkinter", "token",
-                "tokenize", "tomllib", "trace", "traceback", "tracemalloc",
-                "tty", "turtle", "turtledemo", "types", "typing", "unicodedata",
-                "unittest", "urllib", "uu", "uuid", "venv", "warnings", "wave",
-                "weakref", "webbrowser", "winreg", "winsound", "wsgiref",
-                "xdrlib", "xml", "xmlrpc", "zipapp", "zipfile", "zipimport",
-                "zlib", "_thread", "__future__",
-            ].iter().copied().collect()
+                "abc",
+                "aifc",
+                "argparse",
+                "array",
+                "ast",
+                "asynchat",
+                "asyncio",
+                "asyncore",
+                "atexit",
+                "audioop",
+                "base64",
+                "bdb",
+                "binascii",
+                "binhex",
+                "bisect",
+                "builtins",
+                "bz2",
+                "calendar",
+                "cgi",
+                "cgitb",
+                "chunk",
+                "cmath",
+                "cmd",
+                "code",
+                "codecs",
+                "codeop",
+                "collections",
+                "colorsys",
+                "compileall",
+                "concurrent",
+                "configparser",
+                "contextlib",
+                "contextvars",
+                "copy",
+                "copyreg",
+                "cProfile",
+                "crypt",
+                "csv",
+                "ctypes",
+                "curses",
+                "dataclasses",
+                "datetime",
+                "dbm",
+                "decimal",
+                "difflib",
+                "dis",
+                "distutils",
+                "doctest",
+                "email",
+                "encodings",
+                "enum",
+                "errno",
+                "faulthandler",
+                "fcntl",
+                "filecmp",
+                "fileinput",
+                "fnmatch",
+                "formatter",
+                "fractions",
+                "ftplib",
+                "functools",
+                "gc",
+                "getopt",
+                "getpass",
+                "gettext",
+                "glob",
+                "grp",
+                "gzip",
+                "hashlib",
+                "heapq",
+                "hmac",
+                "html",
+                "http",
+                "idlelib",
+                "imaplib",
+                "imghdr",
+                "imp",
+                "importlib",
+                "inspect",
+                "io",
+                "ipaddress",
+                "itertools",
+                "json",
+                "keyword",
+                "lib2to3",
+                "linecache",
+                "locale",
+                "logging",
+                "lzma",
+                "mailbox",
+                "mailcap",
+                "marshal",
+                "math",
+                "mimetypes",
+                "mmap",
+                "modulefinder",
+                "multiprocessing",
+                "netrc",
+                "nis",
+                "nntplib",
+                "numbers",
+                "operator",
+                "optparse",
+                "os",
+                "ossaudiodev",
+                "parser",
+                "pathlib",
+                "pdb",
+                "pickle",
+                "pickletools",
+                "pipes",
+                "pkgutil",
+                "platform",
+                "plistlib",
+                "poplib",
+                "posix",
+                "posixpath",
+                "pprint",
+                "profile",
+                "pstats",
+                "pty",
+                "pwd",
+                "py_compile",
+                "pyclbr",
+                "pydoc",
+                "queue",
+                "quopri",
+                "random",
+                "re",
+                "readline",
+                "reprlib",
+                "resource",
+                "rlcompleter",
+                "runpy",
+                "sched",
+                "secrets",
+                "select",
+                "selectors",
+                "shelve",
+                "shlex",
+                "shutil",
+                "signal",
+                "site",
+                "smtpd",
+                "smtplib",
+                "sndhdr",
+                "socket",
+                "socketserver",
+                "sqlite3",
+                "ssl",
+                "stat",
+                "statistics",
+                "string",
+                "stringprep",
+                "struct",
+                "subprocess",
+                "sunau",
+                "symtable",
+                "sys",
+                "sysconfig",
+                "syslog",
+                "tabnanny",
+                "tarfile",
+                "telnetlib",
+                "tempfile",
+                "termios",
+                "test",
+                "textwrap",
+                "threading",
+                "time",
+                "timeit",
+                "tkinter",
+                "token",
+                "tokenize",
+                "tomllib",
+                "trace",
+                "traceback",
+                "tracemalloc",
+                "tty",
+                "turtle",
+                "turtledemo",
+                "types",
+                "typing",
+                "unicodedata",
+                "unittest",
+                "urllib",
+                "uu",
+                "uuid",
+                "venv",
+                "warnings",
+                "wave",
+                "weakref",
+                "webbrowser",
+                "winreg",
+                "winsound",
+                "wsgiref",
+                "xdrlib",
+                "xml",
+                "xmlrpc",
+                "zipapp",
+                "zipfile",
+                "zipimport",
+                "zlib",
+                "_thread",
+                "__future__",
+            ]
+            .iter()
+            .copied()
+            .collect()
         }
-        "rust" => {
-            ["std", "core", "alloc", "self", "super", "crate", "proc_macro"]
-                .iter().copied().collect()
-        }
+        "rust" => [
+            "std",
+            "core",
+            "alloc",
+            "self",
+            "super",
+            "crate",
+            "proc_macro",
+        ]
+        .iter()
+        .copied()
+        .collect(),
         "go" => {
             // Go stdlib is detected by absence of dots — handled in extract_go_imports
             HashSet::new()
         }
-        "java" | "kotlin" | "kt" => {
-            ["java", "javax", "kotlin", "kotlinx", "sun", "com.sun", "org.xml", "org.w3c"]
-                .iter().copied().collect()
-        }
-        "csharp" | "cs" => {
-            ["System", "Microsoft", "Windows"]
-                .iter().copied().collect()
-        }
+        "java" | "kotlin" | "kt" => [
+            "java", "javax", "kotlin", "kotlinx", "sun", "com.sun", "org.xml", "org.w3c",
+        ]
+        .iter()
+        .copied()
+        .collect(),
+        "csharp" | "cs" => ["System", "Microsoft", "Windows"].iter().copied().collect(),
         "ruby" | "rb" => {
             // Ruby stdlib gems
             [
-                "abbrev", "base64", "benchmark", "bigdecimal", "bundler", "cgi",
-                "csv", "date", "delegate", "digest", "drb", "english", "erb",
-                "etc", "fcntl", "fiddle", "fileutils", "find", "forwardable",
-                "getoptlong", "io", "ipaddr", "irb", "json", "logger", "matrix",
-                "minitest", "monitor", "mutex_m", "net", "nkf", "observer",
-                "open3", "openssl", "optparse", "ostruct", "pathname", "pp",
-                "prettyprint", "prime", "pstore", "psych", "racc", "rake",
-                "rdoc", "readline", "reline", "resolv", "rinda", "ripper",
-                "securerandom", "set", "shellwords", "singleton", "socket",
-                "stringio", "strscan", "syslog", "tempfile", "test",
-                "time", "timeout", "tmpdir", "tsort", "un", "uri", "weakref",
-                "yaml", "zlib",
-            ].iter().copied().collect()
+                "abbrev",
+                "base64",
+                "benchmark",
+                "bigdecimal",
+                "bundler",
+                "cgi",
+                "csv",
+                "date",
+                "delegate",
+                "digest",
+                "drb",
+                "english",
+                "erb",
+                "etc",
+                "fcntl",
+                "fiddle",
+                "fileutils",
+                "find",
+                "forwardable",
+                "getoptlong",
+                "io",
+                "ipaddr",
+                "irb",
+                "json",
+                "logger",
+                "matrix",
+                "minitest",
+                "monitor",
+                "mutex_m",
+                "net",
+                "nkf",
+                "observer",
+                "open3",
+                "openssl",
+                "optparse",
+                "ostruct",
+                "pathname",
+                "pp",
+                "prettyprint",
+                "prime",
+                "pstore",
+                "psych",
+                "racc",
+                "rake",
+                "rdoc",
+                "readline",
+                "reline",
+                "resolv",
+                "rinda",
+                "ripper",
+                "securerandom",
+                "set",
+                "shellwords",
+                "singleton",
+                "socket",
+                "stringio",
+                "strscan",
+                "syslog",
+                "tempfile",
+                "test",
+                "time",
+                "timeout",
+                "tmpdir",
+                "tsort",
+                "un",
+                "uri",
+                "weakref",
+                "yaml",
+                "zlib",
+            ]
+            .iter()
+            .copied()
+            .collect()
         }
         "cpp" | "c" => {
             // C/C++ system headers with slashes that look third-party but aren't
             [
-                "sys", "net", "arpa", "linux", "asm", "bits", "gnu",
-                "X11", "GL", "EGL", "GLES", "GLES2", "GLES3",
-            ].iter().copied().collect()
+                "sys", "net", "arpa", "linux", "asm", "bits", "gnu", "X11", "GL", "EGL", "GLES",
+                "GLES2", "GLES3",
+            ]
+            .iter()
+            .copied()
+            .collect()
         }
-        "lua" => {
-            ["string", "table", "math", "io", "os", "coroutine", "debug", "package", "utf8"]
-                .iter().copied().collect()
-        }
+        "lua" => [
+            "string",
+            "table",
+            "math",
+            "io",
+            "os",
+            "coroutine",
+            "debug",
+            "package",
+            "utf8",
+        ]
+        .iter()
+        .copied()
+        .collect(),
         _ => HashSet::new(),
     }
 }
@@ -610,7 +904,10 @@ async fn install_packages(workspace: &Path, lang: &str, packages: &[String]) -> 
         // Rust/Java/Kotlin/Go need a proper project manifest; standalone import install
         // isn't practical. Just return 0.
         _ => {
-            println!("[IMPORT-SCAN] No standalone package installer for lang={}", lang);
+            println!(
+                "[IMPORT-SCAN] No standalone package installer for lang={}",
+                lang
+            );
             0
         }
     }
@@ -624,18 +921,34 @@ async fn install_python_packages(packages: &[String]) -> usize {
     // Install all at once for speed.
     // --break-system-packages is needed on modern Debian/Ubuntu (PEP 668)
     // where the worker runs in an isolated container anyway.
-    let result = run_cmd("pip", &[
-        &["install", "--quiet", "--break-system-packages"],
-        mapped.as_slice(),
-    ].concat(), None).await;
+    let result = run_cmd(
+        "pip",
+        &[
+            &["install", "--quiet", "--break-system-packages"],
+            mapped.as_slice(),
+        ]
+        .concat(),
+        None,
+    )
+    .await;
     match result {
         Ok(()) => mapped.len(),
         Err(e) => {
-            eprintln!("[IMPORT-SCAN] pip install failed: {}, trying individually...", e);
+            eprintln!(
+                "[IMPORT-SCAN] pip install failed: {}, trying individually...",
+                e
+            );
             // Try each individually
             let mut ok = 0;
             for pkg in &mapped {
-                if run_cmd("pip", &["install", "--quiet", "--break-system-packages", pkg], None).await.is_ok() {
+                if run_cmd(
+                    "pip",
+                    &["install", "--quiet", "--break-system-packages", pkg],
+                    None,
+                )
+                .await
+                .is_ok()
+                {
                     ok += 1;
                 }
             }
@@ -654,7 +967,10 @@ async fn install_js_packages(workspace: &Path, packages: &[String]) -> usize {
             "private": true,
             "dependencies": {}
         });
-        let _ = std::fs::write(&pkg_json, serde_json::to_string_pretty(&content).unwrap_or_default());
+        let _ = std::fs::write(
+            &pkg_json,
+            serde_json::to_string_pretty(&content).unwrap_or_default(),
+        );
     }
 
     let pkgs: Vec<&str> = packages.iter().map(|s| s.as_str()).collect();
@@ -688,7 +1004,10 @@ async fn install_go_packages(workspace: &Path, packages: &[String]) -> usize {
 async fn install_ruby_packages(packages: &[String]) -> usize {
     let mut ok = 0;
     for pkg in packages {
-        if run_cmd("gem", &["install", pkg, "--no-document"], None).await.is_ok() {
+        if run_cmd("gem", &["install", pkg, "--no-document"], None)
+            .await
+            .is_ok()
+        {
             ok += 1;
         }
     }
@@ -698,7 +1017,14 @@ async fn install_ruby_packages(packages: &[String]) -> usize {
 async fn install_php_packages(workspace: &Path, packages: &[String]) -> usize {
     let mut ok = 0;
     for pkg in packages {
-        if run_cmd("composer", &["require", "--no-interaction", pkg], Some(workspace)).await.is_ok() {
+        if run_cmd(
+            "composer",
+            &["require", "--no-interaction", pkg],
+            Some(workspace),
+        )
+        .await
+        .is_ok()
+        {
             ok += 1;
         }
     }
@@ -708,7 +1034,10 @@ async fn install_php_packages(workspace: &Path, packages: &[String]) -> usize {
 async fn install_dart_packages(workspace: &Path, packages: &[String]) -> usize {
     let mut ok = 0;
     for pkg in packages {
-        if run_cmd("dart", &["pub", "add", pkg], Some(workspace)).await.is_ok() {
+        if run_cmd("dart", &["pub", "add", pkg], Some(workspace))
+            .await
+            .is_ok()
+        {
             ok += 1;
         }
     }
@@ -717,9 +1046,7 @@ async fn install_dart_packages(workspace: &Path, packages: &[String]) -> usize {
 
 async fn install_cpp_packages(packages: &[String]) -> usize {
     // For C/C++, install system packages via apt-get
-    let apt_packages: Vec<&str> = packages.iter()
-        .filter_map(|p| map_cpp_package(p))
-        .collect();
+    let apt_packages: Vec<&str> = packages.iter().filter_map(|p| map_cpp_package(p)).collect();
     if apt_packages.is_empty() {
         return 0;
     }
@@ -739,7 +1066,10 @@ async fn install_cpp_packages(packages: &[String]) -> usize {
 async fn install_dotnet_packages(workspace: &Path, packages: &[String]) -> usize {
     let mut ok = 0;
     for pkg in packages {
-        if run_cmd("dotnet", &["add", "package", pkg], Some(workspace)).await.is_ok() {
+        if run_cmd("dotnet", &["add", "package", pkg], Some(workspace))
+            .await
+            .is_ok()
+        {
             ok += 1;
         }
     }
@@ -763,13 +1093,13 @@ async fn install_lua_packages(packages: &[String]) -> usize {
 async fn run_cmd(program: &str, args: &[&str], cwd: Option<&Path>) -> Result<(), String> {
     println!("[IMPORT-SCAN] Running: {} {}", program, args.join(" "));
     let mut cmd = Command::new(program);
-    cmd.args(args)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+    cmd.args(args).stdout(Stdio::piped()).stderr(Stdio::piped());
     if let Some(dir) = cwd {
         cmd.current_dir(dir);
     }
-    let status = cmd.status().await
+    let status = cmd
+        .status()
+        .await
         .map_err(|e| format!("Failed to run {}: {}", program, e))?;
     if status.success() {
         Ok(())

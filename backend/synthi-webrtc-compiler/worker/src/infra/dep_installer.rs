@@ -24,16 +24,40 @@
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use tokio::process::Command;
 use std::process::Stdio;
+use tokio::process::Command;
 
 /// Directories we never descend into while scanning for manifests.
 const SKIP_DIRS: &[&str] = &[
-    "node_modules", ".git", "__pycache__", "target", "build", "dist",
-    ".gradle", ".idea", "bin", "obj", ".dart_tool", "_build", "deps",
-    ".elixir_ls", ".jdtls-data", "zig-cache", ".next", "vendor",
-    "zig-out", ".zig-cache", "coverage", ".nyc_output", ".tox",
-    "venv", ".venv", "env", ".env", ".mypy_cache", ".pytest_cache",
+    "node_modules",
+    ".git",
+    "__pycache__",
+    "target",
+    "build",
+    "dist",
+    ".gradle",
+    ".idea",
+    "bin",
+    "obj",
+    ".dart_tool",
+    "_build",
+    "deps",
+    ".elixir_ls",
+    ".jdtls-data",
+    "zig-cache",
+    ".next",
+    "vendor",
+    "zig-out",
+    ".zig-cache",
+    "coverage",
+    ".nyc_output",
+    ".tox",
+    "venv",
+    ".venv",
+    "env",
+    ".env",
+    ".mypy_cache",
+    ".pytest_cache",
 ];
 
 /// Maximum directory depth to scan (prevents runaway recursion).
@@ -56,14 +80,19 @@ const MAX_DEPTH: usize = 4;
 pub async fn install_all_deps(workspace: &Path, lang: &str, force: bool) -> usize {
     let marker = workspace.join(".synthi_deps_installed");
     if !force && marker.exists() {
-        println!("[LSP-DEPS] Dependencies already installed (marker exists), skipping manifest install.");
+        println!(
+            "[LSP-DEPS] Dependencies already installed (marker exists), skipping manifest install."
+        );
 
         // Even though manifests were already installed, the import scanner
         // tracks per-language markers.  A new language that wasn't covered
         // by the manifests still needs its third-party imports resolved.
         let manifests = scan_manifests(workspace);
         if manifests.is_empty() || !manifests_cover_lang(&manifests, lang) {
-            println!("[LSP-DEPS] Running import scanner for uncovered lang='{}'.", lang);
+            println!(
+                "[LSP-DEPS] Running import scanner for uncovered lang='{}'.",
+                lang
+            );
             super::import_scanner::scan_and_install(workspace, lang, false).await;
         }
         return 0;
@@ -103,7 +132,11 @@ pub async fn install_all_deps(workspace: &Path, lang: &str, force: bool) -> usiz
         }
     }
 
-    println!("[LSP-DEPS] Dependency install complete: {}/{} succeeded.", ok_count, manifests.len());
+    println!(
+        "[LSP-DEPS] Dependency install complete: {}/{} succeeded.",
+        ok_count,
+        manifests.len()
+    );
 
     // ── Standalone-file fallback for the CURRENT language ──────────
     // If the manifests we found don't cover the language being started,
@@ -112,23 +145,36 @@ pub async fn install_all_deps(workspace: &Path, lang: &str, force: bool) -> usiz
     // dependency installation.  Run the import scanner for just that
     // language as a safety net.
     if !manifests_cover_lang(&manifests, lang) {
-        println!("[LSP-DEPS] No manifest covers lang='{}' — running import scanner as supplement.", lang);
+        println!(
+            "[LSP-DEPS] No manifest covers lang='{}' — running import scanner as supplement.",
+            lang
+        );
         let extra = super::import_scanner::scan_and_install(workspace, lang, false).await;
         ok_count += extra;
     }
 
-    let _ = std::fs::write(&marker, format!("installed {} of {}", ok_count, manifests.len()));
+    let _ = std::fs::write(
+        &marker,
+        format!("installed {} of {}", ok_count, manifests.len()),
+    );
     ok_count
 }
 
 /// Returns `true` if at least one manifest is relevant to `lang`.
 fn manifests_cover_lang(manifests: &[Manifest], lang: &str) -> bool {
     manifests.iter().any(|m| match lang {
-        "python" | "py" => matches!(m.kind,
-            ManifestKind::Pip | ManifestKind::PipEditable |
-            ManifestKind::Pipfile | ManifestKind::Poetry | ManifestKind::Conda),
-        "javascript" | "js" | "typescript" | "ts" | "svelte" => matches!(m.kind,
-            ManifestKind::Npm | ManifestKind::Yarn | ManifestKind::Pnpm),
+        "python" | "py" => matches!(
+            m.kind,
+            ManifestKind::Pip
+                | ManifestKind::PipEditable
+                | ManifestKind::Pipfile
+                | ManifestKind::Poetry
+                | ManifestKind::Conda
+        ),
+        "javascript" | "js" | "typescript" | "ts" | "svelte" => matches!(
+            m.kind,
+            ManifestKind::Npm | ManifestKind::Yarn | ManifestKind::Pnpm
+        ),
         "go" => matches!(m.kind, ManifestKind::GoMod),
         "rust" => matches!(m.kind, ManifestKind::Cargo),
         "java" | "kotlin" | "kt" => matches!(m.kind, ManifestKind::Maven | ManifestKind::Gradle),
@@ -137,8 +183,10 @@ fn manifests_cover_lang(manifests: &[Manifest], lang: &str) -> bool {
         "php" => matches!(m.kind, ManifestKind::Composer),
         "dart" => matches!(m.kind, ManifestKind::DartPub),
         "elixir" | "ex" => matches!(m.kind, ManifestKind::MixExs),
-        "cpp" | "c" => matches!(m.kind,
-            ManifestKind::CMake | ManifestKind::Makefile | ManifestKind::Meson),
+        "cpp" | "c" => matches!(
+            m.kind,
+            ManifestKind::CMake | ManifestKind::Makefile | ManifestKind::Meson
+        ),
         _ => false,
     })
 }
@@ -216,35 +264,86 @@ fn walk(dir: &Path, depth: usize, out: &mut Vec<Manifest>) {
 
         // Check for manifest files
         match name_str.as_ref() {
-            "package.json"       => has_package_json = true,
-            "package-lock.json"  => has_package_lock = true,
-            "yarn.lock"          => has_yarn_lock = true,
-            "pnpm-lock.yaml"     => has_pnpm_lock = true,
-            "requirements.txt"   => out.push(Manifest { kind: ManifestKind::Pip, dir: dir.to_path_buf() }),
-            "pyproject.toml"     => out.push(Manifest { kind: ManifestKind::PipEditable, dir: dir.to_path_buf() }),
-            "setup.py"           => out.push(Manifest { kind: ManifestKind::PipEditable, dir: dir.to_path_buf() }),
-            "Pipfile"            => out.push(Manifest { kind: ManifestKind::Pipfile, dir: dir.to_path_buf() }),
-            "poetry.lock"        => out.push(Manifest { kind: ManifestKind::Poetry, dir: dir.to_path_buf() }),
-            "environment.yml" | "environment.yaml"
-                                 => out.push(Manifest { kind: ManifestKind::Conda, dir: dir.to_path_buf() }),
-            "go.mod"             => out.push(Manifest { kind: ManifestKind::GoMod, dir: dir.to_path_buf() }),
-            "Cargo.toml"         => out.push(Manifest { kind: ManifestKind::Cargo, dir: dir.to_path_buf() }),
-            "pom.xml"            => out.push(Manifest { kind: ManifestKind::Maven, dir: dir.to_path_buf() }),
-            "build.gradle" | "build.gradle.kts"
-                                 => out.push(Manifest { kind: ManifestKind::Gradle, dir: dir.to_path_buf() }),
-            "Gemfile"            => out.push(Manifest { kind: ManifestKind::Gemfile, dir: dir.to_path_buf() }),
-            "composer.json"      => out.push(Manifest { kind: ManifestKind::Composer, dir: dir.to_path_buf() }),
-            "pubspec.yaml"       => out.push(Manifest { kind: ManifestKind::DartPub, dir: dir.to_path_buf() }),
-            "mix.exs"            => out.push(Manifest { kind: ManifestKind::MixExs, dir: dir.to_path_buf() }),
-            "CMakeLists.txt"     => out.push(Manifest { kind: ManifestKind::CMake, dir: dir.to_path_buf() }),
-            "meson.build"        => out.push(Manifest { kind: ManifestKind::Meson, dir: dir.to_path_buf() }),
-            "Makefile" | "makefile" | "GNUmakefile"
-                                 => out.push(Manifest { kind: ManifestKind::Makefile, dir: dir.to_path_buf() }),
+            "package.json" => has_package_json = true,
+            "package-lock.json" => has_package_lock = true,
+            "yarn.lock" => has_yarn_lock = true,
+            "pnpm-lock.yaml" => has_pnpm_lock = true,
+            "requirements.txt" => out.push(Manifest {
+                kind: ManifestKind::Pip,
+                dir: dir.to_path_buf(),
+            }),
+            "pyproject.toml" => out.push(Manifest {
+                kind: ManifestKind::PipEditable,
+                dir: dir.to_path_buf(),
+            }),
+            "setup.py" => out.push(Manifest {
+                kind: ManifestKind::PipEditable,
+                dir: dir.to_path_buf(),
+            }),
+            "Pipfile" => out.push(Manifest {
+                kind: ManifestKind::Pipfile,
+                dir: dir.to_path_buf(),
+            }),
+            "poetry.lock" => out.push(Manifest {
+                kind: ManifestKind::Poetry,
+                dir: dir.to_path_buf(),
+            }),
+            "environment.yml" | "environment.yaml" => out.push(Manifest {
+                kind: ManifestKind::Conda,
+                dir: dir.to_path_buf(),
+            }),
+            "go.mod" => out.push(Manifest {
+                kind: ManifestKind::GoMod,
+                dir: dir.to_path_buf(),
+            }),
+            "Cargo.toml" => out.push(Manifest {
+                kind: ManifestKind::Cargo,
+                dir: dir.to_path_buf(),
+            }),
+            "pom.xml" => out.push(Manifest {
+                kind: ManifestKind::Maven,
+                dir: dir.to_path_buf(),
+            }),
+            "build.gradle" | "build.gradle.kts" => out.push(Manifest {
+                kind: ManifestKind::Gradle,
+                dir: dir.to_path_buf(),
+            }),
+            "Gemfile" => out.push(Manifest {
+                kind: ManifestKind::Gemfile,
+                dir: dir.to_path_buf(),
+            }),
+            "composer.json" => out.push(Manifest {
+                kind: ManifestKind::Composer,
+                dir: dir.to_path_buf(),
+            }),
+            "pubspec.yaml" => out.push(Manifest {
+                kind: ManifestKind::DartPub,
+                dir: dir.to_path_buf(),
+            }),
+            "mix.exs" => out.push(Manifest {
+                kind: ManifestKind::MixExs,
+                dir: dir.to_path_buf(),
+            }),
+            "CMakeLists.txt" => out.push(Manifest {
+                kind: ManifestKind::CMake,
+                dir: dir.to_path_buf(),
+            }),
+            "meson.build" => out.push(Manifest {
+                kind: ManifestKind::Meson,
+                dir: dir.to_path_buf(),
+            }),
+            "Makefile" | "makefile" | "GNUmakefile" => out.push(Manifest {
+                kind: ManifestKind::Makefile,
+                dir: dir.to_path_buf(),
+            }),
             _ => {
                 // .csproj / .sln
                 if let Some(ext) = path.extension() {
                     if ext == "csproj" || ext == "sln" {
-                        out.push(Manifest { kind: ManifestKind::Dotnet, dir: dir.to_path_buf() });
+                        out.push(Manifest {
+                            kind: ManifestKind::Dotnet,
+                            dir: dir.to_path_buf(),
+                        });
                     }
                 }
             }
@@ -260,7 +359,10 @@ fn walk(dir: &Path, depth: usize, out: &mut Vec<Manifest>) {
         } else {
             ManifestKind::Npm
         };
-        out.push(Manifest { kind, dir: dir.to_path_buf() });
+        out.push(Manifest {
+            kind,
+            dir: dir.to_path_buf(),
+        });
     }
 
     // Recurse into subdirectories
@@ -287,23 +389,33 @@ async fn run_install(m: &Manifest) -> Result<(), String> {
         ManifestKind::Pnpm => ("pnpm", vec!["install", "--frozen-lockfile"]),
         ManifestKind::Pip => (
             "pip",
-            vec!["install", "-r", "requirements.txt", "--quiet", "--break-system-packages"],
+            vec![
+                "install",
+                "-r",
+                "requirements.txt",
+                "--quiet",
+                "--break-system-packages",
+            ],
         ),
         ManifestKind::PipEditable => (
             "pip",
             vec!["install", "-e", ".", "--quiet", "--break-system-packages"],
         ),
-        ManifestKind::Pipfile => (
-            "pipenv",
-            vec!["install", "--deploy"],
-        ),
-        ManifestKind::Poetry => (
-            "poetry",
-            vec!["install", "--no-interaction"],
-        ),
+        ManifestKind::Pipfile => ("pipenv", vec!["install", "--deploy"]),
+        ManifestKind::Poetry => ("poetry", vec!["install", "--no-interaction"]),
         ManifestKind::Conda => {
             // `conda env update` installs into the base env from environment.yml
-            ("conda", vec!["env", "update", "--file", "environment.yml", "--prune", "-q"])
+            (
+                "conda",
+                vec![
+                    "env",
+                    "update",
+                    "--file",
+                    "environment.yml",
+                    "--prune",
+                    "-q",
+                ],
+            )
         }
         ManifestKind::GoMod => ("go", vec!["mod", "download"]),
         ManifestKind::Cargo => ("cargo", vec!["fetch"]),
@@ -316,20 +428,17 @@ async fn run_install(m: &Manifest) -> Result<(), String> {
                 ("gradle", vec!["dependencies", "--quiet"])
             }
         }
-        ManifestKind::Dotnet => (
-            "dotnet",
-            vec!["restore", "--verbosity", "quiet"],
-        ),
+        ManifestKind::Dotnet => ("dotnet", vec!["restore", "--verbosity", "quiet"]),
         ManifestKind::Gemfile => ("bundle", vec!["install", "--quiet"]),
-        ManifestKind::Composer => (
-            "composer",
-            vec!["install", "--no-interaction", "--quiet"],
-        ),
+        ManifestKind::Composer => ("composer", vec!["install", "--no-interaction", "--quiet"]),
         ManifestKind::DartPub => ("dart", vec!["pub", "get"]),
         ManifestKind::MixExs => ("mix", vec!["deps.get"]),
         ManifestKind::CMake => {
             // Generate compile_commands.json for clangd, then build deps
-            ("cmake", vec!["-B", "build", "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON", "."])
+            (
+                "cmake",
+                vec!["-B", "build", "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON", "."],
+            )
         }
         ManifestKind::Makefile => {
             // Use `bear` to generate compile_commands.json from Makefile
@@ -342,7 +451,12 @@ async fn run_install(m: &Manifest) -> Result<(), String> {
         }
     };
 
-    println!("[LSP-DEPS] Running: {} {} (in {})", program, args.join(" "), m.dir.display());
+    println!(
+        "[LSP-DEPS] Running: {} {} (in {})",
+        program,
+        args.join(" "),
+        m.dir.display()
+    );
 
     // Some tools are installed to non-standard paths (e.g. Dart SDK at
     // /opt/dart-sdk/bin or /usr/lib/dart/bin).  Extend PATH so the

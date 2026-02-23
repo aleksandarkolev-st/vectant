@@ -22,6 +22,6 @@ pub use android_scaffold::{
 pub use build::{
     build_flutter_apk, clean_flutter, BuildVariant, FlutterBuildConfig, FlutterBuildResult,
 };
-pub use detection::{detect_flutter_project, FlutterProjectInfo};
 pub use const_fixer::fix_const_errors;
+pub use detection::{detect_flutter_project, FlutterProjectInfo};
 pub use sdk_health::check_flutter_sdk;

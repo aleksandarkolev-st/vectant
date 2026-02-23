@@ -1,0 +1,223 @@
+﻿cargo :     Checking icu_locale_core 
+v2.1.1
+At line:1 char:1
++ cargo check 2>&1 | Out-File 
+-Encoding utf8 cargo_err.txt
++ ~~~~~~~~~~~~~~~~
+    + CategoryInfo          : 
+NotSpecified    : (    Checking 
+icu_locale_core v2.1.1    :String) 
+[], RemoteException
+    + FullyQualifiedErrorId : 
+NativeComman    dError
+ 
+    Checking icu_collections v2.1.1
+   Compiling glib-sys v0.18.1
+   Compiling gobject-sys v0.18.0
+    Checking pkcs8 v0.10.2
+   Compiling prost-derive v0.12.6
+    Checking rustls-pki-types v1.14.0
+    Checking ff v0.13.1
+   Compiling synstructure v0.12.6
+    Checking nom v7.1.3
+    Checking schannel v0.1.28
+   Compiling proc-macro-error-attr 
+v1.0.4
+warning: glib-sys@0.18.1: Could not 
+run 
+`PKG_CONFIG_ALLOW_SYSTEM_CFLAGS=1 
+pkg-config --libs --cflags glib-2.0 
+'glib-2.0 >= 2.56'`
+error: failed to run custom build 
+command for `glib-sys v0.18.1`
+
+Caused by:
+  process didn't exit successfully: `
+C:\Users\viniw\dev\projects\synthi\sy
+nthi-ide\backend\synthi-webrtc-compil
+er\worker\target\debug\build\glib-sys
+-5dd8743c74ea5d29\build-script-build`
+ (exit code: 1)
+  --- stdout
+  cargo:rerun-if-env-changed=GLIB_2.0
+_NO_PKG_CONFIG
+  cargo:rerun-if-env-changed=PKG_CONF
+IG_x86_64-pc-windows-msvc
+  cargo:rerun-if-env-changed=PKG_CONF
+IG_x86_64_pc_windows_msvc
+  cargo:rerun-if-env-changed=HOST_PKG
+_CONFIG
+  
+cargo:rerun-if-env-changed=PKG_CONFIG
+  cargo:rerun-if-env-changed=PKG_CONF
+IG_PATH_x86_64-pc-windows-msvc
+  cargo:rerun-if-env-changed=PKG_CONF
+IG_PATH_x86_64_pc_windows_msvc
+  cargo:rerun-if-env-changed=HOST_PKG
+_CONFIG_PATH
+  cargo:rerun-if-env-changed=PKG_CONF
+IG_PATH
+  cargo:rerun-if-env-changed=PKG_CONF
+IG_LIBDIR_x86_64-pc-windows-msvc
+  cargo:rerun-if-env-changed=PKG_CONF
+IG_LIBDIR_x86_64_pc_windows_msvc
+  cargo:rerun-if-env-changed=HOST_PKG
+_CONFIG_LIBDIR
+  cargo:rerun-if-env-changed=PKG_CONF
+IG_LIBDIR
+  cargo:rerun-if-env-changed=PKG_CONF
+IG_SYSROOT_DIR_x86_64-pc-windows-msvc
+  cargo:rerun-if-env-changed=PKG_CONF
+IG_SYSROOT_DIR_x86_64_pc_windows_msvc
+  cargo:rerun-if-env-changed=HOST_PKG
+_CONFIG_SYSROOT_DIR
+  cargo:rerun-if-env-changed=PKG_CONF
+IG_SYSROOT_DIR
+  cargo:rerun-if-env-changed=PKG_CONF
+IG_PATH_x86_64-pc-windows-msvc
+  cargo:rerun-if-env-changed=PKG_CONF
+IG_PATH_x86_64_pc_windows_msvc
+  cargo:rerun-if-env-changed=HOST_PKG
+_CONFIG_PATH
+  cargo:rerun-if-env-changed=PKG_CONF
+IG_PATH
+  cargo:rerun-if-env-changed=PKG_CONF
+IG_LIBDIR_x86_64-pc-windows-msvc
+  cargo:rerun-if-env-changed=PKG_CONF
+IG_LIBDIR_x86_64_pc_windows_msvc
+  cargo:rerun-if-env-changed=HOST_PKG
+_CONFIG_LIBDIR
+  cargo:rerun-if-env-changed=PKG_CONF
+IG_LIBDIR
+  cargo:rerun-if-env-changed=PKG_CONF
+IG_SYSROOT_DIR_x86_64-pc-windows-msvc
+  cargo:rerun-if-env-changed=PKG_CONF
+IG_SYSROOT_DIR_x86_64_pc_windows_msvc
+  cargo:rerun-if-env-changed=HOST_PKG
+_CONFIG_SYSROOT_DIR
+  cargo:rerun-if-env-changed=PKG_CONF
+IG_SYSROOT_DIR
+  cargo:warning=Could not run 
+`PKG_CONFIG_ALLOW_SYSTEM_CFLAGS=1 
+pkg-config --libs --cflags glib-2.0 
+'glib-2.0 >= 2.56'`
+  The pkg-config command could not 
+be found.
+
+  Most likely, you need to install a 
+pkg-config package for your OS.
+
+  If you've already installed it, 
+ensure the pkg-config command is one 
+of the
+  directories in the PATH 
+environment variable.
+
+  If you did not expect this build 
+to link to a pre-installed system 
+library,
+  then check documentation of the 
+glib-sys crate for an option to
+  build the library from source, or 
+disable features or dependencies
+  that require pkg-config.
+warning: build failed, waiting for 
+other jobs to finish...
+warning: gobject-sys@0.18.0: Could 
+not run 
+`PKG_CONFIG_ALLOW_SYSTEM_CFLAGS=1 
+pkg-config --libs --cflags 
+gobject-2.0 'gobject-2.0 >= 2.56'`
+error: failed to run custom build 
+command for `gobject-sys v0.18.0`
+
+Caused by:
+  process didn't exit successfully: `
+C:\Users\viniw\dev\projects\synthi\sy
+nthi-ide\backend\synthi-webrtc-compil
+er\worker\target\debug\build\gobject-
+sys-fa4cbcd6b1835f29\build-script-bui
+ld` (exit code: 1)
+  --- stdout
+  cargo:rerun-if-env-changed=GOBJECT_
+2.0_NO_PKG_CONFIG
+  cargo:rerun-if-env-changed=PKG_CONF
+IG_x86_64-pc-windows-msvc
+  cargo:rerun-if-env-changed=PKG_CONF
+IG_x86_64_pc_windows_msvc
+  cargo:rerun-if-env-changed=HOST_PKG
+_CONFIG
+  
+cargo:rerun-if-env-changed=PKG_CONFIG
+  cargo:rerun-if-env-changed=PKG_CONF
+IG_PATH_x86_64-pc-windows-msvc
+  cargo:rerun-if-env-changed=PKG_CONF
+IG_PATH_x86_64_pc_windows_msvc
+  cargo:rerun-if-env-changed=HOST_PKG
+_CONFIG_PATH
+  cargo:rerun-if-env-changed=PKG_CONF
+IG_PATH
+  cargo:rerun-if-env-changed=PKG_CONF
+IG_LIBDIR_x86_64-pc-windows-msvc
+  cargo:rerun-if-env-changed=PKG_CONF
+IG_LIBDIR_x86_64_pc_windows_msvc
+  cargo:rerun-if-env-changed=HOST_PKG
+_CONFIG_LIBDIR
+  cargo:rerun-if-env-changed=PKG_CONF
+IG_LIBDIR
+  cargo:rerun-if-env-changed=PKG_CONF
+IG_SYSROOT_DIR_x86_64-pc-windows-msvc
+  cargo:rerun-if-env-changed=PKG_CONF
+IG_SYSROOT_DIR_x86_64_pc_windows_msvc
+  cargo:rerun-if-env-changed=HOST_PKG
+_CONFIG_SYSROOT_DIR
+  cargo:rerun-if-env-changed=PKG_CONF
+IG_SYSROOT_DIR
+  cargo:rerun-if-env-changed=PKG_CONF
+IG_PATH_x86_64-pc-windows-msvc
+  cargo:rerun-if-env-changed=PKG_CONF
+IG_PATH_x86_64_pc_windows_msvc
+  cargo:rerun-if-env-changed=HOST_PKG
+_CONFIG_PATH
+  cargo:rerun-if-env-changed=PKG_CONF
+IG_PATH
+  cargo:rerun-if-env-changed=PKG_CONF
+IG_LIBDIR_x86_64-pc-windows-msvc
+  cargo:rerun-if-env-changed=PKG_CONF
+IG_LIBDIR_x86_64_pc_windows_msvc
+  cargo:rerun-if-env-changed=HOST_PKG
+_CONFIG_LIBDIR
+  cargo:rerun-if-env-changed=PKG_CONF
+IG_LIBDIR
+  cargo:rerun-if-env-changed=PKG_CONF
+IG_SYSROOT_DIR_x86_64-pc-windows-msvc
+  cargo:rerun-if-env-changed=PKG_CONF
+IG_SYSROOT_DIR_x86_64_pc_windows_msvc
+  cargo:rerun-if-env-changed=HOST_PKG
+_CONFIG_SYSROOT_DIR
+  cargo:rerun-if-env-changed=PKG_CONF
+IG_SYSROOT_DIR
+  cargo:warning=Could not run 
+`PKG_CONFIG_ALLOW_SYSTEM_CFLAGS=1 
+pkg-config --libs --cflags 
+gobject-2.0 'gobject-2.0 >= 2.56'`
+  The pkg-config command could not 
+be found.
+
+  Most likely, you need to install a 
+pkg-config package for your OS.
+
+  If you've already installed it, 
+ensure the pkg-config command is one 
+of the
+  directories in the PATH 
+environment variable.
+
+  If you did not expect this build 
+to link to a pre-installed system 
+library,
+  then check documentation of the 
+gobject-sys crate for an option to
+  build the library from source, or 
+disable features or dependencies
+  that require pkg-config.

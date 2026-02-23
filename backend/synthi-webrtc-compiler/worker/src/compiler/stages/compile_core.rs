@@ -1,6 +1,4 @@
-use crate::compiler::builder::{
-    RebuildScope,
-};
+use crate::compiler::builder::RebuildScope;
 use crate::compiler::context::CompileContext;
 use crate::compiler::stages::ai_utils::calculate_hash;
 use crate::hmr::incremental_cache::IncrementalCache;
