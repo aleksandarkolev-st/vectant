@@ -328,33 +328,38 @@ function ThemePickerOverlay({ onClose }) {
           })}
         </div>
 
-        {/* Footer hint + Create Theme button */}
+        {/* Create Theme button */}
         <div
-          className="flex items-center justify-between px-3 py-1.5 text-[10px]"
-          style={{
-            borderTop: '1px solid var(--border-medium)',
-            color: 'var(--text-muted)',
-          }}
+          className="flex items-center justify-center px-3 py-2"
+          style={{ borderTop: '1px solid var(--border-medium)' }}
         >
-          <span>↑↓ Navigate &middot; Enter Confirm &middot; Esc Cancel</span>
           <button
-            className="flex items-center gap-1 px-2.5 py-1 rounded font-medium transition-colors"
+            className="flex items-center gap-1.5 px-4 py-1.5 rounded font-medium text-[11px] transition-colors w-full justify-center"
             style={{
               color: 'white',
               background: 'var(--accent-primary)',
             }}
             onClick={() => {
-              // Close the picker, then open the creator
               dispatch(clearPreview());
               onClose();
-              // Small delay so picker unmounts before creator mounts
               setTimeout(() => openCreator(), 50);
             }}
             title="Create a brand-new custom theme"
           >
-            <Plus className="h-3 w-3" />
+            <Plus className="h-3.5 w-3.5" />
             Create Your Own Theme
           </button>
+        </div>
+
+        {/* Footer hints */}
+        <div
+          className="flex items-center justify-between px-3 py-1 text-[10px]"
+          style={{
+            borderTop: '1px solid var(--border-subtle)',
+            color: 'var(--text-muted)',
+          }}
+        >
+          <span>↑↓ Navigate &middot; Enter Confirm &middot; Esc Cancel</span>
           <span>Ctrl+K Ctrl+T</span>
         </div>
       </div>
