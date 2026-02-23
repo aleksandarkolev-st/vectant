@@ -332,16 +332,16 @@ function ThemePickerOverlay({ onClose }) {
         <div
           className="flex items-center justify-between px-3 py-1.5 text-[10px]"
           style={{
-            borderTop: '1px solid var(--border-subtle)',
-            color: 'var(--text-dim)',
+            borderTop: '1px solid var(--border-medium)',
+            color: 'var(--text-muted)',
           }}
         >
           <span>↑↓ Navigate &middot; Enter Confirm &middot; Esc Cancel</span>
           <button
-            className="flex items-center gap-1 px-2 py-0.5 rounded transition-colors"
+            className="flex items-center gap-1 px-2.5 py-1 rounded font-medium transition-colors"
             style={{
-              color: 'var(--accent-primary)',
-              background: 'color-mix(in srgb, var(--accent-primary) 8%, transparent)',
+              color: 'white',
+              background: 'var(--accent-primary)',
             }}
             onClick={() => {
               // Close the picker, then open the creator
