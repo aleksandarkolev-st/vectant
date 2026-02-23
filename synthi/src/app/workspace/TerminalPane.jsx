@@ -1,6 +1,7 @@
 'use client';
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { WifiOff, RefreshCw, Terminal, AlertCircle, Zap, EyeOff } from 'lucide-react';
+import { useTheme } from '@/components/ThemeProvider';
 import { useSessionPermissions } from '@/hooks/useCollabSession';
 
 /**
@@ -34,9 +35,11 @@ const TERMINAL_SERVER_URL =
 const RECONNECT_DELAYS = [1000, 2000, 4000, 8000]; // Exponential backoff
 const MAX_RECONNECT_ATTEMPTS = 4;
 
-// ─── Synthi Dark Theme ──────────────────────────────────────────────────────
-
-const SYNTHI_THEME = {
+// ─── Terminal Theme (from ThemeProvider) ───────────────────────────────
+// The `useTheme()` hook provides `terminalTheme` generated from the active
+// theme JSON. The hardcoded SYNTHI_THEME is kept as a static fallback only for
+// the initial render before ThemeProvider hydrates.
+const SYNTHI_THEME_FALLBACK = {
   background: '#0a0b10',
   foreground: '#f0f2f5',
   cursor: '#327464',
@@ -85,11 +88,24 @@ export default function TerminalPane({ terminalId = 'default', paneSide = 'main'
   const reconnectCountRef = useRef(0);
   const mountedRef = useRef(true);
 
+  // Live theme from ThemeProvider
+  const { terminalTheme } = useTheme();
+
   const [state, setState] = useState('connecting'); // connecting | connected | error | closed
   const [shellInfo, setShellInfo] = useState('');
 
   // Stable session key: survives re-renders, unique per terminal tab + pane side
   const sessionKey = `${terminalId}-${paneSide}`;
+
+  // ─── Live terminal theme sync ─────────────────────────────────────────
+  useEffect(() => {
+    if (terminalRef.current?.term && terminalTheme) {
+      const term = terminalRef.current.term;
+      term.options.theme = terminalTheme;
+      // Force an immediate full repaint so colors apply without delay
+      try { term.refresh(0, term.rows - 1); } catch (_) {}
+    }
+  }, [terminalTheme]);
 
   // ─── Cleanup helper ───────────────────────────────────────────────────
   const cleanup = useCallback(() => {
@@ -136,7 +152,7 @@ export default function TerminalPane({ terminalId = 'default', paneSide = 'main'
         fontFamily: 'ui-monospace, SFMono-Regular, "JetBrains Mono", Menlo, Monaco, Consolas, monospace',
         fontSize: 13,
         lineHeight: 1.4,
-        theme: SYNTHI_THEME,
+        theme: terminalTheme || SYNTHI_THEME_FALLBACK,
         cursorBlink: true,
         cursorStyle: 'bar',
         scrollback: 5000,
@@ -378,7 +394,7 @@ export default function TerminalPane({ terminalId = 'default', paneSide = 'main'
 
   // ─── Render ───────────────────────────────────────────────────────────
   return (
-    <div className="h-full w-full bg-[#0a0b10] overflow-hidden relative">
+    <div className="h-full w-full overflow-hidden relative" style={{ background: 'var(--bg-app)' }}>
       <div ref={containerRef} className="h-full w-full" />
 
       {/* Session: View-only terminal overlay for guests without canTerminal */}
@@ -408,17 +424,17 @@ export default function TerminalPane({ terminalId = 'default', paneSide = 'main'
 
       {/* Connection status overlay */}
       {(state === 'error' || state === 'closed') && (
-        <div className="absolute inset-0 bg-[#0a0b10]/95 backdrop-blur-sm flex items-center justify-center z-10">
+        <div className="absolute inset-0 backdrop-blur-sm flex items-center justify-center z-10" style={{ background: 'color-mix(in srgb, var(--bg-app) 95%, transparent)' }}>
           <div className="flex flex-col items-center gap-4 p-8 max-w-sm text-center">
-            <div className="w-12 h-12 rounded-full bg-[#1a1b24] flex items-center justify-center">
-              <WifiOff className="w-5 h-5 text-[#6b7089]" />
+            <div className="w-12 h-12 rounded-full flex items-center justify-center" style={{ background: 'var(--bg-elevated)' }}>
+              <WifiOff className="w-5 h-5" style={{ color: 'var(--text-muted)' }} />
             </div>
 
-            <h3 className="text-base font-semibold text-[#f0f2f5]">
+            <h3 className="text-base font-semibold" style={{ color: 'var(--text-primary)' }}>
               {state === 'closed' ? 'Session Ended' : 'Terminal Disconnected'}
             </h3>
 
-            <p className="text-xs text-[#6b7089] leading-relaxed">
+            <p className="text-xs leading-relaxed" style={{ color: 'var(--text-muted)' }}>
               {state === 'closed'
                 ? 'The shell process has exited.'
                 : 'Unable to reach the terminal server. Make sure the collab-server is running.'}
@@ -427,7 +443,8 @@ export default function TerminalPane({ terminalId = 'default', paneSide = 'main'
             <button
               onClick={handleReconnect}
               className="flex items-center gap-2 px-4 py-2 rounded-md text-xs font-medium
-                         bg-[#327464] text-white hover:bg-[#3d8b78] transition-colors"
+                         text-white transition-colors"
+              style={{ background: 'var(--accent-primary)' }}
             >
               <RefreshCw className="w-3.5 h-3.5" />
               {state === 'closed' ? 'New Session' : 'Reconnect'}
@@ -438,8 +455,8 @@ export default function TerminalPane({ terminalId = 'default', paneSide = 'main'
 
       {/* Connecting indicator */}
       {state === 'connecting' && (
-        <div className="absolute bottom-2 right-3 flex items-center gap-1.5 text-[10px] text-[#6b7089] z-10">
-          <Zap className="w-3 h-3 animate-pulse text-[#327464]" />
+        <div className="absolute bottom-2 right-3 flex items-center gap-1.5 text-[10px] z-10" style={{ color: 'var(--text-muted)' }}>
+          <Zap className="w-3 h-3 animate-pulse" style={{ color: 'var(--accent-primary)' }} />
           <span>Connecting…</span>
         </div>
       )}

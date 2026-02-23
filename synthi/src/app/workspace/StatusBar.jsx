@@ -36,32 +36,34 @@ export default function StatusBar({
     switch (compilerStatus) {
       case 'connected':
         return { 
-          dot: 'bg-[#4ade80]', 
+          dotStyle: { background: 'var(--accent-success)' }, 
           text: 'Connected',
-          pillBorder: 'border-[#4ade8050]',
-          textColor: 'text-[#4ade80]'
+          pillBorder: { borderColor: 'color-mix(in srgb, var(--accent-success) 30%, transparent)' },
+          textStyle: { color: 'var(--accent-success)' }
         };
       case 'connecting':
         return { 
-          dot: 'bg-[#fbbf24] animate-pulse', 
+          dotCls: 'animate-pulse', 
+          dotStyle: { background: 'var(--accent-warning)' }, 
           text: 'Connecting...',
-          pillBorder: 'border-[#fbbf2450]',
-          textColor: 'text-[#fbbf24]'
+          pillBorder: { borderColor: 'color-mix(in srgb, var(--accent-warning) 30%, transparent)' },
+          textStyle: { color: 'var(--accent-warning)' }
         };
       case 'error':
         return { 
-          dot: 'bg-[#ff5757] animate-pulse', 
+          dotCls: 'animate-pulse', 
+          dotStyle: { background: 'var(--accent-danger)' }, 
           text: 'Error',
-          pillBorder: 'border-[#ff575750]',
-          textColor: 'text-[#ff5757] font-semibold'
+          pillBorder: { borderColor: 'color-mix(in srgb, var(--accent-danger) 30%, transparent)' },
+          textStyle: { color: 'var(--accent-danger)', fontWeight: 600 }
         };
       case 'disconnected':
       default:
         return { 
-          dot: 'bg-[#5a6178]', 
+          dotStyle: { background: 'var(--text-muted)' }, 
           text: 'Disconnected',
-          pillBorder: 'border-[#2a2b38]',
-          textColor: 'text-[#5a6178]'
+          pillBorder: { borderColor: 'var(--border-medium)' },
+          textStyle: { color: 'var(--text-muted)' }
         };
     }
   };
@@ -90,7 +92,7 @@ export default function StatusBar({
   const hasProblems = diagnosticSummary.errors > 0 || diagnosticSummary.warnings > 0;
 
   return (
-    <div className="h-7 flex-shrink-0 flex items-center justify-between px-3 bg-[#08090d] border-t-2 border-[#1a1b24] text-[12px] select-none font-[var(--font-ui)]">
+    <div className="h-7 flex-shrink-0 flex items-center justify-between px-3 border-t-2 text-[12px] select-none font-[var(--font-ui)]" style={{ background: 'var(--bg-app)', borderColor: 'var(--border-subtle)' }}>
       {/* Left Section - Grouped info */}
       <div className="flex items-center gap-3">
         {/* Branch Selector - Compact with pill style */}
@@ -98,49 +100,48 @@ export default function StatusBar({
           <BranchSelector slug={slug} />
         </div>
         
-        <div className="w-px h-4 bg-[#1a1b24]"></div>
+        <div className="w-px h-4" style={{ background: 'var(--border-subtle)' }}></div>
         
         {/* Problems Indicator - Clickable to toggle problems panel */}
         <div 
           onClick={onProblemsClick}
-          className={`flex items-center gap-2 px-2 py-0.5 rounded-md cursor-pointer transition-all ${
-            hasProblems 
-              ? 'hover:bg-[#ff575715] bg-[#ff575708]' 
-              : 'hover:bg-[#101118]'
-          }`}
+          className={`flex items-center gap-2 px-2 py-0.5 rounded-md cursor-pointer transition-all`}
+          style={hasProblems ? { background: 'color-mix(in srgb, var(--accent-danger) 3%, transparent)' } : {}}
         >
           {isAnalyzing ? (
             <>
-              <Loader2 className="w-3.5 h-3.5 text-[#9ba2b8] animate-spin" strokeWidth={2} />
-              <span className="text-[#9ba2b8]">Analyzing...</span>
+              <Loader2 className="w-3.5 h-3.5 animate-spin" style={{ color: 'var(--text-secondary)' }} strokeWidth={2} />
+              <span style={{ color: 'var(--text-secondary)' }}>Analyzing...</span>
             </>
           ) : (
             <>
               <AlertCircle 
-                className={`w-3.5 h-3.5 ${diagnosticSummary.errors > 0 ? 'text-[#ff5757]' : 'text-[#5a6178]'}`} 
+                className="w-3.5 h-3.5" 
+                style={{ color: diagnosticSummary.errors > 0 ? 'var(--accent-danger)' : 'var(--text-muted)' }}
                 strokeWidth={2} 
               />
-              <span className={diagnosticSummary.errors > 0 ? 'text-[#ff5757] font-semibold' : 'text-[#9ba2b8]'}>
+              <span style={diagnosticSummary.errors > 0 ? { color: 'var(--accent-danger)', fontWeight: 600 } : { color: 'var(--text-secondary)' }}>
                 {diagnosticSummary.errors}
               </span>
               <AlertTriangle 
-                className={`w-3.5 h-3.5 ${diagnosticSummary.warnings > 0 ? 'text-[#fbbf24]' : 'text-[#5a6178]'}`} 
+                className="w-3.5 h-3.5" 
+                style={{ color: diagnosticSummary.warnings > 0 ? 'var(--accent-warning)' : 'var(--text-muted)' }}
                 strokeWidth={2} 
               />
-              <span className={diagnosticSummary.warnings > 0 ? 'text-[#fbbf24] font-semibold' : 'text-[#9ba2b8]'}>
+              <span style={diagnosticSummary.warnings > 0 ? { color: 'var(--accent-warning)', fontWeight: 600 } : { color: 'var(--text-secondary)' }}>
                 {diagnosticSummary.warnings}
               </span>
             </>
           )}
         </div>
         
-        <div className="w-px h-4 bg-[#1a1b24]"></div>
+        <div className="w-px h-4" style={{ background: 'var(--border-subtle)' }}></div>
         
         {/* Compiler Status - Pill/Badge shaped indicator with better contrast */}
-        <div className={`flex items-center gap-2 px-2.5 py-1 ${statusStyle.pillBg} transition-all cursor-default`}>
-          <Cpu className={`w-3.5 h-3.5 ${statusStyle.textColor}`} strokeWidth={2} />
-          <div className={`w-2 h-2 rounded-full ${statusStyle.dot}`} />
-          <span className={`${statusStyle.textColor} font-semibold`}>{statusStyle.text}</span>
+        <div className={`flex items-center gap-2 px-2.5 py-1 transition-all cursor-default`}>
+          <Cpu className="w-3.5 h-3.5" style={statusStyle.textStyle} strokeWidth={2} />
+          <div className={`w-2 h-2 rounded-full ${statusStyle.dotCls || ''}`} style={statusStyle.dotStyle} />
+          <span className="font-semibold" style={statusStyle.textStyle}>{statusStyle.text}</span>
         </div>
         
         <div className="w-px h-4 bg-[#1a1b24]"></div>
@@ -186,50 +187,45 @@ export default function StatusBar({
         {extensionStatusBarItems.filter(i => i.text).map((item) => (
           <div
             key={item.id}
-            className="flex items-center gap-1 px-2 py-0.5 rounded-md cursor-default hover:bg-[#101118] transition-colors"
+            className="flex items-center gap-1 px-2 py-0.5 rounded-md cursor-default transition-colors"
             title={item.tooltip || item.text}
           >
-            <span className="text-[#9ba2b8] font-medium text-[11px]">{item.text}</span>
+            <span className="font-medium text-[11px]" style={{ color: 'var(--text-secondary)' }}>{item.text}</span>
           </div>
         ))}
         {extensionStatusBarItems.length > 0 && (
-          <div className="w-px h-4 bg-[#1a1b24]"></div>
+          <div className="w-px h-4" style={{ background: 'var(--border-subtle)' }}></div>
         )}
 
         {/* VS Code Server status */}
         {vscodeServerState !== 'disconnected' && (
           <>
             <div
-              className={`flex items-center gap-1.5 px-2 py-0.5 rounded-md cursor-default transition-colors ${
-                vscodeServerState === 'running'
-                  ? 'bg-[#4ade8008]'
-                  : vscodeServerState === 'error'
-                  ? 'bg-[#ff575708]'
-                  : ''
-              }`}
+              className={`flex items-center gap-1.5 px-2 py-0.5 rounded-md cursor-default transition-colors`}
+              style={vscodeServerState === 'running'
+                ? { background: 'color-mix(in srgb, var(--accent-success) 3%, transparent)' }
+                : vscodeServerState === 'error'
+                ? { background: 'color-mix(in srgb, var(--accent-danger) 3%, transparent)' }
+                : {}}
               title={`VS Code Server: ${vscodeServerState}`}
             >
               <div
-                className={`w-2 h-2 rounded-full ${
-                  vscodeServerState === 'running'
-                    ? 'bg-[#4ade80]'
-                    : vscodeServerState === 'connecting'
-                    ? 'bg-[#fbbf24] animate-pulse'
-                    : vscodeServerState === 'error'
-                    ? 'bg-[#ff5757]'
-                    : 'bg-[#5a6178]'
-                }`}
+                className={`w-2 h-2 rounded-full ${vscodeServerState === 'connecting' ? 'animate-pulse' : ''}`}
+                style={{
+                  background: vscodeServerState === 'running' ? 'var(--accent-success)'
+                    : vscodeServerState === 'connecting' ? 'var(--accent-warning)'
+                    : vscodeServerState === 'error' ? 'var(--accent-danger)'
+                    : 'var(--text-muted)'
+                }}
               />
               <span
-                className={`font-medium text-[11px] ${
-                  vscodeServerState === 'running'
-                    ? 'text-[#4ade80]'
-                    : vscodeServerState === 'connecting'
-                    ? 'text-[#fbbf24]'
-                    : vscodeServerState === 'error'
-                    ? 'text-[#ff5757]'
-                    : 'text-[#5a6178]'
-                }`}
+                className="font-medium text-[11px]"
+                style={{
+                  color: vscodeServerState === 'running' ? 'var(--accent-success)'
+                    : vscodeServerState === 'connecting' ? 'var(--accent-warning)'
+                    : vscodeServerState === 'error' ? 'var(--accent-danger)'
+                    : 'var(--text-muted)'
+                }}
               >
                 {vscodeServerState === 'running'
                   ? 'Server'
@@ -238,23 +234,23 @@ export default function StatusBar({
                   : 'Server ✖'}
               </span>
             </div>
-            <div className="w-px h-4 bg-[#1a1b24]"></div>
+            <div className="w-px h-4" style={{ background: 'var(--border-subtle)' }}></div>
           </>
         )}
 
         {/* Line/Column - Clearer */}
-        <div className="flex items-center gap-1 px-2 py-0.5 rounded-md cursor-pointer hover:bg-[#101118] transition-colors">
-          <span className="text-[#9ba2b8] font-medium">Ln {position.lineNumber}</span>
-          <span className="text-[#5a6178]">:</span>
-          <span className="text-[#9ba2b8] font-medium">Col {position.column}</span>
+        <div className="flex items-center gap-1 px-2 py-0.5 rounded-md cursor-pointer transition-colors">
+          <span className="font-medium" style={{ color: 'var(--text-secondary)' }}>Ln {position.lineNumber}</span>
+          <span style={{ color: 'var(--text-dim)' }}>:</span>
+          <span className="font-medium" style={{ color: 'var(--text-secondary)' }}>Col {position.column}</span>
         </div>
         
-        <div className="w-px h-4 bg-[#1a1b24]"></div>
+        <div className="w-px h-4" style={{ background: 'var(--border-subtle)' }}></div>
         
         {/* Language - Pill style with accent on hover */}
-        <div className="flex items-center gap-1.5 px-2 py-0.5 rounded-md cursor-pointer hover:bg-[#3a857415] transition-all">
-          <Zap className="w-3.5 h-3.5 text-[#3a8574]" strokeWidth={2} />
-          <span className="text-[#9ba2b8] font-medium capitalize">{language}</span>
+        <div className="flex items-center gap-1.5 px-2 py-0.5 rounded-md cursor-pointer transition-all">
+          <Zap className="w-3.5 h-3.5" style={{ color: 'var(--accent-primary)' }} strokeWidth={2} />
+          <span className="font-medium capitalize" style={{ color: 'var(--text-secondary)' }}>{language}</span>
         </div>
       </div>
     </div>

@@ -4,7 +4,14 @@
 
 @custom-variant dark (&:is(.dark *));
 
-/* ===== SYNTHI PREMIUM DARK PALETTE - Distinctive Brand Theme ===== */
+/* ===== SYNTHI THEME VARIABLES ===== */
+/* These are FALLBACK defaults for the Synthi Dark theme.
+ * At runtime, ThemeProvider dynamically overrides these via
+ * document.documentElement.style.setProperty().
+ * Light-theme support is handled by swapping CSS variable values,
+ * NOT by toggling a .dark class.
+ * The data-theme-type="dark|light" attribute on <html> is set by
+ * ThemeProvider for CSS selectors that need to differ by base type. */
 :root {
   /* Dark Blue-Gray Backgrounds (Unique Synthi Style) - More extreme contrast */
   --bg-app: #08090d;
@@ -170,14 +177,14 @@
     @apply bg-background text-foreground;
   }
   
-  /* Global selection colors - Synthi teal accent */
+  /* Global selection colors - theme accent */
   ::selection {
-    background-color: rgba(50, 116, 100, 0.35);
+    background-color: color-mix(in srgb, var(--accent-primary) 35%, transparent);
     color: inherit;
   }
   
   ::-moz-selection {
-    background-color: rgba(50, 116, 100, 0.35);
+    background-color: color-mix(in srgb, var(--accent-primary) 35%, transparent);
     color: inherit;
   }
 }
@@ -191,13 +198,13 @@
   vertical-align: top;
   padding: 0.1rem 0.3rem;
   margin: 0 0.05rem;
-  background: #1a1d23;
-  border: 1px solid #252830;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
   border-radius: 4px;
   font-family: 'JetBrains Mono', 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
   font-size: 11px;
   line-height: 1.4;
-  color: #e8eaed;
+  color: var(--text-primary);
 }
 
 /* AI Chat Navigation Links - Clickable file names and symbols */
@@ -217,39 +224,42 @@
 .ai-nav-link:hover {
   color: var(--accent-tertiary);
   text-decoration: underline;
-  background-color: rgba(50, 116, 100, 0.15);
+  background-color: color-mix(in srgb, var(--accent-primary) 15%, transparent);
 }
 
 .ai-nav-file {
-  color: #7cb8f8;
+  color: var(--syntax-function);
 }
 
 .ai-nav-file:hover {
-  color: #9fcbfa;
-  text-decoration-color: #9fcbfa;
-  background-color: rgba(124, 184, 248, 0.12);
+  color: var(--syntax-function);
+  filter: brightness(1.2);
+  text-decoration-color: var(--syntax-function);
+  background-color: color-mix(in srgb, var(--syntax-function) 12%, transparent);
 }
 
 .ai-nav-class,
 .ai-nav-symbol {
-  color: #b8a8f0;
+  color: var(--syntax-preprocessor);
 }
 
 .ai-nav-class:hover,
 .ai-nav-symbol:hover {
-  color: #cbbff5;
-  text-decoration-color: #cbbff5;
-  background-color: rgba(184, 168, 240, 0.12);
+  color: var(--syntax-preprocessor);
+  filter: brightness(1.15);
+  text-decoration-color: var(--syntax-preprocessor);
+  background-color: color-mix(in srgb, var(--syntax-preprocessor) 12%, transparent);
 }
 
 .ai-nav-method {
-  color: #a8e6cf;
+  color: var(--syntax-string);
 }
 
 .ai-nav-method:hover {
-  color: #c1eedc;
-  text-decoration-color: #c1eedc;
-  background-color: rgba(168, 230, 207, 0.12);
+  color: var(--syntax-string);
+  filter: brightness(1.15);
+  text-decoration-color: var(--syntax-string);
+  background-color: color-mix(in srgb, var(--syntax-string) 12%, transparent);
 }
 
 /* ===== Global Scrollbar Styling (Synthi Branded) ===== */
@@ -259,24 +269,24 @@
 }
 
 ::-webkit-scrollbar-track {
-  background: rgba(28, 29, 38, 0.5);
+  background: color-mix(in srgb, var(--bg-surface) 50%, transparent);
   border-radius: 4px;
 }
 
 ::-webkit-scrollbar-thumb {
-  background: linear-gradient(180deg, rgba(50, 116, 100, 0.5) 0%, rgba(61, 139, 120, 0.4) 100%);
+  background: color-mix(in srgb, var(--accent-primary) 50%, transparent);
   border-radius: 4px;
   border: none;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: linear-gradient(180deg, rgba(50, 116, 100, 0.7) 0%, rgba(61, 139, 120, 0.6) 100%);
+  background: color-mix(in srgb, var(--accent-primary) 70%, transparent);
 }
 
 /* Firefox */
 * {
   scrollbar-width: thin;
-  scrollbar-color: rgba(50, 116, 100, 0.5) rgba(28, 29, 38, 0.5);
+  scrollbar-color: color-mix(in srgb, var(--accent-primary) 50%, transparent) color-mix(in srgb, var(--bg-surface) 50%, transparent);
 }
 
 /* Utility to hide scrollbars */
@@ -308,7 +318,7 @@
   text-wrap: nowrap;
   overflow-x: auto;
   overflow-y: auto;
-  background: #0d0e12;
+  background: var(--bg-app);
   border-radius: 6px;
   padding: 8px 10px;
   margin: 0;
@@ -329,7 +339,7 @@
   text-wrap: nowrap;
   overflow-x: auto;
   overflow-y: auto;
-  color: #e8eaed;
+  color: var(--text-primary);
 }
 
 /* Code block wrapper with language label */
@@ -338,8 +348,8 @@
   margin: 5px 0;
   border-radius: 6px;
   overflow: hidden;
-  border: 1px solid #1e2028;
-  background: #0d0e12;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-app);
   max-width: 100%;
   min-width: 0;
 }
@@ -353,8 +363,8 @@
   font-weight: 500;
   text-transform: uppercase;
   letter-spacing: 0.4px;
-  color: #71717a;
-  background: rgba(30, 32, 40, 0.8);
+  color: var(--text-muted);
+  background: color-mix(in srgb, var(--bg-panel) 80%, transparent);
   border-bottom-left-radius: 4px;
   user-select: none;
   z-index: 1;
@@ -362,37 +372,37 @@
 
 /* Syntax highlighting colors - Synthi theme */
 .syntax-keyword {
-  color: #3a8574;
+  color: var(--syntax-keyword);
   font-weight: 500;
 }
 
 .syntax-type {
-  color: #8ad4ff;
+  color: var(--syntax-type);
 }
 
 .syntax-string {
-  color: #a8e6cf;
+  color: var(--syntax-string);
 }
 
 .syntax-number {
-  color: #f5d142;
+  color: var(--syntax-number);
 }
 
 .syntax-comment {
-  color: #5a6178;
+  color: var(--syntax-comment);
   font-style: italic;
 }
 
 .syntax-function {
-  color: #7cb8f8;
+  color: var(--syntax-function);
 }
 
 .syntax-operator {
-  color: #9ba2b8;
+  color: var(--text-secondary);
 }
 
 .syntax-preprocessor {
-  color: #b8a8f0;
+  color: var(--syntax-preprocessor);
 }
 
 /* Message content wrapper - ensures proper containment */
@@ -447,8 +457,8 @@
   box-sizing: border-box;
   white-space: pre;
   overflow-x: auto;
-  background: #0d1117;
-  color: #c9d1d9;
+  background: var(--bg-app);
+  color: var(--text-secondary);
   border-radius: 8px;
   padding: 12px 14px;
   margin: 0;
@@ -514,7 +524,7 @@
 
 /* Synthi gradient text utility */
 .synthi-gradient-text {
-  background: linear-gradient(135deg, #327464 0%, #3d8b78 50%, #4a9d89 100%);
+  background: var(--accent-gradient);
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   background-clip: text;
@@ -522,28 +532,28 @@
 
 /* Synthi glow effect utility */
 .synthi-glow {
-  box-shadow: 0 0 20px rgba(50, 116, 100, 0.4);
+  box-shadow: var(--accent-glow);
 }
 
 .synthi-glow-sm {
-  box-shadow: 0 0 10px rgba(50, 116, 100, 0.3);
+  box-shadow: var(--shadow-glow);
 }
 
 /* Synthi branded button */
 .synthi-btn {
-  background: linear-gradient(135deg, #327464 0%, #3d8b78 100%);
+  background: var(--accent-gradient);
   color: white;
   border: none;
   border-radius: 8px;
   padding: 8px 16px;
   font-weight: 500;
   transition: all 0.2s ease;
-  box-shadow: 0 0 15px rgba(50, 116, 100, 0.3);
+  box-shadow: var(--shadow-glow);
 }
 
 .synthi-btn:hover {
   opacity: 0.9;
-  box-shadow: 0 0 20px rgba(50, 116, 100, 0.5);
+  box-shadow: var(--accent-glow);
   transform: translateY(-1px);
 }
 
@@ -554,31 +564,31 @@
   gap: 6px;
   padding: 4px 12px;
   border-radius: 9999px;
-  background: rgba(50, 116, 100, 0.1);
-  border: 1px solid rgba(50, 116, 100, 0.3);
-  color: #327464;
+  background: color-mix(in srgb, var(--accent-primary) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent-primary) 30%, transparent);
+  color: var(--accent-primary);
   font-size: 12px;
   font-weight: 500;
 }
 
 /* Synthi card style */
 .synthi-card {
-  background: #0d0e14;
-  border: 1px solid #1c1d26;
+  background: var(--bg-editor);
+  border: 1px solid var(--border-subtle);
   border-radius: 12px;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+  box-shadow: var(--shadow-dropdown);
 }
 
 /* Active line glow for editor */
 .synthi-active-line-glow {
-  border-left: 2px solid #327464 !important;
-  box-shadow: inset 4px 0 8px -4px rgba(50, 116, 100, 0.3) !important;
+  border-left: 2px solid var(--accent-primary) !important;
+  box-shadow: inset 4px 0 8px -4px color-mix(in srgb, var(--accent-primary) 30%, transparent) !important;
 }
 
 /* Custom focus ring for Synthi */
 .synthi-focus-ring:focus {
   outline: none;
-  box-shadow: 0 0 0 2px rgba(50, 116, 100, 0.5);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent-primary) 50%, transparent);
 }
 
 /* Synthi loading animation */
@@ -598,7 +608,7 @@
 /* Synthi gradient border */
 .synthi-gradient-border {
   position: relative;
-  background: #0d0e14;
+  background: var(--bg-editor);
   border-radius: 12px;
 }
 
@@ -608,7 +618,7 @@
   inset: -1px;
   border-radius: 13px;
   padding: 1px;
-  background: linear-gradient(135deg, #327464, #3d8b78, #4a9d89);
+  background: var(--accent-gradient);
   -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
   mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
   -webkit-mask-composite: xor;
@@ -618,47 +628,47 @@
 /* Tab active indicator animation */
 @keyframes tab-glow {
   0%, 100% {
-    box-shadow: 0 0 8px rgba(50, 116, 100, 0.4);
+    box-shadow: 0 0 8px color-mix(in srgb, var(--accent-primary) 40%, transparent);
   }
   50% {
-    box-shadow: 0 0 16px rgba(50, 116, 100, 0.6);
+    box-shadow: 0 0 16px color-mix(in srgb, var(--accent-primary) 60%, transparent);
   }
 }
 
 /* Animated tab border - gradient rotation */
 @keyframes tab-border-rotate {
   0% {
-    background: linear-gradient(#0d0e14, #0d0e14) padding-box, 
-                linear-gradient(0deg, #327464, #3d8b78, #4a9d89, #327464) border-box;
+    background: linear-gradient(var(--bg-app), var(--bg-app)) padding-box, 
+                linear-gradient(0deg, var(--accent-primary), var(--accent-secondary), var(--accent-tertiary), var(--accent-primary)) border-box;
   }
   25% {
-    background: linear-gradient(#0d0e14, #0d0e14) padding-box, 
-                linear-gradient(90deg, #327464, #3d8b78, #4a9d89, #327464) border-box;
+    background: linear-gradient(var(--bg-app), var(--bg-app)) padding-box, 
+                linear-gradient(90deg, var(--accent-primary), var(--accent-secondary), var(--accent-tertiary), var(--accent-primary)) border-box;
   }
   50% {
-    background: linear-gradient(#0d0e14, #0d0e14) padding-box, 
-                linear-gradient(180deg, #327464, #3d8b78, #4a9d89, #327464) border-box;
+    background: linear-gradient(var(--bg-app), var(--bg-app)) padding-box, 
+                linear-gradient(180deg, var(--accent-primary), var(--accent-secondary), var(--accent-tertiary), var(--accent-primary)) border-box;
   }
   75% {
-    background: linear-gradient(#0d0e14, #0d0e14) padding-box, 
-                linear-gradient(270deg, #327464, #3d8b78, #4a9d89, #327464) border-box;
+    background: linear-gradient(var(--bg-app), var(--bg-app)) padding-box, 
+                linear-gradient(270deg, var(--accent-primary), var(--accent-secondary), var(--accent-tertiary), var(--accent-primary)) border-box;
   }
   100% {
-    background: linear-gradient(#0d0e14, #0d0e14) padding-box, 
-                linear-gradient(360deg, #327464, #3d8b78, #4a9d89, #327464) border-box;
+    background: linear-gradient(var(--bg-app), var(--bg-app)) padding-box, 
+                linear-gradient(360deg, var(--accent-primary), var(--accent-secondary), var(--accent-tertiary), var(--accent-primary)) border-box;
   }
 }
 
 /* Animated dashed border flow */
 @keyframes tab-dash-flow {
   0% {
-    border-color: rgba(50, 116, 100, 0.3);
+    border-color: color-mix(in srgb, var(--accent-primary) 30%, transparent);
   }
   50% {
-    border-color: rgba(61, 139, 120, 0.6);
+    border-color: color-mix(in srgb, var(--accent-secondary) 60%, transparent);
   }
   100% {
-    border-color: rgba(50, 116, 100, 0.3);
+    border-color: color-mix(in srgb, var(--accent-primary) 30%, transparent);
   }
 }
 
@@ -666,11 +676,11 @@
 @keyframes tab-glow-pulse {
   0%, 100% {
     opacity: 0.5;
-    box-shadow: 0 0 8px rgba(50, 116, 100, 0.25), inset 0 0 4px rgba(50, 116, 100, 0.05);
+    box-shadow: 0 0 8px color-mix(in srgb, var(--accent-primary) 25%, transparent), inset 0 0 4px color-mix(in srgb, var(--accent-primary) 5%, transparent);
   }
   50% {
     opacity: 0.8;
-    box-shadow: 0 0 16px rgba(50, 116, 100, 0.4), inset 0 0 8px rgba(50, 116, 100, 0.1);
+    box-shadow: 0 0 16px color-mix(in srgb, var(--accent-primary) 40%, transparent), inset 0 0 8px color-mix(in srgb, var(--accent-primary) 10%, transparent);
   }
 }
 
@@ -699,14 +709,91 @@
 
 /* Custom tooltip styling */
 .synthi-tooltip {
-  background: #0d0e14;
-  border: 1px solid #1c1d26;
+  background: var(--bg-panel);
+  border: 1px solid var(--border-medium);
   border-radius: 8px;
   padding: 8px 12px;
   font-size: 12px;
-  color: #f0f2f5;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+  color: var(--text-primary);
+  box-shadow: var(--shadow-dropdown);
 }
+
+/* ===== Theme-aware UI Utility Classes ===== */
+
+/* Ghost button — secondary text, elevated bg on hover */
+.th-btn-ghost {
+  color: var(--text-secondary);
+  transition: background 150ms, color 150ms;
+}
+.th-btn-ghost:hover {
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+}
+
+/* Active / toggled button state */
+.th-btn-active {
+  color: var(--accent-primary) !important;
+  background: color-mix(in srgb, var(--accent-primary) 8%, transparent) !important;
+  border: 1px solid color-mix(in srgb, var(--accent-primary) 25%, transparent) !important;
+}
+
+/* Input field */
+.th-input {
+  background: var(--bg-panel);
+  color: var(--text-primary);
+  border-color: var(--border-subtle);
+}
+.th-input:focus {
+  border-color: var(--accent-primary);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent-primary) 20%, transparent);
+}
+.th-input::placeholder {
+  color: var(--text-muted);
+}
+
+/* Dropdown / popover surface */
+.th-surface-dropdown {
+  background: var(--bg-panel);
+  border-color: var(--border-subtle);
+}
+
+/* Dropdown item */
+.th-dropdown-item {
+  color: var(--text-primary);
+}
+.th-dropdown-item:hover {
+  background: color-mix(in srgb, var(--accent-primary) 8%, transparent);
+}
+
+/* Quick action row — text primary, hover accent bg+text */
+.th-action {
+  color: var(--text-primary);
+  transition: background 150ms, color 150ms;
+}
+.th-action:hover {
+  color: var(--accent-primary);
+  background: color-mix(in srgb, var(--accent-primary) 8%, transparent);
+}
+
+/* Toggle switch */
+.th-toggle-on {
+  background: linear-gradient(to right, var(--accent-primary), var(--accent-secondary));
+}
+.th-toggle-off {
+  background: var(--bg-elevated);
+}
+
+/* Danger hover */
+.th-btn-danger:hover {
+  background: color-mix(in srgb, var(--accent-danger) 15%, transparent);
+}
+
+/* Container backgrounds (for inline-style-free usage) */
+.th-bg-app       { background: var(--bg-app); }
+.th-bg-sidebar   { background: var(--bg-sidebar); }
+.th-bg-panel     { background: var(--bg-panel); }
+.th-bg-editor    { background: var(--bg-editor); }
+.th-bg-elevated  { background: var(--bg-elevated); }
 
 /* ===== Typography Hierarchy System ===== */
 .synthi-heading {
@@ -898,7 +985,7 @@
 }
 
 .monaco-hover .actions .action-item:hover {
-  background-color: rgba(50, 116, 100, 0.15) !important; /* Soft teal hover */
+  background-color: color-mix(in srgb, var(--accent-primary) 15%, transparent) !important;
   text-decoration: none !important;
 }
 

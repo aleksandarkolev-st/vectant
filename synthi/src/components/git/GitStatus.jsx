@@ -176,7 +176,7 @@ function TokenSecurityAlert({ remotes, onDismiss }) {
 
 /* ── Synthi card wrapper ── */
 const Section = ({ children, className = '' }) => (
-    <div className={`mx-2 mb-2 rounded-lg bg-white/[0.02] border border-white/[0.04] ${className}`}>
+    <div className={`mx-2 mb-2 rounded-lg border ${className}`} style={{ background: 'var(--bg-surface)', borderColor: 'var(--border-subtle)' }}>
         {children}
     </div>
 );
@@ -184,9 +184,9 @@ const Section = ({ children, className = '' }) => (
 const SectionHead = ({ dot, label, count, actions }) => (
     <div className="flex items-center gap-2 px-3 py-2">
         {dot && <Circle size={7} className={dot} style={{ fill: 'currentColor' }} />}
-        <span className="text-[11px] font-medium text-[#d4d4d8]">{label}</span>
+        <span className="text-[11px] font-medium" style={{ color: 'var(--text-secondary)' }}>{label}</span>
         {count != null && count > 0 && (
-            <span className="text-[10px] text-[#71717a] bg-white/[0.04] rounded-full px-1.5 py-0.5 min-w-[18px] text-center font-medium">{count}</span>
+            <span className="text-[10px] rounded-full px-1.5 py-0.5 min-w-[18px] text-center font-medium" style={{ color: 'var(--text-muted)', background: 'color-mix(in srgb, var(--text-primary) 8%, transparent)' }}>{count}</span>
         )}
         {actions && <div className="ml-auto flex items-center gap-1">{actions}</div>}
     </div>
@@ -453,12 +453,13 @@ export function GitStatus({ slug }) {
                 <div className="w-10 h-10 rounded-xl bg-violet-500/10 flex items-center justify-center mb-3">
                     <GitBranch className="w-5 h-5 text-violet-400" />
                 </div>
-                <div className="text-sm text-[#d4d4d8] font-medium mb-1">No repository</div>
-                <div className="text-[11px] text-[#52525b] mb-4 text-center">Initialize a new repo or clone an existing one</div>
+                <div className="text-sm font-medium mb-1" style={{ color: 'var(--text-secondary)' }}>No repository</div>
+                <div className="text-[11px] mb-4 text-center" style={{ color: 'var(--text-dim)' }}>Initialize a new repo or clone an existing one</div>
                 <div className="flex gap-2 w-full max-w-[220px]">
                     <button
                         onClick={handleInit}
-                        className="flex-1 py-1.5 rounded-lg text-[11px] font-medium bg-white/[0.04] border border-white/[0.06] text-[#d4d4d8] hover:bg-white/[0.07] transition-colors"
+                        className="flex-1 py-1.5 rounded-lg text-[11px] font-medium border transition-colors"
+                        style={{ background: 'color-mix(in srgb, var(--text-primary) 4%, transparent)', borderColor: 'color-mix(in srgb, var(--text-primary) 6%, transparent)', color: 'var(--text-secondary)' }}
                     >
                         Init
                     </button>
@@ -472,7 +473,8 @@ export function GitStatus({ slug }) {
                 {showClone && (
                     <div className="mt-3 w-full max-w-[260px]">
                         <input
-                            className="w-full bg-white/[0.03] border border-white/[0.06] rounded-lg px-3 py-1.5 text-[11px] text-[#d4d4d8] focus:outline-none focus:border-violet-500/50 placeholder:text-[#3f3f46] transition-colors"
+                            className="w-full border rounded-lg px-3 py-1.5 text-[11px] focus:outline-none focus:border-violet-500/50 transition-colors"
+                            style={{ background: 'var(--bg-surface)', borderColor: 'var(--border-medium)', color: 'var(--text-secondary)' }}
                             placeholder="https://github.com/owner/repo.git"
                             value={cloneUrl}
                             onChange={(e) => setCloneUrl(e.target.value)}
@@ -626,10 +628,10 @@ export function GitStatus({ slug }) {
         <div className="flex flex-col h-full w-full overflow-hidden">
             {/* ── Header strip with gradient accent ── */}
             <div className="flex-shrink-0">
-                <div className="h-[2px]" style={{ background: 'linear-gradient(90deg, #6366f1, #8b5cf6, #a78bfa, transparent)' }} />
+                <div className="h-[2px]" style={{ background: 'linear-gradient(90deg, var(--accent-primary, #6366f1), #8b5cf6, #a78bfa, transparent)' }} />
                 <div className="flex items-center gap-2 px-3 py-2">
                     <GitBranch size={14} className="text-violet-400 flex-shrink-0" />
-                    <span className="text-sm font-semibold text-[#e4e4e7] truncate">{status && status.current ? status.current : 'unknown'}</span>
+                    <span className="text-sm font-semibold truncate" style={{ color: 'var(--text-primary)' }}>{status && status.current ? status.current : 'unknown'}</span>
 
                     {/* Sync badges */}
                     <div className="flex items-center gap-1 ml-1">
@@ -656,7 +658,7 @@ export function GitStatus({ slug }) {
                         <IconBtn onClick={handlePush} disabled={loading} title="Push" className="text-[#71717a] hover:text-violet-400 hover:bg-violet-500/10">
                             <UploadCloud className="w-3.5 h-3.5" strokeWidth={1.5} />
                         </IconBtn>
-                        <IconBtn onClick={handleSync} disabled={loading} title="Refresh" className="text-[#71717a] hover:text-[#d4d4d8] hover:bg-white/[0.06]">
+                        <IconBtn onClick={handleSync} disabled={loading} title="Refresh" className="hover:bg-white/[0.06]" style={{ color: 'var(--text-muted)' }}>
                             <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} strokeWidth={1.5} />
                         </IconBtn>
                     </div>
@@ -678,7 +680,7 @@ export function GitStatus({ slug }) {
                             </button>
                         )}
                         {error.toLowerCase().includes('authentication failed') && (
-                            <div className="mt-2 text-[10px] text-[#71717a] leading-relaxed">
+                            <div className="mt-2 text-[10px] leading-relaxed" style={{ color: 'var(--text-muted)' }}>
                                 Use a remote URL with an access token (https://&lt;token&gt;@github.com/owner/repo.git) or configure SSH.
                             </div>
                         )}
@@ -688,7 +690,7 @@ export function GitStatus({ slug }) {
                 {/* ── Merge Conflicts ── */}
                 {hasConflicts && (
                     <Section>
-                        <div className="px-3 py-2 flex items-center gap-2 border-b border-white/[0.04]">
+                        <div className="px-3 py-2 flex items-center gap-2 border-b" style={{ borderColor: 'var(--border-subtle)' }}>
                             <div className="w-1.5 h-1.5 rounded-full bg-rose-500 animate-pulse" />
                             <span className="text-[11px] font-semibold text-rose-400">Merge Conflicts</span>
                             <span className="text-[10px] text-rose-400/50">{conflictedFiles.length} file{conflictedFiles.length > 1 ? 's' : ''}</span>
@@ -703,7 +705,7 @@ export function GitStatus({ slug }) {
                             {conflictedFiles.map(filePath => (
                                 <li
                                     key={`conflict-${filePath}`}
-                                    className="flex items-center justify-between px-3 py-1.5 hover:bg-white/[0.02] cursor-pointer group transition-colors border-l-2 border-l-rose-500 ml-2"
+                                    className="flex items-center justify-between px-3 py-1.5 cursor-pointer group transition-colors border-l-2 border-l-rose-500 ml-2"
                                     onClick={() => handleConflictFileClick(filePath)}
                                 >
                                     <div className="flex items-center gap-2 overflow-hidden">
@@ -713,7 +715,7 @@ export function GitStatus({ slug }) {
                                     <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-all">
                                         <GhostBtn onClick={(e) => handleResolveOurs(e, filePath)} title="Accept ours" className="bg-violet-500/15 text-violet-300 hover:bg-violet-500/25">Ours</GhostBtn>
                                         <GhostBtn onClick={(e) => handleResolveTheirs(e, filePath)} title="Accept theirs" className="bg-teal-500/15 text-teal-300 hover:bg-teal-500/25">Theirs</GhostBtn>
-                                        <GhostBtn onClick={(e) => handleMarkResolved(e, filePath)} title="Mark resolved" className="bg-white/[0.04] text-[#a1a1aa] hover:bg-white/[0.08]">Done</GhostBtn>
+                                <GhostBtn onClick={(e) => handleMarkResolved(e, filePath)} title="Mark resolved" className="text-[#a1a1aa]" style={{ background: 'color-mix(in srgb, var(--text-primary) 4%, transparent)' }}>Done</GhostBtn>
                                     </div>
                                 </li>
                             ))}
@@ -729,7 +731,7 @@ export function GitStatus({ slug }) {
                             label="Staged"
                             count={staged.length}
                             actions={
-                                <GhostBtn onClick={handleUnstageAll} title="Unstage All" className="text-[#71717a] hover:text-[#d4d4d8] hover:bg-white/[0.06]">
+                                <GhostBtn onClick={handleUnstageAll} title="Unstage All" style={{ color: 'var(--text-muted)' }}>
                                     Unstage all
                                 </GhostBtn>
                             }
@@ -738,16 +740,17 @@ export function GitStatus({ slug }) {
                             {staged.map(file => (
                                 <li
                                     key={`staged-${file.path}`}
-                                    className="flex items-center justify-between px-3 py-1 hover:bg-white/[0.02] cursor-pointer group transition-colors border-l-2 border-l-teal-500/60 ml-2"
+                                    className="flex items-center justify-between px-3 py-1 cursor-pointer group transition-colors border-l-2 border-l-teal-500/60 ml-2"
                                     onClick={() => handleFileClick(file)}
                                 >
                                     <div className="flex items-center gap-2 overflow-hidden">
                                         <span className="text-[10px] font-mono font-bold text-teal-400/80 w-3 text-center">{file.index}</span>
-                                        <span className="truncate text-[11px] text-[#d4d4d8]" title={file.path}>{file.path}</span>
+                                        <span className="truncate text-[11px]" style={{ color: 'var(--text-secondary)' }} title={file.path}>{file.path}</span>
                                     </div>
                                     <button
                                         onClick={(e) => handleUnstage(e, file.path)}
-                                        className="opacity-0 group-hover:opacity-100 p-1 rounded-md text-[#71717a] hover:text-amber-400 hover:bg-amber-500/10 transition-all"
+                                        className="opacity-0 group-hover:opacity-100 p-1 rounded-md hover:text-amber-400 hover:bg-amber-500/10 transition-all"
+                                        style={{ color: 'var(--text-muted)' }}
                                         title="Unstage"
                                     >
                                         <Minus className="w-3 h-3" strokeWidth={1.5} />
@@ -767,10 +770,10 @@ export function GitStatus({ slug }) {
                             count={changes.length}
                             actions={
                                 <div className="flex gap-1">
-                                    <GhostBtn onClick={handleDiscardAll} title="Discard All" className="text-[#71717a] hover:text-rose-400 hover:bg-rose-500/10">
+                                    <GhostBtn onClick={handleDiscardAll} title="Discard All" className="hover:text-rose-400 hover:bg-rose-500/10" style={{ color: 'var(--text-muted)' }}>
                                         Discard
                                     </GhostBtn>
-                                    <GhostBtn onClick={handleStageAll} title="Stage All" className="text-[#71717a] hover:text-teal-400 hover:bg-teal-500/10">
+                                    <GhostBtn onClick={handleStageAll} title="Stage All" className="hover:text-teal-400 hover:bg-teal-500/10" style={{ color: 'var(--text-muted)' }}>
                                         Stage all
                                     </GhostBtn>
                                 </div>
@@ -780,26 +783,28 @@ export function GitStatus({ slug }) {
                             {changes.map(file => (
                                 <li
                                     key={`changes-${file.path}`}
-                                    className="flex items-center justify-between px-3 py-1 hover:bg-white/[0.02] cursor-pointer group transition-colors border-l-2 border-l-amber-500/60 ml-2"
+                                    className="flex items-center justify-between px-3 py-1 cursor-pointer group transition-colors border-l-2 border-l-amber-500/60 ml-2"
                                     onClick={() => handleFileClick(file)}
                                 >
                                     <div className="flex items-center gap-2 overflow-hidden">
                                         <span className={`text-[10px] font-mono font-bold w-3 text-center ${file.working_dir === '?' ? 'text-emerald-400/80' : 'text-amber-400/80'}`}>
                                             {file.working_dir === '?' ? 'U' : 'M'}
                                         </span>
-                                        <span className="truncate text-[11px] text-[#d4d4d8]" title={file.path}>{file.path}</span>
+                                        <span className="truncate text-[11px]" style={{ color: 'var(--text-secondary)' }} title={file.path}>{file.path}</span>
                                     </div>
                                     <div className="flex gap-0.5 opacity-0 group-hover:opacity-100 transition-all">
                                         <button
                                             onClick={(e) => handleDiscard(e, file.path)}
-                                            className="p-1 rounded-md text-[#71717a] hover:text-rose-400 hover:bg-rose-500/10 transition-all"
+                                            className="p-1 rounded-md hover:text-rose-400 hover:bg-rose-500/10 transition-all"
+                                            style={{ color: 'var(--text-muted)' }}
                                             title="Discard"
                                         >
                                             <Undo2 className="w-3 h-3" strokeWidth={1.5} />
                                         </button>
                                         <button
                                             onClick={(e) => handleStage(e, file.path)}
-                                            className="p-1 rounded-md text-[#71717a] hover:text-teal-400 hover:bg-teal-500/10 transition-all"
+                                            className="p-1 rounded-md hover:text-teal-400 hover:bg-teal-500/10 transition-all"
+                                            style={{ color: 'var(--text-muted)' }}
                                             title="Stage"
                                         >
                                             <Plus className="w-3 h-3" strokeWidth={1.5} />
@@ -813,7 +818,7 @@ export function GitStatus({ slug }) {
 
                 {/* No changes */}
                 {!hasChanges && !hasConflicts && (
-                    <div className="mx-2 mb-2 py-4 text-center text-[11px] text-[#52525b]">
+                    <div className="mx-2 mb-2 py-4 text-center text-[11px]" style={{ color: 'var(--text-dim)' }}>
                         Working tree clean
                     </div>
                 )}
@@ -825,21 +830,23 @@ export function GitStatus({ slug }) {
                         label="Remotes"
                         count={remotes?.length}
                         actions={
-                            <IconBtn onClick={() => setShowAddRemote(!showAddRemote)} title="Add Remote" className="text-[#71717a] hover:text-blue-400 hover:bg-blue-500/10">
+                            <IconBtn onClick={() => setShowAddRemote(!showAddRemote)} title="Add Remote" className="hover:text-blue-400 hover:bg-blue-500/10" style={{ color: 'var(--text-muted)' }}>
                                 <Plus className="w-3 h-3" strokeWidth={1.5} />
                             </IconBtn>
                         }
                     />
                     {showAddRemote && (
-                        <div className="mx-3 mb-2 p-2.5 rounded-lg bg-white/[0.02] border border-white/[0.04]">
+                        <div className="mx-3 mb-2 p-2.5 rounded-lg" style={{ background: 'var(--bg-surface)', border: '1px solid var(--border-subtle)' }}>
                             <input
-                                className="w-full bg-white/[0.03] border border-white/[0.06] rounded-lg px-2.5 py-1.5 text-[11px] text-[#d4d4d8] mb-2 focus:outline-none focus:border-violet-500/50 placeholder:text-[#3f3f46] transition-colors"
+                                className="w-full rounded-lg px-2.5 py-1.5 text-[11px] mb-2 focus:outline-none focus:border-violet-500/50 transition-colors"
+                                style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border-medium)', color: 'var(--text-secondary)' }}
                                 placeholder="Remote Name (e.g. origin)"
                                 value={newRemoteName}
                                 onChange={(e) => setNewRemoteName(e.target.value)}
                             />
                             <input
-                                className="w-full bg-white/[0.03] border border-white/[0.06] rounded-lg px-2.5 py-1.5 text-[11px] text-[#d4d4d8] mb-2 focus:outline-none focus:border-violet-500/50 placeholder:text-[#3f3f46] transition-colors"
+                                className="w-full rounded-lg px-2.5 py-1.5 text-[11px] mb-2 focus:outline-none focus:border-violet-500/50 transition-colors"
+                                style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border-medium)', color: 'var(--text-secondary)' }}
                                 placeholder="Remote URL"
                                 value={newRemoteUrl}
                                 onChange={(e) => setNewRemoteUrl(e.target.value)}
@@ -854,7 +861,8 @@ export function GitStatus({ slug }) {
                                 </button>
                                 <button
                                     onClick={() => setShowAddRemote(false)}
-                                    className="flex-1 py-1.5 rounded-lg text-[10px] font-medium bg-white/[0.04] text-[#71717a] hover:bg-white/[0.07] transition-colors"
+                                    className="flex-1 py-1.5 rounded-lg text-[10px] font-medium transition-colors"
+                                    style={{ background: 'color-mix(in srgb, var(--text-primary) 8%, transparent)', color: 'var(--text-muted)' }}
                                 >
                                     Cancel
                                 </button>
@@ -864,10 +872,10 @@ export function GitStatus({ slug }) {
                     {remotes && remotes.length > 0 ? (
                         <ul className="pb-1">
                             {remotes.map(remote => (
-                                <li key={remote.name} className="flex items-center gap-2 px-3 py-1 text-[#a1a1aa] hover:bg-white/[0.02] group transition-colors">
+                                <li key={remote.name} className="flex items-center gap-2 px-3 py-1 group transition-colors" style={{ color: 'var(--text-secondary)' }}>
                                     <Globe className="w-3 h-3 text-blue-400/60 flex-shrink-0" strokeWidth={1.5} />
-                                    <span className="text-[11px] font-medium text-[#d4d4d8]">{remote.name}</span>
-                                    <span className="text-[10px] text-[#3f3f46] truncate flex-1 text-right font-mono" title={remote.refs.push}>{remote.refs.push}</span>
+                                    <span className="text-[11px] font-medium" style={{ color: 'var(--text-secondary)' }}>{remote.name}</span>
+                                    <span className="text-[10px] truncate flex-1 text-right font-mono" style={{ color: 'var(--text-dim)' }} title={remote.refs.push}>{remote.refs.push}</span>
                                     <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-all">
                                         {remote.refs && remote.refs.push && remote.refs.push.startsWith('https') && (
                                             <a
@@ -881,7 +889,8 @@ export function GitStatus({ slug }) {
                                         )}
                                         <button
                                             onClick={() => handleRemoveRemoteClick(remote.name)}
-                                            className="p-1 rounded-md text-[#52525b] hover:text-rose-400 hover:bg-rose-500/10 transition-all"
+                                            className="p-1 rounded-md hover:text-rose-400 hover:bg-rose-500/10 transition-all"
+                                            style={{ color: 'var(--text-dim)' }}
                                             title="Remove Remote"
                                         >
                                             <Trash2 className="w-3 h-3" strokeWidth={1.5} />
@@ -891,7 +900,7 @@ export function GitStatus({ slug }) {
                             ))}
                         </ul>
                     ) : (
-                        <div className="text-[11px] text-[#3f3f46] px-3 pb-2">No remotes</div>
+                        <div className="text-[11px] px-3 pb-2" style={{ color: 'var(--text-dim)' }}>No remotes</div>
                     )}
                 </Section>
 
@@ -910,18 +919,18 @@ export function GitStatus({ slug }) {
                     {unpushedCommits && unpushedCommits.length > 0 ? (
                         <ul className="pb-1">
                             {unpushedCommits.map(c => (
-                                <li key={c.hash} className="flex items-center gap-2 px-3 py-1 hover:bg-white/[0.02] transition-colors group">
+                                <li key={c.hash} className="flex items-center gap-2 px-3 py-1 transition-colors group">
                                     <span className="font-mono text-[10px] text-violet-400/60">{c.hash.substring(0,7)}</span>
-                                    <span className="truncate text-[11px] text-[#d4d4d8] flex-1">{c.message}</span>
-                                    <span className="text-[10px] text-[#3f3f46] hidden group-hover:block">{c.author_name}</span>
-                                    <button onClick={() => navigator.clipboard.writeText(c.hash)} title="Copy hash" className="opacity-0 group-hover:opacity-100 p-1 rounded-md text-[#52525b] hover:text-[#d4d4d8] hover:bg-white/[0.06] transition-all">
+                                    <span className="truncate text-[11px] flex-1" style={{ color: 'var(--text-secondary)' }}>{c.message}</span>
+                                    <span className="text-[10px] hidden group-hover:block" style={{ color: 'var(--text-dim)' }}>{c.author_name}</span>
+                                    <button onClick={() => navigator.clipboard.writeText(c.hash)} title="Copy hash" className="opacity-0 group-hover:opacity-100 p-1 rounded-md transition-all" style={{ color: 'var(--text-dim)' }}>
                                         <Copy className="w-3 h-3" strokeWidth={1.5} />
                                     </button>
                                 </li>
                             ))}
                         </ul>
                     ) : (
-                        <div className="text-[11px] text-[#3f3f46] px-3 pb-2">All pushed</div>
+                        <div className="text-[11px] px-3 pb-2" style={{ color: 'var(--text-dim)' }}>All pushed</div>
                     )}
                 </Section>
 
@@ -940,18 +949,18 @@ export function GitStatus({ slug }) {
                     {incomingCommits && incomingCommits.length > 0 ? (
                         <ul className="pb-1">
                             {incomingCommits.map(c => (
-                                <li key={c.hash} className="flex items-center gap-2 px-3 py-1 hover:bg-white/[0.02] transition-colors border-l-2 border-l-emerald-500/40 ml-2 group">
+                                <li key={c.hash} className="flex items-center gap-2 px-3 py-1 transition-colors border-l-2 border-l-emerald-500/40 ml-2 group">
                                     <span className="font-mono text-[10px] text-emerald-400/60">{c.hash.substring(0,7)}</span>
-                                    <span className="truncate text-[11px] text-[#d4d4d8] flex-1">{c.message}</span>
-                                    <span className="text-[10px] text-[#3f3f46] hidden group-hover:block">{c.author_name}</span>
-                                    <button onClick={() => navigator.clipboard.writeText(c.hash)} title="Copy hash" className="opacity-0 group-hover:opacity-100 p-1 rounded-md text-[#52525b] hover:text-[#d4d4d8] hover:bg-white/[0.06] transition-all">
+                                    <span className="truncate text-[11px] flex-1" style={{ color: 'var(--text-secondary)' }}>{c.message}</span>
+                                    <span className="text-[10px] hidden group-hover:block" style={{ color: 'var(--text-dim)' }}>{c.author_name}</span>
+                                    <button onClick={() => navigator.clipboard.writeText(c.hash)} title="Copy hash" className="opacity-0 group-hover:opacity-100 p-1 rounded-md transition-all" style={{ color: 'var(--text-dim)' }}>
                                         <Copy className="w-3 h-3" strokeWidth={1.5} />
                                     </button>
                                 </li>
                             ))}
                         </ul>
                     ) : (
-                        <div className="text-[11px] text-[#3f3f46] px-3 pb-2">Up to date</div>
+                        <div className="text-[11px] px-3 pb-2" style={{ color: 'var(--text-dim)' }}>Up to date</div>
                     )}
                 </Section>
 
@@ -962,7 +971,7 @@ export function GitStatus({ slug }) {
                         label="Stash"
                         count={stashList?.length}
                         actions={
-                            <IconBtn onClick={() => setShowStash(!showStash)} title={showStash ? 'Hide stash' : 'Show stash'} className={`text-[#71717a] hover:text-purple-400 hover:bg-purple-500/10 ${showStash ? 'bg-purple-500/10 text-purple-400' : ''}`}>
+                            <IconBtn onClick={() => setShowStash(!showStash)} title={showStash ? 'Hide stash' : 'Show stash'} className={`hover:text-purple-400 hover:bg-purple-500/10 ${showStash ? 'bg-purple-500/10 text-purple-400' : ''}`} style={!showStash ? { color: 'var(--text-muted)' } : undefined}>
                                 <Archive className="w-3 h-3" strokeWidth={1.5} />
                             </IconBtn>
                         }
@@ -976,7 +985,8 @@ export function GitStatus({ slug }) {
                                         value={stashMessage}
                                         onChange={(e) => setStashMessage(e.target.value)}
                                         placeholder="Stash message..."
-                                        className="flex-1 bg-white/[0.03] border border-white/[0.06] rounded-lg px-2.5 py-1.5 text-[11px] text-[#d4d4d8] focus:outline-none focus:border-purple-500/50 placeholder:text-[#3f3f46] transition-colors"
+                                        className="flex-1 rounded-lg px-2.5 py-1.5 text-[11px] focus:outline-none focus:border-purple-500/50 transition-colors"
+                                        style={{ background: 'var(--bg-surface)', border: '1px solid var(--border-medium)', color: 'var(--text-secondary)' }}
                                     />
                                     <button
                                         onClick={handleStashPush}
@@ -990,20 +1000,22 @@ export function GitStatus({ slug }) {
                             {stashList && stashList.length > 0 ? (
                                 <ul className="space-y-0.5">
                                     {stashList.map((s, idx) => (
-                                        <li key={s.hash || idx} className="flex items-center gap-2 py-1 hover:bg-white/[0.02] rounded-md px-1 group transition-colors">
+                                        <li key={s.hash || idx} className="flex items-center gap-2 py-1 rounded-md px-1 group transition-colors">
                                             <span className="font-mono text-[10px] text-purple-400/50">@{idx}</span>
-                                            <span className="truncate text-[11px] text-[#d4d4d8] flex-1">{s.message || 'WIP'}</span>
+                                            <span className="truncate text-[11px] flex-1" style={{ color: 'var(--text-secondary)' }}>{s.message || 'WIP'}</span>
                                             <div className="flex gap-0.5 opacity-0 group-hover:opacity-100 transition-all">
                                                 <button
                                                     onClick={() => handleStashPop(idx)}
-                                                    className="p-1 rounded-md text-[#71717a] hover:text-purple-300 hover:bg-purple-500/10 transition-all"
+                                                    className="p-1 rounded-md hover:text-purple-300 hover:bg-purple-500/10 transition-all"
+                                                    style={{ color: 'var(--text-muted)' }}
                                                     title="Pop"
                                                 >
                                                     <ArchiveRestore className="w-3 h-3" strokeWidth={1.5} />
                                                 </button>
                                                 <button
                                                     onClick={() => handleStashDrop(idx)}
-                                                    className="p-1 rounded-md text-[#71717a] hover:text-rose-400 hover:bg-rose-500/10 transition-all"
+                                                    className="p-1 rounded-md hover:text-rose-400 hover:bg-rose-500/10 transition-all"
+                                                    style={{ color: 'var(--text-muted)' }}
                                                     title="Drop"
                                                 >
                                                     <Trash2 className="w-3 h-3" strokeWidth={1.5} />
@@ -1013,7 +1025,7 @@ export function GitStatus({ slug }) {
                                     ))}
                                 </ul>
                             ) : (
-                                <div className="text-[11px] text-[#3f3f46]">No stashes</div>
+                                <div className="text-[11px]" style={{ color: 'var(--text-dim)' }}>No stashes</div>
                             )}
                         </div>
                     )}
@@ -1026,7 +1038,7 @@ export function GitStatus({ slug }) {
                         label="History"
                         count={commitHistory?.all?.length}
                         actions={
-                            <IconBtn onClick={() => dispatch(fetchCommitHistory({ slug }))} title="Refresh" className="text-[#71717a] hover:text-[#d4d4d8] hover:bg-white/[0.06]">
+                            <IconBtn onClick={() => dispatch(fetchCommitHistory({ slug }))} title="Refresh" className="hover:bg-white/[0.06]" style={{ color: 'var(--text-muted)' }}>
                                 <RefreshCw className="w-3 h-3" strokeWidth={1.5} />
                             </IconBtn>
                         }
@@ -1034,14 +1046,14 @@ export function GitStatus({ slug }) {
                     {commitHistory && commitHistory.all && commitHistory.all.length > 0 ? (
                         <ul className="pb-1">
                             {(showAllCommits ? commitHistory.all : commitHistory.all.slice(0, 20)).map(c => (
-                                <li key={c.hash} className="flex items-start gap-2 px-3 py-1.5 hover:bg-white/[0.02] transition-colors group">
-                                    <span className="font-mono text-[10px] text-[#52525b] mt-px">{c.hash.substring(0,7)}</span>
+                                <li key={c.hash} className="flex items-start gap-2 px-3 py-1.5 transition-colors group">
+                                    <span className="font-mono text-[10px] mt-px" style={{ color: 'var(--text-dim)' }}>{c.hash.substring(0,7)}</span>
                                     <div className="flex-1 min-w-0">
-                                        <div className="text-[11px] text-[#d4d4d8] truncate">{c.message}</div>
-                                        <div className="text-[10px] text-[#3f3f46]">{c.author_name} · {c.date}</div>
+                                        <div className="text-[11px] truncate" style={{ color: 'var(--text-secondary)' }}>{c.message}</div>
+                                        <div className="text-[10px]" style={{ color: 'var(--text-dim)' }}>{c.author_name} · {c.date}</div>
                                     </div>
                                     <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-all">
-                                        <button onClick={() => navigator.clipboard.writeText(c.hash)} title="Copy hash" className="p-1 rounded-md text-[#52525b] hover:text-[#d4d4d8] hover:bg-white/[0.06] transition-all">
+                                        <button onClick={() => navigator.clipboard.writeText(c.hash)} title="Copy hash" className="p-1 rounded-md transition-all" style={{ color: 'var(--text-dim)' }}>
                                             <Copy className="w-3 h-3" strokeWidth={1.5} />
                                         </button>
                                         {remotes && remotes.length > 0 && remotes[0].refs && remotes[0].refs.push && (
@@ -1052,7 +1064,7 @@ export function GitStatus({ slug }) {
                             ))}
                         </ul>
                     ) : (
-                        <div className="text-[11px] text-[#3f3f46] px-3 pb-2">No history</div>
+                        <div className="text-[11px] px-3 pb-2" style={{ color: 'var(--text-dim)' }}>No history</div>
                     )}
                     {commitHistory && commitHistory.all && commitHistory.all.length > 20 && (
                         <div className="pb-2 flex justify-center">
@@ -1066,20 +1078,22 @@ export function GitStatus({ slug }) {
 
             {/* ── Commit input — pinned bottom ── */}
             {hasChanges && (
-                <div className="flex-shrink-0 p-2 border-t border-white/[0.04] min-w-0">
+                <div className="flex-shrink-0 p-2 min-w-0" style={{ borderTop: '1px solid var(--border-subtle)' }}>
                     <div className="flex gap-1 items-center min-w-0">
                         <input
                             type="text"
                             value={message}
                             onChange={(e) => setMessage(e.target.value)}
                             placeholder="Commit message…"
-                            className="flex-1 min-w-0 bg-white/[0.03] border border-white/[0.06] rounded-lg px-2 py-1.5 text-[11px] text-[#d4d4d8] focus:outline-none focus:border-violet-500/50 placeholder:text-[#3f3f46] transition-colors"
+                            className="flex-1 min-w-0 rounded-lg px-2 py-1.5 text-[11px] focus:outline-none focus:border-violet-500/50 transition-colors"
+                            style={{ background: 'var(--bg-surface)', border: '1px solid var(--border-medium)', color: 'var(--text-secondary)' }}
                             onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && handleCommit()}
                         />
                         <button
                             type="button"
                             onClick={() => setShowCommitBody(!showCommitBody)}
-                            className={`flex-shrink-0 p-1.5 rounded-lg text-xs transition-all ${showCommitBody ? 'bg-violet-500/15 text-violet-300' : 'text-[#52525b] hover:text-[#d4d4d8] hover:bg-white/[0.06]'}`}
+                            className={`flex-shrink-0 p-1.5 rounded-lg text-xs transition-all ${showCommitBody ? 'bg-violet-500/15 text-violet-300' : ''}`}
+                            style={!showCommitBody ? { color: 'var(--text-dim)' } : undefined}
                             title="Add description"
                         >
                             <Edit3 className="w-3.5 h-3.5" strokeWidth={1.5} />
@@ -1099,7 +1113,8 @@ export function GitStatus({ slug }) {
                             value={commitBody}
                             onChange={(e) => setCommitBody(e.target.value)}
                             placeholder="Extended description…"
-                            className="w-full mt-1.5 bg-white/[0.03] border border-white/[0.06] rounded-lg px-3 py-1.5 text-[11px] text-[#d4d4d8] focus:outline-none focus:border-violet-500/50 placeholder:text-[#3f3f46] resize-none transition-colors"
+                            className="w-full mt-1.5 rounded-lg px-3 py-1.5 text-[11px] focus:outline-none focus:border-violet-500/50 resize-none transition-colors"
+                            style={{ background: 'var(--bg-surface)', border: '1px solid var(--border-medium)', color: 'var(--text-secondary)' }}
                             rows={3}
                         />
                     )}

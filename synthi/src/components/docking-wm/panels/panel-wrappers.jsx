@@ -15,13 +15,14 @@
 import { memo } from 'react';
 import dynamic from 'next/dynamic';
 import { useWorkspacePanelContext } from '../context/workspace-panel-context';
+import { SettingsPanelContent } from '@/components/SettingsPanelContent';
 
 // ────────────────────────────────────────────────────────
 //  Lazy component imports (code-split, no SSR)
 // ────────────────────────────────────────────────────────
 
 const Placeholder = () => (
-  <div className="flex h-full w-full items-center justify-center text-xs text-zinc-500">
+  <div className="flex h-full w-full items-center justify-center text-xs" style={{ color: 'var(--text-disabled)' }}>
     Loading…
   </div>
 );
@@ -56,13 +57,18 @@ const SearchView = dynamic(
   { ssr: false, loading: Placeholder },
 );
 
-const GitSummaryPanel = dynamic(
-  () => import('@/components/git/GitSummaryPanel').then(m => ({ default: m.GitSummaryPanel })),
+const GitStatus = dynamic(
+  () => import('@/components/git/GitStatus').then(m => ({ default: m.GitStatus })),
   { ssr: false, loading: Placeholder },
 );
 
 const ExtensionSidebar = dynamic(
   () => import('@/components/extensions/ExtensionSidebar'),
+  { ssr: false, loading: Placeholder },
+);
+
+const ThemeEditorPanel = dynamic(
+  () => import('@/components/ThemeEditorPanel'),
   { ssr: false, loading: Placeholder },
 );
 
@@ -76,7 +82,8 @@ export const ExplorerPanelWrapper = memo(function ExplorerPanelWrapper({ data })
   return (
     <div
       data-panel-type="explorer"
-      className="h-full w-full overflow-hidden bg-[#09090b]"
+      className="h-full w-full overflow-hidden"
+      style={{ background: 'var(--bg-sidebar)' }}
     >
       <FileTreeView
         onToggleOrientation={ctx?.onToggleOrientation}
@@ -95,7 +102,8 @@ export const EditorPanelWrapper = memo(function EditorPanelWrapper({ data }) {
   return (
     <div
       data-panel-type="editor"
-      className="h-full w-full min-w-0 overflow-hidden bg-[#18181b]"
+      className="h-full w-full min-w-0 overflow-hidden"
+      style={{ background: 'var(--bg-editor)' }}
     >
       <EditorPanel
         {...(ctx?.editorProps || {})}
@@ -116,7 +124,8 @@ export const TerminalPanelWrapper = memo(function TerminalPanelWrapper({ data })
   return (
     <div
       data-panel-type="terminal"
-      className="h-full w-full min-h-0 overflow-hidden bg-[#09090b]"
+      className="h-full w-full min-h-0 overflow-hidden"
+      style={{ background: 'var(--bg-sidebar)' }}
     >
       <TerminalManager
         visible={true}
@@ -137,7 +146,8 @@ export const ChatPanelWrapper = memo(function ChatPanelWrapper({ data }) {
   return (
     <div
       data-panel-type="chat"
-      className="h-full w-full overflow-hidden bg-[#09090b]"
+      className="h-full w-full overflow-hidden"
+      style={{ background: 'var(--bg-sidebar)' }}
     >
       <AIChatWindow
         docked={true}
@@ -163,7 +173,8 @@ export const ProblemsPanelWrapper = memo(function ProblemsPanelWrapper({ data })
   return (
     <div
       data-panel-type="problems"
-      className="h-full w-full overflow-hidden bg-[#09090b]"
+      className="h-full w-full overflow-hidden"
+      style={{ background: 'var(--bg-sidebar)' }}
     >
       <ProblemsPanel
         diagnostics={ctx?.diagnostics || []}
@@ -188,7 +199,8 @@ export const SearchPanelWrapper = memo(function SearchPanelWrapper({ data }) {
   return (
     <div
       data-panel-type="search"
-      className="h-full w-full overflow-hidden bg-[#09090b]"
+      className="h-full w-full overflow-hidden"
+      style={{ background: 'var(--bg-sidebar)' }}
     >
       <SearchView slug={ctx?.workspaceSlug} />
     </div>
@@ -205,10 +217,11 @@ export const GitPanelWrapper = memo(function GitPanelWrapper({ data }) {
   return (
     <div
       data-panel-type="git"
-      className="h-full w-full overflow-hidden bg-[#09090b]"
+      className="h-full w-full overflow-hidden"
+      style={{ background: 'var(--bg-sidebar)' }}
     >
-      <GitSummaryPanel
-        onOpenScm={ctx?.onOpenScm}
+      <GitStatus
+        slug={ctx?.workspaceSlug}
       />
     </div>
   );
@@ -222,7 +235,8 @@ export const ExtensionsPanelWrapper = memo(function ExtensionsPanelWrapper({ dat
   return (
     <div
       data-panel-type="extensions"
-      className="h-full w-full overflow-hidden bg-[#09090b]"
+      className="h-full w-full overflow-hidden"
+      style={{ background: 'var(--bg-sidebar)' }}
     >
       <ExtensionSidebar />
     </div>
@@ -237,7 +251,8 @@ export const OutputPanelWrapper = memo(function OutputPanelWrapper({ data }) {
   return (
     <div
       data-panel-type="output"
-      className="h-full w-full overflow-hidden bg-[#09090b] font-mono text-xs text-zinc-400 p-2"
+      className="h-full w-full overflow-hidden font-mono text-xs p-2"
+      style={{ background: 'var(--bg-sidebar)', color: 'var(--text-muted)' }}
     >
       <div className="flex h-full items-center justify-center">
         Output panel — no output yet
@@ -254,11 +269,45 @@ export const PreviewPanelWrapper = memo(function PreviewPanelWrapper({ data }) {
   return (
     <div
       data-panel-type="preview"
-      className="h-full w-full overflow-hidden bg-[#09090b]"
+      className="h-full w-full overflow-hidden"
+      style={{ background: 'var(--bg-sidebar)' }}
     >
-      <div className="flex h-full items-center justify-center text-xs text-zinc-500">
+      <div className="flex h-full items-center justify-center text-xs" style={{ color: 'var(--text-disabled)' }}>
         No preview available
       </div>
+    </div>
+  );
+});
+
+// ────────────────────────────────────────────────────────
+//  Settings Panel Wrapper
+// ────────────────────────────────────────────────────────
+
+export const SettingsPanelWrapper = memo(function SettingsPanelWrapper({ data }) {
+  // Settings panel is a simple inline component — no lazy import needed
+  return (
+    <div
+      data-panel-type="settings"
+      className="h-full w-full overflow-y-auto"
+      style={{ background: 'var(--bg-sidebar)' }}
+    >
+      <SettingsPanelContent />
+    </div>
+  );
+});
+
+// ────────────────────────────────────────────────────────
+//  Theme Editor Panel Wrapper
+// ────────────────────────────────────────────────────────
+
+export const ThemeEditorPanelWrapper = memo(function ThemeEditorPanelWrapper({ data }) {
+  return (
+    <div
+      data-panel-type="theme-editor"
+      className="h-full w-full overflow-hidden"
+      style={{ background: 'var(--bg-sidebar)' }}
+    >
+      <ThemeEditorPanel />
     </div>
   );
 });
@@ -268,14 +317,16 @@ export const PreviewPanelWrapper = memo(function PreviewPanelWrapper({ data }) {
 // ────────────────────────────────────────────────────────
 
 export const PANEL_WRAPPERS = {
-  explorer:   ExplorerPanelWrapper,
-  search:     SearchPanelWrapper,
-  git:        GitPanelWrapper,
-  extensions: ExtensionsPanelWrapper,
-  editor:     EditorPanelWrapper,
-  terminal:   TerminalPanelWrapper,
-  chat:       ChatPanelWrapper,
-  problems:   ProblemsPanelWrapper,
-  output:     OutputPanelWrapper,
-  preview:    PreviewPanelWrapper,
+  explorer:       ExplorerPanelWrapper,
+  search:         SearchPanelWrapper,
+  git:            GitPanelWrapper,
+  extensions:     ExtensionsPanelWrapper,
+  editor:         EditorPanelWrapper,
+  terminal:       TerminalPanelWrapper,
+  chat:           ChatPanelWrapper,
+  problems:       ProblemsPanelWrapper,
+  output:         OutputPanelWrapper,
+  preview:        PreviewPanelWrapper,
+  settings:       SettingsPanelWrapper,
+  'theme-editor': ThemeEditorPanelWrapper,
 };

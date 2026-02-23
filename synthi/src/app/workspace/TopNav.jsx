@@ -76,13 +76,13 @@ export default function TopNav({
   };
 
   return (
-    <div className="flex items-center h-9 px-2 border-b border-[#1c1d26] bg-[#0a0b10] space-x-4 shadow-sm font-[var(--font-ui)]">
+    <div className="flex items-center h-9 px-2 border-b space-x-4 shadow-sm font-[var(--font-ui)]" style={{ background: 'var(--bg-app)', borderColor: 'var(--border-subtle)' }}>
       <div className="flex items-center h-full">
           <img src="/synthi-logo.svg" alt="Synthi" className="h-22 w-auto" />
       </div>
       <div className="relative transition-all duration-200" 
            style={{ width: searchOpen ? '400px' : '200px' }}>
-        <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-[#6b7089]" strokeWidth={1.5} />
+        <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-4 h-4" style={{ color: 'var(--text-muted)' }} strokeWidth={1.5} />
         <input
           type="text"
           value={searchText}
@@ -90,27 +90,27 @@ export default function TopNav({
           onFocus={() => setSearchOpen(true)}
           onBlur={() => setTimeout(() => setSearchOpen(false), 200)}
           placeholder={searchOpen ? "Search files, symbols, commands…" : title}
-          className="w-full h-7 bg-[#0d0e14] text-sm text-[#f0f2f5] rounded-lg pl-8 pr-3 py-1.5 outline-none border border-[#1c1d26] focus:border-[#327464] focus:ring-2 focus:ring-[#327464]/20 transition-all duration-200 placeholder:text-[#6b7089]"
+          className="w-full h-7 th-input text-sm rounded-lg pl-8 pr-3 py-1.5 outline-none border transition-all duration-200"
         />
         {/* Search Results Dropdown */}
         {searchOpen && searchText && (
-          <div className="absolute left-0 right-0 top-full mt-1 bg-[#0d0e14] border border-[#1c1d26] rounded-lg shadow-lg z-[100] max-h-60 overflow-y-auto">
+          <div className="absolute left-0 right-0 top-full mt-1 th-surface-dropdown border rounded-lg shadow-lg z-[100] max-h-60 overflow-y-auto">
             {searchResults.length > 0 ? (
               searchResults.map((file) => (
                 <div
                   key={file.path}
-                  className="flex items-center px-3 py-2.5 cursor-pointer hover:bg-[#32746415] text-sm text-[#f0f2f5]"
+                  className="flex items-center px-3 py-2.5 cursor-pointer th-dropdown-item text-sm"
                   onClick={() => handleFileSelect(file)}
                 >
                   <span className="mr-2.5 flex-shrink-0 text-base">{getFileIcon(file.name)}</span>
                   <div className="flex flex-col overflow-hidden min-w-0">
                     <span className="truncate font-medium">{file.name}</span>
-                    <span className="truncate text-xs text-[#6b7089]">{file.path}</span>
+                    <span className="truncate text-xs" style={{ color: 'var(--text-muted)' }}>{file.path}</span>
                   </div>
                 </div>
               ))
             ) : (
-              <div className="px-3 py-2.5 text-sm text-[#6b7089]">No results found</div>
+              <div className="px-3 py-2.5 text-sm" style={{ color: 'var(--text-muted)' }}>No results found</div>
             )}
           </div>
         )}
@@ -125,7 +125,7 @@ export default function TopNav({
         <Button 
           variant="ghost" 
           size="sm" 
-          className="h-8 w-8 p-0 text-[#a8adc0] hover:bg-[#1c1d26] hover:text-[#f0f2f5] cursor-pointer duration-300 hover:-translate-y-0.5 transition-all rounded-lg" 
+          className="h-8 w-8 p-0 th-btn-ghost cursor-pointer duration-300 hover:-translate-y-0.5 transition-all rounded-lg" 
           onClick={onToggleTerminal}
           title="Toggle Terminal"
         >
@@ -137,7 +137,7 @@ export default function TopNav({
         <Button 
           variant="ghost" 
           size="sm" 
-          className={`h-8 w-8 p-0 text-[#a8adc0] hover:bg-[#1c1d26] hover:text-[#f0f2f5] cursor-pointer transition-colors duration-300 hover:-translate-y-0.5 transition-all rounded-lg ${chatVisible ? 'text-[#327464] bg-[#32746415] border border-[#32746440]' : ''}`} 
+          className={`h-8 w-8 p-0 th-btn-ghost cursor-pointer transition-colors duration-300 hover:-translate-y-0.5 transition-all rounded-lg ${chatVisible ? 'th-btn-active' : ''}`} 
           onClick={onToggleChat}
           aria-label="Toggle Chat"
           title="Toggle Chat"
@@ -149,11 +149,7 @@ export default function TopNav({
         <Button
           variant="ghost"
           size="sm"
-          className={`h-8 px-2 text-xs font-medium transition-colors rounded-lg cursor-pointer duration-300 hover:-translate-y-0.5 transition-all ${
-            runInGuiMode 
-              ? 'text-[#327464] bg-[#32746415] border border-[#32746440]' 
-              : 'text-[#a8adc0] hover:bg-[#1c1d26] hover:text-[#f0f2f5]'
-          }`}
+          className={`h-8 px-2 text-xs font-medium transition-colors rounded-lg cursor-pointer duration-300 hover:-translate-y-0.5 transition-all th-btn-ghost ${runInGuiMode ? 'th-btn-active' : ''}`}
           onClick={() => setRunInGuiMode(!runInGuiMode)}
           title={runInGuiMode ? "Run in GUI Mode" : "Run in Console Mode"}
         >
@@ -164,11 +160,7 @@ export default function TopNav({
         <Button
           variant="ghost"
           size="sm"
-          className={`h-8 px-2 text-xs font-medium transition-colors rounded-lg cursor-pointer duration-300 hover:-translate-y-0.5 transition-all ${
-            useAiSplit 
-              ? 'text-[#327464] bg-[#32746415] border border-[#32746440]' 
-              : 'text-[#a8adc0] hover:bg-[#1c1d26] hover:text-[#f0f2f5]'
-          }`}
+          className={`h-8 px-2 text-xs font-medium transition-colors rounded-lg cursor-pointer duration-300 hover:-translate-y-0.5 transition-all th-btn-ghost ${useAiSplit ? 'th-btn-active' : ''}`}
           onClick={() => setUseAiSplit(!useAiSplit)}
           title={useAiSplit ? "AI HMR Enabled" : "AI HMR Disabled"}
         >
@@ -179,7 +171,7 @@ export default function TopNav({
             <>
                 <Button
                     size="sm" 
-                    className="h-8 w-8 p-0 transition-colors rounded-lg bg-[#0a0b10] hover:bg-[#1c1d26] cursor-pointer duration-300 hover:-translate-y-0.5 transition-all text-red-500 hover:text-red-400" 
+                    className="h-8 w-8 p-0 transition-colors rounded-lg th-bg-app th-btn-ghost cursor-pointer duration-300 hover:-translate-y-0.5 transition-all text-red-500 hover:text-red-400" 
                     onClick={onStop}
                     title="Stop Code"
                 >
@@ -187,8 +179,9 @@ export default function TopNav({
                 </Button>
                 <Button
                     size="sm" 
-                    className="h-8 w-8 p-0 transition-colors rounded-lg bg-[#0a0b10] hover:bg-[#1c1d26] cursor-pointer duration-300 hover:-translate-y-0.5 transition-all text-[#327464]" 
+                    className="h-8 w-8 p-0 transition-colors rounded-lg th-bg-app th-btn-ghost cursor-pointer duration-300 hover:-translate-y-0.5 transition-all" 
                     onClick={onReload}
+                    style={{ color: 'var(--accent-primary)' }}
                     title="Reload Code"
                 >
                     <RotateCw className="w-4 h-4" strokeWidth={2} />
@@ -197,11 +190,11 @@ export default function TopNav({
         ) : (
             <Button
                 size="sm" 
-                className="h-8 w-8 p-0 transition-colors rounded-lg bg-[#0a0b10] hover:bg-[#1c1d26] cursor-pointer duration-300 hover:-translate-y-0.5 transition-all" 
+                className="h-8 w-8 p-0 transition-colors rounded-lg th-bg-app th-btn-ghost cursor-pointer duration-300 hover:-translate-y-0.5 transition-all" 
                 onClick={onRun}
                 title="Run Code"
             >
-                <Play className="w-4 h-4 text-[#327464]" strokeWidth={2} />
+                <Play className="w-4 h-4" style={{ color: 'var(--accent-primary)' }} strokeWidth={2} />
             </Button>
         )}
         <Popover>
@@ -209,22 +202,20 @@ export default function TopNav({
             <Button 
               variant="ghost" 
               size="sm" 
-              className="h-8 text-[#a8adc0] hover:bg-[#1c1d26] hover:text-[#f0f2f5] duration-300 hover:-translate-y-0.5 transition-all cursor-pointer rounded-lg"
+              className="h-8 th-btn-ghost duration-300 hover:-translate-y-0.5 transition-all cursor-pointer rounded-lg"
             >
               <Settings className="w-4 h-4" strokeWidth={2} />
             </Button>
           </PopoverTrigger>
-          <PopoverContent className="min-w-[320px] bg-[#0d0e14] border-[#1c1d26] p-1 shadow-xl rounded-lg" style={{ backgroundColor: '#0d0e14'}}>
-            <div className="text-xs text-[#6b7089] font-semibold p-2">Settings</div>
+          <PopoverContent className="min-w-[320px] th-surface-dropdown p-1 shadow-xl rounded-lg border">
+            <div className="text-xs font-semibold p-2" style={{ color: 'var(--text-muted)' }}>Settings</div>
             <div className="flex flex-col">
               {/* Auto-save toggle */}
               <div className="flex items-center justify-between py-2 px-1">
-                <span className="text-sm text-[#f0f2f5]">Auto Save</span>
+                <span className="text-sm" style={{ color: 'var(--text-primary)' }}>Auto Save</span>
                 <button
                   onClick={() => dispatch(toggleAutoSave())}
-                  className={`relative inline-flex h-5 w-9 items-center rounded-full transition-all ${
-                    autoSaveEnabled ? 'bg-gradient-to-r from-[#327464] to-[#3d8b78]' : 'bg-[#32334a]'
-                  }`}
+                  className={`relative inline-flex h-5 w-9 items-center rounded-full transition-all ${autoSaveEnabled ? 'th-toggle-on' : 'th-toggle-off'}`}
                 >
                   <span
                     className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform shadow-sm ${
@@ -235,7 +226,7 @@ export default function TopNav({
               </div>
               {/* AI Auto-completion toggle */}
               <div className="flex items-center justify-between py-2 px-1">
-                <span className="text-sm text-[#f0f2f5]">AI Auto Completion</span>
+                <span className="text-sm" style={{ color: 'var(--text-primary)' }}>AI Auto Completion</span>
                 <button
                   onClick={() => {
                     dispatch(toggleAutoCompletion());
@@ -243,9 +234,7 @@ export default function TopNav({
                       duration: 2000,
                     });
                   }}
-                  className={`relative inline-flex h-5 w-9 items-center rounded-full transition-all ${
-                    autoCompletionEnabled ? 'bg-gradient-to-r from-[#327464] to-[#3d8b78]' : 'bg-[#32334a]'
-                  }`}
+                  className={`relative inline-flex h-5 w-9 items-center rounded-full transition-all ${autoCompletionEnabled ? 'th-toggle-on' : 'th-toggle-off'}`}
                 >
                   <span
                     className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform shadow-sm ${
@@ -254,15 +243,15 @@ export default function TopNav({
                   />
                 </button>
               </div>
-              <div className="border-t border-[#1c1d26] my-1"></div>
-              <div className="text-xs text-[#6b7089] font-semibold p-2">Quick actions</div>
-              <button className="flex justify-between items-center w-full text-left text-sm px-2 py-2 text-[#f0f2f5] hover:text-[#327464] hover:bg-[#32746415] rounded-lg transition-colors" onClick={onRun}>
+              <div className="border-t my-1" style={{ borderColor: 'var(--border-subtle)' }}></div>
+              <div className="text-xs font-semibold p-2" style={{ color: 'var(--text-muted)' }}>Quick actions</div>
+              <button className="flex justify-between items-center w-full text-left text-sm px-2 py-2 th-action rounded-lg transition-colors" onClick={onRun}>
                 <span>Run current file</span>
-                <span className="text-xs text-[#6b7089]">F5</span>
+                <span className="text-xs" style={{ color: 'var(--text-muted)' }}>F5</span>
               </button>
-              <button className="flex justify-between items-center w-full text-left text-sm px-2 py-2 text-[#f0f2f5] hover:text-[#327464] hover:bg-[#32746415] rounded-lg transition-colors" onClick={onToggleTerminal}>
+              <button className="flex justify-between items-center w-full text-left text-sm px-2 py-2 th-action rounded-lg transition-colors" onClick={onToggleTerminal}>
                 <span>Toggle terminal</span>
-                <span className="text-xs text-[#6b7089]">Ctrl+`</span>
+                <span className="text-xs" style={{ color: 'var(--text-muted)' }}>Ctrl+`</span>
               </button>
             </div>
           </PopoverContent>

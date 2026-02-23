@@ -122,6 +122,25 @@ export function parseManifest(raw, extensionId) {
     console.warn('[ManifestParser] Warnings:', warnings.join('; '));
   }
 
+  // Validate contributes.themes if present
+  if (manifest.contributes?.themes) {
+    if (!Array.isArray(manifest.contributes.themes)) {
+      errors.push('"contributes.themes" must be an array');
+    } else {
+      for (const theme of manifest.contributes.themes) {
+        if (!theme.label || typeof theme.label !== 'string') {
+          warnings.push('Theme entry missing "label"');
+        }
+        if (!theme.path || typeof theme.path !== 'string') {
+          errors.push(`Theme "${theme.label || '?'}" missing "path" field`);
+        }
+        if (theme.uiTheme && !['vs', 'vs-dark', 'hc-black', 'hc-light'].includes(theme.uiTheme)) {
+          warnings.push(`Theme "${theme.label || '?'}" has unknown uiTheme: "${theme.uiTheme}"`);
+        }
+      }
+    }
+  }
+
   if (errors.length > 0) {
     return { valid: false, manifest, errors, warnings };
   }

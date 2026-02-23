@@ -605,7 +605,13 @@ const AIChatWindow = ({
 
     const containerClass = docked
         ? 'h-full w-full min-w-0 max-w-full bg-transparent flex flex-col min-h-0'
-        : 'fixed top-10 right-0 bottom-0 w-[340px] bg-[#08090d] border-l border-[#1c1d26] shadow-[0_0_40px_rgba(0,0,0,0.5)] flex flex-col min-h-0 z-40';
+        : 'fixed top-10 right-0 bottom-0 w-[340px] flex flex-col min-h-0 z-40';
+
+    const containerStyle = docked ? undefined : {
+        background: 'var(--bg-app)',
+        borderLeft: '1px solid var(--border-subtle)',
+        boxShadow: '0 0 40px rgba(0,0,0,0.5)',
+    };
 
     const codeContainerStyle = {
         width: '100%',
@@ -618,7 +624,8 @@ const AIChatWindow = ({
 
     return (
         <div
-            className={`${containerClass} ${isDragging ? 'ring-2 ring-[#4aba9a]/60 ring-inset' : ''}`}
+            className={`${containerClass} ${isDragging ? 'ring-2 ring-inset' : ''}`}
+            style={{ ...containerStyle, ...(isDragging ? { '--tw-ring-color': 'color-mix(in srgb, var(--accent-secondary) 60%, transparent)' } : {}) }}
             onDragOver={handleDragOver}
             onDragEnter={handleDragOver}
             onDragLeave={handleDragLeave}
@@ -627,52 +634,54 @@ const AIChatWindow = ({
         >
             {/* Drop overlay */}
             {isDragging && (
-                <div className="absolute inset-0 z-50 flex items-center justify-center bg-[#08090d]/90 backdrop-blur-sm pointer-events-none">
-                    <div className="flex flex-col items-center gap-3 p-6 rounded-xl border-2 border-dashed border-[#4aba9a]/50 bg-[#0d1a15]/80">
-                        <div className="w-12 h-12 rounded-full bg-[#4aba9a]/20 flex items-center justify-center">
-                            <FileCode className="w-6 h-6 text-[#4aba9a]" />
+                <div className="absolute inset-0 z-50 flex items-center justify-center backdrop-blur-sm pointer-events-none" style={{ background: 'color-mix(in srgb, var(--bg-app) 90%, transparent)' }}>
+                    <div className="flex flex-col items-center gap-3 p-6 rounded-xl border-2 border-dashed" style={{ borderColor: 'color-mix(in srgb, var(--accent-secondary) 50%, transparent)', background: 'color-mix(in srgb, var(--accent-primary) 10%, var(--bg-panel))' }}>
+                        <div className="w-12 h-12 rounded-full flex items-center justify-center" style={{ background: 'color-mix(in srgb, var(--accent-secondary) 20%, transparent)' }}>
+                            <FileCode className="w-6 h-6" style={{ color: 'var(--accent-secondary)' }} />
                         </div>
                         <div className="text-center">
-                            <p className="text-sm font-medium text-[#f4f5f8]">Drop files here</p>
-                            <p className="text-xs text-[#71717a] mt-1">Add files or folders as context</p>
+                            <p className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>Drop files here</p>
+                            <p className="text-xs mt-1" style={{ color: 'var(--text-muted)' }}>Add files or folders as context</p>
                         </div>
                     </div>
                 </div>
             )}
             {/* Header */}
-            <div className="flex flex-col border-b border-[#1c1d26] bg-[#08090d]">
+            <div className="flex flex-col" style={{ borderBottom: '1px solid var(--border-subtle)', background: 'var(--bg-app)' }}>
                 <div className="flex items-center justify-between px-3.5 py-2.5 relative">
                     <div className="flex items-center gap-2.5">
-                        <div className="w-6 h-6 rounded-lg bg-gradient-to-br from-[#327464] to-[#4a9e8a] flex items-center justify-center shadow-[0_0_12px_rgba(50,116,100,0.3)]">
+                        <div className="w-6 h-6 rounded-lg flex items-center justify-center" style={{ background: 'linear-gradient(to bottom right, var(--accent-primary), var(--accent-secondary))', boxShadow: '0 0 12px color-mix(in srgb, var(--accent-primary) 30%, transparent)' }}>
                             <Sparkles className="w-3 h-3 text-white" strokeWidth={2.5} />
                         </div>
-                        <span className="text-[12px] font-semibold tracking-wide text-[#f0f2f5]">Synthi AI</span>
+                        <span className="text-[12px] font-semibold tracking-wide" style={{ color: 'var(--text-primary)' }}>Synthi AI</span>
                         {(suggestedCode || fileSuggestions.length > 0) && (
-                            <div className="text-[9px] font-semibold text-[#4aba9a] bg-[#327464]/15 px-2 py-0.5 rounded-full border border-[#327464]/25">
+                            <div className="text-[9px] font-semibold px-2 py-0.5 rounded-full" style={{ color: 'var(--accent-secondary)', background: 'color-mix(in srgb, var(--accent-primary) 15%, transparent)', border: '1px solid color-mix(in srgb, var(--accent-primary) 25%, transparent)' }}>
                                 {fileSuggestions.length > 0 ? `${fileSuggestions.length} file${fileSuggestions.length > 1 ? 's' : ''}` : 'Ready'}
                             </div>
                         )}
                     </div>
                     <button
                         onClick={onClose}
-                        className="p-1.5 hover:bg-[#14151d] rounded-lg transition-all duration-200"
+                        className="p-1.5 rounded-lg transition-all duration-200"
+                        style={{ color: 'var(--text-muted)' }}
                         title="Close chat"
                     >
-                        <X className="w-3.5 h-3.5 text-[#5a6178] hover:text-[#9ba2b8]" strokeWidth={1.5} />
+                        <X className="w-3.5 h-3.5" strokeWidth={1.5} />
                     </button>
                 </div>
 
                 {/* Code Intel */}
                 {isVisible && (
-                    <div className="mx-3 mb-1.5 rounded-lg border border-[#1c1d26] bg-[#0a0b10]/80 px-2.5 py-1.5 text-[10px] text-[#9ba2b8]">
+                    <div className="mx-3 mb-1.5 rounded-lg px-2.5 py-1.5 text-[10px]" style={{ border: '1px solid var(--border-subtle)', background: 'color-mix(in srgb, var(--bg-panel) 80%, transparent)', color: 'var(--text-secondary)' }}>
                         <div className="flex items-center justify-between gap-2">
                             <div className="flex items-center gap-2">
-                                <span className="w-1.5 h-1.5 rounded-full bg-[#327464] shadow-[0_0_6px_rgba(50,116,100,0.4)]"></span>
-                                <span className="font-semibold uppercase tracking-[0.12em] text-[9px] text-[#5a6178]">Code Intel</span>
+                                <span className="w-1.5 h-1.5 rounded-full" style={{ background: 'var(--accent-primary)', boxShadow: '0 0 6px color-mix(in srgb, var(--accent-primary) 40%, transparent)' }}></span>
+                                <span className="font-semibold uppercase tracking-[0.12em] text-[9px]" style={{ color: 'var(--text-muted)' }}>Code Intel</span>
                             </div>
                             <button
                                 onClick={refreshMetrics}
-                                className="text-[9px] uppercase tracking-[0.12em] text-[#3d4256] hover:text-[#9ba2b8] transition-colors"
+                                className="text-[9px] uppercase tracking-[0.12em] transition-colors"
+                                style={{ color: 'var(--text-dim)' }}
                                 title="Refresh metrics"
                             >
                                 Refresh
@@ -683,29 +692,29 @@ const AIChatWindow = ({
                         )}
                         {!metricsError && (
                             <div className="mt-1 flex flex-wrap gap-x-2.5 gap-y-0.5 text-[9px]">
-                                <span className="text-[#5a6178]">p95:</span>
+                                <span style={{ color: 'var(--text-muted)' }}>p95:</span>
                                 {Object.entries(codeIntelMetrics?.latency || {}).map(([stage, vals]) => (
-                                    <span key={stage} className="text-[#8b93a7]">
+                                    <span key={stage} style={{ color: 'var(--text-secondary)' }}>
                                         {stage} {Math.round(vals?.p95 || 0)}ms
                                     </span>
                                 ))}
-                                <span className="text-[#5a6178]">counters:</span>
+                                <span style={{ color: 'var(--text-muted)' }}>counters:</span>
                                 {Object.entries(codeIntelMetrics?.counters || {}).map(([k, v]) => (
-                                    <span key={k} className="text-[#8b93a7]">
+                                    <span key={k} style={{ color: 'var(--text-secondary)' }}>
                                         {k}:{v}
                                     </span>
                                 ))}
-                                <span className="text-[#5a6178]">budgets:</span>
+                                <span style={{ color: 'var(--text-muted)' }}>budgets:</span>
                                 {Object.entries(codeIntelMetrics?.budgets || {}).map(([k, v]) => (
-                                    <span key={k} className="text-[#8b93a7]">
+                                    <span key={k} style={{ color: 'var(--text-secondary)' }}>
                                         {k}:{v}
                                     </span>
                                 ))}
                                 {codeIntelMetrics?.index_generation && (
-                                    <span className="text-[#5a6178]">gen:{codeIntelMetrics.index_generation}</span>
+                                    <span style={{ color: 'var(--text-muted)' }}>gen:{codeIntelMetrics.index_generation}</span>
                                 )}
                                 {isMetricsLoading && (
-                                    <span className="text-[#3d4256]">syncing…</span>
+                                    <span style={{ color: 'var(--text-dim)' }}>syncing…</span>
                                 )}
                             </div>
                         )}
@@ -720,15 +729,20 @@ const AIChatWindow = ({
                                 key={session.id}
                                 onClick={() => setActiveSessionId(session.id)}
                                 className={`relative flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] transition-all duration-200 ${isActive
-                                        ? 'bg-[#327464]/12 text-[#4aba9a] font-semibold border border-[#327464]/20'
-                                        : 'text-[#5a6178] hover:text-[#9ba2b8] hover:bg-[#14151d] opacity-60 hover:opacity-100'
+                                        ? 'font-semibold'
+                                        : 'opacity-60 hover:opacity-100'
                                     }`}
+                                style={isActive
+                                    ? { background: 'color-mix(in srgb, var(--accent-primary) 12%, transparent)', color: 'var(--accent-secondary)', border: '1px solid color-mix(in srgb, var(--accent-primary) 20%, transparent)' }
+                                    : { color: 'var(--text-muted)' }
+                                }
                             >
-                                {isActive && <span className="absolute left-0 top-1/2 -translate-y-1/2 w-[2px] h-3 rounded-full bg-gradient-to-b from-[#327464] to-[#4aba9a]"></span>}
+                                {isActive && <span className="absolute left-0 top-1/2 -translate-y-1/2 w-[2px] h-3 rounded-full" style={{ background: 'linear-gradient(to bottom, var(--accent-primary), var(--accent-secondary))' }}></span>}
                                 <span className="truncate max-w-[80px]">{session.title}</span>
                                 {chatSessions.length > 1 && (
                                     <X
-                                        className="w-2.5 h-2.5 text-[#5a6178] hover:text-[#9ba2b8] ml-0.5"
+                                        className="w-2.5 h-2.5 ml-0.5"
+                                        style={{ color: 'var(--text-muted)' }}
                                         onClick={(e) => {
                                             e.stopPropagation();
                                             handleCloseSession(session.id);
@@ -741,7 +755,8 @@ const AIChatWindow = ({
                     })}
                     <button
                         onClick={handleNewSession}
-                        className="flex items-center gap-0.5 text-[10px] px-2 py-1 rounded-md text-[#5a6178] hover:text-[#4aba9a] hover:bg-[#327464]/8 transition-all duration-200"
+                        className="flex items-center gap-0.5 text-[10px] px-2 py-1 rounded-md transition-all duration-200"
+                        style={{ color: 'var(--text-muted)' }}
                         title="Start a new chat"
                     >
                         <Plus className="w-2.5 h-2.5" strokeWidth={2} />
@@ -750,23 +765,23 @@ const AIChatWindow = ({
             </div>
 
             {/* Messages Area */}
-            <ScrollArea ref={scrollRef} className="flex-1 px-3 py-3 min-h-0 min-w-0 bg-[#08090d] relative overflow-hidden">
+            <ScrollArea ref={scrollRef} className="flex-1 px-3 py-3 min-h-0 min-w-0 relative overflow-hidden" style={{ background: 'var(--bg-app)' }}>
                 {/* Subtle ambient glow */}
-                <div className="pointer-events-none absolute top-0 left-1/2 -translate-x-1/2 w-[200px] h-[120px] rounded-full bg-[#327464]/[0.04] blur-[60px] z-0"></div>
+                <div className="pointer-events-none absolute top-0 left-1/2 -translate-x-1/2 w-[200px] h-[120px] rounded-full blur-[60px] z-0" style={{ background: 'color-mix(in srgb, var(--accent-primary) 4%, transparent)' }}></div>
                 <div className="space-y-3 min-w-0 relative z-10">
                     {timeline.length === 0 ? (
                         <div className="relative flex flex-col items-center justify-center h-56 px-4 pt-8">
                             {/* Big ambient glow behind everything */}
-                            <div className="pointer-events-none absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[280px] h-[200px] rounded-full bg-[#327464]/[0.07] blur-[80px]"></div>
-                            <div className="pointer-events-none absolute top-[35%] left-1/2 -translate-x-1/2 -translate-y-1/2 w-[180px] h-[100px] rounded-full bg-[#4a9e8a]/[0.05] blur-[50px]"></div>
+                            <div className="pointer-events-none absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[280px] h-[200px] rounded-full blur-[80px]" style={{ background: 'color-mix(in srgb, var(--accent-primary) 7%, transparent)' }}></div>
+                            <div className="pointer-events-none absolute top-[35%] left-1/2 -translate-x-1/2 -translate-y-1/2 w-[180px] h-[100px] rounded-full blur-[50px]" style={{ background: 'color-mix(in srgb, var(--accent-secondary) 5%, transparent)' }}></div>
                             {/* Icon */}
                             <div className="relative z-10">
-                                <div className="relative w-14 h-14 rounded-2xl bg-gradient-to-br from-[#327464]/25 to-[#4a9e8a]/15 flex items-center justify-center mb-4 border border-[#327464]/20 shadow-[0_0_40px_rgba(50,116,100,0.18)]">
-                                    <Sparkles className="w-6 h-6 text-[#4aba9a]" strokeWidth={1.5} />
+                                <div className="relative w-14 h-14 rounded-2xl flex items-center justify-center mb-4" style={{ background: 'linear-gradient(to bottom right, color-mix(in srgb, var(--accent-primary) 25%, transparent), color-mix(in srgb, var(--accent-secondary) 15%, transparent))', border: '1px solid color-mix(in srgb, var(--accent-primary) 20%, transparent)', boxShadow: '0 0 40px color-mix(in srgb, var(--accent-primary) 18%, transparent)' }}>
+                                    <Sparkles className="w-6 h-6" style={{ color: 'var(--accent-secondary)' }} strokeWidth={1.5} />
                                 </div>
                             </div>
-                            <h3 className="relative z-10 text-[14px] font-semibold text-[#f0f2f5] mb-1.5">What can I help with?</h3>
-                            <p className="relative z-10 text-[11px] text-[#5a6178] leading-relaxed text-center max-w-[220px]">
+                            <h3 className="relative z-10 text-[14px] font-semibold mb-1.5" style={{ color: 'var(--text-primary)' }}>What can I help with?</h3>
+                            <p className="relative z-10 text-[11px] leading-relaxed text-center max-w-[220px]" style={{ color: 'var(--text-muted)' }}>
                                 Explain code, fix bugs, add features, or refactor your project.
                             </p>
                         </div>
@@ -797,60 +812,72 @@ const AIChatWindow = ({
                                 const isFailed = msg.status === 'failed';
                                 const isWorking = !isFinished && !isFailed;
                                 const statusLabel = isFinished ? 'Completed' : isFailed ? 'Failed' : 'Working…';
-                                const statusColor = isFinished ? 'text-[#4aba9a]' : isFailed ? 'text-rose-400' : 'text-amber-400';
-                                const iconColor = isFinished ? 'text-[#4aba9a]' : isFailed ? 'text-rose-400' : 'text-amber-400';
+                                const statusColor = isFinished ? 'text-emerald-400' : isFailed ? 'text-rose-400' : 'text-amber-400';
+                                const iconColor = isFinished ? 'text-emerald-400' : isFailed ? 'text-rose-400' : 'text-amber-400';
                                 return (
-                                    <div key={msg.id} className={`relative text-xs rounded-xl overflow-hidden ${
-                                        isFinished ? 'bg-gradient-to-b from-[#0c1612] to-[#0a0f0d] border border-[#327464]/25 shadow-[0_0_15px_rgba(50,116,100,0.08)]' :
-                                        isFailed ? 'bg-gradient-to-b from-[#130c0c] to-[#0f0a0a] border border-rose-900/25 shadow-[0_0_12px_rgba(200,50,50,0.06)]' :
-                                        'bg-gradient-to-b from-[#0e0f15] to-[#0b0c11] border border-[#1c1d26]'
-                                    }`}>
+                                    <div key={msg.id} className={`relative text-xs rounded-xl overflow-hidden`}
+                                        style={{
+                                            background: isFinished
+                                                ? 'linear-gradient(to bottom, color-mix(in srgb, var(--accent-primary) 8%, var(--bg-panel)), var(--bg-panel))'
+                                                : isFailed
+                                                ? 'linear-gradient(to bottom, color-mix(in srgb, #ef4444 6%, var(--bg-panel)), var(--bg-panel))'
+                                                : 'linear-gradient(to bottom, var(--bg-surface), var(--bg-panel))',
+                                            border: isFinished
+                                                ? '1px solid color-mix(in srgb, var(--accent-primary) 25%, transparent)'
+                                                : isFailed
+                                                ? '1px solid color-mix(in srgb, #ef4444 25%, transparent)'
+                                                : '1px solid var(--border-subtle)',
+                                        }}
+                                    >
                                         {/* Accent bar on left */}
-                                        <div className={`absolute left-0 top-0 bottom-0 w-[2px] ${
-                                            isFinished ? 'bg-gradient-to-b from-[#327464] to-[#4aba9a]' :
-                                            isFailed ? 'bg-gradient-to-b from-rose-700 to-rose-500' :
-                                            'bg-gradient-to-b from-[#3d4256] to-[#2a2d38]'
-                                        }`}></div>
+                                        <div className={`absolute left-0 top-0 bottom-0 w-[2px]`}
+                                            style={{
+                                                background: isFinished
+                                                    ? 'linear-gradient(to bottom, var(--accent-primary), var(--accent-secondary))'
+                                                    : isFailed
+                                                    ? 'linear-gradient(to bottom, #b91c1c, #ef4444)'
+                                                    : 'linear-gradient(to bottom, var(--text-dim), var(--border-subtle))'
+                                            }}
+                                        ></div>
                                         <button
-                                            className="w-full flex items-center gap-2.5 px-3.5 py-2.5 text-left hover:bg-white/[0.015] transition-all duration-200"
+                                            className="w-full flex items-center gap-2.5 px-3.5 py-2.5 text-left transition-all duration-200"
                                             onClick={() => toggleProgressMessage(msg.id)}
                                         >
-                                            <div className={`flex items-center justify-center w-5 h-5 rounded-md ${
-                                                isFinished ? 'bg-[#327464]/20' :
-                                                isFailed ? 'bg-rose-500/15' :
-                                                'bg-amber-500/15'
-                                            }`}>
+                                            <div className={`flex items-center justify-center w-5 h-5 rounded-md`}
+                                                style={{ background: isFinished ? 'color-mix(in srgb, var(--accent-primary) 20%, transparent)' : isFailed ? 'rgba(239,68,68,0.15)' : 'rgba(245,158,11,0.15)' }}
+                                            >
                                                 {expanded ? 
-                                                    <ChevronDown className={`w-3 h-3 ${isFinished ? 'text-[#4aba9a]' : isFailed ? 'text-rose-400' : 'text-amber-400'}`} strokeWidth={2.5} /> : 
-                                                    <ChevronRight className={`w-3 h-3 ${isFinished ? 'text-[#4aba9a]' : isFailed ? 'text-rose-400' : 'text-amber-400'}`} strokeWidth={2.5} />
+                                                    <ChevronDown className={`w-3 h-3 ${isFailed ? 'text-rose-400' : isFinished ? '' : 'text-amber-400'}`} style={isFinished ? { color: 'var(--accent-secondary)' } : undefined} strokeWidth={2.5} /> : 
+                                                    <ChevronRight className={`w-3 h-3 ${isFailed ? 'text-rose-400' : isFinished ? '' : 'text-amber-400'}`} style={isFinished ? { color: 'var(--accent-secondary)' } : undefined} strokeWidth={2.5} />
                                                 }
                                             </div>
                                             <div className="flex items-center gap-2 flex-1 min-w-0">
                                                 <span className={`inline-flex items-center gap-1.5 text-[10px] font-semibold tracking-wide ${
-                                                    isFinished ? 'text-[#4aba9a]' : isFailed ? 'text-rose-400' : 'text-amber-400'
-                                                }`}>
-                                                    {isFinished && <span className="w-2 h-2 rounded-full bg-[#4aba9a] shadow-[0_0_10px_rgba(50,116,100,0.6)]"></span>}
+                                                    isFailed ? 'text-rose-400' : isFinished ? '' : 'text-amber-400'
+                                                }`} style={isFinished ? { color: 'var(--accent-secondary)' } : undefined}>
+                                                    {isFinished && <span className="w-2 h-2 rounded-full" style={{ background: 'var(--accent-secondary)', boxShadow: '0 0 10px color-mix(in srgb, var(--accent-secondary) 60%, transparent)' }}></span>}
                                                     {isFailed && <span className="w-2 h-2 rounded-full bg-rose-400 shadow-[0_0_10px_rgba(251,113,133,0.5)]"></span>}
                                                     {!isFinished && !isFailed && <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse shadow-[0_0_10px_rgba(245,158,11,0.5)]"></span>}
                                                     {statusLabel}
                                                 </span>
-                                                <span className="text-[10px] text-[#5a6178] truncate">{summarizeLog(msg.logs)}</span>
+                                                <span className="text-[10px] truncate" style={{ color: 'var(--text-muted)' }}>{summarizeLog(msg.logs)}</span>
                                             </div>
                                         </button>
                                         {expanded && (
-                                            <div className={`px-3.5 pb-3 pt-2 space-y-1.5 border-t ${
-                                                isFinished ? 'border-[#327464]/15 bg-[#080d0b]/50' :
-                                                isFailed ? 'border-rose-900/15 bg-[#0d0909]/50' :
-                                                'border-[#1c1d26]/80 bg-[#090a0e]/50'
-                                            }`}>
+                                            <div className={`px-3.5 pb-3 pt-2 space-y-1.5`}
+                                                style={{
+                                                    borderTop: isFinished
+                                                        ? '1px solid color-mix(in srgb, var(--accent-primary) 15%, transparent)'
+                                                        : isFailed
+                                                        ? '1px solid color-mix(in srgb, #ef4444 15%, transparent)'
+                                                        : '1px solid color-mix(in srgb, var(--border-subtle) 80%, transparent)',
+                                                    background: 'color-mix(in srgb, var(--bg-panel) 50%, transparent)',
+                                                }}
+                                            >
                                                 {(msg.logs || []).map((entry, idx) => {
                                                     return (
-                                                        <div key={`${msg.id}-log-${idx}`} className="flex items-start gap-2 text-[10px] text-[#8b93a7] font-mono leading-relaxed">
-                                                            <span className={`select-none mt-0.5 text-[9px] ${
-                                                                isFinished ? 'text-[#327464]/70' :
-                                                                isFailed ? 'text-rose-800/70' :
-                                                                'text-[#2a2d38]'
-                                                            }`}>›</span>
+                                                        <div key={`${msg.id}-log-${idx}`} className="flex items-start gap-2 text-[10px] font-mono leading-relaxed" style={{ color: 'var(--text-secondary)' }}>
+                                                            <span className="select-none mt-0.5 text-[9px]" style={{ color: 'var(--text-dim)' }}>›</span>
                                                             <span className="whitespace-normal break-words">{entry}</span>
                                                         </div>
                                                     );
@@ -865,16 +892,16 @@ const AIChatWindow = ({
                                 const meta = msg.contextMeta || {};
                                 const sources = Array.isArray(meta.sources) ? meta.sources : [];
                                 return (
-                                    <div key={msg.id} className="text-xs rounded-xl border border-[#1c1d26] bg-[#0d0e14]/80 backdrop-blur-sm px-3 py-2">
+                                    <div key={msg.id} className="text-xs rounded-xl backdrop-blur-sm px-3 py-2" style={{ border: '1px solid var(--border-subtle)', background: 'color-mix(in srgb, var(--bg-panel) 80%, transparent)' }}>
                                         <div className="flex items-center justify-between gap-2">
                                             <div className="flex items-center gap-2">
-                                                <div className="w-5 h-5 rounded-md bg-[#327464]/15 flex items-center justify-center">
-                                                    <FileCode className="w-3 h-3 text-[#4aba9a]" />
+                                                <div className="w-5 h-5 rounded-md flex items-center justify-center" style={{ background: 'color-mix(in srgb, var(--accent-primary) 15%, transparent)' }}>
+                                                    <FileCode className="w-3 h-3" style={{ color: 'var(--accent-secondary)' }} />
                                                 </div>
-                                                <span className="text-[10px] uppercase tracking-[0.12em] font-semibold text-[#5a6178]">Context used</span>
+                                                <span className="text-[10px] uppercase tracking-[0.12em] font-semibold" style={{ color: 'var(--text-muted)' }}>Context used</span>
                                             </div>
                                             {meta.traceSummary ? (
-                                                <span className="text-[9px] text-[#3d4256] truncate max-w-[200px] font-mono">{meta.traceSummary}</span>
+                                                <span className="text-[9px] truncate max-w-[200px] font-mono" style={{ color: 'var(--text-dim)' }}>{meta.traceSummary}</span>
                                             ) : null}
                                         </div>
                                         {sources.length > 0 && (
@@ -886,8 +913,8 @@ const AIChatWindow = ({
                                                         ? ` (L${src.start_line}-${src.end_line})`
                                                         : '';
                                                     return (
-                                                        <div key={`${file}-${idx}`} className="text-[10px] text-[#8b93a7] font-mono truncate">
-                                                            <span className="text-[#3d4256] mr-1">›</span>{file}{lineInfo}<span className="text-[#5a6178]">{symbol}</span>
+                                                        <div key={`${file}-${idx}`} className="text-[10px] font-mono truncate" style={{ color: 'var(--text-secondary)' }}>
+                                                            <span className="mr-1" style={{ color: 'var(--text-dim)' }}>›</span>{file}{lineInfo}<span style={{ color: 'var(--text-muted)' }}>{symbol}</span>
                                                         </div>
                                                     );
                                                 })}
@@ -914,11 +941,11 @@ const AIChatWindow = ({
                                                         return (
                                                             <div
                                                                 key={`${suggestion.path}-${suggestion.status}-${idx}`}
-                                                                className="rounded-lg border border-[#1f1f26] bg-[#0d0d11] overflow-hidden min-w-0 shadow-sm"
-                                                                style={codeContainerStyle}
+                                                                className="rounded-lg overflow-hidden min-w-0 shadow-sm"
+                                                                style={{ ...codeContainerStyle, border: '1px solid var(--bg-elevated)', background: 'var(--bg-panel)' }}
                                                             >
                                                                 {/* File header - compact */}
-                                                                <div className="flex items-center justify-between gap-2 px-1.5 py-1 bg-[#111116] border-b border-[#1a1a20]">
+                                                                <div className="flex items-center justify-between gap-2 px-1.5 py-1" style={{ background: 'var(--bg-surface)', borderBottom: '1px solid var(--bg-elevated)' }}>
                                                                     <div className="flex items-center gap-1.5 min-w-0 flex-1">
                                                                         {(() => {
                                                                             const meta = buildLanguageMeta(suggestion.path);
@@ -978,7 +1005,8 @@ const AIChatWindow = ({
                                                                                     }
                                                                                 } catch (e) { }
                                                                             }}
-                                                                            className="text-left font-mono text-[10px] text-[#e4e4e7] hover:text-[#4aba9a] truncate transition-colors"
+                                                                            className="text-left font-mono text-[10px] truncate transition-colors"
+                                                                            style={{ color: 'var(--text-primary)' }}
                                                                             title={suggestion.path}
                                                                         >
                                                                             {suggestion.path}
@@ -995,14 +1023,15 @@ const AIChatWindow = ({
                                                                     </div>
                                                                 </div>
                                                                 {/* Actions bar */}
-                                                                <div className="flex items-center justify-between gap-1.5 px-2 py-1 bg-[#0e0e13] border-b border-[#1a1a20]">
+                                                                <div className="flex items-center justify-between gap-1.5 px-2 py-1" style={{ background: 'var(--bg-panel)', borderBottom: '1px solid var(--bg-elevated)' }}>
                                                                     <button
-                                                                        className="text-[#71717a] hover:text-[#e4e4e7] text-[10px] flex items-center gap-0.5 font-medium transition-colors"
+                                                                        className="text-[10px] flex items-center gap-0.5 font-medium transition-colors"
+                                                                        style={{ color: 'var(--text-muted)' }}
                                                                         onClick={() => toggleFilePreview(suggestion.path)}
                                                                     >
                                                                         {collapsed ? <ChevronRight className="w-3 h-3" strokeWidth={2} /> : <ChevronDown className="w-3 h-3" strokeWidth={2} />}
                                                                         {collapsed ? 'Show diff' : 'Hide diff'}
-                                                                        {collapsed && <span className="text-[9px] text-[#3d4256] ml-1">(click to expand)</span>}
+                                                                        {collapsed && <span className="text-[9px] ml-1" style={{ color: 'var(--text-dim)' }}>(click to expand)</span>}
                                                                     </button>
                                                                     {suggestion.status === 'pending' && msg.role === 'suggestion-live' && (
                                                                         <div className="flex items-center gap-4">
@@ -1011,7 +1040,8 @@ const AIChatWindow = ({
                                                                                 <button
                                                                                     disabled={Boolean(suggestion.error)}
                                                                                     onClick={() => handlePreviewFileSuggestion(activeSession?.id || activeSessionId, suggestion.path)}
-                                                                                    className="text-[11px] font-medium text-[#6b7280] hover:text-[#9ca3af] px-1.5 py-1 rounded disabled:opacity-40 disabled:cursor-not-allowed"
+                                                                                    className="text-[11px] font-medium px-1.5 py-1 rounded disabled:opacity-40 disabled:cursor-not-allowed"
+                                                                                    style={{ color: 'var(--text-muted)' }}
                                                                                 >
                                                                                     Preview
                                                                                 </button>
@@ -1024,7 +1054,7 @@ const AIChatWindow = ({
                                                                                     handleRejectFileSuggestion(activeSession?.id || activeSessionId, suggestion.path);
                                                                                     setTimeout(() => { scrollLockRef.current = false; }, 300);
                                                                                 }}
-                                                                                className="text-[11px] font-semibold text-red-500 opacity-75 py-1 rounded-md hover:border-[#3a3b41] bg-transparent hover:-translate-y-1 cursor-pointer hover:underline duration-300 hover:opacity-100 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+                                                                                className="text-[11px] font-semibold text-red-500 opacity-75 py-1 rounded-md bg-transparent hover:-translate-y-1 cursor-pointer hover:underline duration-300 hover:opacity-100 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
                                                                             >
                                                                                 Reject
                                                                             </button>
@@ -1050,8 +1080,8 @@ const AIChatWindow = ({
                                                                     </div>
                                                                 ) : !collapsed ? (
                                                                     <div
-                                                                        className="max-h-[35vh] min-h-[60px] overflow-auto overflow-x-auto text-[10px] font-mono bg-[#09090b] ai-diff-code min-w-0 w-full max-w-full"
-                                                                        style={codeContainerStyle}
+                                                                        className="max-h-[35vh] min-h-[60px] overflow-auto overflow-x-auto text-[10px] font-mono ai-diff-code min-w-0 w-full max-w-full"
+                                                                        style={{ ...codeContainerStyle, background: 'var(--bg-app)' }}
                                                                     >
                                                                         {renderDiffChunkList(suggestion.chunks)}
                                                                     </div>
@@ -1061,12 +1091,12 @@ const AIChatWindow = ({
                                                     })}
                                                 </div>
                                             ) : snapshot.suggestedCode ? (
-                                                <div className="rounded-lg border border-[#1f1f26] bg-[#0d0d11] overflow-hidden min-w-0 shadow-sm">
+                                                <div className="rounded-lg overflow-hidden min-w-0 shadow-sm" style={{ border: '1px solid var(--bg-elevated)', background: 'var(--bg-panel)' }}>
                                                     {/* Header */}
-                                                    <div className="flex items-center justify-between px-2 py-1.5 bg-[#111116] border-b border-[#1a1a20]">
+                                                    <div className="flex items-center justify-between px-2 py-1.5" style={{ background: 'var(--bg-surface)', borderBottom: '1px solid var(--bg-elevated)' }}>
                                                         <div className="flex items-center gap-1.5">
-                                                            <Sparkles className="w-3.5 h-3.5 text-[#4aba9a]" />
-                                                            <span className="text-[11px] font-semibold text-[#e4e4e7]">AI Suggestion</span>
+                                                            <Sparkles className="w-3.5 h-3.5" style={{ color: 'var(--accent-secondary)' }} />
+                                                            <span className="text-[11px] font-semibold" style={{ color: 'var(--text-primary)' }}>AI Suggestion</span>
                                                             {isLoading && (
                                                                 <span className="inline-flex items-center gap-1.5 text-xs text-amber-400">
                                                                     <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse"></span>
@@ -1079,14 +1109,16 @@ const AIChatWindow = ({
                                                                 {/* Reject - neutral */}
                                                                 <button
                                                                     onClick={() => { scrollLockRef.current = true; setSuggestionExpanded(false); rejectSuggestion(); setTimeout(() => { scrollLockRef.current = false; }, 300); }}
-                                                                    className="text-[11px] font-semibold text-red-500 px-2.5 py-1.25 rounded-md border border-[#2f3035] hover:border-[#3a3b41] bg-transparent hover:bg-[#18181f] transition-all"
+                                                                    className="text-[11px] font-semibold text-red-500 px-2.5 py-1.25 rounded-md bg-transparent transition-all"
+                                                                    style={{ border: '1px solid var(--border-medium)' }}
                                                                 >
                                                                     Reject
                                                                 </button>
                                                                 {/* Apply - primary */}
                                                                 <button
                                                                     onClick={() => { scrollLockRef.current = true; setSuggestionExpanded(false); applySuggestion(); setTimeout(() => { scrollLockRef.current = false; }, 300); }}
-                                                                    className="text-xs font-semibold px-4 text-emerald-400 py-1.5 rounded-md bg-[#4aba9a] hover:bg-[#3da88a] border border-[#4aba9a] shadow-sm shadow-[#4aba9a]/20 transition-all"
+                                                                    className="text-xs font-semibold px-4 text-emerald-400 py-1.5 rounded-md shadow-sm transition-all"
+                                                                    style={{ background: 'var(--accent-secondary)', borderColor: 'var(--accent-secondary)', border: '1px solid var(--accent-secondary)' }}
                                                                 >
                                                                     Apply
                                                                 </button>
@@ -1094,10 +1126,11 @@ const AIChatWindow = ({
                                                         )}
                                                     </div>
                                                     {/* Toggle bar */}
-                                                    <div className="flex items-center justify-between px-2 py-1 bg-[#111116] border-b border-[#1c1c20]">
-                                                        <span className="text-[10px] text-[#71717a] font-medium">Preview diff</span>
+                                                    <div className="flex items-center justify-between px-2 py-1" style={{ background: 'var(--bg-surface)', borderBottom: '1px solid var(--border-subtle)' }}>
+                                                        <span className="text-[10px] font-medium" style={{ color: 'var(--text-muted)' }}>Preview diff</span>
                                                         <button
-                                                            className="text-[#71717a] hover:text-[#e4e4e7] text-[10px] flex items-center gap-0.5 font-medium transition-colors"
+                                                            className="text-[10px] flex items-center gap-0.5 font-medium transition-colors"
+                                                            style={{ color: 'var(--text-muted)' }}
                                                             onClick={() => setSuggestionExpanded((v) => !v)}
                                                         >
                                                             {suggestionExpanded ? <ChevronDown className="w-3 h-3" strokeWidth={2} /> : <ChevronRight className="w-3 h-3" strokeWidth={2} />}
@@ -1106,7 +1139,7 @@ const AIChatWindow = ({
                                                     </div>
                                                     {/* Diff content */}
                                                     {suggestionExpanded && (
-                                                        <div className="max-h-[35vh] min-h-[60px] overflow-auto overflow-x-auto text-[10px] font-mono ai-diff-code min-w-0 w-full max-w-full bg-[#09090b]">
+                                                        <div className="max-h-[35vh] min-h-[60px] overflow-auto overflow-x-auto text-[10px] font-mono ai-diff-code min-w-0 w-full max-w-full" style={{ background: 'var(--bg-app)' }}>
                                                             {renderDiffChunkList(snapshot.diffChunks || [])}
                                                         </div>
                                                     )}
@@ -1123,23 +1156,23 @@ const AIChatWindow = ({
                                     {Array.isArray(msg.attachments) && msg.attachments.length > 0 && (
                                         <div className="mb-2 space-y-2">
                                             {msg.attachments.map((att) => (
-                                                <div key={att.id || att.name} className="bg-[#18181b] border border-[#27272a] rounded p-2">
-                                                    <div className="flex items-center justify-between text-xs text-[#a1a1aa] mb-1">
+                                                <div key={att.id || att.name} className="rounded p-2" style={{ background: 'var(--bg-surface)', border: '1px solid var(--border-medium)' }}>
+                                                    <div className="flex items-center justify-between text-xs mb-1" style={{ color: 'var(--text-secondary)' }}>
                                                         <span className="truncate max-w-[200px]">{att.name || 'Attachment'}</span>
-                                                        {att.size ? <span className="text-[#52525b]">{att.size} bytes</span> : null}
+                                                        {att.size ? <span style={{ color: 'var(--text-dim)' }}>{att.size} bytes</span> : null}
                                                     </div>
                                                     {att.kind === 'image' && att.content ? (
                                                         <img
                                                             src={att.content}
                                                             alt={att.name || 'image'}
-                                                            className="max-h-48 rounded border border-[#27272a]"
+                                                            className="max-h-48 rounded" style={{ border: '1px solid var(--border-medium)' }}
                                                         />
                                                     ) : att.kind === 'text' ? (
-                                                        <pre className="text-[10px] whitespace-pre-wrap max-h-24 overflow-auto bg-[#09090b] rounded p-1.5">
+                                                        <pre className="text-[10px] whitespace-pre-wrap max-h-24 overflow-auto rounded p-1.5" style={{ background: 'var(--bg-app)' }}>
                                                             {att.content?.slice(0, 2000) || ''}
                                                         </pre>
                                                     ) : (
-                                                        <div className="text-[11px] text-[#a1a1aa] italic">Binary attachment</div>
+                                                        <div className="text-[11px] italic" style={{ color: 'var(--text-secondary)' }}>Binary attachment</div>
                                                     )}
                                                 </div>
                                             ))}
@@ -1151,7 +1184,7 @@ const AIChatWindow = ({
                                     >
                                         <MessageContent content={msg.content} enableNavigation={true} />
                                     </div>
-                                    <span className="text-[9px] text-[#3d4256] mt-2 block tracking-wide">
+                                    <span className="text-[9px] mt-2 block tracking-wide" style={{ color: 'var(--text-dim)' }}>
                                         {formatTimestamp(msg.timestamp)}
                                     </span>
                                 </>
@@ -1159,7 +1192,7 @@ const AIChatWindow = ({
 
                             if (isInlineSummary) {
                                 return (
-                                    <div key={msg.id} className="text-xs text-[#e4e4e7]">
+                                    <div key={msg.id} className="text-xs" style={{ color: 'var(--text-primary)' }}>
                                         {baseContent}
                                     </div>
                                 );
@@ -1172,9 +1205,13 @@ const AIChatWindow = ({
                                 >
                                     <div
                                         className={`max-w-[88%] px-3.5 py-2.5 rounded-2xl text-sm ai-chat-message min-w-0 overflow-hidden transition-all duration-200 ${msg.role === 'user'
-                                                ? 'bg-gradient-to-br from-[#1e1535] to-[#1a1230] text-[#e8dff5] border border-[#7c5cbf]/20 rounded-br-md shadow-[0_2px_12px_rgba(124,92,191,0.1)]'
-                                                : 'bg-[#0d0e14] text-[#e4e4e7] border border-[#1c1d26] rounded-bl-md shadow-[0_1px_6px_rgba(0,0,0,0.25)]'
+                                                ? 'rounded-br-md'
+                                                : 'rounded-bl-md'
                                             }`}
+                                        style={msg.role === 'user'
+                                            ? { background: 'linear-gradient(to bottom right, color-mix(in srgb, var(--accent-primary) 15%, var(--bg-panel)), color-mix(in srgb, var(--accent-primary) 8%, var(--bg-panel)))', color: 'var(--text-primary)', border: '1px solid color-mix(in srgb, var(--accent-primary) 20%, transparent)' }
+                                            : { background: 'var(--bg-panel)', color: 'var(--text-primary)', border: '1px solid var(--border-subtle)' }
+                                        }
                                     >
                                         {baseContent}
                                     </div>
@@ -1184,9 +1221,10 @@ const AIChatWindow = ({
                     )}
                     {streamingMessage ? (
                         <div className="flex justify-start">
-                            <div className="max-w-[88%] bg-[#0d0e14] border border-[#1c1d26] px-3.5 py-2.5 rounded-2xl rounded-bl-md min-w-0 overflow-hidden shadow-[0_1px_6px_rgba(0,0,0,0.25)]">
+                            <div className="max-w-[88%] px-3.5 py-2.5 rounded-2xl rounded-bl-md min-w-0 overflow-hidden" style={{ background: 'var(--bg-panel)', border: '1px solid var(--border-subtle)' }}>
                                 <div 
-                                    className="text-[11px] text-[#e4e4e7] leading-normal ai-chat-content min-w-0 w-full overflow-hidden"
+                                    className="text-[11px] leading-normal ai-chat-content min-w-0 w-full overflow-hidden"
+                                    style={{ color: 'var(--text-primary)' }}
                                     onClick={handleContentNavClick}
                                 >
                                     <MessageContent content={streamingMessage} enableNavigation={true} />
@@ -1196,7 +1234,7 @@ const AIChatWindow = ({
                     ) : null}
                     {showThinking && (
                         <div className="flex justify-start">
-                            <div className={`bg-[#0d0e14] border border-[#1c1d26] px-4 py-3 rounded-2xl rounded-bl-md transition-opacity duration-200 shadow-[0_2px_8px_rgba(0,0,0,0.3)] ${isThinking ? 'opacity-100' : 'opacity-0'}`}>
+                            <div className={`px-4 py-3 rounded-2xl rounded-bl-md transition-opacity duration-200 ${isThinking ? 'opacity-100' : 'opacity-0'}`} style={{ background: 'var(--bg-panel)', border: '1px solid var(--border-subtle)' }}>
                                 <ThinkingDots />
                             </div>
                         </div>
@@ -1205,7 +1243,7 @@ const AIChatWindow = ({
             </ScrollArea>
 
             {/* Input Area */}
-            <div className="px-3.5 py-2.5 bg-[#08090d] border-t border-[#1c1d26]">
+            <div className="px-3.5 py-2.5" style={{ background: 'var(--bg-app)', borderTop: '1px solid var(--border-subtle)' }}>
                 <input
                     ref={fileInputRef}
                     type="file"
@@ -1239,13 +1277,18 @@ const AIChatWindow = ({
                                 return (
                                     <div
                                         key={chip.id}
-                                        className={`flex items-center gap-1.5 border px-1.5 py-0.5 rounded text-[10px] min-w-0 ${
-                                            isDetachedContext
-                                                ? 'bg-[#0c0d12] border-[#1a1b24] opacity-40'
-                                                : isWorkspaceFile 
-                                                    ? 'bg-[#0c1410] border-[#1a3d2e]/50' 
-                                                    : 'bg-[#0c0d12] border-[#1a1b24]'
-                                        }`}
+                                        className={`flex items-center gap-1.5 border px-1.5 py-0.5 rounded text-[10px] min-w-0`}
+                                        style={{
+                                            background: isDetachedContext
+                                                ? 'var(--bg-editor)'
+                                                : isWorkspaceFile
+                                                    ? 'color-mix(in srgb, var(--accent-primary) 5%, var(--bg-editor))'
+                                                    : 'var(--bg-editor)',
+                                            borderColor: isWorkspaceFile
+                                                ? 'color-mix(in srgb, var(--accent-primary) 20%, transparent)'
+                                                : 'var(--bg-elevated)',
+                                            opacity: isDetachedContext ? 0.4 : 1,
+                                        }}
                                         title={chip.isContext ? (contextFileAttached ? `${chip.name} (attached as context — click link to detach)` : `${chip.name} (not attached — click link to attach as context)`) : (chip.path || chip.name)}
                                     >
                                         <span
@@ -1256,22 +1299,19 @@ const AIChatWindow = ({
                                             <span className="font-semibold">{meta.label}</span>
                                         </span>
                                         <div className="flex-1 min-w-0">
-                                            <span className={`truncate block leading-tight ${isDetachedContext ? 'text-[#6b7280]' : 'text-[#e4e4e7]'}`}>
+                                            <span className={`truncate block leading-tight`} style={{ color: isDetachedContext ? 'var(--text-muted)' : 'var(--text-primary)' }}>
                                                 {chip.name}
                                             </span>
                                             {chip.size ? (
-                                                <span className="text-[#5a6178] whitespace-nowrap">{formatBytes(chip.size)}</span>
+                                                <span className="whitespace-nowrap" style={{ color: 'var(--text-muted)' }}>{formatBytes(chip.size)}</span>
                                             ) : null}
                                         </div>
                                         {chip.isContext ? (
                                             <button
                                                 type="button"
                                                 onClick={() => setContextFileAttached((prev) => !prev)}
-                                                className={`p-0.5 rounded transition-colors ${
-                                                    contextFileAttached
-                                                        ? 'text-[#4aba9a] hover:text-[#6dd4b8]'
-                                                        : 'text-[#5a6178] hover:text-[#9ba2b8]'
-                                                }`}
+                                                className="p-0.5 rounded transition-colors"
+                                                style={{ color: contextFileAttached ? 'var(--accent-secondary)' : 'var(--text-muted)' }}
                                                 title={contextFileAttached ? 'Detach from context' : 'Attach as context'}
                                             >
                                                 {contextFileAttached
@@ -1281,7 +1321,8 @@ const AIChatWindow = ({
                                         ) : (
                                             <button
                                                 onClick={() => removeAttachment(chip.id)}
-                                                className="p-0.5 text-[#5a6178] hover:text-[#9ba2b8]"
+                                                className="p-0.5"
+                                                style={{ color: 'var(--text-muted)' }}
                                                 title="Remove attachment"
                                             >
                                                 <X className="w-2.5 h-2.5" strokeWidth={1.5} />
@@ -1294,7 +1335,7 @@ const AIChatWindow = ({
                     );
                 })()}
                 <div className="flex gap-2">
-                    <div className="flex-1 flex flex-col gap-0 border border-[#1c1d26] rounded-xl bg-[#0c0d12] overflow-hidden focus-within:border-[#327464]/50 focus-within:ring-1 focus-within:ring-[#327464]/15 focus-within:shadow-[0_0_12px_rgba(50,116,100,0.08)] transition-all duration-200">
+                    <div className="flex-1 flex flex-col gap-0 rounded-xl overflow-hidden transition-all duration-200" style={{ border: '1px solid var(--border-subtle)', background: 'var(--bg-editor)' }}>
                         <textarea
                             value={inputValue}
                             onChange={(e) => {
@@ -1307,9 +1348,9 @@ const AIChatWindow = ({
                             onKeyPress={handleKeyPress}
                             placeholder="Ask Synthi anything..."
                             disabled={isLoading || !clientReady}
-                            className="w-full min-h-[36px] max-h-[120px] resize-none overflow-y-auto placeholder:text-[#3d4256] min-w-0 border-none bg-transparent px-3 pt-2.5 pb-1.5 text-[12px] text-[#f0f2f5] outline-none disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-50"
+                            className="w-full min-h-[36px] max-h-[120px] resize-none overflow-y-auto min-w-0 border-none bg-transparent px-3 pt-2.5 pb-1.5 text-[12px] outline-none disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-50"
                             rows={1}
-                            style={{ height: '36px', maxHeight: '120px' }}
+                            style={{ color: 'var(--text-primary)', height: '36px', maxHeight: '120px' }}
                         />
                             <div className="flex items-center px-2 pb-1.5 relative">
                             <Popover open={agentMenuOpen} onOpenChange={setAgentMenuOpen}>
@@ -1317,7 +1358,8 @@ const AIChatWindow = ({
                                     <Button
                                         variant="ghost"
                                         size="sm"
-                                        className={`text-xs px-2.5 py-1 h-6 rounded-md bg-transparent border-none transition-colors ${agentMode === 'direct' ? 'text-[#6b7280] hover:text-[#9ba1ab]' : 'text-[#4aba9a] hover:text-[#6dd4b8]'}`}
+                                        className="text-xs px-2.5 py-1 h-6 rounded-md bg-transparent border-none transition-colors"
+                                        style={{ color: agentMode === 'direct' ? 'var(--text-muted)' : 'var(--accent-secondary)' }}
                                         title="Agent mode"
                                     >
                                         <span className="flex items-center gap-1.5">
@@ -1327,11 +1369,12 @@ const AIChatWindow = ({
                                     </Button>
                                 </PopoverTrigger>
                                 <PopoverContent
-                                    className="w-64 mr-6 bg-[#0e0f14] border border-[#1f1f26] p-2.5 space-y-1.5"
+                                    className="w-64 mr-6 p-2.5 space-y-1.5"
+                                    style={{ background: 'var(--bg-panel)', border: '1px solid var(--bg-elevated)' }}
                                     side="top"
                                     align="start"
                                 >
-                                    <p className="text-[9px] text-[#6b7280] uppercase tracking-wider mb-1 px-1">Agent Mode</p>
+                                    <p className="text-[9px] uppercase tracking-wider mb-1 px-1" style={{ color: 'var(--text-muted)' }}>Agent Mode</p>
                                     {[
                                         { key: 'direct', label: 'Direct', desc: 'Single LLM call, no agents' },
                                         { key: 'auto', label: 'Auto Agent', desc: 'AI decides when to use sub-agents' },
@@ -1341,23 +1384,27 @@ const AIChatWindow = ({
                                         <button
                                             key={mode.key}
                                             onClick={() => { setAgentMode(mode.key); setAgentMenuOpen(false); }}
-                                            className={`w-full text-left px-2 py-1.5 rounded text-xs transition-colors ${agentMode === mode.key ? 'bg-[#4aba9a]/10 text-[#4aba9a]' : 'text-[#c9cdd4] hover:bg-[#1a1c22]'}`}
+                                            className={`w-full text-left px-2 py-1.5 rounded text-xs transition-colors`}
+                                            style={agentMode === mode.key
+                                                ? { background: 'color-mix(in srgb, var(--accent-secondary) 10%, transparent)', color: 'var(--accent-secondary)' }
+                                                : { color: 'var(--text-secondary)' }
+                                            }
                                         >
                                             <span className="font-medium">{mode.label}</span>
-                                            <span className="block text-[10px] text-[#5a6178] mt-0.5">{mode.desc}</span>
+                                            <span className="block text-[10px] mt-0.5" style={{ color: 'var(--text-muted)' }}>{mode.desc}</span>
                                         </button>
                                     ))}
                                     {activePipeline && activePipeline.status !== 'completed' && activePipeline.status !== 'failed' && (
                                         <button
                                             onClick={() => { cancelPipeline(); setAgentMenuOpen(false); }}
-                                            className="w-full text-left px-2 py-1.5 rounded text-xs text-red-400 hover:bg-[#1a1c22] transition-colors mt-1"
+                                            className="w-full text-left px-2 py-1.5 rounded text-xs text-red-400 transition-colors mt-1"
                                         >
                                             Cancel running pipeline
                                         </button>
                                     )}
                                     {contextWindowInfo && (
-                                        <div className="border-t border-[#2a2d35] pt-2 mt-2">
-                                            <p className="text-[10px] text-[#6b7280]">
+                                        <div className="pt-2 mt-2" style={{ borderTop: '1px solid var(--border-medium)' }}>
+                                            <p className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
                                                 Context: {Math.round(contextWindowInfo.availableTokens / 1000)}K tokens available
                                             </p>
                                         </div>
@@ -1369,7 +1416,8 @@ const AIChatWindow = ({
                                     <Button
                                         variant="ghost"
                                         size="sm"
-                                        className="text-xs px-2.5 py-1 h-6 rounded-md bg-transparent border-none text-[#9ba1ab] hover:text-[#e8eaed] transition-colors"
+                                        className="text-xs px-2.5 py-1 h-6 rounded-md bg-transparent border-none transition-colors"
+                                        style={{ color: 'var(--text-secondary)' }}
                                         title="Switch AI model"
                                     >
                                         <span className="flex items-center gap-1.5">
@@ -1382,21 +1430,30 @@ const AIChatWindow = ({
                                     </Button>
                                 </PopoverTrigger>
                                 <PopoverContent
-                                    className="w-72 mr-6 bg-[#0e0f14] border border-[#1f1f26] p-2.5 space-y-2.5"
+                                    className="w-72 mr-6 p-2.5 space-y-2.5"
+                                    style={{ background: 'var(--bg-panel)', border: '1px solid var(--bg-elevated)' }}
                                     side="top"
                                     align="start"
                                     sideOffset={10}
                                 >
-                                    <div className="text-[9px] text-[#6b7280] font-semibold uppercase tracking-wider px-1">Model selection</div>
-                                    <div className="flex gap-1.5 text-xs text-[#e8eaed]">
+                                    <div className="text-[9px] font-semibold uppercase tracking-wider px-1" style={{ color: 'var(--text-muted)' }}>Model selection</div>
+                                    <div className="flex gap-1.5 text-xs" style={{ color: 'var(--text-primary)' }}>
                                         <button
-                                            className={`flex-1 px-3 py-1.5 rounded-lg border transition-all ${modelChoice === 'gemini' ? 'border-[#4aba9a]/40 bg-[#4aba9a]/8 text-[#4aba9a]' : 'border-[#1f1f26] hover:border-[#3d4250] hover:bg-[#1a1d23]'}`}
+                                            className={`flex-1 px-3 py-1.5 rounded-lg border transition-all`}
+                                            style={modelChoice === 'gemini'
+                                                ? { borderColor: 'color-mix(in srgb, var(--accent-secondary) 40%, transparent)', background: 'color-mix(in srgb, var(--accent-secondary) 8%, transparent)', color: 'var(--accent-secondary)' }
+                                                : { borderColor: 'var(--bg-elevated)' }
+                                            }
                                             onClick={() => setModelChoice('gemini')}
                                         >
                                             Gemini (default)
                                         </button>
                                         <button
-                                            className={`flex-1 px-3 py-1.5 rounded-lg border transition-all ${modelChoice === 'custom' ? 'border-[#4aba9a]/40 bg-[#4aba9a]/8 text-[#4aba9a]' : 'border-[#1f1f26] hover:border-[#3d4250] hover:bg-[#1a1d23]'}`}
+                                            className={`flex-1 px-3 py-1.5 rounded-lg border transition-all`}
+                                            style={modelChoice === 'custom'
+                                                ? { borderColor: 'color-mix(in srgb, var(--accent-secondary) 40%, transparent)', background: 'color-mix(in srgb, var(--accent-secondary) 8%, transparent)', color: 'var(--accent-secondary)' }
+                                                : { borderColor: 'var(--bg-elevated)' }
+                                            }
                                             onClick={() => setModelChoice('custom')}
                                         >
                                             Custom
@@ -1405,25 +1462,27 @@ const AIChatWindow = ({
                                     {modelChoice === 'custom' && (
                                         <div className="space-y-3 pt-1">
                                             <div>
-                                                <label className="block text-[11px] text-[#6b7280] mb-1.5 uppercase tracking-wider">Model ID</label>
+                                                <label className="block text-[11px] mb-1.5 uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>Model ID</label>
                                                 <Input
                                                     value={customModel}
                                                     onChange={(e) => setCustomModel(e.target.value)}
                                                     placeholder="e.g. gpt-4.1, gemini-1.5-pro"
-                                                    className="text-xs bg-[#0a0b10] border-[#1f1f26] focus:border-[#4aba9a]/40"
+                                                    className="text-xs"
+                                                    style={{ background: 'var(--bg-app)', borderColor: 'var(--bg-elevated)' }}
                                                 />
                                             </div>
                                             <div>
-                                                <label className="block text-[11px] text-[#6b7280] mb-1.5 uppercase tracking-wider">API Key</label>
+                                                <label className="block text-[11px] mb-1.5 uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>API Key</label>
                                                 <Input
                                                     type="password"
                                                     value={customApiKey}
                                                     onChange={(e) => setCustomApiKey(e.target.value)}
                                                     placeholder="Enter custom API key"
-                                                    className="text-xs bg-[#0a0b10] border-[#1f1f26] focus:border-[#4aba9a]/40"
+                                                    className="text-xs"
+                                                    style={{ background: 'var(--bg-app)', borderColor: 'var(--bg-elevated)' }}
                                                 />
                                             </div>
-                                            <div className="text-[11px] text-[#6b7280] flex items-center gap-1.5">
+                                            <div className="text-[11px] flex items-center gap-1.5" style={{ color: 'var(--text-muted)' }}>
                                                 <Eye className="w-3 h-3" />
                                                 Key stored locally in your browser
                                             </div>
@@ -1447,7 +1506,8 @@ const AIChatWindow = ({
                                     variant="ghost"
                                     size="sm"
                                     onClick={() => fileInputRef.current?.click()}
-                                    className="h-6 w-6 p-0 text-[#5a6178] hover:text-[#9ba2b8]"
+                                    className="h-6 w-6 p-0"
+                                    style={{ color: 'var(--text-muted)' }}
                                     title="Attach files"
                                 >
                                     <Paperclip className="w-3 h-3" strokeWidth={2} />
@@ -1457,7 +1517,8 @@ const AIChatWindow = ({
                                     disabled={!inputValue.trim() || isLoading || !clientReady}
                                     title="Send message (Enter)"
                                     size="sm"
-                                    className="h-6 w-6 p-0 bg-transparent text-[#4aba9a] hover:text-[#6dd4b8] disabled:text-[#2a3d35] disabled:opacity-50"
+                                    className="h-6 w-6 p-0 bg-transparent disabled:opacity-50"
+                                    style={{ color: 'var(--accent-secondary)' }}
                                 >
                                     <Send className="w-3.5 h-3.5" strokeWidth={2} />
                                 </Button>
