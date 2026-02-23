@@ -10,6 +10,7 @@
 
 import { createSlice, createSelector } from '@reduxjs/toolkit';
 import { DEFAULT_THEME_ID } from '../themes/theme-schema';
+import { BUILTIN_THEMES } from '../themes/index';
 
 // ─── Initial State ─────────────────────────────────────────
 
@@ -21,7 +22,7 @@ export const initialThemeState = {
   previewThemeId: null,
 
   /** Built-in themes  { [id]: themeObj } */
-  builtinThemes: {},
+  builtinThemes: BUILTIN_THEMES,
 
   /** Extension-contributed themes  { [id]: themeObj } */
   extensionThemes: {},

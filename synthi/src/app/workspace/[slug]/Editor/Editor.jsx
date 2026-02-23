@@ -1,6 +1,6 @@
 // src/app/Editor.jsx
 'use client';
-import { useCallback, useEffect, useLayoutEffect, useState, useRef } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useState, useRef, useMemo } from 'react';
 import Editor, { DiffEditor, loader } from '@monaco-editor/react';
 import { getMonacoLanguage } from '@/utils/languageMapper';
 import dynamic from 'next/dynamic';
@@ -70,6 +70,18 @@ const ErrorAction = {
     Continue: 1,
     Shutdown: 2,
 };
+
+// ── Suppress known @codingame/monaco-vscode-api "Unsupported" noise ─
+// The stub in missing-services.js fires a console.error for every unregistered
+// service method (e.g. MarkdownRendererService.setDefaultCodeBlockRenderer).
+// These are harmless in the standalone editor and clutter the dev overlay.
+if (typeof window !== 'undefined') {
+    const _origConsoleError = console.error;
+    console.error = function (...args) {
+        if (typeof args[0] === 'string' && args[0].startsWith('Unsupported:') && args[0].includes('is not supported')) return;
+        return _origConsoleError.apply(this, args);
+    };
+}
 
 // ── Language registration for @codingame/monaco-vscode-api ──────────
 // The vscode-api layer doesn't know about languages like Java, Go, Rust, etc.
@@ -306,6 +318,21 @@ const EditorPanel = ({
     const [tabIndicator, setTabIndicator] = useState({ left: 0, width: 0, visible: false });
     const [hoveredTabPath, setHoveredTabPath] = useState(null);
     const tabRefs = useRef({});
+
+    // ── Presence hover-card state ────────────────
+    const [hoverPresence, setHoverPresence] = useState(null); // { user, clientId, rect, cursor }
+    const hoverHideTimeoutRef = useRef(null);
+    const showAnonymousPresence = false; // flip to true to show anonymous users in the presence list
+    const hoverCardStyle = useMemo(() => {
+        if (!hoverPresence?.rect) return null;
+        const { rect } = hoverPresence;
+        return {
+            position: 'fixed',
+            left: rect.left + rect.width / 2 - 112, // centre the 224px card on the avatar
+            top: rect.bottom + 6,
+            zIndex: 9999,
+        };
+    }, [hoverPresence]);
 
     const { client: compilerClient, status: compilerStatus } = useCompiler();
     const languageClientsRef = useRef(new Map());
@@ -3552,7 +3579,10 @@ const EditorPanel = ({
                                             }} className="px-2 py-1 rounded text-xs border" style={{ background: 'var(--bg-surface)', borderColor: 'var(--border-medium)', color: 'var(--text-secondary)' }}>Jump</button>
                                         </div>
                                     </div>
-                                </div>
+                                </div>      
+                            </div>
+                        )}
+
                         {/* Merge Conflict Resolver — overlays the editor when active.
                             Kept as a sibling (not a conditional replacement) so the Monaco
                             editor stays mounted and its passive-unmount effects don't throw
@@ -3611,6 +3641,18 @@ const EditorPanel = ({
                             <ContextMenu>
                                 <ContextMenuTrigger asChild>
                                     <div className="h-full w-full">
+                                        {/* Gate Monaco editor mounting on servicesReady so that
+                                            wrapper.start() has installed the real MarkdownRendererService
+                                            (and all other service overrides) BEFORE the standalone editor
+                                            constructor runs.  Without this, the @codingame/monaco-vscode-api
+                                            missing-services stub throws:
+                                              "Unsupported: MarkdownRendererService.setDefaultCodeBlockRenderer
+                                               is not supported" */}
+                                        {!servicesReady ? (
+                                            <div className="h-full w-full flex items-center justify-center bg-[#0a0b10]">
+                                                <span className="text-[#4d5168] text-sm select-none animate-pulse">Initializing editor…</span>
+                                            </div>
+                                        ) : (<>
                                         {/* DiffEditor — kept mounted (display:none) once activated
                                             to prevent React unmount crash in
                                             recursivelyTraversePassiveUnmountEffects.
@@ -3822,6 +3864,7 @@ const EditorPanel = ({
                                                 }}
                                             />
                                         </div>
+                                        </>)}
                                     </div>
                                 </ContextMenuTrigger>
                                 <ContextMenuContent className="w-56" style={{ background: 'var(--bg-elevated)', borderColor: 'var(--border-medium)', color: 'var(--text-primary)' }}>

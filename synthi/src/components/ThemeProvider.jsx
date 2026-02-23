@@ -25,10 +25,8 @@ import {
   selectAllThemes,
   selectUserOverrides,
   selectEffectiveThemeId,
-  registerBuiltinThemes,
   hydrateTheme,
 } from '@/redux/themeSlice';
-import { BUILTIN_THEMES } from '@/themes/index';
 import {
   resolveTheme,
   applyThemeToDOM,
@@ -74,9 +72,6 @@ export default function ThemeProvider({ children }) {
 
   // ── Bootstrap: register built-ins + hydrate ───────────
   useEffect(() => {
-    // Register all bundled themes
-    dispatch(registerBuiltinThemes(BUILTIN_THEMES));
-
     // Hydrate persisted theme preferences (activeThemeId)
     const prefs = loadThemePrefs();
     if (prefs) {

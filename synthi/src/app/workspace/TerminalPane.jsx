@@ -252,6 +252,11 @@ export default function TerminalPane({ terminalId = 'default', paneSide = 'main'
         }
 
         const wsLocal = wsRef.current;
+        if (wsLocal && wsLocal.readyState === WebSocket.OPEN) {
+          wsLocal.send(new TextEncoder().encode(data));
+        }
+      });
+
       ws.onopen = () => {
         if (disposed) return;
         reconnectCountRef.current = 0;
@@ -329,14 +334,6 @@ export default function TerminalPane({ terminalId = 'default', paneSide = 'main'
           setState('closed');
         }
       };
-
-      // ── xterm → WebSocket (keystroke hot path) ────────────────────
-      term.onData((data) => {
-        if (ws.readyState === WebSocket.OPEN) {
-          // Send raw binary for minimum latency
-          ws.send(new TextEncoder().encode(data));
-        }
-      });
 
       // Also forward binary (paste, etc.)
       term.onBinary((data) => {
@@ -416,11 +413,10 @@ export default function TerminalPane({ terminalId = 'default', paneSide = 'main'
             {/* Title with gradient */}
             <h3 className="text-xl font-bold bg-gradient-to-r from-[#f0f2f5] to-[#a8adc0] bg-clip-text text-transparent">
               Terminal Disconnected
-      {/* xterm container */}
-      <div
-        ref={containerRef}
-        className="h-full w-full"
-      />
+            </h3>
+          </div>
+        </div>
+      )}
 
       {/* Connection status overlay */}
       {(state === 'error' || state === 'closed') && (

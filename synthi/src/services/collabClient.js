@@ -1006,7 +1006,6 @@ class CollabClient {
     if (!entry._seeded) {
       entry._seeded = false;
     }
-<<<<<<< HEAD
     
     // Flag: set to true once the MonacoTextBinding is created below.
     // When the binding exists, Yjs → model sync is handled by the binding's
@@ -1015,8 +1014,6 @@ class CollabClient {
     // event and could overwrite user edits that arrived between mount and
     // the provider sync event.
     let bindingEstablished = false;
-    
-=======
 
     // ── Seed Strategy ────────────────────────────────────────────────
     // The server's bindState is the sole authority for initial seeding
@@ -1034,7 +1031,6 @@ class CollabClient {
     // ─────────────────────────────────────────────────────────────────
     const SEED_WAIT_MS = 1500; // allow server bindState to complete
 
->>>>>>> 4333b750f3b10dc22a93381c88e9ed2cbb0e6b4c
     const doSeed = () => {
       // Only seed once per doc lifecycle
       if (entry._seeded) return;
@@ -1105,15 +1101,12 @@ class CollabClient {
           if (model.getValue() !== providedContent) {
             model.setValue(providedContent);
           }
-<<<<<<< HEAD
           entry.ytext.insert(0, providedContent);
-        });
+        }
         // Writing to Yjs triggers _yObserver which updates the model.
         // Only call model.setValue() if the binding isn't established yet.
         if (!bindingEstablished && model.getValue() !== providedContent) {
           model.setValue(providedContent);
-=======
->>>>>>> 4333b750f3b10dc22a93381c88e9ed2cbb0e6b4c
         }
         entry._seeded = true;
       };
@@ -1127,13 +1120,10 @@ class CollabClient {
       // Fallback timeout for truly new documents
       seedTimer = setTimeout(commit, SEED_WAIT_MS);
     };
-<<<<<<< HEAD
     
     // Normalize helper for comparing content from different sources
     // (API may include trailing newlines that disk content lacks, etc.)
     const normalizeContent = (s) => s ? s.replace(/\r\n/g, '\n').replace(/\s+$/, '') : '';
-=======
->>>>>>> 4333b750f3b10dc22a93381c88e9ed2cbb0e6b4c
 
     if (isSynced) {
       // Provider already synced, safe to check now
@@ -1151,7 +1141,6 @@ class CollabClient {
         doSeed();
       }
     } else {
-<<<<<<< HEAD
       // Wait for sync before seeding to avoid racing with server content.
       // CRITICAL: Clear the model if it was pre-populated by
       // @monaco-editor/react's defaultValue.  Without this, the Yjs sync
@@ -1163,23 +1152,17 @@ class CollabClient {
       if (model.getValue().length > 0) {
         model.setValue('');
       }
-=======
-      // Wait for sync before checking
->>>>>>> 4333b750f3b10dc22a93381c88e9ed2cbb0e6b4c
       const syncHandler = () => {
         entry.provider.off('sync', syncHandler);
         doSeed();
       };
       entry.provider.on('sync', syncHandler);
-<<<<<<< HEAD
-=======
 
       // Set model content optimistically so user sees something
       // but don't write to ytext yet
       if (model.getValue() !== providedContent && hasProvidedContent) {
         model.setValue(providedContent);
       }
->>>>>>> 4333b750f3b10dc22a93381c88e9ed2cbb0e6b4c
     }
     
     // Now set the model on the editor if different
