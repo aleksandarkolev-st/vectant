@@ -77,6 +77,9 @@ import {
   Save,
   ChevronRight,
   Info,
+  Wand2,
+  Send,
+  Loader2,
 } from 'lucide-react';
 
 // ─── Icon map for section icons ─────────────────────────────
@@ -248,6 +251,11 @@ function ThemeCreatorOverlay({ onClose }) {
   const [nameError, setNameError] = useState(null);
   const [saveAttempted, setSaveAttempted] = useState(false);
   const [showUnfilled, setShowUnfilled] = useState(false);
+  const [aiChatOpen, setAiChatOpen] = useState(false);
+  const [aiMessages, setAiMessages] = useState([]);
+  const [aiInput, setAiInput] = useState('');
+  const [aiLoading, setAiLoading] = useState(false);
+  const aiMessagesEndRef = useRef(null);
 
   // Store the theme that was active before the creator opened
   const initialThemeIdRef = useRef(activeThemeId);
@@ -437,6 +445,62 @@ function ThemeCreatorOverlay({ onClose }) {
     onClose();
   }, [themeName, themeType, uiColors, dispatch, onClose]);
 
+  // ── AI theme generation ───────────────────────────────
+  const handleAiGenerate = useCallback(async () => {
+    const prompt = aiInput.trim();
+    if (!prompt || aiLoading) return;
+
+    setAiMessages((prev) => [...prev, { role: 'user', text: prompt }]);
+    setAiInput('');
+    setAiLoading(true);
+
+    try {
+      const res = await fetch('/api/theme-generate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt, themeType }),
+      });
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || `Request failed (${res.status})`);
+      }
+
+      const data = await res.json();
+      const { colors, themeName: suggestedName } = data;
+
+      // Apply all generated colors
+      if (colors && typeof colors === 'object') {
+        setUiColors((prev) => ({ ...prev, ...colors }));
+      }
+      // Apply suggested name if user hasn't set one
+      if (suggestedName && !themeName.trim()) {
+        setThemeName(suggestedName);
+      }
+
+      const filledCount = colors ? Object.keys(colors).length : 0;
+      setAiMessages((prev) => [
+        ...prev,
+        {
+          role: 'assistant',
+          text: `Done! Applied ${filledCount} colours${suggestedName ? ` — named "${suggestedName}"` : ''}. You can refine any colour manually, or describe more changes.`,
+        },
+      ]);
+    } catch (err) {
+      setAiMessages((prev) => [
+        ...prev,
+        { role: 'assistant', text: `Error: ${err.message}` },
+      ]);
+    } finally {
+      setAiLoading(false);
+    }
+  }, [aiInput, aiLoading, themeType, themeName, setUiColors, setThemeName]);
+
+  // Scroll AI messages to bottom
+  useEffect(() => {
+    aiMessagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [aiMessages]);
+
   // ── Keyboard: Escape to cancel ────────────────────────
   useEffect(() => {
     const onKeyDown = (e) => {
@@ -460,6 +524,8 @@ function ThemeCreatorOverlay({ onClose }) {
       className="fixed inset-0 z-[9998] flex items-center justify-center"
       style={{ background: 'rgba(0,0,0,0.5)', backdropFilter: 'blur(3px)' }}
     >
+      {/* Flex wrapper so the AI chat panel can sit beside the main overlay */}
+      <div className="flex items-start gap-3">
       {/*
        * Scoped CSS variable overrides — pin the overlay to a known dark
        * palette so it stays readable regardless of the live theme preview
@@ -506,9 +572,25 @@ function ThemeCreatorOverlay({ onClose }) {
             Create Your Own Theme
           </span>
 
+          {/* AI Generate button */}
+          <button
+            className="flex items-center gap-1.5 px-2.5 py-1 rounded text-[11px] font-medium transition-all ml-auto"
+            style={{
+              background: aiChatOpen
+                ? 'var(--accent-primary)'
+                : 'linear-gradient(135deg, var(--accent-primary), var(--accent-secondary))',
+              color: 'white',
+              boxShadow: aiChatOpen ? 'none' : '0 0 8px rgba(50,116,100,0.3)',
+            }}
+            onClick={() => setAiChatOpen((v) => !v)}
+          >
+            <Wand2 className="h-3.5 w-3.5" />
+            AI Generate
+          </button>
+
           {/* Theme type toggle */}
           <div
-            className="flex text-[10px] rounded overflow-hidden ml-auto"
+            className="flex text-[10px] rounded overflow-hidden"
             style={{ border: '1px solid var(--border-subtle)' }}
           >
             <button
@@ -933,6 +1015,151 @@ function ThemeCreatorOverlay({ onClose }) {
           </div>
         </div>
       </div>
+
+      {/* ─── AI Chat Panel (slides in beside the overlay) ── */}
+      {aiChatOpen && (
+        <div
+          className="w-[320px] max-h-[80vh] flex flex-col rounded-lg overflow-hidden shrink-0"
+          style={{
+            '--bg-app':          '#08090d',
+            '--bg-editor':       '#0c0d12',
+            '--bg-sidebar':      '#070810',
+            '--bg-panel':        '#101118',
+            '--bg-surface':      '#14151d',
+            '--bg-elevated':     '#1a1b24',
+            '--border-subtle':   '#1a1b24',
+            '--border-medium':   '#2a2b38',
+            '--border-focus':    '#3a3b52',
+            '--border-strong':   '#42445a',
+            '--text-primary':    '#f4f5f8',
+            '--text-secondary':  '#9ba2b8',
+            '--text-muted':      '#5a6178',
+            '--text-dim':        '#3d4256',
+            '--accent-primary':  '#327464',
+            '--accent-secondary':'#3d8b78',
+            '--accent-tertiary': '#4a9e8a',
+            '--accent-danger':   '#ff5757',
+            '--accent-success':  '#4ade80',
+            '--accent-warning':  '#fbbf24',
+            '--shadow-dropdown': '0 4px 16px rgba(0, 0, 0, 0.7)',
+            background: 'var(--bg-elevated)',
+            border: '1px solid var(--border-medium)',
+            boxShadow: 'var(--shadow-dropdown)',
+          }}
+        >
+          {/* Panel header */}
+          <div
+            className="flex items-center gap-2 px-3 py-2.5 shrink-0"
+            style={{ borderBottom: '1px solid var(--border-subtle)' }}
+          >
+            <Wand2 className="h-4 w-4" style={{ color: 'var(--accent-primary)' }} />
+            <span className="text-xs font-semibold" style={{ color: 'var(--text-primary)' }}>
+              AI Theme Generator
+            </span>
+            <button
+              className="ml-auto p-0.5 rounded transition-colors"
+              style={{ color: 'var(--text-muted)' }}
+              onClick={() => setAiChatOpen(false)}
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
+          </div>
+
+          {/* Messages area */}
+          <div
+            className="flex-1 overflow-y-auto px-3 py-2 space-y-2 min-h-0"
+            style={{ background: 'var(--bg-app)' }}
+          >
+            {aiMessages.length === 0 && (
+              <div className="flex flex-col items-center justify-center h-full gap-2 py-8">
+                <Sparkles className="h-8 w-8" style={{ color: 'var(--border-focus)' }} />
+                <p className="text-[11px] text-center leading-relaxed px-4" style={{ color: 'var(--text-muted)' }}>
+                  Describe your ideal theme and the AI will generate all the colours for you.
+                </p>
+                <div className="flex flex-wrap gap-1 mt-1 justify-center">
+                  {['Monokai inspired', 'Ocean breeze', 'Warm sunset', 'Minimal grayscale'].map((suggestion) => (
+                    <button
+                      key={suggestion}
+                      className="text-[9px] px-2 py-0.5 rounded-full transition-colors"
+                      style={{
+                        border: '1px solid var(--border-subtle)',
+                        color: 'var(--text-secondary)',
+                        background: 'transparent',
+                      }}
+                      onClick={() => setAiInput(suggestion)}
+                    >
+                      {suggestion}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+            {aiMessages.map((msg, i) => (
+              <div
+                key={i}
+                className={cn(
+                  'text-[11px] px-2.5 py-1.5 rounded-lg max-w-[90%] leading-relaxed',
+                  msg.role === 'user' ? 'ml-auto' : 'mr-auto',
+                )}
+                style={{
+                  background: msg.role === 'user' ? 'var(--accent-primary)' : 'var(--bg-surface)',
+                  color: msg.role === 'user' ? 'white' : 'var(--text-secondary)',
+                }}
+              >
+                {msg.text}
+              </div>
+            ))}
+            {aiLoading && (
+              <div className="flex items-center gap-2 px-2.5 py-1.5 mr-auto">
+                <Loader2 className="h-3 w-3 animate-spin" style={{ color: 'var(--accent-primary)' }} />
+                <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>Generating theme…</span>
+              </div>
+            )}
+            <div ref={aiMessagesEndRef} />
+          </div>
+
+          {/* Input area */}
+          <div
+            className="shrink-0 px-3 py-2.5"
+            style={{ borderTop: '1px solid var(--border-subtle)' }}
+          >
+            <div
+              className="flex items-center gap-2 rounded-md px-2.5 py-1.5"
+              style={{
+                background: 'var(--bg-surface)',
+                border: '1px solid var(--border-subtle)',
+              }}
+            >
+              <input
+                className="flex-1 bg-transparent text-[11px] outline-none placeholder:opacity-40"
+                style={{ color: 'var(--text-primary)' }}
+                placeholder="Describe your theme…"
+                value={aiInput}
+                onChange={(e) => setAiInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    handleAiGenerate();
+                  }
+                }}
+                disabled={aiLoading}
+              />
+              <button
+                className="p-1 rounded transition-colors"
+                style={{
+                  color: aiInput.trim() && !aiLoading ? 'var(--accent-primary)' : 'var(--text-dim)',
+                }}
+                onClick={handleAiGenerate}
+                disabled={!aiInput.trim() || aiLoading}
+              >
+                <Send className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      </div>{/* end flex wrapper */}
     </div>
   );
 }
