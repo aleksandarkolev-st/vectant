@@ -38,18 +38,19 @@ export function BranchSelector({ slug }) {
 
     return (
         <Select value={currentBranch || ''} onValueChange={handleValueChange} disabled={loading}>
-            <SelectTrigger className="h-5 w-auto gap-1.5 border-none bg-transparent px-1.5 text-[11px] text-[#f0f2f5] hover:text-[#f0f2f5] hover:bg-[#1c1d26] rounded-full focus:ring-0 focus:ring-offset-0 data-[size=default]:h-5 data-[size=default]:px-1.5 data-[size=default]:py-0 [&>svg:last-child]:w-3 [&>svg:last-child]:h-3 [&>svg:last-child]:opacity-50 duration-300 hover:-translate-y-0.5 transition-all cursor-pointer">
-                <GitBranch className="w-3.5 h-3.5 text-[#327464]" strokeWidth={1.5} />
+            <SelectTrigger className="h-5 w-auto gap-1.5 border-none bg-transparent px-1.5 text-[11px] rounded-full focus:ring-0 focus:ring-offset-0 data-[size=default]:h-5 data-[size=default]:px-1.5 data-[size=default]:py-0 [&>svg:last-child]:w-3 [&>svg:last-child]:h-3 [&>svg:last-child]:opacity-50 duration-300 hover:-translate-y-0.5 transition-all cursor-pointer" style={{ color: 'var(--text-primary)' }}>
+                <GitBranch className="w-3.5 h-3.5" style={{ color: 'var(--accent-primary)' }} strokeWidth={1.5} />
                 <SelectValue placeholder="Select branch" />
             </SelectTrigger>
-            <SelectContent className="bg-[#0d0e14] border-[#1c1d26] text-[#f0f2f5] min-w-[140px] rounded-lg">
+            <SelectContent className="min-w-[140px] rounded-lg" style={{ background: 'var(--bg-elevated)', borderColor: 'var(--border-medium)', color: 'var(--text-primary)' }}>
                 <SelectGroup>
-                    <SelectLabel className="text-[#6b7089] text-xs">Local Branches</SelectLabel>
+                    <SelectLabel className="text-xs" style={{ color: 'var(--text-muted)' }}>{localBranches.length > 0 ? 'Local Branches' : 'No branches'}</SelectLabel>
                     {localBranches.map(b => (
                         <SelectItem 
                             key={b} 
                             value={b}
-                            className="text-xs cursor-pointer focus:bg-[#32746420] focus:text-[#f0f2f5] rounded"
+                            className="text-xs cursor-pointer rounded"
+                            style={{ color: 'var(--text-primary)' }}
                         >
                             {b}
                         </SelectItem>
@@ -57,7 +58,8 @@ export function BranchSelector({ slug }) {
                 </SelectGroup>
                 <SelectItem 
                     value="create-new" 
-                    className="text-xs cursor-pointer text-[#327464] focus:bg-[#32746420] focus:text-[#327464] rounded"
+                    className="text-xs cursor-pointer rounded"
+                    style={{ color: 'var(--accent-primary)' }}
                 >
                     <span className="flex items-center gap-1.5">
                         <Plus className="w-3 h-3" />
