@@ -87,6 +87,7 @@ export default function TerminalPane({ terminalId = 'default', paneSide = 'main'
   const reconnectTimerRef = useRef(null);
   const reconnectCountRef = useRef(0);
   const mountedRef = useRef(true);
+  const isResizingRef = useRef(false);
 
   // Live theme from ThemeProvider
   const { terminalTheme } = useTheme();
@@ -178,10 +179,13 @@ export default function TerminalPane({ terminalId = 'default', paneSide = 'main'
       let resizeRaf = null;
       const doFit = () => {
         if (disposed || !terminalRef.current) return;
+        isResizingRef.current = true;
         try {
           fitAddon.fit();
           sendResize(term.cols, term.rows);
-        } catch (_) {}
+        } catch (_) {} finally {
+          isResizingRef.current = false;
+        }
       };
 
       const scheduleResize = () => {
@@ -239,7 +243,7 @@ export default function TerminalPane({ terminalId = 'default', paneSide = 'main'
       // Also provide a local-echo fallback when no backend is connected so
       // the user sees their keystrokes while offline/disconnected.
       term.onData((data) => {
-        if (isResizing) return;
+        if (isResizingRef.current) return;
 
         // ── Session permission gate ──────────────────────────────────
         // When the user is a Guest without terminal permission, block

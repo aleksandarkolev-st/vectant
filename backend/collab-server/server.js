@@ -2946,6 +2946,10 @@ const notifyWss = new WebSocket.Server({ noServer: true });
 // Clients connect to /session-events?sessionId=<id>&userId=<id>.
 const sessionWss = new WebSocket.Server({ noServer: true });
 
+// Terminal PTY WebSocket server — spawns shell sessions via node-pty.
+// Clients connect to /terminal?sessionId=<id>&workspace=<slug>&cols=N&rows=N.
+const terminalWss = createTerminalWSS();
+
 // Grace period for guest disconnect → reconnect (prevents phantom kicks)
 const GUEST_DISCONNECT_GRACE_MS = 30_000;
 /** @type {Map<string, NodeJS.Timeout>} userId → timeout handle */
@@ -3153,6 +3157,11 @@ server.on('upgrade', (request, socket, head) => {
     // Route to session event WebSocket server
     sessionWss.handleUpgrade(request, socket, head, (ws) => {
       sessionWss.emit('connection', ws, request);
+    });
+  } else if (pathname === 'terminal') {
+    // Route to terminal PTY WebSocket server
+    terminalWss.handleUpgrade(request, socket, head, (ws) => {
+      terminalWss.emit('connection', ws, request);
     });
   } else {
     // All other paths are Yjs document rooms
