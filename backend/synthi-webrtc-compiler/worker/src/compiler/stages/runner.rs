@@ -204,9 +204,11 @@ pub async fn handle_runner_execution(
                     .arg("-use_cursor")
                     .arg("no");
                 wm_cmd.env("DISPLAY", &wsl_display_str);
-                wm_cmd.kill_on_drop(true);
-                // We don't keep the WM handle, assuming it dies when Xvfb dies or worker dies
-                let _ = wm_cmd
+                // NOTE: kill_on_drop is NOT set here. The WM needs to live as long
+                // as Xvfb — it will be killed when Xvfb is killed. Setting
+                // kill_on_drop(true) + `let _ = spawn()` would immediately drop the
+                // Child handle, killing the WM within milliseconds of starting.
+                let _wm_child = wm_cmd
                     .spawn()
                     .context("Failed to spawn matchbox-window-manager")?;
 

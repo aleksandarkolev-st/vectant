@@ -73,6 +73,7 @@ use capability::HmrStatus; // Removed detect_capabilities
 
 use crash_recovery::{
     execute_with_protection, generate_crash_report, install_crash_handlers, set_current_lib_path,
+    set_protection_mode, ProtectionMode,
     HmrCrashStatus,
 };
 
@@ -205,7 +206,12 @@ fn main() {
     }
 
     // Install crash handlers for runtime error recovery
+    // IMPORTANT: Set protection mode to SignalRecovery BEFORE installing handlers.
+    // The runner uses thread-based execution (execute_with_protection spawns threads),
+    // NOT fork-based isolation. ForkIsolation mode would call _exit() in the signal
+    // handler, killing the entire runner process instead of just the crashed thread.
     eprintln!("[Runner] Installing crash handlers...");
+    set_protection_mode(ProtectionMode::SignalRecovery);
     if let Err(e) = install_crash_handlers() {
         eprintln!("[Runner] Warning: Failed to install crash handlers: {}", e);
     } else {
@@ -924,12 +930,16 @@ fn main() {
                                     RecoveryAction::HotReload
                                 };
 
-                                // CRITICAL SAFETY CHECK:
-                                // If the crash was caused by memory corruption (SIGSEGV, SIGBUS, etc.),
-                                // we MUST NOT continue in the same process, as the heap state is undefined.
-                                let is_fatal = crash_info.is_fatal_memory_error();
-                                let force_restart = is_fatal
-                                    || recovery_action == RecoveryAction::FullRestart
+                                // Check if supervisor thinks we should restart
+                                // (too many consecutive crashes without recovery).
+                                // NOTE: We intentionally do NOT treat SIGSEGV as
+                                // unconditionally fatal because our thread-based
+                                // crash protection isolates the crash to the plugin
+                                // thread.  The runner's own heap and SDL state are
+                                // safe since the faulting thread is terminated via
+                                // pthread_exit and never touches shared state again.
+                                let force_restart =
+                                    recovery_action == RecoveryAction::FullRestart
                                     || recovery_action == RecoveryAction::Fatal
                                     || (supervisor_enabled
                                         && crash_supervisor.should_force_restart());
@@ -940,11 +950,7 @@ fn main() {
                                 eprintln!("[Runner] Recovery action: {:?}", recovery_action);
 
                                 if force_restart {
-                                    if is_fatal {
-                                        eprintln!("[Runner] Fatal memory corruption detected ({:?}). Forcing cold restart.", crash_info.signal_name);
-                                    } else {
-                                        eprintln!("[Runner] Too many consecutive crashes (action={:?}). Exiting.", recovery_action);
-                                    }
+                                    eprintln!("[Runner] Too many consecutive crashes (action={:?}). Exiting for cold restart.", recovery_action);
                                     std::process::exit(1);
                                 }
 
