@@ -723,6 +723,7 @@ export class CompilerClient {
                     if (this.terminalChannel.readyState === 'open') {
                         if (typeof window !== 'undefined' && window.addEventListener) {
                             window.addEventListener('synthi:terminal-input', this._handleTerminalInput);
+                            window.addEventListener('synthi:gui-input', this._handleGuiInput);
                         }
                     }
                     this.terminalChannel.onclose = () => {
@@ -1419,6 +1420,27 @@ export class CompilerClient {
         this._sessionTargets.delete(sessionId);
 
         return result;
+    }
+
+    /**
+     * Dismiss a session locally without sending cancel-build to the worker.
+     * Used for HMR saves: the worker's compile function will handle runner
+     * restart automatically (killing old runner, reusing Xvfb/GStreamer).
+     * Sending cancel-build would destroy the entire infrastructure.
+     */
+    dismissSession(sessionId) {
+        if (!sessionId) return;
+        // Reject the pending promise so the caller doesn't hang
+        if (this.pendingCompilationMap.has(sessionId)) {
+            const { reject } = this.pendingCompilationMap.get(sessionId);
+            try { reject(new SynthiException('Cancelled', 'HMR restart')); } catch (_) {}
+            this.pendingCompilationMap.delete(sessionId);
+        }
+        // Clear active session so compile() generates a fresh one
+        if (this.activeSessionId === sessionId) {
+            this.activeSessionId = null;
+        }
+        this._sessionTargets.delete(sessionId);
     }
 
     /**

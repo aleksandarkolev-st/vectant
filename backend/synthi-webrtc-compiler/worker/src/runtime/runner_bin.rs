@@ -20,6 +20,8 @@ use worker::runtime::platform::sdl_defs::*;
 use x11rb::connection::Connection;
 #[cfg(target_os = "linux")]
 use x11rb::protocol::shm::ConnectionExt as ShmConnectionExt;
+#[cfg(target_os = "linux")]
+use x11rb::protocol::xtest::ConnectionExt as XTestConnectionExt;
 
 use worker::runtime::runner_logic;
 // use worker::compiler::abi_version;
@@ -238,18 +240,75 @@ fn main() {
         let root = conn.setup().roots[screen_num].root;
         (c, Some(conn), screen_num, root)
     } else {
-        eprintln!("[Runner] Worker manages display — skipping Xvfb/X11/SHM (worker captures via ximagesrc)");
-        (None, None, 0, 0u32)
+        // Worker manages Xvfb — we still need an X11 connection for XTest
+        // input injection (fake_input for mouse events).
+        let display_str = std::env::var("DISPLAY").unwrap_or_else(|_| ":99".to_string());
+        eprintln!("[Runner] Worker manages display — connecting to {} for XTest input injection", display_str);
+        match x11rb::connect(Some(&display_str)) {
+            Ok((conn, screen_num)) => {
+                let root = conn.setup().roots[screen_num].root;
+                (None, Some(conn), screen_num, root)
+            }
+            Err(e) => {
+                eprintln!("[Runner] Failed to connect to X11 display {}: {}. Mouse input disabled.", display_str, e);
+                (None, None, 0, 0u32)
+            }
+        }
     };
 
+    // Initialize XTest extension for mouse input injection.
+    // XTest fake_input bypasses window-manager passive grabs (with grab_control),
+    // eliminating the WM interference that caused xdotool clicks to clear windows.
+    // Also avoids spawning a process per event (5-10ms overhead + race conditions).
     #[cfg(target_os = "linux")]
-    let (shm_seg, shm_ptr) = if let Some(ref conn) = x11_conn {
-        let size = 800 * 600 * 4;
-        let (id, ptr) = worker::runtime::runner::capture::create_shm_segment(size)
-            .expect("Failed to create SHM");
-        let seg = conn.generate_id().unwrap();
-        conn.shm_attach(seg, id as u32, false).unwrap();
-        (seg, ptr)
+    let xtest_ready = if let Some(ref conn) = x11_conn {
+        match conn.xtest_get_version(2, 2u16) {
+            Ok(cookie) => match cookie.reply() {
+                Ok(ver) => {
+                    eprintln!("[Runner] XTest extension v{}.{} available", ver.major_version, ver.minor_version);
+                    // Enable grab bypass: XTest events will not activate passive grabs
+                    // (e.g. matchbox-WM's button grabs for click-to-focus). Without this,
+                    // the WM intercepts every button event before the app sees it.
+                    match conn.xtest_grab_control(true) {
+                        Ok(_) => {
+                            let _ = conn.flush();
+                            eprintln!("[Runner] XTest grab_control(impervious=true) — WM grabs bypassed");
+                            true
+                        }
+                        Err(e) => {
+                            eprintln!("[Runner] XTest grab_control failed: {}. Falling back to xdotool.", e);
+                            false
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!("[Runner] XTest get_version failed: {}. Mouse input may not work.", e);
+                    false
+                }
+            },
+            Err(e) => {
+                eprintln!("[Runner] XTest extension not available: {}. Mouse input may not work.", e);
+                false
+            }
+        }
+    } else {
+        false
+    };
+
+    // SHM is only needed when runner manages its own display (for frame capture).
+    // When the worker manages display, GStreamer ximagesrc handles capture.
+    #[cfg(target_os = "linux")]
+    let (shm_seg, shm_ptr) = if !worker_managed_display {
+        if let Some(ref conn) = x11_conn {
+            let size = 800 * 600 * 4;
+            let (id, ptr) = worker::runtime::runner::capture::create_shm_segment(size)
+                .expect("Failed to create SHM");
+            let seg = conn.generate_id().unwrap();
+            conn.shm_attach(seg, id as u32, false).unwrap();
+            (seg, ptr)
+        } else {
+            (0u32, ptr::null_mut())
+        }
     } else {
         (0u32, ptr::null_mut())
     };
@@ -469,6 +528,7 @@ fn main() {
     };
     let mut last_frame = Instant::now();
     let mut last_log = Instant::now();
+    let mut last_motion_time = Instant::now();
     let mut frame_count: u64 = 0;
     let mut frames_sent: u64 = 0;
     let mut last_frame_log = Instant::now();
@@ -684,24 +744,37 @@ fn main() {
                 "input" => {
                     #[cfg(target_os = "linux")]
                     if parts.len() >= 2 {
-                        // Inject input events through the X11 XTest extension.
-                        // SDL_PushEvent only adds events to the SDL event queue but does
-                        // NOT update SDL's internal mouse/keyboard state. Programs using
-                        // SDL_GetMouseState() never see pushed events. XTest injects events
-                        // through the X server so SDL_PumpEvents picks them up naturally
-                        // and updates all internal state.
+                        // XTest fake_input for mouse; SDL_PushEvent for keyboard.
+                        //
+                        // XTest with grab_control(impervious=true) bypasses
+                        // window-manager passive grabs entirely. This fixes the
+                        // issue where matchbox-WM intercepted xdotool button
+                        // events, causing the user's X11 app to redraw incorrectly
+                        // (text/components disappearing on click).
+                        //
+                        // XTest also eliminates per-event process spawning (~5-10ms
+                        // xdotool overhead) and race conditions between concurrent
+                        // xdotool processes.
+                        //
+                        // XTest event types:
+                        //   2 = KeyPress, 3 = KeyRelease
+                        //   4 = ButtonPress, 5 = ButtonRelease
+                        //   6 = MotionNotify
                         match parts[1] {
                             "motion" => {
                                 if parts.len() >= 4 {
-                                    if let (Ok(x), Ok(y)) =
-                                        (parts[2].parse::<i16>(), parts[3].parse::<i16>())
-                                    {
-                                        if let Some(ref conn) = x11_conn {
-                                            // XTest MotionNotify: type=6, detail=1 (absolute coords)
-                                            let _ = x11rb::protocol::xtest::fake_input(
-                                                conn, 6, 1, 0, x11_root, x, y, 0,
-                                            );
-                                            let _ = conn.flush();
+                                    // Rate-limit motion to ~60fps
+                                    let now = Instant::now();
+                                    if now.duration_since(last_motion_time).as_millis() >= 16 {
+                                        last_motion_time = now;
+                                        let x = parts[2].parse::<i16>().unwrap_or(0);
+                                        let y = parts[3].parse::<i16>().unwrap_or(0);
+                                        if xtest_ready {
+                                            if let Some(ref conn) = x11_conn {
+                                                // MotionNotify: detail=0, root_x/root_y = target position, deviceid=0 (server default)
+                                                let _ = conn.xtest_fake_input(6, 0, 0, x11_root, x, y, 0);
+                                                let _ = conn.flush();
+                                            }
                                         }
                                     }
                                 }
@@ -709,21 +782,20 @@ fn main() {
                             "button" => {
                                 if parts.len() >= 6 {
                                     let type_str = parts[2];
-                                    let btn = parts[3].parse::<u8>().unwrap_or(1);
+                                    let btn: u8 = parts[3].parse().unwrap_or(1);
                                     let x = parts[4].parse::<i16>().unwrap_or(0);
                                     let y = parts[5].parse::<i16>().unwrap_or(0);
 
-                                    if let Some(ref conn) = x11_conn {
-                                        // Move mouse to position first
-                                        let _ = x11rb::protocol::xtest::fake_input(
-                                            conn, 6, 1, 0, x11_root, x, y, 0,
-                                        );
-                                        // XTest ButtonPress=4, ButtonRelease=5
-                                        let x11_type: u8 = if type_str == "down" { 4 } else { 5 };
-                                        let _ = x11rb::protocol::xtest::fake_input(
-                                            conn, x11_type, btn, 0, x11_root, 0, 0, 0,
-                                        );
-                                        let _ = conn.flush();
+                                    if xtest_ready {
+                                        if let Some(ref conn) = x11_conn {
+                                            // Warp pointer to click position first,
+                                            // then send button event (which fires at
+                                            // the current pointer position).
+                                            let _ = conn.xtest_fake_input(6, 0, 0, x11_root, x, y, 0);
+                                            let event_type: u8 = if type_str == "down" { 4 } else { 5 };
+                                            let _ = conn.xtest_fake_input(event_type, btn, 0, x11_root, 0, 0, 0);
+                                            let _ = conn.flush();
+                                        }
                                     }
                                 }
                             }
@@ -732,9 +804,10 @@ fn main() {
                                     let type_str = parts[2];
                                     let keycode = parts[3].parse::<i32>().unwrap_or(0);
 
-                                    // For keyboard events, use SDL_PushEvent since key events
-                                    // are typically processed through on_event, not SDL_GetKeyboardState.
-                                    // XTest requires X11 keycodes which differ from SDL keycodes.
+                                    // For keyboard events, use SDL_PushEvent since
+                                    // xdotool uses X11 keysyms which differ from SDL
+                                    // keycodes. SDL_PushEvent works reliably for keyboard
+                                    // events processed via SDL_PollEvent / on_event.
                                     unsafe {
                                         let event_type = if type_str == "down" {
                                             SDL_KEYDOWN

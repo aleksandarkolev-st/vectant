@@ -43,8 +43,8 @@ pub async fn handle_runner_execution(
 
     // Check if we need to restart due to GUI mode change or blocking app
     let is_blocking_app = !has_on_update;
-    let req_width = req.width.unwrap_or(1280);
-    let req_height = req.height.unwrap_or(720);
+    let req_width = req.width.unwrap_or(800);
+    let req_height = req.height.unwrap_or(600);
 
     eprintln!(
         "[Main] Restart check: is_gui={}, has_on_update={}, is_blocking_app={}, use_ai_split={}",
@@ -696,8 +696,19 @@ pub async fn handle_runner_execution(
         }
     }
 
-    // Send Status Updates
-    // ...
+    // Send build-status "done" so the frontend's compile() promise resolves.
+    // Without this, native compile promises hang forever, breaking HMR session
+    // lifecycle and the [RECOMPILING] badge.
+    let done_payload = serde_json::json!({
+        "sessionId": session_id,
+        "status": "done",
+        "success": true,
+        "stage": "runner",
+    });
+    let _ = ctx
+        .log_dc
+        .send_text(serde_json::to_string(&done_payload).unwrap_or_default())
+        .await;
 
     Ok(())
 }
