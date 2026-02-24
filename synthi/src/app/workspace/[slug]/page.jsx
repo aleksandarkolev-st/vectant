@@ -113,6 +113,7 @@ export default function EditorPage({ params }) {
     const [isProblemsPanelDocked, setIsProblemsPanelDocked] = useState(true); // Track if panel is docked or floating
     const [guiConfig, setGuiConfig] = useState(null);
     const [isGuiRunning, setIsGuiRunning] = useState(false);
+    const [isHmrRecompiling, setIsHmrRecompiling] = useState(false);
     const [runInGuiMode, setRunInGuiMode] = useState(false);
     const [editor, setEditor] = useState(null);
     // Track editor content version to force re-analysis on every change (including remote/undo)
@@ -1809,7 +1810,7 @@ export default function EditorPage({ params }) {
 
         // Check if language is supported for compilation to avoid errors
         const ext = (filename.split('.').pop() || '').toLowerCase();
-        const supportedExts = ['cpp', 'cc', 'cxx', 'hpp', 'h', 'rs', 'ts', 'tsx'];
+        const supportedExts = ['c', 'cpp', 'cc', 'cxx', 'hpp', 'h', 'rs', 'ts', 'tsx'];
         if (!supportedExts.includes(ext)) {
             console.log(`[HMR] Skipping silent compilation for unsupported extension: .${ext}`);
             return;
@@ -1833,6 +1834,7 @@ export default function EditorPage({ params }) {
             // HMR mode: stop the currently running app and re-run it
             // This ensures a clean restart with the latest code
             console.log('[HMR] Stopping current app and re-running with latest code...');
+            setIsHmrRecompiling(true);
             const activeSessionId = client?.getActiveSessionId?.();
             if (activeSessionId) {
                 try {
@@ -1850,8 +1852,10 @@ export default function EditorPage({ params }) {
                 files: additionalFiles,
                 isGui: runInGuiMode,
             });
+            setIsHmrRecompiling(false);
             console.log('[HMR] Re-run succeeded after save');
         } catch (err) {
+            setIsHmrRecompiling(false);
             console.error('[HMR] HMR re-run failed', err);
         }
     }, [activeFile, currentContent, rawFiles, slug, compile, hmrEnabled, runInGuiMode, client]);
@@ -2077,6 +2081,7 @@ export default function EditorPage({ params }) {
                 setGuiConfig={setGuiConfig}
                 isGuiRunning={isGuiRunning}
                 setIsGuiRunning={setIsGuiRunning}
+                isHmrRecompiling={isHmrRecompiling}
                 mediaStream={mediaStream}
                 sendGuiEvent={sendGuiEvent}
             />

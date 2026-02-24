@@ -6,9 +6,9 @@ use std::ffi::{c_int, c_void};
 pub type SDL_Window = c_void;
 
 #[cfg(target_os = "linux")]
-#[repr(C)]
+#[repr(C, align(8))]
 pub struct SDL_Event {
-    pub data: [u8; 128], // Generous padding for SDL_Event union
+    pub data: [u8; 128], // Generous padding for SDL_Event union (real SDL_Event is 56 bytes)
 }
 
 #[cfg(target_os = "linux")]
@@ -56,6 +56,7 @@ extern "C" {
     ) -> c_int;
     pub fn SDL_PollEvent(event: *mut SDL_Event) -> c_int;
     pub fn SDL_PushEvent(event: *mut SDL_Event) -> c_int;
+    pub fn SDL_GetWindowID(window: *mut SDL_Window) -> u32;
     pub fn SDL_Quit();
     pub fn SDL_GetError() -> *const i8;
 }
@@ -71,6 +72,10 @@ pub const SDL_MOUSEBUTTONUP: u32 = 0x402;
 pub const SDL_KEYDOWN: u32 = 0x300;
 #[cfg(target_os = "linux")]
 pub const SDL_KEYUP: u32 = 0x301;
+#[cfg(target_os = "linux")]
+pub const SDL_QUIT: u32 = 0x100;
+#[cfg(target_os = "linux")]
+pub const SDL_WINDOWEVENT: u32 = 0x200;
 
 pub const SDL_INIT_VIDEO: u32 = 0x00000020;
 pub const SDL_WINDOW_SHOWN: u32 = 0x00000004;

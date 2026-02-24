@@ -127,7 +127,7 @@ export class CompilerClient {
 
     _mapLanguage(filename = '') {
         const ext = filename.split('.').pop().toLowerCase();
-        if (['cpp', 'cc', 'cxx', 'hpp', 'h'].includes(ext)) return 'cpp';
+        if (['c', 'cpp', 'cc', 'cxx', 'hpp', 'h'].includes(ext)) return 'cpp';
         if (ext === 'rs') return 'rust';
         if (ext === 'ts' || ext === 'tsx') return 'ts';
         if (ext === 'dart') return 'dart';

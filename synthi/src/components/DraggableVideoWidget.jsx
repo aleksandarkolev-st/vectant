@@ -5,6 +5,7 @@ export function DraggableVideoWidget({
     setGuiConfig,
     isGuiRunning,
     setIsGuiRunning,
+    isHmrRecompiling,
     mediaStream,
     sendGuiEvent
 }) {
@@ -213,7 +214,8 @@ export function DraggableVideoWidget({
                 className="bg-gray-800 text-white text-xs px-2 py-1 z-10 flex items-center gap-2 cursor-move w-full shrink-0 select-none"
             >
                 <span>GUI Output ({guiConfig.width}x{guiConfig.height})</span>
-                {!isGuiRunning && <span className="text-red-400 font-bold">[STOPPED]</span>}
+                {!isGuiRunning && isHmrRecompiling && <span className="text-yellow-400 font-bold">[RECOMPILING]</span>}
+                {!isGuiRunning && !isHmrRecompiling && <span className="text-red-400 font-bold">[STOPPED]</span>}
                 <button 
                     onClick={(e) => { 
                         e.stopPropagation(); 
@@ -243,8 +245,8 @@ export function DraggableVideoWidget({
                         onClick={() => { try { videoRef.current && videoRef.current.focus(); } catch (e) {} }}
                     />
                 ) : (
-                    <div className="w-full h-full flex items-center justify-center text-gray-500">
-                        {isGuiRunning ? 'Waiting for video stream...' : 'Application exited'}
+                    <div className="w-full h-full flex items-center justify-center text-gray-500 bg-black">
+                        {isGuiRunning ? 'Waiting for video stream...' : isHmrRecompiling ? 'Recompiling...' : 'Application exited'}
                     </div>
                 )}
             </div>

@@ -260,6 +260,17 @@ fn main() {
     #[cfg(target_os = "linux")]
     let (window, renderer) = unsafe { init_sdl() };
 
+    // Cache the SDL window ID for injected events (SDL assigns IDs starting from 1).
+    // Using windowID=0 in injected events causes them to target a non-existent window.
+    #[cfg(target_os = "linux")]
+    let sdl_window_id: u32 = if !window.is_null() {
+        unsafe { SDL_GetWindowID(window as *mut SDL_Window) }
+    } else {
+        0
+    };
+    #[cfg(not(target_os = "linux"))]
+    let sdl_window_id: u32 = 0;
+
     #[cfg(target_os = "linux")]
     let _sdl_texture = unsafe {
         if !renderer.is_null() {
@@ -534,7 +545,37 @@ fn main() {
                                 } else {
                                     app_state.raw
                                 };
-                            f(state_ptr, &mut event);
+
+                            // BUG FIX: Wrap on_event in crash protection, same as on_update.
+                            // Previously this was a bare call — if user_event() crashed
+                            // (SIGSEGV, etc.), the entire runner process died without recovery,
+                            // causing the GUI app to "disappear" on click.
+                            #[cfg(unix)]
+                            {
+                                let module_name = name.clone();
+                                if let Some(lib_path) = loaded_paths.get(name) {
+                                    set_current_lib_path(lib_path);
+                                }
+                                let state_ptr_wrapper = SendVoidPtr(state_ptr as usize);
+                                let event_ptr_wrapper = SendVoidPtr(&mut event as *mut SDL_Event as usize);
+                                let func_ptr = *f;
+                                let result = execute_with_protection(&module_name, move || {
+                                    let sp = state_ptr_wrapper.0 as *mut std::ffi::c_void;
+                                    let ep = event_ptr_wrapper.0 as *mut SDL_Event;
+                                    func_ptr(sp, ep);
+                                });
+                                if let Err(crash_info) = result {
+                                    eprintln!("{}", generate_crash_report(&crash_info));
+                                    let status = HmrCrashStatus::from_crash(&crash_info, true);
+                                    eprintln!("[Runner] [HMR-STATUS] {}", status.to_json());
+                                    eprintln!("[Runner] on_event crash in module '{}' — continuing", name);
+                                    // Don't kill the runner; skip this module's event and continue
+                                }
+                            }
+                            #[cfg(not(unix))]
+                            {
+                                f(state_ptr, &mut event);
+                            }
                         }
                     }
                 }
@@ -643,112 +684,82 @@ fn main() {
                 "input" => {
                     #[cfg(target_os = "linux")]
                     if parts.len() >= 2 {
-                        // Create SDL events and push them to SDL's event queue
-                        // This ensures they get picked up by SDL_PollEvent and passed to on_event
-                        unsafe {
-                            match parts[1] {
-                                "motion" => {
-                                    if parts.len() >= 4 {
-                                        if let (Ok(x), Ok(y)) =
-                                            (parts[2].parse::<i32>(), parts[3].parse::<i32>())
-                                        {
-                                            // Create SDL_MouseMotionEvent
-                                            let mut event: SDL_Event = std::mem::zeroed();
-                                            let event_ptr = event.data.as_mut_ptr();
-                                            // SDL_MouseMotionEvent layout:
-                                            // type (u32), timestamp (u32), windowID (u32), which (u32), state (u32), x (i32), y (i32), xrel (i32), yrel (i32)
-                                            *(event_ptr as *mut u32) = SDL_MOUSEMOTION;
-                                            *(event_ptr.add(4) as *mut u32) = 0; // timestamp
-                                            *(event_ptr.add(8) as *mut u32) = 0; // windowID
-                                            *(event_ptr.add(12) as *mut u32) = 0; // which (mouse)
-                                            *(event_ptr.add(16) as *mut u32) = 0; // state (button mask)
-                                            *(event_ptr.add(20) as *mut i32) = x; // x
-                                            *(event_ptr.add(24) as *mut i32) = y; // y
-                                            *(event_ptr.add(28) as *mut i32) = 0; // xrel
-                                            *(event_ptr.add(32) as *mut i32) = 0; // yrel
-
-                                            SDL_PushEvent(&mut event);
-                                            eprintln!(
-                                                "[Runner] Pushed SDL mouse motion event: ({}, {})",
-                                                x, y
+                        // Inject input events through the X11 XTest extension.
+                        // SDL_PushEvent only adds events to the SDL event queue but does
+                        // NOT update SDL's internal mouse/keyboard state. Programs using
+                        // SDL_GetMouseState() never see pushed events. XTest injects events
+                        // through the X server so SDL_PumpEvents picks them up naturally
+                        // and updates all internal state.
+                        match parts[1] {
+                            "motion" => {
+                                if parts.len() >= 4 {
+                                    if let (Ok(x), Ok(y)) =
+                                        (parts[2].parse::<i16>(), parts[3].parse::<i16>())
+                                    {
+                                        if let Some(ref conn) = x11_conn {
+                                            // XTest MotionNotify: type=6, detail=1 (absolute coords)
+                                            let _ = x11rb::protocol::xtest::fake_input(
+                                                conn, 6, 1, 0, x11_root, x, y, 0,
                                             );
+                                            let _ = conn.flush();
                                         }
                                     }
                                 }
-                                "button" => {
-                                    if parts.len() >= 6 {
-                                        let type_str = parts[2];
-                                        let btn = parts[3].parse::<u8>().unwrap_or(1);
-                                        let x = parts[4].parse::<i32>().unwrap_or(0);
-                                        let y = parts[5].parse::<i32>().unwrap_or(0);
+                            }
+                            "button" => {
+                                if parts.len() >= 6 {
+                                    let type_str = parts[2];
+                                    let btn = parts[3].parse::<u8>().unwrap_or(1);
+                                    let x = parts[4].parse::<i16>().unwrap_or(0);
+                                    let y = parts[5].parse::<i16>().unwrap_or(0);
 
-                                        let event_type = if type_str == "down" {
-                                            SDL_MOUSEBUTTONDOWN
-                                        } else {
-                                            SDL_MOUSEBUTTONUP
-                                        };
-
-                                        // Create SDL_MouseButtonEvent
-                                        let mut event: SDL_Event = std::mem::zeroed();
-                                        let event_ptr = event.data.as_mut_ptr();
-                                        // SDL_MouseButtonEvent layout:
-                                        // type (u32), timestamp (u32), windowID (u32), which (u32), button (u8), state (u8), clicks (u8), padding (u8), x (i32), y (i32)
-                                        *(event_ptr as *mut u32) = event_type;
-                                        *(event_ptr.add(4) as *mut u32) = 0; // timestamp
-                                        *(event_ptr.add(8) as *mut u32) = 0; // windowID
-                                        *(event_ptr.add(12) as *mut u32) = 0; // which (mouse)
-                                        *(event_ptr.add(16) as *mut u8) = btn; // button
-                                        *(event_ptr.add(17) as *mut u8) =
-                                            if type_str == "down" { 1 } else { 0 }; // state
-                                        *(event_ptr.add(18) as *mut u8) = 1; // clicks
-                                        *(event_ptr.add(20) as *mut i32) = x; // x
-                                        *(event_ptr.add(24) as *mut i32) = y; // y
-
-                                        SDL_PushEvent(&mut event);
-                                        eprintln!(
-                                            "[Runner] Pushed SDL mouse {} event: btn={}, ({}, {})",
-                                            type_str, btn, x, y
+                                    if let Some(ref conn) = x11_conn {
+                                        // Move mouse to position first
+                                        let _ = x11rb::protocol::xtest::fake_input(
+                                            conn, 6, 1, 0, x11_root, x, y, 0,
                                         );
+                                        // XTest ButtonPress=4, ButtonRelease=5
+                                        let x11_type: u8 = if type_str == "down" { 4 } else { 5 };
+                                        let _ = x11rb::protocol::xtest::fake_input(
+                                            conn, x11_type, btn, 0, x11_root, 0, 0, 0,
+                                        );
+                                        let _ = conn.flush();
                                     }
                                 }
-                                "key" => {
-                                    if parts.len() >= 4 {
-                                        let type_str = parts[2];
-                                        let keycode = parts[3].parse::<i32>().unwrap_or(0);
+                            }
+                            "key" => {
+                                if parts.len() >= 4 {
+                                    let type_str = parts[2];
+                                    let keycode = parts[3].parse::<i32>().unwrap_or(0);
 
+                                    // For keyboard events, use SDL_PushEvent since key events
+                                    // are typically processed through on_event, not SDL_GetKeyboardState.
+                                    // XTest requires X11 keycodes which differ from SDL keycodes.
+                                    unsafe {
                                         let event_type = if type_str == "down" {
                                             SDL_KEYDOWN
                                         } else {
                                             SDL_KEYUP
                                         };
 
-                                        // Create SDL_KeyboardEvent
                                         let mut event: SDL_Event = std::mem::zeroed();
                                         let event_ptr = event.data.as_mut_ptr();
-                                        // SDL_KeyboardEvent layout:
-                                        // type (u32), timestamp (u32), windowID (u32), state (u8), repeat (u8), padding (u16), keysym (SDL_Keysym)
-                                        // SDL_Keysym: scancode (u32), sym (i32), mod (u16), unused (u32)
                                         *(event_ptr as *mut u32) = event_type;
                                         *(event_ptr.add(4) as *mut u32) = 0; // timestamp
-                                        *(event_ptr.add(8) as *mut u32) = 0; // windowID
+                                        *(event_ptr.add(8) as *mut u32) = sdl_window_id; // windowID
                                         *(event_ptr.add(12) as *mut u8) =
-                                            if type_str == "down" { 1 } else { 0 }; // state
+                                            if type_str == "down" { 1 } else { 0 };
                                         *(event_ptr.add(13) as *mut u8) = 0; // repeat
-                                                                             // keysym starts at offset 16
                                         *(event_ptr.add(16) as *mut u32) = keycode as u32; // scancode
-                                        *(event_ptr.add(20) as *mut i32) = keycode; // sym (SDLK_*)
+                                        *(event_ptr.add(20) as *mut i32) = keycode; // sym
                                         *(event_ptr.add(24) as *mut u16) = 0; // mod
 
                                         SDL_PushEvent(&mut event);
-                                        eprintln!(
-                                            "[Runner] Pushed SDL key {} event: keycode={}",
-                                            type_str, keycode
-                                        );
                                     }
                                 }
-                                _ => {
-                                    eprintln!("[Runner] Unknown input type: {}", parts[1]);
-                                }
+                            }
+                            _ => {
+                                eprintln!("[Runner] Unknown input type: {}", parts[1]);
                             }
                         }
                     }
@@ -987,6 +998,10 @@ fn main() {
         // For non-split mode (main): Call main's on_render/gui_render.
 
         // Check if GUI module has an independent on_render
+        // BUG FIX: Wrap all on_render calls in crash protection. Previously
+        // a click that corrupted module state would cause an unprotected
+        // on_render to SIGSEGV, killing the runner process ("app disappears
+        // when user clicks a button").
         if let Some(lib) = modules.get("gui") {
             unsafe {
                 // Try new symbol first, then legacy
@@ -1000,10 +1015,8 @@ fn main() {
                 // because core owns application data (x, y, dx, paused, etc.).
                 // Only fall back to GUI's own state if core is not loaded.
                 let render_state = if modules.contains_key("core") && !app_state.raw.is_null() {
-                    // Split mode: render core's state (has animation data)
                     app_state.raw
                 } else {
-                    // GUI-only mode: render GUI's own state
                     module_states
                         .get("gui")
                         .map(|s| s.state_ptr)
@@ -1011,31 +1024,94 @@ fn main() {
                 };
 
                 if let Some(f) = render_func {
-                    f(render_state);
+                    #[cfg(unix)]
+                    {
+                        if let Some(lib_path) = loaded_paths.get("gui") {
+                            set_current_lib_path(lib_path);
+                        }
+                        let state_ptr_wrapper = SendVoidPtr(render_state as usize);
+                        let func_ptr = *f;
+                        let result = execute_with_protection("gui_render", move || {
+                            let sp = state_ptr_wrapper.0 as *mut std::ffi::c_void;
+                            func_ptr(sp);
+                        });
+                        if let Err(crash_info) = result {
+                            eprintln!("{}", generate_crash_report(&crash_info));
+                            let status = HmrCrashStatus::from_crash(&crash_info, true);
+                            eprintln!("[Runner] [HMR-STATUS] {}", status.to_json());
+                            eprintln!("[Runner] on_render crash in module 'gui' — continuing");
+                        }
+                    }
+                    #[cfg(not(unix))]
+                    {
+                        f(render_state);
+                    }
                 }
             }
         } else if let Some(lib) = modules.get("core") {
             unsafe {
-                // Core may export on_render that calls ptr_gui_render internally
                 let render_func: Result<Symbol<unsafe extern "C" fn(*mut c_void)>, _> =
                     lib.get(b"on_render");
                 if let Ok(f) = render_func {
-                    f(app_state.raw);
+                    #[cfg(unix)]
+                    {
+                        if let Some(lib_path) = loaded_paths.get("core") {
+                            set_current_lib_path(lib_path);
+                        }
+                        let state_ptr_wrapper = SendVoidPtr(app_state.raw as usize);
+                        let func_ptr = *f;
+                        let result = execute_with_protection("core_render", move || {
+                            let sp = state_ptr_wrapper.0 as *mut std::ffi::c_void;
+                            func_ptr(sp);
+                        });
+                        if let Err(crash_info) = result {
+                            eprintln!("{}", generate_crash_report(&crash_info));
+                            let status = HmrCrashStatus::from_crash(&crash_info, true);
+                            eprintln!("[Runner] [HMR-STATUS] {}", status.to_json());
+                            eprintln!("[Runner] on_render crash in module 'core' — continuing");
+                        }
+                    }
+                    #[cfg(not(unix))]
+                    {
+                        f(app_state.raw);
+                    }
                 }
-                // If core doesn't have on_render, that's OK - core's on_update handles rendering
             }
         } else if let Some(lib) = modules.get("main") {
-            // Fallback for non-split mode: call main's render
             unsafe {
                 let render_func: Result<Symbol<unsafe extern "C" fn(*mut c_void)>, _> =
                     lib.get(b"on_render");
                 let gui_render_func: Result<Symbol<unsafe extern "C" fn(*mut c_void)>, _> =
                     lib.get(b"gui_render");
 
-                if let Ok(f) = render_func {
-                    f(app_state.raw);
-                } else if let Ok(f) = gui_render_func {
-                    f(app_state.raw);
+                let func_to_call: Option<Symbol<unsafe extern "C" fn(*mut c_void)>> =
+                    if let Ok(f) = render_func { Some(f) }
+                    else if let Ok(f) = gui_render_func { Some(f) }
+                    else { None };
+
+                if let Some(f) = func_to_call {
+                    #[cfg(unix)]
+                    {
+                        if let Some(lib_path) = loaded_paths.get("main") {
+                            set_current_lib_path(lib_path);
+                        }
+                        let state_ptr_wrapper = SendVoidPtr(app_state.raw as usize);
+                        let func_ptr = *f;
+                        let result = execute_with_protection("main_render", move || {
+                            let sp = state_ptr_wrapper.0 as *mut std::ffi::c_void;
+                            func_ptr(sp);
+                        });
+                        if let Err(crash_info) = result {
+                            eprintln!("{}", generate_crash_report(&crash_info));
+                            let status = HmrCrashStatus::from_crash(&crash_info, true);
+                            eprintln!("[Runner] [HMR-STATUS] {}", status.to_json());
+                            eprintln!("[Runner] on_render crash in module 'main' — continuing");
+                        }
+                    }
+                    #[cfg(not(unix))]
+                    {
+                        f(app_state.raw);
+                    }
                 }
             }
         }
