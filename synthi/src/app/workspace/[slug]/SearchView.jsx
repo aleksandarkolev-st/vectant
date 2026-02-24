@@ -9,16 +9,16 @@ import { selectTreeOnRight } from "@/redux/uiSlice";
 import { perfMeasureToConsole } from "@/services/perfMarkers";
 
 const Section = ({ children, className = "" }) => (
-  <div className={`mx-2 mb-2 rounded-lg bg-white/[0.02] border border-white/[0.04] ${className}`}>
+  <div className={`mx-2 mb-2 rounded-lg border ${className}`} style={{ background: 'var(--bg-surface)', borderColor: 'var(--border-subtle)' }}>
     {children}
   </div>
 );
 
 const SectionHead = ({ label, count, actions }) => (
   <div className="flex items-center gap-2 px-3 py-2">
-    <span className="text-[11px] font-medium text-[#d4d4d8]">{label}</span>
+    <span className="text-[11px] font-medium" style={{ color: 'var(--text-primary)' }}>{label}</span>
     {count != null && count > 0 && (
-      <span className="text-[10px] text-[#71717a] bg-white/[0.04] rounded-full px-1.5 py-0.5 min-w-[18px] text-center font-medium">{count}</span>
+      <span className="text-[10px] rounded-full px-1.5 py-0.5 min-w-[18px] text-center font-medium" style={{ color: 'var(--text-muted)', background: 'color-mix(in srgb, var(--text-primary) 8%, transparent)' }}>{count}</span>
     )}
     {actions && <div className="ml-auto flex items-center gap-1">{actions}</div>}
   </div>
@@ -116,7 +116,8 @@ export default function SearchView({ slug, onToggleOrientation }) {
         return (
           <mark
             key={`hl-${index}`}
-            className="bg-teal-500/20 text-teal-200 rounded-sm px-0.5"
+            className="rounded-sm px-0.5"
+            style={{ background: 'color-mix(in srgb, var(--accent-secondary) 25%, transparent)', color: 'var(--accent-tertiary)' }}
           >
             {part}
           </mark>
@@ -130,15 +131,16 @@ export default function SearchView({ slug, onToggleOrientation }) {
     <div className="flex flex-col h-full w-full overflow-hidden select-none">
       {/* Header strip with gradient accent */}
       <div className="flex-shrink-0">
-        <div className="h-[2px]" style={{ background: "linear-gradient(90deg, #14b8a6, #22c55e, #38bdf8, transparent)" }} />
+        <div className="h-[2px]" style={{ background: 'linear-gradient(90deg, var(--accent-primary), var(--accent-secondary), var(--accent-tertiary), transparent)' }} />
         <div className={`flex items-center gap-2 px-3 py-2 ${isRightSide ? "flex-row-reverse" : ""}`}>
-          <Search size={14} className="text-teal-400 flex-shrink-0" />
-          <span className="text-sm font-semibold text-[#e4e4e7]">Search</span>
+          <Search size={14} className="flex-shrink-0" style={{ color: 'var(--accent-secondary)' }} />
+          <span className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>Search</span>
           <div className="ml-auto flex items-center gap-0.5">
             <IconBtn
               onClick={onToggleOrientation}
               title={isRightSide ? "Move to left" : "Move to right"}
-              className="text-[#71717a] hover:text-[#d4d4d8] hover:bg-white/[0.06]"
+              className="transition-colors"
+              style={{ color: 'var(--text-muted)' }}
             >
               {isRightSide ? (
                 <PanelLeftClose className="w-3.5 h-3.5" strokeWidth={1.5} />
@@ -155,15 +157,16 @@ export default function SearchView({ slug, onToggleOrientation }) {
         <Section>
           <div className="px-3 py-2">
             <div className="relative">
-              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-[#71717a]" />
+              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5" style={{ color: 'var(--text-muted)' }} />
               <input
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
                 placeholder="Search in files"
-                className="w-full h-8 rounded-lg border border-white/[0.06] bg-white/[0.03] pl-8 pr-2 text-[12px] text-[#e4e4e7] placeholder:text-[#52525b] outline-none focus:border-teal-500/50 transition-colors"
+                className="w-full h-8 rounded-lg border pl-8 pr-2 text-[12px] outline-none transition-colors"
+                style={{ color: 'var(--text-primary)', background: 'var(--bg-elevated)', borderColor: 'var(--border-medium)', '--tw-placeholder-color': 'var(--text-dim)' }}
               />
             </div>
-            <div className="mt-2 text-[11px] text-[#71717a]">
+            <div className="mt-2 text-[11px]" style={{ color: 'var(--text-muted)' }}>
               {isSearching ? "Searching..." : query.trim() ? `${results.length} file(s) with matches` : ""}
             </div>
           </div>
@@ -171,7 +174,7 @@ export default function SearchView({ slug, onToggleOrientation }) {
 
         {query.trim() && !isSearching && results.length === 0 && (
           <Section>
-            <div className="px-3 py-2 text-[11px] text-[#71717a]">No results.</div>
+            <div className="px-3 py-2 text-[11px]" style={{ color: 'var(--text-muted)' }}>No results.</div>
           </Section>
         )}
 
@@ -184,23 +187,24 @@ export default function SearchView({ slug, onToggleOrientation }) {
                 const isOpen = expanded.has(filePath);
 
                 return (
-                  <div key={filePath} className="border-t border-white/[0.04]">
+                  <div key={filePath} className="border-t" style={{ borderColor: 'var(--border-subtle)' }}>
                     <button
                       type="button"
                       onClick={() => toggleExpanded(filePath)}
-                      className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-white/[0.02] transition-colors"
+                      className="w-full flex items-center gap-2 px-3 py-2 text-left transition-colors"
+                      style={{ ':hover': undefined }}
                       title={filePath}
                     >
                       {isOpen ? (
-                        <ChevronDown className="w-4 h-4 text-[#71717a]" />
+                        <ChevronDown className="w-4 h-4" style={{ color: 'var(--text-muted)' }} />
                       ) : (
-                        <ChevronRight className="w-4 h-4 text-[#71717a]" />
+                        <ChevronRight className="w-4 h-4" style={{ color: 'var(--text-muted)' }} />
                       )}
                       <div className="flex-1 min-w-0">
-                        <div className="text-[12px] text-[#e4e4e7] truncate">{r.file.name}</div>
-                        <div className="text-[10px] text-[#71717a] truncate">{filePath}</div>
+                        <div className="text-[12px] truncate" style={{ color: 'var(--text-primary)' }}>{r.file.name}</div>
+                        <div className="text-[10px] truncate" style={{ color: 'var(--text-muted)' }}>{filePath}</div>
                       </div>
-                      <div className="text-[10px] text-[#a1a1aa] bg-white/[0.04] rounded-full px-2 py-0.5">{r.matchCount}</div>
+                      <div className="text-[10px] rounded-full px-2 py-0.5" style={{ color: 'var(--text-secondary)', background: 'color-mix(in srgb, var(--text-primary) 8%, transparent)' }}>{r.matchCount}</div>
                     </button>
 
                     {isOpen && (
@@ -209,12 +213,13 @@ export default function SearchView({ slug, onToggleOrientation }) {
                           <button
                             key={`${filePath}:${m.lineNumber}`}
                             type="button"
-                            className="w-full px-8 py-1.5 text-left text-[11px] text-[#e4e4e7] hover:bg-white/[0.02] transition-colors"
+                            className="w-full px-8 py-1.5 text-left text-[11px] transition-colors hover:opacity-80"
+                            style={{ color: 'var(--text-primary)' }}
                             onClick={() => openFile(r.file)}
                             title={`Line ${m.lineNumber}`}
                           >
-                            <span className="inline-block w-14 text-[#71717a]">{m.lineNumber}</span>
-                            <span className="font-mono text-[#d4d4d8]">{renderHighlightedPreview(m.preview, query)}</span>
+                            <span className="inline-block w-14" style={{ color: 'var(--text-muted)' }}>{m.lineNumber}</span>
+                            <span className="font-mono" style={{ color: 'var(--text-primary)' }}>{renderHighlightedPreview(m.preview, query)}</span>
                           </button>
                         ))}
                       </div>

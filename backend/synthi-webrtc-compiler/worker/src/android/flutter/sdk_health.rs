@@ -72,17 +72,21 @@ pub async fn check_flutter_sdk() -> Result<FlutterSdkHealth> {
     }
 
     // Check Android SDK
-    if let Ok(sdk_path) = std::env::var("ANDROID_SDK_ROOT")
-        .or_else(|_| std::env::var("ANDROID_HOME"))
+    if let Ok(sdk_path) =
+        std::env::var("ANDROID_SDK_ROOT").or_else(|_| std::env::var("ANDROID_HOME"))
     {
         let sdk = PathBuf::from(&sdk_path);
         if sdk.exists() {
             health.android_sdk_available = true;
         } else {
-            health.issues.push(format!("Android SDK path does not exist: {}", sdk_path));
+            health
+                .issues
+                .push(format!("Android SDK path does not exist: {}", sdk_path));
         }
     } else {
-        health.issues.push("ANDROID_SDK_ROOT or ANDROID_HOME not set".to_string());
+        health
+            .issues
+            .push("ANDROID_SDK_ROOT or ANDROID_HOME not set".to_string());
     }
 
     // Run flutter doctor to check for additional issues
@@ -129,7 +133,7 @@ async fn find_flutter_binary() -> Result<(PathBuf, Option<String>)> {
         "/opt/flutter/bin/flutter",
         "/usr/local/flutter/bin/flutter",
         "/home/worker/flutter/bin/flutter",
-        "/home/sasho/flutter/bin/flutter",  // Common dev machine location
+        "/home/sasho/flutter/bin/flutter", // Common dev machine location
     ];
 
     for path_str in &common_paths {
@@ -193,10 +197,7 @@ async fn get_flutter_version(flutter_bin: &PathBuf) -> Result<String> {
     }
 
     // Try without --machine flag
-    let output = Command::new(flutter_bin)
-        .arg("--version")
-        .output()
-        .await?;
+    let output = Command::new(flutter_bin).arg("--version").output().await?;
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     // Parse "Flutter X.Y.Z" from output
@@ -238,7 +239,12 @@ async fn get_dart_version() -> Result<String> {
             }
             // Try to find version-like string
             for part in &parts {
-                if part.chars().next().map(|c| c.is_ascii_digit()).unwrap_or(false) {
+                if part
+                    .chars()
+                    .next()
+                    .map(|c| c.is_ascii_digit())
+                    .unwrap_or(false)
+                {
                     return Ok(part.to_string());
                 }
             }
@@ -258,7 +264,7 @@ async fn check_java() -> Result<String> {
 
     // Java version is printed to stderr
     let stderr = String::from_utf8_lossy(&output.stderr);
-    
+
     // Parse version from output like: openjdk version "17.0.1" or java version "1.8.0_xxx"
     for line in stderr.lines() {
         if line.contains("version") {
@@ -290,10 +296,13 @@ async fn run_flutter_doctor() -> Result<Vec<String>> {
     let mut in_issue_section = false;
     for line in stdout.lines() {
         let trimmed = line.trim();
-        
+
         // Lines starting with [✗] or [!] indicate issues
-        if trimmed.starts_with("[✗]") || trimmed.starts_with("[!]") || 
-           trimmed.starts_with("[X]") || trimmed.starts_with("[x]") {
+        if trimmed.starts_with("[✗]")
+            || trimmed.starts_with("[!]")
+            || trimmed.starts_with("[X]")
+            || trimmed.starts_with("[x]")
+        {
             in_issue_section = true;
             let issue = trimmed
                 .trim_start_matches("[✗]")

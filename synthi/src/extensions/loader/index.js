@@ -20,3 +20,9 @@ export {
   clearAllExtensions,
   parseVSIX,
 } from './ExtensionInstaller.js';
+
+export {
+  getContributedThemes,
+  registerExtensionThemes,
+  unregisterExtensionThemes,
+} from './ThemeRegistrar.js';

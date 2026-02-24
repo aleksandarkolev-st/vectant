@@ -1006,7 +1006,19 @@ class CollabClient {
     if (!entry._seeded) {
       entry._seeded = false;
     }
-<<<<<<< HEAD
+
+    // Cancel any pending doSeed timer/observer from a PREVIOUS attachEditor
+    // call (e.g. React strict-mode double-fire, session hydration re-run).
+    // Without this, the old timeout can fire into the new binding context
+    // and double-insert into ytext.
+    if (entry._seedTimer) {
+      clearTimeout(entry._seedTimer);
+      entry._seedTimer = null;
+    }
+    if (entry._seedObserver) {
+      try { entry.ytext.unobserve(entry._seedObserver); } catch (_) {}
+      entry._seedObserver = null;
+    }
     
     // Flag: set to true once the MonacoTextBinding is created below.
     // When the binding exists, Yjs → model sync is handled by the binding's
@@ -1015,8 +1027,6 @@ class CollabClient {
     // event and could overwrite user edits that arrived between mount and
     // the provider sync event.
     let bindingEstablished = false;
-    
-=======
 
     // ── Seed Strategy ────────────────────────────────────────────────
     // The server's bindState is the sole authority for initial seeding
@@ -1034,7 +1044,6 @@ class CollabClient {
     // ─────────────────────────────────────────────────────────────────
     const SEED_WAIT_MS = 1500; // allow server bindState to complete
 
->>>>>>> 4333b750f3b10dc22a93381c88e9ed2cbb0e6b4c
     const doSeed = () => {
       // Only seed once per doc lifecycle
       if (entry._seeded) return;
@@ -1090,8 +1099,14 @@ class CollabClient {
 
         const content = entry.ytext.toString();
         if (content.length > 0) {
-          // Server seeded while we waited — use it
-          if (model.getValue() !== content) {
+          // Server seeded while we waited — use it.
+          // If the MonacoBinding is already established, the binding's
+          // _yObserver has already (or will) apply the ytext delta to the
+          // model.  Calling model.setValue() here would reset the model
+          // just before the binding applies its INSERT delta — doubling
+          // the text.  Only update the model manually when there is no
+          // binding to do it for us.
+          if (!bindingEstablished && model.getValue() !== content) {
             model.setValue(content);
           }
         } else {
@@ -1102,18 +1117,12 @@ class CollabClient {
             }
             entry.ytext.insert(0, providedContent);
           });
-          if (model.getValue() !== providedContent) {
+          // The transact above already inserted into ytext; the _yObserver
+          // will sync the model.  Only call model.setValue() when the binding
+          // hasn't been established yet (the observer isn't active).
+          if (!bindingEstablished && model.getValue() !== providedContent) {
             model.setValue(providedContent);
           }
-<<<<<<< HEAD
-          entry.ytext.insert(0, providedContent);
-        });
-        // Writing to Yjs triggers _yObserver which updates the model.
-        // Only call model.setValue() if the binding isn't established yet.
-        if (!bindingEstablished && model.getValue() !== providedContent) {
-          model.setValue(providedContent);
-=======
->>>>>>> 4333b750f3b10dc22a93381c88e9ed2cbb0e6b4c
         }
         entry._seeded = true;
       };
@@ -1123,17 +1132,17 @@ class CollabClient {
         if (entry.ytext.length > 0) commit();
       };
       entry.ytext.observe(seedObserver);
+      // Store on entry so a subsequent attachEditor call can cancel them
+      entry._seedObserver = seedObserver;
 
       // Fallback timeout for truly new documents
       seedTimer = setTimeout(commit, SEED_WAIT_MS);
+      entry._seedTimer = seedTimer;
     };
-<<<<<<< HEAD
     
     // Normalize helper for comparing content from different sources
     // (API may include trailing newlines that disk content lacks, etc.)
     const normalizeContent = (s) => s ? s.replace(/\r\n/g, '\n').replace(/\s+$/, '') : '';
-=======
->>>>>>> 4333b750f3b10dc22a93381c88e9ed2cbb0e6b4c
 
     if (isSynced) {
       // Provider already synced, safe to check now
@@ -1144,42 +1153,36 @@ class CollabClient {
         }
         entry._seeded = true;
       } else if (hasProvidedContent && !entry._seeded) {
-        // Set model for display first, then wait for server
-        if (model.getValue() !== providedContent) {
-          model.setValue(providedContent);
+        // Do NOT set model content optimistically here.  The MonacoBinding
+        // (established below) will apply the ytext delta as an INSERT at
+        // position 0.  If the model already has content, the insert lands
+        // ON TOP of it — doubling the text.  Leave the model empty so the
+        // binding applies the delta cleanly.
+        if (model.getValue().length > 0) {
+          model.setValue('');
         }
         doSeed();
       }
     } else {
-<<<<<<< HEAD
       // Wait for sync before seeding to avoid racing with server content.
-      // CRITICAL: Clear the model if it was pre-populated by
-      // @monaco-editor/react's defaultValue.  Without this, the Yjs sync
-      // delta (which inserts the full file content) gets applied ON TOP of
-      // the existing model content — causing the text to appear doubled or
-      // tripled after repeated tab switches.  The user sees the editor
-      // blank for a brief moment (<200ms typical) which is preferable to
-      // content duplication.
+      // CRITICAL: Keep the model EMPTY until the Yjs sync delta arrives.
+      // If the model has content when the sync delta is applied, the delta
+      // (a full insert) would land ON TOP of the existing text — doubling
+      // or tripling it.  The user sees a blank editor for a brief moment
+      // (<200ms typical) which is preferable to content duplication.
+      //
+      // NOTE: A previous version filled the model "optimistically" after
+      // clearing it, but that re-created the exact condition the clear was
+      // trying to prevent.  Now we leave it empty and let the Yjs sync
+      // (or doSeed fallback) populate it authoritatively.
       if (model.getValue().length > 0) {
         model.setValue('');
       }
-=======
-      // Wait for sync before checking
->>>>>>> 4333b750f3b10dc22a93381c88e9ed2cbb0e6b4c
       const syncHandler = () => {
         entry.provider.off('sync', syncHandler);
         doSeed();
       };
       entry.provider.on('sync', syncHandler);
-<<<<<<< HEAD
-=======
-
-      // Set model content optimistically so user sees something
-      // but don't write to ytext yet
-      if (model.getValue() !== providedContent && hasProvidedContent) {
-        model.setValue(providedContent);
-      }
->>>>>>> 4333b750f3b10dc22a93381c88e9ed2cbb0e6b4c
     }
     
     // Now set the model on the editor if different

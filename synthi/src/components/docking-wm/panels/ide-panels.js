@@ -22,6 +22,8 @@ import {
   ExtensionsPanelWrapper,
   OutputPanelWrapper,
   PreviewPanelWrapper,
+  SettingsPanelWrapper,
+  ThemeEditorPanelWrapper,
 } from './panel-wrappers';
 
 // ────────────────────────────────────────────────────────
@@ -40,6 +42,7 @@ export const IDE_PANEL = Object.freeze({
   OUTPUT:     'output',
   PREVIEW:    'preview',
   SETTINGS:   'settings',
+  THEME_EDITOR: 'theme-editor',
 });
 
 // ────────────────────────────────────────────────────────
@@ -161,6 +164,26 @@ export const IDE_PANEL_DEFINITIONS = [
     component: PreviewPanelWrapper,
     allowMultiple: false,
     defaultLocation: 'center',
+    closable: true,
+  },
+  {
+    panelType: IDE_PANEL.SETTINGS,
+    displayName: 'Settings',
+    icon: 'settings',
+    category: 'sidebar',
+    component: SettingsPanelWrapper,
+    allowMultiple: false,
+    defaultLocation: 'left',
+    closable: true,
+  },
+  {
+    panelType: IDE_PANEL.THEME_EDITOR,
+    displayName: 'Theme Editor',
+    icon: 'palette',
+    category: 'sidebar',
+    component: ThemeEditorPanelWrapper,
+    allowMultiple: false,
+    defaultLocation: 'right',
     closable: true,
   },
 ];

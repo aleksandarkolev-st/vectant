@@ -106,14 +106,20 @@ pub async fn diagnose_android_scaffold(project_root: &Path) -> DiagnosticReport 
     if let Ok(content) = fs::read_to_string(&wrapper_path).await {
         if let Some(version) = extract_gradle_version(&content) {
             if !is_gradle_version_sufficient(&version, MIN_GRADLE_VERSION) {
-                actions.push(MaintenanceAction::UpgradeGradleWrapper(MIN_GRADLE_VERSION.to_string()));
+                actions.push(MaintenanceAction::UpgradeGradleWrapper(
+                    MIN_GRADLE_VERSION.to_string(),
+                ));
             }
         } else {
             // Can't parse version or invalid file
-            actions.push(MaintenanceAction::UpgradeGradleWrapper(MIN_GRADLE_VERSION.to_string()));
+            actions.push(MaintenanceAction::UpgradeGradleWrapper(
+                MIN_GRADLE_VERSION.to_string(),
+            ));
         }
     } else {
-        actions.push(MaintenanceAction::UpgradeGradleWrapper(MIN_GRADLE_VERSION.to_string()));
+        actions.push(MaintenanceAction::UpgradeGradleWrapper(
+            MIN_GRADLE_VERSION.to_string(),
+        ));
     }
 
     // Check if gradle.properties has caching enabled
@@ -170,10 +176,10 @@ fn is_gradle_version_sufficient(gradle_version: &str, min_version: &str) -> bool
         let patch = parts.get(2).and_then(|s| s.parse().ok()).unwrap_or(0);
         (major, minor, patch)
     };
-    
+
     let current = parse_version(gradle_version);
     let required = parse_version(min_version);
-    
+
     current >= required
 }
 
@@ -205,7 +211,7 @@ pub async fn generate_android_scaffold(
                 // Since this regenerates everything, we can break early or continue.
                 // Depending on implementation, Scaffold might miss things if not comprehensive.
                 // But our full scaffold should be comprehensive.
-                break; 
+                break;
             }
             MaintenanceAction::UpdateManifestEmbedding => {
                 apply_patch_manifest(&android_dir, app_id, project_name).await?;
@@ -237,16 +243,16 @@ pub async fn generate_android_scaffold(
 // --- ATOMIC REMEDIATION IMPLEMENTATIONS ---
 
 async fn apply_full_scaffold(
-    project_root: &Path, 
-    app_id: &str, 
-    project_name: &str, 
-    flutter_sdk_path: Option<&str>
+    project_root: &Path,
+    app_id: &str,
+    project_name: &str,
+    flutter_sdk_path: Option<&str>,
 ) -> Result<()> {
     // This uses the "generators" to create the full structure from scratch
     // Note: We REMOVED the fs::remove_dir_all call.
-    
+
     let android_dir = project_root.join("android");
-    
+
     // Create directory structure
     fs::create_dir_all(android_dir.join("app/src/main/java")).await?;
     fs::create_dir_all(android_dir.join("app/src/main/res/drawable")).await?;
@@ -258,11 +264,11 @@ async fn apply_full_scaffold(
     fs::create_dir_all(android_dir.join("app/src/profile/java")).await?;
     fs::create_dir_all(android_dir.join("app/src/profile/kotlin")).await?;
     fs::create_dir_all(android_dir.join("gradle/wrapper")).await?;
-    
+
     let java_package_path = app_id.replace('.', "/");
     let main_activity_dir = android_dir.join(format!("app/src/main/java/{}", java_package_path));
     fs::create_dir_all(&main_activity_dir).await?;
-    
+
     // Call generators
     generate_settings_gradle(&android_dir).await?;
     generate_root_build_gradle(&android_dir).await?;
@@ -278,7 +284,7 @@ async fn apply_full_scaffold(
     generate_styles(&android_dir, project_name).await?;
     generate_launch_background(&android_dir).await?;
     generate_ic_launcher(&android_dir).await?;
-    
+
     if let Some(sdk) = flutter_sdk_path {
         copy_gradle_wrapper_jar(&android_dir, sdk).await?;
     }
@@ -288,7 +294,7 @@ async fn apply_full_scaffold(
 
 async fn apply_patch_manifest(android_dir: &Path, app_id: &str, project_name: &str) -> Result<()> {
     let manifest_path = android_dir.join("app/src/main/AndroidManifest.xml");
-    
+
     // Fallback: if manifest doesn't exist, generate it
     if !manifest_path.exists() {
         return generate_android_manifest(android_dir, app_id, project_name).await;
@@ -301,7 +307,9 @@ async fn apply_patch_manifest(android_dir: &Path, app_id: &str, project_name: &s
     // 1. Check if flutterEmbedding exists
     if new_content.contains("flutterEmbedding") {
         // Update value to 2
-        let re = Regex::new(r#"(<meta-data[^>]*android:name="flutterEmbedding"[^>]*android:value=")[^"]*(")"#)?;
+        let re = Regex::new(
+            r#"(<meta-data[^>]*android:name="flutterEmbedding"[^>]*android:value=")[^"]*(")"#,
+        )?;
         new_content = re.replace(&new_content, "${1}2${2}").to_string();
     } else {
         // Prepare tag to insert
@@ -309,21 +317,24 @@ async fn apply_patch_manifest(android_dir: &Path, app_id: &str, project_name: &s
             <meta-data
               android:name="flutterEmbedding"
               android:value="2" />"#;
-        
+
         // Find <application> tag start
         // We look for the closing bracket > of <application ... >
         let re_app = Regex::new(r"(<application[^>]*>)")?;
         if re_app.is_match(&new_content) {
-             new_content = re_app.replace(&new_content, format!("$1{}", embedding_tag).as_str()).to_string();
+            new_content = re_app
+                .replace(&new_content, format!("$1{}", embedding_tag).as_str())
+                .to_string();
         } else {
-             // Malformed XML or no application tag? Backup and regen.
-             backup_and_regenerate(&manifest_path, || {
-                 generate_android_manifest(android_dir, app_id, project_name)
-             }).await?;
-             return Ok(());
+            // Malformed XML or no application tag? Backup and regen.
+            backup_and_regenerate(&manifest_path, || {
+                generate_android_manifest(android_dir, app_id, project_name)
+            })
+            .await?;
+            return Ok(());
         }
     }
-    
+
     if new_content != content {
         fs::write(&manifest_path, new_content).await?;
     }
@@ -335,9 +346,7 @@ async fn apply_patch_settings_gradle(android_dir: &Path) -> Result<()> {
     // Since implementing a regex patch for settings.gradle structure is complex (mix of GroovyDSL),
     // and maintaining the old structure isn't worth it if it's missing pluginManagement,
     // we backup and regenerate.
-    backup_and_regenerate(&settings_path, || {
-        generate_settings_gradle(android_dir)
-    }).await
+    backup_and_regenerate(&settings_path, || generate_settings_gradle(android_dir)).await
 }
 
 async fn apply_upgrade_gradle_wrapper(android_dir: &Path, version: &str) -> Result<()> {
@@ -345,14 +354,16 @@ async fn apply_upgrade_gradle_wrapper(android_dir: &Path, version: &str) -> Resu
     if !wrapper_path.exists() {
         return generate_gradle_wrapper(android_dir).await;
     }
-    
+
     let content = fs::read_to_string(&wrapper_path).await?;
     // Replace distributionUrl=...
     // Pattern: distributionUrl=https\://services.gradle.org/distributions/gradle-X.Y.Z-all.zip
     let re = Regex::new(r"(distributionUrl=.*gradle-)([\d\.]+)(-.*zip)")?;
     // We expect version to include minor/patch if needed? MIN_GRADLE_VERSION is "8.5"
-    let new_content = re.replace(&content, format!("${{1}}{}${{3}}", version).as_str()).to_string();
-    
+    let new_content = re
+        .replace(&content, format!("${{1}}{}${{3}}", version).as_str())
+        .to_string();
+
     if new_content != content {
         fs::write(&wrapper_path, new_content).await?;
     }
@@ -364,48 +375,52 @@ async fn apply_enable_gradle_caching(android_dir: &Path) -> Result<()> {
     if !props_path.exists() {
         return generate_gradle_properties(android_dir).await;
     }
-    
+
     let content = fs::read_to_string(&props_path).await?;
     let mut new_content = String::with_capacity(content.len() + 50);
     new_content.push_str(&content);
 
     // If not exists, append. If exists but false, replace (regex).
     if content.contains("org.gradle.caching") {
-         let re = Regex::new(r"(org\.gradle\.caching\s*=\s*)(.*)")?;
-         new_content = re.replace(&content, "${1}true").to_string();
+        let re = Regex::new(r"(org\.gradle\.caching\s*=\s*)(.*)")?;
+        new_content = re.replace(&content, "${1}true").to_string();
     } else {
-         if !new_content.ends_with('\n') {
-             new_content.push('\n');
-         }
-         new_content.push_str("org.gradle.caching=true\n");
+        if !new_content.ends_with('\n') {
+            new_content.push('\n');
+        }
+        new_content.push_str("org.gradle.caching=true\n");
     }
 
     if new_content != content {
-         fs::write(&props_path, new_content).await?;
+        fs::write(&props_path, new_content).await?;
     }
     Ok(())
 }
 
 async fn apply_fix_gradlew(android_dir: &Path) -> Result<()> {
     // Regenerate helpful scripts, overwriting is generally safe here as they are standard boilerplate
-    // but strict "Intelligence" would parse it. 
+    // but strict "Intelligence" would parse it.
     // Given the complexity of shell scripts, "Backup and Regen" is the safer "surgical" fall back.
-    backup_and_regenerate(&android_dir.join("gradlew"), || generate_gradlew(android_dir)).await
+    backup_and_regenerate(&android_dir.join("gradlew"), || {
+        generate_gradlew(android_dir)
+    })
+    .await
 }
-
 
 // --- HELPER UTILS ---
 
-async fn backup_and_regenerate<F, Fut>(path: &Path, generator: F) -> Result<()> 
-where 
+async fn backup_and_regenerate<F, Fut>(path: &Path, generator: F) -> Result<()>
+where
     F: FnOnce() -> Fut,
-    Fut: std::future::Future<Output = Result<()>>
+    Fut: std::future::Future<Output = Result<()>>,
 {
     if path.exists() {
         let backup_path = path.with_extension("bak");
-        // Don't overwrite existing backup blindly? or do we? 
+        // Don't overwrite existing backup blindly? or do we?
         // Let's assume we want to save the current state.
-        fs::rename(path, &backup_path).await.context("Failed to backup file")?;
+        fs::rename(path, &backup_path)
+            .await
+            .context("Failed to backup file")?;
     }
     generator().await
 }
@@ -442,10 +457,13 @@ plugins {
 
 include ":app"
 "#;
-    
-    fs::write(android_dir.join("settings.gradle"), normalize_line_endings(content))
-        .await
-        .context("Failed to write settings.gradle")?;
+
+    fs::write(
+        android_dir.join("settings.gradle"),
+        normalize_line_endings(content),
+    )
+    .await
+    .context("Failed to write settings.gradle")?;
     Ok(())
 }
 
@@ -469,15 +487,19 @@ tasks.register("clean", Delete) {
     delete rootProject.buildDir
 }
 "#;
-    
-    fs::write(android_dir.join("build.gradle"), normalize_line_endings(content))
-        .await
-        .context("Failed to write build.gradle")?;
+
+    fs::write(
+        android_dir.join("build.gradle"),
+        normalize_line_endings(content),
+    )
+    .await
+    .context("Failed to write build.gradle")?;
     Ok(())
 }
 
 async fn generate_app_build_gradle(android_dir: &Path, app_id: &str) -> Result<()> {
-    let content = format!(r#"plugins {{
+    let content = format!(
+        r#"plugins {{
     id "com.android.application"
     id "kotlin-android"
     id "dev.flutter.flutter-gradle-plugin"
@@ -515,11 +537,15 @@ android {{
 flutter {{
     source "../.."
 }}
-"#);
-    
-    fs::write(android_dir.join("app/build.gradle"), normalize_line_endings(&content))
-        .await
-        .context("Failed to write app/build.gradle")?;
+"#
+    );
+
+    fs::write(
+        android_dir.join("app/build.gradle"),
+        normalize_line_endings(&content),
+    )
+    .await
+    .context("Failed to write app/build.gradle")?;
     Ok(())
 }
 
@@ -532,30 +558,43 @@ org.gradle.daemon=true
 org.gradle.parallel=true
 org.gradle.configureondemand=true
 "#;
-    
-    fs::write(android_dir.join("gradle.properties"), normalize_line_endings(content))
-        .await
-        .context("Failed to write gradle.properties")?;
+
+    fs::write(
+        android_dir.join("gradle.properties"),
+        normalize_line_endings(content),
+    )
+    .await
+    .context("Failed to write gradle.properties")?;
     Ok(())
 }
 
 async fn generate_main_activity(activity_dir: &Path, app_id: &str) -> Result<()> {
-    let content = format!(r#"package {app_id}
+    let content = format!(
+        r#"package {app_id}
 
 import io.flutter.embedding.android.FlutterActivity
 
 class MainActivity: FlutterActivity()
-"#);
-    
-    fs::write(activity_dir.join("MainActivity.kt"), normalize_line_endings(&content))
-        .await
-        .context("Failed to write MainActivity.kt")?;
+"#
+    );
+
+    fs::write(
+        activity_dir.join("MainActivity.kt"),
+        normalize_line_endings(&content),
+    )
+    .await
+    .context("Failed to write MainActivity.kt")?;
     Ok(())
 }
 
-async fn generate_android_manifest(android_dir: &Path, _app_id: &str, project_name: &str) -> Result<()> {
+async fn generate_android_manifest(
+    android_dir: &Path,
+    _app_id: &str,
+    project_name: &str,
+) -> Result<()> {
     // Note: Intentionally kept simple for regeneration
-    let content = format!(r#"<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    let content = format!(
+        r#"<manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <application
         android:label="{project_name}"
         android:name="${{applicationName}}"
@@ -589,11 +628,15 @@ async fn generate_android_manifest(android_dir: &Path, _app_id: &str, project_na
         </intent>
     </queries>
 </manifest>
-"#);
-    
-    fs::write(android_dir.join("app/src/main/AndroidManifest.xml"), normalize_line_endings(&content))
-        .await
-        .context("Failed to write AndroidManifest.xml")?;
+"#
+    );
+
+    fs::write(
+        android_dir.join("app/src/main/AndroidManifest.xml"),
+        normalize_line_endings(&content),
+    )
+    .await
+    .context("Failed to write AndroidManifest.xml")?;
     Ok(())
 }
 
@@ -602,10 +645,13 @@ async fn generate_debug_manifest(android_dir: &Path, _app_id: &str) -> Result<()
     <uses-permission android:name="android.permission.INTERNET"/>
 </manifest>
 "#;
-    
-    fs::write(android_dir.join("app/src/debug/AndroidManifest.xml"), normalize_line_endings(content))
-        .await
-        .context("Failed to write debug AndroidManifest.xml")?;
+
+    fs::write(
+        android_dir.join("app/src/debug/AndroidManifest.xml"),
+        normalize_line_endings(content),
+    )
+    .await
+    .context("Failed to write debug AndroidManifest.xml")?;
     Ok(())
 }
 
@@ -614,10 +660,13 @@ async fn generate_profile_manifest(android_dir: &Path, _app_id: &str) -> Result<
     <uses-permission android:name="android.permission.INTERNET"/>
 </manifest>
 "#;
-    
-    fs::write(android_dir.join("app/src/profile/AndroidManifest.xml"), normalize_line_endings(content))
-        .await
-        .context("Failed to write profile AndroidManifest.xml")?;
+
+    fs::write(
+        android_dir.join("app/src/profile/AndroidManifest.xml"),
+        normalize_line_endings(content),
+    )
+    .await
+    .context("Failed to write profile AndroidManifest.xml")?;
     Ok(())
 }
 
@@ -633,8 +682,12 @@ async fn generate_styles(android_dir: &Path, _project_name: &str) -> Result<()> 
     </style>
 </resources>
 "#;
-    fs::write(android_dir.join("app/src/main/res/values/styles.xml"), normalize_line_endings(launch_theme)).await?;
-    
+    fs::write(
+        android_dir.join("app/src/main/res/values/styles.xml"),
+        normalize_line_endings(launch_theme),
+    )
+    .await?;
+
     // Night mode styles
     let night_theme = r#"<?xml version="1.0" encoding="utf-8"?>
 <resources>
@@ -646,7 +699,11 @@ async fn generate_styles(android_dir: &Path, _project_name: &str) -> Result<()> 
     </style>
 </resources>
 "#;
-    fs::write(android_dir.join("app/src/main/res/values-night/styles.xml"), normalize_line_endings(night_theme)).await?;
+    fs::write(
+        android_dir.join("app/src/main/res/values-night/styles.xml"),
+        normalize_line_endings(night_theme),
+    )
+    .await?;
     Ok(())
 }
 
@@ -656,15 +713,23 @@ async fn generate_launch_background(android_dir: &Path) -> Result<()> {
     <item android:drawable="?android:colorBackground" />
 </layer-list>
 "#;
-    fs::write(android_dir.join("app/src/main/res/drawable/launch_background.xml"), normalize_line_endings(content)).await?;
-    
+    fs::write(
+        android_dir.join("app/src/main/res/drawable/launch_background.xml"),
+        normalize_line_endings(content),
+    )
+    .await?;
+
     // v21 version
     let content_v21 = r#"<?xml version="1.0" encoding="utf-8"?>
 <layer-list xmlns:android="http://schemas.android.com/apk/res/android">
     <item android:drawable="?android:colorBackground" />
 </layer-list>
 "#;
-    fs::write(android_dir.join("app/src/main/res/drawable-v21/launch_background.xml"), normalize_line_endings(content_v21)).await?;
+    fs::write(
+        android_dir.join("app/src/main/res/drawable-v21/launch_background.xml"),
+        normalize_line_endings(content_v21),
+    )
+    .await?;
     Ok(())
 }
 
@@ -672,19 +737,34 @@ async fn generate_launch_background(android_dir: &Path) -> Result<()> {
 pub fn derive_app_id(project_name: &str) -> String {
     let clean_name: String = project_name
         .chars()
-        .map(|c| if c.is_alphanumeric() || c == '_' { c.to_ascii_lowercase() } else { '_' })
+        .map(|c| {
+            if c.is_alphanumeric() || c == '_' {
+                c.to_ascii_lowercase()
+            } else {
+                '_'
+            }
+        })
         .collect();
     format!("com.example.{}", clean_name)
 }
 
-async fn generate_local_properties(android_dir: &Path, flutter_sdk_path: Option<&str>) -> Result<()> {
+async fn generate_local_properties(
+    android_dir: &Path,
+    flutter_sdk_path: Option<&str>,
+) -> Result<()> {
     let sdk_path = flutter_sdk_path.unwrap_or("/home/sasho/flutter");
-    let content = format!(r#"flutter.sdk={}
-"#, sdk_path);
-    
-    fs::write(android_dir.join("local.properties"), normalize_line_endings(&content))
-        .await
-        .context("Failed to write local.properties")?;
+    let content = format!(
+        r#"flutter.sdk={}
+"#,
+        sdk_path
+    );
+
+    fs::write(
+        android_dir.join("local.properties"),
+        normalize_line_endings(&content),
+    )
+    .await
+    .context("Failed to write local.properties")?;
     Ok(())
 }
 
@@ -697,10 +777,13 @@ validateDistributionUrl=true
 zipStoreBase=GRADLE_USER_HOME
 zipStorePath=wrapper/dists
 "#;
-    
-    fs::write(android_dir.join("gradle/wrapper/gradle-wrapper.properties"), normalize_line_endings(content))
-        .await
-        .context("Failed to write gradle-wrapper.properties")?;
+
+    fs::write(
+        android_dir.join("gradle/wrapper/gradle-wrapper.properties"),
+        normalize_line_endings(content),
+    )
+    .await
+    .context("Failed to write gradle-wrapper.properties")?;
     Ok(())
 }
 
@@ -748,22 +831,22 @@ exec "$JAVACMD" $DEFAULT_JVM_OPTS $JAVA_OPTS $GRADLE_OPTS \
 "##;
 
     let gradlew_unix = gradlew_unix.replace("\r\n", "\n").replace("\r", "\n");
-    
+
     let gradlew_path = android_dir.join("gradlew");
     fs::write(&gradlew_path, gradlew_unix)
         .await
         .context("Failed to write gradlew")?;
-    
+
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         if let Ok(metadata) = std::fs::metadata(&gradlew_path) {
-             let mut perms = metadata.permissions();
-             perms.set_mode(0o755);
-             let _ = std::fs::set_permissions(&gradlew_path, perms);
+            let mut perms = metadata.permissions();
+            perms.set_mode(0o755);
+            let _ = std::fs::set_permissions(&gradlew_path, perms);
         }
     }
-    
+
     // Windows batch script
     let gradlew_bat = r#"@rem Gradle startup script for Windows
 @if "%DEBUG%"=="" @echo off
@@ -802,20 +885,28 @@ if "%OS%"=="Windows_NT" endlocal
     fs::write(android_dir.join("gradlew.bat"), gradlew_bat)
         .await
         .context("Failed to write gradlew.bat")?;
-    
+
     Ok(())
 }
 
 async fn copy_gradle_wrapper_jar(android_dir: &Path, flutter_sdk_path: &str) -> Result<()> {
     let wrapper_sources = [
-        format!("{}/packages/flutter_tools/gradle/wrapper/gradle-wrapper.jar", flutter_sdk_path),
-        format!("{}/bin/cache/artifacts/gradle_wrapper/gradle-wrapper.jar", flutter_sdk_path),
+        format!(
+            "{}/packages/flutter_tools/gradle/wrapper/gradle-wrapper.jar",
+            flutter_sdk_path
+        ),
+        format!(
+            "{}/bin/cache/artifacts/gradle_wrapper/gradle-wrapper.jar",
+            flutter_sdk_path
+        ),
     ];
     let dest = android_dir.join("gradle/wrapper/gradle-wrapper.jar");
     for source in &wrapper_sources {
         let source_path = Path::new(source);
         if source_path.exists() {
-            fs::copy(source_path, &dest).await.context("Failed to copy gradle-wrapper.jar")?;
+            fs::copy(source_path, &dest)
+                .await
+                .context("Failed to copy gradle-wrapper.jar")?;
             return Ok(());
         }
     }
@@ -837,8 +928,11 @@ async fn generate_ic_launcher(android_dir: &Path) -> Result<()> {
         android:pathData="M54,54m-20,0a20,20 0 1,1 40,0a20,20 0 1,1 -40,0"/>
 </vector>
 "##;
-    fs::write(android_dir.join("app/src/main/res/drawable/ic_launcher.xml"), normalize_line_endings(content))
-        .await
-        .context("Failed to write ic_launcher.xml")?;
+    fs::write(
+        android_dir.join("app/src/main/res/drawable/ic_launcher.xml"),
+        normalize_line_endings(content),
+    )
+    .await
+    .context("Failed to write ic_launcher.xml")?;
     Ok(())
 }

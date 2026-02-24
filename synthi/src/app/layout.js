@@ -6,6 +6,9 @@ import { ReduxProvider } from "./ReduxProvider";
 import { Toaster } from "../components/ui/sonner";
 import GlobalErrorHandler from "../components/GlobalErrorHandler";
 import StoreHydrator from "../components/StoreHydrator";
+import ThemeProvider from "../components/ThemeProvider";
+import { ThemePickerProvider } from "../components/ThemePicker";
+import { ThemeCreatorProvider } from "../components/ThemeCreator";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -40,9 +43,15 @@ export default function RootLayout({ children }) {
         <GlobalErrorHandler />
         <ReduxProvider>
           <StoreHydrator />
-          <NextAuthSessionProvider>
-            {children}
-          </NextAuthSessionProvider>
+          <ThemeProvider>
+            <ThemeCreatorProvider>
+              <ThemePickerProvider>
+                <NextAuthSessionProvider>
+                  {children}
+                </NextAuthSessionProvider>
+              </ThemePickerProvider>
+            </ThemeCreatorProvider>
+          </ThemeProvider>
         </ReduxProvider>
         
         

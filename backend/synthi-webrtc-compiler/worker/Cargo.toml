@@ -43,7 +43,7 @@ notify = "8.2.0"
 uuid = "1.19.0"
 libloading = "0.8"
 reqwest = { version = "0.11", features = ["json", "blocking", "stream"] }
-x11rb = { version = "0.13", features = ["allow-unsafe-code", "dl-libxcb", "shm"] }
+x11rb = { version = "0.13", features = ["allow-unsafe-code", "dl-libxcb", "shm", "xtest"] }
 libc = "0.2"
 setjmp = "0.1"
 regex = "1"

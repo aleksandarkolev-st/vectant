@@ -66,6 +66,7 @@ import { GuestBanner } from '@/components/collaboration';
 import { useExtensions } from '@/hooks/useExtensions';
 import ExtensionSidebar from '@/components/extensions/ExtensionSidebar';
 import ExtensionViewContainer from '@/components/extensions/ExtensionViewContainer';
+import { SettingsPanelContent } from '@/components/SettingsPanelContent';
 
 // ─── New Docking Window Manager ────────────────────────
 import { DockableWorkspace } from '@/components/docking-wm/DockableWorkspace';
@@ -112,6 +113,7 @@ export default function EditorPage({ params }) {
     const [isProblemsPanelDocked, setIsProblemsPanelDocked] = useState(true); // Track if panel is docked or floating
     const [guiConfig, setGuiConfig] = useState(null);
     const [isGuiRunning, setIsGuiRunning] = useState(false);
+    const [isHmrRecompiling, setIsHmrRecompiling] = useState(false);
     const [runInGuiMode, setRunInGuiMode] = useState(false);
     const [editor, setEditor] = useState(null);
     // Track editor content version to force re-analysis on every change (including remote/undo)
@@ -169,7 +171,7 @@ export default function EditorPage({ params }) {
     const [latestCompletion, setLatestCompletion] = useState(null);
     const [completionClearSignal, setCompletionClearSignal] = useState(0);
     const [buildLogs, setBuildLogs] = useState([]);
-    const [useAiSplit, setUseAiSplit] = useState(false);
+    const [hmrEnabled, setHmrEnabled] = useState(true);
     const [emulatorRunNonce, setEmulatorRunNonce] = useState(0);
     const [emulatorSessionId, setEmulatorSessionId] = useState(null);
     const [emulatorForcedError, setEmulatorForcedError] = useState('');
@@ -1709,7 +1711,6 @@ export default function EditorPage({ params }) {
                 filename,
                 source,
                 files: additionalFiles,
-                useAiSplit,
                 isGui: runInGuiMode,
                 target,
                 projectRoot,
@@ -1733,7 +1734,7 @@ export default function EditorPage({ params }) {
                 setEmulatorForcedError(msg);
             }
         }
-    }, [activeFile, currentContent, appendBuildLog, dispatch, showTerminal, rawFiles, slug, compile, detectReactNativeProject, detectReactNativeInSource, useAiSplit, emulatorSessionId, cancelMobileJob]);
+    }, [activeFile, currentContent, appendBuildLog, dispatch, showTerminal, rawFiles, slug, compile, detectReactNativeProject, detectReactNativeInSource, runInGuiMode, emulatorSessionId, cancelMobileJob]);
 
     const handleStop = useCallback(async () => {
         const activeSessionId = client?.getActiveSessionId?.();
@@ -1786,6 +1787,12 @@ export default function EditorPage({ params }) {
     const handleSave = useCallback(async () => {
         if (!activeFile) return;
 
+        // If HMR is disabled, skip recompilation on save
+        if (!hmrEnabled) {
+            console.log('[HMR] HMR disabled — skipping recompilation on save');
+            return;
+        }
+
         // Dispatch optimistic "compiling" status immediately for fast feedback
         if (typeof window !== 'undefined') {
             window.dispatchEvent(new CustomEvent('synthi:hmr-status', {
@@ -1803,7 +1810,7 @@ export default function EditorPage({ params }) {
 
         // Check if language is supported for compilation to avoid errors
         const ext = (filename.split('.').pop() || '').toLowerCase();
-        const supportedExts = ['cpp', 'cc', 'cxx', 'hpp', 'h', 'rs', 'ts', 'tsx'];
+        const supportedExts = ['c', 'cpp', 'cc', 'cxx', 'hpp', 'h', 'rs', 'ts', 'tsx'];
         if (!supportedExts.includes(ext)) {
             console.log(`[HMR] Skipping silent compilation for unsupported extension: .${ext}`);
             return;
@@ -1824,18 +1831,45 @@ export default function EditorPage({ params }) {
         }
 
         try {
-            console.log('[HMR] Triggering silent compile for save...');
+            // HMR mode: kill the running app and re-compile with latest code.
+            // We dismiss the old session locally (so the old promise doesn't
+            // block), then send a fresh compile request. The worker's compile
+            // handler sees the existing RunnerState, kills the runner process,
+            // but REUSES Xvfb + GStreamer (same resolution + gui mode). The
+            // video feed stays live (shows empty desktop briefly) while the
+            // new code compiles and the new runner starts.
+            console.log('[HMR] Killing app and re-compiling with latest code...');
+            setIsHmrRecompiling(true);
+
+            // If there's no active GUI session, we need isGui=true for the
+            // worker to set up the video pipeline.
+            const shouldRunGui = runInGuiMode || isGuiRunning;
+
+            const activeSessionId = client?.getActiveSessionId?.();
+            if (activeSessionId) {
+                // Local-only cleanup: reject pending promise, clear session.
+                // Does NOT send cancel-build to the worker — the worker's
+                // compile handler will kill the old runner process itself.
+                client.dismissSession(activeSessionId);
+            }
+
             await compile({
                 filename,
                 source,
                 files: additionalFiles,
-                // We don't attach onLog here to avoid spamming the build log on every save
-                // unless we want to see HMR logs.
+                isGui: shouldRunGui,
             });
+            setIsHmrRecompiling(false);
+            console.log('[HMR] Re-run succeeded after save');
         } catch (err) {
-            console.error('[HMR] Silent compile failed', err);
+            setIsHmrRecompiling(false);
+            // Don't log HMR restart rejections from the dismissed session.
+            // SynthiException('Cancelled', 'HMR restart') produces message "Cancelled: HMR restart"
+            const msg = err?.message || '';
+            if (msg.includes('HMR restart') || msg.includes('Cancelled')) return;
+            console.error('[HMR] HMR re-run failed', err);
         }
-    }, [activeFile, currentContent, rawFiles, slug, compile]);
+    }, [activeFile, currentContent, rawFiles, slug, compile, hmrEnabled, runInGuiMode, isGuiRunning, client]);
 
     const handleEditorMount = useCallback((editorInstance) => {
         setEditor(editorInstance);
@@ -1892,11 +1926,13 @@ export default function EditorPage({ params }) {
     );
 
     const FileTreePanel = (
-        <ResizablePanel defaultSize={20} minSize={12} maxSize={35} className={`${treeOnRight ? 'border-l' : 'border-r'} border-[#27272a] bg-[#09090b]`}>
-            <div className="flex h-full min-w-0">
+        <ResizablePanel defaultSize={20} minSize={12} maxSize={35} className={`${treeOnRight ? 'border-l' : 'border-r'}`} style={{ borderColor: 'var(--border-medium)', background: 'var(--bg-sidebar)' }}>
+            <div className="flex h-full min-w-0 overflow-hidden">
                 <ActivityBar
                     active={sidebarView}
-                    onSelect={(id) => setSidebarView(id === sidebarView ? 'explorer' : id)}
+                    onSelect={(id) => {
+                        setSidebarView(id === sidebarView ? 'explorer' : id);
+                    }}
                     extensionContainers={contributedContainers}
                 />
                 <div className="flex-1 min-w-0 overflow-hidden flex flex-col">
@@ -1937,7 +1973,9 @@ export default function EditorPage({ params }) {
                                 viewsWelcome={extensionViewsWelcome}
                             />
                         );
-                    })() : (
+                    })() : sidebarView === 'settings' ? (
+                        <SettingsPanelContent />
+                    ) : (
                         <div className="flex flex-col h-full min-h-0">
                             <div className="flex-1 min-h-0 overflow-y-auto">
                                 <FileTreeView onToggleOrientation={toggleTreeOrientation} />
@@ -2009,8 +2047,8 @@ export default function EditorPage({ params }) {
 
     return (
     <DockablePanelProvider workspaceId={slug}>
-    <div className="flex flex-col h-screen overflow-hidden bg-[#09090b] text-[#D7DAE0]">
-        <div className="flex flex-col flex-1 bg-[#1e1e1e] text-gray-200">
+    <div className="flex flex-col h-screen overflow-hidden" style={{ background: 'var(--bg-sidebar)', color: 'var(--text-primary)' }}>
+        <div className="flex flex-col flex-1 min-h-0 overflow-hidden" style={{ background: 'var(--bg-editor)', color: 'var(--text-primary)' }}>
             {/* Hydrate workspace-specific tabs from localStorage */}
             <WorkspaceHydrator slug={slug} />
 
@@ -2019,8 +2057,8 @@ export default function EditorPage({ params }) {
                 onRun={handleRun}
                 runInGuiMode={runInGuiMode}
                 setRunInGuiMode={setRunInGuiMode}
-                useAiSplit={useAiSplit}
-                setUseAiSplit={setUseAiSplit}
+                hmrEnabled={hmrEnabled}
+                setHmrEnabled={setHmrEnabled}
                 onStop={handleStop}
                 onReload={handleRestart}
                 isRunning={isCompiling}
@@ -2054,6 +2092,7 @@ export default function EditorPage({ params }) {
                 setGuiConfig={setGuiConfig}
                 isGuiRunning={isGuiRunning}
                 setIsGuiRunning={setIsGuiRunning}
+                isHmrRecompiling={isHmrRecompiling}
                 mediaStream={mediaStream}
                 sendGuiEvent={sendGuiEvent}
             />

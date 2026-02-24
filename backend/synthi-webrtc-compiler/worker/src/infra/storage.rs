@@ -291,9 +291,14 @@ pub async fn download(
 pub async fn upload_directory(
     local_path: &PathBuf,
     slug: &str,
-    sub_path: &str, 
+    sub_path: &str,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    println!("📤 Uploading directory: {} -> workspaces/{}/{}", local_path.display(), slug, sub_path);
+    println!(
+        "📤 Uploading directory: {} -> workspaces/{}/{}",
+        local_path.display(),
+        slug,
+        sub_path
+    );
 
     // GCS setup (duplicated from download for now to allow independent usage)
     let credentials_json = json!({
@@ -322,43 +327,45 @@ pub async fn upload_directory(
     // Recursively walk directory and upload
     let mut stack = vec![local_path.clone()];
     while let Some(current_dir) = stack.pop() {
-        let entries = fs::read_dir(&current_dir).map_err(|e| format!("Failed to read directory {}: {}", current_dir.display(), e))?;
+        let entries = fs::read_dir(&current_dir)
+            .map_err(|e| format!("Failed to read directory {}: {}", current_dir.display(), e))?;
         for entry in entries {
             let entry = entry.map_err(|e| format!("Failed to read directory entry: {}", e))?;
             let path = entry.path();
-            
+
             if path.is_dir() {
                 stack.push(path);
             } else {
                 // Calculate relative path from local_path
-                let rel_path = path.strip_prefix(local_path)
+                let rel_path = path
+                    .strip_prefix(local_path)
                     .map_err(|e| format!("Failed to strip prefix: {}", e))?;
-                
+
                 // Construct remote path: workspaces/{slug}/{sub_path}/{rel_path}
                 // ensuring forward slashes
                 let rel_str = rel_path.to_string_lossy().replace('\\', "/");
                 let sub_str = sub_path.trim_matches('/').replace('\\', "/");
-                
+
                 let remote_key = if sub_str.is_empty() {
                     format!("workspaces/{}/{}", slug, rel_str)
                 } else {
                     format!("workspaces/{}/{}/{}", slug, sub_str, rel_str)
                 };
-                
+
                 println!("   Uploading: {} -> {}", rel_str, remote_key);
-                
+
                 // Read file content
                 let content = fs::read(&path)
                     .map_err(|e| format!("Failed to read file {}: {}", path.display(), e))?;
-                
+
                 // Put object
-                store.put(
-                    &Path::from(remote_key),
-                    content.into(),
-                ).await.map_err(|e| format!("Failed to upload file {}: {}", path.display(), e))?;
+                store
+                    .put(&Path::from(remote_key), content.into())
+                    .await
+                    .map_err(|e| format!("Failed to upload file {}: {}", path.display(), e))?;
             }
         }
     }
-    
+
     Ok(())
 }

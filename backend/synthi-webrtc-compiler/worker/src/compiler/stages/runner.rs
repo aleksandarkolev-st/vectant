@@ -1,13 +1,13 @@
 use anyhow::{Context, Result};
-use tokio::process::Command;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::sync::mpsc;
 use gstreamer as gst;
 use gstreamer::prelude::*;
 use gstreamer_app as gst_app;
+use std::collections::HashMap;
 use std::process::Stdio;
 use std::sync::Arc;
-use std::collections::HashMap;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::process::Command;
+use tokio::sync::mpsc;
 use webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecCapability;
 use webrtc::track::track_local::track_local_static_rtp::TrackLocalStaticRTP;
 use webrtc::track::track_local::{TrackLocal, TrackLocalWriter};
@@ -16,7 +16,7 @@ use crate::compiler::builder::ModuleHashes;
 use crate::compiler::context::CompileContext;
 use crate::infra::constants::GUI_TOOLS;
 use crate::infra::messages::CompileRequest;
-use crate::infra::observability::{ReloadId};
+use crate::infra::observability::ReloadId;
 use crate::runtime::runner_state::RunnerState; // Aliasing if needed, or check definition
 
 pub async fn handle_runner_execution(
@@ -43,8 +43,8 @@ pub async fn handle_runner_execution(
 
     // Check if we need to restart due to GUI mode change or blocking app
     let is_blocking_app = !has_on_update;
-    let req_width = req.width.unwrap_or(1280);
-    let req_height = req.height.unwrap_or(720);
+    let req_width = req.width.unwrap_or(800);
+    let req_height = req.height.unwrap_or(600);
 
     eprintln!(
         "[Main] Restart check: is_gui={}, has_on_update={}, is_blocking_app={}, use_ai_split={}",
@@ -198,10 +198,17 @@ pub async fn handle_runner_execution(
 
                 // Start Matchbox Window Manager (to handle window sizing/borders)
                 let mut wm_cmd = Command::new("matchbox-window-manager");
+                wm_cmd
+                    .arg("-use_titlebar")
+                    .arg("no")
+                    .arg("-use_cursor")
+                    .arg("no");
                 wm_cmd.env("DISPLAY", &wsl_display_str);
-                wm_cmd.kill_on_drop(true);
-                // We don't keep the WM handle, assuming it dies when Xvfb dies or worker dies
-                let _ = wm_cmd
+                // NOTE: kill_on_drop is NOT set here. The WM needs to live as long
+                // as Xvfb — it will be killed when Xvfb is killed. Setting
+                // kill_on_drop(true) + `let _ = spawn()` would immediately drop the
+                // Child handle, killing the WM within milliseconds of starting.
+                let _wm_child = wm_cmd
                     .spawn()
                     .context("Failed to spawn matchbox-window-manager")?;
 
@@ -413,17 +420,20 @@ pub async fn handle_runner_execution(
 
         let mut cmd = Command::new(runner_path);
         cmd.env("DISPLAY", &wsl_display_str)
-           .env("LD_LIBRARY_PATH", std::env::var("LD_LIBRARY_PATH").unwrap_or_default())
-           // The worker already manages Xvfb, GStreamer, and video streaming.
-           // The runner only needs to load .so modules and execute them in-process.
-           // ProcessIsolated mode spawns a supervisor + child that conflicts with
-           // the worker's own Xvfb on :99 and uses binary IPC instead of the text
-           // protocol the worker sends.
-           .env("SYNTHI_UNSAFE_INPROCESS", "1")
-           .stdin(Stdio::piped())
-           .stdout(Stdio::piped())
-           .stderr(Stdio::piped())
-           .kill_on_drop(true);
+            .env(
+                "LD_LIBRARY_PATH",
+                std::env::var("LD_LIBRARY_PATH").unwrap_or_default(),
+            )
+            // The worker already manages Xvfb, GStreamer, and video streaming.
+            // The runner only needs to load .so modules and execute them in-process.
+            // ProcessIsolated mode spawns a supervisor + child that conflicts with
+            // the worker's own Xvfb on :99 and uses binary IPC instead of the text
+            // protocol the worker sends.
+            .env("SYNTHI_UNSAFE_INPROCESS", "1")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
 
         if let Some(sid) = &session_id {
             cmd.env("SYNTHI_SESSION_ID", sid);
@@ -434,7 +444,7 @@ pub async fn handle_runner_execution(
         // Capture stdout/stderr
         let stdout = child.stdout.take().unwrap();
         let stderr = child.stderr.take().unwrap();
-        let stdin = child.stdin.take().unwrap();
+        let stdin = Arc::new(tokio::sync::Mutex::new(child.stdin.take().unwrap()));
 
         let (log_tx, _) = tokio::sync::broadcast::channel::<String>(100);
         let log_tx_clone = log_tx.clone();
@@ -496,7 +506,7 @@ pub async fn handle_runner_execution(
 
         *guard = Some(RunnerState {
             process: Some(child),
-            stdin: Some(stdin),
+            stdin: Some(stdin.clone()),
             output_tx: log_tx,
             is_gui: req.is_gui,
             is_hmr_capable: has_on_update,
@@ -533,28 +543,31 @@ pub async fn handle_runner_execution(
                     sdl_guard.insert(sid.clone(), input_tx);
                 }
 
-                // Spawn xdotool command executor
-                let display_for_xdotool = wsl_display_str.clone();
+                // Spawn stdin input writer — sends `input` commands directly
+                // to the runner process's stdin (parsed as SDL_PushEvent).
+                // This completely bypasses X11 and the window manager, avoiding:
+                //   - matchbox-WM intercepting/consuming click events
+                //   - xdotool process-per-event overhead (~5-10ms each)
+                //   - coordinate mismatches between Xvfb and SDL window
+                let stdin_for_input = stdin.clone();
                 tokio::spawn(async move {
                     while let Some(cmd) = input_rx.recv().await {
-                        // Split command into program args for xdotool
-                        let parts: Vec<&str> = cmd.split_whitespace().collect();
-                        if parts.is_empty() {
-                            continue;
+                        let mut stdin_guard = stdin_for_input.lock().await;
+                        // Commands may contain multiple lines (e.g. scroll = button down + up)
+                        for line in cmd.lines() {
+                            if !line.is_empty() {
+                                let _ = stdin_guard.write_all(format!("{}\n", line).as_bytes()).await;
+                            }
                         }
-                        let result = tokio::process::Command::new("xdotool")
-                            .args(&parts)
-                            .env("DISPLAY", &display_for_xdotool)
-                            .output()
-                            .await;
-                        if let Err(e) = result {
-                            eprintln!("[xdotool] Failed to run '{}': {}", cmd, e);
-                        }
+                        let _ = stdin_guard.flush().await;
                     }
-                    eprintln!("[xdotool] Input channel closed");
+                    eprintln!("[stdin-input] Input channel closed");
                 });
 
-                println!("[Main] xdotool input channel registered for session {}", sid);
+                println!(
+                    "[Main] stdin input channel registered for session {}",
+                    sid
+                );
             }
         } else if req.is_gui {
             // Reusing existing sdl_tx - re-register it in the store
@@ -577,7 +590,14 @@ pub async fn handle_runner_execution(
                 println!("[Main] Replacing video track on transceiver");
                 for t in &transceivers {
                     if t.kind() == webrtc::rtp_transceiver::rtp_codec::RTPCodecType::Video {
-                        match t.sender().await.replace_track(Some(Arc::clone(track) as Arc<dyn TrackLocal + Send + Sync>)).await {
+                        match t
+                            .sender()
+                            .await
+                            .replace_track(Some(
+                                Arc::clone(track) as Arc<dyn TrackLocal + Send + Sync>
+                            ))
+                            .await
+                        {
                             Ok(_) => println!("[Main] Video track replaced successfully"),
                             Err(e) => eprintln!("[Main] ERROR replacing video track: {:?}", e),
                         }
@@ -589,7 +609,14 @@ pub async fn handle_runner_execution(
                 println!("[Main] Replacing audio track on transceiver");
                 for t in &transceivers {
                     if t.kind() == webrtc::rtp_transceiver::rtp_codec::RTPCodecType::Audio {
-                        match t.sender().await.replace_track(Some(Arc::clone(track) as Arc<dyn TrackLocal + Send + Sync>)).await {
+                        match t
+                            .sender()
+                            .await
+                            .replace_track(Some(
+                                Arc::clone(track) as Arc<dyn TrackLocal + Send + Sync>
+                            ))
+                            .await
+                        {
                             Ok(_) => println!("[Main] Audio track replaced successfully"),
                             Err(e) => eprintln!("[Main] ERROR replacing audio track: {:?}", e),
                         }
@@ -617,17 +644,22 @@ pub async fn handle_runner_execution(
         // swap: no intermediate frame where new core state is rendered
         // by old GUI code (which would read corrupt data).
         // ============================================================
-        if let Some(stdin) = state.stdin.as_mut() {
+        if let Some(stdin_arc) = &state.stdin {
             // Check if process is still alive before sending anything
             let mut process_alive = true;
             if let Some(child) = state.process.as_mut() {
                 if let Ok(Some(status)) = child.try_wait() {
-                    eprintln!("[Main] Runner process has already exited with status: {}", status);
+                    eprintln!(
+                        "[Main] Runner process has already exited with status: {}",
+                        status
+                    );
                     process_alive = false;
                 }
             }
 
             if process_alive {
+                let mut stdin = stdin_arc.lock().await;
+
                 // Send set_session first (required for Host KV support).
                 // The runner needs the session ID before any module load
                 // so modules can read/write persistent key-value state.
@@ -664,8 +696,19 @@ pub async fn handle_runner_execution(
         }
     }
 
-    // Send Status Updates
-    // ...
+    // Send build-status "done" so the frontend's compile() promise resolves.
+    // Without this, native compile promises hang forever, breaking HMR session
+    // lifecycle and the [RECOMPILING] badge.
+    let done_payload = serde_json::json!({
+        "sessionId": session_id,
+        "status": "done",
+        "success": true,
+        "stage": "runner",
+    });
+    let _ = ctx
+        .log_dc
+        .send_text(serde_json::to_string(&done_payload).unwrap_or_default())
+        .await;
 
     Ok(())
 }

@@ -32,6 +32,7 @@ const SIDEBAR_TYPES = new Set([
   IDE_PANEL.EXTENSIONS,
   IDE_PANEL.EXTENSION_VIEW,
   IDE_PANEL.CHAT,
+  IDE_PANEL.SETTINGS,
 ]);
 
 const BOTTOM_TYPES = new Set([
@@ -164,6 +165,7 @@ export function useActivityBarDocking() {
       problems:   () => togglePanel(IDE_PANEL.PROBLEMS, 'Problems'),
       output:     () => togglePanel(IDE_PANEL.OUTPUT, 'Output'),
       preview:    () => togglePanel(IDE_PANEL.PREVIEW, 'Preview'),
+      settings:   () => togglePanel(IDE_PANEL.SETTINGS, 'Settings'),
     }),
     [togglePanel],
   );

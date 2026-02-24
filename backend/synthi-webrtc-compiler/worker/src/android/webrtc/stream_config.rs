@@ -33,8 +33,8 @@ impl EmulatorStreamConfig {
             Err(_) => EmulatorStreamMode::Grpc, // Default to gRPC if unset
         };
 
-        let host = std::env::var("SYNTHI_ANDROID_GRPC_HOST")
-            .unwrap_or_else(|_| "127.0.0.1".to_string());
+        let host =
+            std::env::var("SYNTHI_ANDROID_GRPC_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
 
         let port = std::env::var("SYNTHI_ANDROID_GRPC_PORT")
             .ok()

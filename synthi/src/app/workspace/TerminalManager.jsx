@@ -116,7 +116,7 @@ export default function TerminalManager({ visible, onCloseAll, workspaceSlug = '
   };
 
   const header = (
-    <div className="h-10 flex items-center justify-between px-2 border-b border-[#1a1a1e] bg-[#09090b] select-none" ref={dragRef}>
+    <div className="h-10 flex items-center justify-between px-2 border-b select-none" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-sidebar)' }} ref={dragRef}>
       {/* Tabs */}
       <div className="flex items-center gap-1 overflow-x-auto">
         {terminals.map(t => (
@@ -124,13 +124,16 @@ export default function TerminalManager({ visible, onCloseAll, workspaceSlug = '
             key={t.id} 
             className={`group flex items-center gap-2 h-8 px-3 cursor-pointer transition-all duration-150 ${
               t.id === activeId 
-                ? 'bg-[#0c0c0e] text-[#D7DAE0] border-t-2 border-t-[#327464]' 
-                : 'text-[#a1a1aa] hover:bg-[#111113] hover:text-[#D7DAE0]'
-            }`} 
+                ? 'th-bg-panel' 
+                : ''
+            }`}
+            style={t.id === activeId 
+              ? { color: 'var(--text-primary)', borderTop: '2px solid var(--accent-primary)' }
+              : { color: 'var(--text-secondary)' }} 
             onClick={() => setActiveId(t.id)}
           >
             {t.isAi ? (
-              <Bot className="w-3.5 h-3.5 text-[#327464]" strokeWidth={2} />
+              <Bot className="w-3.5 h-3.5" style={{ color: 'var(--accent-primary)' }} strokeWidth={2} />
             ) : (
               <TerminalSquare className="w-3.5 h-3.5" strokeWidth={2} />
             )}
@@ -150,22 +153,22 @@ export default function TerminalManager({ visible, onCloseAll, workspaceSlug = '
       {/* Actions - Larger click targets */}
       <div className="flex items-center gap-1">
         <button 
-          className="w-8 h-8 flex items-center justify-center rounded text-[#a1a1aa] hover:bg-[#1a1a1e] hover:text-[#D7DAE0] transition-colors" 
+          className="w-8 h-8 flex items-center justify-center rounded th-btn-ghost transition-colors" 
           onClick={addTerminal} 
           title="New Terminal"
         >
           <Plus className="w-4 h-4" strokeWidth={2} />
         </button>
         <button 
-          className="w-8 h-8 flex items-center justify-center rounded text-[#a1a1aa] hover:bg-[#1a1a1e] hover:text-[#D7DAE0] transition-colors" 
+          className="w-8 h-8 flex items-center justify-center rounded th-btn-ghost transition-colors" 
           onClick={toggleSplit} 
           title="Split Terminal"
         >
           <SplitSquareHorizontal className="w-4 h-4" strokeWidth={2} />
         </button>
-        <div className="w-px h-5 bg-[#1a1a1e] mx-1"></div>
+        <div className="w-px h-5 mx-1" style={{ background: 'var(--border-subtle)' }}></div>
         <button 
-          className="w-8 h-8 flex items-center justify-center rounded text-[#a1a1aa] hover:bg-[#ef4444]/20 hover:text-[#ef4444] transition-colors" 
+          className="w-8 h-8 flex items-center justify-center rounded th-btn-ghost hover:bg-[#ef4444]/20 hover:text-[#ef4444] transition-colors" 
           onClick={handleCloseAll} 
           title="Close Terminal Panel"
         >
@@ -177,9 +180,9 @@ export default function TerminalManager({ visible, onCloseAll, workspaceSlug = '
   
   if (!visible) return null;
   const body = (
-    <div className="bg-[#09090b] flex-1 overflow-hidden p-2">
+    <div className="flex-1 overflow-hidden p-2" style={{ background: 'var(--bg-sidebar)' }}>
       {terminals.length === 0 ? (
-        <div className="h-full flex items-center justify-center text-xs text-[#71717a]">No terminals</div>
+        <div className="h-full flex items-center justify-center text-xs" style={{ color: 'var(--text-muted)' }}>No terminals</div>
       ) : (
         <div className="h-full w-full relative">
           {terminals.map(t => (
@@ -205,7 +208,7 @@ export default function TerminalManager({ visible, onCloseAll, workspaceSlug = '
   );
 
   return (
-    <div className="border-t border-[#1a1a1e] bg-[#09090b] h-full flex flex-col">
+    <div className="border-t h-full flex flex-col" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-sidebar)' }}>
       {header}
       {body}
     </div>

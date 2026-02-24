@@ -4,6 +4,7 @@ import workspaceReducer, { initialWorkspaceState } from './workspaceSlice';
 import uiReducer, { initialUiState } from './uiSlice';
 import gitReducer from './gitSlice';
 import extensionReducer from './extensionSlice';
+import themeReducer from './themeSlice';
 import layoutReducer from '@/components/docking-wm/state/layout-slice';
 
 import { enableMapSet } from 'immer';
@@ -15,6 +16,7 @@ enableMapSet();
 // environment).
 const UI_STORAGE_KEY = 'synthi:ui';
 const EXPANDED_FOLDERS_KEY = 'synthi:expandedFolders';
+const THEME_STORAGE_KEY = 'synthi:theme';
 
 // Workspace-specific storage key helpers
 const getOpenTabsKey = (slug) => `synthi:openTabs:${slug}`;
@@ -47,6 +49,18 @@ export function loadExpandedFolders() {
     return JSON.parse(raw);
   } catch (e) {
     console.warn('Failed to load expanded folders from localStorage', e);
+    return undefined;
+  }
+}
+
+export function loadThemePrefs() {
+  if (typeof window === 'undefined' || !window.localStorage) return undefined;
+  try {
+    const raw = localStorage.getItem(THEME_STORAGE_KEY);
+    if (!raw) return undefined;
+    return JSON.parse(raw);
+  } catch (e) {
+    console.warn('Failed to load theme prefs from localStorage', e);
     return undefined;
   }
 }
@@ -136,6 +150,7 @@ export const store = configureStore({
     ui: uiReducer,
     git: gitReducer,
     extensions: extensionReducer,
+    theme: themeReducer,
     layout: layoutReducer,
   },
   // We need to disable the serializable check for the Map used in fileContentCache
@@ -163,6 +178,11 @@ if (typeof window !== 'undefined') {
   let lastOpenTabs = '';
   let lastActiveTabPath = null;
 
+  // Track theme for persistence
+  let lastThemeId = '';
+  let lastUserThemes = '{}';
+  let lastUserOverrides = '{}';
+
   store.subscribe(() => {
     try {
       const state = store.getState();
@@ -180,6 +200,30 @@ if (typeof window !== 'undefined') {
         if (expandedSnapshot !== lastExpandedFolders) {
           lastExpandedFolders = expandedSnapshot;
           saveExpandedFolders(expanded);
+        }
+      } catch (_) {}
+
+      // Persist active theme ID + user themes + overrides
+      try {
+        const themeId = state?.theme?.activeThemeId || '';
+        const userThemes = state?.theme?.userThemes || {};
+        const userOverrides = state?.theme?.userOverrides || {};
+        const userThemesSnapshot = JSON.stringify(userThemes);
+        const userOverridesSnapshot = JSON.stringify(userOverrides);
+        // Write when anything has changed
+        if (
+          (themeId && themeId !== lastThemeId) ||
+          userThemesSnapshot !== (lastUserThemes || '{}') ||
+          userOverridesSnapshot !== (lastUserOverrides || '{}')
+        ) {
+          lastThemeId = themeId;
+          lastUserThemes = userThemesSnapshot;
+          lastUserOverrides = userOverridesSnapshot;
+          localStorage.setItem(THEME_STORAGE_KEY, JSON.stringify({
+            activeThemeId: themeId,
+            userThemes,
+            userOverrides,
+          }));
         }
       } catch (_) {}
       

@@ -13,15 +13,19 @@ use std::sync::LazyLock;
 static DART_ERROR_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
     // Matches: lib/main.dart:10:5: Error: Expected ';' after this.
     // Or: lib/main.dart:10:5: error: Expected ';' after this.
-    Regex::new(r"^([^:]+):(\d+):(\d+):\s*(Error|error|Warning|warning|Info|info|Hint|hint):\s*(.+)$")
-        .expect("Invalid dart error regex")
+    Regex::new(
+        r"^([^:]+):(\d+):(\d+):\s*(Error|error|Warning|warning|Info|info|Hint|hint):\s*(.+)$",
+    )
+    .expect("Invalid dart error regex")
 });
 
 static FLUTTER_ANALYSIS_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
     // Matches: error • Message • lib/file.dart:10:5 • error_code
     // Or: warning • Message • lib/file.dart:10:5 • warning_code
-    Regex::new(r"^\s*(error|warning|info|hint)\s*[•·]\s*(.+?)\s*[•·]\s*([^:]+):(\d+):(\d+)\s*[•·]\s*(\w+)")
-        .expect("Invalid flutter analysis regex")
+    Regex::new(
+        r"^\s*(error|warning|info|hint)\s*[•·]\s*(.+?)\s*[•·]\s*([^:]+):(\d+):(\d+)\s*[•·]\s*(\w+)",
+    )
+    .expect("Invalid flutter analysis regex")
 });
 
 static GRADLE_ERROR_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
@@ -32,8 +36,7 @@ static GRADLE_ERROR_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
 
 static BUILD_FAILED_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
     // Matches: FAILURE: Build failed with an exception.
-    Regex::new(r"(?i)(FAILURE|BUILD FAILED|error:|Exception:)")
-        .expect("Invalid build failed regex")
+    Regex::new(r"(?i)(FAILURE|BUILD FAILED|error:|Exception:)").expect("Invalid build failed regex")
 });
 
 /// Parses Flutter/Dart diagnostics from command output
@@ -73,8 +76,7 @@ pub fn parse_flutter_diagnostics(stdout: &str, stderr: &str) -> Vec<Diagnostic> 
 
     // Deduplicate diagnostics
     diagnostics.sort_by(|a, b| {
-        (&a.file, a.line, a.column, &a.message)
-            .cmp(&(&b.file, b.line, b.column, &b.message))
+        (&a.file, a.line, a.column, &a.message).cmp(&(&b.file, b.line, b.column, &b.message))
     });
     diagnostics.dedup_by(|a, b| {
         a.file == b.file && a.line == b.line && a.column == b.column && a.message == b.message
@@ -87,7 +89,7 @@ pub fn parse_flutter_diagnostics(stdout: &str, stderr: &str) -> Vec<Diagnostic> 
 /// Format: file.dart:10:5: Error: message
 fn parse_dart_error(line: &str) -> Option<Diagnostic> {
     let caps = DART_ERROR_PATTERN.captures(line)?;
-    
+
     let file = caps.get(1)?.as_str().to_string();
     let line_num = caps.get(2)?.as_str().parse::<u32>().ok()?;
     let column = caps.get(3)?.as_str().parse::<u32>().ok()?;
@@ -172,11 +174,11 @@ fn parse_build_failure(line: &str) -> Option<Diagnostic> {
     }
 
     // Don't create diagnostic for lines that were already parsed
-    if line.contains(':') && (
-        line.chars().filter(|c| *c == ':').count() >= 3 ||
-        line.starts_with("e:") ||
-        line.contains("• ")
-    ) {
+    if line.contains(':')
+        && (line.chars().filter(|c| *c == ':').count() >= 3
+            || line.starts_with("e:")
+            || line.contains("• "))
+    {
         return None;
     }
 
@@ -193,7 +195,7 @@ fn parse_build_failure(line: &str) -> Option<Diagnostic> {
 /// Extracts the main error message from Flutter build output
 pub fn extract_main_error(stdout: &str, stderr: &str) -> Option<String> {
     let combined = format!("{}\n{}", stderr, stdout);
-    
+
     // Look for common Flutter error patterns
     let error_patterns = [
         "Error:",

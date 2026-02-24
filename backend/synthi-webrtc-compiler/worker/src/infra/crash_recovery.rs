@@ -363,7 +363,7 @@ extern "C" fn crash_handler(sig: c_int, info: *mut siginfo_t, _context: *mut c_v
     ABORT_REQUESTED.store(true, Ordering::SeqCst);
 
     // In fork isolation mode, exit the child process
-    // In signal recovery mode, this will cause the thread to detect abort on next check
+    // In signal recovery mode, terminate only the crashed thread
     if get_protection_mode() == ProtectionMode::ForkIsolation {
         // Child process - exit with signal code
         unsafe {
@@ -371,11 +371,12 @@ extern "C" fn crash_handler(sig: c_int, info: *mut siginfo_t, _context: *mut c_v
         }
     }
 
-    // For signal recovery mode, re-raise to terminate (we've stored the info)
-    eprintln!("[CRASH] Plugin crash detected: {}", signal_name);
+    // For signal recovery mode (thread-based execution):
+    // Use pthread_exit to terminate ONLY the crashed thread, not the entire process.
+    // The main thread's polling loop will detect ABORT_REQUESTED and handle recovery.
+    eprintln!("[CRASH] Plugin crash detected: {} — terminating crashed thread", signal_name);
     unsafe {
-        libc::signal(sig, libc::SIG_DFL);
-        libc::raise(sig);
+        libc::pthread_exit(std::ptr::null_mut());
     }
 }
 

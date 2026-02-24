@@ -7,8 +7,8 @@
 //! try to spawn anyway (maybe the user installed it manually in the meantime).
 
 use std::path::Path;
-use tokio::process::Command;
 use std::process::Stdio;
+use tokio::process::Command;
 
 /// Check whether `program` is available on PATH (or reachable via WSL on Windows).
 /// Also checks well-known SDK install locations for certain programs (e.g. Dart).
@@ -250,7 +250,10 @@ pub async fn ensure_lsp_installed(lang: &str, workspace: &Path) -> Result<&'stat
     }
 
     if install_steps.is_empty() {
-        return Err(format!("{} not found and no auto-installer configured", binary));
+        return Err(format!(
+            "{} not found and no auto-installer configured",
+            binary
+        ));
     }
 
     // Check marker to rate-limit install attempts (max once per 5 minutes).
@@ -260,7 +263,9 @@ pub async fn ensure_lsp_installed(lang: &str, workspace: &Path) -> Result<&'stat
     if marker.exists() {
         // Already attempted — check if it actually worked
         if is_on_path(binary).await {
-            if lang == "rust" { ensure_rust_src().await; }
+            if lang == "rust" {
+                ensure_rust_src().await;
+            }
             return Ok(binary);
         }
         // Rate-limit: only retry if the marker is older than 5 minutes
@@ -275,7 +280,10 @@ pub async fn ensure_lsp_installed(lang: &str, workspace: &Path) -> Result<&'stat
         let _ = std::fs::remove_file(&marker);
     }
 
-    println!("[LSP-INSTALL] {} not found, installing for {}...", binary, lang);
+    println!(
+        "[LSP-INSTALL] {} not found, installing for {}...",
+        binary, lang
+    );
 
     for step in &install_steps {
         if let Err(e) = sh(step).await {
@@ -297,7 +305,10 @@ pub async fn ensure_lsp_installed(lang: &str, workspace: &Path) -> Result<&'stat
                     && !std::path::Path::new("/usr/local/bin/dart").exists()
                 {
                     let _ = std::os::unix::fs::symlink(candidate, "/usr/local/bin/dart");
-                    println!("[LSP-INSTALL] Symlinked {} → /usr/local/bin/dart", candidate);
+                    println!(
+                        "[LSP-INSTALL] Symlinked {} → /usr/local/bin/dart",
+                        candidate
+                    );
                     break;
                 }
             }
@@ -306,12 +317,23 @@ pub async fn ensure_lsp_installed(lang: &str, workspace: &Path) -> Result<&'stat
     } else {
         // Write marker with timestamp so we can rate-limit retries
         let _ = std::fs::write(&marker, "failed");
-        eprintln!("[LSP-INSTALL] {} still not found after install attempt", binary);
+        eprintln!(
+            "[LSP-INSTALL] {} still not found after install attempt",
+            binary
+        );
         // Log where we looked for debugging
         if lang == "dart" {
-            for candidate in &["/opt/dart-sdk/bin/dart", "/usr/lib/dart/bin/dart", "/usr/local/bin/dart"] {
+            for candidate in &[
+                "/opt/dart-sdk/bin/dart",
+                "/usr/lib/dart/bin/dart",
+                "/usr/local/bin/dart",
+            ] {
                 let exists = std::path::Path::new(candidate).exists();
-                eprintln!("[LSP-INSTALL]   {} {}", if exists { "✓" } else { "✗" }, candidate);
+                eprintln!(
+                    "[LSP-INSTALL]   {} {}",
+                    if exists { "✓" } else { "✗" },
+                    candidate
+                );
             }
         }
         Err(format!("{} still not found after install attempt", binary))
@@ -344,8 +366,12 @@ async fn ensure_rust_src() {
             return;
         }
         println!("[LSP-INSTALL] rust-src not found in WSL, installing...");
-        let _ = sh(". \"$HOME/.cargo/env\" 2>/dev/null; rustup component add rust-src 2>/dev/null || true").await;
-        let _ = sh("apt-get update -qq && apt-get install -y -qq rust-src 2>/dev/null || true").await;
+        let _ = sh(
+            ". \"$HOME/.cargo/env\" 2>/dev/null; rustup component add rust-src 2>/dev/null || true",
+        )
+        .await;
+        let _ =
+            sh("apt-get update -qq && apt-get install -y -qq rust-src 2>/dev/null || true").await;
         println!("[LSP-INSTALL] rust-src installation attempted in WSL");
         return;
     }
@@ -353,8 +379,7 @@ async fn ensure_rust_src() {
     // Linux: check using the same PATH that rust-analyzer will use.
     // RA is spawned with $CARGO_HOME/bin prepended to PATH, which may
     // resolve to a different rustc (rustup proxy) than the system one.
-    let cargo_home = std::env::var("CARGO_HOME")
-        .unwrap_or_else(|_| "/root/.cargo".to_string());
+    let cargo_home = std::env::var("CARGO_HOME").unwrap_or_else(|_| "/root/.cargo".to_string());
     let current_path = std::env::var("PATH").unwrap_or_default();
     let ra_path = format!("{}/bin:{}", cargo_home, current_path);
 
@@ -368,20 +393,28 @@ async fn ensure_rust_src() {
         .output()
         .await
         .ok()
-        .and_then(|o| if o.status.success() {
-            Some(String::from_utf8_lossy(&o.stdout).trim().to_string())
-        } else {
-            None
+        .and_then(|o| {
+            if o.status.success() {
+                Some(String::from_utf8_lossy(&o.stdout).trim().to_string())
+            } else {
+                None
+            }
         });
 
     if let Some(ref sysroot) = ra_sysroot {
-        let lib_path = std::path::PathBuf::from(sysroot)
-            .join("lib/rustlib/src/rust/library");
+        let lib_path = std::path::PathBuf::from(sysroot).join("lib/rustlib/src/rust/library");
         if lib_path.exists() {
-            println!("[LSP-INSTALL] rust-src already present at {} (RA sysroot)", lib_path.display());
+            println!(
+                "[LSP-INSTALL] rust-src already present at {} (RA sysroot)",
+                lib_path.display()
+            );
             return;
         }
-        println!("[LSP-INSTALL] rust-src NOT found at {} (RA sysroot: {})", lib_path.display(), sysroot);
+        println!(
+            "[LSP-INSTALL] rust-src NOT found at {} (RA sysroot: {})",
+            lib_path.display(),
+            sysroot
+        );
     }
 
     // Also check the system sysroot as a secondary location
@@ -392,15 +425,16 @@ async fn ensure_rust_src() {
         .output()
         .await
         .ok()
-        .and_then(|o| if o.status.success() {
-            Some(String::from_utf8_lossy(&o.stdout).trim().to_string())
-        } else {
-            None
+        .and_then(|o| {
+            if o.status.success() {
+                Some(String::from_utf8_lossy(&o.stdout).trim().to_string())
+            } else {
+                None
+            }
         });
 
     if let Some(ref sysroot) = sys_sysroot {
-        let lib_path = std::path::PathBuf::from(sysroot)
-            .join("lib/rustlib/src/rust/library");
+        let lib_path = std::path::PathBuf::from(sysroot).join("lib/rustlib/src/rust/library");
         if lib_path.exists() {
             println!("[LSP-INSTALL] rust-src found at system sysroot {} but NOT in RA's sysroot — installing for RA's toolchain", lib_path.display());
         }

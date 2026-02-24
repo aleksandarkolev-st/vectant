@@ -449,7 +449,7 @@ class ValidatingPersistence {
 
       // ── 1. Hash cache update (fast, debounced at FLUSH_DEBOUNCE_MS) ──
       if (entry.flushTimer) clearTimeout(entry.flushTimer);
-      entry.flushTimer = setTimeout(() => {
+      entry.flushTimer = setTimeout(async () => {
         entry.flushTimer = null;
         try {
           const content = targetText.toString();
@@ -2946,6 +2946,10 @@ const notifyWss = new WebSocket.Server({ noServer: true });
 // Clients connect to /session-events?sessionId=<id>&userId=<id>.
 const sessionWss = new WebSocket.Server({ noServer: true });
 
+// Terminal PTY WebSocket server — spawns shell sessions via node-pty.
+// Clients connect to /terminal?sessionId=<id>&workspace=<slug>&cols=N&rows=N.
+const terminalWss = createTerminalWSS();
+
 // Grace period for guest disconnect → reconnect (prevents phantom kicks)
 const GUEST_DISCONNECT_GRACE_MS = 30_000;
 /** @type {Map<string, NodeJS.Timeout>} userId → timeout handle */
@@ -3141,12 +3145,52 @@ wss.on('connection', (ws, req) => {
 });
 
 server.on('upgrade', (request, socket, head) => {
-  const roomName = request.url ? request.url.slice(1).split('?')[0] : 'unknown';
-  console.log(`[Collab DEBUG] Upgrade request for room: ${roomName}`);
-  
-  // We accept all WebSocket connections at any path (room name encoded in path)
-  wss.handleUpgrade(request, socket, head, (ws) => {
-    wss.emit('connection', ws, request);
+  const pathname = request.url ? request.url.slice(1).split('?')[0] : 'unknown';
+  console.log(`[Collab DEBUG] Upgrade request for room: ${pathname}`);
+
+  if (pathname === 'notifications') {
+    // Route to lightweight notification WebSocket server
+    notifyWss.handleUpgrade(request, socket, head, (ws) => {
+      notifyWss.emit('connection', ws, request);
+    });
+  } else if (pathname === 'session-events') {
+    // Route to session event WebSocket server
+    sessionWss.handleUpgrade(request, socket, head, (ws) => {
+      sessionWss.emit('connection', ws, request);
+    });
+  } else if (pathname === 'terminal') {
+    // Route to terminal PTY WebSocket server
+    terminalWss.handleUpgrade(request, socket, head, (ws) => {
+      terminalWss.emit('connection', ws, request);
+    });
+  } else {
+    // All other paths are Yjs document rooms
+    wss.handleUpgrade(request, socket, head, (ws) => {
+      wss.emit('connection', ws, request);
+    });
+  }
+});
+
+// ── Notification WS connection handler ──────────────────────────────
+notifyWss.on('connection', (ws, req) => {
+  const params = new URLSearchParams((req.url || '').split('?')[1] || '');
+  ws._slug = params.get('slug') || null;
+  ws._userId = params.get('userId') ? decodeURIComponent(params.get('userId')) : null;
+  ws._sessionId = params.get('sessionId') || null;
+  console.log(`[Collab] Notification WS connected — slug=${ws._slug}, userId=${ws._userId}`);
+  ws.on('close', () => {
+    console.log(`[Collab] Notification WS disconnected — slug=${ws._slug}, userId=${ws._userId}`);
+  });
+});
+
+// ── Session-events WS connection handler ────────────────────────────
+sessionWss.on('connection', (ws, req) => {
+  const params = new URLSearchParams((req.url || '').split('?')[1] || '');
+  ws._sessionId = params.get('sessionId') || null;
+  ws._userId = params.get('userId') ? decodeURIComponent(params.get('userId')) : null;
+  console.log(`[Collab] Session WS connected — session=${ws._sessionId}, userId=${ws._userId}`);
+  ws.on('close', () => {
+    console.log(`[Collab] Session WS disconnected — session=${ws._sessionId}, userId=${ws._userId}`);
   });
 });
 

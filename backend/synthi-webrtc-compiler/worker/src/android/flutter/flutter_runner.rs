@@ -59,7 +59,7 @@ pub async fn find_flutter_binary() -> Result<PathBuf> {
         "/opt/flutter/bin/flutter",
         "/usr/local/flutter/bin/flutter",
         "/home/worker/flutter/bin/flutter",
-        "/home/sasho/flutter/bin/flutter",  // Common dev machine location
+        "/home/sasho/flutter/bin/flutter", // Common dev machine location
     ];
 
     for path in &common_paths {
@@ -142,49 +142,50 @@ pub async fn run_flutter_build_apk(
     if let Some(cb) = log_callback {
         cb("Performing aggressive workspace cleanup...".to_string());
     }
-    
+
     // Debug: Print main.dart content to logs to verify sync status
     let main_dart = project_root.join("lib/main.dart");
     if main_dart.exists() {
         if let Ok(content) = tokio::fs::read_to_string(&main_dart).await {
             if let Some(cb) = log_callback {
-                cb(format!("[debug] lib/main.dart content preview (FULL):\n{}", content));
+                cb(format!(
+                    "[debug] lib/main.dart content preview (FULL):\n{}",
+                    content
+                ));
             }
         }
     }
 
-    let dirs_to_clean = ["build", ".dart_tool", "android/.gradle", "android/app/build"];
+    let dirs_to_clean = [
+        "build",
+        ".dart_tool",
+        "android/.gradle",
+        "android/app/build",
+    ];
     for dir in dirs_to_clean {
         let p = project_root.join(dir);
         if p.exists() {
-             let _ = tokio::fs::remove_dir_all(&p).await;
+            let _ = tokio::fs::remove_dir_all(&p).await;
         }
     }
 
     let mut args = vec!["build", "apk"];
-    
+
     if release {
         args.push("--release");
     } else {
         args.push("--debug");
     }
-    
+
     // REMOVED --verbose to reduce log noise
     // args.push("--verbose");
-    
+
     // Add any extra arguments
     for arg in extra_args {
         args.push(arg);
     }
 
-    run_flutter_command(
-        project_root,
-        &args,
-        env_vars,
-        log_callback,
-        timeout_secs,
-    )
-    .await
+    run_flutter_command(project_root, &args, env_vars, log_callback, timeout_secs).await
 }
 
 /// Runs `flutter build appbundle` for release builds

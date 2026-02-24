@@ -7,6 +7,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const nextConfig = {
   // Turbopack-specific configuration (used by `next dev --turbopack`)
   turbopack: {
+    root: __dirname,
     resolveAlias: {
       // Ensure a single Monaco instance: monaco-languageclient uses
       // @codingame/monaco-vscode-editor-api internally; the editor must

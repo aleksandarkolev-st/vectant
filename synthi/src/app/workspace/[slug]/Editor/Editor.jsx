@@ -1,6 +1,6 @@
 // src/app/Editor.jsx
 'use client';
-import { useCallback, useEffect, useLayoutEffect, useState, useRef } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useState, useRef, useMemo } from 'react';
 import Editor, { DiffEditor, loader } from '@monaco-editor/react';
 import { getMonacoLanguage } from '@/utils/languageMapper';
 import dynamic from 'next/dynamic';
@@ -52,6 +52,7 @@ import { useEditorProviders } from './providers';
 import { useEditorEvents } from './events';
 import { takeLastChars, useCustomScrollbar } from './utils';
 import { SYNTHI_THEME } from './theme';
+import { useTheme } from '@/components/ThemeProvider';
 import { ConflictBanner } from './ConflictBanner';
 import MergeConflictEditor from '@/components/git/MergeConflictEditor';
 import { useSessionPermissions } from '@/hooks/useCollabSession';
@@ -69,6 +70,18 @@ const ErrorAction = {
     Continue: 1,
     Shutdown: 2,
 };
+
+// ── Suppress known @codingame/monaco-vscode-api "Unsupported" noise ─
+// The stub in missing-services.js fires a console.error for every unregistered
+// service method (e.g. MarkdownRendererService.setDefaultCodeBlockRenderer).
+// These are harmless in the standalone editor and clutter the dev overlay.
+if (typeof window !== 'undefined') {
+    const _origConsoleError = console.error;
+    console.error = function (...args) {
+        if (typeof args[0] === 'string' && args[0].startsWith('Unsupported:') && args[0].includes('is not supported')) return;
+        return _origConsoleError.apply(this, args);
+    };
+}
 
 // ── Language registration for @codingame/monaco-vscode-api ──────────
 // The vscode-api layer doesn't know about languages like Java, Go, Rust, etc.
@@ -167,25 +180,19 @@ const TerminalManagerDyn = dynamic(() => import('../../TerminalManager.jsx'), {
 let servicesInitialized = false;
 let servicesInitPromise = null; // serialize concurrent init attempts
 
-// ===== SYNTHI BRAND Design Tokens - Updated for better contrast =====
+// ===== SYNTHI BRAND Design Tokens - Theme-aware via CSS vars =====
 const TAB_TOKENS = {
-    // Active tab matches editor exactly (seamless connection)
-    activeBg: '#0c0d12',      // bg-editor (darker)
-    // Inactive tabs much more faded
-    inactiveBg: '#08090d',    // bg-app (darker)
-    hoverBg: '#101118',       // panel bg
-    // Accent color for focus indicators - TEAL - brighter
-    primary: '#3a8574',       // accent-primary (Synthi teal)
-    primaryGlow: '0 0 14px rgba(58, 133, 116, 0.6)',
-    // Border colors - stronger
-    borderSubtle: '#1a1b24',  // border-subtle
-    borderFocus: '#3a3b52',   // border-focus
-    // Text colors - more contrast
-    textPrimary: '#f4f5f8',   // text-primary
-    textSecondary: '#9ba2b8', // text-secondary
-    textInactive: '#4a5066',  // text for inactive tabs - much dimmer
-    // Status colors
-    unsaved: '#ff6b6b',       // coral red for unsaved
+    activeBg: 'var(--bg-editor, #0c0d12)',
+    inactiveBg: 'var(--bg-app, #08090d)',
+    hoverBg: 'var(--bg-surface, #101118)',
+    primary: 'var(--accent-primary, #3a8574)',
+    primaryGlow: '0 0 14px color-mix(in srgb, var(--accent-primary, #3a8574) 60%, transparent)',
+    borderSubtle: 'var(--border-subtle, #1a1b24)',
+    borderFocus: 'var(--border-focus, #3a3b52)',
+    textPrimary: 'var(--text-primary, #f4f5f8)',
+    textSecondary: 'var(--text-secondary, #9ba2b8)',
+    textInactive: 'var(--text-dim, #4a5066)',
+    unsaved: 'var(--accent-danger, #ff6b6b)',
 };
 
 const EditorPanel = ({
@@ -232,6 +239,9 @@ const EditorPanel = ({
     // Collaboration permissions — enforce read-only for guests without canEdit
     const { canEdit: collabCanEdit, role: collabRole } = useSessionPermissions();
     const isCollabReadOnly = collabRole === 'guest' && !collabCanEdit;
+
+    // Theme context — provides monacoRef for live theme switching
+    const { monacoRef: themeMonacoRef, reapply: reapplyTheme } = useTheme();
 
     // Local state
     const [position, setPosition] = useState({ lineNumber: 1, column: 1 });
@@ -308,6 +318,21 @@ const EditorPanel = ({
     const [tabIndicator, setTabIndicator] = useState({ left: 0, width: 0, visible: false });
     const [hoveredTabPath, setHoveredTabPath] = useState(null);
     const tabRefs = useRef({});
+
+    // ── Presence hover-card state ────────────────
+    const [hoverPresence, setHoverPresence] = useState(null); // { user, clientId, rect, cursor }
+    const hoverHideTimeoutRef = useRef(null);
+    const showAnonymousPresence = false; // flip to true to show anonymous users in the presence list
+    const hoverCardStyle = useMemo(() => {
+        if (!hoverPresence?.rect) return null;
+        const { rect } = hoverPresence;
+        return {
+            position: 'fixed',
+            left: rect.left + rect.width / 2 - 112, // centre the 224px card on the avatar
+            top: rect.bottom + 6,
+            zIndex: 9999,
+        };
+    }, [hoverPresence]);
 
     const { client: compilerClient, status: compilerStatus } = useCompiler();
     const languageClientsRef = useRef(new Map());
@@ -3238,9 +3263,9 @@ const EditorPanel = ({
 
 
     const editorUI = (
-                    <div className="h-full flex flex-col bg-[#0c0d12] rounded-tl-lg rounded-tr-lg overflow-hidden">
+                    <div className="h-full flex flex-col rounded-tl-lg rounded-tr-lg overflow-hidden" style={{ background: 'var(--bg-editor)' }}>
                         {/* Minimal Sleek Header - Synthi Brand Theme */}
-                        <div className="h-10 border-b-2 border-[#1a1b24] bg-[#08090d] flex justify-between select-none shadow-sm">
+                        <div className="h-10 border-b-2 flex justify-between select-none shadow-sm" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-app)' }}>
 
                             {/* Breadcrumbs */}
                                 <div className="h-full flex min-w-0 relative group tabs-container-wrapper">
@@ -3257,8 +3282,8 @@ const EditorPanel = ({
                                                 left: tabIndicator.left,
                                                 width: tabIndicator.width,
                                                 opacity: tabIndicator.visible ? 1 : 0,
-                                                background: 'linear-gradient(90deg, #3a8574, #4aba9a, #3a8574)',
-                                                boxShadow: '0 0 8px rgba(58, 133, 116, 0.5)',
+                                                background: 'linear-gradient(90deg, var(--accent-primary), var(--accent-secondary), var(--accent-primary))',
+                                                boxShadow: '0 0 8px color-mix(in srgb, var(--accent-primary) 50%, transparent)',
                                                 transition: 'left 0.15s cubic-bezier(0.4, 0, 0.2, 1), width 0.15s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.1s ease',
                                                 borderRadius: '2px 2px 0 0',
                                                 willChange: 'left, width',
@@ -3307,7 +3332,7 @@ const EditorPanel = ({
                                                         e.preventDefault();
                                                         setTabContext({ visible: true, x: e.clientX, y: e.clientY, file, index: idx });
                                                     }}
-                                                    className={`group flex items-center gap-2 px-3 cursor-pointer select-none transition-all duration-200 ${isActive ? 'text-[#f4f5f8] bg-[#0c0d12]' : 'text-[#4a5066] bg-[#08090d] hover:bg-[#0c0d12] hover:text-[#9ba2b8] opacity-60 hover:opacity-90'}`}
+                                                    className={`group flex items-center gap-2 px-3 cursor-pointer select-none transition-all duration-200`}
                                                     title={file.path}
                                                     style={{
                                                         minWidth: 130,
@@ -3320,97 +3345,112 @@ const EditorPanel = ({
                                                         borderRadius: isActive ? '8px 8px 0 0' : '0',
                                                         marginLeft: '0',
                                                         position: 'relative',
+                                                        background: isActive ? TAB_TOKENS.activeBg : TAB_TOKENS.inactiveBg,
+                                                        color: isActive ? TAB_TOKENS.textPrimary : TAB_TOKENS.textInactive,
+                                                        opacity: isActive ? 1 : 0.6,
                                                     }}
                                                 >
                                                     <span className={`flex-shrink-0 text-sm ${isActive ? 'opacity-90' : 'opacity-50'}`} aria-hidden="true">
-                                                        {loadingFiles.includes(file.path) ? <Loader2 className="w-4 h-4 animate-spin text-[#3a8574]" /> : fileIcon}
+                                                        {loadingFiles.includes(file.path) ? <Loader2 className="w-4 h-4 animate-spin" style={{ color: TAB_TOKENS.primary }} /> : fileIcon}
                                                     </span>
                                                     <div className="flex flex-col min-w-0 overflow-hidden">
-                                                        <span className={`text-[13px] truncate ${isActive ? 'text-[#f4f5f8] font-semibold' : 'text-[#9ba2b8] font-normal'}`}>
+                                                        <span className={`text-[13px] truncate ${isActive ? 'font-semibold' : 'font-normal'}`} style={{ color: isActive ? TAB_TOKENS.textPrimary : TAB_TOKENS.textSecondary }}>
                                                             {file.name}
                                                         </span>
                                                         {/* Breadcrumb path - shows parent folder context - only for active */}
                                                         {parentPath && isActive && (
-                                                            <span className="text-[9px] text-[#5a6178] truncate">
+                                                            <span className="text-[9px] truncate" style={{ color: 'var(--text-muted)' }}>
                                                                 {parentPath}
                                                             </span>
                                                         )}
                                                     </div>
 
-                                                    {/* Presence avatars — small colored dots for remote users on this file */}
-                                                    {(() => {
-                                                        const fileUsers = presenceByFile[file.path];
-                                                        if (!fileUsers || fileUsers.length === 0) return null;
-                                                        return (
-                                                            <div className="flex items-center -space-x-1 flex-shrink-0 group-hover:hidden" title={fileUsers.map(u => u.name).join(', ')}>
-                                                                {fileUsers.slice(0, 3).map((u) => (
-                                                                    u.image ? (
-                                                                        <img
-                                                                            key={u.userId}
-                                                                            src={u.image}
-                                                                            alt={u.name}
-                                                                            style={{
-                                                                                width: 14, height: 14,
-                                                                                borderRadius: '50%',
-                                                                                border: `1.5px solid ${u.color}`,
-                                                                                objectFit: 'cover',
-                                                                            }}
-                                                                        />
-                                                                    ) : (
-                                                                        <span
-                                                                            key={u.userId}
-                                                                            style={{
-                                                                                width: 10, height: 10,
-                                                                                borderRadius: '50%',
-                                                                                backgroundColor: u.color,
-                                                                                display: 'inline-block',
-                                                                                border: '1.5px solid #0c0d12',
-                                                                                flexShrink: 0,
-                                                                            }}
-                                                                        />
-                                                                    )
-                                                                ))}
-                                                                {fileUsers.length > 3 && (
-                                                                    <span style={{
-                                                                        fontSize: 8, color: '#7c80a0', marginLeft: 2,
-                                                                        fontWeight: 600, lineHeight: 1,
-                                                                    }}>+{fileUsers.length - 3}</span>
-                                                                )}
-                                                            </div>
-                                                        );
-                                                    })()}
-
-                                                    {/* VSCode-style: unsaved dot and close button share the same slot.
-                                                        • When unsaved & not hovered → coral dot visible
-                                                        • When hovered (regardless of state) → close ✕ visible
-                                                        • When saved & not hovered → empty (reserving space) */}
-                                                    <div className="ml-auto w-5 h-5 flex-shrink-0 flex items-center justify-center relative">
-                                                        {/* Unsaved dot — hidden on group hover so the close ✕ takes over.
-                                                            When autosave is ON, suppress the dot for LOCAL unsaved state to
-                                                            avoid a brief flicker between the edit and the autosave debounce.
-                                                            Remote unsaved state always shows regardless of local autosave. */}
-                                                        {((!autoSaveEnabled && (file.isUnsaved || (isActive && isUnsaved))) || (isActive && remoteUnsaved)) && (
-                                                            <Circle
-                                                                className="w-2.5 h-2.5 fill-[#ff6b6b] text-[#ff6b6b] drop-shadow-[0_0_4px_rgba(255,107,107,0.6)] group-hover:hidden"
-                                                            />
-                                                        )}
-                                                        {/* Close button — always in DOM for hover, hidden until group hover */}
-                                                        <button
-                                                            onClick={(e) => { e.stopPropagation(); dispatch(closeFile(file.path)); }}
-                                                            className={`absolute inset-0 items-center justify-center rounded-full transition-all duration-150 hidden group-hover:flex ${isActive ? 'text-[#f4f5f8]/80 hover:text-[#f4f5f8] hover:bg-[#3a857430]' : 'text-[#5a6178] hover:text-[#f4f5f8] hover:bg-[#1a1b24]'}`}
-                                                            aria-label={`Close ${file.name}`}
+                                                 {/* Presence avatars — small colored dots/avatars for remote users on this file */}
+                                                {(() => {
+                                                    const fileUsers = presenceByFile[file.path];
+                                                    if (!fileUsers || fileUsers.length === 0) return null;
+                                                    return (
+                                                        <div 
+                                                            className="flex items-center -space-x-1 flex-shrink-0 group-hover:hidden" 
+                                                            title={fileUsers.map(u => u.name).join(', ')}
                                                         >
-                                                            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" className="pointer-events-none">
-                                                                <path d="M18 6L6 18" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-                                                                <path d="M6 6L18 18" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-                                                            </svg>
-                                                        </button>
-                                                    </div>
+                                                            {fileUsers.slice(0, 3).map((u) => (
+                                                                u.image ? (
+                                                                    <img
+                                                                        key={u.userId}
+                                                                        src={u.image}
+                                                                        alt={u.name}
+                                                                        style={{
+                                                                            width: 14, height: 14,
+                                                                            borderRadius: '50%',
+                                                                            border: `1.5px solid ${u.color}`,
+                                                                            objectFit: 'cover',
+                                                                        }}
+                                                                    />
+                                                                ) : (
+                                                                    <span
+                                                                        key={u.userId}
+                                                                        style={{
+                                                                            width: 10, height: 10,
+                                                                            borderRadius: '50%',
+                                                                            backgroundColor: u.color,
+                                                                            display: 'inline-block',
+                                                                            border: '1.5px solid var(--bg-primary, #0c0d12)',
+                                                                            flexShrink: 0,
+                                                                        }}
+                                                                    />
+                                                                )
+                                                            ))}
+                                                            {fileUsers.length > 3 && (
+                                                                <span style={{
+                                                                    fontSize: 8, 
+                                                                    color: 'var(--text-muted)', 
+                                                                    marginLeft: 2,
+                                                                    fontWeight: 600, 
+                                                                    lineHeight: 1,
+                                                                }}>+{fileUsers.length - 3}</span>
+                                                            )}
+                                                        </div>
+                                                    );
+                                                })()}
+
+                                                {/* VSCode-style: unsaved dot and close button share the same slot. */}
+                                                <div className="ml-auto w-5 h-5 flex-shrink-0 flex items-center justify-center relative">
+                                                    {/* Unsaved dot — using TAB_TOKENS for theme-adaptive coloring.
+                                                        Logic: Only show if (Manual Save + Local Unsaved) OR (Remote Unsaved).
+                                                    */}
+                                                    {((!autoSaveEnabled && (file.isUnsaved || (isActive && isUnsaved))) || (isActive && remoteUnsaved)) && (
+                                                        <span 
+                                                            aria-hidden="true" 
+                                                            className="w-2 h-2 rounded-full flex-shrink-0 transition-opacity group-hover:hidden" 
+                                                            style={{ 
+                                                                backgroundColor: TAB_TOKENS.unsaved, 
+                                                                boxShadow: `0 0 6px color-mix(in srgb, ${TAB_TOKENS.unsaved} 60%, transparent)` 
+                                                            }} 
+                                                        />
+                                                    )}
+
+                                                    {/* Close button — uses theme variables for text and hover backgrounds */}
+                                                    <button
+                                                        onClick={(e) => { e.stopPropagation(); dispatch(closeFile(file.path)); }}
+                                                        className={`absolute inset-0 items-center justify-center rounded-full transition-all duration-150 hidden group-hover:flex 
+                                                            ${isActive 
+                                                                ? 'text-[var(--text-primary)] opacity-80 hover:opacity-100 hover:bg-[var(--hover-bg-active)]' 
+                                                                : 'text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--hover-bg-inactive)]'
+                                                            }`}
+                                                        aria-label={`Close ${file.name}`}
+                                                    >
+                                                        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" className="pointer-events-none">
+                                                            <path d="M18 6L6 18" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                                                            <path d="M6 6L18 18" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                                                        </svg>
+                                                    </button>
+                                                  </div>
                                                 </div>
                                             </div>
                                         );
                                     }) : (
-                                        <span className="text-[#5a6178] text-xs italic px-3 flex items-center">No file open</span>
+                                        <span className="text-xs italic px-3 flex items-center" style={{ color: 'var(--text-muted)' }}>No file open</span>
                                     )}
                                     </div>
                                     {/* Custom Scrollbar - Synthi accent */}
@@ -3428,9 +3468,9 @@ const EditorPanel = ({
                                         style={{ position: 'fixed', left: tabContext.x, top: tabContext.y, zIndex: 9999 }}
                                         onMouseLeave={() => setTabContext({ visible: false, x: 0, y: 0, file: null, index: -1 })}
                                     >
-                                        <div className="bg-[#0c0d12] border border-[#1a1b24] rounded-lg shadow-lg text-sm text-[#f4f5f8]">
-                                            <div className="px-3 py-2 hover:bg-[#3a857418] hover:text-[#4aba9a] cursor-pointer rounded-t-lg transition-colors" onClick={() => { if (tabContext.file) dispatch(closeFile(tabContext.file.path)); setTabContext({ visible: false, x: 0, y: 0, file: null, index: -1 }); }}>Close</div>
-                                            <div className="px-3 py-2 hover:bg-[#3a857418] hover:text-[#4aba9a] cursor-pointer transition-colors" onClick={() => {
+                                        <div className="rounded-lg shadow-lg text-sm border" style={{ background: TAB_TOKENS.activeBg, borderColor: TAB_TOKENS.borderSubtle, color: TAB_TOKENS.textPrimary }}>
+                                            <div className="px-3 py-2 cursor-pointer rounded-t-lg transition-colors" style={{ ':hover': undefined }} onClick={() => { if (tabContext.file) dispatch(closeFile(tabContext.file.path)); setTabContext({ visible: false, x: 0, y: 0, file: null, index: -1 }); }}>Close</div>
+                                            <div className="px-3 py-2 cursor-pointer transition-colors" onClick={() => {
                                                 if (tabContext.file) {
                                                     const keep = tabContext.file.path;
                                                     const toClose = openFiles.filter(f => f.path !== keep).map(f => f.path);
@@ -3438,7 +3478,7 @@ const EditorPanel = ({
                                                 }
                                                 setTabContext({ visible: false, x: 0, y: 0, file: null, index: -1 });
                                             }}>Close Others</div>
-                                            <div className="px-3 py-2 hover:bg-[#3a857418] hover:text-[#4aba9a] cursor-pointer rounded-b-lg transition-colors" onClick={() => {
+                                            <div className="px-3 py-2 cursor-pointer rounded-b-lg transition-colors" onClick={() => {
                                                 if (tabContext.index >= 0) {
                                                     const toClose = openFiles.slice(tabContext.index + 1).map(f => f.path);
                                                     toClose.forEach(p => dispatch(closeFile(p)));
@@ -3453,17 +3493,95 @@ const EditorPanel = ({
 
                             {/* Status & Controls */}
                             <div className="flex items-center gap-2 pr-2">
+                                {/* Collaboration presence */}
+                                <div className="flex items-center gap-1 text-[11px]" style={{ color: 'var(--text-secondary)' }}>
+                                    <button 
+                                        onClick={() => setIsPrivateMode(!isPrivateMode)}
+                                        className={`flex items-center px-1.5 py-0.5 rounded-full transition-all`}
+                                        style={isPrivateMode ? { background: 'color-mix(in srgb, var(--accent-danger) 12%, transparent)', color: 'var(--accent-danger)', border: '1px solid color-mix(in srgb, var(--accent-danger) 25%, transparent)' } : {}}
+                                        title={isPrivateMode ? "Enable Collaboration" : "Disable Collaboration (Private Mode)"}
+                                    >
+                                        {isPrivateMode ? <EyeOff className="w-3 h-3" /> : <div className="text-xs h-5" style={{ color: 'var(--text-secondary)' }}>👥</div>}
+                                        {isPrivateMode && <span className="text-[10px] font-bold ml-1">PRIVATE</span>}
+                                    </button>
+                                    
+                                    {!isPrivateMode && (
+                                    <div className="flex items-center gap-2">
+                                        {/* small presence list */}
+                                        {(() => {
+                                            // only show active editors (users with cursor) to avoid many idle/default slots
+                                            const allUsers = (presenceGranularity === 'workspace') ? collabClient.getWorkspaceActiveEditors(slug) : collabClient.getActiveEditors(slug, activeFile?.path);
+                                            const users = allUsers.filter(u => (showAnonymousPresence ? true : !(u.state?.user?.isAnonymous)));
+                                            if (!users || users.length === 0) return <span className="text-xs px-2 py-0.5 rounded-full border" style={{ color: 'var(--text-muted)', background: 'var(--bg-surface)', borderColor: 'var(--border-medium)' }}>Solo</span>;
+                                            return users.slice(0,6).map(u => {
+                                                const user = u.state?.user || {};
+                                                const initials = (user.name || 'U').split(' ').filter(Boolean).map(p => p[0]).slice(0,2).join('').toUpperCase();
+                                                return (
+                                                    <div key={`${u.clientId}-${user.id || 'u'}`} className="relative">
+                                                        <div
+                                                            onMouseEnter={(e) => {
+                                                                // cancel any pending hide
+                                                                if (hoverHideTimeoutRef.current) { clearTimeout(hoverHideTimeoutRef.current); hoverHideTimeoutRef.current = null; }
+                                                                const rect = e.currentTarget.getBoundingClientRect();
+                                                                // find cursor info
+                                                                const found = allUsers.find(x => x.clientId === u.clientId) || u;
+                                                                setHoverPresence({ user, clientId: u.clientId, rect, cursor: found.state?.cursor });
+                                                            }}
+                                                            onMouseLeave={() => {
+                                                                if (hoverHideTimeoutRef.current) clearTimeout(hoverHideTimeoutRef.current);
+                                                                hoverHideTimeoutRef.current = setTimeout(() => setHoverPresence(null), 140);
+                                                            }}
+                                                            className="w-6 h-6 rounded-full flex items-center justify-center text-xs text-white cursor-default shadow-sm"
+                                                            style={{ border: `2px solid ${user.color || 'var(--accent-primary)'}`, background: user.color ? 'color-mix(in srgb, var(--text-primary) 5%, transparent)' : 'var(--bg-surface)' }}
+                                                        >
+                                                            <span style={{ fontSize: 10 }}>{initials}</span>
+                                                        </div>
+                                                    </div>
+                                                );
+                                            });
+                                        })()}
+                                    </div>
+                                    )}
+                                </div>
+
                                 {/* AI Status Indicator - Shows only when loading */}
                                 <div className={`transition-opacity duration-300 ${(aiCompletionState === 'loading' || aiBusy) ? 'opacity-100' : 'opacity-0'}`}>
-                                    <Sparkles className="w-3.5 h-3.5 text-[#327464] animate-pulse" />
+                                    <Sparkles className="w-3.5 h-3.5 animate-pulse" style={{ color: 'var(--accent-primary)' }} />
                                 </div>
 
                                 {/* Manual Save (Optional since we have auto-save) */}
                                 <button onClick={handleSave} className="opacity-60 hover:opacity-100 transition-opacity px-1">
-                                    <Save className="w-4 h-4 text-[#71717a]" />
+                                    <Save className="w-4 h-4" style={{ color: 'var(--text-muted)' }} />
                                 </button>
                             </div>
                         </div>
+
+                        {/* Hover card for presence */}
+                        {hoverCardStyle && hoverPresence && hoverPresence.user && (
+                            <div style={hoverCardStyle} onMouseEnter={() => { if (hoverHideTimeoutRef.current) { clearTimeout(hoverHideTimeoutRef.current); hoverHideTimeoutRef.current = null; } }} onMouseLeave={() => { if (hoverHideTimeoutRef.current) clearTimeout(hoverHideTimeoutRef.current); hoverHideTimeoutRef.current = setTimeout(() => setHoverPresence(null), 140); }}>
+                                <div className="border rounded-md p-2 text-sm shadow-lg w-56" style={{ background: 'var(--bg-elevated)', borderColor: 'var(--border-medium)', color: 'var(--text-primary)' }}>
+                                    <div className="flex items-center gap-2">
+                                        <div className="w-8 h-8 rounded-full flex items-center justify-center text-sm text-white" style={{ background: hoverPresence.user.color || 'var(--accent-primary)' }}>{(hoverPresence.user.name || 'Anonymous').split(' ').map(p => p[0]).slice(0,2).join('').toUpperCase()}</div>
+                                        <div className="flex flex-col">
+                                            <div className="font-semibold text-sm">{hoverPresence.user.name || 'Anonymous'}</div>
+                                            <div className="text-xs" style={{ color: 'var(--text-muted)' }}>{hoverPresence.user.email || (hoverPresence.user.id ? `id: ${hoverPresence.user.id}` : 'Anonymous user')}</div>
+                                        </div>
+                                        <div className="ml-auto flex items-center gap-2">
+                                            <button onClick={() => {
+                                                // jump to user's cursor line if available
+                                                if (!hoverPresence || !hoverPresence.cursor || !editorInstance) return;
+                                                const pos = hoverPresence.cursor.head || hoverPresence.cursor.anchor || null;
+                                                if (!pos) return;
+                                                try {
+                                                    editorInstance.revealPositionInCenter({ lineNumber: pos.line, column: pos.column });
+                                                    editorInstance.setSelection(new monaco.Selection(pos.line, pos.column, pos.line, pos.column));
+                                                } catch (_) {}
+                                            }} className="px-2 py-1 rounded text-xs border" style={{ background: 'var(--bg-surface)', borderColor: 'var(--border-medium)', color: 'var(--text-secondary)' }}>Jump</button>
+                                        </div>
+                                    </div>
+                                </div>      
+                            </div>
+                        )}
 
                         {/* Merge Conflict Resolver — overlays the editor when active.
                             Kept as a sibling (not a conditional replacement) so the Monaco
@@ -3523,6 +3641,18 @@ const EditorPanel = ({
                             <ContextMenu>
                                 <ContextMenuTrigger asChild>
                                     <div className="h-full w-full">
+                                        {/* Gate Monaco editor mounting on servicesReady so that
+                                            wrapper.start() has installed the real MarkdownRendererService
+                                            (and all other service overrides) BEFORE the standalone editor
+                                            constructor runs.  Without this, the @codingame/monaco-vscode-api
+                                            missing-services stub throws:
+                                              "Unsupported: MarkdownRendererService.setDefaultCodeBlockRenderer
+                                               is not supported" */}
+                                        {!servicesReady ? (
+                                            <div className="h-full w-full flex items-center justify-center bg-[#0a0b10]">
+                                                <span className="text-[#4d5168] text-sm select-none animate-pulse">Initializing editor…</span>
+                                            </div>
+                                        ) : (<>
                                         {/* DiffEditor — kept mounted (display:none) once activated
                                             to prevent React unmount crash in
                                             recursivelyTraversePassiveUnmountEffects.
@@ -3532,15 +3662,16 @@ const EditorPanel = ({
                                         {diffModeEverActive && (
                                             <div className="h-full w-full relative flex flex-col" style={{ display: diffMode ? 'flex' : 'none' }}>
                                                 {/* Diff view header with close button */}
-                                                <div className="flex items-center justify-between px-3 py-1 bg-[#0d0e14] border-b border-[#1e1f2e] text-xs shrink-0 select-none" style={{ height: 32 }}>
+                                                <div className="flex items-center justify-between px-3 py-1 border-b text-xs shrink-0 select-none" style={{ height: 32, background: 'var(--bg-panel)', borderColor: 'var(--border-subtle)' }}>
                                                     <div className="flex items-center gap-2 min-w-0">
-                                                        <span className="text-[#e8eaf0] font-medium truncate">{activeFile?.name || 'Unknown'}</span>
-                                                        <span className="text-[#4d5168]">•</span>
-                                                        <span className="text-[#7c80a0] whitespace-nowrap">Working Copy ↔ HEAD</span>
+                                                        <span className="font-medium truncate" style={{ color: 'var(--text-primary)' }}>{activeFile?.name || 'Unknown'}</span>
+                                                        <span style={{ color: 'var(--text-dim, var(--text-muted))' }}>•</span>
+                                                        <span className="whitespace-nowrap" style={{ color: 'var(--text-secondary)' }}>Working Copy ↔ HEAD</span>
                                                     </div>
                                                     <button
                                                         onClick={() => dispatch(setDiffMode(false))}
-                                                        className="flex items-center justify-center w-6 h-6 rounded hover:bg-[#1e1f2e] text-[#7c80a0] hover:text-[#e8eaf0] transition-colors shrink-0"
+                                                        className="flex items-center justify-center w-6 h-6 rounded transition-colors shrink-0"
+                                                        style={{ color: 'var(--text-secondary)' }}
                                                         title="Close diff view (Esc)"
                                                         aria-label="Close diff view"
                                                     >
@@ -3615,6 +3746,12 @@ const EditorPanel = ({
                                                     setEditorInstance(editor);
                                                     setMonacoInstance(monaco);
                                                     if (onEditorMount) onEditorMount(editor);
+
+                                                    // Wire Monaco into ThemeProvider for live theme switching
+                                                    if (themeMonacoRef) {
+                                                        themeMonacoRef.current = monaco;
+                                                        reapplyTheme();
+                                                    }
 
                                                     // Hard reset: clear only SYNTHI-owned markers on initial mount.
                                                     // P0: Do NOT clear all markers — LSP-published diagnostics must survive.
@@ -3728,9 +3865,10 @@ const EditorPanel = ({
                                                 }}
                                             />
                                         </div>
+                                        </>)}
                                     </div>
                                 </ContextMenuTrigger>
-                                <ContextMenuContent className="w-56 bg-[#252526] border-[#454545] text-gray-200">
+                                <ContextMenuContent className="w-56" style={{ background: 'var(--bg-elevated)', borderColor: 'var(--border-medium)', color: 'var(--text-primary)' }}>
                                     <ContextMenuItem onClick={onRun}>Run File</ContextMenuItem>
                                     <ContextMenuItem onClick={() => editorInstance?.getAction('editor.action.formatDocument')?.run()}>
                                         Format Document
@@ -3738,7 +3876,7 @@ const EditorPanel = ({
                                     <ContextMenuItem onClick={() => handleSave()}>
                                         Save
                                     </ContextMenuItem>
-                                    <ContextMenuSeparator className="bg-[#454545]" />
+                                    <ContextMenuSeparator style={{ background: 'var(--border-medium)' }} />
                                     <ContextMenuItem onClick={() => editorInstance?.getAction('actions.find')?.run()}>
                                         Find
                                     </ContextMenuItem>
@@ -3765,7 +3903,7 @@ const EditorPanel = ({
 
                 {showTerminal && (
                     <>
-                        <ResizableHandle className="bg-[#1a1a1e] h-px hover:bg-[#327464]" />
+                        <ResizableHandle className="h-px" style={{ background: 'var(--border-subtle)' }} />
                         <ResizablePanel defaultSize={30} minSize={15}>
                             <TerminalManagerDyn visible={true} onCloseAll={onToggleTerminal} workspaceSlug={slug} />
                         </ResizablePanel>
