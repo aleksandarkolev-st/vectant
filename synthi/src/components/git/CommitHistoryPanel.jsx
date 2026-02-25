@@ -171,6 +171,11 @@ function CommitDetailPane({ detail, loading, onClose, onFileClick }) {
   if (!detail) return null;
 
   const files = detail.files || [];
+  const totalInsertions = files.reduce((s, f) => s + (f.insertions || 0), 0);
+  const totalDeletions = files.reduce((s, f) => s + (f.deletions || 0), 0);
+  const totalChanges = totalInsertions + totalDeletions;
+  // Build a mini bar chart of insertions vs deletions
+  const insPercent = totalChanges > 0 ? Math.round((totalInsertions / totalChanges) * 100) : 50;
 
   return (
     <div className="border-t border-[#27272a] bg-[#111113] max-h-[50%] overflow-auto">
@@ -213,6 +218,8 @@ function CommitDetailPane({ detail, loading, onClose, onFileClick }) {
           <div className="flex items-center gap-1.5">
             <FileText className="w-3 h-3 text-[#52525b]" />
             <span className="text-[11px] text-[#71717a] font-medium">{files.length} file{files.length !== 1 ? 's' : ''} changed</span>
+            {totalInsertions > 0 && <span className="text-emerald-400 text-[10px] font-mono">+{totalInsertions}</span>}
+            {totalDeletions > 0 && <span className="text-red-400 text-[10px] font-mono">−{totalDeletions}</span>}
           </div>
           <button
             onClick={() => setShowDiff(!showDiff)}
@@ -221,6 +228,16 @@ function CommitDetailPane({ detail, loading, onClose, onFileClick }) {
             {showDiff ? 'Hide diff' : 'Show diff'}
           </button>
         </div>
+        {/* Insertions/deletions bar */}
+        {totalChanges > 0 && (
+          <div className="flex items-center gap-2 mb-2">
+            <div className="flex-1 h-1.5 bg-[#27272a] rounded-full overflow-hidden flex">
+              <div className="bg-emerald-500 h-full transition-all" style={{ width: `${insPercent}%` }} />
+              <div className="bg-red-500 h-full transition-all" style={{ width: `${100 - insPercent}%` }} />
+            </div>
+            <span className="text-[9px] text-[#52525b] flex-shrink-0">{totalChanges} changes</span>
+          </div>
+        )}
         {files.length > 0 && (
           <ul className="space-y-0.5 mb-2">
             {files.map((f, i) => (
