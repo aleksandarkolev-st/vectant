@@ -15,7 +15,7 @@ import {
   Copy, ArrowRightLeft, GitBranch, Clock, Plus, Minus,
 } from 'lucide-react';
 import { toast } from 'sonner';
-import { MarkdownRenderer, MarkdownEditor} from './MarkdownRenderer';
+import { MarkdownRenderer, MarkdownEditor, MarkdownToolbar } from './MarkdownRenderer';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -148,6 +148,7 @@ function CommentBox({ onSubmit, placeholder = 'Leave a comment…', submitLabel 
             color: mode === 'preview' ? 'var(--text-primary)' : 'var(--text-muted)',
           }}>Preview</button>
       </div>
+      {mode === 'write' && <MarkdownToolbar textareaRef={textareaRef} />}
       {mode === 'write' ? (
         <textarea
           ref={textareaRef}
