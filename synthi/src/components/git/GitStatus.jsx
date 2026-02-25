@@ -3,7 +3,7 @@ import { useDispatch, useSelector } from 'react-redux';
 import {
   fetchGitStatus, fetchRemote, commitChanges, pushChanges, pullChanges,
   stageFile, unstageFile, discardChange, initRepo, cloneRepo,
-  addRemote, removeRemote, fetchRemotes, fetchCommitHistory,
+  addRemote, removeRemote, setRemoteUrl, fetchRemotes, fetchCommitHistory,
   fetchUnpushedCommits, fetchIncomingCommits, fetchStashList,
   stashPush, stashPop, stashDrop, clearError, stageAll, unstageAll,
   discardAll, resolveConflictOurs, resolveConflictTheirs,
@@ -14,7 +14,7 @@ import {
   RefreshCw, Check, CheckCircle2, UploadCloud, Plus, Minus, DownloadCloud,
   Undo2, Globe, Trash2, Copy, Archive, ArchiveRestore,
   AlertTriangle, GitMerge, X, Edit3, Search, ChevronDown, ChevronRight,
-  ExternalLink, ShieldAlert, ArrowUpCircle, ArrowDownCircle, GitPullRequest, Key
+  ExternalLink, ShieldAlert, ArrowUpCircle, ArrowDownCircle, GitPullRequest, Key, Maximize2
 } from 'lucide-react';
 import { fetchGithubInfo, fetchPRList, setActivePR, setHasToken } from '@/redux/prSlice';
 import { getStoredToken } from '@/services/prClient';
@@ -26,6 +26,14 @@ import {
   commitWebUrl, parseConventionalCommit, ccColor, groupCommitsByDate,
   buildCommitGraph, relativeTime
 } from './gitUtils';
+import {
+  openTab, activateTabAction, setFocusedTabGroup,
+  selectNodes, selectTabs,
+} from '@/components/docking-wm/state/layout-slice';
+import { IDE_PANEL } from '@/components/docking-wm/panels/ide-panels';
+import dynamic from 'next/dynamic';
+
+const HunkStagingView = dynamic(() => import('./HunkStagingView'), { ssr: false });
 
 /* ─────────────── tiny sub-components ─────────────── */
 
@@ -190,7 +198,10 @@ export function GitStatus({ slug }) {
   const [showAddRemote, setShowAddRemote] = useState(false);
   const [newRemoteName, setNewRemoteName] = useState('origin');
   const [newRemoteUrl, setNewRemoteUrl] = useState('');
+  const [editingRemote, setEditingRemote] = useState(null);   // remote name being edited
+  const [editRemoteUrl, setEditRemoteUrl] = useState('');      // edited URL value
   const [showAllCommits, setShowAllCommits] = useState(false);
+  const [hunkStagingFile, setHunkStagingFile] = useState(null); // file path for hunk staging
   const [stashMessage, setStashMessage] = useState('');
   const [cloneUrl, setCloneUrl] = useState('');
   const [showClone, setShowClone] = useState(false);
@@ -198,6 +209,100 @@ export function GitStatus({ slug }) {
   const [showSearch, setShowSearch] = useState(false);
   const [securityDismissed, setSecurityDismissed] = useState(false);
   const searchInputRef = useRef(null);
+
+  // ── docking WM helpers for opening PR panel ────
+  const dockNodes = useSelector(selectNodes);
+  const dockTabs = useSelector(selectTabs);
+
+  /** Open (or focus) the Pull Requests panel in the docking layout */
+  const openPRPanel = useCallback(() => {
+    // Check if a PR tab already exists
+    const panelType = IDE_PANEL.PULL_REQUESTS;
+    let existing = null;
+    for (const [nodeId, node] of Object.entries(dockNodes)) {
+      if (node.type !== 'tabgroup') continue;
+      for (const tId of node.tabs || []) {
+        const t = dockTabs[tId];
+        if (t && t.panelType === panelType) {
+          existing = { tabId: tId, groupId: nodeId };
+          break;
+        }
+      }
+      if (existing) break;
+    }
+
+    if (existing) {
+      dispatch(setFocusedTabGroup(existing.groupId));
+      dispatch(activateTabAction({ tabId: existing.tabId }));
+      return;
+    }
+
+    // Find a sidebar group to open the tab in
+    const SIDEBAR_PANELS = new Set(['explorer', 'search', 'git', 'extensions', 'extension-view', 'chat', 'pullrequests', 'settings']);
+    const groups = Object.entries(dockNodes).filter(([, n]) => n.type === 'tabgroup');
+    let targetGroupId = null;
+    for (const [groupId, group] of groups) {
+      for (const tId of group.tabs || []) {
+        const t = dockTabs[tId];
+        if (t && SIDEBAR_PANELS.has(t.panelType)) {
+          targetGroupId = groupId;
+          break;
+        }
+      }
+      if (targetGroupId) break;
+    }
+    if (!targetGroupId && groups.length > 0) targetGroupId = groups[0][0];
+
+    if (targetGroupId) {
+      dispatch(openTab({
+        panelType,
+        title: 'Pull Requests',
+        targetTabGroupId: targetGroupId,
+      }));
+      dispatch(setFocusedTabGroup(targetGroupId));
+    }
+  }, [dispatch, dockNodes, dockTabs]);
+
+  /** Open (or focus) the Commit History panel in the bottom area */
+  const openCommitHistoryPanel = useCallback(() => {
+    const panelType = IDE_PANEL.COMMIT_HISTORY;
+    // Check if already open
+    for (const [nodeId, node] of Object.entries(dockNodes)) {
+      if (node.type !== 'tabgroup') continue;
+      for (const tId of node.tabs || []) {
+        const t = dockTabs[tId];
+        if (t && t.panelType === panelType) {
+          dispatch(setFocusedTabGroup(nodeId));
+          dispatch(activateTabAction({ tabId: tId }));
+          return;
+        }
+      }
+    }
+    // Find a bottom-area group (terminal, problems, output)
+    const BOTTOM_PANELS = new Set(['terminal', 'problems', 'output']);
+    const groups = Object.entries(dockNodes).filter(([, n]) => n.type === 'tabgroup');
+    let targetGroupId = null;
+    for (const [groupId, group] of groups) {
+      for (const tId of group.tabs || []) {
+        const t = dockTabs[tId];
+        if (t && BOTTOM_PANELS.has(t.panelType)) {
+          targetGroupId = groupId;
+          break;
+        }
+      }
+      if (targetGroupId) break;
+    }
+    if (!targetGroupId && groups.length > 0) targetGroupId = groups[0][0];
+
+    if (targetGroupId) {
+      dispatch(openTab({
+        panelType,
+        title: 'Commit History',
+        targetTabGroupId: targetGroupId,
+      }));
+      dispatch(setFocusedTabGroup(targetGroupId));
+    }
+  }, [dispatch, dockNodes, dockTabs]);
 
   // ── data refresh ───────────────────────────────
   const refreshGitData = useCallback(async () => {
@@ -278,6 +383,28 @@ export function GitStatus({ slug }) {
       const result = await dispatch(removeRemote({ slug, name }));
       if (removeRemote.fulfilled.match(result)) toast.success(`Remote '${name}' removed`);
     }
+  };
+
+  const handleEditRemoteStart = (remote) => {
+    setEditingRemote(remote.name);
+    setEditRemoteUrl(remote.refs?.push || '');
+  };
+
+  const handleEditRemoteSave = async () => {
+    if (!slug || !editingRemote || !editRemoteUrl) return;
+    const valid = editRemoteUrl.startsWith('http://') || editRemoteUrl.startsWith('https://') || editRemoteUrl.includes('@');
+    if (!valid) { toast.error('Please enter a valid remote URL (https://... or git@...)'); return; }
+    const result = await dispatch(setRemoteUrl({ slug, name: editingRemote, url: editRemoteUrl }));
+    if (setRemoteUrl.fulfilled.match(result)) {
+      toast.success(`Remote '${editingRemote}' URL updated`);
+      setEditingRemote(null);
+      setEditRemoteUrl('');
+    }
+  };
+
+  const handleEditRemoteCancel = () => {
+    setEditingRemote(null);
+    setEditRemoteUrl('');
   };
 
   const handlePull = async () => {
@@ -728,26 +855,60 @@ export function GitStatus({ slug }) {
                 const hasTokenInUrl = urlContainsToken(remote.refs?.push);
                 const displayUrl = hasTokenInUrl ? maskRemoteUrl(remote.refs?.push) : humanRemoteUrl(remote.refs?.push);
                 const cleanWebUrl = remote.refs?.push?.replace(/\.git$/, '').replace(/https?:\/\/[^@/]+@/, 'https://');
+                const isEditing = editingRemote === remote.name;
 
                 return (
-                  <li key={remote.name} className="flex items-center gap-1.5 px-1.5 py-1 hover:bg-[#27272a] rounded group transition-colors">
-                    <ProviderIcon provider={provider} className="w-3.5 h-3.5 text-[#a1a1aa] flex-shrink-0" />
-                    <span className="text-xs font-medium text-[#e4e4e7]">{remote.name}</span>
-                    <span className="text-[10px] text-[#52525b] truncate flex-1 text-right" title={remote.refs?.push}>
-                      {displayUrl}
-                    </span>
-                    <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0">
-                      {cleanWebUrl?.startsWith('https') && (
-                        <a href={cleanWebUrl} target="_blank" rel="noreferrer"
-                          className="hover:bg-[#3f3f46] p-0.5 rounded text-[#a1a1aa] hover:text-[#e4e4e7]" title="Open in browser">
-                          <ExternalLink className="w-3 h-3" />
-                        </a>
-                      )}
-                      <button onClick={() => handleRemoveRemoteClick(remote.name)}
-                        className="hover:bg-red-500/10 p-0.5 rounded text-[#a1a1aa] hover:text-red-400" title="Remove remote">
-                        <Trash2 className="w-3 h-3" strokeWidth={1.5} />
-                      </button>
-                    </div>
+                  <li key={remote.name} className="px-1.5 py-1 hover:bg-[#27272a] rounded group transition-colors">
+                    {isEditing ? (
+                      <div className="space-y-1.5">
+                        <div className="flex items-center gap-1.5">
+                          <ProviderIcon provider={provider} className="w-3.5 h-3.5 text-[#a1a1aa] flex-shrink-0" />
+                          <span className="text-xs font-medium text-[#e4e4e7]">{remote.name}</span>
+                        </div>
+                        <input
+                          className="w-full bg-[#09090b] border border-[#3b82f6] rounded px-2 py-1 text-xs text-[#e4e4e7] focus:outline-none focus:ring-1 focus:ring-[#3b82f6]"
+                          value={editRemoteUrl}
+                          onChange={e => setEditRemoteUrl(e.target.value)}
+                          onKeyDown={e => { if (e.key === 'Enter') handleEditRemoteSave(); if (e.key === 'Escape') handleEditRemoteCancel(); }}
+                          autoFocus
+                          placeholder="https://github.com/user/repo.git"
+                        />
+                        <div className="flex gap-1.5">
+                          <button onClick={handleEditRemoteSave} disabled={loading}
+                            className="border border-[#3b82f6] bg-transparent hover:bg-[#3b82f6]/10 disabled:opacity-50 text-[#3b82f6] px-2 py-0.5 rounded text-xs flex-1 transition-colors">
+                            {loading ? <RefreshCw className="w-3 h-3 animate-spin mx-auto" /> : 'Save'}
+                          </button>
+                          <button onClick={handleEditRemoteCancel}
+                            className="border border-[#3f3f46] bg-transparent hover:bg-[#27272a] text-[#a1a1aa] px-2 py-0.5 rounded text-xs flex-1 transition-colors">
+                            Cancel
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="flex items-center gap-1.5">
+                        <ProviderIcon provider={provider} className="w-3.5 h-3.5 text-[#a1a1aa] flex-shrink-0" />
+                        <span className="text-xs font-medium text-[#e4e4e7]">{remote.name}</span>
+                        <span className="text-[10px] text-[#52525b] truncate flex-1 text-right" title={remote.refs?.push}>
+                          {displayUrl}
+                        </span>
+                        <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0">
+                          {cleanWebUrl?.startsWith('https') && (
+                            <a href={cleanWebUrl} target="_blank" rel="noreferrer"
+                              className="hover:bg-[#3f3f46] p-0.5 rounded text-[#a1a1aa] hover:text-[#e4e4e7]" title="Open in browser">
+                              <ExternalLink className="w-3 h-3" />
+                            </a>
+                          )}
+                          <button onClick={() => handleEditRemoteStart(remote)}
+                            className="hover:bg-[#3b82f6]/10 p-0.5 rounded text-[#a1a1aa] hover:text-[#3b82f6]" title="Edit remote URL">
+                            <Edit3 className="w-3 h-3" strokeWidth={1.5} />
+                          </button>
+                          <button onClick={() => handleRemoveRemoteClick(remote.name)}
+                            className="hover:bg-red-500/10 p-0.5 rounded text-[#a1a1aa] hover:text-red-400" title="Remove remote">
+                            <Trash2 className="w-3 h-3" strokeWidth={1.5} />
+                          </button>
+                        </div>
+                      </div>
+                    )}
                   </li>
                 );
               })}
@@ -862,7 +1023,7 @@ export function GitStatus({ slug }) {
               {prHasToken && githubInfo?.provider === 'github' && (
                 <button 
                   onClick={() => {
-                    window.dispatchEvent(new CustomEvent('synthi:switch-sidebar', { detail: 'pullrequests' }));
+                    openPRPanel();
                     // Small delay to let view switch, then trigger create
                     setTimeout(() => window.dispatchEvent(new CustomEvent('synthi:pr-action', { detail: 'create' })), 100);
                   }}
@@ -873,9 +1034,22 @@ export function GitStatus({ slug }) {
                 </button>
               )}
               <button 
-                onClick={() => window.dispatchEvent(new CustomEvent('synthi:switch-sidebar', { detail: 'pullrequests' }))}
+                onClick={() => openPRPanel()}
                 className="p-0.5 rounded hover:bg-[#27272a] text-[#71717a] hover:text-[#a1a1aa]" 
-                title="Open Pull Requests Panel"
+                title="Open Pull Requests panel"
+              >
+                <Maximize2 className="w-3 h-3" />
+              </button>
+              <button 
+                onClick={() => {
+                  if (githubInfo?.htmlUrl) {
+                    window.open(githubInfo.htmlUrl + '/pulls', '_blank');
+                  } else {
+                    openPRPanel();
+                  }
+                }}
+                className="p-0.5 rounded hover:bg-[#27272a] text-[#71717a] hover:text-[#a1a1aa]" 
+                title="Manage PRs on GitHub"
               >
                 <ExternalLink className="w-3 h-3" />
               </button>
@@ -919,7 +1093,7 @@ export function GitStatus({ slug }) {
                     <li key={pr.id} className="group flex items-center gap-1.5 px-1.5 py-1 rounded hover:bg-[#27272a] cursor-pointer"
                       onClick={() => {
                         dispatch(setActivePR(pr));
-                        window.dispatchEvent(new CustomEvent('synthi:switch-sidebar', { detail: 'pullrequests' }));
+                        openPRPanel();
                       }}>
                       <GitPullRequest className="w-3 h-3 text-emerald-500 flex-shrink-0" />
                       <span className="truncate text-xs text-[#e4e4e7] flex-1">
@@ -932,7 +1106,7 @@ export function GitStatus({ slug }) {
                   {prList.filter(p => p.state === 'open').length > 5 && (
                     <li className="px-1.5 py-0.5">
                       <button 
-                        onClick={() => window.dispatchEvent(new CustomEvent('synthi:switch-sidebar', { detail: 'pullrequests' }))}
+                        onClick={() => openPRPanel()}
                         className="text-[10px] text-[#71717a] hover:text-[#a1a1aa] underline"
                       >
                         View all {prList.filter(p => p.state === 'open').length} pull requests →
@@ -945,7 +1119,7 @@ export function GitStatus({ slug }) {
                   <div className="text-[10px] text-[#52525b] italic mb-1.5">No open pull requests</div>
                   <button 
                     onClick={() => {
-                      window.dispatchEvent(new CustomEvent('synthi:switch-sidebar', { detail: 'pullrequests' }));
+                      openPRPanel();
                       setTimeout(() => window.dispatchEvent(new CustomEvent('synthi:pr-action', { detail: 'create' })), 100);
                     }}
                     className="flex items-center gap-1 text-[10px] px-2 py-1 rounded border border-emerald-600/40 hover:bg-emerald-600/10 text-emerald-400 transition-colors"
@@ -985,6 +1159,11 @@ export function GitStatus({ slug }) {
                 ? `${filteredCommits.length}/${allCommits.length}`
                 : allCommits.length}
             </span>
+            <button onClick={openCommitHistoryPanel}
+              className="p-0.5 rounded text-[#71717a] hover:text-[#e4e4e7] hover:bg-[#27272a] transition-colors flex-shrink-0"
+              title="Open full Commit History panel">
+              <Maximize2 className="w-3 h-3" />
+            </button>
           </div>
 
           {dateGroups.length > 0 ? (
@@ -1090,28 +1269,50 @@ export function GitStatus({ slug }) {
                   </button>
                 </div>
                 <ul className="space-y-0.5">
-                  {changes.map(file => (
-                    <li key={`changes-${file.path}`}
-                      className="flex items-center justify-between hover:bg-[#27272a] px-1.5 py-1 rounded group cursor-pointer transition-colors"
-                      onClick={() => handleFileClick(file)}>
-                      <div className="flex items-center gap-1.5 overflow-hidden min-w-0">
-                        <span className="w-3 text-center font-mono text-[10px] text-amber-400 flex-shrink-0">
-                          {file.working_dir === '?' ? 'U' : 'M'}
-                        </span>
-                        <span className="truncate text-xs text-[#e4e4e7]" title={file.path}>{file.path}</span>
-                      </div>
-                      <div className="flex gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0">
-                        <button onClick={(e) => handleDiscard(e, file.path)}
-                          className="hover:bg-[#3f3f46] p-0.5 rounded text-[#a1a1aa] hover:text-[#e4e4e7]" title="Discard Changes">
-                          <Undo2 className="w-3 h-3" strokeWidth={1.5} />
-                        </button>
-                        <button onClick={(e) => handleStage(e, file.path)}
-                          className="hover:bg-[#3f3f46] p-0.5 rounded text-[#a1a1aa] hover:text-[#e4e4e7]" title="Stage">
-                          <Plus className="w-3 h-3" strokeWidth={1.5} />
-                        </button>
-                      </div>
-                    </li>
-                  ))}
+                  {changes.map(file => {
+                    const isUntracked = file.working_dir === '?';
+                    const showHunkStaging = hunkStagingFile === file.path;
+                    return (
+                      <li key={`changes-${file.path}`} className="space-y-0">
+                        <div
+                          className="flex items-center justify-between hover:bg-[#27272a] px-1.5 py-1 rounded group cursor-pointer transition-colors"
+                          onClick={() => handleFileClick(file)}>
+                          <div className="flex items-center gap-1.5 overflow-hidden min-w-0">
+                            <span className="w-3 text-center font-mono text-[10px] text-amber-400 flex-shrink-0">
+                              {isUntracked ? 'U' : 'M'}
+                            </span>
+                            <span className="truncate text-xs text-[#e4e4e7]" title={file.path}>{file.path}</span>
+                          </div>
+                          <div className="flex gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0">
+                            <button onClick={(e) => handleDiscard(e, file.path)}
+                              className="hover:bg-[#3f3f46] p-0.5 rounded text-[#a1a1aa] hover:text-[#e4e4e7]" title="Discard Changes">
+                              <Undo2 className="w-3 h-3" strokeWidth={1.5} />
+                            </button>
+                            {!isUntracked && (
+                              <button onClick={(e) => { e.stopPropagation(); setHunkStagingFile(showHunkStaging ? null : file.path); }}
+                                className={`hover:bg-[#3b82f6]/10 p-0.5 rounded transition-colors ${showHunkStaging ? 'text-[#3b82f6]' : 'text-[#a1a1aa] hover:text-[#3b82f6]'}`}
+                                title="Stage Selected Lines">
+                                <Edit3 className="w-3 h-3" strokeWidth={1.5} />
+                              </button>
+                            )}
+                            <button onClick={(e) => handleStage(e, file.path)}
+                              className="hover:bg-[#3f3f46] p-0.5 rounded text-[#a1a1aa] hover:text-[#e4e4e7]" title="Stage">
+                              <Plus className="w-3 h-3" strokeWidth={1.5} />
+                            </button>
+                          </div>
+                        </div>
+                        {showHunkStaging && (
+                          <div className="mx-1 mb-1 border border-[#27272a] rounded overflow-hidden" style={{ maxHeight: 400 }}>
+                            <HunkStagingView
+                              slug={slug}
+                              filePath={file.path}
+                              onClose={() => setHunkStagingFile(null)}
+                            />
+                          </div>
+                        )}
+                      </li>
+                    );
+                  })}
                 </ul>
               </SectionHeader>
             )}
