@@ -544,6 +544,36 @@ export const openDiffThunk = createAsyncThunk(
     }
 );
 
+// 8. Open Commit File Diff — compare file at commit vs parent commit (read-only)
+export const openCommitFileDiffThunk = createAsyncThunk(
+    'workspace/openCommitFileDiff',
+    async ({ filePath, commitHash }, { dispatch, getState }) => {
+        ensureEditorPanel(dispatch, getState);
+        const slug = getState().workspace.slug;
+
+        // Fetch content at this commit and its parent
+        let afterContent = '';
+        let beforeContent = '';
+        try {
+            const res = await gitClient.getFileContent(slug, filePath, commitHash);
+            afterContent = res.content ?? '';
+        } catch (_) { /* new file — no content at this commit */ }
+
+        try {
+            const res = await gitClient.getFileContent(slug, filePath, `${commitHash}~1`);
+            beforeContent = res.content ?? '';
+        } catch (_) { /* file didn't exist in parent — added in this commit */ }
+
+        const file = {
+            path: filePath,
+            name: filePath.split('/').pop(),
+            commitDiff: true,           // flag so editor knows this is read-only historical diff
+            commitHash,
+        };
+        return { file, currentContent: afterContent, originalContent: beforeContent };
+    }
+);
+
 // --- SLICE DEFINITION ---
 
 const workspaceSlice = createSlice({
@@ -786,6 +816,14 @@ const workspaceSlice = createSlice({
                 
                 // Update cache
                 try { fileCache.set(file.path, currentContent); } catch (_) {}
+            })
+            .addCase(openCommitFileDiffThunk.fulfilled, (state, action) => {
+                const { file, currentContent, originalContent } = action.payload;
+                state.activeFile = file;
+                state.currentContent = currentContent;
+                state.savedContent = currentContent; // read-only, no unsaved marker
+                state.originalContent = originalContent;
+                state.diffMode = true;
             })
             .addCase(selectFileThunk.fulfilled, (state, action) => {
                 const { file, content, fromCache } = action.payload;

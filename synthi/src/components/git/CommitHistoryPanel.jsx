@@ -5,6 +5,7 @@ import {
   fetchCommitHistory, cherryPickCommit, revertCommit, fetchCommitDetail,
   fetchGitStatus, fetchUnpushedCommits,
 } from '@/redux/gitSlice';
+import { openCommitFileDiffThunk } from '@/redux/workspaceSlice';
 import { toast } from 'sonner';
 import {
   Search, RefreshCw, Copy, ExternalLink, GitBranch, GitCommit,
@@ -127,7 +128,7 @@ function ContextMenu({ x, y, commit, onClose, onAction }) {
 
 /* ─── Commit Detail Pane ────────────────────────────── */
 
-function CommitDetailPane({ detail, loading, onClose }) {
+function CommitDetailPane({ detail, loading, onClose, onFileClick }) {
   const [showDiff, setShowDiff] = useState(false);
 
   if (loading) {
@@ -195,7 +196,11 @@ function CommitDetailPane({ detail, loading, onClose }) {
         {files.length > 0 && (
           <ul className="space-y-0.5 mb-2">
             {files.map((f, i) => (
-              <li key={i} className="flex items-center gap-1.5 text-[11px] px-1 py-0.5 hover:bg-[#27272a] rounded">
+              <li key={i}
+                className="flex items-center gap-1.5 text-[11px] px-1 py-0.5 hover:bg-[#27272a] rounded cursor-pointer"
+                onClick={() => onFileClick?.(f.file, detail.hash)}
+                title={`Click to open diff for ${f.file}`}
+              >
                 <span className={`w-3 text-center font-mono text-[10px] flex-shrink-0 ${
                   f.insertions > 0 && f.deletions > 0 ? 'text-amber-400' :
                   f.insertions > 0 ? 'text-emerald-400' : 'text-red-400'
@@ -526,6 +531,9 @@ export default function CommitHistoryPanel({ slug }) {
           detail={commitDetail}
           loading={commitDetailLoading}
           onClose={() => setSelectedHash(null)}
+          onFileClick={(filePath, commitHash) => {
+            dispatch(openCommitFileDiffThunk({ filePath, commitHash }));
+          }}
         />
       )}
 
