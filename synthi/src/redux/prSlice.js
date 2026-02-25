@@ -16,7 +16,10 @@ import { gitClient } from '@/services/gitClient';
 
 export const fetchGithubInfo = createAsyncThunk(
   'pr/fetchGithubInfo',
-  async (slug, { rejectWithValue }) => {
+  async (slug, { rejectWithValue, getState }) => {
+    // Skip if already loaded for same slug
+    const existing = getState().pr.githubInfo;
+    if (existing?.owner && existing?.repo) return existing;
     try {
       const info = await gitClient.getGithubInfo(slug);
       if (info?.error) return rejectWithValue(info);
@@ -38,6 +41,12 @@ export const fetchPRList = createAsyncThunk(
     } catch (e) {
       return rejectWithValue({ error: e.message, status: e.status });
     }
+  },
+  {
+    condition: (_, { getState }) => {
+      // Don't start a new fetch if one is already in progress
+      return !getState().pr.prListLoading;
+    },
   }
 );
 
