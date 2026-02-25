@@ -1,5 +1,6 @@
 'use client';
 import React, { useEffect, useRef, useState, useCallback } from 'react';
+import { useSession } from 'next-auth/react';
 import { WifiOff, RefreshCw, Terminal, AlertCircle, Zap, EyeOff } from 'lucide-react';
 import { useTheme } from '@/components/ThemeProvider';
 import { useSessionPermissions } from '@/hooks/useCollabSession';
@@ -76,6 +77,9 @@ export default function TerminalPane({ terminalId = 'default', paneSide = 'main'
   const [errorMessage, setErrorMessage] = useState('');
   const reconnectAttemptsRef = useRef(0);
   const { canTerminal, role } = useSessionPermissions();
+  const { data: authSession } = useSession();
+  const authSessionRef = useRef(authSession);
+  authSessionRef.current = authSession;
   const canTerminalRef = useRef(canTerminal);
   canTerminalRef.current = canTerminal;
   const isGuest = role === 'guest';
@@ -217,9 +221,11 @@ export default function TerminalPane({ terminalId = 'default', paneSide = 'main'
       sessionIdRef.current = sid;
 
       const { cols, rows } = term;
+      const termUserId = authSessionRef.current?.user?.id || authSessionRef.current?.user?.email || '';
       const params = new URLSearchParams({
         sessionId: sid,
         workspace: workspaceSlug,
+        userId: termUserId,
         cols: String(cols),
         rows: String(rows),
       });
