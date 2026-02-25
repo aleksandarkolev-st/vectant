@@ -1,11 +1,11 @@
-import GoogleProvider from 'next-auth/providers/google';
-import GitHubProvider from 'next-auth/providers/github';
+import GoogleProvider from "next-auth/providers/google";
+import GitHubProvider from "next-auth/providers/github";
 
 export const authOptions = {
   session: {
-    strategy: 'jwt',
+    strategy: "jwt",
   },
-  
+
   providers: [
     GoogleProvider({
       clientId: process.env.GOOGLE_CLIENT_ID,
@@ -14,6 +14,11 @@ export const authOptions = {
     GitHubProvider({
       clientId: process.env.GITHUB_ID,
       clientSecret: process.env.GITHUB_SECRET,
+      authorization: {
+        params: {
+          scope: "read:user user:email repo",
+        },
+      },
     }),
   ],
 
@@ -49,9 +54,8 @@ export const authOptions = {
     },
   },
   pages: {
-    signIn: '/login'
+    signIn: "/login",
   },
 
   secret: process.env.AUTH_SECRET,
-
 };
