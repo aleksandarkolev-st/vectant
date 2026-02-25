@@ -2896,6 +2896,53 @@ const server = http.createServer(async (req, res) => {
                     }
                     result = { success: true, cleared: filesToClear.length };
                     break;
+                case 'github-info': {
+                    // Extract owner/repo from the git remote URL for this workspace.
+                    // Used by the PR panel to know which GitHub repo to query.
+                    try {
+                        const git = gitService.getGit(slug, effectiveUserId);
+                        const remotes = await git.getRemotes(true);
+                        const origin = remotes.find(r => r.name === 'origin') || remotes[0];
+                        if (!origin || !origin.refs?.fetch) {
+                            result = { error: 'no_remote', message: 'No remote configured for this workspace.' };
+                            break;
+                        }
+                        const remoteUrl = origin.refs.fetch;
+
+                        // Parse various remote URL formats:
+                        //   https://github.com/owner/repo.git
+                        //   git@github.com:owner/repo.git
+                        //   https://token@github.com/owner/repo.git
+                        let owner = null;
+                        let repo = null;
+                        let provider = 'unknown';
+                        let htmlUrl = null;
+
+                        const cleanUrl = remoteUrl.replace(/^https?:\/\/[^@]+@/, 'https://'); // strip embedded credentials
+
+                        const httpsMatch = cleanUrl.match(/https?:\/\/(github\.com|gitlab\.com|bitbucket\.org)\/([^/]+)\/([^/]+?)(?:\.git)?(?:\/)?$/i);
+                        const sshMatch = cleanUrl.match(/git@(github\.com|gitlab\.com|bitbucket\.org):([^/]+)\/([^/]+?)(?:\.git)?$/i);
+
+                        if (httpsMatch) {
+                            const host = httpsMatch[1].toLowerCase();
+                            owner = httpsMatch[2];
+                            repo = httpsMatch[3];
+                            provider = host === 'github.com' ? 'github' : host === 'gitlab.com' ? 'gitlab' : 'bitbucket';
+                            htmlUrl = `https://${host}/${owner}/${repo}`;
+                        } else if (sshMatch) {
+                            const host = sshMatch[1].toLowerCase();
+                            owner = sshMatch[2];
+                            repo = sshMatch[3];
+                            provider = host === 'github.com' ? 'github' : host === 'gitlab.com' ? 'gitlab' : 'bitbucket';
+                            htmlUrl = `https://${host}/${owner}/${repo}`;
+                        }
+
+                        result = { owner, repo, provider, remoteUrl: cleanUrl, htmlUrl };
+                    } catch (e) {
+                        result = { error: 'parse_failed', message: e.message };
+                    }
+                    break;
+                }
                 default:
                     res.writeHead(404);
                     res.end('Unknown action');

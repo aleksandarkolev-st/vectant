@@ -262,5 +262,13 @@ export const gitClient = {
      */
     async clearCollabPersistence(slug, files) {
         return this.request(slug, 'clear-collab', { files });
-    }
+    },
+
+    /**
+     * Get GitHub repo info (owner, repo, provider) extracted from the git remote URL.
+     * Used by the Pull Requests panel.
+     */
+    async getGithubInfo(slug) {
+        return this.request(slug, 'github-info');
+    },
 };

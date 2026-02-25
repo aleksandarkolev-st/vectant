@@ -1110,7 +1110,18 @@ class CollabClient {
             model.setValue(content);
           }
         } else {
-          // Timeout: file likely doesn't exist on server — client seeds
+          // Timeout: file likely doesn't exist on server — client seeds.
+          // GUEST GUARD: If this client is a guest in a collaboration session
+          // (identity.hostId is set), NEVER seed the Yjs doc from the client.
+          // The host's Yjs document is the single source of truth.  If the
+          // guest seeds concurrently with the server delivering the host's
+          // state, the Yjs CRDT will merge both inserts → content doubles.
+          // Guests must always wait for the host/server to push content.
+          if (this.identity.hostId) {
+            console.debug('[Collab] Guest: skipping client seed, waiting for host Yjs state');
+            entry._seeded = true; // prevent further seed attempts
+            return;
+          }
           entry.doc.transact(() => {
             if (entry.ytext.length > 0) {
               entry.ytext.delete(0, entry.ytext.length);

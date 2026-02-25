@@ -51,6 +51,7 @@ import { useHMR } from '@/hooks/useHMR';
 import ErrorOverlay from '@/components/ErrorOverlay';
 import { GitStatus } from '@/components/git/GitStatus';
 import { GitSummaryPanel } from '@/components/git/GitSummaryPanel';
+import { PullRequestsPanel } from '@/components/git/PullRequestsPanel';
 import ActivityBar from '../ActivityBar.jsx';
 import SearchView from './SearchView.jsx';
 import FloatingEmulatorWindow from '@/components/emulator/FloatingEmulatorWindow';
@@ -109,6 +110,7 @@ export default function EditorPage({ params }) {
     
     const [chatVisible, setChatVisible] = useState(false);
     const [sidebarView, setSidebarView] = useState('explorer');
+    const openPRCount = useAppSelector(s => s.pr ? s.pr.prList.filter(p => p.state === 'open' && !p.pull_request?.merged_at).length : 0);
     const [showProblemsPanel, setShowProblemsPanel] = useState(false);
     const [isProblemsPanelDocked, setIsProblemsPanelDocked] = useState(true); // Track if panel is docked or floating
     const [guiConfig, setGuiConfig] = useState(null);
@@ -365,9 +367,9 @@ export default function EditorPage({ params }) {
             const raw = sessionStorage.getItem('synthi-pending-guest-session');
             if (!raw) return;
             sessionStorage.removeItem('synthi-pending-guest-session');
-            const { sessionId: sId, guestId, hostId, slug: sessionSlug } = JSON.parse(raw);
+            const { sessionId: sId, guestId, hostId, slug: sessionSlug, hostName, permissions } = JSON.parse(raw);
             if (sId && guestId) {
-                collabSessionService.joinAsGuest(sId, guestId, hostId || '', sessionSlug || slug);
+                collabSessionService.joinAsGuest(sId, guestId, hostId || '', sessionSlug || slug, { hostName: hostName || null, permissions: permissions || null });
             }
         } catch (_) {}
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1960,10 +1962,13 @@ export default function EditorPage({ params }) {
                         setSidebarView(id === sidebarView ? 'explorer' : id);
                     }}
                     extensionContainers={contributedContainers}
+                    badges={{ pullrequests: openPRCount }}
                 />
                 <div className="flex-1 min-w-0 overflow-hidden flex flex-col">
                     {sidebarView === 'scm' ? (
                         <GitStatus slug={slug} />
+                    ) : sidebarView === 'pullrequests' ? (
+                        <PullRequestsPanel slug={slug} />
                     ) : sidebarView === 'search' ? (
                         <SearchView slug={slug} onToggleOrientation={toggleTreeOrientation} />
                     ) : sidebarView === 'extensions' ? (
