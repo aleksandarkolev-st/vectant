@@ -4,6 +4,7 @@ import React, { useEffect, useState, Suspense } from 'react';
 import { useSearchParams } from 'next/navigation';
 import collabSessionService from '@/services/collabSessionService';
 import { Users, Loader2, AlertTriangle, CheckCircle2, XCircle } from 'lucide-react';
+import { getCurrentUser } from '@/services/userIdentity';
 
 /**
  * /collab/[sessionId] — Guest invite landing page.
@@ -25,6 +26,7 @@ function CollabJoinContent({ params }) {
   const [sessionInfo, setSessionInfo] = useState(null);
   const [guestName, setGuestName] = useState('');
   const [errorMsg, setErrorMsg] = useState('');
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
 
   // Validate token on mount
   useEffect(() => {
@@ -32,6 +34,12 @@ function CollabJoinContent({ params }) {
       setState('error');
       setErrorMsg('Missing invite token. Please check the link.');
       return;
+    }
+
+    const user = getCurrentUser();
+    if (user && user.id !== 'guest') {
+      setIsAuthenticated(true);
+      setGuestName(user.name);
     }
 
     collabSessionService.validateToken(token).then((info) => {
@@ -67,18 +75,31 @@ function CollabJoinContent({ params }) {
 
   // Handle knock
   const handleJoin = async () => {
-    if (!guestName.trim()) return;
+    if (!guestName.trim() && !isAuthenticated) return;
     setState('knocking');
 
     try {
-      // Generate a simple guest id
-      const guestId = `guest-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-      localStorage.setItem('synthi-user-id', guestId);
-      localStorage.setItem('synthi-user-name', guestName.trim());
+      let guestId;
+      let displayName;
+      let avatarUrl = '';
+
+      if (isAuthenticated) {
+        const user = getCurrentUser();
+        guestId = user.id;
+        displayName = user.name;
+        avatarUrl = user.avatar;
+      } else {
+        // Generate a simple guest id
+        guestId = `guest-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        displayName = guestName.trim();
+        localStorage.setItem('synthi-user-id', guestId);
+        localStorage.setItem('synthi-user-name', displayName);
+      }
 
       await collabSessionService.knock(sessionInfo.sessionId, {
         guestId,
-        displayName: guestName.trim(),
+        displayName,
+        avatarUrl,
       });
     } catch (e) {
       setState('error');
@@ -137,12 +158,13 @@ function CollabJoinContent({ params }) {
                 placeholder="Enter your display name"
                 className="w-full bg-[#101118] border border-[#1a1b24] focus:border-[#3a8574] rounded-lg px-4 py-2.5 text-sm text-[#e0e4ec] placeholder-[#5a6178] outline-none transition-colors"
                 autoFocus
+                disabled={isAuthenticated}
               />
             </div>
 
             <button
               onClick={handleJoin}
-              disabled={!guestName.trim()}
+              disabled={!guestName.trim() && !isAuthenticated}
               className="w-full py-2.5 bg-[#3a8574] hover:bg-[#327464] disabled:bg-[#1a1b24] disabled:text-[#5a6178] text-white font-semibold rounded-lg transition-colors flex items-center justify-center gap-2"
             >
               <Users className="w-4 h-4" />
