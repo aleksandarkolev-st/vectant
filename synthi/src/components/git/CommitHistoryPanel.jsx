@@ -1,0 +1,546 @@
+'use client';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
+import { useDispatch, useSelector } from 'react-redux';
+import {
+  fetchCommitHistory, cherryPickCommit, revertCommit, fetchCommitDetail,
+  fetchGitStatus, fetchUnpushedCommits,
+} from '@/redux/gitSlice';
+import { toast } from 'sonner';
+import {
+  Search, RefreshCw, Copy, ExternalLink, GitBranch, GitCommit,
+  ChevronDown, ChevronRight, Filter, X, ChevronsUp, ChevronsDown,
+  RotateCcw, Cherry, Eye, User, Calendar, FileText, Hash
+} from 'lucide-react';
+import {
+  buildCommitGraph, commitWebUrl, parseConventionalCommit,
+  ccColor, groupCommitsByDate, relativeTime
+} from './gitUtils';
+
+/* ────────────────────────────────────────────────────────────
+ * CommitHistoryPanel — SourceTree-style advanced history view
+ *
+ * Features:
+ *  • Visual commit graph with lane-based rendering
+ *  • Search / filter by author, message, hash
+ *  • Commit detail view with diff + file list
+ *  • Right-click context menus (cherry-pick, revert, copy hash)
+ *  • Infinite scroll with paginated loading
+ * ──────────────────────────────────────────────────────────── */
+
+const GRAPH_COLORS = [
+  '#3b82f6', '#f59e0b', '#10b981', '#ef4444',
+  '#8b5cf6', '#ec4899', '#06b6d4', '#f97316',
+];
+
+/* ─── Graph Column SVG ──────────────────────────────── */
+
+function GraphColumn({ graphNode, rowHeight = 36, totalLanes }) {
+  if (!graphNode) return <div style={{ width: 20 }} />;
+  const cols = Math.max(totalLanes || 1, graphNode.laneCount || 1);
+  const colW = 14;
+  const width = cols * colW + 6;
+  const cx = graphNode.col * colW + colW / 2 + 3;
+  const cy = rowHeight / 2;
+  const r = graphNode.isMerge ? 5 : 3.5;
+
+  return (
+    <svg width={width} height={rowHeight} className="flex-shrink-0" style={{ minWidth: width }}>
+      {graphNode.activeLanes.map((lane, idx) => {
+        if (lane === null) return null;
+        const x = idx * colW + colW / 2 + 3;
+        return (
+          <line key={idx} x1={x} y1={0} x2={x} y2={rowHeight}
+            stroke={GRAPH_COLORS[idx % GRAPH_COLORS.length]} strokeWidth={1.5} opacity={0.3} />
+        );
+      })}
+      {graphNode.mergeFromCols.map((mc, i) => {
+        const mx = mc * colW + colW / 2 + 3;
+        const d = `M ${mx} 0 C ${mx} ${cy * 0.6}, ${cx} ${cy * 0.4}, ${cx} ${cy}`;
+        return (
+          <path key={`m-${i}`} d={d} fill="none"
+            stroke={graphNode.color} strokeWidth={1.5} opacity={0.5} />
+        );
+      })}
+      <circle cx={cx} cy={cy} r={r}
+        fill={graphNode.isMerge ? '#18181b' : graphNode.color}
+        stroke={graphNode.color}
+        strokeWidth={graphNode.isMerge ? 2 : 0} />
+    </svg>
+  );
+}
+
+/* ─── Context menu ──────────────────────────────────── */
+
+function ContextMenu({ x, y, commit, onClose, onAction }) {
+  const menuRef = useRef(null);
+
+  useEffect(() => {
+    const handleClickOutside = (e) => {
+      if (menuRef.current && !menuRef.current.contains(e.target)) onClose();
+    };
+    const handleEsc = (e) => { if (e.key === 'Escape') onClose(); };
+    document.addEventListener('mousedown', handleClickOutside);
+    document.addEventListener('keydown', handleEsc);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+      document.removeEventListener('keydown', handleEsc);
+    };
+  }, [onClose]);
+
+  const items = [
+    { icon: Copy, label: 'Copy commit hash', action: 'copy-hash' },
+    { icon: Copy, label: 'Copy commit message', action: 'copy-message' },
+    { divider: true },
+    { icon: Eye, label: 'View commit details', action: 'view-detail' },
+    { divider: true },
+    { icon: Cherry, label: 'Cherry-pick this commit', action: 'cherry-pick', danger: false },
+    { icon: RotateCcw, label: 'Revert this commit', action: 'revert', danger: true },
+  ];
+
+  return (
+    <div
+      ref={menuRef}
+      className="fixed z-[9999] bg-[#1c1c1e] border border-[#3f3f46] rounded-lg shadow-xl py-1 min-w-[200px]"
+      style={{ left: x, top: y }}
+    >
+      {items.map((item, i) =>
+        item.divider ? (
+          <div key={i} className="h-px bg-[#27272a] my-1" />
+        ) : (
+          <button
+            key={i}
+            onClick={() => { onAction(item.action, commit); onClose(); }}
+            className={`w-full flex items-center gap-2 px-3 py-1.5 text-xs transition-colors
+              ${item.danger
+                ? 'text-red-400 hover:bg-red-500/10'
+                : 'text-[#e4e4e7] hover:bg-[#27272a]'
+              }`}
+          >
+            <item.icon className="w-3 h-3 flex-shrink-0" />
+            {item.label}
+          </button>
+        )
+      )}
+    </div>
+  );
+}
+
+/* ─── Commit Detail Pane ────────────────────────────── */
+
+function CommitDetailPane({ detail, loading, onClose }) {
+  const [showDiff, setShowDiff] = useState(false);
+
+  if (loading) {
+    return (
+      <div className="border-t border-[#27272a] bg-[#111113] p-4 flex items-center gap-2">
+        <RefreshCw className="w-3.5 h-3.5 animate-spin text-[#3b82f6]" />
+        <span className="text-xs text-[#71717a]">Loading commit details…</span>
+      </div>
+    );
+  }
+
+  if (!detail) return null;
+
+  const files = detail.files || [];
+
+  return (
+    <div className="border-t border-[#27272a] bg-[#111113] max-h-[50%] overflow-auto">
+      {/* Header */}
+      <div className="flex items-center justify-between px-3 py-2 border-b border-[#27272a] sticky top-0 bg-[#111113] z-10">
+        <div className="flex items-center gap-2 min-w-0">
+          <GitCommit className="w-3.5 h-3.5 text-[#3b82f6] flex-shrink-0" />
+          <code className="text-[11px] font-mono text-[#71717a]">{detail.hash?.substring(0, 10)}</code>
+          <span className="text-xs font-semibold text-[#e4e4e7] truncate">{detail.subject}</span>
+        </div>
+        <button onClick={onClose} className="hover:bg-[#27272a] p-0.5 rounded text-[#71717a] hover:text-[#e4e4e7]">
+          <X className="w-3.5 h-3.5" />
+        </button>
+      </div>
+
+      {/* Meta */}
+      <div className="px-3 py-2 space-y-1 border-b border-[#27272a]">
+        <div className="flex items-center gap-2 text-[11px]">
+          <User className="w-3 h-3 text-[#52525b]" />
+          <span className="text-[#a1a1aa]">{detail.author_name}</span>
+          <span className="text-[#52525b]">&lt;{detail.author_email}&gt;</span>
+        </div>
+        <div className="flex items-center gap-2 text-[11px]">
+          <Calendar className="w-3 h-3 text-[#52525b]" />
+          <span className="text-[#a1a1aa]">{detail.date ? new Date(detail.date).toLocaleString() : ''}</span>
+          <span className="text-[#52525b]">{relativeTime(detail.date)}</span>
+        </div>
+        <div className="flex items-center gap-2 text-[11px]">
+          <Hash className="w-3 h-3 text-[#52525b]" />
+          <code className="text-[#71717a] font-mono">{detail.hash}</code>
+        </div>
+        {detail.body && (
+          <p className="text-[11px] text-[#a1a1aa] mt-1 whitespace-pre-wrap">{detail.body}</p>
+        )}
+      </div>
+
+      {/* Files */}
+      <div className="px-3 py-2">
+        <div className="flex items-center justify-between mb-1">
+          <div className="flex items-center gap-1.5">
+            <FileText className="w-3 h-3 text-[#52525b]" />
+            <span className="text-[11px] text-[#71717a] font-medium">{files.length} file{files.length !== 1 ? 's' : ''} changed</span>
+          </div>
+          <button
+            onClick={() => setShowDiff(!showDiff)}
+            className="text-[10px] text-[#3b82f6] hover:text-[#60a5fa]"
+          >
+            {showDiff ? 'Hide diff' : 'Show diff'}
+          </button>
+        </div>
+        {files.length > 0 && (
+          <ul className="space-y-0.5 mb-2">
+            {files.map((f, i) => (
+              <li key={i} className="flex items-center gap-1.5 text-[11px] px-1 py-0.5 hover:bg-[#27272a] rounded">
+                <span className={`w-3 text-center font-mono text-[10px] flex-shrink-0 ${
+                  f.insertions > 0 && f.deletions > 0 ? 'text-amber-400' :
+                  f.insertions > 0 ? 'text-emerald-400' : 'text-red-400'
+                }`}>
+                  {f.insertions > 0 && f.deletions > 0 ? 'M' : f.insertions > 0 ? 'A' : 'D'}
+                </span>
+                <span className="text-[#e4e4e7] truncate flex-1">{f.file}</span>
+                {f.insertions > 0 && <span className="text-emerald-400 text-[10px]">+{f.insertions}</span>}
+                {f.deletions > 0 && <span className="text-red-400 text-[10px]">-{f.deletions}</span>}
+              </li>
+            ))}
+          </ul>
+        )}
+
+        {/* Inline diff */}
+        {showDiff && detail.diff && (
+          <div className="mt-2 border border-[#27272a] rounded overflow-hidden">
+            <pre className="text-[10px] font-mono leading-[16px] overflow-auto max-h-[300px] p-2">
+              {detail.diff.split('\n').map((line, i) => {
+                const color = line.startsWith('+') && !line.startsWith('+++')
+                  ? 'text-emerald-400 bg-emerald-500/10'
+                  : line.startsWith('-') && !line.startsWith('---')
+                    ? 'text-red-400 bg-red-500/10'
+                    : line.startsWith('@@')
+                      ? 'text-[#6366f1] bg-[#6366f1]/5'
+                      : line.startsWith('diff --git')
+                        ? 'text-[#3b82f6] font-bold'
+                        : 'text-[#71717a]';
+                return (
+                  <div key={i} className={`${color} px-1`}>{line || ' '}</div>
+                );
+              })}
+            </pre>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ─── Filter bar ────────────────────────────────────── */
+
+function FilterBar({ searchQuery, onSearchChange, authorFilter, onAuthorChange, authors, onClose }) {
+  return (
+    <div className="flex items-center gap-2 px-3 py-2 bg-[#111113] border-b border-[#27272a]">
+      <Search className="w-3.5 h-3.5 text-[#52525b] flex-shrink-0" />
+      <input
+        type="text"
+        value={searchQuery}
+        onChange={e => onSearchChange(e.target.value)}
+        placeholder="Search by message, hash, or author…"
+        className="flex-1 bg-transparent text-xs text-[#e4e4e7] placeholder-[#3f3f46] focus:outline-none"
+        autoFocus
+      />
+      {authors.length > 0 && (
+        <select
+          value={authorFilter}
+          onChange={e => onAuthorChange(e.target.value)}
+          className="bg-[#18181b] border border-[#3f3f46] rounded px-1.5 py-0.5 text-[10px] text-[#a1a1aa] focus:outline-none focus:border-[#3b82f6]"
+        >
+          <option value="">All authors</option>
+          {authors.map(a => (
+            <option key={a} value={a}>{a}</option>
+          ))}
+        </select>
+      )}
+      <button onClick={onClose} className="hover:bg-[#27272a] p-0.5 rounded text-[#71717a] hover:text-[#e4e4e7]">
+        <X className="w-3 h-3" />
+      </button>
+    </div>
+  );
+}
+
+/* ─── Main Panel ────────────────────────────────────── */
+
+export default function CommitHistoryPanel({ slug }) {
+  const dispatch = useDispatch();
+  const { commitHistory, commitDetail, commitDetailLoading, loading } = useSelector(s => s.git);
+  const remotes = useSelector(s => s.git.remotes);
+  const primaryRemoteUrl = remotes?.[0]?.refs?.push ?? null;
+
+  const [searchQuery, setSearchQuery] = useState('');
+  const [authorFilter, setAuthorFilter] = useState('');
+  const [showFilter, setShowFilter] = useState(false);
+  const [selectedHash, setSelectedHash] = useState(null);
+  const [contextMenu, setContextMenu] = useState(null);
+  const [page, setPage] = useState(1);
+  const scrollRef = useRef(null);
+
+  // Load commit history
+  useEffect(() => {
+    if (slug) {
+      dispatch(fetchCommitHistory({ slug, page: 1, limit: 200 }));
+    }
+  }, [dispatch, slug]);
+
+  const allCommits = useMemo(() => commitHistory?.all ?? [], [commitHistory]);
+
+  // Extract unique authors
+  const authors = useMemo(() => {
+    const set = new Set();
+    for (const c of allCommits) {
+      if (c.author_name) set.add(c.author_name);
+    }
+    return [...set].sort();
+  }, [allCommits]);
+
+  // Filter commits
+  const filteredCommits = useMemo(() => {
+    let result = allCommits;
+    if (searchQuery) {
+      const q = searchQuery.toLowerCase();
+      result = result.filter(c =>
+        c.message?.toLowerCase().includes(q) ||
+        c.hash?.toLowerCase().includes(q) ||
+        c.author_name?.toLowerCase().includes(q)
+      );
+    }
+    if (authorFilter) {
+      result = result.filter(c => c.author_name === authorFilter);
+    }
+    return result;
+  }, [allCommits, searchQuery, authorFilter]);
+
+  // Build graph
+  const graphNodes = useMemo(() => buildCommitGraph(filteredCommits), [filteredCommits]);
+  const maxLanes = useMemo(() => {
+    let max = 0;
+    for (const gn of graphNodes) {
+      if (gn.laneCount > max) max = gn.laneCount;
+    }
+    return max;
+  }, [graphNodes]);
+
+  // Group by date
+  const dateGroups = useMemo(() => groupCommitsByDate(filteredCommits), [filteredCommits]);
+
+  const handleRefresh = useCallback(() => {
+    if (slug) dispatch(fetchCommitHistory({ slug, page: 1, limit: 200 }));
+  }, [dispatch, slug]);
+
+  const handleContextMenu = useCallback((e, commit) => {
+    e.preventDefault();
+    setContextMenu({ x: e.clientX, y: e.clientY, commit });
+  }, []);
+
+  const handleContextAction = useCallback(async (action, commit) => {
+    switch (action) {
+      case 'copy-hash':
+        navigator.clipboard.writeText(commit.hash);
+        toast.success('Commit hash copied');
+        break;
+      case 'copy-message':
+        navigator.clipboard.writeText(commit.message);
+        toast.success('Commit message copied');
+        break;
+      case 'view-detail':
+        setSelectedHash(commit.hash);
+        dispatch(fetchCommitDetail({ slug, hash: commit.hash }));
+        break;
+      case 'cherry-pick':
+        if (confirm(`Cherry-pick commit ${commit.hash.substring(0, 7)}?\n\n"${commit.message}"`)) {
+          const result = await dispatch(cherryPickCommit({ slug, hash: commit.hash }));
+          if (cherryPickCommit.fulfilled.match(result)) {
+            toast.success(`Cherry-picked ${commit.hash.substring(0, 7)}`);
+          } else {
+            toast.error(result.error?.message || 'Cherry-pick failed');
+          }
+        }
+        break;
+      case 'revert':
+        if (confirm(`Revert commit ${commit.hash.substring(0, 7)}?\n\n"${commit.message}"\n\nThis will create a new commit that undoes the changes.`)) {
+          const result = await dispatch(revertCommit({ slug, hash: commit.hash }));
+          if (revertCommit.fulfilled.match(result)) {
+            toast.success(`Reverted ${commit.hash.substring(0, 7)}`);
+            handleRefresh();
+          } else {
+            toast.error(result.error?.message || 'Revert failed');
+          }
+        }
+        break;
+    }
+  }, [dispatch, slug, handleRefresh]);
+
+  const handleCommitClick = useCallback((commit) => {
+    if (selectedHash === commit.hash) {
+      setSelectedHash(null);
+    } else {
+      setSelectedHash(commit.hash);
+      dispatch(fetchCommitDetail({ slug, hash: commit.hash }));
+    }
+  }, [dispatch, slug, selectedHash]);
+
+  return (
+    <div className="flex flex-col h-full bg-[#0a0a0b] text-[#e4e4e7]">
+      {/* Toolbar */}
+      <div className="flex items-center justify-between px-3 py-2 border-b border-[#27272a] bg-[#111113]">
+        <div className="flex items-center gap-2">
+          <GitCommit className="w-4 h-4 text-[#3b82f6]" />
+          <span className="text-xs font-semibold">Commit History</span>
+          <span className="text-[10px] text-[#52525b]">
+            {filteredCommits.length !== allCommits.length
+              ? `${filteredCommits.length}/${allCommits.length}`
+              : allCommits.length}
+          </span>
+        </div>
+        <div className="flex items-center gap-1">
+          <button
+            onClick={() => setShowFilter(!showFilter)}
+            className={`p-1 rounded transition-colors ${showFilter ? 'bg-[#3b82f6]/20 text-[#3b82f6]' : 'hover:bg-[#27272a] text-[#71717a] hover:text-[#e4e4e7]'}`}
+            title="Search & filter"
+          >
+            <Filter className="w-3.5 h-3.5" />
+          </button>
+          <button
+            onClick={handleRefresh}
+            disabled={loading}
+            className="p-1 rounded hover:bg-[#27272a] text-[#71717a] hover:text-[#e4e4e7] disabled:opacity-50 transition-colors"
+            title="Refresh"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
+          </button>
+        </div>
+      </div>
+
+      {/* Filter bar */}
+      {showFilter && (
+        <FilterBar
+          searchQuery={searchQuery}
+          onSearchChange={setSearchQuery}
+          authorFilter={authorFilter}
+          onAuthorChange={setAuthorFilter}
+          authors={authors}
+          onClose={() => { setShowFilter(false); setSearchQuery(''); setAuthorFilter(''); }}
+        />
+      )}
+
+      {/* Commit list */}
+      <div ref={scrollRef} className="flex-1 overflow-auto">
+        {dateGroups.length > 0 ? (
+          <div>
+            {dateGroups.map(group => (
+              <div key={group.label}>
+                {/* Date section header */}
+                <div className="sticky top-0 z-[5] px-3 py-1 bg-[#0d0d0f] border-b border-[#1a1a1e]">
+                  <span className="text-[10px] text-[#52525b] font-semibold uppercase tracking-wider">{group.label}</span>
+                </div>
+                {/* Commits in this date group */}
+                {group.commits.map(commit => {
+                  const gIdx = filteredCommits.indexOf(commit);
+                  const gn = graphNodes[gIdx];
+                  const webUrl = commitWebUrl(primaryRemoteUrl, commit.hash);
+                  const cc = parseConventionalCommit(commit.message);
+                  const isSelected = selectedHash === commit.hash;
+                  const isoDate = commit.date ? new Date(commit.date).toISOString() : '';
+
+                  return (
+                    <div
+                      key={commit.hash}
+                      className={`flex items-center cursor-pointer transition-colors border-l-2
+                        ${isSelected
+                          ? 'bg-[#3b82f6]/10 border-l-[#3b82f6]'
+                          : 'hover:bg-[#27272a] border-l-transparent'
+                        }`}
+                      onClick={() => handleCommitClick(commit)}
+                      onContextMenu={e => handleContextMenu(e, commit)}
+                      title={`${commit.hash}\n${isoDate}\n\nRight-click for actions`}
+                    >
+                      <GraphColumn graphNode={gn} totalLanes={maxLanes} rowHeight={36} />
+                      <div className="flex-1 min-w-0 py-1.5 pr-2">
+                        <div className="flex items-center gap-1.5">
+                          <code className="font-mono text-[10px] text-[#52525b] flex-shrink-0">{commit.hash?.substring(0, 7)}</code>
+                          {cc && (
+                            <span className={`text-[9px] px-1 py-0.5 rounded font-medium flex-shrink-0 bg-opacity-20`}
+                              style={{ color: ccColor(cc.type), backgroundColor: ccColor(cc.type) + '20' }}>
+                              {cc.type}{cc.scope ? `(${cc.scope})` : ''}
+                            </span>
+                          )}
+                          <span className="text-xs text-[#e4e4e7] truncate">
+                            {cc ? cc.description : commit.message}
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-1.5 text-[10px] text-[#52525b]">
+                          <span className="truncate">{commit.author_name}</span>
+                          <span>·</span>
+                          <span className="flex-shrink-0">{relativeTime(commit.date)}</span>
+                        </div>
+                      </div>
+                      {/* Quick actions (visible on hover) */}
+                      <div className="flex items-center gap-0.5 pr-2 opacity-0 hover:opacity-100 transition-opacity flex-shrink-0"
+                        style={{ opacity: isSelected ? 1 : undefined }}>
+                        <button
+                          onClick={(e) => { e.stopPropagation(); navigator.clipboard.writeText(commit.hash); toast.success('Hash copied'); }}
+                          className="p-0.5 rounded hover:bg-[#3f3f46] text-[#52525b] hover:text-[#e4e4e7]"
+                          title="Copy hash"
+                        >
+                          <Copy className="w-2.5 h-2.5" />
+                        </button>
+                        {webUrl && (
+                          <a
+                            href={webUrl}
+                            target="_blank"
+                            rel="noreferrer"
+                            onClick={e => e.stopPropagation()}
+                            className="p-0.5 rounded hover:bg-[#3f3f46] text-[#52525b] hover:text-[#e4e4e7]"
+                            title="View on remote"
+                          >
+                            <ExternalLink className="w-2.5 h-2.5" />
+                          </a>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="flex items-center justify-center h-32 text-[#52525b] text-xs italic">
+            {searchQuery || authorFilter ? 'No matching commits' : 'No commit history'}
+          </div>
+        )}
+      </div>
+
+      {/* Commit detail pane */}
+      {selectedHash && (
+        <CommitDetailPane
+          detail={commitDetail}
+          loading={commitDetailLoading}
+          onClose={() => setSelectedHash(null)}
+        />
+      )}
+
+      {/* Context menu */}
+      {contextMenu && (
+        <ContextMenu
+          x={contextMenu.x}
+          y={contextMenu.y}
+          commit={contextMenu.commit}
+          onClose={() => setContextMenu(null)}
+          onAction={handleContextAction}
+        />
+      )}
+    </div>
+  );
+}
+
+export { GraphColumn, CommitDetailPane, FilterBar };
