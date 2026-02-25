@@ -7,7 +7,7 @@ import {
   Check, CheckSquare, Square, ChevronDown, ChevronRight,
   Plus, Minus, RefreshCw, X
 } from 'lucide-react';
-import gitClient from '@/services/gitClient';
+import { gitClient } from '@/services/gitClient';
 
 /* ────────────────────────────────────────────────────────────
  *  HunkStagingView — Line/Hunk-level selective staging

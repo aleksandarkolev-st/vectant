@@ -275,9 +275,12 @@ export const unstageAll = createAsyncThunk(
 
 export const pushChanges = createAsyncThunk(
     'git/push',
-    async (slug, { dispatch }) => {
+    async (arg, { dispatch }) => {
+        // Support both pushChanges(slug) and pushChanges({ slug, force })
+        const slug = typeof arg === 'string' ? arg : arg.slug;
+        const force = typeof arg === 'object' && arg.force;
         const token = getGitToken(slug);
-        await gitClient.push(slug, token);
+        await gitClient.push(slug, token, force);
         dispatch(fetchGitStatus(slug));
         dispatch(fetchUnpushedCommits({ slug, max: 50 }));
         dispatch(fetchCommitHistory({ slug }));

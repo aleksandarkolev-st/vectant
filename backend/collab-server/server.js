@@ -2680,7 +2680,7 @@ const server = http.createServer(async (req, res) => {
                     broadcastGitStatusChanged(slug, undefined, notifyScope, { immediate: true });
                     break;
                 case 'push':
-                    result = await gitService.push(slug, effectiveUserId, data.token);
+                    result = await gitService.push(slug, effectiveUserId, data.token, data.force);
                     broadcastGitStatusChanged(slug, undefined, notifyScope, { immediate: true });
                     break;
                 case 'pull':

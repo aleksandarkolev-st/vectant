@@ -1153,7 +1153,7 @@ class GitService {
         }, userId);
     }
 
-    async push(slug, userId, token) {
+    async push(slug, userId, token, force = false) {
         return this.withLock(slug, async () => {
             const git = this.getGit(slug, userId);
             // Make sure we don't trigger interactive credential prompts in the server process
@@ -1190,9 +1190,15 @@ class GitService {
                 }
 
                 if (effectiveToken) {
-                    await git.raw([...extraHeaderConfig, 'push']);
+                    const pushArgs = [...extraHeaderConfig, 'push'];
+                    if (force) pushArgs.push('--force-with-lease');
+                    await git.raw(pushArgs);
                 } else {
-                    await git.push();
+                    if (force) {
+                        await git.push({ '--force-with-lease': null });
+                    } else {
+                        await git.push();
+                    }
                 }
             } catch (e) {
                 const msg = (e.message || '').toLowerCase();
@@ -1209,9 +1215,13 @@ class GitService {
                         }
                         try {
                             if (effectiveToken) {
-                                await git.raw([...extraHeaderConfig, 'push', '--set-upstream', remoteToUse, currentBranch]);
+                                const pushArgs = [...extraHeaderConfig, 'push', '--set-upstream', remoteToUse, currentBranch];
+                                if (force) pushArgs.push('--force-with-lease');
+                                await git.raw(pushArgs);
                             } else {
-                                await git.push(remoteToUse, currentBranch, ['--set-upstream']);
+                                const opts = ['--set-upstream'];
+                                if (force) opts.push('--force-with-lease');
+                                await git.push(remoteToUse, currentBranch, opts);
                             }
                         } catch (pushErr) {
                             throw this.mapGitError(pushErr, slug);

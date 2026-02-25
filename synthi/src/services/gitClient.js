@@ -170,8 +170,11 @@ export const gitClient = {
         return this.request(slug, 'unstage-all');
     },
 
-    async push(slug, token) {
-        return this.request(slug, 'push', token ? { token } : {});
+    async push(slug, token, force = false) {
+        const data = {};
+        if (token) data.token = token;
+        if (force) data.force = true;
+        return this.request(slug, 'push', data);
     },
 
     async pull(slug, token) {
