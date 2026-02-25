@@ -83,6 +83,24 @@ export const gitClient = {
             error.details = body?.details || null;
             error.statusCode = response.status;
             error.required = body?.required || null;
+            error.granted = body?.granted || null;
+
+            // ── Permission boundary toast ──
+            // Surface 403 permission_denied as a toast so the user immediately
+            // knows their collab role prevents the action — without having to
+            // look at the error banner.
+            if (response.status === 403 && (error.code === 'permission_denied' || error.code === 'host_only')) {
+                // Dynamic import to avoid circular dep; sonner is side-effect-safe
+                import('sonner').then(({ toast }) => {
+                    toast.error(error.message || 'Permission denied', {
+                        description: error.required
+                            ? `Requires "${error.required}" permission. Ask the session Host.`
+                            : undefined,
+                        duration: 5000,
+                    });
+                }).catch(() => { /* sonner not available */ });
+            }
+
             throw error;
         }
         return body;
@@ -98,6 +116,10 @@ export const gitClient = {
 
     async removeRemote(slug, name) {
         return this.request(slug, 'remove-remote', { name });
+    },
+
+    async setRemoteUrl(slug, name, url) {
+        return this.request(slug, 'set-remote-url', { name, url });
     },
 
     async getRemotes(slug) {
@@ -120,8 +142,8 @@ export const gitClient = {
         return this.request(slug, 'checkout', { branch, create });
     },
 
-    async fetch(slug) {
-        return this.request(slug, 'fetch');
+    async fetch(slug, token) {
+        return this.request(slug, 'fetch', token ? { token } : {});
     },
 
     async commit(slug, message) {
@@ -148,12 +170,12 @@ export const gitClient = {
         return this.request(slug, 'unstage-all');
     },
 
-    async push(slug) {
-        return this.request(slug, 'push');
+    async push(slug, token) {
+        return this.request(slug, 'push', token ? { token } : {});
     },
 
-    async pull(slug) {
-        return this.request(slug, 'pull');
+    async pull(slug, token) {
+        return this.request(slug, 'pull', token ? { token } : {});
     },
 
     async discardChange(slug, filePath) {
@@ -228,6 +250,18 @@ export const gitClient = {
 
     async abortMerge(slug) {
         return this.request(slug, 'abort-merge');
+    },
+
+    async cherryPick(slug, hash) {
+        return this.request(slug, 'cherry-pick', { hash });
+    },
+
+    async revertCommit(slug, hash) {
+        return this.request(slug, 'revert', { hash });
+    },
+
+    async getCommitDetail(slug, hash) {
+        return this.request(slug, 'commit-detail', { hash });
     },
 
     async getConflictVersions(slug, filePath) {
