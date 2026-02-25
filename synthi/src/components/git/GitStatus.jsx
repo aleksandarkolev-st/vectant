@@ -748,6 +748,21 @@ export function GitStatus({ slug }) {
     );
   }
 
+  const [showCommitTypes, setShowCommitTypes] = useState(false);
+
+  const COMMIT_TYPES = [
+    { type: 'feat', label: 'Feature', emoji: '✨', desc: 'New feature' },
+    { type: 'fix', label: 'Fix', emoji: '🐛', desc: 'Bug fix' },
+    { type: 'docs', label: 'Docs', emoji: '📝', desc: 'Documentation' },
+    { type: 'style', label: 'Style', emoji: '💄', desc: 'Code style/formatting' },
+    { type: 'refactor', label: 'Refactor', emoji: '♻️', desc: 'Code refactoring' },
+    { type: 'perf', label: 'Perf', emoji: '⚡', desc: 'Performance improvement' },
+    { type: 'test', label: 'Test', emoji: '✅', desc: 'Tests' },
+    { type: 'build', label: 'Build', emoji: '📦', desc: 'Build system' },
+    { type: 'ci', label: 'CI', emoji: '🔧', desc: 'CI/CD' },
+    { type: 'chore', label: 'Chore', emoji: '🔨', desc: 'Maintenance' },
+  ];
+
   // ──────────────── RENDER ────────────────────────
 
 
@@ -1406,7 +1421,30 @@ export function GitStatus({ slug }) {
       {hasChanges && (
         <div className="p-2 border-t border-[#27272a]">
           <div className="space-y-1.5">
-            <div className="flex gap-1.5">
+            <div className="flex gap-1.5 relative">
+              <button onClick={() => setShowCommitTypes(!showCommitTypes)}
+                className={`p-1 rounded text-xs transition-colors flex-shrink-0 ${showCommitTypes ? 'bg-[#27272a] text-[#e4e4e7]' : 'text-[#a1a1aa] hover:text-[#e4e4e7] hover:bg-[#27272a]'}`}
+                title="Conventional Commit type">
+                <ChevronDown className="w-3 h-3" />
+              </button>
+              {showCommitTypes && (
+                <div className="absolute left-0 bottom-full mb-1 z-50 bg-[#1c1c1e] border border-[#3f3f46] rounded-lg shadow-xl py-1 min-w-[180px]">
+                  {COMMIT_TYPES.map(ct => (
+                    <button key={ct.type}
+                      onClick={() => {
+                        const scope = prompt(`Scope (optional, e.g. auth, api):`);
+                        const prefix = scope?.trim() ? `${ct.type}(${scope.trim()}): ` : `${ct.type}: `;
+                        setMessage(prefix + message.replace(/^(feat|fix|docs|style|refactor|perf|test|build|ci|chore)(\([^)]*\))?:\s*/i, ''));
+                        setShowCommitTypes(false);
+                      }}
+                      className="w-full text-left px-3 py-1 text-xs hover:bg-[#27272a] text-[#e4e4e7] flex items-center gap-2">
+                      <span>{ct.emoji}</span>
+                      <span className="font-medium">{ct.type}</span>
+                      <span className="text-[#52525b] text-[10px]">{ct.desc}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
               <input type="text" value={message} onChange={e => setMessage(e.target.value)}
                 placeholder={amendMode ? "New commit message (amend)…" : "Commit message…"}
                 className="flex-1 bg-[#18181b] border border-[#3f3f46] rounded px-2 py-1 text-xs text-[#e4e4e7] focus:outline-none focus:border-[#3b82f6] font-mono"
