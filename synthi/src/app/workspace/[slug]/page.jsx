@@ -113,6 +113,7 @@ export default function EditorPage({ params }) {
     const [isProblemsPanelDocked, setIsProblemsPanelDocked] = useState(true); // Track if panel is docked or floating
     const [guiConfig, setGuiConfig] = useState(null);
     const [isGuiRunning, setIsGuiRunning] = useState(false);
+    const [isHmrRecompiling, setIsHmrRecompiling] = useState(false);
     const [runInGuiMode, setRunInGuiMode] = useState(false);
     const [editor, setEditor] = useState(null);
     // Track editor content version to force re-analysis on every change (including remote/undo)
@@ -1809,7 +1810,7 @@ export default function EditorPage({ params }) {
 
         // Check if language is supported for compilation to avoid errors
         const ext = (filename.split('.').pop() || '').toLowerCase();
-        const supportedExts = ['cpp', 'cc', 'cxx', 'hpp', 'h', 'rs', 'ts', 'tsx'];
+        const supportedExts = ['c', 'cpp', 'cc', 'cxx', 'hpp', 'h', 'rs', 'ts', 'tsx'];
         if (!supportedExts.includes(ext)) {
             console.log(`[HMR] Skipping silent compilation for unsupported extension: .${ext}`);
             return;
@@ -1830,31 +1831,45 @@ export default function EditorPage({ params }) {
         }
 
         try {
-            // HMR mode: stop the currently running app and re-run it
-            // This ensures a clean restart with the latest code
-            console.log('[HMR] Stopping current app and re-running with latest code...');
+            // HMR mode: kill the running app and re-compile with latest code.
+            // We dismiss the old session locally (so the old promise doesn't
+            // block), then send a fresh compile request. The worker's compile
+            // handler sees the existing RunnerState, kills the runner process,
+            // but REUSES Xvfb + GStreamer (same resolution + gui mode). The
+            // video feed stays live (shows empty desktop briefly) while the
+            // new code compiles and the new runner starts.
+            console.log('[HMR] Killing app and re-compiling with latest code...');
+            setIsHmrRecompiling(true);
+
+            // If there's no active GUI session, we need isGui=true for the
+            // worker to set up the video pipeline.
+            const shouldRunGui = runInGuiMode || isGuiRunning;
+
             const activeSessionId = client?.getActiveSessionId?.();
             if (activeSessionId) {
-                try {
-                    await client.cancelBuild(activeSessionId);
-                } catch (e) {
-                    console.debug('[HMR] Cancel previous build failed (may already be stopped):', e.message);
-                }
-                // Brief pause to let the runner process clean up
-                await new Promise(r => setTimeout(r, 200));
+                // Local-only cleanup: reject pending promise, clear session.
+                // Does NOT send cancel-build to the worker — the worker's
+                // compile handler will kill the old runner process itself.
+                client.dismissSession(activeSessionId);
             }
 
             await compile({
                 filename,
                 source,
                 files: additionalFiles,
-                isGui: runInGuiMode,
+                isGui: shouldRunGui,
             });
+            setIsHmrRecompiling(false);
             console.log('[HMR] Re-run succeeded after save');
         } catch (err) {
+            setIsHmrRecompiling(false);
+            // Don't log HMR restart rejections from the dismissed session.
+            // SynthiException('Cancelled', 'HMR restart') produces message "Cancelled: HMR restart"
+            const msg = err?.message || '';
+            if (msg.includes('HMR restart') || msg.includes('Cancelled')) return;
             console.error('[HMR] HMR re-run failed', err);
         }
-    }, [activeFile, currentContent, rawFiles, slug, compile, hmrEnabled, runInGuiMode, client]);
+    }, [activeFile, currentContent, rawFiles, slug, compile, hmrEnabled, runInGuiMode, isGuiRunning, client]);
 
     const handleEditorMount = useCallback((editorInstance) => {
         setEditor(editorInstance);
@@ -2077,6 +2092,7 @@ export default function EditorPage({ params }) {
                 setGuiConfig={setGuiConfig}
                 isGuiRunning={isGuiRunning}
                 setIsGuiRunning={setIsGuiRunning}
+                isHmrRecompiling={isHmrRecompiling}
                 mediaStream={mediaStream}
                 sendGuiEvent={sendGuiEvent}
             />
