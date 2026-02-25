@@ -472,8 +472,20 @@ export function PullRequestsPanel({ slug }) {
           onClose={() => setShowTokenModal(false)}
           onSuccess={() => {
             setShowTokenModal(false);
+            dispatch(setHasToken(true));
+            // Fetch github info if not loaded yet, then fetch PRs
             if (owner && repo) {
               dispatch(fetchPRList({ owner, repo, state: prListState, slug }));
+            } else {
+              // Need to load github info first
+              dispatch(fetchGithubInfo(slug)).then(result => {
+                if (fetchGithubInfo.fulfilled.match(result)) {
+                  const info = result.payload;
+                  if (info?.owner && info.repo) {
+                    dispatch(fetchPRList({ owner: info.owner, repo: info.repo, state: prListState, slug }));
+                  }
+                }
+              });
             }
           }}
         />
