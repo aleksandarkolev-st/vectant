@@ -8,6 +8,7 @@ import {
   GitPullRequest, ChevronLeft, AlertCircle, CheckCircle2,
   Tag, ChevronDown, RefreshCw
 } from 'lucide-react';
+import { MarkdownEditor } from './MarkdownRenderer';
 
 /**
  * Form for creating a new Pull Request.
@@ -174,17 +175,11 @@ export function CreatePRForm({ slug, onBack, onCreated }) {
           <label className="block text-[10px] font-semibold mb-1" style={{ color: 'var(--text-muted)' }}>
             DESCRIPTION
           </label>
-          <textarea
+          <MarkdownEditor
             value={body}
-            onChange={e => setBody(e.target.value)}
+            onChange={setBody}
             placeholder="Describe your changes…"
             rows={6}
-            className="w-full px-2.5 py-1.5 rounded-lg text-sm border outline-none transition resize-y min-h-[80px]"
-            style={{
-              background: 'var(--bg-app)',
-              borderColor: 'var(--border-medium)',
-              color: 'var(--text-primary)',
-            }}
           />
         </div>
 
