@@ -1511,8 +1511,8 @@ class GitService {
                     const remotes = await git.getRemotes(false);
                     if (!remotes || remotes.length === 0) return [];
                     const logOutput = await git.raw([
-                        'log',
-                        '--not', '--remotes',
+                        'log', 'HEAD',
+                        '--not', '--glob=refs/remotes/*',
                         `--max-count=${Math.min(max, 200)}`,
                         '--format=%H|%s|%an|%ae|%aI',
                     ]);
@@ -1541,8 +1541,8 @@ class GitService {
                 // Remote branch doesn't exist yet — new branch, never pushed.
                 try {
                     const logOutput = await git.raw([
-                        'log',
-                        '--not', '--remotes',
+                        'log', 'HEAD',
+                        '--not', '--glob=refs/remotes/*',
                         `--max-count=${Math.min(max, 200)}`,
                         '--format=%H|%s|%an|%ae|%aI',
                     ]);
