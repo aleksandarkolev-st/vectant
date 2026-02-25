@@ -110,7 +110,7 @@ export default function EditorPage({ params }) {
     
     const [chatVisible, setChatVisible] = useState(false);
     const [sidebarView, setSidebarView] = useState('explorer');
-    const openPRCount = useAppSelector(s => s.pr ? s.pr.prList.filter(p => p.state === 'open' && !p.pull_request?.merged_at).length : 0);
+    const openPRCount = useAppSelector(s => s.pr?.prList?.filter(p => p.state === 'open' && !p.merged).length || 0);
     const [showProblemsPanel, setShowProblemsPanel] = useState(false);
     const [isProblemsPanelDocked, setIsProblemsPanelDocked] = useState(true); // Track if panel is docked or floating
     const [guiConfig, setGuiConfig] = useState(null);
