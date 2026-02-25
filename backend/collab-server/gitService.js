@@ -937,8 +937,21 @@ class GitService {
         return this.withLock(slug, async () => {
             try {
                 const git = this.getGit(slug, userId);
-                // Use git apply --cached to stage a specific patch
-                await git.raw(['apply', '--cached', '--unidiff-zero'], patch);
+                const repoPath = this.getEffectiveRepoPath(slug, userId);
+
+                // Write the patch to a temp file — simple-git's raw() passes
+                // all args as CLI arguments and does NOT support stdin piping,
+                // so we can't pass the patch content inline.
+                const tmpDir = path.join(repoPath, '.git');
+                const tmpPatch = path.join(tmpDir, `_stage_${Date.now()}.patch`);
+                fs.writeFileSync(tmpPatch, patch, 'utf8');
+
+                try {
+                    await git.raw(['apply', '--cached', '--unidiff-zero', tmpPatch]);
+                } finally {
+                    // Always clean up the temp patch file
+                    try { fs.unlinkSync(tmpPatch); } catch (_) {}
+                }
                 return this.getStatus(slug, userId);
             } catch (e) {
                 throw this.mapGitError(e, slug);
