@@ -5,7 +5,7 @@ import {
   stageFile, unstageFile, discardChange, initRepo, cloneRepo,
   addRemote, removeRemote, setRemoteUrl, fetchRemotes, fetchCommitHistory,
   fetchUnpushedCommits, fetchIncomingCommits, fetchStashList,
-  stashPush, stashPop, stashDrop, clearError, stageAll, unstageAll,
+  stashPush, stashPop, stashApply, stashDrop, clearError, stageAll, unstageAll,
   discardAll, resolveConflictOurs, resolveConflictTheirs,
   markResolved, abortMerge, openConflictResolver
 } from '@/redux/gitSlice';
@@ -506,6 +506,13 @@ export function GitStatus({ slug }) {
     if (!slug) return;
     const result = await dispatch(stashPop({ slug, index }));
     if (stashPop.fulfilled.match(result)) toast.success('Stash applied and removed');
+    dispatch(refreshWorkspaceThunk());
+  };
+  const handleStashApply = async (index = 0) => {
+    if (!slug) return;
+    const result = await dispatch(stashApply({ slug, index }));
+    if (stashApply.fulfilled.match(result)) toast.success('Stash applied (kept in list)');
+    else toast.error(result?.error?.message || 'Failed to apply stash');
     dispatch(refreshWorkspaceThunk());
   };
   const handleStashDrop = async (index = 0) => {
@@ -1041,7 +1048,10 @@ export function GitStatus({ slug }) {
                   <code className="font-mono text-[10px] text-[#a1a1aa] flex-shrink-0">stash@{`{${idx}}`}</code>
                   <span className="truncate text-xs text-[#e4e4e7] flex-1">{s.message || 'WIP'}</span>
                   <div className="flex gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0">
-                    <button onClick={() => handleStashPop(idx)} className="hover:bg-[#27272a] p-0.5 rounded text-[#a1a1aa] hover:text-[#e4e4e7]" title="Pop stash">
+                    <button onClick={() => handleStashApply(idx)} className="hover:bg-[#27272a] p-0.5 rounded text-[#a1a1aa] hover:text-emerald-400" title="Apply stash (keep)">
+                      <Check className="w-3 h-3" strokeWidth={1.5} />
+                    </button>
+                    <button onClick={() => handleStashPop(idx)} className="hover:bg-[#27272a] p-0.5 rounded text-[#a1a1aa] hover:text-[#e4e4e7]" title="Pop stash (apply & remove)">
                       <ArchiveRestore className="w-3 h-3" strokeWidth={1.5} />
                     </button>
                     <button onClick={() => handleStashDrop(idx)} className="hover:bg-red-500/10 p-0.5 rounded text-[#a1a1aa] hover:text-red-400" title="Drop stash">
