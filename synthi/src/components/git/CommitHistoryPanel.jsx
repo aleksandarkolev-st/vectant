@@ -3,12 +3,12 @@ import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import { useDispatch, useSelector } from 'react-redux';
 import {
   fetchCommitHistory, cherryPickCommit, revertCommit, fetchCommitDetail,
-  fetchGitStatus, fetchUnpushedCommits,
+  fetchGitStatus, fetchUnpushedCommits, createTag,
 } from '@/redux/gitSlice';
 import { openCommitFileDiffThunk } from '@/redux/workspaceSlice';
 import { toast } from 'sonner';
 import {
-  Search, RefreshCw, Copy, ExternalLink, GitBranch, GitCommit,
+  Search, RefreshCw, Copy, ExternalLink, GitBranch, GitCommit, Tag,
   ChevronDown, ChevronRight, Filter, X, ChevronsUp, ChevronsDown,
   RotateCcw, Cherry, Eye, User, Calendar, FileText, Hash, Layers
 } from 'lucide-react';
@@ -122,6 +122,7 @@ function ContextMenu({ x, y, commit, onClose, onAction }) {
     { icon: Cherry, label: 'Cherry-pick this commit', action: 'cherry-pick', danger: false },
     { icon: RotateCcw, label: 'Revert this commit', action: 'revert', danger: true },
     { divider: true },
+    { icon: Tag, label: 'Tag this commit…', action: 'create-tag', danger: false },
     { icon: Layers, label: 'Interactive rebase from here…', action: 'rebase-from', danger: false },
   ];
 
@@ -470,6 +471,18 @@ export default function CommitHistoryPanel({ slug }) {
           break;
         }
         setRebaseCommits(commitsForRebase);
+        break;
+      }
+      case 'create-tag': {
+        const tagName = prompt(`Create tag on ${commit.hash.substring(0, 7)}:\n\nTag name:`);
+        if (!tagName?.trim()) break;
+        const tagMessage = prompt('Tag message (leave empty for lightweight tag):');
+        const result = await dispatch(createTag({ slug, name: tagName.trim(), ref: commit.hash, message: tagMessage || undefined }));
+        if (createTag.fulfilled.match(result)) {
+          toast.success(`Tag "${tagName.trim()}" created`);
+        } else {
+          toast.error(result.error?.message || 'Failed to create tag');
+        }
         break;
       }
     }
