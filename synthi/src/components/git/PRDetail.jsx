@@ -207,7 +207,7 @@ function CommentBox({ onSubmit, placeholder = 'Leave a comment…', submitLabel 
 // ── ReviewPanel ───────────────────────────────────────────────────────────────
 function ReviewPanel({ slug, owner, repo, prNumber }) {
   const dispatch = useDispatch();
-  const { reviewLoading, actionError } = useSelector(s => s.pr);
+  const { reviewLoading } = useSelector(s => s.pr);
   const [event, setEvent] = useState('COMMENT');
   const [body, setBody] = useState('');
 
@@ -215,11 +215,13 @@ function ReviewPanel({ slug, owner, repo, prNumber }) {
     if (!body.trim() && event === 'COMMENT') return;
     const result = await dispatch(submitReview({ owner, repo, prNumber, slug, event, body }));
     if (submitReview.fulfilled.match(result)) {
-      toast.success(`Review submitted: ${event}`);
+      toast.success(`Review submitted: ${event.replace('_', ' ').toLowerCase()}`);
       setBody('');
       setEvent('COMMENT');
+      // Refresh the PR detail to get updated reviews
+      dispatch(fetchPRDetail({ owner, repo, prNumber, slug }));
     } else {
-      toast.error(actionError || 'Review failed');
+      toast.error(result.payload?.error || 'Review submission failed');
     }
   };
 
@@ -248,7 +250,19 @@ function ReviewPanel({ slug, owner, repo, prNumber }) {
         ))}
       </div>
       <CommentBox
-        onSubmit={handleSubmit}
+        onSubmit={async (text) => {
+          setBody(text);
+          if (!text.trim() && event === 'COMMENT') return;
+          const result = await dispatch(submitReview({ owner, repo, prNumber, slug, event, body: text }));
+          if (submitReview.fulfilled.match(result)) {
+            toast.success(`Review submitted: ${event.replace('_', ' ').toLowerCase()}`);
+            setBody('');
+            setEvent('COMMENT');
+            dispatch(fetchPRDetail({ owner, repo, prNumber, slug }));
+          } else {
+            toast.error(result.payload?.error || 'Review submission failed');
+          }
+        }}
         placeholder={`Submit ${event.toLowerCase().replace('_', ' ')} review…`}
         submitLabel={reviewLoading ? 'Submitting…' : 'Submit Review'}
         loading={reviewLoading}
@@ -260,7 +274,7 @@ function ReviewPanel({ slug, owner, repo, prNumber }) {
 // ── MergePanel ────────────────────────────────────────────────────────────────
 function MergePanel({ slug, owner, repo, pr }) {
   const dispatch = useDispatch();
-  const { mergePRLoading, actionError } = useSelector(s => s.pr);
+  const { mergePRLoading } = useSelector(s => s.pr);
   const [method, setMethod] = useState('merge');
   const [commitTitle, setCommitTitle] = useState('');
   const [commitMsg, setCommitMsg] = useState('');
@@ -276,8 +290,10 @@ function MergePanel({ slug, owner, repo, pr }) {
     if (mergePR.fulfilled.match(result)) {
       toast.success('Pull request merged!');
       dispatch(fetchPRList({ owner, repo, state: 'open', slug }));
+      // Refresh detail to show updated state
+      dispatch(fetchPRDetail({ owner, repo, prNumber: pr.number, slug }));
     } else {
-      toast.error(actionError || 'Merge failed. Check if all requirements are satisfied.');
+      toast.error(result.payload?.error || 'Merge failed. Check if all requirements are satisfied.');
     }
   };
 
@@ -374,7 +390,7 @@ export function PRDetail({ slug, onBack }) {
   const {
     githubInfo, activePR: pr, prDetailLoading, prDetailError,
     prFiles, prCommits, prReviews, prIssueComments, prChecks,
-    commentLoading, actionError,
+    commentLoading,
   } = useSelector(s => s.pr);
 
   const [tab, setTab] = useState('overview');
@@ -412,8 +428,10 @@ export function PRDetail({ slug, onBack }) {
     const result = await dispatch(action({ owner, repo, prNumber: pr.number, slug }));
     if (action.fulfilled.match(result)) {
       toast.success(pr.state === 'closed' ? 'PR reopened' : 'PR closed');
+      // Refresh PR list
+      dispatch(fetchPRList({ owner, repo, state: 'open', slug }));
     } else {
-      toast.error(actionError || 'Action failed');
+      toast.error(result.payload?.error || 'Action failed');
     }
     setClosingPR(false);
   };
@@ -423,7 +441,7 @@ export function PRDetail({ slug, onBack }) {
     if (postComment.fulfilled.match(result)) {
       toast.success('Comment posted');
     } else {
-      toast.error(actionError || 'Comment failed');
+      toast.error(result.payload?.error || 'Comment failed');
     }
   };
 
