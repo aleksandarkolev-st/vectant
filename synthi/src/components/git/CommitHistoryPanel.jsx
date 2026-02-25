@@ -267,33 +267,69 @@ function CommitDetailPane({ detail, loading, onClose, onFileClick }) {
 
 /* ─── Filter bar ────────────────────────────────────── */
 
-function FilterBar({ searchQuery, onSearchChange, authorFilter, onAuthorChange, authors, onClose }) {
+function FilterBar({
+  searchQuery, onSearchChange,
+  authorFilter, onAuthorChange,
+  dateFrom, onDateFromChange,
+  dateTo, onDateToChange,
+  authors, onClose,
+}) {
   return (
-    <div className="flex items-center gap-2 px-3 py-2 bg-[#111113] border-b border-[#27272a]">
-      <Search className="w-3.5 h-3.5 text-[#52525b] flex-shrink-0" />
-      <input
-        type="text"
-        value={searchQuery}
-        onChange={e => onSearchChange(e.target.value)}
-        placeholder="Search by message, hash, or author…"
-        className="flex-1 bg-transparent text-xs text-[#e4e4e7] placeholder-[#3f3f46] focus:outline-none"
-        autoFocus
-      />
-      {authors.length > 0 && (
-        <select
-          value={authorFilter}
-          onChange={e => onAuthorChange(e.target.value)}
-          className="bg-[#18181b] border border-[#3f3f46] rounded px-1.5 py-0.5 text-[10px] text-[#a1a1aa] focus:outline-none focus:border-[#3b82f6]"
-        >
-          <option value="">All authors</option>
-          {authors.map(a => (
-            <option key={a} value={a}>{a}</option>
-          ))}
-        </select>
-      )}
-      <button onClick={onClose} className="hover:bg-[#27272a] p-0.5 rounded text-[#71717a] hover:text-[#e4e4e7]">
-        <X className="w-3 h-3" />
-      </button>
+    <div className="flex flex-col gap-1.5 px-3 py-2 bg-[#111113] border-b border-[#27272a]">
+      {/* Row 1: text search + author */}
+      <div className="flex items-center gap-2">
+        <Search className="w-3.5 h-3.5 text-[#52525b] flex-shrink-0" />
+        <input
+          type="text"
+          value={searchQuery}
+          onChange={e => onSearchChange(e.target.value)}
+          placeholder="Search by message, hash, author, or file path…"
+          className="flex-1 bg-transparent text-xs text-[#e4e4e7] placeholder-[#3f3f46] focus:outline-none"
+          autoFocus
+        />
+        {authors.length > 0 && (
+          <select
+            value={authorFilter}
+            onChange={e => onAuthorChange(e.target.value)}
+            className="bg-[#18181b] border border-[#3f3f46] rounded px-1.5 py-0.5 text-[10px] text-[#a1a1aa] focus:outline-none focus:border-[#3b82f6]"
+          >
+            <option value="">All authors</option>
+            {authors.map(a => (
+              <option key={a} value={a}>{a}</option>
+            ))}
+          </select>
+        )}
+        <button onClick={onClose} className="hover:bg-[#27272a] p-0.5 rounded text-[#71717a] hover:text-[#e4e4e7]">
+          <X className="w-3 h-3" />
+        </button>
+      </div>
+      {/* Row 2: date range */}
+      <div className="flex items-center gap-2 text-[10px]">
+        <Calendar className="w-3 h-3 text-[#52525b] flex-shrink-0" />
+        <span className="text-[#71717a]">From</span>
+        <input
+          type="date"
+          value={dateFrom}
+          onChange={e => onDateFromChange(e.target.value)}
+          className="bg-[#18181b] border border-[#3f3f46] rounded px-1 py-0.5 text-[10px] text-[#a1a1aa] focus:outline-none focus:border-[#3b82f6]"
+        />
+        <span className="text-[#71717a]">To</span>
+        <input
+          type="date"
+          value={dateTo}
+          onChange={e => onDateToChange(e.target.value)}
+          className="bg-[#18181b] border border-[#3f3f46] rounded px-1 py-0.5 text-[10px] text-[#a1a1aa] focus:outline-none focus:border-[#3b82f6]"
+        />
+        {(dateFrom || dateTo) && (
+          <button
+            onClick={() => { onDateFromChange(''); onDateToChange(''); }}
+            className="text-[#71717a] hover:text-[#e4e4e7]"
+            title="Clear date filter"
+          >
+            <X className="w-2.5 h-2.5" />
+          </button>
+        )}
+      </div>
     </div>
   );
 }
@@ -308,6 +344,8 @@ export default function CommitHistoryPanel({ slug }) {
 
   const [searchQuery, setSearchQuery] = useState('');
   const [authorFilter, setAuthorFilter] = useState('');
+  const [dateFrom, setDateFrom] = useState('');
+  const [dateTo, setDateTo] = useState('');
   const [showFilter, setShowFilter] = useState(false);
   const [selectedHash, setSelectedHash] = useState(null);
   const [contextMenu, setContextMenu] = useState(null);
@@ -346,8 +384,18 @@ export default function CommitHistoryPanel({ slug }) {
     if (authorFilter) {
       result = result.filter(c => c.author_name === authorFilter);
     }
+    if (dateFrom) {
+      const from = new Date(dateFrom);
+      from.setHours(0, 0, 0, 0);
+      result = result.filter(c => c.date && new Date(c.date) >= from);
+    }
+    if (dateTo) {
+      const to = new Date(dateTo);
+      to.setHours(23, 59, 59, 999);
+      result = result.filter(c => c.date && new Date(c.date) <= to);
+    }
     return result;
-  }, [allCommits, searchQuery, authorFilter]);
+  }, [allCommits, searchQuery, authorFilter, dateFrom, dateTo]);
 
   // Build graph
   const graphNodes = useMemo(() => buildCommitGraph(filteredCommits), [filteredCommits]);
@@ -457,8 +505,12 @@ export default function CommitHistoryPanel({ slug }) {
           onSearchChange={setSearchQuery}
           authorFilter={authorFilter}
           onAuthorChange={setAuthorFilter}
+          dateFrom={dateFrom}
+          onDateFromChange={setDateFrom}
+          dateTo={dateTo}
+          onDateToChange={setDateTo}
           authors={authors}
-          onClose={() => { setShowFilter(false); setSearchQuery(''); setAuthorFilter(''); }}
+          onClose={() => { setShowFilter(false); setSearchQuery(''); setAuthorFilter(''); setDateFrom(''); setDateTo(''); }}
         />
       )}
 
