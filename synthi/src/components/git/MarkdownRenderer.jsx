@@ -458,9 +458,9 @@ function renderBlock(block, idx) {
 // ── Toolbar for Write/Preview mode ───────────────────────────────────────────
 
 const MD_TOOLBAR_ITEMS = [
-  { label: 'B', title: 'Bold', before: '**', after: '**' },
-  { label: 'I', title: 'Italic', before: '_', after: '_', className: 'italic' },
-  { label: 'S', title: 'Strikethrough', before: '~~', after: '~~', className: 'line-through' },
+  { label: 'B', title: 'Bold (Ctrl+B)', before: '**', after: '**', shortcut: { key: 'b', ctrl: true } },
+  { label: 'I', title: 'Italic (Ctrl+I)', before: '_', after: '_', className: 'italic', shortcut: { key: 'i', ctrl: true } },
+  { label: 'S', title: 'Strikethrough (Ctrl+Shift+X)', before: '~~', after: '~~', className: 'line-through', shortcut: { key: 'x', ctrl: true, shift: true } },
   { label: '<>', title: 'Inline code', before: '`', after: '`', className: 'font-mono text-[10px]' },
   { sep: true },
   { label: 'H1', title: 'Heading 1', before: '# ', after: '', block: true },
@@ -473,9 +473,58 @@ const MD_TOOLBAR_ITEMS = [
   { sep: true },
   { label: '""', title: 'Blockquote', before: '> ', after: '', block: true },
   { label: '```', title: 'Code block', before: '```\n', after: '\n```', block: true },
-  { label: '🔗', title: 'Link', before: '[', after: '](url)' },
+  { label: '🔗', title: 'Link (Ctrl+K)', before: '[', after: '](url)', shortcut: { key: 'k', ctrl: true } },
   { label: '📷', title: 'Image', before: '![alt](', after: ')' },
 ];
+
+/**
+ * Insert markdown formatting around the selection of a textarea.
+ * Uses execCommand for undo support. Returns early if ref is null.
+ */
+export function insertMarkdownFormatting(textareaRef, item) {
+  const ta = textareaRef?.current;
+  if (!ta) return;
+  const start = ta.selectionStart;
+  const end = ta.selectionEnd;
+  const text = ta.value;
+  const selected = text.slice(start, end);
+
+  let insert;
+  if (item.block && start > 0 && text[start - 1] !== '\n') {
+    insert = '\n' + item.before + (selected || 'text') + item.after;
+  } else {
+    insert = item.before + (selected || 'text') + item.after;
+  }
+
+  ta.focus();
+  document.execCommand('insertText', false, insert);
+  ta.dispatchEvent(new Event('input', { bubbles: true }));
+}
+
+/**
+ * onKeyDown handler for Markdown keyboard shortcuts.
+ * Attach to any textarea that has a corresponding ref.
+ *
+ * Supported: Ctrl+B (Bold), Ctrl+I (Italic), Ctrl+K (Link), Ctrl+Shift+X (Strikethrough)
+ */
+export function handleMarkdownKeyDown(e, textareaRef) {
+  const ctrl = e.ctrlKey || e.metaKey;
+  if (!ctrl) return;
+
+  for (const item of MD_TOOLBAR_ITEMS) {
+    if (!item.shortcut) continue;
+    const s = item.shortcut;
+    if (
+      e.key.toLowerCase() === s.key &&
+      ctrl === !!s.ctrl &&
+      e.shiftKey === !!s.shift
+    ) {
+      e.preventDefault();
+      insertMarkdownFormatting(textareaRef, item);
+      return;
+    }
+  }
+}
 
 /**
  * Markdown toolbar that wraps a textarea ref.
@@ -483,26 +532,7 @@ const MD_TOOLBAR_ITEMS = [
  */
 export function MarkdownToolbar({ textareaRef }) {
   const handleInsert = useCallback((item) => {
-    const ta = textareaRef?.current;
-    if (!ta) return;
-    const start = ta.selectionStart;
-    const end = ta.selectionEnd;
-    const text = ta.value;
-    const selected = text.slice(start, end);
-
-    let insert;
-    if (item.block && start > 0 && text[start - 1] !== '\n') {
-      insert = '\n' + item.before + (selected || 'text') + item.after;
-    } else {
-      insert = item.before + (selected || 'text') + item.after;
-    }
-
-    // Use execCommand for undo-able insertion
-    ta.focus();
-    document.execCommand('insertText', false, insert);
-
-    // Native event to trigger React onChange
-    ta.dispatchEvent(new Event('input', { bubbles: true }));
+    insertMarkdownFormatting(textareaRef, item);
   }, [textareaRef]);
 
   return (
@@ -575,6 +605,7 @@ export function MarkdownEditor({ value, onChange, placeholder = 'Write…', rows
           ref={textareaRef}
           value={value}
           onChange={e => onChange(e.target.value)}
+          onKeyDown={e => handleMarkdownKeyDown(e, textareaRef)}
           placeholder={placeholder}
           rows={rows}
           className="w-full px-3 py-2 text-xs resize-y outline-none font-mono min-h-[80px]"
