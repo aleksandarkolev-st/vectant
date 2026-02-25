@@ -1608,7 +1608,11 @@ export default function EditorPage({ params }) {
         }
     }, [rawFiles, slug]);
 
-    const handleRun = useCallback(async ({ skipCancel = false } = {}) => {
+    const handleRun = useCallback(async (options = {}) => {
+        const isEvent = options && typeof options.preventDefault === 'function';
+        const skipCancel = isEvent ? false : (options.skipCancel || false);
+        const latestCode = isEvent ? null : (options.latestCode || null);
+
         if (!activeFile) {
             console.warn('No active file selected for compilation.');
             return;
@@ -1621,7 +1625,7 @@ export default function EditorPage({ params }) {
             }));
         }
 
-        const source = typeof currentContent === 'string' ? currentContent : '';
+        const source = typeof latestCode === 'string' ? latestCode : (typeof currentContent === 'string' ? currentContent : '');
         // Use the full path to preserve directory structure in the worker
         const filename = activeFile?.path || activeFile?.name || 'main';
         // Ensure a terminal is visible when running so output is shown
@@ -1638,7 +1642,7 @@ export default function EditorPage({ params }) {
         const getContentForDependency = async (path) => {
             // If it's the active file, use the current editor content (which might be unsaved)
             if (path === activeFile.path) {
-                return typeof currentContent === 'string' ? currentContent : '';
+                return typeof latestCode === 'string' ? latestCode : (typeof currentContent === 'string' ? currentContent : '');
             }
             // Check cache
             const cached = fileCache.get(path);
@@ -1784,7 +1788,7 @@ export default function EditorPage({ params }) {
         await handleRun({ skipCancel: true });
     }, [client, handleRun]);
 
-    const handleSave = useCallback(async () => {
+    const handleSave = useCallback(async (latestCode) => {
         if (!activeFile) return;
 
         // If HMR is disabled, skip recompilation on save
@@ -1801,7 +1805,7 @@ export default function EditorPage({ params }) {
         }
 
         // Similar to handleRun but silent and doesn't force terminal open
-        const source = typeof currentContent === 'string' ? currentContent : '';
+        const source = typeof latestCode === 'string' ? latestCode : (typeof currentContent === 'string' ? currentContent : '');
         const filename = activeFile?.path || activeFile?.name || 'main';
 
         // Note: CodeIntel re-index is triggered by saveFileContentThunk
@@ -1817,7 +1821,7 @@ export default function EditorPage({ params }) {
         }
 
         const getContentForDependency = async (path) => {
-            if (path === activeFile.path) return typeof currentContent === 'string' ? currentContent : '';
+            if (path === activeFile.path) return typeof latestCode === 'string' ? latestCode : (typeof currentContent === 'string' ? currentContent : '');
             const cached = fileCache.get(path);
             if (cached !== undefined) return cached;
             return await api.fetchFileContent(slug, path);

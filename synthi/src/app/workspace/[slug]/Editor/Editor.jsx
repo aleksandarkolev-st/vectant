@@ -2643,7 +2643,7 @@ const EditorPanel = ({
             });
         }
         // Trigger HMR/Compilation on save
-        if (onSave) onSave();
+        if (onSave) onSave(latestCodeRef.current ?? code);
     }, [activeFile, dispatch, onSave, compilerClient, code, slug]);
 
     // Auto-save mode: persist edits after a short idle period.
@@ -3869,7 +3869,9 @@ const EditorPanel = ({
                                     </div>
                                 </ContextMenuTrigger>
                                 <ContextMenuContent className="w-56" style={{ background: 'var(--bg-elevated)', borderColor: 'var(--border-medium)', color: 'var(--text-primary)' }}>
-                                    <ContextMenuItem onClick={onRun}>Run File</ContextMenuItem>
+                                    <ContextMenuItem onClick={() => {
+                                        if (onRun) onRun({ latestCode: latestCodeRef.current ?? code });
+                                    }}>Run File</ContextMenuItem>
                                     <ContextMenuItem onClick={() => editorInstance?.getAction('editor.action.formatDocument')?.run()}>
                                         Format Document
                                     </ContextMenuItem>
