@@ -6,7 +6,7 @@ import {
 } from '@/redux/prSlice';
 import {
   GitPullRequest, ChevronLeft, AlertCircle, CheckCircle2,
-  Tag, ChevronDown
+  Tag, ChevronDown, RefreshCw
 } from 'lucide-react';
 
 /**
@@ -27,6 +27,22 @@ export function CreatePRForm({ slug, onBack, onCreated }) {
   const [draft, setDraft] = useState(false);
   const [selectedLabels, setSelectedLabels] = useState([]);
   const [showLabelPicker, setShowLabelPicker] = useState(false);
+  const [titleTouched, setTitleTouched] = useState(false);
+
+  // Auto-fill title from branch name if user hasn't touched it
+  useEffect(() => {
+    if (!titleTouched && head) {
+      // Convert branch name like "feature/add-login-page" → "Add login page"
+      const branchPart = head.replace(/^(feature|fix|bugfix|hotfix|chore|refactor|docs|feat)\//i, '');
+      const humanized = branchPart
+        .replace(/[-_]/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+      if (humanized) {
+        setTitle(humanized.charAt(0).toUpperCase() + humanized.slice(1));
+      }
+    }
+  }, [head, titleTouched]);
 
   useEffect(() => {
     if (owner && repo) {
@@ -105,6 +121,7 @@ export function CreatePRForm({ slug, onBack, onCreated }) {
               onChange={setHead}
               branches={repoBranches}
               placeholder="head branch"
+              loading={repoBranches.length === 0}
             />
           </div>
           <div>
@@ -116,9 +133,21 @@ export function CreatePRForm({ slug, onBack, onCreated }) {
               onChange={setBase}
               branches={repoBranches}
               placeholder="base branch"
+              loading={repoBranches.length === 0}
             />
           </div>
         </div>
+        {head && base && head === base && (
+          <div className="flex items-center gap-1.5 text-[10px] text-amber-400 -mt-1">
+            <AlertCircle className="w-3 h-3 flex-shrink-0" />
+            Head and base branches must be different
+          </div>
+        )}
+        {repoBranches.length === 0 && (
+          <div className="flex items-center gap-1.5 text-[10px] -mt-1" style={{ color: 'var(--text-muted)' }}>
+            <RefreshCw className="w-3 h-3 animate-spin" /> Loading branches…
+          </div>
+        )}
 
         {/* Title */}
         <div>
@@ -128,7 +157,7 @@ export function CreatePRForm({ slug, onBack, onCreated }) {
           <input
             type="text"
             value={title}
-            onChange={e => setTitle(e.target.value)}
+            onChange={e => { setTitle(e.target.value); setTitleTouched(true); }}
             placeholder="PR title…"
             required
             className="w-full px-2.5 py-1.5 rounded-lg text-sm border outline-none transition"
@@ -238,30 +267,25 @@ export function CreatePRForm({ slug, onBack, onCreated }) {
         >
           {createPRLoading ? 'Creating…' : 'Create Pull Request'}
         </button>
-
-        {head && base && head === base && (
-          <p className="text-xs text-center" style={{ color: 'var(--text-muted)' }}>
-            Head and base branch must be different.
-          </p>
-        )}
       </form>
     </div>
   );
 }
 
-function BranchSelect({ value, onChange, branches, placeholder }) {
+function BranchSelect({ value, onChange, branches, placeholder, loading }) {
   return (
     <select
       value={value}
       onChange={e => onChange(e.target.value)}
-      className="w-full px-2 py-1.5 rounded-lg text-xs border outline-none transition"
+      disabled={loading}
+      className="w-full px-2 py-1.5 rounded-lg text-xs border outline-none transition disabled:opacity-50"
       style={{
         background: 'var(--bg-app)',
         borderColor: 'var(--border-medium)',
         color: 'var(--text-primary)',
       }}
     >
-      {!value && <option value="">{placeholder}</option>}
+      {!value && <option value="">{loading ? 'Loading…' : placeholder}</option>}
       {branches.map(b => (
         <option key={b} value={b}>{b}</option>
       ))}
