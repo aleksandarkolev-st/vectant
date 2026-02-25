@@ -277,10 +277,15 @@ const prClient = {
    * Submit a review.
    * @param {'APPROVE'|'REQUEST_CHANGES'|'COMMENT'|'PENDING'} event
    */
-  async createReview(owner, repo, prNumber, { event, body, comments = [] }, token) {
+  async createReview(owner, repo, prNumber, { event, body, comments }, token) {
+    // Only include fields that are defined — GitHub rejects unknown/empty
+    // fields (e.g. `comments: []` without inline comment objects).
+    const payload = { event };
+    if (body !== undefined && body !== null && body !== '') payload.body = body;
+    if (Array.isArray(comments) && comments.length > 0) payload.comments = comments;
     return ghFetch(`/repos/${owner}/${repo}/pulls/${prNumber}/reviews`, {
       method: 'POST',
-      body: { event, body, comments },
+      body: payload,
       token,
     });
   },
