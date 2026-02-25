@@ -440,18 +440,28 @@ export function PullRequestsPanel({ slug }) {
             ) : filteredPRs.length === 0 ? (
               <div className="flex flex-col items-center justify-center flex-1 py-10 text-center px-4">
                 <GitPullRequest className="w-8 h-8 mb-3" style={{ color: 'var(--text-muted)', opacity: 0.3 }} />
-                <p className="text-xs font-medium" style={{ color: 'var(--text-primary)' }}>
+                <p className="text-xs font-medium mb-1" style={{ color: 'var(--text-primary)' }}>
                   {searchQuery ? 'No matching pull requests' : `No ${prListState === 'all' ? '' : prListState} pull requests`}
                 </p>
                 {!searchQuery && prListState === 'open' && (
-                  <button
-                    onClick={() => setView('create')}
-                    className="mt-3 flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition"
-                    style={{ background: 'var(--accent-primary)', color: '#fff' }}
-                  >
-                    <Plus className="w-3.5 h-3.5" />
-                    New Pull Request
-                  </button>
+                  <>
+                    <p className="text-[10px] mb-3 max-w-[200px]" style={{ color: 'var(--text-muted)' }}>
+                      Create a pull request to propose changes from one branch to another.
+                    </p>
+                    <button
+                      onClick={() => setView('create')}
+                      className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-semibold transition"
+                      style={{ background: 'var(--accent-primary)', color: '#fff' }}
+                    >
+                      <Plus className="w-3.5 h-3.5" />
+                      New Pull Request
+                    </button>
+                  </>
+                )}
+                {!searchQuery && prListState === 'closed' && (
+                  <p className="text-[10px] max-w-[200px]" style={{ color: 'var(--text-muted)' }}>
+                    No closed pull requests found. Try switching to "Open" or "All".
+                  </p>
                 )}
               </div>
             ) : (
