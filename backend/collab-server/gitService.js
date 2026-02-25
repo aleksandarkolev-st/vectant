@@ -863,6 +863,66 @@ class GitService {
         }
     }
 
+    // ── Tag management ─────────────────────────────────
+    async getTags(slug, userId) {
+        if (!this.isRepoExists(slug, userId)) return [];
+        if (!this.isRepoInitialized(slug, userId)) return [];
+        try {
+            const git = this.getGit(slug, userId);
+            const raw = await git.raw(['tag', '-l', '--sort=-creatordate', '--format=%(refname:short)%09%(objectname:short)%09%(creatordate:iso-strict)%09%(contents:subject)']);
+            return raw.trim().split('\n').filter(Boolean).map(line => {
+                const [name, hash, date, message] = line.split('\t');
+                return { name, hash, date, message: message || '' };
+            });
+        } catch (e) {
+            throw this.mapGitError(e, slug);
+        }
+    }
+
+    async createTag(slug, name, ref = 'HEAD', message, userId) {
+        return this.withLock(slug, async () => {
+            const git = this.getGit(slug, userId);
+            try {
+                if (message) {
+                    await git.tag(['-a', name, ref, '-m', message]);
+                } else {
+                    await git.tag([name, ref]);
+                }
+                return { name, ref };
+            } catch (e) {
+                throw this.mapGitError(e, slug);
+            }
+        }, userId);
+    }
+
+    async deleteTag(slug, name, userId) {
+        return this.withLock(slug, async () => {
+            const git = this.getGit(slug, userId);
+            try {
+                await git.tag(['-d', name]);
+                return { deleted: name };
+            } catch (e) {
+                throw this.mapGitError(e, slug);
+            }
+        }, userId);
+    }
+
+    async pushTag(slug, name, userId, token) {
+        return this.withLock(slug, async () => {
+            const git = this.getGit(slug, userId);
+            try {
+                if (token) {
+                    await git.raw(['-c', `http.extraheader=Authorization: Bearer ${token}`, 'push', 'origin', `refs/tags/${name}`]);
+                } else {
+                    await git.push('origin', `refs/tags/${name}`);
+                }
+                return { pushed: name };
+            } catch (e) {
+                throw this.mapGitError(e, slug);
+            }
+        }, userId);
+    }
+
     async checkout(slug, branchName, create = false, userId) {
         return this.withLock(slug, async () => {
             const git = this.getGit(slug, userId);

@@ -275,6 +275,23 @@ export const gitClient = {
         return this.request(slug, 'rebase-continue');
     },
 
+    // ── Tag management ─────────────────────────────────
+    async getTags(slug) {
+        return this.request(slug, 'tags');
+    },
+
+    async createTag(slug, name, ref = 'HEAD', message) {
+        return this.request(slug, 'create-tag', { name, ref, message });
+    },
+
+    async deleteTag(slug, name) {
+        return this.request(slug, 'delete-tag', { name });
+    },
+
+    async pushTag(slug, name, token) {
+        return this.request(slug, 'push-tag', { name, token });
+    },
+
     async getCommitDetail(slug, hash) {
         return this.request(slug, 'commit-detail', { hash });
     },

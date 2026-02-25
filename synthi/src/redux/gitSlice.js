@@ -423,6 +423,42 @@ export const stashDrop = createAsyncThunk(
     }
 );
 
+// ── Tag management ─────────────────────────────────
+export const fetchTags = createAsyncThunk(
+    'git/fetchTags',
+    async (slug) => {
+        return await gitClient.getTags(slug);
+    }
+);
+
+export const createTag = createAsyncThunk(
+    'git/createTag',
+    async ({ slug, name, ref, message }, { dispatch }) => {
+        const result = await gitClient.createTag(slug, name, ref, message);
+        dispatch(fetchTags(slug));
+        dispatch(fetchCommitHistory({ slug }));
+        return result;
+    }
+);
+
+export const deleteTag = createAsyncThunk(
+    'git/deleteTag',
+    async ({ slug, name }, { dispatch }) => {
+        const result = await gitClient.deleteTag(slug, name);
+        dispatch(fetchTags(slug));
+        dispatch(fetchCommitHistory({ slug }));
+        return result;
+    }
+);
+
+export const pushTag = createAsyncThunk(
+    'git/pushTag',
+    async ({ slug, name }) => {
+        const token = getGitToken(slug);
+        return await gitClient.pushTag(slug, name, token);
+    }
+);
+
 // Blame
 export const fetchBlame = createAsyncThunk(
     'git/fetchBlame',
@@ -485,6 +521,7 @@ const gitSlice = createSlice({
         unpushedCommits: [],
         incomingCommits: [],
         stashList: [],
+        tags: [],
         blameData: [],
         currentBranch: 'main',
         loading: false,
@@ -585,7 +622,8 @@ const gitSlice = createSlice({
         
         builder
             .addCase(fetchStashList.fulfilled, (state, action) => { state.stashList = action.payload || []; })
-            .addCase(fetchBlame.fulfilled, (state, action) => { state.blameData = action.payload || []; });
+            .addCase(fetchBlame.fulfilled, (state, action) => { state.blameData = action.payload || []; })
+            .addCase(fetchTags.fulfilled, (state, action) => { state.tags = action.payload || []; });
         
         builder
             .addCase(fetchRemotes.fulfilled, (state, action) => {

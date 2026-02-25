@@ -2809,6 +2809,18 @@ const server = http.createServer(async (req, res) => {
                     await invalidateDocsForSlug(slug, null, notifyScope);
                     broadcastFileTreeChanged(slug, notifyScope);
                     break;
+                case 'tags':
+                    result = await gitService.getTags(slug, effectiveUserId);
+                    break;
+                case 'create-tag':
+                    result = await gitService.createTag(slug, data.name, data.ref || 'HEAD', data.message, effectiveUserId);
+                    break;
+                case 'delete-tag':
+                    result = await gitService.deleteTag(slug, data.name, effectiveUserId);
+                    break;
+                case 'push-tag':
+                    result = await gitService.pushTag(slug, data.name, effectiveUserId, data.token);
+                    break;
                 case 'revert':
                     result = await gitService.revertCommit(slug, data.hash, effectiveUserId);
                     broadcastFileReverted(slug, [], notifyScope);
