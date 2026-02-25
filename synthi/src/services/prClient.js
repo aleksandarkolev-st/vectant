@@ -386,6 +386,10 @@ const prClient = {
     });
   },
 
+  async listCollaborators(owner, repo, token) {
+    return ghFetchAll(`/repos/${owner}/${repo}/collaborators`, { token });
+  },
+
   // ── Checks ──────────────────────────────────────────────────────────────────
 
   async listCheckRunsForRef(owner, repo, ref, token) {

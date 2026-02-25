@@ -252,6 +252,19 @@ export const fetchRepoBranches = createAsyncThunk(
   }
 );
 
+export const fetchRepoCollaborators = createAsyncThunk(
+  'pr/fetchRepoCollaborators',
+  async ({ owner, repo, slug }, { rejectWithValue }) => {
+    const token = getStoredToken(slug);
+    if (!token) return rejectWithValue({ error: 'no_token' });
+    try {
+      return await prClient.listCollaborators(owner, repo, token);
+    } catch (e) {
+      return rejectWithValue({ error: e.message });
+    }
+  }
+);
+
 // ── Slice ─────────────────────────────────────────────────────────────────────
 
 const initialState = {
@@ -283,6 +296,7 @@ const initialState = {
 
   // Repo metadata
   repoLabels: [],
+  repoCollaborators: [],
   repoBranches: [],
 
   // Create PR form
@@ -519,6 +533,18 @@ const prSlice = createSlice({
     builder
       .addCase(setLabels.fulfilled, (state, { payload }) => {
         if (state.activePR) state.activePR = { ...state.activePR, labels: payload };
+      });
+
+    // ── fetchRepoCollaborators ───────────────────────────────────────────────
+    builder
+      .addCase(fetchRepoCollaborators.fulfilled, (state, { payload }) => {
+        state.repoCollaborators = payload;
+      });
+
+    // ── setAssignees ─────────────────────────────────────────────────────────
+    builder
+      .addCase(setAssignees.fulfilled, (state, { payload }) => {
+        if (state.activePR) state.activePR = { ...state.activePR, assignees: payload };
       });
   },
 });

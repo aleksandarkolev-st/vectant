@@ -3,8 +3,8 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import {
   fetchPRDetail, updatePR, mergePR, closePR, reopenPR,
-  submitReview, postComment, deleteComment, setLabels,
-  fetchRepoLabels, setActivePR, clearActionError, fetchRepoBranches,
+  submitReview, postComment, deleteComment, setLabels, setAssignees,
+  fetchRepoLabels, fetchRepoCollaborators, setActivePR, clearActionError, fetchRepoBranches,
   fetchPRList,
 } from '@/redux/prSlice';
 import {
@@ -584,16 +584,23 @@ export function PRDetail({ slug, onBack }) {
 // ── Overview Tab ──────────────────────────────────────────────────────────────
 function OverviewTab({ pr, slug, owner, repo, onEditTitle, editingTitle, newTitle, setNewTitle, onTitleSave, onTitleCancel, onClose, closingPR, reviews }) {
   const dispatch = useDispatch();
-  const { repoLabels } = useSelector(s => s.pr);
+  const { repoLabels, repoCollaborators } = useSelector(s => s.pr);
   const [showLabelPicker, setShowLabelPicker] = useState(false);
   const [editingBody, setEditingBody] = useState(false);
   const [newBody, setNewBody] = useState('');
+  const [showAssigneePicker, setShowAssigneePicker] = useState(false);
 
   useEffect(() => {
     if (owner && repo && repoLabels.length === 0) {
       dispatch(fetchRepoLabels({ owner, repo, slug }));
     }
   }, [owner, repo, slug, dispatch, repoLabels.length]);
+
+  useEffect(() => {
+    if (owner && repo && repoCollaborators.length === 0) {
+      dispatch(fetchRepoCollaborators({ owner, repo, slug }));
+    }
+  }, [owner, repo, slug, dispatch, repoCollaborators.length]);
 
   const handleBodySave = async () => {
     if (newBody === (pr.body || '')) {
@@ -605,6 +612,15 @@ function OverviewTab({ pr, slug, owner, repo, onEditTitle, editingTitle, newTitl
       toast.success('Description updated');
     }
     setEditingBody(false);
+  };
+
+  const handleToggleAssignee = async (user) => {
+    const currentAssignees = pr.assignees || [];
+    const isAssigned = currentAssignees.find(a => a.login === user.login);
+    const newAssignees = isAssigned
+      ? currentAssignees.filter(a => a.login !== user.login)
+      : [...currentAssignees, user];
+    dispatch(setAssignees({ owner, repo, prNumber: pr.number, slug, assignees: newAssignees }));
   };
 
   const handleToggleLabel = async (label) => {
@@ -767,11 +783,20 @@ function OverviewTab({ pr, slug, owner, repo, onEditTitle, editingTitle, newTitl
         )}
       </div>
 
-      {/* Assignees */}
-      {pr.assignees?.length > 0 && (
-        <div>
-          <p className="text-[10px] font-semibold mb-1.5" style={{ color: 'var(--text-muted)' }}>ASSIGNEES</p>
-          <div className="flex gap-2 flex-wrap">
+      {/* Assignees — editable */}
+      <div>
+        <div className="flex items-center gap-2 mb-1.5">
+          <p className="text-[10px] font-semibold" style={{ color: 'var(--text-muted)' }}>ASSIGNEES</p>
+          <button
+            onClick={() => setShowAssigneePicker(v => !v)}
+            className="text-[10px] px-1.5 py-0.5 rounded hover:opacity-80 transition"
+            style={{ color: 'var(--accent-primary)' }}
+          >
+            {showAssigneePicker ? 'Done' : '+ Edit'}
+          </button>
+        </div>
+        {pr.assignees?.length > 0 && (
+          <div className="flex gap-2 flex-wrap mb-1.5">
             {pr.assignees.map(u => (
               <a key={u.id} href={u.html_url} target="_blank" rel="noopener noreferrer"
                 className="flex items-center gap-1.5 text-xs hover:underline" style={{ color: 'var(--text-secondary)' }}>
@@ -780,8 +805,39 @@ function OverviewTab({ pr, slug, owner, repo, onEditTitle, editingTitle, newTitl
               </a>
             ))}
           </div>
-        </div>
-      )}
+        )}
+        {!pr.assignees?.length && !showAssigneePicker && (
+          <p className="text-[10px] italic" style={{ color: 'var(--text-muted)' }}>No assignees</p>
+        )}
+        {showAssigneePicker && (
+          <div
+            className="rounded-lg border overflow-y-auto max-h-40 mt-1"
+            style={{ background: 'var(--bg-elevated)', borderColor: 'var(--border-medium)' }}
+          >
+            {repoCollaborators.map(user => {
+              const isSelected = pr.assignees?.find(a => a.login === user.login);
+              return (
+                <button
+                  key={user.id}
+                  onClick={() => handleToggleAssignee(user)}
+                  className="flex items-center gap-2 w-full px-2.5 py-1.5 text-xs hover:opacity-80 transition text-left"
+                  style={{
+                    color: 'var(--text-primary)',
+                    background: isSelected ? 'color-mix(in srgb, var(--accent-primary) 10%, transparent)' : 'transparent'
+                  }}
+                >
+                  <img src={user.avatar_url} alt={user.login} className="w-4 h-4 rounded-full flex-shrink-0" />
+                  {user.login}
+                  {isSelected && <CheckCircle2 className="w-3 h-3 ml-auto" style={{ color: 'var(--accent-primary)' }} />}
+                </button>
+              );
+            })}
+            {repoCollaborators.length === 0 && (
+              <p className="text-[10px] py-2 px-2.5 italic" style={{ color: 'var(--text-muted)' }}>No collaborators found</p>
+            )}
+          </div>
+        )}
+      </div>
 
       {/* Reviews summary */}
       {reviews?.length > 0 && (
