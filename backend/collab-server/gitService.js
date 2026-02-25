@@ -1014,6 +1014,31 @@ class GitService {
         }, userId);
     }
 
+    async rebaseAbort(slug, userId) {
+        return this.withLock(slug, async () => {
+            try {
+                const git = this.getGit(slug, userId);
+                await git.rebase(['--abort']);
+                return this.getStatus(slug, userId);
+            } catch (e) {
+                throw this.mapGitError(e, slug);
+            }
+        }, userId);
+    }
+
+    async rebaseContinue(slug, userId) {
+        return this.withLock(slug, async () => {
+            try {
+                const git = this.getGit(slug, userId);
+                await git.rebase(['--continue']);
+                this._archiveGitAsync(slug, userId);
+                return this.getStatus(slug, userId);
+            } catch (e) {
+                throw this.mapGitError(e, slug);
+            }
+        }, userId);
+    }
+
     async stageFile(slug, filePath, userId) {
         return this.withLock(slug, async () => {
             try {

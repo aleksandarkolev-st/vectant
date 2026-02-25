@@ -2789,6 +2789,20 @@ const server = http.createServer(async (req, res) => {
                     broadcastFileTreeChanged(slug, notifyScope);
                     broadcastGitStatusChanged(slug, undefined, notifyScope, { immediate: true });
                     break;
+                case 'rebase-abort':
+                    result = await gitService.rebaseAbort(slug, effectiveUserId);
+                    broadcastFileReverted(slug, [], notifyScope);
+                    await invalidateDocsForSlug(slug, null, notifyScope);
+                    broadcastFileTreeChanged(slug, notifyScope);
+                    broadcastGitStatusChanged(slug, undefined, notifyScope, { immediate: true });
+                    break;
+                case 'rebase-continue':
+                    result = await gitService.rebaseContinue(slug, effectiveUserId);
+                    broadcastFileReverted(slug, [], notifyScope);
+                    await invalidateDocsForSlug(slug, null, notifyScope);
+                    broadcastFileTreeChanged(slug, notifyScope);
+                    broadcastGitStatusChanged(slug, undefined, notifyScope, { immediate: true });
+                    break;
                 case 'cherry-pick':
                     result = await gitService.cherryPick(slug, data.hash, effectiveUserId);
                     broadcastFileReverted(slug, [], notifyScope);
