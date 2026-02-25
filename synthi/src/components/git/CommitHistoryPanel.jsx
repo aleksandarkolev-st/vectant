@@ -46,26 +46,50 @@ function GraphColumn({ graphNode, rowHeight = 36, totalLanes }) {
 
   return (
     <svg width={width} height={rowHeight} className="flex-shrink-0" style={{ minWidth: width }}>
+      {/* Active lane rails — straight vertical lines through this row */}
       {graphNode.activeLanes.map((lane, idx) => {
         if (lane === null) return null;
         const x = idx * colW + colW / 2 + 3;
         return (
-          <line key={idx} x1={x} y1={0} x2={x} y2={rowHeight}
-            stroke={GRAPH_COLORS[idx % GRAPH_COLORS.length]} strokeWidth={1.5} opacity={0.3} />
+          <line key={`lane-${idx}`} x1={x} y1={0} x2={x} y2={rowHeight}
+            stroke={GRAPH_COLORS[idx % GRAPH_COLORS.length]} strokeWidth={1.5} opacity={0.35} />
         );
       })}
+      {/* Current commit's own vertical rail (above and below node) */}
+      <line x1={cx} y1={0} x2={cx} y2={cy - r - 1}
+        stroke={graphNode.color} strokeWidth={1.5} opacity={0.6} />
+      <line x1={cx} y1={cy + r + 1} x2={cx} y2={rowHeight}
+        stroke={graphNode.color} strokeWidth={1.5} opacity={0.6} />
+      {/* Merge curves from parent columns into the commit node */}
       {graphNode.mergeFromCols.map((mc, i) => {
         const mx = mc * colW + colW / 2 + 3;
-        const d = `M ${mx} 0 C ${mx} ${cy * 0.6}, ${cx} ${cy * 0.4}, ${cx} ${cy}`;
+        const d = `M ${mx} 0 C ${mx} ${cy * 0.55}, ${cx} ${cy * 0.45}, ${cx} ${cy}`;
         return (
-          <path key={`m-${i}`} d={d} fill="none"
-            stroke={graphNode.color} strokeWidth={1.5} opacity={0.5} />
+          <path key={`merge-${i}`} d={d} fill="none"
+            stroke={GRAPH_COLORS[mc % GRAPH_COLORS.length]} strokeWidth={1.5} opacity={0.55} />
         );
       })}
-      <circle cx={cx} cy={cy} r={r}
-        fill={graphNode.isMerge ? '#18181b' : graphNode.color}
-        stroke={graphNode.color}
-        strokeWidth={graphNode.isMerge ? 2 : 0} />
+      {/* Closing lanes — branches merging into this commit's lane */}
+      {(graphNode.closingLanes || []).map((cl, i) => {
+        const clx = cl * colW + colW / 2 + 3;
+        const d = `M ${clx} 0 C ${clx} ${cy * 0.55}, ${cx} ${cy * 0.45}, ${cx} ${cy}`;
+        return (
+          <path key={`close-${i}`} d={d} fill="none"
+            stroke={GRAPH_COLORS[cl % GRAPH_COLORS.length]} strokeWidth={1.5} opacity={0.45} />
+        );
+      })}
+      {/* Commit node — merge nodes are larger & hollow, regular commits are solid */}
+      {graphNode.isMerge ? (
+        <>
+          <circle cx={cx} cy={cy} r={r + 1}
+            fill="#0a0a0b" stroke={graphNode.color} strokeWidth={2} />
+          <circle cx={cx} cy={cy} r={2}
+            fill={graphNode.color} />
+        </>
+      ) : (
+        <circle cx={cx} cy={cy} r={r}
+          fill={graphNode.color} />
+      )}
     </svg>
   );
 }

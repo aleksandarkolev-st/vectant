@@ -211,12 +211,15 @@ export function buildCommitGraph(commits) {
   // Assign columns using a simple lane allocator
   const lanes = [];           // ordered list of active commit hashes occupying each lane
   const result = [];
+  const hashToRow = new Map(); // hash → row index for parent lookups
 
   for (let i = 0; i < commits.length; i++) {
     const c = commits[i];
     const hash = c.hash;
     const parents = (c.parents || '').split(/\s+/).filter(Boolean);
     const isMerge = parents.length > 1;
+
+    hashToRow.set(hash, i);
 
     // Find or assign lane for this commit
     let col = lanes.indexOf(hash);
@@ -230,6 +233,9 @@ export function buildCommitGraph(commits) {
         lanes[col] = hash;
       }
     }
+
+    // Track lanes that are being freed / merged at this row
+    const closingLanes = [];
 
     // Replace the current lane with first parent (continuation)
     if (parents.length > 0) {
@@ -254,6 +260,15 @@ export function buildCommitGraph(commits) {
       mergeFromCols.push(pcol);
     }
 
+    // Detect closing lanes — lanes occupied by the same parent hash as current
+    // This happens when a branch merges back
+    for (let li = 0; li < lanes.length; li++) {
+      if (li !== col && lanes[li] === hash) {
+        closingLanes.push(li);
+        lanes[li] = null;
+      }
+    }
+
     // Compact empty trailing lanes
     while (lanes.length > 0 && lanes[lanes.length - 1] === null) lanes.pop();
 
@@ -263,6 +278,7 @@ export function buildCommitGraph(commits) {
       color: GRAPH_COLORS[col % GRAPH_COLORS.length],
       isMerge,
       mergeFromCols,
+      closingLanes,
       activeLanes: [...lanes],
       laneCount: lanes.length,
     });
