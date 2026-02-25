@@ -124,6 +124,14 @@ export default function EditorPage({ params }) {
     const { client, compile, mediaStream, cancelMobileJob, isCompiling, status: compilerStatus } = useCompiler();
     useHMR();
 
+    useEffect(() => {
+        const handleSwitchView = (e) => {
+            if (e.detail) setSidebarView(e.detail);
+        };
+        window.addEventListener('synthi:switch-sidebar', handleSwitchView);
+        return () => window.removeEventListener('synthi:switch-sidebar', handleSwitchView);
+    }, []);
+
     // ─── Extension system ──────────────────────────────────
     const {
         ready: extensionsReady,

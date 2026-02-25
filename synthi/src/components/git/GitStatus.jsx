@@ -14,8 +14,9 @@ import {
   RefreshCw, Check, CheckCircle2, UploadCloud, Plus, Minus, DownloadCloud,
   Undo2, Globe, Trash2, Copy, Archive, ArchiveRestore,
   AlertTriangle, GitMerge, X, Edit3, Search, ChevronDown, ChevronRight,
-  ExternalLink, ShieldAlert, ArrowUpCircle, ArrowDownCircle
+  ExternalLink, ShieldAlert, ArrowUpCircle, ArrowDownCircle, GitPullRequest
 } from 'lucide-react';
+import { fetchGithubInfo, fetchPRList, setActivePR } from '@/redux/prSlice';
 import { toast } from 'sonner';
 import { getFileLanguage } from '@/utils/fileUtils';
 import {
@@ -178,6 +179,8 @@ export function GitStatus({ slug }) {
     status, loading, error, actionError, actionErrorCode,
     remotes, stashList, commitHistory, unpushedCommits, incomingCommits,
   } = useSelector(s => s.git);
+  const { githubInfo, prList, prListLoading } = useSelector(s => s.pr);
+
   const [message, setMessage] = useState('');
   const [commitBody, setCommitBody] = useState('');
   const [showCommitBody, setShowCommitBody] = useState(false);
@@ -194,7 +197,7 @@ export function GitStatus({ slug }) {
   const searchInputRef = useRef(null);
 
   // ── data refresh ───────────────────────────────
-  const refreshGitData = useCallback(() => {
+  const refreshGitData = useCallback(async () => {
     if (!slug) return;
     dispatch(fetchGitStatus(slug));
     dispatch(fetchRemotes(slug));
@@ -202,6 +205,15 @@ export function GitStatus({ slug }) {
     dispatch(fetchUnpushedCommits({ slug, max: 50 }));
     dispatch(fetchIncomingCommits({ slug, max: 50 }));
     dispatch(fetchStashList(slug));
+    
+    // Also fetch PR info if available
+    const infoResult = await dispatch(fetchGithubInfo(slug));
+    if (fetchGithubInfo.fulfilled.match(infoResult)) {
+      const info = infoResult.payload;
+      if (info?.owner && info.repo) {
+        dispatch(fetchPRList({ owner: info.owner, repo: info.repo, slug }));
+      }
+    }
   }, [slug, dispatch]);
 
   useEffect(() => {
@@ -224,6 +236,12 @@ export function GitStatus({ slug }) {
     dispatch(fetchUnpushedCommits({ slug, max: 50 }));
     dispatch(fetchIncomingCommits({ slug, max: 50 }));
     if (fetchRemote.fulfilled.match(result)) toast.success('Fetched latest from remote');
+  };
+
+  const handleRefreshPRs = () => {
+    if (githubInfo?.owner && githubInfo?.repo) {
+      dispatch(fetchPRList({ owner: githubInfo.owner, repo: githubInfo.repo, slug }));
+    }
   };
 
   const handleAddRemote = async () => {
@@ -813,6 +831,53 @@ export function GitStatus({ slug }) {
             </ul>
           ) : (
             <div className="text-[10px] text-[#52525b] px-1 italic">No stashed changes</div>
+          )}
+        </SectionHeader>
+
+        {/* ── Pull Requests ──────────────────────── */}
+        <SectionHeader 
+          title="Pull Requests" 
+          count={prList.filter(p => p.state === 'open').length} 
+          defaultOpen={true}
+          actions={
+            <div className="flex items-center gap-0.5">
+              <button 
+                onClick={() => window.dispatchEvent(new CustomEvent('synthi:switch-sidebar', { detail: 'pullrequests' }))}
+                className="p-0.5 rounded hover:bg-[#27272a] text-[#71717a] hover:text-[#a1a1aa]" 
+                title="Manage Pull Requests"
+              >
+                <ExternalLink className="w-3 h-3" />
+              </button>
+              <button onClick={handleRefreshPRs} className="p-0.5 rounded hover:bg-[#27272a] text-[#71717a] hover:text-[#a1a1aa]" title="Refresh PRs">
+                <RefreshCw className={`w-3 h-3 ${prListLoading ? 'animate-spin' : ''}`} />
+              </button>
+            </div>
+          }
+        >
+          {prList.length > 0 ? (
+            <ul className="space-y-0.5">
+              {prList.filter(p => p.state === 'open').slice(0, 5).map(pr => (
+                <li key={pr.id} className="group flex items-center gap-1.5 px-1.5 py-1 rounded hover:bg-[#27272a] cursor-pointer"
+                  onClick={() => {
+                    dispatch(setActivePR(pr));
+                    window.dispatchEvent(new CustomEvent('synthi:switch-sidebar', { detail: 'pullrequests' }));
+                  }}>
+                  <GitPullRequest className="w-3 h-3 text-emerald-500" />
+                  <span className="truncate text-xs text-[#e4e4e7] flex-1">
+                    <span className="text-[#71717a] mr-1">#{pr.number}</span>
+                    {pr.title}
+                  </span>
+                  <ExternalLink className="w-2.5 h-2.5 opacity-0 group-hover:opacity-100 text-[#71717a]" />
+                </li>
+              ))}
+              {prList.filter(p => p.state === 'open').length > 5 && (
+                <li className="px-1.5 py-0.5 text-[10px] text-[#71717a]">
+                  + {prList.filter(p => p.state === 'open').length - 5} more...
+                </li>
+              )}
+            </ul>
+          ) : (
+             <div className="text-[10px] text-[#52525b] px-1 italic">No open pull requests</div>
           )}
         </SectionHeader>
 
