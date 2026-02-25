@@ -14,9 +14,11 @@ import {
   RefreshCw, Check, CheckCircle2, UploadCloud, Plus, Minus, DownloadCloud,
   Undo2, Globe, Trash2, Copy, Archive, ArchiveRestore,
   AlertTriangle, GitMerge, X, Edit3, Search, ChevronDown, ChevronRight,
-  ExternalLink, ShieldAlert, ArrowUpCircle, ArrowDownCircle, GitPullRequest
+  ExternalLink, ShieldAlert, ArrowUpCircle, ArrowDownCircle, GitPullRequest, Key
 } from 'lucide-react';
-import { fetchGithubInfo, fetchPRList, setActivePR } from '@/redux/prSlice';
+import { fetchGithubInfo, fetchPRList, setActivePR, setHasToken } from '@/redux/prSlice';
+import { getStoredToken } from '@/services/prClient';
+import { GitHubTokenModal } from './GitHubTokenModal';
 import { toast } from 'sonner';
 import { getFileLanguage } from '@/utils/fileUtils';
 import {
@@ -179,7 +181,8 @@ export function GitStatus({ slug }) {
     status, loading, error, actionError, actionErrorCode,
     remotes, stashList, commitHistory, unpushedCommits, incomingCommits,
   } = useSelector(s => s.git);
-  const { githubInfo, prList, prListLoading } = useSelector(s => s.pr);
+  const { githubInfo, prList, prListLoading, hasToken: prHasToken } = useSelector(s => s.pr);
+  const [showTokenModalFromSCM, setShowTokenModalFromSCM] = useState(false);
 
   const [message, setMessage] = useState('');
   const [commitBody, setCommitBody] = useState('');
@@ -206,11 +209,15 @@ export function GitStatus({ slug }) {
     dispatch(fetchIncomingCommits({ slug, max: 50 }));
     dispatch(fetchStashList(slug));
     
+    // Check stored token
+    const storedToken = getStoredToken(slug);
+    if (storedToken) dispatch(setHasToken(true));
+    
     // Also fetch PR info if available
     const infoResult = await dispatch(fetchGithubInfo(slug));
     if (fetchGithubInfo.fulfilled.match(infoResult)) {
       const info = infoResult.payload;
-      if (info?.owner && info.repo) {
+      if (info?.owner && info.repo && storedToken) {
         dispatch(fetchPRList({ owner: info.owner, repo: info.repo, slug }));
       }
     }
@@ -238,9 +245,19 @@ export function GitStatus({ slug }) {
     if (fetchRemote.fulfilled.match(result)) toast.success('Fetched latest from remote');
   };
 
-  const handleRefreshPRs = () => {
-    if (githubInfo?.owner && githubInfo?.repo) {
-      dispatch(fetchPRList({ owner: githubInfo.owner, repo: githubInfo.repo, slug }));
+  const handleRefreshPRs = async () => {
+    const token = getStoredToken(slug);
+    if (!token) return;
+    
+    let info = githubInfo;
+    if (!info?.owner || !info?.repo) {
+      const infoResult = await dispatch(fetchGithubInfo(slug));
+      if (fetchGithubInfo.fulfilled.match(infoResult)) {
+        info = infoResult.payload;
+      }
+    }
+    if (info?.owner && info?.repo) {
+      dispatch(fetchPRList({ owner: info.owner, repo: info.repo, slug }));
     }
   };
 
@@ -539,6 +556,7 @@ export function GitStatus({ slug }) {
 
 
   return (
+    <>
     <div className="flex flex-col h-full w-full overflow-hidden" style={graphStyle}>
       {/* ── Header ────────────────────────────────── */}
       <div className="px-2 py-1.5 font-semibold text-xs uppercase tracking-wider text-[#a1a1aa] border-b border-[#27272a] flex justify-between items-center">
@@ -841,10 +859,23 @@ export function GitStatus({ slug }) {
           defaultOpen={true}
           actions={
             <div className="flex items-center gap-0.5">
+              {prHasToken && githubInfo?.provider === 'github' && (
+                <button 
+                  onClick={() => {
+                    window.dispatchEvent(new CustomEvent('synthi:switch-sidebar', { detail: 'pullrequests' }));
+                    // Small delay to let view switch, then trigger create
+                    setTimeout(() => window.dispatchEvent(new CustomEvent('synthi:pr-action', { detail: 'create' })), 100);
+                  }}
+                  className="p-0.5 rounded hover:bg-[#27272a] text-[#71717a] hover:text-emerald-400" 
+                  title="Create Pull Request"
+                >
+                  <Plus className="w-3 h-3" />
+                </button>
+              )}
               <button 
                 onClick={() => window.dispatchEvent(new CustomEvent('synthi:switch-sidebar', { detail: 'pullrequests' }))}
                 className="p-0.5 rounded hover:bg-[#27272a] text-[#71717a] hover:text-[#a1a1aa]" 
-                title="Manage Pull Requests"
+                title="Open Pull Requests Panel"
               >
                 <ExternalLink className="w-3 h-3" />
               </button>
@@ -854,30 +885,82 @@ export function GitStatus({ slug }) {
             </div>
           }
         >
-          {prList.length > 0 ? (
-            <ul className="space-y-0.5">
-              {prList.filter(p => p.state === 'open').slice(0, 5).map(pr => (
-                <li key={pr.id} className="group flex items-center gap-1.5 px-1.5 py-1 rounded hover:bg-[#27272a] cursor-pointer"
-                  onClick={() => {
-                    dispatch(setActivePR(pr));
-                    window.dispatchEvent(new CustomEvent('synthi:switch-sidebar', { detail: 'pullrequests' }));
-                  }}>
-                  <GitPullRequest className="w-3 h-3 text-emerald-500" />
-                  <span className="truncate text-xs text-[#e4e4e7] flex-1">
-                    <span className="text-[#71717a] mr-1">#{pr.number}</span>
-                    {pr.title}
-                  </span>
-                  <ExternalLink className="w-2.5 h-2.5 opacity-0 group-hover:opacity-100 text-[#71717a]" />
-                </li>
-              ))}
-              {prList.filter(p => p.state === 'open').length > 5 && (
-                <li className="px-1.5 py-0.5 text-[10px] text-[#71717a]">
-                  + {prList.filter(p => p.state === 'open').length - 5} more...
-                </li>
+          {/* No token state */}
+          {!prHasToken && githubInfo?.provider === 'github' && (
+            <div className="px-1.5 py-1.5">
+              <p className="text-[10px] text-[#71717a] mb-1.5">Connect GitHub to manage pull requests</p>
+              <button 
+                onClick={() => setShowTokenModalFromSCM(true)}
+                className="flex items-center gap-1 text-[10px] px-2 py-1 rounded border border-[#3f3f46] hover:bg-[#27272a] text-[#a1a1aa] hover:text-[#e4e4e7] transition-colors"
+              >
+                <Key className="w-2.5 h-2.5" />
+                Add GitHub Token
+              </button>
+            </div>
+          )}
+
+          {/* No GitHub remote */}
+          {githubInfo && githubInfo.provider !== 'github' && (
+            <div className="text-[10px] text-[#52525b] px-1 italic">
+              {githubInfo.provider ? `${githubInfo.provider} remote detected — PRs supported for GitHub only` : 'No GitHub remote configured'}
+            </div>
+          )}
+
+          {/* Has token + GitHub remote — show PRs */}
+          {prHasToken && githubInfo?.provider === 'github' && (
+            <>
+              {prListLoading && prList.length === 0 ? (
+                <div className="flex items-center gap-1.5 px-1.5 py-1 text-[10px] text-[#71717a]">
+                  <RefreshCw className="w-2.5 h-2.5 animate-spin" /> Loading PRs…
+                </div>
+              ) : prList.filter(p => p.state === 'open').length > 0 ? (
+                <ul className="space-y-0.5">
+                  {prList.filter(p => p.state === 'open').slice(0, 5).map(pr => (
+                    <li key={pr.id} className="group flex items-center gap-1.5 px-1.5 py-1 rounded hover:bg-[#27272a] cursor-pointer"
+                      onClick={() => {
+                        dispatch(setActivePR(pr));
+                        window.dispatchEvent(new CustomEvent('synthi:switch-sidebar', { detail: 'pullrequests' }));
+                      }}>
+                      <GitPullRequest className="w-3 h-3 text-emerald-500 flex-shrink-0" />
+                      <span className="truncate text-xs text-[#e4e4e7] flex-1">
+                        <span className="text-[#71717a] mr-1">#{pr.number}</span>
+                        {pr.title}
+                      </span>
+                      <span className="text-[9px] text-[#52525b] flex-shrink-0">{relativeTime(pr.updated_at)}</span>
+                    </li>
+                  ))}
+                  {prList.filter(p => p.state === 'open').length > 5 && (
+                    <li className="px-1.5 py-0.5">
+                      <button 
+                        onClick={() => window.dispatchEvent(new CustomEvent('synthi:switch-sidebar', { detail: 'pullrequests' }))}
+                        className="text-[10px] text-[#71717a] hover:text-[#a1a1aa] underline"
+                      >
+                        View all {prList.filter(p => p.state === 'open').length} pull requests →
+                      </button>
+                    </li>
+                  )}
+                </ul>
+              ) : (
+                <div className="px-1.5 py-1.5">
+                  <div className="text-[10px] text-[#52525b] italic mb-1.5">No open pull requests</div>
+                  <button 
+                    onClick={() => {
+                      window.dispatchEvent(new CustomEvent('synthi:switch-sidebar', { detail: 'pullrequests' }));
+                      setTimeout(() => window.dispatchEvent(new CustomEvent('synthi:pr-action', { detail: 'create' })), 100);
+                    }}
+                    className="flex items-center gap-1 text-[10px] px-2 py-1 rounded border border-emerald-600/40 hover:bg-emerald-600/10 text-emerald-400 transition-colors"
+                  >
+                    <Plus className="w-2.5 h-2.5" />
+                    Create Pull Request
+                  </button>
+                </div>
               )}
-            </ul>
-          ) : (
-             <div className="text-[10px] text-[#52525b] px-1 italic">No open pull requests</div>
+            </>
+          )}
+
+          {/* No info yet / loading */}
+          {!githubInfo && !prListLoading && (
+            <div className="text-[10px] text-[#52525b] px-1 italic">Detecting remote…</div>
           )}
         </SectionHeader>
 
@@ -1066,5 +1149,18 @@ export function GitStatus({ slug }) {
         </div>
       )}
     </div>
+
+    {/* Token modal from SCM panel */}
+    {showTokenModalFromSCM && (
+      <GitHubTokenModal
+        slug={slug}
+        onClose={() => setShowTokenModalFromSCM(false)}
+        onSuccess={() => {
+          setShowTokenModalFromSCM(false);
+          handleRefreshPRs();
+        }}
+      />
+    )}
+    </>
   );
 }
