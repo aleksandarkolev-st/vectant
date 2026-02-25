@@ -364,6 +364,7 @@ export default function CommitHistoryPanel({ slug }) {
   }, [dispatch, slug]);
 
   const allCommits = useMemo(() => commitHistory?.all ?? [], [commitHistory]);
+  const refsMap = useMemo(() => commitHistory?.refs ?? {}, [commitHistory]);
 
   // Extract unique authors
   const authors = useMemo(() => {
@@ -577,6 +578,19 @@ export default function CommitHistoryPanel({ slug }) {
                       <div className="flex-1 min-w-0 py-1.5 pr-2">
                         <div className="flex items-center gap-1.5">
                           <code className="font-mono text-[10px] text-[#52525b] flex-shrink-0">{commit.hash?.substring(0, 7)}</code>
+                          {/* Branch / tag ref badges */}
+                          {(refsMap[commit.hash?.substring(0, 7)] || []).map((ref, ri) => (
+                            <span key={ri} className={`text-[9px] px-1 py-0 rounded font-medium flex-shrink-0 inline-flex items-center gap-0.5 border ${
+                              ref.type === 'tag'
+                                ? 'border-amber-500/30 text-amber-400 bg-amber-500/10'
+                                : ref.type === 'remote'
+                                  ? 'border-purple-500/30 text-purple-400 bg-purple-500/10'
+                                  : 'border-emerald-500/30 text-emerald-400 bg-emerald-500/10'
+                            }`}>
+                              {ref.type === 'tag' ? '🏷' : <GitBranch className="w-2 h-2" />}
+                              {ref.name}
+                            </span>
+                          ))}
                           {cc && (
                             <span className={`text-[9px] px-1 py-0.5 rounded font-medium flex-shrink-0 bg-opacity-20`}
                               style={{ color: ccColor(cc.type), backgroundColor: ccColor(cc.type) + '20' }}>

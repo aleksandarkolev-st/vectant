@@ -1641,9 +1641,42 @@ class GitService {
                 }
             }
             
+            // Collect branch & tag refs mapped to commit hashes
+            let refs = {};
+            try {
+                const branchRaw = await git.raw(['for-each-ref', '--format=%(objectname:short) %(refname:short)', 'refs/heads/', 'refs/remotes/', 'refs/tags/']);
+                for (const line of branchRaw.trim().split('\n').filter(Boolean)) {
+                    const spaceIdx = line.indexOf(' ');
+                    if (spaceIdx < 0) continue;
+                    const hash = line.substring(0, spaceIdx);
+                    const name = line.substring(spaceIdx + 1);
+                    if (!refs[hash]) refs[hash] = [];
+                    const isTag = name.startsWith('refs/tags/') || !name.includes('/');
+                    // Classify ref type
+                    let type = 'branch';
+                    if (name.startsWith('origin/') || name.startsWith('upstream/')) type = 'remote';
+                    // Tags from for-each-ref under refs/tags/ will appear without prefix
+                    if (name.startsWith('v') && /^v?\d/.test(name)) type = 'tag';
+                    refs[hash].push({ name, type });
+                }
+                // Also explicitly get tags
+                const tagRaw = await git.raw(['tag', '--format=%(objectname:short) %(refname:short)']);
+                for (const line of tagRaw.trim().split('\n').filter(Boolean)) {
+                    const spaceIdx = line.indexOf(' ');
+                    if (spaceIdx < 0) continue;
+                    const hash = line.substring(0, spaceIdx);
+                    const name = line.substring(spaceIdx + 1);
+                    if (!refs[hash]) refs[hash] = [];
+                    if (!refs[hash].some(r => r.name === name)) {
+                        refs[hash].push({ name, type: 'tag' });
+                    }
+                }
+            } catch { /* refs decoration is best-effort */ }
+            
             return { 
                 all: log.all, 
                 total,
+                refs,
                 page,
                 limit,
                 hasMore: skip + log.all.length < total
