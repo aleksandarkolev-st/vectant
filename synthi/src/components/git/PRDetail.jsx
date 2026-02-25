@@ -406,6 +406,15 @@ export function PRDetail({ slug, onBack }) {
     }
   }, [pr?.number, owner, repo, slug, dispatch]);
 
+  // Auto-refresh PR detail every 90 seconds
+  useEffect(() => {
+    if (!pr?.number || !owner || !repo) return;
+    const interval = setInterval(() => {
+      dispatch(fetchPRDetail({ owner, repo, prNumber: pr.number, slug }));
+    }, 90_000);
+    return () => clearInterval(interval);
+  }, [pr?.number, owner, repo, slug, dispatch]);
+
   const handleRefresh = () => {
     if (pr?.number) dispatch(fetchPRDetail({ owner, repo, prNumber: pr.number, slug }));
   };

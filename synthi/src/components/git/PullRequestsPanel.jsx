@@ -1,5 +1,5 @@
 'use client';
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import {
   fetchGithubInfo, fetchPRList, setActivePR, setPRListState,
@@ -242,6 +242,15 @@ export function PullRequestsPanel({ slug }) {
       setView('detail');
     }
   }, [activePR]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Auto-refresh PR list every 60 seconds when in list view
+  useEffect(() => {
+    if (view !== 'list' || !hasToken || !owner || !repo || !isGitHub) return;
+    const interval = setInterval(() => {
+      dispatch(fetchPRList({ owner, repo, state: prListState, slug }));
+    }, 60_000);
+    return () => clearInterval(interval);
+  }, [view, hasToken, owner, repo, isGitHub, prListState, slug, dispatch]);
 
   const handleSelectPR = useCallback((pr) => {
     dispatch(setActivePR(pr));
