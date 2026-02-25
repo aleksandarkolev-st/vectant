@@ -15,6 +15,7 @@ import {
   Copy, ArrowRightLeft, GitBranch, Clock, Plus, Minus,
 } from 'lucide-react';
 import { toast } from 'sonner';
+import { MarkdownRenderer, MarkdownEditor} from './MarkdownRenderer';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -88,56 +89,10 @@ function fileDiffLabel(status) {
   return map[status] || '?';
 }
 
-// ── Simple markdown -> text renderer (no dep) ─────────────────────────────────
+// ── Markdown rendering — uses full MarkdownRenderer from ./MarkdownRenderer ──
+// The MarkdownText alias ensures backward-compat with internal usages.
 function MarkdownText({ text }) {
-  if (!text) return <span className="text-xs opacity-50 italic" style={{ color: 'var(--text-muted)' }}>No description.</span>;
-  // Very basic: bold, code, links, headings, bullets
-  const lines = text.split('\n');
-  return (
-    <div className="space-y-1">
-      {lines.map((line, i) => {
-        if (line.startsWith('### ')) return <h3 key={i} className="text-xs font-bold mt-2" style={{ color: 'var(--text-primary)' }}>{line.slice(4)}</h3>;
-        if (line.startsWith('## ')) return <h2 key={i} className="text-sm font-bold mt-2" style={{ color: 'var(--text-primary)' }}>{line.slice(3)}</h2>;
-        if (line.startsWith('# ')) return <h1 key={i} className="text-sm font-bold mt-2" style={{ color: 'var(--text-primary)' }}>{line.slice(2)}</h1>;
-        if (line.startsWith('- ') || line.startsWith('* ')) return (
-          <div key={i} className="flex gap-1 text-xs" style={{ color: 'var(--text-secondary)' }}>
-            <span className="opacity-50">•</span>
-            <InlineMarkdown text={line.slice(2)} />
-          </div>
-        );
-        if (line.trim() === '') return <div key={i} className="h-2" />;
-        return <p key={i} className="text-xs leading-relaxed" style={{ color: 'var(--text-secondary)' }}><InlineMarkdown text={line} /></p>;
-      })}
-    </div>
-  );
-}
-
-function InlineMarkdown({ text }) {
-  // Replace **bold**, `code`, and [link](url)
-  const parts = [];
-  let remaining = text;
-  let key = 0;
-  while (remaining.length > 0) {
-    const boldMatch = remaining.match(/^\*\*(.+?)\*\*/);
-    const codeMatch = remaining.match(/^`(.+?)`/);
-    const linkMatch = remaining.match(/^\[(.+?)\]\((.+?)\)/);
-    if (boldMatch) {
-      parts.push(<strong key={key++} className="font-semibold" style={{ color: 'var(--text-primary)' }}>{boldMatch[1]}</strong>);
-      remaining = remaining.slice(boldMatch[0].length);
-    } else if (codeMatch) {
-      parts.push(<code key={key++} className="font-mono text-[10px] px-1 py-0.5 rounded" style={{ background: 'var(--bg-app)', color: 'var(--accent-primary)' }}>{codeMatch[1]}</code>);
-      remaining = remaining.slice(codeMatch[0].length);
-    } else if (linkMatch) {
-      parts.push(<a key={key++} href={linkMatch[2]} target="_blank" rel="noopener noreferrer" className="underline" style={{ color: 'var(--accent-primary)' }}>{linkMatch[1]}</a>);
-      remaining = remaining.slice(linkMatch[0].length);
-    } else {
-      const nextSpecial = remaining.search(/\*\*|`|\[/);
-      const chunk = nextSpecial > 0 ? remaining.slice(0, nextSpecial) : remaining;
-      parts.push(<span key={key++}>{chunk}</span>);
-      remaining = nextSpecial > 0 ? remaining.slice(nextSpecial) : '';
-    }
-  }
-  return <>{parts}</>;
+  return <MarkdownRenderer text={text} />;
 }
 
 // ── Tab button ────────────────────────────────────────────────────────────────
@@ -165,31 +120,62 @@ function TabButton({ active, onClick, icon: Icon, label, count }) {
 // ── CommentBox ────────────────────────────────────────────────────────────────
 function CommentBox({ onSubmit, placeholder = 'Leave a comment…', submitLabel = 'Comment', loading }) {
   const [text, setText] = useState('');
+  const [mode, setMode] = useState('write');
+  const textareaRef = React.useRef(null);
 
   const handleSubmit = async () => {
     if (!text.trim()) return;
     await onSubmit(text.trim());
     setText('');
+    setMode('write');
   };
 
   return (
     <div className="border rounded-lg overflow-hidden" style={{ borderColor: 'var(--border-medium)' }}>
-      <textarea
-        value={text}
-        onChange={e => setText(e.target.value)}
-        placeholder={placeholder}
-        rows={3}
-        className="w-full px-3 py-2 text-xs resize-none outline-none"
-        style={{ background: 'var(--bg-app)', color: 'var(--text-primary)' }}
-        onKeyDown={e => {
-          if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) handleSubmit();
-        }}
-      />
+      {/* Write / Preview tabs */}
+      <div className="flex items-center border-b"
+        style={{ background: 'var(--bg-panel)', borderColor: 'var(--border-subtle)' }}>
+        <button onClick={() => setMode('write')}
+          className="px-2.5 py-1 text-[10px] font-medium border-b-2 -mb-px transition"
+          style={{
+            borderBottomColor: mode === 'write' ? 'var(--accent-primary)' : 'transparent',
+            color: mode === 'write' ? 'var(--text-primary)' : 'var(--text-muted)',
+          }}>Write</button>
+        <button onClick={() => setMode('preview')}
+          className="px-2.5 py-1 text-[10px] font-medium border-b-2 -mb-px transition"
+          style={{
+            borderBottomColor: mode === 'preview' ? 'var(--accent-primary)' : 'transparent',
+            color: mode === 'preview' ? 'var(--text-primary)' : 'var(--text-muted)',
+          }}>Preview</button>
+      </div>
+      {mode === 'write' ? (
+        <textarea
+          ref={textareaRef}
+          value={text}
+          onChange={e => setText(e.target.value)}
+          placeholder={placeholder}
+          rows={3}
+          className="w-full px-3 py-2 text-xs resize-none outline-none"
+          style={{ background: 'var(--bg-app)', color: 'var(--text-primary)' }}
+          onKeyDown={e => {
+            if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) handleSubmit();
+          }}
+        />
+      ) : (
+        <div className="px-3 py-2 min-h-[72px]"
+          style={{ background: 'var(--bg-app)' }}>
+          {text.trim() ? (
+            <MarkdownRenderer text={text} />
+          ) : (
+            <p className="text-xs italic" style={{ color: 'var(--text-muted)' }}>Nothing to preview</p>
+          )}
+        </div>
+      )}
       <div
         className="flex items-center justify-between px-3 py-1.5 border-t"
         style={{ background: 'var(--bg-panel)', borderColor: 'var(--border-subtle)' }}
       >
-        <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>Ctrl+Enter to submit</span>
+        <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>Markdown supported · Ctrl+Enter to submit</span>
         <button
           onClick={handleSubmit}
           disabled={!text.trim() || loading}
@@ -764,14 +750,11 @@ function OverviewTab({ pr, slug, owner, repo, onEditTitle, editingTitle, newTitl
         </div>
         {editingBody ? (
           <div className="space-y-2">
-            <textarea
-              autoFocus
+            <MarkdownEditor
               value={newBody}
-              onChange={e => setNewBody(e.target.value)}
-              rows={8}
+              onChange={setNewBody}
               placeholder="Describe this pull request…"
-              className="w-full px-2.5 py-2 text-xs rounded-lg border outline-none resize-y font-mono"
-              style={{ background: 'var(--bg-app)', borderColor: 'var(--accent-primary)', color: 'var(--text-primary)' }}
+              rows={8}
             />
             <div className="flex gap-2">
               <button onClick={handleBodySave} className="px-3 py-1.5 rounded-lg text-xs font-medium" style={{ background: 'var(--accent-primary)', color: '#fff' }}>Save</button>
@@ -896,60 +879,150 @@ function ReviewRow({ review }) {
 }
 
 // ── Files Tab ─────────────────────────────────────────────────────────────────
+
+/** Parse a unified diff patch into structured hunks for rendering */
+function parsePatchHunks(patch) {
+  if (!patch) return [];
+  const lines = patch.split('\n');
+  const hunks = [];
+  let currentHunk = null;
+  let oldLine = 0;
+  let newLine = 0;
+
+  for (const line of lines) {
+    const hunkHeader = line.match(/^@@\s+-(\d+)(?:,\d+)?\s+\+(\d+)(?:,\d+)?\s+@@(.*)/);
+    if (hunkHeader) {
+      if (currentHunk) hunks.push(currentHunk);
+      oldLine = parseInt(hunkHeader[1], 10);
+      newLine = parseInt(hunkHeader[2], 10);
+      currentHunk = { header: line, context: hunkHeader[3]?.trim() || '', lines: [] };
+      continue;
+    }
+    if (!currentHunk) continue;
+    if (line.startsWith('+')) {
+      currentHunk.lines.push({ type: 'add', content: line.slice(1), newLine: newLine++ });
+    } else if (line.startsWith('-')) {
+      currentHunk.lines.push({ type: 'del', content: line.slice(1), oldLine: oldLine++ });
+    } else {
+      currentHunk.lines.push({ type: 'ctx', content: line.startsWith(' ') ? line.slice(1) : line, oldLine: oldLine++, newLine: newLine++ });
+    }
+  }
+  if (currentHunk) hunks.push(currentHunk);
+  return hunks;
+}
+
+function DiffHunkView({ hunk }) {
+  return (
+    <div className="border-t first:border-t-0" style={{ borderColor: 'var(--border-subtle)' }}>
+      {/* Hunk header */}
+      <div className="px-3 py-1 text-[10px] font-mono select-none flex items-center gap-2"
+        style={{ background: 'rgba(99,102,241,0.06)', color: '#818cf8' }}>
+        <span>{hunk.header}</span>
+        {hunk.context && <span className="opacity-60 truncate">{hunk.context}</span>}
+      </div>
+      {/* Lines */}
+      <div className="font-mono text-[11px] leading-[1.6]">
+        {hunk.lines.map((line, i) => {
+          const bgColor = line.type === 'add'
+            ? 'rgba(52,211,153,0.06)' : line.type === 'del'
+            ? 'rgba(248,113,113,0.06)' : 'transparent';
+          const textColor = line.type === 'add'
+            ? '#34d399' : line.type === 'del'
+            ? '#f87171' : 'var(--text-secondary, #a1a1aa)';
+          const prefix = line.type === 'add' ? '+' : line.type === 'del' ? '-' : ' ';
+          return (
+            <div key={i} className="flex hover:brightness-110" style={{ background: bgColor }}>
+              <span className="select-none text-right pr-1 min-w-[3em] opacity-30"
+                style={{ color: 'var(--text-muted)' }}>
+                {line.oldLine ?? ''}
+              </span>
+              <span className="select-none text-right pr-2 min-w-[3em] opacity-30 border-r mr-2"
+                style={{ color: 'var(--text-muted)', borderColor: 'var(--border-subtle)' }}>
+                {line.newLine ?? ''}
+              </span>
+              <span className="select-none w-4 text-center flex-shrink-0" style={{ color: textColor }}>{prefix}</span>
+              <span className="flex-1 whitespace-pre-wrap break-all" style={{ color: textColor }}>{line.content}</span>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function FilesTab({ files, pr }) {
   const [expandedFiles, setExpandedFiles] = useState({});
+  const [diffViewMode, setDiffViewMode] = useState('unified'); // 'unified' | 'raw'
 
   return (
     <div className="p-3 space-y-1.5">
-      <p className="text-[10px] font-semibold mb-2" style={{ color: 'var(--text-muted)' }}>
-        {files.length} file{files.length !== 1 ? 's' : ''} changed
-        {pr && <span className="ml-2 text-emerald-400">+{pr.additions}</span>}
-        {pr && <span className="ml-1 text-red-400">-{pr.deletions}</span>}
-      </p>
-      {files.map(file => (
-        <div key={file.sha || file.filename}
-          className="rounded-lg border overflow-hidden"
-          style={{ borderColor: 'var(--border-subtle)' }}
-        >
-          <button
-            onClick={() => setExpandedFiles(prev => ({ ...prev, [file.filename]: !prev[file.filename] }))}
-            className="flex items-center gap-2 w-full px-2.5 py-2 text-left hover:opacity-80 transition"
-            style={{ background: 'var(--bg-panel)', color: 'var(--text-primary)' }}
-          >
-            <span
-              className={`text-[10px] font-bold font-mono w-3.5 text-center ${fileDiffColor(file.status)}`}
-            >{fileDiffLabel(file.status)}</span>
-            <span className="text-xs font-mono flex-1 truncate">{file.filename}</span>
-            {file.previous_filename && (
-              <span className="text-[10px] opacity-50 truncate">(was {file.previous_filename})</span>
-            )}
-            <span className="text-[10px] text-emerald-400 flex-shrink-0">+{file.additions}</span>
-            <span className="text-[10px] text-red-400 flex-shrink-0 ml-1">-{file.deletions}</span>
-            <ChevronDown
-              className="w-3 h-3 flex-shrink-0 ml-1 transition-transform"
-              style={{ transform: expandedFiles[file.filename] ? 'rotate(180deg)' : 'none', color: 'var(--text-muted)' }}
-            />
-          </button>
-          {expandedFiles[file.filename] && file.patch && (
-            <pre
-              className="text-[10px] font-mono px-3 py-2 overflow-x-auto leading-relaxed"
-              style={{ background: 'var(--bg-app)', color: 'var(--text-secondary)', maxHeight: '300px', overflowY: 'auto' }}
-            >
-              {file.patch.split('\n').map((line, i) => (
-                <div
-                  key={i}
-                  style={{
-                    color: line.startsWith('+') ? '#34d399' : line.startsWith('-') ? '#f87171' : line.startsWith('@@') ? '#818cf8' : undefined,
-                    background: line.startsWith('+') ? 'rgba(52,211,153,0.06)' : line.startsWith('-') ? 'rgba(248,113,113,0.06)' : 'transparent',
-                  }}
-                >
-                  {line}
-                </div>
-              ))}
-            </pre>
-          )}
+      <div className="flex items-center justify-between mb-2">
+        <p className="text-[10px] font-semibold" style={{ color: 'var(--text-muted)' }}>
+          {files.length} file{files.length !== 1 ? 's' : ''} changed
+          {pr && <span className="ml-2 text-emerald-400">+{pr.additions}</span>}
+          {pr && <span className="ml-1 text-red-400">-{pr.deletions}</span>}
+        </p>
+        <div className="flex gap-0.5">
+          <button onClick={() => setDiffViewMode('unified')} title="Unified diff"
+            className="px-1.5 py-0.5 rounded text-[10px] transition"
+            style={{
+              background: diffViewMode === 'unified' ? 'color-mix(in srgb, var(--accent-primary) 15%, transparent)' : 'transparent',
+              color: diffViewMode === 'unified' ? 'var(--accent-primary)' : 'var(--text-muted)'
+            }}>Unified</button>
+          <button onClick={() => setDiffViewMode('raw')} title="Raw patch"
+            className="px-1.5 py-0.5 rounded text-[10px] transition"
+            style={{
+              background: diffViewMode === 'raw' ? 'color-mix(in srgb, var(--accent-primary) 15%, transparent)' : 'transparent',
+              color: diffViewMode === 'raw' ? 'var(--accent-primary)' : 'var(--text-muted)'
+            }}>Raw</button>
         </div>
-      ))}
+      </div>
+      {files.map(file => {
+        const hunks = expandedFiles[file.filename] && file.patch ? parsePatchHunks(file.patch) : [];
+        return (
+          <div key={file.sha || file.filename}
+            className="rounded-lg border overflow-hidden"
+            style={{ borderColor: 'var(--border-subtle)' }}>
+            <button
+              onClick={() => setExpandedFiles(prev => ({ ...prev, [file.filename]: !prev[file.filename] }))}
+              className="flex items-center gap-2 w-full px-2.5 py-2 text-left hover:opacity-80 transition"
+              style={{ background: 'var(--bg-panel)', color: 'var(--text-primary)' }}>
+              <span className={`text-[10px] font-bold font-mono w-3.5 text-center ${fileDiffColor(file.status)}`}>
+                {fileDiffLabel(file.status)}
+              </span>
+              <span className="text-xs font-mono flex-1 truncate">{file.filename}</span>
+              {file.previous_filename && (
+                <span className="text-[10px] opacity-50 truncate">(was {file.previous_filename})</span>
+              )}
+              <span className="text-[10px] text-emerald-400 flex-shrink-0">+{file.additions}</span>
+              <span className="text-[10px] text-red-400 flex-shrink-0 ml-1">-{file.deletions}</span>
+              <ChevronDown
+                className="w-3 h-3 flex-shrink-0 ml-1 transition-transform"
+                style={{ transform: expandedFiles[file.filename] ? 'rotate(180deg)' : 'none', color: 'var(--text-muted)' }}
+              />
+            </button>
+            {expandedFiles[file.filename] && file.patch && (
+              diffViewMode === 'unified' && hunks.length > 0 ? (
+                <div style={{ background: 'var(--bg-app)', maxHeight: 400, overflowY: 'auto' }}>
+                  {hunks.map((hunk, i) => <DiffHunkView key={i} hunk={hunk} />)}
+                </div>
+              ) : (
+                <pre
+                  className="text-[10px] font-mono px-3 py-2 overflow-x-auto leading-relaxed"
+                  style={{ background: 'var(--bg-app)', color: 'var(--text-secondary)', maxHeight: '300px', overflowY: 'auto' }}>
+                  {file.patch.split('\n').map((line, i) => (
+                    <div key={i}
+                      style={{
+                        color: line.startsWith('+') ? '#34d399' : line.startsWith('-') ? '#f87171' : line.startsWith('@@') ? '#818cf8' : undefined,
+                        background: line.startsWith('+') ? 'rgba(52,211,153,0.06)' : line.startsWith('-') ? 'rgba(248,113,113,0.06)' : 'transparent',
+                      }}>{line}</div>
+                  ))}
+                </pre>
+              )
+            )}
+          </div>
+        );
+      })}
       {files.length === 0 && (
         <p className="text-xs py-4 text-center" style={{ color: 'var(--text-muted)' }}>No files changed.</p>
       )}
