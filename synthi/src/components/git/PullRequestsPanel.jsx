@@ -443,8 +443,13 @@ export function PullRequestsPanel({ slug }) {
 
             {/* PR list content */}
             {prListLoading && prList.length === 0 ? (
-              <div className="flex items-center justify-center py-8 text-xs" style={{ color: 'var(--text-muted)' }}>
-                <RefreshCw className="w-4 h-4 animate-spin mr-2" /> Loading pull requests…
+              <div className="px-3 py-2 space-y-2">
+                {[1, 2, 3].map(i => (
+                  <div key={i} className="rounded-lg border p-2.5 animate-pulse" style={{ borderColor: 'var(--border-subtle)' }}>
+                    <div className="h-3 rounded w-3/4 mb-2" style={{ background: 'var(--bg-elevated)' }} />
+                    <div className="h-2 rounded w-1/2" style={{ background: 'var(--bg-elevated)' }} />
+                  </div>
+                ))}
               </div>
             ) : prListError ? (
               <div className="mx-3 mt-3 p-3 rounded-lg text-xs text-red-400" style={{ background: 'rgba(239,68,68,0.08)' }}>
@@ -482,6 +487,11 @@ export function PullRequestsPanel({ slug }) {
                 {filteredPRs.map(pr => (
                   <PRListItem key={pr.id} pr={pr} onClick={() => handleSelectPR(pr)} />
                 ))}
+                {prListLoading && prList.length > 0 && (
+                  <div className="flex items-center justify-center py-2 text-[10px]" style={{ color: 'var(--text-muted)' }}>
+                    <RefreshCw className="w-3 h-3 animate-spin mr-1.5" /> Refreshing…
+                  </div>
+                )}
               </div>
             )}
           </>
