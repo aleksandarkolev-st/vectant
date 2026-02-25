@@ -44,11 +44,19 @@ async function ghFetch(path, { method = 'GET', body, token, accept } = {}) {
     headers['Content-Type'] = 'application/json';
   }
 
-  const res = await fetch(`${GITHUB_API}${path}`, {
-    method,
-    headers,
-    body: body ? JSON.stringify(body) : undefined,
-  });
+  let res;
+  try {
+    res = await fetch(`${GITHUB_API}${path}`, {
+      method,
+      headers,
+      body: body ? JSON.stringify(body) : undefined,
+    });
+  } catch (networkError) {
+    const err = new Error('Network error — check your internet connection and try again.');
+    err.status = 0;
+    err.isNetworkError = true;
+    throw err;
+  }
 
   // 204 No Content
   if (res.status === 204) return null;
@@ -59,7 +67,22 @@ async function ghFetch(path, { method = 'GET', body, token, accept } = {}) {
   } catch (_) {}
 
   if (!res.ok) {
-    const message = json?.message || json?.error || res.statusText || `HTTP ${res.status}`;
+    let message;
+    if (res.status === 401) {
+      message = 'Authentication failed — your token may be expired or revoked. Update it in settings.';
+    } else if (res.status === 403) {
+      message = json?.message?.includes('rate limit')
+        ? 'GitHub API rate limit exceeded. Wait a few minutes and try again.'
+        : `Permission denied (403): ${json?.message || 'Check your token scopes.'}`;
+    } else if (res.status === 404) {
+      message = `Not found (404): ${json?.message || 'The resource may not exist or your token lacks access.'}`;
+    } else if (res.status === 422) {
+      message = json?.errors?.length
+        ? `Validation error: ${json.errors.map(e => e.message || e.field).join(', ')}`
+        : (json?.message || 'Validation error — check your input.');
+    } else {
+      message = json?.message || json?.error || res.statusText || `HTTP ${res.status}`;
+    }
     const err = new Error(message);
     err.status = res.status;
     err.githubErrors = json?.errors;
