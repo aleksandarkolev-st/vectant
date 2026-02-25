@@ -666,6 +666,7 @@
   border-radius: 13px;
   padding: 1px;
   background: var(--accent-gradient);
+  pointer-events: none;
   -webkit-mask:
     linear-gradient(#fff 0 0) content-box,
     linear-gradient(#fff 0 0);

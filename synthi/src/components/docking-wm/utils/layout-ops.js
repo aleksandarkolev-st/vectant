@@ -4,10 +4,29 @@
  * Designed for Redux reducer composition.
  */
 
-import { NODE_TYPE, DIRECTION, MIN_PANEL_SIZE, DEFAULT_SPLIT_RATIO, DROP_ZONE } from '../types';
-import { createSplitNode, createTabGroupNode, normalizeSizes } from './layout-node';
-import { getNode, getParent, getChildIndex, findTabGroup, collectDescendants, collectTabIds, getSiblings, findFirstTabGroup } from './layout-query';
-import { nodeId } from './id-generator';
+import {
+  NODE_TYPE,
+  DIRECTION,
+  MIN_PANEL_SIZE,
+  DEFAULT_SPLIT_RATIO,
+  DROP_ZONE,
+} from "../types";
+import {
+  createSplitNode,
+  createTabGroupNode,
+  normalizeSizes,
+} from "./layout-node";
+import {
+  getNode,
+  getParent,
+  getChildIndex,
+  findTabGroup,
+  collectDescendants,
+  collectTabIds,
+  getSiblings,
+  findFirstTabGroup,
+} from "./layout-query";
+import { nodeId } from "./id-generator";
 
 // ─── Immutable helpers ──────────────────────────────────
 
@@ -41,7 +60,13 @@ function cloneNode(node) {
  * @param {number} [ratio] - size ratio for the new panel
  * @returns {import('../types').LayoutState}
  */
-export function splitNode(state, targetNodeId, tabId, zone, ratio = DEFAULT_SPLIT_RATIO) {
+export function splitNode(
+  state,
+  targetNodeId,
+  tabId,
+  zone,
+  ratio = DEFAULT_SPLIT_RATIO,
+) {
   let next = cloneState(state);
   const target = cloneNode(next.nodes[targetNodeId]);
   next.nodes[targetNodeId] = target;
@@ -66,15 +91,24 @@ export function splitNode(state, targetNodeId, tabId, zone, ratio = DEFAULT_SPLI
   const children = isBeforeTarget
     ? [newGroup.id, targetNodeId]
     : [targetNodeId, newGroup.id];
-  const sizes = isBeforeTarget
-    ? [ratio, 1 - ratio]
-    : [1 - ratio, ratio];
+  const sizes = isBeforeTarget ? [ratio, 1 - ratio] : [1 - ratio, ratio];
 
   const parent = target.parentId ? next.nodes[target.parentId] : null;
 
   // Check if parent split is same direction — if so, insert inline instead of nesting
-  if (parent && parent.type === NODE_TYPE.SPLIT && parent.direction === direction) {
-    return insertIntoExistingSplit(next, parent, targetNodeId, newGroup, isBeforeTarget, ratio);
+  if (
+    parent &&
+    parent.type === NODE_TYPE.SPLIT &&
+    parent.direction === direction
+  ) {
+    return insertIntoExistingSplit(
+      next,
+      parent,
+      targetNodeId,
+      newGroup,
+      isBeforeTarget,
+      ratio,
+    );
   }
 
   // Create new wrapping split
@@ -111,7 +145,14 @@ export function splitNode(state, targetNodeId, tabId, zone, ratio = DEFAULT_SPLI
 /**
  * Insert a new tab group into an existing split node (inline, no nesting).
  */
-function insertIntoExistingSplit(state, parentSplit, targetNodeId, newGroup, before, ratio) {
+function insertIntoExistingSplit(
+  state,
+  parentSplit,
+  targetNodeId,
+  newGroup,
+  before,
+  ratio,
+) {
   const next = state;
   const clonedParent = cloneNode(parentSplit);
   const idx = clonedParent.children.indexOf(targetNodeId);
@@ -146,7 +187,13 @@ function insertIntoExistingSplit(state, parentSplit, targetNodeId, newGroup, bef
  * @param {boolean} [activate] - whether to set as active tab
  * @returns {import('../types').LayoutState}
  */
-export function addTabToGroup(state, tabGroupId, tabId, insertIndex, activate = true) {
+export function addTabToGroup(
+  state,
+  tabGroupId,
+  tabId,
+  insertIndex,
+  activate = true,
+) {
   const next = cloneState(state);
   const group = cloneNode(next.nodes[tabGroupId]);
   if (!group || group.type !== NODE_TYPE.TAB_GROUP) return state;
@@ -184,13 +231,13 @@ export function addTabToGroup(state, tabGroupId, tabId, insertIndex, activate = 
  */
 export function removeTabFromCurrentGroup(state, tabId) {
   const next = cloneState(state);
-  
+
   // Remove from floating if it's there
   const floatKey = `float-${tabId}`;
   if (next.floating[floatKey]) {
     delete next.floating[floatKey];
   }
-  
+
   // Remove from popouts if it's there
   const popKey = `popout-${tabId}`;
   if (next.popouts[popKey]) {
@@ -222,6 +269,10 @@ export function removeTabFromCurrentGroup(state, tabId) {
  * @returns {import('../types').LayoutState}
  */
 export function closeTab(state, tabId, removeDefinition = true) {
+  // Guard: never close a non-closable tab (e.g. editor)
+  const tab = state.tabs[tabId];
+  if (tab && tab.closable === false) return state;
+
   let next = removeTabFromCurrentGroup(state, tabId);
 
   if (removeDefinition) {
@@ -255,6 +306,10 @@ export function closeTab(state, tabId, removeDefinition = true) {
  * @returns {import('../types').LayoutState}
  */
 export function moveTab(state, tabId, targetTabGroupId, targetIndex) {
+  // Guard: never move a non-movable tab (e.g. editor)
+  const tab = state.tabs[tabId];
+  if (tab && tab.closable === false) return state;
+
   let next = removeTabFromCurrentGroup(state, tabId);
   next = addTabToGroup(next, targetTabGroupId, tabId, targetIndex, true);
   return next;
@@ -344,6 +399,9 @@ export function toggleMaximize(state, nodeId) {
 export function floatTab(state, tabId, rect) {
   const tab = state.tabs[tabId];
 
+  // Guard: never float a non-closable tab (e.g. editor)
+  if (tab && tab.closable === false) return state;
+
   // ── Dedup guard: if a floating window for the same panelType exists, bring it to front ──
   if (tab) {
     for (const fw of Object.values(state.floating || {})) {
@@ -351,7 +409,7 @@ export function floatTab(state, tabId, rect) {
       const existingTab = state.tabs[fw.tabId];
       if (existingTab && existingTab.panelType === tab.panelType) {
         // For extension-view, also match on containerId
-        if (tab.panelType === 'extension-view') {
+        if (tab.panelType === "extension-view") {
           if (existingTab.data?.containerId !== tab.data?.containerId) continue;
         }
         return bringFloatToFront(state, fw.id);
@@ -396,7 +454,8 @@ export function dockFloat(state, floatId, targetTabGroupId, insertIndex) {
 
   // Resolve target: prefer the group the tab was originally docked in,
   // then fall back to focused group, then first available
-  const sourceStillExists = fw.sourceGroupId && state.nodes[fw.sourceGroupId]?.type === 'tabgroup';
+  const sourceStillExists =
+    fw.sourceGroupId && state.nodes[fw.sourceGroupId]?.type === "tabgroup";
   const resolvedTarget =
     targetTabGroupId ||
     (sourceStillExists ? fw.sourceGroupId : null) ||
@@ -441,7 +500,7 @@ export function bringFloatToFront(state, floatId) {
 function getMaxFloatingZIndex(state) {
   return Object.values(state.floating).reduce(
     (max, fw) => Math.max(max, fw.zIndex || 0),
-    99
+    99,
   );
 }
 
@@ -558,10 +617,7 @@ export function cleanupEmptyNodes(state) {
       }
 
       // Collapse single-child split nodes
-      if (
-        node.type === NODE_TYPE.SPLIT &&
-        node.children.length === 1
-      ) {
+      if (node.type === NODE_TYPE.SPLIT && node.children.length === 1) {
         const childId = node.children[0];
         const child = next.nodes[childId];
         if (!child) continue;
@@ -588,10 +644,7 @@ export function cleanupEmptyNodes(state) {
       }
 
       // Remove splits with 0 children (shouldn't happen but safety)
-      if (
-        node.type === NODE_TYPE.SPLIT &&
-        node.children.length === 0
-      ) {
+      if (node.type === NODE_TYPE.SPLIT && node.children.length === 0) {
         if (id === next.rootId) {
           // Replace root with empty tab group
           const emptyGroup = createTabGroupNode({ parentId: null });

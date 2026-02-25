@@ -1,4 +1,4 @@
-'use client';
+"use client";
 
 /**
  * @fileoverview Context menu for docking tab groups and tabs.
@@ -14,8 +14,8 @@
  *  - Move to new group
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { createPortal } from 'react-dom';
+import { useCallback, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 
 // ────────────────────────────────────────────────────────
 //  Menu item data
@@ -49,80 +49,99 @@ export function buildTabContextMenu({
   tabCount,
   tabIndex,
   isMaximized,
+  isFixed,
   actions,
 }) {
-  return [
-    {
-      id: 'close',
-      label: 'Close',
-      shortcut: 'Ctrl+W',
-      action: () => actions.closeTab(tabId),
-    },
-    {
-      id: 'close-others',
-      label: 'Close Others',
-      disabled: tabCount <= 1,
-      action: () => actions.closeOtherTabs(tabId, tabGroupId),
-    },
-    {
-      id: 'close-right',
-      label: 'Close to the Right',
-      disabled: tabIndex >= tabCount - 1,
-      action: () => actions.closeTabsToRight(tabId, tabGroupId),
-    },
-    {
-      id: 'close-all',
-      label: 'Close All',
-      dividerAfter: true,
-      action: () => actions.closeAllTabs(tabGroupId),
-    },
-    {
-      id: 'split-right',
-      label: 'Split Right',
-      shortcut: 'Ctrl+\\',
-      action: () => actions.splitTab(tabId, tabGroupId, 'row', 'after'),
-    },
-    {
-      id: 'split-down',
-      label: 'Split Down',
-      shortcut: 'Ctrl+Shift+\\',
-      action: () => actions.splitTab(tabId, tabGroupId, 'column', 'after'),
-    },
-    {
-      id: 'split-left',
-      label: 'Split Left',
-      action: () => actions.splitTab(tabId, tabGroupId, 'row', 'before'),
-    },
-    {
-      id: 'split-up',
-      label: 'Split Up',
-      dividerAfter: true,
-      action: () => actions.splitTab(tabId, tabGroupId, 'column', 'before'),
-    },
-    {
-      id: 'maximize',
-      label: isMaximized ? 'Restore' : 'Maximize',
-      shortcut: 'Ctrl+Shift+M',
-      action: () => actions.toggleMaximize(tabGroupId),
-    },
-    {
-      id: 'float',
-      label: 'Float',
-      action: () => actions.floatTab(tabId),
-    },
-    {
-      id: 'popout',
-      label: 'Pop Out to Window',
-      dividerAfter: true,
-      action: () => actions.popoutTab(tabId),
-    },
-    {
-      id: 'move-new-group',
-      label: 'Move to New Group',
-      disabled: tabCount <= 1,
-      action: () => actions.moveToNewGroup(tabId, tabGroupId),
-    },
-  ];
+  const items = [];
+
+  // Only show close actions for closable tabs
+  if (!isFixed) {
+    items.push(
+      {
+        id: "close",
+        label: "Close",
+        shortcut: "Ctrl+W",
+        action: () => actions.closeTab(tabId),
+      },
+      {
+        id: "close-others",
+        label: "Close Others",
+        disabled: tabCount <= 1,
+        action: () => actions.closeOtherTabs(tabId, tabGroupId),
+      },
+      {
+        id: "close-right",
+        label: "Close to the Right",
+        disabled: tabIndex >= tabCount - 1,
+        action: () => actions.closeTabsToRight(tabId, tabGroupId),
+      },
+      {
+        id: "close-all",
+        label: "Close All",
+        dividerAfter: true,
+        action: () => actions.closeAllTabs(tabGroupId),
+      },
+    );
+  }
+  // Only show split/float/move actions for non-fixed tabs
+  if (!isFixed) {
+    items.push(
+      {
+        id: "split-right",
+        label: "Split Right",
+        shortcut: "Ctrl+\\",
+        action: () => actions.splitTab(tabId, tabGroupId, "row", "after"),
+      },
+      {
+        id: "split-down",
+        label: "Split Down",
+        shortcut: "Ctrl+Shift+\\",
+        action: () => actions.splitTab(tabId, tabGroupId, "column", "after"),
+      },
+      {
+        id: "split-left",
+        label: "Split Left",
+        action: () => actions.splitTab(tabId, tabGroupId, "row", "before"),
+      },
+      {
+        id: "split-up",
+        label: "Split Up",
+        dividerAfter: true,
+        action: () => actions.splitTab(tabId, tabGroupId, "column", "before"),
+      },
+    );
+  }
+
+  items.push({
+    id: "maximize",
+    label: isMaximized ? "Restore" : "Maximize",
+    shortcut: "Ctrl+Shift+M",
+    action: () => actions.toggleMaximize(tabGroupId),
+  });
+
+  if (!isFixed) {
+    items.push(
+      {
+        id: "float",
+        label: "Float",
+        action: () => actions.floatTab(tabId),
+      },
+      {
+        id: "popout",
+        label: "Pop Out to Window",
+        dividerAfter: true,
+        action: () => actions.popoutTab(tabId),
+      },
+      {
+        id: "move-new-group",
+        label: "Move to New Group",
+        disabled: tabCount <= 1,
+        action: () => actions.moveToNewGroup(tabId, tabGroupId),
+      },
+    );
+  }
+
+  return items;
 }
 
 // ────────────────────────────────────────────────────────
@@ -157,18 +176,21 @@ export function ContextMenu({ items, position, onClose }) {
   useEffect(() => {
     const dismiss = () => onClose();
     const handleKey = (e) => {
-      if (e.key === 'Escape') { e.preventDefault(); dismiss(); }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        dismiss();
+      }
     };
     const handleClick = (e) => {
       if (menuRef.current && !menuRef.current.contains(e.target)) dismiss();
     };
-    window.addEventListener('keydown', handleKey, true);
-    window.addEventListener('mousedown', handleClick, true);
-    window.addEventListener('scroll', dismiss, true);
+    window.addEventListener("keydown", handleKey, true);
+    window.addEventListener("mousedown", handleClick, true);
+    window.addEventListener("scroll", dismiss, true);
     return () => {
-      window.removeEventListener('keydown', handleKey, true);
-      window.removeEventListener('mousedown', handleClick, true);
-      window.removeEventListener('scroll', dismiss, true);
+      window.removeEventListener("keydown", handleKey, true);
+      window.removeEventListener("mousedown", handleClick, true);
+      window.removeEventListener("scroll", dismiss, true);
     };
   }, [onClose]);
 
@@ -178,20 +200,20 @@ export function ContextMenu({ items, position, onClose }) {
       role="menu"
       className="docking-context-menu"
       style={{
-        position: 'fixed',
+        position: "fixed",
         left: adjusted.x,
         top: adjusted.y,
         zIndex: 99999,
         minWidth: 200,
         maxWidth: 280,
-        background: 'var(--docking-bg-elevated, #1e1e2e)',
-        border: '1px solid var(--docking-border, #333)',
+        background: "var(--docking-bg-elevated, #1e1e2e)",
+        border: "1px solid var(--docking-border, #333)",
         borderRadius: 6,
-        padding: '4px 0',
-        boxShadow: '0 8px 32px rgba(0,0,0,.55)',
+        padding: "4px 0",
+        boxShadow: "0 8px 32px rgba(0,0,0,.55)",
         fontSize: 13,
-        color: 'var(--docking-text-primary, #ccc)',
-        fontFamily: 'inherit',
+        color: "var(--docking-text-primary, #ccc)",
+        fontFamily: "inherit",
       }}
     >
       {items.map((item) => (
@@ -207,30 +229,30 @@ export function ContextMenu({ items, position, onClose }) {
               }
             }}
             style={{
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-              width: '100%',
-              padding: '6px 12px',
-              background: 'none',
-              border: 'none',
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              width: "100%",
+              padding: "6px 12px",
+              background: "none",
+              border: "none",
               color: item.disabled
-                ? 'var(--docking-text-tertiary, #555)'
-                : 'inherit',
-              cursor: item.disabled ? 'default' : 'pointer',
-              textAlign: 'left',
-              fontSize: 'inherit',
-              fontFamily: 'inherit',
-              lineHeight: '1.4',
+                ? "var(--docking-text-tertiary, #555)"
+                : "inherit",
+              cursor: item.disabled ? "default" : "pointer",
+              textAlign: "left",
+              fontSize: "inherit",
+              fontFamily: "inherit",
+              lineHeight: "1.4",
             }}
             onMouseEnter={(e) => {
               if (!item.disabled) {
                 e.currentTarget.style.background =
-                  'var(--docking-bg-hover, rgba(255,255,255,.06))';
+                  "var(--docking-bg-hover, rgba(255,255,255,.06))";
               }
             }}
             onMouseLeave={(e) => {
-              e.currentTarget.style.background = 'none';
+              e.currentTarget.style.background = "none";
             }}
           >
             <span>{item.label}</span>
@@ -239,8 +261,8 @@ export function ContextMenu({ items, position, onClose }) {
                 style={{
                   marginLeft: 24,
                   fontSize: 11,
-                  color: 'var(--docking-text-tertiary, #666)',
-                  whiteSpace: 'nowrap',
+                  color: "var(--docking-text-tertiary, #666)",
+                  whiteSpace: "nowrap",
                 }}
               >
                 {item.shortcut}
@@ -251,8 +273,8 @@ export function ContextMenu({ items, position, onClose }) {
             <div
               style={{
                 height: 1,
-                margin: '4px 8px',
-                background: 'var(--docking-border, #333)',
+                margin: "4px 8px",
+                background: "var(--docking-border, #333)",
               }}
             />
           )}

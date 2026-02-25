@@ -260,7 +260,7 @@ export default function Dashboard() {
               </p>
             </div>
             <button
-              onClick={() => signIn("github")}
+              onClick={() => signIn("github", { callbackUrl: "/" })}
               className="synthi-btn w-full flex items-center justify-center gap-2 h-10 text-sm font-medium cursor-pointer"
               style={{ borderRadius: 8 }}
             >

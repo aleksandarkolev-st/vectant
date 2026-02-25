@@ -1,4 +1,4 @@
-'use client';
+"use client";
 
 /**
  * @fileoverview Pre-built workspace layout presets.
@@ -18,9 +18,9 @@ import {
   normalizeSizes,
   generateId,
   nodeId,
-} from '../utils';
+} from "../utils";
 
-import { IDE_PANEL } from './ide-panels';
+import { IDE_PANEL } from "./ide-panels";
 
 // ────────────────────────────────────────────────────────
 //  Helper: build a layout from a simple DSL
@@ -54,46 +54,83 @@ export function createClassicLayout() {
   const layout = createEmptyLayout();
 
   // Create tabs
-  const explorerTab = addTab(layout, createTab({ panelType: IDE_PANEL.EXPLORER, title: 'Explorer' }));
-  const searchTab = addTab(layout, createTab({ panelType: IDE_PANEL.SEARCH, title: 'Search' }));
-  const gitTab = addTab(layout, createTab({ panelType: IDE_PANEL.GIT, title: 'Source Control' }));
-  const extensionsTab = addTab(layout, createTab({ panelType: IDE_PANEL.EXTENSIONS, title: 'Extensions' }));
-  const welcomeTab = addTab(layout, createTab({ panelType: IDE_PANEL.EDITOR, title: 'Editor' }));
-  const terminalTab = addTab(layout, createTab({ panelType: IDE_PANEL.TERMINAL, title: 'Terminal' }));
+  const explorerTab = addTab(
+    layout,
+    createTab({ panelType: IDE_PANEL.EXPLORER, title: "Explorer" }),
+  );
+  const searchTab = addTab(
+    layout,
+    createTab({ panelType: IDE_PANEL.SEARCH, title: "Search" }),
+  );
+  const gitTab = addTab(
+    layout,
+    createTab({ panelType: IDE_PANEL.GIT, title: "Source Control" }),
+  );
+  const extensionsTab = addTab(
+    layout,
+    createTab({ panelType: IDE_PANEL.EXTENSIONS, title: "Extensions" }),
+  );
+  const welcomeTab = addTab(
+    layout,
+    createTab({
+      panelType: IDE_PANEL.EDITOR,
+      title: "Editor",
+      closable: false,
+    }),
+  );
+  const terminalTab = addTab(
+    layout,
+    createTab({ panelType: IDE_PANEL.TERMINAL, title: "Terminal" }),
+  );
 
   // Sidebar tab group
-  const sidebarGroup = addNode(layout, createTabGroupNode({
-    tabs: [explorerTab.id, searchTab.id, gitTab.id, extensionsTab.id],
-    activeTabId: explorerTab.id,
-  }));
+  const sidebarGroup = addNode(
+    layout,
+    createTabGroupNode({
+      tabs: [explorerTab.id, searchTab.id, gitTab.id, extensionsTab.id],
+      activeTabId: explorerTab.id,
+    }),
+  );
 
   // Editor tab group
-  const editorGroup = addNode(layout, createTabGroupNode({
-    tabs: [welcomeTab.id],
-    activeTabId: welcomeTab.id,
-  }));
+  const editorGroup = addNode(
+    layout,
+    createTabGroupNode({
+      tabs: [welcomeTab.id],
+      activeTabId: welcomeTab.id,
+    }),
+  );
 
   // Bottom panel tab group (terminal only — Problems is a separate dockable panel)
-  const bottomGroup = addNode(layout, createTabGroupNode({
-    tabs: [terminalTab.id],
-    activeTabId: terminalTab.id,
-  }));
+  const bottomGroup = addNode(
+    layout,
+    createTabGroupNode({
+      tabs: [terminalTab.id],
+      activeTabId: terminalTab.id,
+    }),
+  );
 
   // Right column: editor on top, bottom panel below
-  const rightCol = addNode(layout, createSplitNode({
-    direction: 'column',
-    children: [editorGroup.id, bottomGroup.id],
-    sizes: normalizeSizes([0.72, 0.28]),
-  }));
+  const rightCol = addNode(
+    layout,
+    createSplitNode({
+      direction: "column",
+      children: [editorGroup.id, bottomGroup.id],
+      sizes: normalizeSizes([0.72, 0.28]),
+    }),
+  );
   editorGroup.parentId = rightCol.id;
   bottomGroup.parentId = rightCol.id;
 
   // Root: sidebar left, right column
-  const root = addNode(layout, createSplitNode({
-    direction: 'row',
-    children: [sidebarGroup.id, rightCol.id],
-    sizes: normalizeSizes([0.20, 0.80]),
-  }));
+  const root = addNode(
+    layout,
+    createSplitNode({
+      direction: "row",
+      children: [sidebarGroup.id, rightCol.id],
+      sizes: normalizeSizes([0.2, 0.8]),
+    }),
+  );
   sidebarGroup.parentId = root.id;
   rightCol.parentId = root.id;
 
@@ -115,11 +152,21 @@ export function createClassicLayout() {
 export function createFocusLayout() {
   const layout = createEmptyLayout();
 
-  const editorTab = addTab(layout, createTab({ panelType: IDE_PANEL.EDITOR, title: 'Editor' }));
-  const editorGroup = addNode(layout, createTabGroupNode({
-    tabs: [editorTab.id],
-    activeTabId: editorTab.id,
-  }));
+  const editorTab = addTab(
+    layout,
+    createTab({
+      panelType: IDE_PANEL.EDITOR,
+      title: "Editor",
+      closable: false,
+    }),
+  );
+  const editorGroup = addNode(
+    layout,
+    createTabGroupNode({
+      tabs: [editorTab.id],
+      activeTabId: editorTab.id,
+    }),
+  );
 
   layout.rootId = editorGroup.id;
   layout.focusedTabGroupId = editorGroup.id;
@@ -141,55 +188,96 @@ export function createFocusLayout() {
 export function createSideBySideLayout() {
   const layout = createEmptyLayout();
 
-  const explorerTab = addTab(layout, createTab({ panelType: IDE_PANEL.EXPLORER, title: 'Explorer' }));
-  const editor1Tab = addTab(layout, createTab({ panelType: IDE_PANEL.EDITOR, title: 'File 1' }));
-  const editor2Tab = addTab(layout, createTab({ panelType: IDE_PANEL.EDITOR, title: 'File 2' }));
-  const terminalTab = addTab(layout, createTab({ panelType: IDE_PANEL.TERMINAL, title: 'Terminal' }));
+  const explorerTab = addTab(
+    layout,
+    createTab({ panelType: IDE_PANEL.EXPLORER, title: "Explorer" }),
+  );
+  const editor1Tab = addTab(
+    layout,
+    createTab({
+      panelType: IDE_PANEL.EDITOR,
+      title: "File 1",
+      closable: false,
+    }),
+  );
+  const editor2Tab = addTab(
+    layout,
+    createTab({
+      panelType: IDE_PANEL.EDITOR,
+      title: "File 2",
+      closable: false,
+    }),
+  );
+  const terminalTab = addTab(
+    layout,
+    createTab({ panelType: IDE_PANEL.TERMINAL, title: "Terminal" }),
+  );
 
-  const sidebarGroup = addNode(layout, createTabGroupNode({
-    tabs: [explorerTab.id],
-    activeTabId: explorerTab.id,
-  }));
+  const sidebarGroup = addNode(
+    layout,
+    createTabGroupNode({
+      tabs: [explorerTab.id],
+      activeTabId: explorerTab.id,
+    }),
+  );
 
-  const leftEditor = addNode(layout, createTabGroupNode({
-    tabs: [editor1Tab.id],
-    activeTabId: editor1Tab.id,
-  }));
+  const leftEditor = addNode(
+    layout,
+    createTabGroupNode({
+      tabs: [editor1Tab.id],
+      activeTabId: editor1Tab.id,
+    }),
+  );
 
-  const rightEditor = addNode(layout, createTabGroupNode({
-    tabs: [editor2Tab.id],
-    activeTabId: editor2Tab.id,
-  }));
+  const rightEditor = addNode(
+    layout,
+    createTabGroupNode({
+      tabs: [editor2Tab.id],
+      activeTabId: editor2Tab.id,
+    }),
+  );
 
-  const bottomGroup = addNode(layout, createTabGroupNode({
-    tabs: [terminalTab.id],
-    activeTabId: terminalTab.id,
-  }));
+  const bottomGroup = addNode(
+    layout,
+    createTabGroupNode({
+      tabs: [terminalTab.id],
+      activeTabId: terminalTab.id,
+    }),
+  );
 
   // Editors side by side
-  const editorRow = addNode(layout, createSplitNode({
-    direction: 'row',
-    children: [leftEditor.id, rightEditor.id],
-    sizes: normalizeSizes([0.50, 0.50]),
-  }));
+  const editorRow = addNode(
+    layout,
+    createSplitNode({
+      direction: "row",
+      children: [leftEditor.id, rightEditor.id],
+      sizes: normalizeSizes([0.5, 0.5]),
+    }),
+  );
   leftEditor.parentId = editorRow.id;
   rightEditor.parentId = editorRow.id;
 
   // Right column: editors + bottom
-  const rightCol = addNode(layout, createSplitNode({
-    direction: 'column',
-    children: [editorRow.id, bottomGroup.id],
-    sizes: normalizeSizes([0.75, 0.25]),
-  }));
+  const rightCol = addNode(
+    layout,
+    createSplitNode({
+      direction: "column",
+      children: [editorRow.id, bottomGroup.id],
+      sizes: normalizeSizes([0.75, 0.25]),
+    }),
+  );
   editorRow.parentId = rightCol.id;
   bottomGroup.parentId = rightCol.id;
 
   // Root
-  const root = addNode(layout, createSplitNode({
-    direction: 'row',
-    children: [sidebarGroup.id, rightCol.id],
-    sizes: normalizeSizes([0.18, 0.82]),
-  }));
+  const root = addNode(
+    layout,
+    createSplitNode({
+      direction: "row",
+      children: [sidebarGroup.id, rightCol.id],
+      sizes: normalizeSizes([0.18, 0.82]),
+    }),
+  );
   sidebarGroup.parentId = root.id;
   rightCol.parentId = root.id;
 
@@ -213,55 +301,92 @@ export function createSideBySideLayout() {
 export function createAIAssistedLayout() {
   const layout = createEmptyLayout();
 
-  const explorerTab = addTab(layout, createTab({ panelType: IDE_PANEL.EXPLORER, title: 'Explorer' }));
-  const editorTab = addTab(layout, createTab({ panelType: IDE_PANEL.EDITOR, title: 'Editor' }));
-  const chatTab = addTab(layout, createTab({ panelType: IDE_PANEL.CHAT, title: 'AI Chat' }));
-  const terminalTab = addTab(layout, createTab({ panelType: IDE_PANEL.TERMINAL, title: 'Terminal' }));
+  const explorerTab = addTab(
+    layout,
+    createTab({ panelType: IDE_PANEL.EXPLORER, title: "Explorer" }),
+  );
+  const editorTab = addTab(
+    layout,
+    createTab({
+      panelType: IDE_PANEL.EDITOR,
+      title: "Editor",
+      closable: false,
+    }),
+  );
+  const chatTab = addTab(
+    layout,
+    createTab({ panelType: IDE_PANEL.CHAT, title: "AI Chat" }),
+  );
+  const terminalTab = addTab(
+    layout,
+    createTab({ panelType: IDE_PANEL.TERMINAL, title: "Terminal" }),
+  );
 
-  const sidebarGroup = addNode(layout, createTabGroupNode({
-    tabs: [explorerTab.id],
-    activeTabId: explorerTab.id,
-  }));
+  const sidebarGroup = addNode(
+    layout,
+    createTabGroupNode({
+      tabs: [explorerTab.id],
+      activeTabId: explorerTab.id,
+    }),
+  );
 
-  const editorGroup = addNode(layout, createTabGroupNode({
-    tabs: [editorTab.id],
-    activeTabId: editorTab.id,
-  }));
+  const editorGroup = addNode(
+    layout,
+    createTabGroupNode({
+      tabs: [editorTab.id],
+      activeTabId: editorTab.id,
+    }),
+  );
 
-  const chatGroup = addNode(layout, createTabGroupNode({
-    tabs: [chatTab.id],
-    activeTabId: chatTab.id,
-  }));
+  const chatGroup = addNode(
+    layout,
+    createTabGroupNode({
+      tabs: [chatTab.id],
+      activeTabId: chatTab.id,
+    }),
+  );
 
-  const bottomGroup = addNode(layout, createTabGroupNode({
-    tabs: [terminalTab.id],
-    activeTabId: terminalTab.id,
-  }));
+  const bottomGroup = addNode(
+    layout,
+    createTabGroupNode({
+      tabs: [terminalTab.id],
+      activeTabId: terminalTab.id,
+    }),
+  );
 
   // Editor + Chat side by side
-  const editorChatRow = addNode(layout, createSplitNode({
-    direction: 'row',
-    children: [editorGroup.id, chatGroup.id],
-    sizes: normalizeSizes([0.65, 0.35]),
-  }));
+  const editorChatRow = addNode(
+    layout,
+    createSplitNode({
+      direction: "row",
+      children: [editorGroup.id, chatGroup.id],
+      sizes: normalizeSizes([0.65, 0.35]),
+    }),
+  );
   editorGroup.parentId = editorChatRow.id;
   chatGroup.parentId = editorChatRow.id;
 
   // Right column
-  const rightCol = addNode(layout, createSplitNode({
-    direction: 'column',
-    children: [editorChatRow.id, bottomGroup.id],
-    sizes: normalizeSizes([0.72, 0.28]),
-  }));
+  const rightCol = addNode(
+    layout,
+    createSplitNode({
+      direction: "column",
+      children: [editorChatRow.id, bottomGroup.id],
+      sizes: normalizeSizes([0.72, 0.28]),
+    }),
+  );
   editorChatRow.parentId = rightCol.id;
   bottomGroup.parentId = rightCol.id;
 
   // Root
-  const root = addNode(layout, createSplitNode({
-    direction: 'row',
-    children: [sidebarGroup.id, rightCol.id],
-    sizes: normalizeSizes([0.18, 0.82]),
-  }));
+  const root = addNode(
+    layout,
+    createSplitNode({
+      direction: "row",
+      children: [sidebarGroup.id, rightCol.id],
+      sizes: normalizeSizes([0.18, 0.82]),
+    }),
+  );
   sidebarGroup.parentId = root.id;
   rightCol.parentId = root.id;
 
@@ -284,31 +409,59 @@ export function createAIAssistedLayout() {
 export function createThreeColumnLayout() {
   const layout = createEmptyLayout();
 
-  const explorerTab = addTab(layout, createTab({ panelType: IDE_PANEL.EXPLORER, title: 'Explorer' }));
-  const gitTab = addTab(layout, createTab({ panelType: IDE_PANEL.GIT, title: 'Source Control' }));
-  const editorTab = addTab(layout, createTab({ panelType: IDE_PANEL.EDITOR, title: 'Editor' }));
-  const chatTab = addTab(layout, createTab({ panelType: IDE_PANEL.CHAT, title: 'AI Chat' }));
+  const explorerTab = addTab(
+    layout,
+    createTab({ panelType: IDE_PANEL.EXPLORER, title: "Explorer" }),
+  );
+  const gitTab = addTab(
+    layout,
+    createTab({ panelType: IDE_PANEL.GIT, title: "Source Control" }),
+  );
+  const editorTab = addTab(
+    layout,
+    createTab({
+      panelType: IDE_PANEL.EDITOR,
+      title: "Editor",
+      closable: false,
+    }),
+  );
+  const chatTab = addTab(
+    layout,
+    createTab({ panelType: IDE_PANEL.CHAT, title: "AI Chat" }),
+  );
 
-  const sidebarGroup = addNode(layout, createTabGroupNode({
-    tabs: [explorerTab.id, gitTab.id],
-    activeTabId: explorerTab.id,
-  }));
+  const sidebarGroup = addNode(
+    layout,
+    createTabGroupNode({
+      tabs: [explorerTab.id, gitTab.id],
+      activeTabId: explorerTab.id,
+    }),
+  );
 
-  const editorGroup = addNode(layout, createTabGroupNode({
-    tabs: [editorTab.id],
-    activeTabId: editorTab.id,
-  }));
+  const editorGroup = addNode(
+    layout,
+    createTabGroupNode({
+      tabs: [editorTab.id],
+      activeTabId: editorTab.id,
+    }),
+  );
 
-  const secondaryGroup = addNode(layout, createTabGroupNode({
-    tabs: [chatTab.id],
-    activeTabId: chatTab.id,
-  }));
+  const secondaryGroup = addNode(
+    layout,
+    createTabGroupNode({
+      tabs: [chatTab.id],
+      activeTabId: chatTab.id,
+    }),
+  );
 
-  const root = addNode(layout, createSplitNode({
-    direction: 'row',
-    children: [sidebarGroup.id, editorGroup.id, secondaryGroup.id],
-    sizes: normalizeSizes([0.18, 0.52, 0.30]),
-  }));
+  const root = addNode(
+    layout,
+    createSplitNode({
+      direction: "row",
+      children: [sidebarGroup.id, editorGroup.id, secondaryGroup.id],
+      sizes: normalizeSizes([0.18, 0.52, 0.3]),
+    }),
+  );
   sidebarGroup.parentId = root.id;
   editorGroup.parentId = root.id;
   secondaryGroup.parentId = root.id;
@@ -335,38 +488,38 @@ export function createThreeColumnLayout() {
 /** @type {LayoutPreset[]} */
 export const LAYOUT_PRESETS = [
   {
-    id: 'classic',
-    name: 'Classic IDE',
-    description: 'Sidebar + Editor + Bottom Panel',
-    icon: 'layout',
+    id: "classic",
+    name: "Classic IDE",
+    description: "Sidebar + Editor + Bottom Panel",
+    icon: "layout",
     create: createClassicLayout,
   },
   {
-    id: 'focus',
-    name: 'Focus Mode',
-    description: 'Full-screen editor, no distractions',
-    icon: 'maximize',
+    id: "focus",
+    name: "Focus Mode",
+    description: "Full-screen editor, no distractions",
+    icon: "maximize",
     create: createFocusLayout,
   },
   {
-    id: 'side-by-side',
-    name: 'Side-by-Side Editors',
-    description: 'Two editors with sidebar & terminal',
-    icon: 'columns',
+    id: "side-by-side",
+    name: "Side-by-Side Editors",
+    description: "Two editors with sidebar & terminal",
+    icon: "columns",
     create: createSideBySideLayout,
   },
   {
-    id: 'ai-assisted',
-    name: 'AI-Assisted',
-    description: 'Editor + AI Chat with bottom panel',
-    icon: 'sparkles',
+    id: "ai-assisted",
+    name: "AI-Assisted",
+    description: "Editor + AI Chat with bottom panel",
+    icon: "sparkles",
     create: createAIAssistedLayout,
   },
   {
-    id: 'three-column',
-    name: 'Three Column',
-    description: 'Sidebar + Editor + Secondary panel',
-    icon: 'layout-grid',
+    id: "three-column",
+    name: "Three Column",
+    description: "Sidebar + Editor + Secondary panel",
+    icon: "layout-grid",
     create: createThreeColumnLayout,
   },
 ];
@@ -377,7 +530,7 @@ export const LAYOUT_PRESETS = [
  * @returns {LayoutPreset | undefined}
  */
 export function getPreset(id) {
-  return LAYOUT_PRESETS.find(p => p.id === id);
+  return LAYOUT_PRESETS.find((p) => p.id === id);
 }
 
 /**
