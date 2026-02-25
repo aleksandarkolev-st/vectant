@@ -2268,6 +2268,14 @@ const EditorPanel = ({
             // and the collab binding observer.
             revertLockRef.current = true;
 
+            // 0. Snapshot current model content BEFORE teardown so we can
+            //    immediately restore it after the Yjs binding is destroyed.
+            //    This prevents the visible blank flash while selectFileThunk
+            //    fetches fresh content from the server.
+            const preRevertSnapshot = (() => {
+                try { return editorInstance?.getModel?.()?.getValue?.() ?? null; } catch (_) { return null; }
+            })();
+
             // 1. Cancel any pending Redux sync timer (prevent stale content from being dispatched)
             if (reduxSyncTimerRef.current) {
                 clearTimeout(reduxSyncTimerRef.current);
@@ -2301,6 +2309,23 @@ const EditorPanel = ({
             //    the destroy already ran synchronously in the notification
             //    handler before this DOM event was dispatched.
             await new Promise(r => queueMicrotask(r));
+
+            // 4b. Immediately restore the pre-revert snapshot so the editor
+            //     never shows a blank while selectFileThunk loads fresh content.
+            //     This keeps the old content visible as a placeholder rather
+            //     than an empty whitespace flash.
+            if (preRevertSnapshot !== null) {
+                try {
+                    const modelNow = editorInstance?.getModel?.();
+                    if (modelNow) {
+                        modelNow.pushEditOperations([], [{
+                            range: modelNow.getFullModelRange(),
+                            text: preRevertSnapshot,
+                        }], () => null);
+                        latestCodeRef.current = preRevertSnapshot;
+                    }
+                } catch (_) {}
+            }
 
             // 5. Re-select the file — this fetches clean content from the
             //    server and updates Redux (savedContent, currentContent).
