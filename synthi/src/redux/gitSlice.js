@@ -2,6 +2,17 @@ import { createSlice, createAsyncThunk } from '@reduxjs/toolkit';
 import { gitClient } from '@/services/gitClient';
 import collabClient from '@/services/collabClient';
 
+/**
+ * Read the global GitHub token from localStorage.
+ * Falls back to the per-workspace PR token if no global token is set.
+ */
+function getGitToken(slug) {
+    if (typeof window === 'undefined') return null;
+    return localStorage.getItem('synthi:global-github-token')
+        || localStorage.getItem(`synthi:github-token:${slug}`)
+        || null;
+}
+
 // Track a queued re-fetch so that when a fetchGitStatus is in-flight and
 // another request arrives, we automatically re-fetch once the current one
 // finishes rather than silently dropping the request.
@@ -70,7 +81,8 @@ export const syncFileToGit = createAsyncThunk(
 export const fetchRemote = createAsyncThunk(
     'git/fetchRemote',
     async (slug, { dispatch }) => {
-        await gitClient.fetch(slug);
+        const token = getGitToken(slug);
+        await gitClient.fetch(slug, token);
         dispatch(fetchGitStatus(slug));
     }
 );
@@ -123,6 +135,14 @@ export const removeRemote = createAsyncThunk(
     }
 );
 
+export const setRemoteUrl = createAsyncThunk(
+    'git/setRemoteUrl',
+    async ({ slug, name, url }, { dispatch }) => {
+        await gitClient.setRemoteUrl(slug, name, url);
+        dispatch(fetchRemotes(slug));
+    }
+);
+
 export const fetchRemotes = createAsyncThunk(
     'git/fetchRemotes',
     async (slug) => {
@@ -150,6 +170,33 @@ export const commitChanges = createAsyncThunk(
     }
 );
 
+export const cherryPickCommit = createAsyncThunk(
+    'git/cherryPick',
+    async ({ slug, hash }, { dispatch }) => {
+        await gitClient.cherryPick(slug, hash);
+        dispatch(fetchGitStatus(slug));
+        dispatch(fetchCommitHistory({ slug }));
+        dispatch(fetchUnpushedCommits({ slug, max: 50 }));
+    }
+);
+
+export const revertCommit = createAsyncThunk(
+    'git/revert',
+    async ({ slug, hash }, { dispatch }) => {
+        await gitClient.revertCommit(slug, hash);
+        dispatch(fetchGitStatus(slug));
+        dispatch(fetchCommitHistory({ slug }));
+        dispatch(fetchUnpushedCommits({ slug, max: 50 }));
+    }
+);
+
+export const fetchCommitDetail = createAsyncThunk(
+    'git/fetchCommitDetail',
+    async ({ slug, hash }) => {
+        return await gitClient.getCommitDetail(slug, hash);
+    }
+);
+
 export const stageFile = createAsyncThunk(
     'git/stage',
     async ({ slug, filePath }, { dispatch }) => {
@@ -163,6 +210,21 @@ export const stageAll = createAsyncThunk(
     async (slug, { dispatch }) => {
         await gitClient.stageAll(slug);
         dispatch(forceRefreshGitStatus(slug));
+    }
+);
+
+export const stageLines = createAsyncThunk(
+    'git/stageLines',
+    async ({ slug, filePath, patch }, { dispatch }) => {
+        await gitClient.stageLines(slug, filePath, patch);
+        dispatch(forceRefreshGitStatus(slug));
+    }
+);
+
+export const fetchFileDiff = createAsyncThunk(
+    'git/fetchFileDiff',
+    async ({ slug, filePath }) => {
+        return await gitClient.getDiff(slug, filePath, true);
     }
 );
 
@@ -185,7 +247,8 @@ export const unstageAll = createAsyncThunk(
 export const pushChanges = createAsyncThunk(
     'git/push',
     async (slug, { dispatch }) => {
-        await gitClient.push(slug);
+        const token = getGitToken(slug);
+        await gitClient.push(slug, token);
         dispatch(fetchGitStatus(slug));
         dispatch(fetchUnpushedCommits({ slug, max: 50 }));
         dispatch(fetchCommitHistory({ slug }));
@@ -197,7 +260,8 @@ export const pullChanges = createAsyncThunk(
     'git/pull',
     async (slug, { dispatch, rejectWithValue }) => {
         try {
-            const result = await gitClient.pull(slug);
+            const token = getGitToken(slug);
+            const result = await gitClient.pull(slug, token);
             dispatch(fetchGitStatus(slug));
             dispatch(fetchUnpushedCommits({ slug, max: 50 }));
             dispatch(fetchCommitHistory({ slug }));
@@ -403,6 +467,9 @@ const gitSlice = createSlice({
         // When set, the main editor area renders MergeConflictEditor
         // instead of the standard Monaco editor.
         conflictResolverFile: null,
+        // Commit detail for the expanded commit in history
+        commitDetail: null,
+        commitDetailLoading: false,
     },
     reducers: {
         clearError: (state) => {
@@ -505,6 +572,21 @@ const gitSlice = createSlice({
             .addCase(addRemote.pending, (state) => { state.loading = true; state.actionError = null; state.actionErrorCode = null; })
             .addCase(addRemote.fulfilled, (state) => { state.loading = false; })
             .addCase(addRemote.rejected, (state, action) => { state.loading = false; state.actionError = action.error.message; state.actionErrorCode = action.error.code || null; })
+            .addCase(setRemoteUrl.pending, (state) => { state.loading = true; state.actionError = null; state.actionErrorCode = null; })
+            .addCase(setRemoteUrl.fulfilled, (state) => { state.loading = false; })
+            .addCase(setRemoteUrl.rejected, (state, action) => { state.loading = false; state.actionError = action.error.message; state.actionErrorCode = action.error.code || null; })
+            .addCase(stageLines.pending, (state) => { state.loading = true; state.actionError = null; state.actionErrorCode = null; })
+            .addCase(stageLines.fulfilled, (state) => { state.loading = false; })
+            .addCase(stageLines.rejected, (state, action) => { state.loading = false; state.actionError = action.error.message; state.actionErrorCode = action.error.code || null; })
+            .addCase(cherryPickCommit.pending, (state) => { state.loading = true; state.actionError = null; state.actionErrorCode = null; })
+            .addCase(cherryPickCommit.fulfilled, (state) => { state.loading = false; })
+            .addCase(cherryPickCommit.rejected, (state, action) => { state.loading = false; state.actionError = action.error.message; state.actionErrorCode = action.error.code || null; })
+            .addCase(revertCommit.pending, (state) => { state.loading = true; state.actionError = null; state.actionErrorCode = null; })
+            .addCase(revertCommit.fulfilled, (state) => { state.loading = false; })
+            .addCase(revertCommit.rejected, (state, action) => { state.loading = false; state.actionError = action.error.message; state.actionErrorCode = action.error.code || null; })
+            .addCase(fetchCommitDetail.pending, (state) => { state.commitDetailLoading = true; })
+            .addCase(fetchCommitDetail.fulfilled, (state, action) => { state.commitDetailLoading = false; state.commitDetail = action.payload; })
+            .addCase(fetchCommitDetail.rejected, (state) => { state.commitDetailLoading = false; state.commitDetail = null; })
             .addCase(pushChanges.pending, (state) => { state.loading = true; state.actionError = null; state.actionErrorCode = null; })
             .addCase(pushChanges.fulfilled, (state) => { state.loading = false; })
             .addCase(pushChanges.rejected, (state, action) => { state.loading = false; state.actionError = action.error.message; state.actionErrorCode = action.error.code || null; })
