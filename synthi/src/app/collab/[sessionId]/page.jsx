@@ -2,9 +2,9 @@
 
 import React, { useEffect, useState, Suspense } from 'react';
 import { useSearchParams } from 'next/navigation';
+import { useSession } from 'next-auth/react';
 import collabSessionService from '@/services/collabSessionService';
 import { Users, Loader2, AlertTriangle, CheckCircle2, XCircle } from 'lucide-react';
-import { getCurrentUser } from '@/services/userIdentity';
 
 /**
  * /collab/[sessionId] — Guest invite landing page.
@@ -22,11 +22,21 @@ function CollabJoinContent({ params }) {
   const token = searchParams.get('token');
   const sessionId = params?.sessionId;
 
+  const { data: authSession, status: authStatus } = useSession();
   const [state, setState] = useState('validating'); // validating | valid | knocking | admitted | denied | error
   const [sessionInfo, setSessionInfo] = useState(null);
   const [guestName, setGuestName] = useState('');
   const [errorMsg, setErrorMsg] = useState('');
   const [isAuthenticated, setIsAuthenticated] = useState(false);
+
+  // Sync auth state from next-auth session
+  useEffect(() => {
+    if (authStatus === 'loading') return;
+    if (authSession?.user) {
+      setIsAuthenticated(true);
+      setGuestName(authSession.user.name || authSession.user.email?.split('@')[0] || '');
+    }
+  }, [authSession, authStatus]);
 
   // Validate token on mount
   useEffect(() => {
@@ -34,12 +44,6 @@ function CollabJoinContent({ params }) {
       setState('error');
       setErrorMsg('Missing invite token. Please check the link.');
       return;
-    }
-
-    const user = getCurrentUser();
-    if (user && user.id !== 'guest') {
-      setIsAuthenticated(true);
-      setGuestName(user.name);
     }
 
     collabSessionService.validateToken(token).then((info) => {
@@ -84,10 +88,9 @@ function CollabJoinContent({ params }) {
       let avatarUrl = '';
 
       if (isAuthenticated) {
-        const user = getCurrentUser();
-        guestId = user.id;
-        displayName = user.name;
-        avatarUrl = user.avatar;
+        guestId = authSession.user.id || authSession.user.email;
+        displayName = authSession.user.name || authSession.user.email?.split('@')[0];
+        avatarUrl = authSession.user.image || '';
       } else {
         // Generate a simple guest id
         guestId = `guest-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
