@@ -2559,6 +2559,9 @@ const server = http.createServer(async (req, res) => {
                 case 'remove-remote':
                     result = await gitService.removeRemote(slug, data.name, effectiveUserId);
                     break;
+                case 'set-remote-url':
+                    result = await gitService.setRemoteUrl(slug, data.name, data.url, effectiveUserId);
+                    break;
                 case 'remotes':
                     result = await gitService.getRemotes(slug, effectiveUserId);
                     break;
@@ -2650,7 +2653,7 @@ const server = http.createServer(async (req, res) => {
                     broadcastFileTreeChanged(slug, notifyScope);
                     break;
                 case 'fetch':
-                    result = await gitService.fetch(slug, effectiveUserId);
+                    result = await gitService.fetch(slug, effectiveUserId, data.token);
                     break;
                 case 'commit':
                     result = await gitService.commit(slug, data.message, effectiveUserId);
@@ -2677,11 +2680,11 @@ const server = http.createServer(async (req, res) => {
                     broadcastGitStatusChanged(slug, undefined, notifyScope, { immediate: true });
                     break;
                 case 'push':
-                    result = await gitService.push(slug, effectiveUserId);
+                    result = await gitService.push(slug, effectiveUserId, data.token);
                     broadcastGitStatusChanged(slug, undefined, notifyScope, { immediate: true });
                     break;
                 case 'pull':
-                    result = await gitService.pull(slug, effectiveUserId);
+                    result = await gitService.pull(slug, effectiveUserId, data.token);
                     // Broadcast BEFORE invalidation so clients destroy stale
                     // Yjs docs before WS close triggers provider reconnect.
                     broadcastFileReverted(slug, [], notifyScope);
@@ -2778,6 +2781,21 @@ const server = http.createServer(async (req, res) => {
                     break;
                 case 'stash-drop':
                     result = await gitService.stashDrop(slug, data.index, effectiveUserId);
+                    break;
+                case 'cherry-pick':
+                    result = await gitService.cherryPick(slug, data.hash, effectiveUserId);
+                    broadcastFileReverted(slug, [], notifyScope);
+                    await invalidateDocsForSlug(slug, null, notifyScope);
+                    broadcastFileTreeChanged(slug, notifyScope);
+                    break;
+                case 'revert':
+                    result = await gitService.revertCommit(slug, data.hash, effectiveUserId);
+                    broadcastFileReverted(slug, [], notifyScope);
+                    await invalidateDocsForSlug(slug, null, notifyScope);
+                    broadcastFileTreeChanged(slug, notifyScope);
+                    break;
+                case 'commit-detail':
+                    result = await gitService.getCommitDetail(slug, data.hash, effectiveUserId);
                     break;
                 case 'sync':
                     // Sync a single file — explicit save action from the client.
