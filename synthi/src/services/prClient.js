@@ -12,9 +12,19 @@ const GITHUB_API = 'https://api.github.com';
 
 // ── Token helpers ─────────────────────────────────────────────────────────────
 
+const GLOBAL_TOKEN_KEY = 'synthi:global-github-token';
+
 export function getStoredToken(slug) {
   if (typeof window === 'undefined') return null;
-  return localStorage.getItem(`synthi:github-token:${slug}`) || null;
+  // Per-workspace token takes priority, then fall back to global token
+  return localStorage.getItem(`synthi:github-token:${slug}`)
+    || localStorage.getItem(GLOBAL_TOKEN_KEY)
+    || null;
+}
+
+export function getGlobalToken() {
+  if (typeof window === 'undefined') return null;
+  return localStorage.getItem(GLOBAL_TOKEN_KEY) || null;
 }
 
 export function storeToken(slug, token) {
@@ -77,9 +87,33 @@ async function ghFetch(path, { method = 'GET', body, token, accept } = {}) {
     } else if (res.status === 404) {
       message = `Not found (404): ${json?.message || 'The resource may not exist or your token lacks access.'}`;
     } else if (res.status === 422) {
-      message = json?.errors?.length
-        ? `Validation error: ${json.errors.map(e => e.message || e.field).join(', ')}`
-        : (json?.message || 'Validation error — check your input.');
+      if (json?.errors?.length) {
+        // Build descriptive per-field messages from GitHub's error response
+        const details = json.errors.map(e => {
+          const field = e.field || e.resource || 'unknown field';
+          const code = e.code || '';
+          if (e.message) return e.message;
+          if (code === 'missing_field') return `"${field}" is required but was not provided`;
+          if (code === 'invalid') return `"${field}" has an invalid value`;
+          if (code === 'missing') return `"${field}" does not exist`;
+          if (code === 'already_exists') return `"${field}" already exists — a duplicate was detected`;
+          if (code === 'custom') return e.message || `Validation failed for "${field}"`;
+          return `${field}: ${code || 'validation failed'}`;
+        });
+        message = `Validation failed:\n• ${details.join('\n• ')}`;
+      } else {
+        // Provide context-aware fallback messages based on the API path
+        const pathHint = path.toLowerCase();
+        if (pathHint.includes('/reviews')) {
+          message = json?.message || 'Review submission failed — ensure you have a non-empty body for comment-only reviews and that the PR is open.';
+        } else if (pathHint.includes('/pulls') && method === 'POST') {
+          message = json?.message || 'PR creation failed — verify that head/base branches exist and are different, and that a PR for this branch pair does not already exist.';
+        } else if (pathHint.includes('/merge')) {
+          message = json?.message || 'Merge failed — the PR may have merge conflicts, failing status checks, or require additional approvals.';
+        } else {
+          message = json?.message || 'Validation error — check your input and try again.';
+        }
+      }
     } else {
       message = json?.message || json?.error || res.statusText || `HTTP ${res.status}`;
     }

@@ -82,7 +82,12 @@ export const createPR = createAsyncThunk(
   'pr/create',
   async ({ owner, repo, slug, ...prData }, { rejectWithValue }) => {
     const token = getStoredToken(slug);
-    if (!token) return rejectWithValue({ error: 'no_token' });
+    if (!token) return rejectWithValue({ error: 'no_token', message: 'No GitHub token configured.' });
+    // Client-side validation
+    if (!prData.title?.trim()) return rejectWithValue({ error: 'PR title is required.' });
+    if (!prData.head) return rejectWithValue({ error: 'Source branch (head) is required.' });
+    if (!prData.base) return rejectWithValue({ error: 'Target branch (base) is required.' });
+    if (prData.head === prData.base) return rejectWithValue({ error: 'Source and target branches must be different.' });
     try {
       return await prClient.createPR(owner, repo, prData, token);
     } catch (e) {
@@ -148,7 +153,17 @@ export const submitReview = createAsyncThunk(
   'pr/review',
   async ({ owner, repo, prNumber, slug, event, body, comments }, { rejectWithValue }) => {
     const token = getStoredToken(slug);
-    if (!token) return rejectWithValue({ error: 'no_token' });
+    if (!token) return rejectWithValue({ error: 'no_token', message: 'No GitHub token configured. Add your Personal Access Token first.' });
+    // Client-side validation with descriptive messages
+    if (event === 'COMMENT' && !body?.trim()) {
+      return rejectWithValue({ error: 'Review body is required when submitting a comment-only review. Write a comment or choose Approve / Request Changes instead.' });
+    }
+    if (event === 'REQUEST_CHANGES' && !body?.trim()) {
+      return rejectWithValue({ error: 'A description is required when requesting changes. Explain what needs to be fixed.' });
+    }
+    if (!['APPROVE', 'REQUEST_CHANGES', 'COMMENT'].includes(event)) {
+      return rejectWithValue({ error: `Invalid review event "${event}". Must be APPROVE, REQUEST_CHANGES, or COMMENT.` });
+    }
     try {
       return await prClient.createReview(owner, repo, prNumber, { event, body, comments }, token);
     } catch (e) {
