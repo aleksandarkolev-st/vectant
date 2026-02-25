@@ -354,6 +354,25 @@ export default function EditorPage({ params }) {
         });
     }, []);
 
+    // ── Restore guest session after redirect from collab join page ──────
+    // When a guest is admitted and redirected to the host's workspace, the
+    // full-page navigation resets collabSessionService to idle.  We persist
+    // the session info in sessionStorage before navigating and restore it
+    // here (after the onChange listener is registered so the state update
+    // propagates correctly via the change event).
+    useEffect(() => {
+        try {
+            const raw = sessionStorage.getItem('synthi-pending-guest-session');
+            if (!raw) return;
+            sessionStorage.removeItem('synthi-pending-guest-session');
+            const { sessionId: sId, guestId, hostId, slug: sessionSlug } = JSON.parse(raw);
+            if (sId && guestId) {
+                collabSessionService.joinAsGuest(sId, guestId, hostId || '', sessionSlug || slug);
+            }
+        } catch (_) {}
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
+
     useEffect(() => {
         if (slug) {
             const init = async () => {

@@ -63,11 +63,24 @@ function CollabJoinContent({ params }) {
   // Listen for admit/deny events
   useEffect(() => {
     const unsubs = [
-      collabSessionService.on('session:joined', () => {
+      collabSessionService.on('session:joined', (detail) => {
         setState('admitted');
-        // Redirect to workspace after short delay
+        // Persist session info so it survives the full-page navigation
+        const hostSlug = detail?.slug || sessionInfo?.slug || '';
+        const resolvedSessionId = collabSessionService.sessionId || sessionId;
+        const resolvedGuestId = detail?.guestId || collabSessionService._userId || '';
+        const resolvedHostId = detail?.hostId || collabSessionService._hostId || '';
+        try {
+          sessionStorage.setItem('synthi-pending-guest-session', JSON.stringify({
+            sessionId: resolvedSessionId,
+            guestId: resolvedGuestId,
+            hostId: resolvedHostId,
+            slug: hostSlug,
+          }));
+        } catch (_) {}
+        // Redirect to the host's workspace after short delay
         setTimeout(() => {
-          window.location.href = `/workspace/${sessionInfo?.slug || ''}`;
+          window.location.href = `/workspace/${hostSlug}`;
         }, 1500);
       }),
       collabSessionService.on('knock:denied', () => {
@@ -75,7 +88,7 @@ function CollabJoinContent({ params }) {
       }),
     ];
     return () => unsubs.forEach(fn => fn());
-  }, [sessionInfo]);
+  }, [sessionInfo, sessionId]);
 
   // Handle knock
   const handleJoin = async () => {
