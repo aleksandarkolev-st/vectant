@@ -47,50 +47,10 @@ pub fn capture_frame(
     last_frame_log: &mut Instant,
 ) {
     // Pixel Pump: Read from Xvfb via XShm
-    // We need to capture from the plugin's window, not root.
-    // Root window captures don't include child windows unless a compositor is running.
-    // Query the window tree to find the plugin's window (child of root).
-    let target_window = if let Ok(tree_reply) = x11_conn.query_tree(x11_root) {
-        if let Ok(reply) = tree_reply.reply() {
-            // Find a mapped child window that's not the SDL window
-            // The plugin's window should be the most recently mapped non-SDL window
-            let mut found_window = None;
-
-            // Log window count periodically
-            if last_frame_log.elapsed() > Duration::from_secs(4) {
-                eprintln!(
-                    "[Runner] query_tree found {} children of root",
-                    reply.children.len()
-                );
-            }
-
-            for &child in reply.children.iter().rev() {
-                // Check if window is mapped (viewable)
-                if let Ok(attrs) = x11_conn.get_window_attributes(child) {
-                    if let Ok(attr_reply) = attrs.reply() {
-                        if attr_reply.map_state == MapState::VIEWABLE {
-                            found_window = Some(child);
-                            break;
-                        }
-                    }
-                }
-            }
-            if last_frame_log.elapsed() > Duration::from_secs(4) {
-                eprintln!("[Runner] Found viewable window: {:?}", found_window);
-            }
-            found_window.unwrap_or(x11_root)
-        } else {
-            if last_frame_log.elapsed() > Duration::from_secs(4) {
-                eprintln!("[Runner] query_tree reply failed");
-            }
-            x11_root
-        }
-    } else {
-        if last_frame_log.elapsed() > Duration::from_secs(4) {
-            eprintln!("[Runner] query_tree failed");
-        }
-        x11_root
-    };
+    // We capture from the root window directly. In Xvfb, the X server automatically
+    // composites all visible windows (including popups, tooltips, and menus) onto
+    // the root window's framebuffer from bottom to top.
+    let target_window = x11_root;
 
     // The output must always be 800x600 to match the GStreamer pipeline caps
     const OUTPUT_W: u16 = 800;
@@ -100,9 +60,6 @@ pub fn capture_frame(
     let (win_w, win_h): (u16, u16) = if target_window != x11_root {
         if let Ok(geom) = x11_conn.get_geometry(target_window) {
             if let Ok(g) = geom.reply() {
-                if last_frame_log.elapsed() > Duration::from_secs(4) {
-                    eprintln!("[Runner] Target window geometry: {}x{}", g.width, g.height);
-                }
                 (g.width, g.height)
             } else {
                 (OUTPUT_W, OUTPUT_H)

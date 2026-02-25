@@ -283,16 +283,24 @@ const REPOS_DIR = path.resolve(__dirname, 'repos');
  * Set the WORKSPACE_ROOT env var to override the base path (useful for
  * Docker / K8s where the volume mount differs from the local layout).
  */
-function resolveWorkspaceCwd(slug) {
+function resolveWorkspaceCwd(slug, userId) {
   const baseDir = process.env.WORKSPACE_ROOT || REPOS_DIR;
 
   if (slug) {
+    // 1. Try per-user directory: repos/<slug>/<userId>  (matches gitService layout)
+    if (userId) {
+      const perUserDir = path.join(baseDir, slug, userId);
+      try {
+        if (fs.existsSync(perUserDir)) return perUserDir;
+      } catch (_) { /* ignore */ }
+    }
+    // 2. Fall back to workspace root: repos/<slug>
     const wsDir = path.join(baseDir, slug);
     try {
       if (fs.existsSync(wsDir)) return wsDir;
     } catch (_) { /* ignore */ }
   }
-  // Fallback: base directory itself, then $HOME
+  // 3. Fallback: base directory itself, then $HOME
   try {
     if (fs.existsSync(baseDir)) return baseDir;
   } catch (_) { /* ignore */ }
@@ -344,8 +352,8 @@ function sanitizeResize(cols, rows) {
  * @param {number} rows      - Terminal rows (default 30)
  * @returns {{ ptyProcess, shell, cwd, sessionId }}
  */
-function createHeadlessSession(sessionId, slug, cols = 120, rows = 30) {
-  const cwd = resolveWorkspaceCwd(slug);
+function createHeadlessSession(sessionId, slug, userId, cols = 120, rows = 30) {
+  const cwd = resolveWorkspaceCwd(slug, userId);
   const { ptyProcess, shell } = createPtyProcess({ cwd, cols, rows });
 
   // Buffer output so we can replay it when the frontend connects
@@ -391,6 +399,7 @@ function createTerminalWSS() {
 
     const requestedSessionId = parsedUrl.searchParams.get('sessionId');
     const workspaceSlug = parsedUrl.searchParams.get('workspace') || '';
+    const requestedUserId = parsedUrl.searchParams.get('userId') || '';
     const initialCols = parseInt(parsedUrl.searchParams.get('cols'), 10) || 80;
     const initialRows = parseInt(parsedUrl.searchParams.get('rows'), 10) || 24;
 
@@ -499,9 +508,10 @@ function createTerminalWSS() {
 
     // ── Generate session ID ─────────────────────────────────────────────
     const sessionId = requestedSessionId || crypto.randomUUID();
-    const cwd = resolveWorkspaceCwd(workspaceSlug);
+    const cwd = resolveWorkspaceCwd(workspaceSlug, requestedUserId);
 
-    console.log(`[Terminal] New session ${sessionId} | workspace=${workspaceSlug} | cwd=${cwd}`);
+    console.log(`[Terminal] New session ${sessionId} | workspace=${workspaceSlug} | userId=${requestedUserId} | cwd=${cwd}`);
+
 
     // ── Spawn PTY ───────────────────────────────────────────────────────
     let ptyProcess, shell;

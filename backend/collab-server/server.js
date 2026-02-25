@@ -1356,7 +1356,7 @@ const server = http.createServer(async (req, res) => {
       const sessionId = `ai-${crypto.randomUUID().slice(0, 8)}`;
 
       // Create a real PTY with a known session ID
-      const { ptyProcess, cwd } = createHeadlessSession(sessionId, slug);
+      const { ptyProcess, cwd } = createHeadlessSession(sessionId, slug, parsed.userId || '');
 
       console.log(`[ExecTerminal] slug=${slug} cwd=${cwd} sessionId=${sessionId} cmd=${command.slice(0, 120)}`);
 
@@ -3192,6 +3192,44 @@ sessionWss.on('connection', (ws, req) => {
   ws.on('close', () => {
     console.log(`[Collab] Session WS disconnected — session=${ws._sessionId}, userId=${ws._userId}`);
   });
+});
+
+// ── Wire SessionManager events to WebSocket delivery ─────────────────────
+// SessionManager is an EventEmitter; these listeners bridge in-process events
+// to the connected WebSocket clients (host + guests).
+
+sessionManager.on('session:knock', ({ sessionId, hostId, guestId, displayName, avatarUrl }) => {
+  sendToSessionHost(sessionId, 'knock', { guestId, displayName, avatarUrl, hostId });
+});
+
+sessionManager.on('session:guestJoined', ({ sessionId, hostId, guest, autoAdmitted }) => {
+  const session = sessionManager.getSession(sessionId);
+  broadcastSessionEvent(sessionId, 'guest:joined', {
+    guest,
+    hostId,
+    slug: session?.slug,
+    autoAdmitted: autoAdmitted || false,
+  });
+});
+
+sessionManager.on('session:knockDenied', ({ sessionId, guestId }) => {
+  sendToSessionUser(sessionId, guestId, 'knock:denied', { guestId });
+});
+
+sessionManager.on('session:permissionsUpdated', ({ sessionId, guestId, permissions }) => {
+  broadcastSessionEvent(sessionId, 'permissions:updated', { guestId, permissions });
+});
+
+sessionManager.on('session:guestRemoved', ({ sessionId, guestId, reason }) => {
+  broadcastSessionEvent(sessionId, 'guest:removed', { guestId, reason });
+});
+
+sessionManager.on('session:terminated', ({ sessionId }) => {
+  broadcastSessionEvent(sessionId, 'session:terminated', {});
+});
+
+sessionManager.on('session:knockCancelled', ({ sessionId, guestId }) => {
+  sendToSessionHost(sessionId, 'knock:cancelled', { guestId });
 });
 
 server.listen(PORT, '0.0.0.0', () => {

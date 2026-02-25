@@ -199,6 +199,34 @@ class CollabSessionService extends EventTarget {
     this._emit('knock:sent', { sessionId });
   }
 
+  /**
+   * Restore guest state after a page navigation.
+   * Called on workspace mount when ?sessionId=&guestId=&hostId= URL params
+   * are present, which means the user was just redirected here from the
+   * collab join page after being admitted.
+   *
+   * @param {string} sessionId
+   * @param {string} guestId
+   * @param {string} hostId
+   * @param {string} slug  — the host's workspace slug
+   */
+  joinAsGuest(sessionId, guestId, hostId, slug) {
+    if (this._role === 'guest' && this._sessionId === sessionId) return; // already set
+    this._role = 'guest';
+    this._sessionId = sessionId;
+    this._userId = guestId;
+    this._hostId = hostId;
+    this._sessionSlug = slug;
+    this._permissions = { canEdit: true, canTerminal: false, canGit: false, canFileOps: false };
+    this._session = {
+      id: sessionId,
+      hostId,
+      slug,
+    };
+    this._connectWs();
+    this._emit('session:joined', { guestId, hostId, slug });
+  }
+
   // ── Host: Manage guests ──────────────────────────────────────────────────
 
   /**

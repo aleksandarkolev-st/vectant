@@ -53,7 +53,10 @@ export const checkoutBranch = createAsyncThunk(
     'git/checkout',
     async ({ slug, branch, create }, { dispatch }) => {
         await gitClient.checkout(slug, branch, create);
+        // Refresh status AND unpushed so the UI immediately reflects the
+        // correct ahead/behind count for the newly active branch.
         dispatch(fetchGitStatus(slug));
+        dispatch(fetchUnpushedCommits({ slug, max: 50 }));
     }
 );
 

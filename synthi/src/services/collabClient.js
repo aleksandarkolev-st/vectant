@@ -1480,10 +1480,11 @@ class CollabClient {
               handlers.onCollabInvite(msg);
             }
           }
-          if (msg.type === 'session-knock') {
+          if (msg.type === 'session-knock' || msg.type === 'knock') {
             // Fallback knock delivery via notification WS (when host's
-            // session WS was not connected at knock time).  Forward
-            // to collabSessionService for processing.
+            // session WS was not connected at knock time).  Some server
+            // paths emit 'session-knock' while others emit plain 'knock';
+            // forward both to collabSessionService for consistent handling.
             const { default: collabSessionService } = await import('@/services/collabSessionService');
             collabSessionService._handleWsMessage(msg);
           }

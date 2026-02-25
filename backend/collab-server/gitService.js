@@ -1504,16 +1504,56 @@ class GitService {
             }
 
             if (!upstream) {
-                // No upstream configured - we cannot determine unpushed commits
-                return [];
+                // No upstream configured — this is a brand-new local branch that has
+                // never been pushed.  Show every commit on HEAD that isn't reachable
+                // from any remote ref.  If there are no remotes at all return empty.
+                try {
+                    const remotes = await git.getRemotes(false);
+                    if (!remotes || remotes.length === 0) return [];
+                    const logOutput = await git.raw([
+                        'log', 'HEAD',
+                        '--not', '--glob=refs/remotes/*',
+                        `--max-count=${Math.min(max, 200)}`,
+                        '--format=%H|%s|%an|%ae|%aI',
+                    ]);
+                    if (!logOutput || !logOutput.trim()) return [];
+                    return logOutput.trim().split('\n').filter(Boolean).map(line => {
+                        const [hash, message, author_name, author_email, date] = line.split('|');
+                        return { hash, message, author_name, author_email, date };
+                    });
+                } catch (noRemoteErr) {
+                    return [];
+                }
             }
 
-            // Check if upstream ref actually exists locally (was fetched)
+            // Check if upstream ref actually exists locally (was fetched).
+            // If the upstream ref is missing it could still be a freshly-created
+            // remote tracking branch that hasn't been fetched yet — treat the same
+            // as "no upstream": show commits not on any remote.
+            let upstreamExists = true;
             try {
                 await git.raw(['rev-parse', '--verify', upstream]);
             } catch (e) {
-                // Upstream ref doesn't exist locally (never fetched)
-                return [];
+                upstreamExists = false;
+            }
+
+            if (!upstreamExists) {
+                // Remote branch doesn't exist yet — new branch, never pushed.
+                try {
+                    const logOutput = await git.raw([
+                        'log', 'HEAD',
+                        '--not', '--glob=refs/remotes/*',
+                        `--max-count=${Math.min(max, 200)}`,
+                        '--format=%H|%s|%an|%ae|%aI',
+                    ]);
+                    if (!logOutput || !logOutput.trim()) return [];
+                    return logOutput.trim().split('\n').filter(Boolean).map(line => {
+                        const [hash, message, author_name, author_email, date] = line.split('|');
+                        return { hash, message, author_name, author_email, date };
+                    });
+                } catch (e) {
+                    return [];
+                }
             }
 
             // Use raw git log with proper two-dot notation: upstream..HEAD

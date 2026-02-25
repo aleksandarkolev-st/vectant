@@ -3,12 +3,12 @@
  * Handles the HTML5 Drag & Drop source side.
  */
 
-'use client';
+"use client";
 
-import { useCallback, useRef, useState } from 'react';
-import { useDispatch } from 'react-redux';
-import { setDragSource, floatTabAction } from '../state/layout-slice';
-import { DRAG_START_THRESHOLD } from '../types';
+import { useCallback, useRef, useState } from "react";
+import { useDispatch } from "react-redux";
+import { setDragSource, floatTabAction } from "../state/layout-slice";
+import { DRAG_START_THRESHOLD } from "../types";
 
 /**
  * @typedef {Object} DragPanelOptions
@@ -26,7 +26,14 @@ import { DRAG_START_THRESHOLD } from '../types';
  * @param {DragPanelOptions} options
  * @returns {{ dragProps: Object, isDragging: boolean }}
  */
-export function useDragPanel({ tabId, tabGroupId, tabIndex, onDragStart, onDragEnd }) {
+export function useDragPanel({
+  tabId,
+  tabGroupId,
+  tabIndex,
+  onDragStart,
+  onDragEnd,
+  disabled = false,
+}) {
   const dispatch = useDispatch();
   const [isDragging, setIsDragging] = useState(false);
   const startPos = useRef(null);
@@ -36,27 +43,31 @@ export function useDragPanel({ tabId, tabGroupId, tabIndex, onDragStart, onDragE
     (e) => {
       // Set drag data
       const payload = JSON.stringify({
-        type: 'tab',
+        type: "tab",
         tabId,
         sourceTabGroupId: tabGroupId,
         sourceTabIndex: tabIndex,
       });
 
-      e.dataTransfer.setData('application/synthi-dock', payload);
-      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData("application/synthi-dock", payload);
+      e.dataTransfer.effectAllowed = "move";
 
       // Set a translucent drag image
       if (e.target) {
         const rect = e.target.getBoundingClientRect();
         const ghostEl = e.target.cloneNode(true);
-        ghostEl.style.position = 'absolute';
-        ghostEl.style.top = '-9999px';
-        ghostEl.style.left = '-9999px';
-        ghostEl.style.opacity = '0.7';
+        ghostEl.style.position = "absolute";
+        ghostEl.style.top = "-9999px";
+        ghostEl.style.left = "-9999px";
+        ghostEl.style.opacity = "0.7";
         ghostEl.style.width = `${rect.width}px`;
-        ghostEl.style.pointerEvents = 'none';
+        ghostEl.style.pointerEvents = "none";
         document.body.appendChild(ghostEl);
-        e.dataTransfer.setDragImage(ghostEl, e.clientX - rect.left, e.clientY - rect.top);
+        e.dataTransfer.setDragImage(
+          ghostEl,
+          e.clientX - rect.left,
+          e.clientY - rect.top,
+        );
         // Clean up ghost after a tick
         requestAnimationFrame(() => {
           document.body.removeChild(ghostEl);
@@ -67,7 +78,7 @@ export function useDragPanel({ tabId, tabGroupId, tabIndex, onDragStart, onDragE
       dispatch(setDragSource({ tabId }));
       onDragStart?.(e);
     },
-    [tabId, tabGroupId, tabIndex, dispatch, onDragStart]
+    [tabId, tabGroupId, tabIndex, dispatch, onDragStart],
   );
 
   const handleDragEnd = useCallback(
@@ -77,7 +88,7 @@ export function useDragPanel({ tabId, tabGroupId, tabIndex, onDragStart, onDragE
 
       // If the drop didn't land on a valid target, float the tab
       // dropEffect is 'none' when the browser didn't process a drop event
-      if (e.dataTransfer.dropEffect === 'none' && tabId) {
+      if (e.dataTransfer.dropEffect === "none" && tabId) {
         // Use the mouse position as the floating window origin
         // screenX/screenY may be 0 at end; fallback to last known position
         const x = e.clientX > 0 ? e.clientX - 100 : 100;
@@ -89,21 +100,23 @@ export function useDragPanel({ tabId, tabGroupId, tabIndex, onDragStart, onDragE
             y: Math.max(0, y),
             width: 500,
             height: 400,
-          })
+          }),
         );
       }
 
       onDragEnd?.(e);
     },
-    [tabId, dispatch, onDragEnd]
+    [tabId, dispatch, onDragEnd],
   );
 
-  const dragProps = {
-    draggable: true,
-    onDragStart: handleDragStart,
-    onDragEnd: handleDragEnd,
-    'data-drag-tab-id': tabId,
-  };
+  const dragProps = disabled
+    ? { draggable: false, "data-drag-tab-id": tabId }
+    : {
+        draggable: true,
+        onDragStart: handleDragStart,
+        onDragEnd: handleDragEnd,
+        "data-drag-tab-id": tabId,
+      };
 
   return { dragProps, isDragging };
 }
@@ -115,7 +128,7 @@ export function useDragPanel({ tabId, tabGroupId, tabIndex, onDragStart, onDragE
  */
 export function parseDragPayload(e) {
   try {
-    const data = e.dataTransfer.getData('application/synthi-dock');
+    const data = e.dataTransfer.getData("application/synthi-dock");
     if (!data) return null;
     return JSON.parse(data);
   } catch {
