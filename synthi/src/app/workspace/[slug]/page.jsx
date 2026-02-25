@@ -1789,6 +1789,7 @@ export default function EditorPage({ params }) {
     }, [client, handleRun]);
 
     const handleSave = useCallback(async (latestCode) => {
+        console.log('[HMR] handleSave called with activeFile:', activeFile?.name);
         if (!activeFile) return;
 
         // If HMR is disabled, skip recompilation on save
@@ -1819,6 +1820,8 @@ export default function EditorPage({ params }) {
             console.log(`[HMR] Skipping silent compilation for unsupported extension: .${ext}`);
             return;
         }
+
+        console.log(`[HMR] Proceeding with compilation for ${filename}`);
 
         const getContentForDependency = async (path) => {
             if (path === activeFile.path) return typeof latestCode === 'string' ? latestCode : (typeof currentContent === 'string' ? currentContent : '');
@@ -2131,6 +2134,18 @@ export default function EditorPage({ params }) {
                                 connectionMeta,
                                 latestCompletion,
                                 completionClearSignal,
+                                onRun: handleRun,
+                                onSave: handleSave,
+                                onToggleTerminal: () => dispatch(toggleTerminal()),
+                                onEditorMount: handleEditorMount,
+                                analysisResult: lastResult,
+                                diagnostics: mergedDiagnostics,
+                                onAiDiagnosticsRecalibrated: handleAiDiagnosticsRecalibrated,
+                                removeDiagnosticByLocation,
+                                aiBusy,
+                                onClearCompletion: handleClearLatestCompletion,
+                                chatVisible,
+                                collabHostId,
                             },
                         }}
                     />
