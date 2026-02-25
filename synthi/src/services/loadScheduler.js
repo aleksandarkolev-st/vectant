@@ -187,8 +187,10 @@ export class LoadScheduler {
       fileCache.set(task.filePath, content);
       task.resolve(content);
     } catch (e) {
-      // Background tasks swallow cancellations to avoid unhandled rejections.
-      if (task.signal?.aborted && task.background) {
+      // Background (prefetch) tasks always resolve silently — their promises
+      // are never awaited by callers so rejecting would produce unhandled
+      // rejections (caught by GlobalErrorHandler → unwanted error toasts).
+      if (task.background) {
         task.resolve(undefined);
       } else {
         task.reject(e);

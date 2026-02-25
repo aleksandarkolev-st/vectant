@@ -2600,6 +2600,7 @@ const EditorPanel = ({
     }, [handleCodeChange]);
 
     const handleSave = useCallback(() => {
+        console.log('[Editor] handleSave triggered. activeFile:', activeFile?.name);
         // Ensure Redux has the absolute latest content before saving.
         // Since updateContent is now dispatched synchronously in handleCodeChange,
         // this is a safety net for edge cases (e.g. rapid save before React tick).
@@ -2643,7 +2644,8 @@ const EditorPanel = ({
             });
         }
         // Trigger HMR/Compilation on save
-        if (onSave) onSave();
+        console.log('[Editor] Calling onSave prop with latest code');
+        if (onSave) onSave(latestCodeRef.current ?? code);
     }, [activeFile, dispatch, onSave, compilerClient, code, slug]);
 
     // Auto-save mode: persist edits after a short idle period.
@@ -2701,7 +2703,13 @@ const EditorPanel = ({
                 e.preventDefault();
                 handleSave();
             }
-            // Escape: close diff view
+            // Run: Ctrl+Enter
+            if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+                e.preventDefault();
+                // Ensure Redux has the absolute latest content before running
+                dispatch(updateContent(latestCodeRef.current));
+                if (onRun) onRun({ latestCode: latestCodeRef.current ?? code });
+            }
             if (e.key === 'Escape' && diffMode) {
                 e.preventDefault();
                 dispatch(setDiffMode(false));
@@ -3869,7 +3877,9 @@ const EditorPanel = ({
                                     </div>
                                 </ContextMenuTrigger>
                                 <ContextMenuContent className="w-56" style={{ background: 'var(--bg-elevated)', borderColor: 'var(--border-medium)', color: 'var(--text-primary)' }}>
-                                    <ContextMenuItem onClick={onRun}>Run File</ContextMenuItem>
+                                    <ContextMenuItem onClick={() => {
+                                        if (onRun) onRun({ latestCode: latestCodeRef.current ?? code });
+                                    }}>Run File</ContextMenuItem>
                                     <ContextMenuItem onClick={() => editorInstance?.getAction('editor.action.formatDocument')?.run()}>
                                         Format Document
                                     </ContextMenuItem>

@@ -2,6 +2,7 @@
 
 import React, { useEffect, useState, Suspense } from 'react';
 import { useSearchParams } from 'next/navigation';
+import { useSession } from 'next-auth/react';
 import collabSessionService from '@/services/collabSessionService';
 import { Users, Loader2, AlertTriangle, CheckCircle2, XCircle } from 'lucide-react';
 
@@ -21,10 +22,21 @@ function CollabJoinContent({ params }) {
   const token = searchParams.get('token');
   const sessionId = params?.sessionId;
 
+  const { data: authSession, status: authStatus } = useSession();
   const [state, setState] = useState('validating'); // validating | valid | knocking | admitted | denied | error
   const [sessionInfo, setSessionInfo] = useState(null);
   const [guestName, setGuestName] = useState('');
   const [errorMsg, setErrorMsg] = useState('');
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+
+  // Sync auth state from next-auth session
+  useEffect(() => {
+    if (authStatus === 'loading') return;
+    if (authSession?.user) {
+      setIsAuthenticated(true);
+      setGuestName(authSession.user.name || authSession.user.email?.split('@')[0] || '');
+    }
+  }, [authSession, authStatus]);
 
   // Validate token on mount
   useEffect(() => {
@@ -51,11 +63,24 @@ function CollabJoinContent({ params }) {
   // Listen for admit/deny events
   useEffect(() => {
     const unsubs = [
-      collabSessionService.on('session:joined', () => {
+      collabSessionService.on('session:joined', (detail) => {
         setState('admitted');
-        // Redirect to workspace after short delay
+        // Persist session info so it survives the full-page navigation
+        const hostSlug = detail?.slug || sessionInfo?.slug || '';
+        const resolvedSessionId = collabSessionService.sessionId || sessionId;
+        const resolvedGuestId = detail?.guestId || collabSessionService._userId || '';
+        const resolvedHostId = detail?.hostId || collabSessionService._hostId || '';
+        try {
+          sessionStorage.setItem('synthi-pending-guest-session', JSON.stringify({
+            sessionId: resolvedSessionId,
+            guestId: resolvedGuestId,
+            hostId: resolvedHostId,
+            slug: hostSlug,
+          }));
+        } catch (_) {}
+        // Redirect to the host's workspace after short delay
         setTimeout(() => {
-          window.location.href = `/workspace/${sessionInfo?.slug || ''}`;
+          window.location.href = `/workspace/${hostSlug}`;
         }, 1500);
       }),
       collabSessionService.on('knock:denied', () => {
@@ -63,22 +88,34 @@ function CollabJoinContent({ params }) {
       }),
     ];
     return () => unsubs.forEach(fn => fn());
-  }, [sessionInfo]);
+  }, [sessionInfo, sessionId]);
 
   // Handle knock
   const handleJoin = async () => {
-    if (!guestName.trim()) return;
+    if (!guestName.trim() && !isAuthenticated) return;
     setState('knocking');
 
     try {
-      // Generate a simple guest id
-      const guestId = `guest-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-      localStorage.setItem('synthi-user-id', guestId);
-      localStorage.setItem('synthi-user-name', guestName.trim());
+      let guestId;
+      let displayName;
+      let avatarUrl = '';
+
+      if (isAuthenticated) {
+        guestId = authSession.user.id || authSession.user.email;
+        displayName = authSession.user.name || authSession.user.email?.split('@')[0];
+        avatarUrl = authSession.user.image || '';
+      } else {
+        // Generate a simple guest id
+        guestId = `guest-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        displayName = guestName.trim();
+        localStorage.setItem('synthi-user-id', guestId);
+        localStorage.setItem('synthi-user-name', displayName);
+      }
 
       await collabSessionService.knock(sessionInfo.sessionId, {
         guestId,
-        displayName: guestName.trim(),
+        displayName,
+        avatarUrl,
       });
     } catch (e) {
       setState('error');
@@ -137,12 +174,13 @@ function CollabJoinContent({ params }) {
                 placeholder="Enter your display name"
                 className="w-full bg-[#101118] border border-[#1a1b24] focus:border-[#3a8574] rounded-lg px-4 py-2.5 text-sm text-[#e0e4ec] placeholder-[#5a6178] outline-none transition-colors"
                 autoFocus
+                disabled={isAuthenticated}
               />
             </div>
 
             <button
               onClick={handleJoin}
-              disabled={!guestName.trim()}
+              disabled={!guestName.trim() && !isAuthenticated}
               className="w-full py-2.5 bg-[#3a8574] hover:bg-[#327464] disabled:bg-[#1a1b24] disabled:text-[#5a6178] text-white font-semibold rounded-lg transition-colors flex items-center justify-center gap-2"
             >
               <Users className="w-4 h-4" />

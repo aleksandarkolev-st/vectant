@@ -354,6 +354,25 @@ export default function EditorPage({ params }) {
         });
     }, []);
 
+    // ── Restore guest session after redirect from collab join page ──────
+    // When a guest is admitted and redirected to the host's workspace, the
+    // full-page navigation resets collabSessionService to idle.  We persist
+    // the session info in sessionStorage before navigating and restore it
+    // here (after the onChange listener is registered so the state update
+    // propagates correctly via the change event).
+    useEffect(() => {
+        try {
+            const raw = sessionStorage.getItem('synthi-pending-guest-session');
+            if (!raw) return;
+            sessionStorage.removeItem('synthi-pending-guest-session');
+            const { sessionId: sId, guestId, hostId, slug: sessionSlug } = JSON.parse(raw);
+            if (sId && guestId) {
+                collabSessionService.joinAsGuest(sId, guestId, hostId || '', sessionSlug || slug);
+            }
+        } catch (_) {}
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
+
     useEffect(() => {
         if (slug) {
             const init = async () => {
@@ -1608,7 +1627,11 @@ export default function EditorPage({ params }) {
         }
     }, [rawFiles, slug]);
 
-    const handleRun = useCallback(async ({ skipCancel = false } = {}) => {
+    const handleRun = useCallback(async (options = {}) => {
+        const isEvent = options && typeof options.preventDefault === 'function';
+        const skipCancel = isEvent ? false : (options.skipCancel || false);
+        const latestCode = isEvent ? null : (options.latestCode || null);
+
         if (!activeFile) {
             console.warn('No active file selected for compilation.');
             return;
@@ -1621,7 +1644,7 @@ export default function EditorPage({ params }) {
             }));
         }
 
-        const source = typeof currentContent === 'string' ? currentContent : '';
+        const source = typeof latestCode === 'string' ? latestCode : (typeof currentContent === 'string' ? currentContent : '');
         // Use the full path to preserve directory structure in the worker
         const filename = activeFile?.path || activeFile?.name || 'main';
         // Ensure a terminal is visible when running so output is shown
@@ -1638,7 +1661,7 @@ export default function EditorPage({ params }) {
         const getContentForDependency = async (path) => {
             // If it's the active file, use the current editor content (which might be unsaved)
             if (path === activeFile.path) {
-                return typeof currentContent === 'string' ? currentContent : '';
+                return typeof latestCode === 'string' ? latestCode : (typeof currentContent === 'string' ? currentContent : '');
             }
             // Check cache
             const cached = fileCache.get(path);
@@ -1784,7 +1807,8 @@ export default function EditorPage({ params }) {
         await handleRun({ skipCancel: true });
     }, [client, handleRun]);
 
-    const handleSave = useCallback(async () => {
+    const handleSave = useCallback(async (latestCode) => {
+        console.log('[HMR] handleSave called with activeFile:', activeFile?.name);
         if (!activeFile) return;
 
         // If HMR is disabled, skip recompilation on save
@@ -1801,7 +1825,7 @@ export default function EditorPage({ params }) {
         }
 
         // Similar to handleRun but silent and doesn't force terminal open
-        const source = typeof currentContent === 'string' ? currentContent : '';
+        const source = typeof latestCode === 'string' ? latestCode : (typeof currentContent === 'string' ? currentContent : '');
         const filename = activeFile?.path || activeFile?.name || 'main';
 
         // Note: CodeIntel re-index is triggered by saveFileContentThunk
@@ -1816,8 +1840,10 @@ export default function EditorPage({ params }) {
             return;
         }
 
+        console.log(`[HMR] Proceeding with compilation for ${filename}`);
+
         const getContentForDependency = async (path) => {
-            if (path === activeFile.path) return typeof currentContent === 'string' ? currentContent : '';
+            if (path === activeFile.path) return typeof latestCode === 'string' ? latestCode : (typeof currentContent === 'string' ? currentContent : '');
             const cached = fileCache.get(path);
             if (cached !== undefined) return cached;
             return await api.fetchFileContent(slug, path);
@@ -2127,6 +2153,18 @@ export default function EditorPage({ params }) {
                                 connectionMeta,
                                 latestCompletion,
                                 completionClearSignal,
+                                onRun: handleRun,
+                                onSave: handleSave,
+                                onToggleTerminal: () => dispatch(toggleTerminal()),
+                                onEditorMount: handleEditorMount,
+                                analysisResult: lastResult,
+                                diagnostics: mergedDiagnostics,
+                                onAiDiagnosticsRecalibrated: handleAiDiagnosticsRecalibrated,
+                                removeDiagnosticByLocation,
+                                aiBusy,
+                                onClearCompletion: handleClearLatestCompletion,
+                                chatVisible,
+                                collabHostId,
                             },
                         }}
                     />
