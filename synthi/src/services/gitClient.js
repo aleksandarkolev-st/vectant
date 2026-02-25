@@ -146,8 +146,8 @@ export const gitClient = {
         return this.request(slug, 'fetch', token ? { token } : {});
     },
 
-    async commit(slug, message) {
-        return this.request(slug, 'commit', { message });
+    async commit(slug, message, amend = false) {
+        return this.request(slug, 'commit', { message, amend });
     },
 
     async stageFile(slug, filePath) {

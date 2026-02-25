@@ -896,22 +896,26 @@ class GitService {
         }, userId);
     }
 
-    async commit(slug, message, userId) {
+    async commit(slug, message, userId, amend = false) {
         return this.withLock(slug, async () => {
             try {
                 const git = this.getGit(slug, userId);
-                // Check if there are staged changes before committing.
-                // Without this guard, `git commit` with nothing staged either
-                // throws a generic error or (with --allow-empty) creates an
-                // empty commit — both of which confuse the user.
-                const status = await git.status();
-                if (!status.staged || status.staged.length === 0) {
-                    throw new GitError(
-                        'Nothing to commit — stage files first.',
-                        'NOTHING_STAGED'
-                    );
+                // Check if there are staged changes before committing
+                // (skip for amend — amend can just rewrite the message).
+                if (!amend) {
+                    const status = await git.status();
+                    if (!status.staged || status.staged.length === 0) {
+                        throw new GitError(
+                            'Nothing to commit — stage files first.',
+                            'NOTHING_STAGED'
+                        );
+                    }
                 }
-                await git.commit(message);
+                if (amend) {
+                    await git.commit(message, { '--amend': null });
+                } else {
+                    await git.commit(message);
+                }
                 this._archiveGitAsync(slug, userId);
                 return this.getStatus(slug, userId);
             } catch (e) {

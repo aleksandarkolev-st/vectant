@@ -2656,7 +2656,7 @@ const server = http.createServer(async (req, res) => {
                     result = await gitService.fetch(slug, effectiveUserId, data.token);
                     break;
                 case 'commit':
-                    result = await gitService.commit(slug, data.message, effectiveUserId);
+                    result = await gitService.commit(slug, data.message, effectiveUserId, data.amend);
                     broadcastGitStatusChanged(slug, undefined, notifyScope, { immediate: true });
                     break;
                 case 'stage':

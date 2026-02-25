@@ -160,8 +160,8 @@ export const cloneRepo = createAsyncThunk(
 
 export const commitChanges = createAsyncThunk(
     'git/commit',
-    async ({ slug, message }, { dispatch }) => {
-        await gitClient.commit(slug, message);
+    async ({ slug, message, amend }, { dispatch }) => {
+        await gitClient.commit(slug, message, amend);
         dispatch(fetchGitStatus(slug));
         dispatch(fetchCommitHistory({ slug }));
         dispatch(fetchUnpushedCommits({ slug, max: 50 }));

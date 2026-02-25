@@ -202,6 +202,7 @@ export function GitStatus({ slug }) {
   const [editRemoteUrl, setEditRemoteUrl] = useState('');      // edited URL value
   const [showAllCommits, setShowAllCommits] = useState(false);
   const [hunkStagingFile, setHunkStagingFile] = useState(null); // file path for hunk staging
+  const [amendMode, setAmendMode] = useState(false);
   const [stashMessage, setStashMessage] = useState('');
   const [cloneUrl, setCloneUrl] = useState('');
   const [showClone, setShowClone] = useState(false);
@@ -447,9 +448,10 @@ export function GitStatus({ slug }) {
     setMessage('');
     setCommitBody('');
     setShowCommitBody(false);
-    const resultAction = await dispatch(commitChanges({ slug, message: fullMessage }));
+    setAmendMode(false);
+    const resultAction = await dispatch(commitChanges({ slug, message: fullMessage, amend: amendMode }));
     if (commitChanges.fulfilled.match(resultAction)) {
-      toast.success(`Committed: ${prevMessage}`);
+      toast.success(amendMode ? `Amended commit` : `Committed: ${prevMessage}`);
     } else {
       // Restore the message on failure so the user doesn't lose their input
       setMessage(prevMessage);
@@ -457,6 +459,32 @@ export function GitStatus({ slug }) {
       if (prevBody) setShowCommitBody(true);
       const errMsg = resultAction?.error?.message || 'Commit failed';
       toast.error(errMsg);
+    }
+  };
+
+  const handleCommitAndPush = async () => {
+    if (!slug || !message) return;
+    const fullMessage = commitBody ? `${message}\n\n${commitBody}` : message;
+    const prevMessage = message;
+    const prevBody = commitBody;
+    setMessage('');
+    setCommitBody('');
+    setShowCommitBody(false);
+    setAmendMode(false);
+    const commitResult = await dispatch(commitChanges({ slug, message: fullMessage, amend: amendMode }));
+    if (commitChanges.fulfilled.match(commitResult)) {
+      toast.success(amendMode ? 'Amended commit' : `Committed: ${prevMessage}`);
+      const pushResult = await dispatch(pushChanges(slug));
+      if (pushChanges.fulfilled.match(pushResult)) {
+        toast.success('Pushed to remote');
+      } else {
+        toast.error(pushResult?.error?.message || 'Push failed after commit');
+      }
+    } else {
+      setMessage(prevMessage);
+      setCommitBody(prevBody);
+      if (prevBody) setShowCommitBody(true);
+      toast.error(commitResult?.error?.message || 'Commit failed');
     }
   };
 
@@ -1328,7 +1356,7 @@ export function GitStatus({ slug }) {
           <div className="space-y-1.5">
             <div className="flex gap-1.5">
               <input type="text" value={message} onChange={e => setMessage(e.target.value)}
-                placeholder="Commit message…"
+                placeholder={amendMode ? "New commit message (amend)…" : "Commit message…"}
                 className="flex-1 bg-[#18181b] border border-[#3f3f46] rounded px-2 py-1 text-xs text-[#e4e4e7] focus:outline-none focus:border-[#3b82f6] font-mono"
                 onKeyDown={e => e.key === 'Enter' && !e.shiftKey && handleCommit()} />
               <button onClick={() => setShowCommitBody(!showCommitBody)}
@@ -1336,10 +1364,15 @@ export function GitStatus({ slug }) {
                 title="Add description">
                 <Edit3 className="w-3 h-3" />
               </button>
-              <button onClick={handleCommit} disabled={!message || staged.length === 0}
+              <button onClick={handleCommit} disabled={!message || (!amendMode && staged.length === 0)}
                 className="border border-[#3b82f6] bg-transparent hover:bg-[#3b82f6]/10 disabled:opacity-50 disabled:cursor-not-allowed text-[#3b82f6] p-1 rounded transition-colors"
-                title="Commit Staged">
+                title={amendMode ? "Amend Last Commit" : "Commit Staged"}>
                 <Check className="w-4 h-4" strokeWidth={1.5} />
+              </button>
+              <button onClick={handleCommitAndPush} disabled={!message || (!amendMode && staged.length === 0)}
+                className="border border-emerald-500 bg-transparent hover:bg-emerald-500/10 disabled:opacity-50 disabled:cursor-not-allowed text-emerald-500 p-1 rounded transition-colors"
+                title="Commit & Push">
+                <UploadCloud className="w-4 h-4" strokeWidth={1.5} />
               </button>
             </div>
             {showCommitBody && (
@@ -1348,6 +1381,27 @@ export function GitStatus({ slug }) {
                 className="w-full bg-[#18181b] border border-[#3f3f46] rounded px-2 py-1 text-xs text-[#e4e4e7] focus:outline-none focus:border-[#3b82f6] resize-none font-mono"
                 rows={3} />
             )}
+            {/* Amend toggle */}
+            <div className="flex items-center gap-1.5">
+              <label className="flex items-center gap-1 cursor-pointer text-[10px] text-[#71717a] hover:text-[#a1a1aa]">
+                <input type="checkbox" checked={amendMode} onChange={e => {
+                  const enabled = e.target.checked;
+                  setAmendMode(enabled);
+                  // Pre-fill with last commit message when enabling amend
+                  if (enabled && unpushedCommits?.length > 0 && !message) {
+                    const lastMsg = unpushedCommits[0]?.message || '';
+                    const [subject, ...bodyParts] = lastMsg.split('\n\n');
+                    setMessage(subject || '');
+                    if (bodyParts.length) {
+                      setCommitBody(bodyParts.join('\n\n'));
+                      setShowCommitBody(true);
+                    }
+                  }
+                }}
+                  className="w-3 h-3 rounded accent-[#3b82f6]" />
+                <span>Amend last commit</span>
+              </label>
+            </div>
           </div>
         </div>
       )}
