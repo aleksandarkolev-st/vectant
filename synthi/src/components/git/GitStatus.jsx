@@ -340,6 +340,33 @@ export function GitStatus({ slug }) {
     return () => { clearInterval(interval); window.removeEventListener('focus', handleFocus); };
   }, [slug, dispatch, refreshGitData]);
 
+  // ── Keyboard shortcuts for git operations ──────
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      // Only activate when focus is within the git panel or commit input
+      const isGitPanel = e.target.closest?.('[data-git-panel]');
+      if (!isGitPanel) return;
+
+      // Ctrl+Enter = Commit
+      if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey) {
+        e.preventDefault();
+        if (message && (amendMode || staged.length > 0)) handleCommit();
+      }
+      // Ctrl+Shift+Enter = Commit & Push
+      if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && e.shiftKey && !e.altKey) {
+        e.preventDefault();
+        if (message && (amendMode || staged.length > 0)) handleCommitAndPush();
+      }
+      // Ctrl+Shift+P = Push (when not in a text input)
+      if (e.key === 'p' && (e.ctrlKey || e.metaKey) && e.shiftKey && e.target.tagName !== 'INPUT' && e.target.tagName !== 'TEXTAREA') {
+        e.preventDefault();
+        handlePush(false);
+      }
+    };
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, [message, amendMode, staged]);
+
   // ── handlers ───────────────────────────────────
   const handleSync = async () => {
     if (!slug) return;
@@ -726,7 +753,7 @@ export function GitStatus({ slug }) {
 
   return (
     <>
-    <div className="flex flex-col h-full w-full overflow-hidden" style={graphStyle}>
+    <div data-git-panel className="flex flex-col h-full w-full overflow-hidden" style={graphStyle}>
       {/* ── Header ────────────────────────────────── */}
       <div className="px-2 py-1.5 font-semibold text-xs uppercase tracking-wider text-[#a1a1aa] border-b border-[#27272a] flex justify-between items-center">
         <span>Source Control</span>
