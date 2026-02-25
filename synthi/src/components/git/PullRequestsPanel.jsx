@@ -252,8 +252,12 @@ export function PullRequestsPanel({ slug }) {
     if (view === 'detail' || view === 'create') {
       dispatch(setActivePR(null));
       setView('list');
+      // Refresh PR list when coming back
+      if (owner && repo && hasToken) {
+        dispatch(fetchPRList({ owner, repo, state: prListState, slug }));
+      }
     }
-  }, [view, dispatch]);
+  }, [view, dispatch, owner, repo, hasToken, prListState, slug]);
 
   const handleCreated = useCallback((pr) => {
     dispatch(setActivePR(pr));
