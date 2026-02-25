@@ -586,12 +586,26 @@ function OverviewTab({ pr, slug, owner, repo, onEditTitle, editingTitle, newTitl
   const dispatch = useDispatch();
   const { repoLabels } = useSelector(s => s.pr);
   const [showLabelPicker, setShowLabelPicker] = useState(false);
+  const [editingBody, setEditingBody] = useState(false);
+  const [newBody, setNewBody] = useState('');
 
   useEffect(() => {
     if (owner && repo && repoLabels.length === 0) {
       dispatch(fetchRepoLabels({ owner, repo, slug }));
     }
   }, [owner, repo, slug, dispatch, repoLabels.length]);
+
+  const handleBodySave = async () => {
+    if (newBody === (pr.body || '')) {
+      setEditingBody(false);
+      return;
+    }
+    const result = await dispatch(updatePR({ owner, repo, prNumber: pr.number, slug, updates: { body: newBody } }));
+    if (updatePR.fulfilled.match(result)) {
+      toast.success('Description updated');
+    }
+    setEditingBody(false);
+  };
 
   const handleToggleLabel = async (label) => {
     const currentLabels = pr.labels || [];
@@ -709,12 +723,48 @@ function OverviewTab({ pr, slug, owner, repo, onEditTitle, editingTitle, newTitl
         )}
       </div>
 
-      {/* Description */}
-      <div
-        className="rounded-lg p-3 border"
-        style={{ background: 'var(--bg-app)', borderColor: 'var(--border-subtle)' }}
-      >
-        <MarkdownText text={pr.body} />
+      {/* Description — editable */}
+      <div>
+        <div className="flex items-center gap-2 mb-1.5">
+          <p className="text-[10px] font-semibold" style={{ color: 'var(--text-muted)' }}>DESCRIPTION</p>
+          {!editingBody && (
+            <button
+              onClick={() => { setNewBody(pr.body || ''); setEditingBody(true); }}
+              className="text-[10px] px-1.5 py-0.5 rounded hover:opacity-80 transition"
+              style={{ color: 'var(--accent-primary)' }}
+            >
+              + Edit
+            </button>
+          )}
+        </div>
+        {editingBody ? (
+          <div className="space-y-2">
+            <textarea
+              autoFocus
+              value={newBody}
+              onChange={e => setNewBody(e.target.value)}
+              rows={8}
+              placeholder="Describe this pull request…"
+              className="w-full px-2.5 py-2 text-xs rounded-lg border outline-none resize-y font-mono"
+              style={{ background: 'var(--bg-app)', borderColor: 'var(--accent-primary)', color: 'var(--text-primary)' }}
+            />
+            <div className="flex gap-2">
+              <button onClick={handleBodySave} className="px-3 py-1.5 rounded-lg text-xs font-medium" style={{ background: 'var(--accent-primary)', color: '#fff' }}>Save</button>
+              <button onClick={() => setEditingBody(false)} className="px-3 py-1.5 rounded-lg text-xs border" style={{ borderColor: 'var(--border-medium)', color: 'var(--text-muted)' }}>Cancel</button>
+            </div>
+          </div>
+        ) : (
+          <div
+            className="rounded-lg p-3 border"
+            style={{ background: 'var(--bg-app)', borderColor: 'var(--border-subtle)' }}
+          >
+            {pr.body ? (
+              <MarkdownText text={pr.body} />
+            ) : (
+              <p className="text-xs italic" style={{ color: 'var(--text-muted)' }}>No description provided</p>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Assignees */}
