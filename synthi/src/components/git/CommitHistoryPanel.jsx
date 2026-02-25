@@ -10,12 +10,13 @@ import { toast } from 'sonner';
 import {
   Search, RefreshCw, Copy, ExternalLink, GitBranch, GitCommit,
   ChevronDown, ChevronRight, Filter, X, ChevronsUp, ChevronsDown,
-  RotateCcw, Cherry, Eye, User, Calendar, FileText, Hash
+  RotateCcw, Cherry, Eye, User, Calendar, FileText, Hash, Layers
 } from 'lucide-react';
 import {
   buildCommitGraph, commitWebUrl, parseConventionalCommit,
   ccColor, groupCommitsByDate, relativeTime
 } from './gitUtils';
+import InteractiveRebasePanel from './InteractiveRebasePanel';
 
 /* ────────────────────────────────────────────────────────────
  * CommitHistoryPanel — SourceTree-style advanced history view
@@ -120,6 +121,8 @@ function ContextMenu({ x, y, commit, onClose, onAction }) {
     { divider: true },
     { icon: Cherry, label: 'Cherry-pick this commit', action: 'cherry-pick', danger: false },
     { icon: RotateCcw, label: 'Revert this commit', action: 'revert', danger: true },
+    { divider: true },
+    { icon: Layers, label: 'Interactive rebase from here…', action: 'rebase-from', danger: false },
   ];
 
   return (
@@ -349,6 +352,7 @@ export default function CommitHistoryPanel({ slug }) {
   const [showFilter, setShowFilter] = useState(false);
   const [selectedHash, setSelectedHash] = useState(null);
   const [contextMenu, setContextMenu] = useState(null);
+  const [rebaseCommits, setRebaseCommits] = useState(null); // commits for interactive rebase
   const [page, setPage] = useState(1);
   const scrollRef = useRef(null);
 
@@ -454,8 +458,21 @@ export default function CommitHistoryPanel({ slug }) {
           }
         }
         break;
+      case 'rebase-from': {
+        // Collect all commits from this one to the top (most recent)
+        const idx = allCommits.findIndex(c => c.hash === commit.hash);
+        if (idx < 0) break;
+        // allCommits is newest-first; for rebase-todo we need oldest-first
+        const commitsForRebase = allCommits.slice(0, idx + 1).reverse();
+        if (commitsForRebase.length < 1) {
+          toast.error('No commits to rebase');
+          break;
+        }
+        setRebaseCommits(commitsForRebase);
+        break;
+      }
     }
-  }, [dispatch, slug, handleRefresh]);
+  }, [dispatch, slug, handleRefresh, allCommits]);
 
   const handleCommitClick = useCallback((commit) => {
     if (selectedHash === commit.hash) {
@@ -465,6 +482,17 @@ export default function CommitHistoryPanel({ slug }) {
       dispatch(fetchCommitDetail({ slug, hash: commit.hash }));
     }
   }, [dispatch, slug, selectedHash]);
+
+  // If rebase panel is open, render it instead of the commit list
+  if (rebaseCommits) {
+    return (
+      <InteractiveRebasePanel
+        commits={rebaseCommits}
+        slug={slug}
+        onClose={() => { setRebaseCommits(null); handleRefresh(); }}
+      />
+    );
+  }
 
   return (
     <div className="flex flex-col h-full bg-[#0a0a0b] text-[#e4e4e7]">
