@@ -72,6 +72,16 @@ const ThemeEditorPanel = dynamic(
   { ssr: false, loading: Placeholder },
 );
 
+const PullRequestsPanel = dynamic(
+  () => import('@/components/git/PullRequestsPanel').then(m => ({ default: m.PullRequestsPanel })),
+  { ssr: false, loading: Placeholder },
+);
+
+const CommitHistoryPanel = dynamic(
+  () => import('@/components/git/CommitHistoryPanel'),
+  { ssr: false, loading: Placeholder },
+);
+
 // ────────────────────────────────────────────────────────
 //  Explorer Panel Wrapper
 // ────────────────────────────────────────────────────────
@@ -313,6 +323,46 @@ export const ThemeEditorPanelWrapper = memo(function ThemeEditorPanelWrapper({ d
 });
 
 // ────────────────────────────────────────────────────────
+//  Pull Requests Panel Wrapper
+// ────────────────────────────────────────────────────────
+
+export const PullRequestsPanelWrapper = memo(function PullRequestsPanelWrapper({ data }) {
+  const ctx = useWorkspacePanelContext();
+
+  return (
+    <div
+      data-panel-type="pullrequests"
+      className="h-full w-full overflow-hidden"
+      style={{ background: 'var(--bg-sidebar)' }}
+    >
+      <PullRequestsPanel
+        slug={ctx?.workspaceSlug}
+      />
+    </div>
+  );
+});
+
+// ────────────────────────────────────────────────────────
+//  Commit History Panel Wrapper
+// ────────────────────────────────────────────────────────
+
+export const CommitHistoryPanelWrapper = memo(function CommitHistoryPanelWrapper({ data }) {
+  const ctx = useWorkspacePanelContext();
+
+  return (
+    <div
+      data-panel-type="commithistory"
+      className="h-full w-full overflow-hidden"
+      style={{ background: 'var(--bg-sidebar)' }}
+    >
+      <CommitHistoryPanel
+        slug={ctx?.workspaceSlug}
+      />
+    </div>
+  );
+});
+
+// ────────────────────────────────────────────────────────
 //  Wrapper registry (type → component)
 // ────────────────────────────────────────────────────────
 
@@ -329,4 +379,6 @@ export const PANEL_WRAPPERS = {
   preview:        PreviewPanelWrapper,
   settings:       SettingsPanelWrapper,
   'theme-editor': ThemeEditorPanelWrapper,
+  pullrequests:    PullRequestsPanelWrapper,
+  commithistory:   CommitHistoryPanelWrapper,
 };

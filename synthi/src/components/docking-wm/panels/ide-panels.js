@@ -24,6 +24,8 @@ import {
   PreviewPanelWrapper,
   SettingsPanelWrapper,
   ThemeEditorPanelWrapper,
+  PullRequestsPanelWrapper,
+  CommitHistoryPanelWrapper,
 } from './panel-wrappers';
 
 // ────────────────────────────────────────────────────────
@@ -43,6 +45,8 @@ export const IDE_PANEL = Object.freeze({
   PREVIEW:    'preview',
   SETTINGS:   'settings',
   THEME_EDITOR: 'theme-editor',
+  PULL_REQUESTS: 'pullrequests',
+  COMMIT_HISTORY: 'commithistory',
 });
 
 // ────────────────────────────────────────────────────────
@@ -184,6 +188,26 @@ export const IDE_PANEL_DEFINITIONS = [
     component: ThemeEditorPanelWrapper,
     allowMultiple: false,
     defaultLocation: 'right',
+    closable: true,
+  },
+  {
+    panelType: IDE_PANEL.PULL_REQUESTS,
+    displayName: 'Pull Requests',
+    icon: 'git-pull-request',
+    category: 'sidebar',
+    component: PullRequestsPanelWrapper,
+    allowMultiple: false,
+    defaultLocation: 'left',
+    closable: true,
+  },
+  {
+    panelType: IDE_PANEL.COMMIT_HISTORY,
+    displayName: 'Commit History',
+    icon: 'git-commit',
+    category: 'bottom',
+    component: CommitHistoryPanelWrapper,
+    allowMultiple: false,
+    defaultLocation: 'bottom',
     closable: true,
   },
 ];
