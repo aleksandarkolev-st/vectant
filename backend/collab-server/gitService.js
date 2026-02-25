@@ -705,9 +705,11 @@ class GitService {
                     }
                     if (!cloneSucceeded) throw lastError;
                     
-                    // Remove token from stored remote URL after clone
-                    const repoGit = simpleGit(repoPath);
-                    await repoGit.remote(['set-url', 'origin', cleanRepoUrl]);
+                    // NOTE: We intentionally preserve the original remote URL
+                    // (including any embedded credentials) so that push/pull
+                    // operations can authenticate without requiring a separate
+                    // token configuration step.  Security-conscious setups can
+                    // use SSH keys or credential helpers instead.
                 }
             } else {
                 await git.clone(cleanRepoUrl, repoPath);
@@ -735,10 +737,11 @@ class GitService {
                     const bareGit = simpleGit();
                     await bareGit.clone(repoPath, barePath, ['--bare', '--no-hardlinks']);
                     console.log(`[GitService] Created bare repo at ${barePath}`);
-                    // Preserve the clean remote URL on the bare repo
+                    // Preserve the remote URL (with credentials if present)
+                    // on the bare repo so user repos inherit it.
                     try {
                         const bGit = simpleGit(barePath);
-                        await bGit.remote(['set-url', 'origin', cleanRepoUrl]);
+                        await bGit.remote(['set-url', 'origin', repoUrl]);
                     } catch (_) {}
                 } catch (e) {
                     console.warn(`[GitService] Failed to create bare repo: ${e.message}`);
