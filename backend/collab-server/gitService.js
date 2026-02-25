@@ -924,6 +924,96 @@ class GitService {
         }, userId);
     }
 
+    /**
+     * Interactive rebase — apply a list of operations to a range of commits.
+     *
+     * @param {string} slug          - repo identifier
+     * @param {string} baseCommit    - the commit onto which we rebase (exclusive,
+     *                                 typically HEAD~N or a commit hash)
+     * @param {Array}  operations    - ordered list of { action, hash, message? }
+     *                                 action: 'pick'|'reword'|'squash'|'fixup'|'drop'
+     * @param {string} userId
+     */
+    async interactiveRebase(slug, baseCommit, operations, userId) {
+        return this.withLock(slug, async () => {
+            try {
+                const git = this.getGit(slug, userId);
+                const repoPath = this.getEffectiveRepoPath(slug, userId);
+
+                // Build the rebase-todo script
+                const todoLines = operations.map(op => {
+                    const action = op.action || 'pick';
+                    const hash = op.hash;
+                    const msg = op.message || '';
+                    return `${action} ${hash} ${msg}`;
+                });
+
+                // Write todo to a file and use GIT_SEQUENCE_EDITOR to apply it
+                const todoFile = path.join(repoPath, '.git', '_rebase_todo.txt');
+                fs.writeFileSync(todoFile, todoLines.join('\n') + '\n', 'utf8');
+
+                // Build reword messages if any
+                const rewords = operations.filter(op => op.action === 'reword' && op.message);
+                const rewordMap = {};
+                rewords.forEach(r => { rewordMap[r.hash.substring(0, 7)] = r.message; });
+
+                // Determine the sequence-editor script based on OS
+                const isWin = process.platform === 'win32';
+                let seqEditor;
+                if (isWin) {
+                    // On Windows, use a simple copy command as sequence editor
+                    const todoFileEscaped = todoFile.replace(/\\/g, '\\\\');
+                    seqEditor = `cmd /c copy /y "${todoFileEscaped}" `;
+                } else {
+                    seqEditor = `cp "${todoFile}" `;
+                }
+
+                // Use env to set the sequence editor
+                const env = {
+                    ...process.env,
+                    GIT_SEQUENCE_EDITOR: `${seqEditor}`,
+                };
+
+                // For rewords, we need a GIT_EDITOR that writes the new message
+                // For simplicity, handle rewords as a second pass:
+                // First do the rebase with pick/squash/fixup/drop,
+                // then use git commit --amend for any rewords.
+
+                // Actually, simpler: write a shell script as GIT_SEQUENCE_EDITOR
+                // that simply copies our pre-computed todo over the rebase-todo file.
+                const seqScript = path.join(repoPath, '.git', '_seq_editor');
+                if (isWin) {
+                    // Windows batch: copy our todo over the argument ($1 = path git passes)
+                    const batContent = `@echo off\ncopy /y "${todoFile.replace(/\\/g, '\\\\')}" %1 >nul\n`;
+                    const batFile = seqScript + '.bat';
+                    fs.writeFileSync(batFile, batContent, 'utf8');
+                    env.GIT_SEQUENCE_EDITOR = batFile;
+                } else {
+                    const shContent = `#!/bin/sh\ncp "${todoFile}" "$1"\n`;
+                    fs.writeFileSync(seqScript, shContent, { mode: 0o755 });
+                    env.GIT_SEQUENCE_EDITOR = seqScript;
+                }
+
+                // Run the interactive rebase
+                await git.env(env).rebase(['-i', baseCommit]);
+
+                // Cleanup temp files
+                try { fs.unlinkSync(todoFile); } catch (_) {}
+                try { fs.unlinkSync(isWin ? seqScript + '.bat' : seqScript); } catch (_) {}
+
+                this._archiveGitAsync(slug, userId);
+                return this.getStatus(slug, userId);
+            } catch (e) {
+                // If rebase fails, try to abort so we don't leave repo in bad state
+                try {
+                    const git2 = this.getGit(slug, userId);
+                    await git2.rebase(['--abort']);
+                } catch (_) { /* already clean */ }
+                throw this.mapGitError(e, slug);
+            }
+        }, userId);
+    }
+
     async stageFile(slug, filePath, userId) {
         return this.withLock(slug, async () => {
             try {

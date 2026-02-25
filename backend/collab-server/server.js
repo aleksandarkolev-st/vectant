@@ -2782,6 +2782,13 @@ const server = http.createServer(async (req, res) => {
                 case 'stash-drop':
                     result = await gitService.stashDrop(slug, data.index, effectiveUserId);
                     break;
+                case 'interactive-rebase':
+                    result = await gitService.interactiveRebase(slug, data.baseCommit, data.operations, effectiveUserId);
+                    broadcastFileReverted(slug, [], notifyScope);
+                    await invalidateDocsForSlug(slug, null, notifyScope);
+                    broadcastFileTreeChanged(slug, notifyScope);
+                    broadcastGitStatusChanged(slug, undefined, notifyScope, { immediate: true });
+                    break;
                 case 'cherry-pick':
                     result = await gitService.cherryPick(slug, data.hash, effectiveUserId);
                     broadcastFileReverted(slug, [], notifyScope);
