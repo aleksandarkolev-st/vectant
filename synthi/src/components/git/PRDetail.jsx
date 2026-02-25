@@ -583,6 +583,25 @@ export function PRDetail({ slug, onBack }) {
 
 // ── Overview Tab ──────────────────────────────────────────────────────────────
 function OverviewTab({ pr, slug, owner, repo, onEditTitle, editingTitle, newTitle, setNewTitle, onTitleSave, onTitleCancel, onClose, closingPR, reviews }) {
+  const dispatch = useDispatch();
+  const { repoLabels } = useSelector(s => s.pr);
+  const [showLabelPicker, setShowLabelPicker] = useState(false);
+
+  useEffect(() => {
+    if (owner && repo && repoLabels.length === 0) {
+      dispatch(fetchRepoLabels({ owner, repo, slug }));
+    }
+  }, [owner, repo, slug, dispatch, repoLabels.length]);
+
+  const handleToggleLabel = async (label) => {
+    const currentLabels = pr.labels || [];
+    const hasLabel = currentLabels.find(l => l.name === label.name);
+    const newLabels = hasLabel
+      ? currentLabels.filter(l => l.name !== label.name)
+      : [...currentLabels, label];
+    dispatch(setLabels({ owner, repo, prNumber: pr.number, slug, labels: newLabels }));
+  };
+
   return (
     <div className="p-3 space-y-4">
       {/* Title row */}
@@ -631,21 +650,64 @@ function OverviewTab({ pr, slug, owner, repo, onEditTitle, editingTitle, newTitl
         </div>
       </div>
 
-      {/* Labels */}
-      {pr.labels?.length > 0 && (
-        <div className="flex flex-wrap gap-1">
-          {pr.labels.map(label => (
-            <span
-              key={label.id}
-              className="flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium"
-              style={{ background: `#${label.color}22`, color: `#${label.color}`, border: `1px solid #${label.color}44` }}
-            >
-              <span className="w-2 h-2 rounded-full" style={{ background: `#${label.color}` }} />
-              {label.name}
-            </span>
-          ))}
+      {/* Labels — editable */}
+      <div>
+        <div className="flex items-center gap-2 mb-1.5">
+          <p className="text-[10px] font-semibold" style={{ color: 'var(--text-muted)' }}>LABELS</p>
+          <button
+            onClick={() => setShowLabelPicker(v => !v)}
+            className="text-[10px] px-1.5 py-0.5 rounded hover:opacity-80 transition"
+            style={{ color: 'var(--accent-primary)' }}
+          >
+            {showLabelPicker ? 'Done' : '+ Edit'}
+          </button>
         </div>
-      )}
+        {pr.labels?.length > 0 && (
+          <div className="flex flex-wrap gap-1 mb-1.5">
+            {pr.labels.map(label => (
+              <span
+                key={label.id}
+                className="flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium"
+                style={{ background: `#${label.color}22`, color: `#${label.color}`, border: `1px solid #${label.color}44` }}
+              >
+                <span className="w-2 h-2 rounded-full" style={{ background: `#${label.color}` }} />
+                {label.name}
+              </span>
+            ))}
+          </div>
+        )}
+        {!pr.labels?.length && !showLabelPicker && (
+          <p className="text-[10px] italic" style={{ color: 'var(--text-muted)' }}>No labels</p>
+        )}
+        {showLabelPicker && (
+          <div
+            className="rounded-lg border overflow-y-auto max-h-40 mt-1"
+            style={{ background: 'var(--bg-elevated)', borderColor: 'var(--border-medium)' }}
+          >
+            {repoLabels.map(label => {
+              const isSelected = pr.labels?.find(l => l.name === label.name);
+              return (
+                <button
+                  key={label.id}
+                  onClick={() => handleToggleLabel(label)}
+                  className="flex items-center gap-2 w-full px-2.5 py-1.5 text-xs hover:opacity-80 transition text-left"
+                  style={{ 
+                    color: 'var(--text-primary)', 
+                    background: isSelected ? 'color-mix(in srgb, var(--accent-primary) 10%, transparent)' : 'transparent' 
+                  }}
+                >
+                  <span className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ background: `#${label.color}` }} />
+                  {label.name}
+                  {isSelected && <CheckCircle2 className="w-3 h-3 ml-auto" style={{ color: 'var(--accent-primary)' }} />}
+                </button>
+              );
+            })}
+            {repoLabels.length === 0 && (
+              <p className="text-[10px] py-2 px-2.5 italic" style={{ color: 'var(--text-muted)' }}>No labels in repository</p>
+            )}
+          </div>
+        )}
+      </div>
 
       {/* Description */}
       <div
