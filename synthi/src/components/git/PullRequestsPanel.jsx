@@ -227,6 +227,22 @@ export function PullRequestsPanel({ slug }) {
     }
   }, [hasToken, owner, repo, isGitHub, prListState, slug, dispatch]);
 
+  // Listen for external actions (e.g., "create" from SCM panel)
+  useEffect(() => {
+    const handleAction = (e) => {
+      if (e.detail === 'create') setView('create');
+    };
+    window.addEventListener('synthi:pr-action', handleAction);
+    return () => window.removeEventListener('synthi:pr-action', handleAction);
+  }, []);
+
+  // When activePR is set externally (e.g., from SCM panel), switch to detail view
+  useEffect(() => {
+    if (activePR && view === 'list') {
+      setView('detail');
+    }
+  }, [activePR]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const handleSelectPR = useCallback((pr) => {
     dispatch(setActivePR(pr));
     setView('detail');
