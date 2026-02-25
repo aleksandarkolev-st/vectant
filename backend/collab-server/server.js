@@ -3194,6 +3194,44 @@ sessionWss.on('connection', (ws, req) => {
   });
 });
 
+// ── Wire SessionManager events to WebSocket delivery ─────────────────────
+// SessionManager is an EventEmitter; these listeners bridge in-process events
+// to the connected WebSocket clients (host + guests).
+
+sessionManager.on('session:knock', ({ sessionId, hostId, guestId, displayName, avatarUrl }) => {
+  sendToSessionHost(sessionId, 'knock', { guestId, displayName, avatarUrl, hostId });
+});
+
+sessionManager.on('session:guestJoined', ({ sessionId, hostId, guest, autoAdmitted }) => {
+  const session = sessionManager.getSession(sessionId);
+  broadcastSessionEvent(sessionId, 'guest:joined', {
+    guest,
+    hostId,
+    slug: session?.slug,
+    autoAdmitted: autoAdmitted || false,
+  });
+});
+
+sessionManager.on('session:knockDenied', ({ sessionId, guestId }) => {
+  sendToSessionUser(sessionId, guestId, 'knock:denied', { guestId });
+});
+
+sessionManager.on('session:permissionsUpdated', ({ sessionId, guestId, permissions }) => {
+  broadcastSessionEvent(sessionId, 'permissions:updated', { guestId, permissions });
+});
+
+sessionManager.on('session:guestRemoved', ({ sessionId, guestId, reason }) => {
+  broadcastSessionEvent(sessionId, 'guest:removed', { guestId, reason });
+});
+
+sessionManager.on('session:terminated', ({ sessionId }) => {
+  broadcastSessionEvent(sessionId, 'session:terminated', {});
+});
+
+sessionManager.on('session:knockCancelled', ({ sessionId, guestId }) => {
+  sendToSessionHost(sessionId, 'knock:cancelled', { guestId });
+});
+
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`Collaboration server (y-websocket) listening on port ${PORT}`);
   console.log(`[Collab DEBUG] Server started with persistence: ${LeveldbPersistence ? 'LevelDB' : 'In-Memory'}`);
