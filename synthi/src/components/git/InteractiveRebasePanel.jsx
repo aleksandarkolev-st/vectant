@@ -1,7 +1,7 @@
 'use client';
 import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { useDispatch } from 'react-redux';
-import { interactiveRebase } from '@/redux/gitSlice';
+import { interactiveRebase, fetchCommitHistory, fetchGitStatus, fetchUnpushedCommits } from '@/redux/gitSlice';
 import { toast } from 'sonner';
 import {
   GripVertical, Play, X, ChevronDown, Edit3,
@@ -194,9 +194,18 @@ export default function InteractiveRebasePanel({ commits, slug, onClose }) {
 
       if (interactiveRebase.fulfilled.match(result)) {
         toast.success('Interactive rebase completed');
+        // Auto-refresh all git state after rebase
+        dispatch(fetchCommitHistory({ slug }));
+        dispatch(fetchGitStatus(slug));
+        dispatch(fetchUnpushedCommits({ slug, max: 50 }));
         onClose?.();
       } else {
-        toast.error(result.error?.message || 'Rebase failed');
+        const errMsg = result.error?.message || 'Rebase failed';
+        if (/conflict/i.test(errMsg)) {
+          toast.error('Rebase stopped due to conflicts. Resolve them and use rebase continue.', { duration: 6000 });
+        } else {
+          toast.error(errMsg);
+        }
       }
     } catch (err) {
       toast.error(err.message || 'Rebase failed');
