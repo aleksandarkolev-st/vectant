@@ -210,6 +210,38 @@ class GitService {
         return new GitError(e.message || 'Unknown git error', 'GIT_ERROR');
     }
 
+    /**
+     * Extract an auth token from the push URL of the first configured remote.
+     * Supports formats like:
+     *   https://<token>@github.com/owner/repo.git
+     *   https://x-access-token:<token>@github.com/owner/repo.git
+     *   https://oauth2:<token>@github.com/owner/repo.git
+     *
+     * @param {object} git - simple-git instance
+     * @returns {Promise<string|null>} The extracted token, or null
+     */
+    async _extractTokenFromRemoteUrl(git) {
+        try {
+            const remotes = await git.getRemotes(true);
+            if (!remotes || remotes.length === 0) return null;
+            const pushUrl = remotes[0]?.refs?.push || remotes[0]?.refs?.fetch;
+            if (!pushUrl || !pushUrl.startsWith('https://')) return null;
+
+            const parsed = new URL(pushUrl);
+            // Password field takes priority (https://user:<token>@host)
+            if (parsed.password) {
+                return decodeURIComponent(parsed.password);
+            }
+            // Username-only token (https://<token>@host) — skip known non-token usernames
+            if (parsed.username && parsed.username !== 'git' && parsed.username !== 'oauth2' && parsed.username !== 'x-access-token') {
+                return decodeURIComponent(parsed.username);
+            }
+            return null;
+        } catch (_) {
+            return null;
+        }
+    }
+
     getRepoPath(slug) {
         return path.join(this.baseDir, slug);
     }
@@ -845,11 +877,15 @@ class GitService {
         }, userId);
     }
 
-    async fetch(slug, userId) {
+    async fetch(slug, userId, token) {
         return this.withLock(slug, async () => {
             try {
                 const git = this.getGit(slug, userId);
-                await git.fetch();
+                if (token) {
+                    await git.raw(['-c', `http.extraheader=Authorization: Bearer ${token}`, 'fetch']);
+                } else {
+                    await git.fetch();
+                }
                 return this.getStatus(slug, userId);
             } catch (e) {
                 throw this.mapGitError(e, slug);
@@ -982,12 +1018,24 @@ class GitService {
         }, userId);
     }
 
-    async push(slug, userId) {
+    async push(slug, userId, token) {
         return this.withLock(slug, async () => {
             const git = this.getGit(slug, userId);
             // Make sure we don't trigger interactive credential prompts in the server process
             const prev = process.env.GIT_TERMINAL_PROMPT;
             process.env.GIT_TERMINAL_PROMPT = '0';
+
+            // If no explicit token provided, try to extract one from the remote URL
+            let effectiveToken = token;
+            if (!effectiveToken) {
+                effectiveToken = await this._extractTokenFromRemoteUrl(git);
+            }
+
+            // If a token is provided, configure git to use it for this operation
+            const extraHeaderConfig = effectiveToken
+                ? ['-c', `http.extraheader=Authorization: Bearer ${effectiveToken}`]
+                : [];
+
             try {
                 // If no remotes configured, attempt to auto-add from workspace metadata
                 const remotes = await git.getRemotes(true);
@@ -1006,7 +1054,11 @@ class GitService {
                     }
                 }
 
-                await git.push();
+                if (effectiveToken) {
+                    await git.raw([...extraHeaderConfig, 'push']);
+                } else {
+                    await git.push();
+                }
             } catch (e) {
                 const msg = (e.message || '').toLowerCase();
 
@@ -1021,7 +1073,11 @@ class GitService {
                             throw new RemoteNotConfiguredError();
                         }
                         try {
-                            await git.push(remoteToUse, currentBranch, ['--set-upstream']);
+                            if (effectiveToken) {
+                                await git.raw([...extraHeaderConfig, 'push', '--set-upstream', remoteToUse, currentBranch]);
+                            } else {
+                                await git.push(remoteToUse, currentBranch, ['--set-upstream']);
+                            }
                         } catch (pushErr) {
                             throw this.mapGitError(pushErr, slug);
                         }
@@ -1067,6 +1123,23 @@ class GitService {
         }, userId);
     }
 
+    /**
+     * Update the URL of an existing remote.
+     *
+     * Uses `git remote set-url <name> <url>` under the hood.
+     */
+    async setRemoteUrl(slug, name, url, userId) {
+        return this.withLock(slug, async () => {
+            try {
+                const git = this.getGit(slug, userId);
+                await git.remote(['set-url', name, url]);
+                return await this.getRemotes(slug, userId);
+            } catch (e) {
+                throw this.mapGitError(e, slug);
+            }
+        }, userId);
+    }
+
     async getRemotes(slug, userId) {
         try {
             const git = this.getGit(slug, userId);
@@ -1076,11 +1149,24 @@ class GitService {
         }
     }
 
-    async pull(slug, userId) {
+    async pull(slug, userId, token) {
         return this.withLock(slug, async () => {
             const git = this.getGit(slug, userId);
             try {
-                const pullResult = await git.pull();
+                // If no explicit token provided, try to extract one from the remote URL
+                let effectiveToken = token;
+                if (!effectiveToken) {
+                    effectiveToken = await this._extractTokenFromRemoteUrl(git);
+                }
+
+                let pullResult;
+                if (effectiveToken) {
+                    // Use git raw command with extraheader for token auth
+                    const output = await git.raw(['-c', `http.extraheader=Authorization: Bearer ${effectiveToken}`, 'pull']);
+                    pullResult = { summary: { changes: 0, insertions: 0, deletions: 0 } };
+                } else {
+                    pullResult = await git.pull();
+                }
                 const status = await this.getStatus(slug, userId);
                 
                 // Check for merge conflicts after pull (in case pull succeeded but left conflicts)
@@ -1211,6 +1297,63 @@ class GitService {
                 throw this.mapGitError(e, slug);
             }
         }, userId);
+    }
+
+    // Cherry-pick a commit onto the current branch
+    async cherryPick(slug, hash, userId) {
+        return this.withLock(slug, async () => {
+            try {
+                const git = this.getGit(slug, userId);
+                await git.raw(['cherry-pick', hash]);
+                return this.getStatus(slug, userId);
+            } catch (e) {
+                throw this.mapGitError(e, slug);
+            }
+        }, userId);
+    }
+
+    // Revert a commit (create an inverse commit)
+    async revertCommit(slug, hash, userId) {
+        return this.withLock(slug, async () => {
+            try {
+                const git = this.getGit(slug, userId);
+                await git.raw(['revert', hash]);
+                return this.getStatus(slug, userId);
+            } catch (e) {
+                throw this.mapGitError(e, slug);
+            }
+        }, userId);
+    }
+
+    // Get detailed information about a specific commit
+    async getCommitDetail(slug, hash, userId) {
+        try {
+            const git = this.getGit(slug, userId);
+            const showOutput = await git.show(['--format=%H%n%an%n%ae%n%aI%n%s%n%b', '--stat', hash]);
+            const diff = await git.show(['--format=', '--patch', hash]);
+
+            const lines = showOutput.split('\n');
+            const commitHash = lines[0] || '';
+            const author_name = lines[1] || '';
+            const author_email = lines[2] || '';
+            const date = lines[3] || '';
+            const subject = lines[4] || '';
+
+            // Body runs from line 5 until the stat summary (blank line before stat block)
+            let bodyEnd = 5;
+            for (let i = lines.length - 1; i >= 5; i--) {
+                if (lines[i].trim() === '') { bodyEnd = i; break; }
+            }
+            const body = lines.slice(5, bodyEnd).join('\n').trim();
+
+            // Stat lines come after the body blank line
+            const statLines = lines.slice(bodyEnd + 1).filter(l => l.trim() !== '' && !l.includes('changed'));
+            const files = statLines.map(l => l.trim().split(/\s+\|/)[0].trim()).filter(Boolean);
+
+            return { hash: commitHash, author_name, author_email, date, subject, body, files, diff };
+        } catch (e) {
+            throw this.mapGitError(e, slug);
+        }
     }
 
     // Abort current merge (discard all merge changes)
