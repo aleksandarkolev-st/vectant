@@ -13,8 +13,8 @@ import { refreshWorkspaceThunk, openDiffThunk, fetchFilesThunk, selectFileThunk 
 import {
   RefreshCw, Check, CheckCircle2, UploadCloud, Plus, Minus, DownloadCloud,
   Undo2, Globe, Trash2, Copy, Archive, ArchiveRestore,
-  AlertTriangle, GitMerge, X, Edit3, Search, ChevronDown, ChevronRight,
-  ExternalLink, ShieldAlert, ArrowUpCircle, ArrowDownCircle, GitPullRequest, Key, Maximize2
+  AlertTriangle, GitMerge, X, Edit3, Search, ChevronDown, ChevronRight, ShieldAlert,
+  ExternalLink, ArrowUpCircle, ArrowDownCircle, GitPullRequest, Key, Maximize2
 } from 'lucide-react';
 import { fetchGithubInfo, fetchPRList, setActivePR, setHasToken } from '@/redux/prSlice';
 import { getStoredToken } from '@/services/prClient';
@@ -429,13 +429,20 @@ export function GitStatus({ slug }) {
     }
   };
 
-  const handlePush = async () => {
+  const handlePush = async (force = false) => {
     if (!slug) return;
-    const result = await dispatch(pushChanges(slug));
+    if (force && !window.confirm('Force push will overwrite remote history. This uses --force-with-lease for safety. Continue?')) return;
+    const result = await dispatch(pushChanges(force ? { slug, force: true } : slug));
     if (pushChanges.fulfilled.match(result)) {
-      toast.success('Pushed to remote');
+      toast.success(force ? 'Force pushed to remote' : 'Pushed to remote');
     } else if (pushChanges.rejected.match(result)) {
-      toast.error(result.payload?.message || result.error?.message || 'Push failed');
+      const errMsg = result.payload?.message || result.error?.message || 'Push failed';
+      // Suggest force push if rejected due to non-fast-forward
+      if (!force && /non-fast-forward|rejected|fetch first|cannot lock ref/i.test(errMsg)) {
+        toast.error('Push rejected — remote has changes. Try Force Push (uses --force-with-lease).', { duration: 6000 });
+      } else {
+        toast.error(errMsg);
+      }
     }
   };
 
@@ -721,7 +728,8 @@ export function GitStatus({ slug }) {
             className="hover:bg-[#27272a] p-1 rounded text-[#a1a1aa] hover:text-[#e4e4e7] transition-colors disabled:opacity-50">
             <DownloadCloud className="w-3 h-3" strokeWidth={1.5} />
           </button>
-          <button onClick={handlePush} disabled={loading} title="Push to Remote"
+          <button onClick={() => handlePush(false)} onContextMenu={e => { e.preventDefault(); handlePush(true); }} disabled={loading}
+            title="Push to Remote (right-click for Force Push)"
             className="hover:bg-[#27272a] p-1 rounded text-[#a1a1aa] hover:text-[#e4e4e7] transition-colors disabled:opacity-50">
             <UploadCloud className="w-3 h-3" strokeWidth={1.5} />
           </button>
@@ -969,10 +977,17 @@ export function GitStatus({ slug }) {
                   </li>
                 ))}
               </ul>
-              <button onClick={handlePush}
-                className="mt-1.5 w-full border border-[#3b82f6]/40 bg-transparent hover:bg-[#3b82f6]/10 text-[#3b82f6] py-0.5 rounded text-xs transition-colors">
-                Push {unpushedCommits.length} commit{unpushedCommits.length > 1 ? 's' : ''}
-              </button>
+              <div className="mt-1.5 flex gap-1">
+                <button onClick={() => handlePush(false)}
+                  className="flex-1 border border-[#3b82f6]/40 bg-transparent hover:bg-[#3b82f6]/10 text-[#3b82f6] py-0.5 rounded text-xs transition-colors">
+                  Push {unpushedCommits.length} commit{unpushedCommits.length > 1 ? 's' : ''}
+                </button>
+                <button onClick={() => handlePush(true)}
+                  className="border border-amber-500/40 bg-transparent hover:bg-amber-500/10 text-amber-400 py-0.5 px-1.5 rounded text-xs transition-colors"
+                  title="Force Push (--force-with-lease)">
+                  <ShieldAlert className="w-3 h-3" />
+                </button>
+              </div>
             </>
           ) : (
             <div className="text-[10px] text-[#52525b] px-1 italic">Nothing to push</div>
