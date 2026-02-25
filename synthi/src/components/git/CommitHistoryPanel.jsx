@@ -360,8 +360,10 @@ function FilterBar({
 export default function CommitHistoryPanel({ slug }) {
   const dispatch = useDispatch();
   const { commitHistory, commitDetail, commitDetailLoading, loading } = useSelector(s => s.git);
+  const unpushedCommits = useSelector(s => s.git.unpushedCommits);
   const remotes = useSelector(s => s.git.remotes);
   const primaryRemoteUrl = remotes?.[0]?.refs?.push ?? null;
+  const unpushedHashes = useMemo(() => new Set((unpushedCommits || []).map(c => c.hash)), [unpushedCommits]);
 
   const [searchQuery, setSearchQuery] = useState('');
   const [authorFilter, setAuthorFilter] = useState('');
@@ -591,6 +593,8 @@ export default function CommitHistoryPanel({ slug }) {
                   const cc = parseConventionalCommit(commit.message);
                   const isSelected = selectedHash === commit.hash;
                   const isoDate = commit.date ? new Date(commit.date).toISOString() : '';
+                  const isHead = gIdx === 0;
+                  const isUnpushed = unpushedHashes.has(commit.hash);
 
                   return (
                     <div
@@ -598,7 +602,9 @@ export default function CommitHistoryPanel({ slug }) {
                       className={`flex items-center cursor-pointer transition-colors border-l-2
                         ${isSelected
                           ? 'bg-[#3b82f6]/10 border-l-[#3b82f6]'
-                          : 'hover:bg-[#27272a] border-l-transparent'
+                          : isUnpushed
+                            ? 'hover:bg-[#27272a] border-l-amber-500/40 bg-amber-500/[0.03]'
+                            : 'hover:bg-[#27272a] border-l-transparent'
                         }`}
                       onClick={() => handleCommitClick(commit)}
                       onContextMenu={e => handleContextMenu(e, commit)}
@@ -608,6 +614,16 @@ export default function CommitHistoryPanel({ slug }) {
                       <div className="flex-1 min-w-0 py-1.5 pr-2">
                         <div className="flex items-center gap-1.5">
                           <code className="font-mono text-[10px] text-[#52525b] flex-shrink-0">{commit.hash?.substring(0, 7)}</code>
+                          {isHead && (
+                            <span className="text-[8px] px-1 py-0 rounded font-bold flex-shrink-0 border border-[#3b82f6]/50 text-[#3b82f6] bg-[#3b82f6]/10">
+                              HEAD
+                            </span>
+                          )}
+                          {isUnpushed && !isHead && (
+                            <span className="text-[8px] px-0.5 py-0 rounded flex-shrink-0 text-amber-400" title="Unpushed">
+                              ↑
+                            </span>
+                          )}
                           {/* Branch / tag ref badges */}
                           {(refsMap[commit.hash?.substring(0, 7)] || []).map((ref, ri) => (
                             <span key={ri} className={`text-[9px] px-1 py-0 rounded font-medium flex-shrink-0 inline-flex items-center gap-0.5 border ${
