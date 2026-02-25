@@ -190,6 +190,16 @@ export const revertCommit = createAsyncThunk(
     }
 );
 
+export const interactiveRebase = createAsyncThunk(
+    'git/interactiveRebase',
+    async ({ slug, baseCommit, operations }, { dispatch }) => {
+        await gitClient.interactiveRebase(slug, baseCommit, operations);
+        dispatch(fetchGitStatus(slug));
+        dispatch(fetchCommitHistory({ slug }));
+        dispatch(fetchUnpushedCommits({ slug, max: 50 }));
+    }
+);
+
 export const fetchCommitDetail = createAsyncThunk(
     'git/fetchCommitDetail',
     async ({ slug, hash }) => {

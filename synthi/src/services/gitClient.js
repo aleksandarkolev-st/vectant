@@ -260,6 +260,10 @@ export const gitClient = {
         return this.request(slug, 'revert', { hash });
     },
 
+    async interactiveRebase(slug, baseCommit, operations) {
+        return this.request(slug, 'interactive-rebase', { baseCommit, operations });
+    },
+
     async getCommitDetail(slug, hash) {
         return this.request(slug, 'commit-detail', { hash });
     },
