@@ -264,6 +264,14 @@ export const gitClient = {
         return this.request(slug, 'interactive-rebase', { baseCommit, operations });
     },
 
+    async rebaseAbort(slug) {
+        return this.request(slug, 'rebase-abort');
+    },
+
+    async rebaseContinue(slug) {
+        return this.request(slug, 'rebase-continue');
+    },
+
     async getCommitDetail(slug, hash) {
         return this.request(slug, 'commit-detail', { hash });
     },

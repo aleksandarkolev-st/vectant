@@ -200,6 +200,25 @@ export const interactiveRebase = createAsyncThunk(
     }
 );
 
+export const rebaseAbort = createAsyncThunk(
+    'git/rebaseAbort',
+    async ({ slug }, { dispatch }) => {
+        await gitClient.rebaseAbort(slug);
+        dispatch(fetchGitStatus(slug));
+        dispatch(fetchCommitHistory({ slug }));
+    }
+);
+
+export const rebaseContinue = createAsyncThunk(
+    'git/rebaseContinue',
+    async ({ slug }, { dispatch }) => {
+        await gitClient.rebaseContinue(slug);
+        dispatch(fetchGitStatus(slug));
+        dispatch(fetchCommitHistory({ slug }));
+        dispatch(fetchUnpushedCommits({ slug, max: 50 }));
+    }
+);
+
 export const fetchCommitDetail = createAsyncThunk(
     'git/fetchCommitDetail',
     async ({ slug, hash }) => {
