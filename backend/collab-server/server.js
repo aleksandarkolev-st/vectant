@@ -1356,7 +1356,7 @@ const server = http.createServer(async (req, res) => {
       const sessionId = `ai-${crypto.randomUUID().slice(0, 8)}`;
 
       // Create a real PTY with a known session ID
-      const { ptyProcess, cwd } = createHeadlessSession(sessionId, slug);
+      const { ptyProcess, cwd } = createHeadlessSession(sessionId, slug, parsed.userId || '');
 
       console.log(`[ExecTerminal] slug=${slug} cwd=${cwd} sessionId=${sessionId} cmd=${command.slice(0, 120)}`);
 

@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState, useCallback } from 'react';
+import { useSession } from 'next-auth/react';
 import { useCollabSession } from '@/hooks/useCollabSession';
 import {
   Users, Link2, Copy, Check, X, Shield, ShieldOff,
@@ -36,6 +37,7 @@ const RISK_COLORS = {
  *   - Terminate Session button
  */
 export default function SessionControlPanel({ slug }) {
+  const { data: authSession } = useSession();
   const {
     role, session, guests, pendingKnocks, isHost,
     createSession, admitGuest, denyKnock, updatePermissions,
@@ -49,9 +51,12 @@ export default function SessionControlPanel({ slug }) {
   // ── Create session ─────────────────────────────────────────────────────
 
   const handleCreate = useCallback(async (defaultPerms) => {
-    // TODO: get userId from auth context
-    const userId = typeof window !== 'undefined' ? localStorage.getItem('synthi-user-id') || 'host' : 'host';
-    const userName = typeof window !== 'undefined' ? localStorage.getItem('synthi-user-name') || 'Host' : 'Host';
+    const userId = authSession?.user?.id || authSession?.user?.email
+      || (typeof window !== 'undefined' ? localStorage.getItem('synthi-user-id') : null)
+      || 'host';
+    const userName = authSession?.user?.name || authSession?.user?.email
+      || (typeof window !== 'undefined' ? localStorage.getItem('synthi-user-name') : null)
+      || 'Host';
     await createSession({
       hostId: userId,
       hostName: userName,
@@ -60,7 +65,7 @@ export default function SessionControlPanel({ slug }) {
     });
     setShowCreate(false);
     setExpanded(true);
-  }, [createSession, slug]);
+  }, [createSession, slug, authSession]);
 
   // ── Copy invite link ──────────────────────────────────────────────────
 

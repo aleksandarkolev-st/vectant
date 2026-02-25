@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState, useCallback, useEffect, useRef } from 'react';
+import { useSession } from 'next-auth/react';
 import { useCollabSession } from '@/hooks/useCollabSession';
 import collabSessionService from '@/services/collabSessionService';
 import WorkspaceUsersPanel from './WorkspaceUsersPanel';
@@ -34,6 +35,7 @@ const PERM_CONFIG = [
  *   - Online users list + invite/join actions
  */
 export default function ShareModal({ slug, open, onClose }) {
+  const { data: authSession } = useSession();
   const {
     role, isHost, isGuest, isKnocking, isActive, session,
     guests, pendingKnocks, pendingSession, hasPendingSession, permissions,
@@ -110,15 +112,19 @@ export default function ShareModal({ slug, open, onClose }) {
   }, [joinCode, joinByCode]);
 
   const handleStartSession = useCallback(async () => {
-    const userId = typeof window !== 'undefined' ? localStorage.getItem('synthi-user-id') || 'host' : 'host';
-    const userName = typeof window !== 'undefined' ? localStorage.getItem('synthi-user-name') || 'Host' : 'Host';
+    const userId = authSession?.user?.id || authSession?.user?.email
+      || (typeof window !== 'undefined' ? localStorage.getItem('synthi-user-id') : null)
+      || 'host';
+    const userName = authSession?.user?.name || authSession?.user?.email
+      || (typeof window !== 'undefined' ? localStorage.getItem('synthi-user-name') : null)
+      || 'Host';
     await createSession({
       hostId: userId,
       hostName: userName,
       slug,
       defaultPerms: { canEdit: true, canTerminal: false, canGit: false, canFileOps: true },
     });
-  }, [createSession, slug]);
+  }, [createSession, slug, authSession]);
 
   if (!open) return null;
 
