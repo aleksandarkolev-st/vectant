@@ -509,7 +509,59 @@ export function insertMarkdownFormatting(textareaRef, item) {
  */
 export function handleMarkdownKeyDown(e, textareaRef) {
   const ctrl = e.ctrlKey || e.metaKey;
-  if (!ctrl) return;
+  if (!ctrl) {
+    // Smart list continuation on Enter (no modifier)
+    if (e.key === 'Enter' && !e.shiftKey) {
+      const ta = textareaRef?.current;
+      if (!ta) return;
+      const { selectionStart } = ta;
+      const text = ta.value;
+
+      // Find the current line
+      const lineStart = text.lastIndexOf('\n', selectionStart - 1) + 1;
+      const currentLine = text.slice(lineStart, selectionStart);
+
+      // Match list markers: "  - ", "  * ", "  1. ", "  - [ ] ", "  - [x] "
+      const listMatch = currentLine.match(/^(\s*)([-*]|\d+\.)(\s+(?:\[[ x]\]\s*)?)/);
+      if (listMatch) {
+        const indent = listMatch[1];
+        const marker = listMatch[2];
+        const afterMarker = listMatch[3];
+        const contentAfterMarker = currentLine.slice(listMatch[0].length);
+
+        // If line only has the marker (empty item) → remove the marker
+        if (!contentAfterMarker.trim()) {
+          e.preventDefault();
+          // Select the empty list marker line and replace with empty line
+          ta.setSelectionRange(lineStart, selectionStart);
+          document.execCommand('insertText', false, '');
+          ta.dispatchEvent(new Event('input', { bubbles: true }));
+          return;
+        }
+
+        // Auto-insert next marker
+        e.preventDefault();
+        let nextMarker;
+        if (/^\d+/.test(marker)) {
+          // Increment numbered list
+          const num = parseInt(marker, 10) + 1;
+          nextMarker = `${num}.`;
+        } else {
+          nextMarker = marker;
+        }
+
+        // Check if current line had a checkbox
+        const hasCheckbox = /\[[ x]\]/.test(afterMarker);
+        const checkboxPart = hasCheckbox ? '[ ] ' : afterMarker;
+
+        const insertText = `\n${indent}${nextMarker}${hasCheckbox ? ' ' + checkboxPart : afterMarker}`;
+        document.execCommand('insertText', false, insertText);
+        ta.dispatchEvent(new Event('input', { bubbles: true }));
+        return;
+      }
+    }
+    return;
+  }
 
   for (const item of MD_TOOLBAR_ITEMS) {
     if (!item.shortcut) continue;
