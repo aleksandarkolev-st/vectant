@@ -263,19 +263,35 @@ export default function EditorPage({ params }) {
     });
 
     // ── Problems panel imperative expand/collapse ───────────────────────
-    // Use RAF so the call happens after react-resizable-panels finishes its
-    // first layout measurement — otherwise resize() is silently ignored.
+    // Open: expand panel (CSS flex transition handles the smooth slide-up).
+    // Close: collapse after a short delay so the content opacity fades first.
     useEffect(() => {
         const panel = problemsPanelRef.current;
         if (!panel) return;
-        const rafId = requestAnimationFrame(() => {
-            if (showProblemsPanel && isProblemsPanelDocked) {
+
+        let rafId;
+        let timerId;
+
+        if (showProblemsPanel && isProblemsPanelDocked) {
+            // Expand – use RAF so the call happens after react-resizable-panels
+            // finishes its first layout measurement.
+            rafId = requestAnimationFrame(() => {
                 panel.resize(25);
-            } else {
-                panel.collapse();
-            }
-        });
-        return () => cancelAnimationFrame(rafId);
+            });
+        } else {
+            // Collapse – let content opacity transition (150ms) play first,
+            // then collapse the panel slot so the slide-down looks intentional.
+            timerId = setTimeout(() => {
+                rafId = requestAnimationFrame(() => {
+                    panel.collapse();
+                });
+            }, 120);
+        }
+
+        return () => {
+            cancelAnimationFrame(rafId);
+            clearTimeout(timerId);
+        };
     }, [showProblemsPanel, isProblemsPanelDocked]);
 
     useEffect(() => {
@@ -2230,8 +2246,10 @@ export default function EditorPage({ params }) {
                         {/* Problems dock slot — always present, expanded/collapsed imperatively for smooth animation */}
                         <ResizableHandle
                             className={cn(
-                                "!pointer-events-auto bg-[#1a1a1e] hover:bg-[#3A7AFE] h-px z-50 transition-opacity duration-300",
-                                (!showProblemsPanel || !isProblemsPanelDocked) && "opacity-0 pointer-events-none"
+                                "!pointer-events-auto h-px z-50 transition-all duration-300",
+                                showProblemsPanel && isProblemsPanelDocked
+                                    ? "bg-[#1a1a1e] hover:bg-[#3A7AFE]"
+                                    : "opacity-0 pointer-events-none"
                             )}
                         />
                         <ResizablePanel
@@ -2240,13 +2258,20 @@ export default function EditorPage({ params }) {
                             minSize={10}
                             collapsible={true}
                             collapsedSize={0}
-                            style={{ transition: 'flex 300ms cubic-bezier(0.4, 0, 0.2, 1)' }}
+                            className="overflow-hidden"
+                            style={{
+                                transition: 'flex 350ms cubic-bezier(0.4, 0, 0.2, 1)',
+                                willChange: 'flex-grow',
+                            }}
                         >
                             <div
                                 className={cn(
-                                    "h-full transition-opacity duration-300",
-                                    (!showProblemsPanel || !isProblemsPanelDocked) && "opacity-0"
+                                    "h-full overflow-hidden border-t",
+                                    showProblemsPanel && isProblemsPanelDocked
+                                        ? "opacity-100 transition-opacity duration-200 delay-100"
+                                        : "opacity-0 transition-opacity duration-150"
                                 )}
+                                style={{ borderColor: 'var(--border-medium, #1a1a1e)' }}
                                 id="problems-panel-dock-slot"
                             />
                         </ResizablePanel>
