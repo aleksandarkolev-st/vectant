@@ -91,10 +91,28 @@ export default function TerminalManager({ visible, onCloseAll, workspaceSlug = '
     const effectiveShell = shellType || defaultShellPref;
     const meta = effectiveShell ? getShellMeta(effectiveShell) : { label: 'Terminal' };
     const id = `term-${Date.now()}`;
-    const newTerm = { id, label: meta.label, split: false, shellType: effectiveShell };
+    // Count existing terminals with same shell type for unique numbering
+    const sameShellCount = terminals.filter(t => 
+      (t.shellType || null) === (effectiveShell || null) && !t.isAi
+    ).length;
+    const label = sameShellCount > 0 ? `${meta.label} ${sameShellCount + 1}` : meta.label;
+    const newTerm = { id, label, split: false, shellType: effectiveShell };
     setTerminals(prev => [...prev, newTerm]);
     setActiveId(id);
   };
+
+  // ── Keyboard shortcut: Ctrl+Shift+` to create new terminal ──────────
+  useEffect(() => {
+    if (!visible) return;
+    const handleKeyDown = (e) => {
+      if (e.ctrlKey && e.shiftKey && e.key === '`') {
+        e.preventDefault();
+        addTerminal();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [visible, defaultShellPref, terminals.length]);
 
   const toggleSplit = () => {
     setTerminals(prev => prev.map(t => t.id === activeId ? { ...t, split: !t.split } : t));
@@ -215,10 +233,19 @@ export default function TerminalManager({ visible, onCloseAll, workspaceSlug = '
       
       {/* Actions - Larger click targets */}
       <div className="flex items-center gap-1">
+        {/* Terminal count badge */}
+        {terminals.length > 1 && (
+          <span
+            className="text-[9px] px-1.5 py-0.5 rounded font-medium mr-1"
+            style={{ color: 'var(--text-muted)', background: 'var(--bg-elevated)' }}
+          >
+            {terminals.length}
+          </span>
+        )}
         <button 
           className="w-8 h-8 flex items-center justify-center rounded th-btn-ghost transition-colors" 
           onClick={() => addTerminal()} 
-          title="New Terminal (Default Shell)"
+          title="New Terminal (Ctrl+Shift+`)"
         >
           <Plus className="w-4 h-4" strokeWidth={2} />
         </button>
