@@ -9,11 +9,11 @@ import { fetchGitStatus, forceRefreshGitStatus } from '@/redux/gitSlice';
 import collabClient from '@/services/collabClient';
 import collabSessionService from '@/services/collabSessionService';
 import { USER_ID_KEY, USER_NAME_KEY, USER_AVATAR_KEY } from '@/services/userIdentity';
-import { 
-    selectShowTerminal, 
+import {
+    selectShowTerminal,
     selectShowEmulatorPreview,
-    selectTreeOnRight, 
-    toggleTerminal, 
+    selectTreeOnRight,
+    toggleTerminal,
     setTreeOrientation,
     setEmulatorPreviewVisible
 } from '@/redux/uiSlice';
@@ -79,7 +79,7 @@ export default function EditorPage({ params }) {
     const dispatch = useAppDispatch();
     const { data: authSession, status: authStatus } = useSession();
     const router = useRouter();
-    
+
     // ── Auth guard: redirect unauthenticated users to the home page ─────
     useEffect(() => {
         if (authStatus === 'unauthenticated') {
@@ -95,22 +95,23 @@ export default function EditorPage({ params }) {
     useEffect(() => {
         if (authSession?.user) {
             const { id, name, email, image } = authSession.user;
-            if (id || email)  localStorage.setItem(USER_ID_KEY, id || email);
+            if (id || email) localStorage.setItem(USER_ID_KEY, id || email);
             // Persist a human-readable name — prefer display name, then email
             // local part, to avoid leaking opaque database IDs into the UI.
             const displayName = name || (email ? email.split('@')[0] : null);
-            if (displayName)  localStorage.setItem(USER_NAME_KEY, displayName);
-            if (image)        localStorage.setItem(USER_AVATAR_KEY, image);
+            if (displayName) localStorage.setItem(USER_NAME_KEY, displayName);
+            if (image) localStorage.setItem(USER_AVATAR_KEY, image);
         }
     }, [authSession]);
-    
+
     // 1. Consume the slug parameter first (needed by hooks below)
     const { slug } = use(params);
-    
+
     const [chatVisible, setChatVisible] = useState(false);
     const [sidebarView, setSidebarView] = useState('explorer');
     const [showProblemsPanel, setShowProblemsPanel] = useState(false);
     const [isProblemsPanelDocked, setIsProblemsPanelDocked] = useState(true); // Track if panel is docked or floating
+    const problemsPanelRef = useRef(null); // Imperative handle for the dock slot ResizablePanel
     const [guiConfig, setGuiConfig] = useState(null);
     const [isGuiRunning, setIsGuiRunning] = useState(false);
     const [isHmrRecompiling, setIsHmrRecompiling] = useState(false);
@@ -147,13 +148,13 @@ export default function EditorPage({ params }) {
         requestTreeRefresh,
         viewsWelcome: extensionViewsWelcome,
     } = useExtensions({ editor, workspaceId: slug });
-    
+
     // Collaboration event toast notifications
     useCollabNotifications();
-    
+
     // Code Intelligence - auto-index workspace for AI context retrieval
-    const { 
-        isIndexing: isCodeIntelIndexing, 
+    const {
+        isIndexing: isCodeIntelIndexing,
         isIndexed: isCodeIntelIndexed,
         filesIndexed: codeIntelFilesIndexed,
         indexWorkspace: triggerCodeIntelIndex,
@@ -167,7 +168,7 @@ export default function EditorPage({ params }) {
             console.log(`[Workspace] Code intelligence ready: ${result.files_indexed} files indexed`);
         },
     });
-    
+
     const [latestCompletion, setLatestCompletion] = useState(null);
     const [completionClearSignal, setCompletionClearSignal] = useState(0);
     const [buildLogs, setBuildLogs] = useState([]);
@@ -178,7 +179,7 @@ export default function EditorPage({ params }) {
     const reconcileRef = useRef({});
     const analysisTimeoutRef = useRef(null);
     const lastAnalyzedSignatureRef = useRef('');
-    
+
     // Proactive analysis state - keyed by file path
     const [diagnostics, setDiagnostics] = useState([]);
     const [isAnalyzingProactive, setIsAnalyzingProactive] = useState(false);
@@ -242,7 +243,7 @@ export default function EditorPage({ params }) {
             return changed ? next : prev;
         });
     }, [normalizePath]);
-    
+
     // Multi-file workspace analysis (cross-file issue detection)
     const {
         trackFileChange,
@@ -260,6 +261,22 @@ export default function EditorPage({ params }) {
         debounceMs: 1200,  // Slightly longer debounce for workspace-level analysis
         includeAi: false,  // Disabled by default, can be enabled via settings
     });
+
+    // ── Problems panel imperative expand/collapse ───────────────────────
+    // Use RAF so the call happens after react-resizable-panels finishes its
+    // first layout measurement — otherwise resize() is silently ignored.
+    useEffect(() => {
+        const panel = problemsPanelRef.current;
+        if (!panel) return;
+        const rafId = requestAnimationFrame(() => {
+            if (showProblemsPanel && isProblemsPanelDocked) {
+                panel.resize(25);
+            } else {
+                panel.collapse();
+            }
+        });
+        return () => cancelAnimationFrame(rafId);
+    }, [showProblemsPanel, isProblemsPanelDocked]);
 
     useEffect(() => {
         const handleGuiStart = (e) => {
@@ -369,8 +386,8 @@ export default function EditorPage({ params }) {
             if (sId && guestId) {
                 collabSessionService.joinAsGuest(sId, guestId, hostId || '', sessionSlug || slug);
             }
-        } catch (_) {}
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+        } catch (_) { }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
     useEffect(() => {
@@ -410,12 +427,12 @@ export default function EditorPage({ params }) {
                                         }
                                         return flat;
                                     };
-                                    
+
                                     const flatFiles = flatten(files);
                                     // Limit to reasonable number of files to avoid overwhelming the browser/network
                                     const MAX_INIT_FILES = 50;
                                     const filesToAnalyze = flatFiles.slice(0, MAX_INIT_FILES);
-                                    
+
                                     // Fetch content for analysis
                                     const filesWithContent = await Promise.all(filesToAnalyze.map(async (f) => {
                                         try {
@@ -425,9 +442,9 @@ export default function EditorPage({ params }) {
                                             return null;
                                         }
                                     }));
-                                    
+
                                     const validFiles = filesWithContent.filter(f => f && f.content);
-                                    
+
                                     if (validFiles.length > 0) {
                                         trackFiles(validFiles);
                                         // Trigger full analysis (AI + Semantic + Static)
@@ -552,18 +569,18 @@ export default function EditorPage({ params }) {
     const removeDiagnosticByLocation = useCallback((location, filePath) => {
         if (!location) return;
         const targetFile = filePath || activeFile?.path || activeFile?.name;
-        
+
         setDiagnostics(prev => prev.filter(d => {
             // Only consider diagnostics from the same file
             if (d.filePath !== targetFile) return true;
-            
+
             const loc = d.location || {};
             // Remove if exact location match
             const sameStart = loc.line === location.line && loc.column === location.column;
             const sameEnd = loc.endLine === location.endLine && loc.endColumn === location.endColumn;
             return !(sameStart && sameEnd);
         }));
-        
+
         // Invalidate the signature so next analysis runs fresh
         // Use requestAnimationFrame to ensure this happens AFTER the content
         // has propagated to Redux (Editor uses rAF to batch content updates)
@@ -611,7 +628,7 @@ export default function EditorPage({ params }) {
     useEffect(() => {
         const currentFilePath = activeFile?.path || activeFile?.name;
         const previousFilePath = currentAnalysisFileRef.current;
-        
+
         // If we're switching files, reset analysis state but keep diagnostics from other files
         if (currentFilePath && previousFilePath && currentFilePath !== previousFilePath) {
             // Reset analysis signature so new file gets analyzed
@@ -631,7 +648,7 @@ export default function EditorPage({ params }) {
                 aiAnalysisRef.current.cancelled = true;
             }
         }
-        
+
         // Update the current file reference
         currentAnalysisFileRef.current = currentFilePath;
     }, [activeFile]);
@@ -705,31 +722,31 @@ export default function EditorPage({ params }) {
     // Get related files for cross-file analysis (includes, imports)
     const getRelatedFilesForAnalysis = useCallback(async () => {
         if (!activeFile || !rawFiles) return [];
-        
+
         // Build a map from fileCacheEntries for fast lookup
         // This contains the LATEST edited content of open files
         const reduxCacheMap = new Map(fileCacheEntries);
-        
+
         const getContentForDep = async (path) => {
             // If it's the active file, use the current editor content
             if (path === activeFile.path) {
                 return typeof currentContent === 'string' ? currentContent : '';
             }
-            
+
             // PRIORITY 1: Check Redux cache (has edited content of open files)
             const reduxCached = reduxCacheMap.get(path);
             if (reduxCached !== undefined) {
                 console.log(`[RELATED FILES] Using Redux cache for ${path}: ${reduxCached?.length || 0} chars`);
                 return reduxCached;
             }
-            
+
             // PRIORITY 2: Check fileCache service (LRU cache)
             const cached = fileCache.get(path);
             if (cached !== undefined) {
                 console.log(`[RELATED FILES] Using fileCache for ${path}: ${cached?.length || 0} chars`);
                 return cached;
             }
-            
+
             // PRIORITY 3: Fetch from server
             try {
                 const fetched = await api.fetchFileContent(slug, path);
@@ -783,16 +800,16 @@ export default function EditorPage({ params }) {
 
     useEffect(() => {
         if (!activeFile || !hasLoadedInitialFile || !slug) return;
-        
+
         // Get content from Monaco if available, falling back to Redux
         // IMPORTANT: On initial load, Monaco might not have Y.js synced changes yet.
         // We use a small delay to allow Y.js to sync before running analysis.
         const getContentToAnalyze = () => {
             return editor ? editor.getValue() : (typeof currentContent === 'string' ? currentContent : '');
         };
-        
+
         let contentToAnalyze = getContentToAnalyze();
-        
+
         // GUARD: Skip analysis if content is empty - this likely means Y.js hasn't synced yet
         // or the file content hasn't been loaded from Redux. We'll re-trigger when content updates.
         if (contentToAnalyze.length === 0) {
@@ -839,19 +856,19 @@ export default function EditorPage({ params }) {
             lastFastSignatureRef.current = '';
             lastAiSignatureRef.current = '';
         }
-        
+
         // DEBUG: Log content hash and preview to trace stale content issues
         console.log(`[page.jsx] Content changed - Hash: ${contentHash}, Length: ${contentToAnalyze.length}`);
-        
+
         // Check if content actually changed for this file compared to last analysis
         const lastFastHash = lastFastHashMapRef.current.get(currentFilePath);
         const lastAiHash = lastAiHashMapRef.current.get(currentFilePath);
-        
+
         // If content hasn't changed since last analysis (e.g. just switched tabs back),
         // DO NOT clear diagnostics and DO NOT trigger new analysis.
         const shouldRunFast = !(lastFastHash === contentHash && !isFileSwitch);
         const shouldRunAi = !(lastAiHash === contentHash && !isFileSwitch);
-        
+
         // Secure behavior: diagnostics are tied to a specific file snapshot.
         // Monaco markers do NOT reliably "shift" with text edits, so keeping them after edits
         // can pin errors to the wrong lines/columns (ghost underlines).
@@ -876,12 +893,12 @@ export default function EditorPage({ params }) {
                 });
             });
         }
-        
+
         // IMPORTANT: Do NOT mark this hash as "analyzed" yet.
         // Fast re-renders (editorVersion bumps, Yjs sync) can cancel the debounce timer.
         // We only record the analyzed hash after a successful response.
         lastContentHashRef.current = contentHash;
-        
+
         // Capture version at request time for stale detection
         const requestVersion = docVersionRef.current;
 
@@ -896,263 +913,263 @@ export default function EditorPage({ params }) {
                 pendingFastSignatureRef.current = scheduledFastSignature;
 
                 proactiveTimeoutRef.current = setTimeout(async () => {
-            // RE-READ CONTENT AT ANALYSIS TIME
-            // This is crucial: content might have changed (e.g., Y.js sync) since
-            // the effect started. Always use the LATEST Monaco content.
-            const freshContent = getContentToAnalyze();
-            const freshContentHash = computeContentHash(freshContent);
-            
-            // If content is empty now, skip (Y.js might still be syncing)
-            if (freshContent.length === 0) {
-                console.log('[page.jsx] Skipping analysis - content became empty, waiting for sync');
-                return;
-            }
-            
-            // DEBUG: Detect if content changed significantly during debounce (indicates Y.js sync race)
-            if (contentHash !== freshContentHash) {
-                const initialLines = contentToAnalyze.split('\n').length;
-                const freshLines = freshContent.split('\n').length;
-                console.log(`[page.jsx] Content changed during debounce: initial ${initialLines} lines -> fresh ${freshLines} lines (using fresh)`);
-            }
-            
-            const langSource =
-                activeFile.language ||
-                (activeFile.name ? getFileLanguage(activeFile.name) : undefined) ||
-                'plaintext';
-            const normalizedLang = langSource.toLowerCase();
-            const signature = `fast::${slug}::${currentFilePath}::${freshContentHash}`;
+                    // RE-READ CONTENT AT ANALYSIS TIME
+                    // This is crucial: content might have changed (e.g., Y.js sync) since
+                    // the effect started. Always use the LATEST Monaco content.
+                    const freshContent = getContentToAnalyze();
+                    const freshContentHash = computeContentHash(freshContent);
 
-            if (lastFastSignatureRef.current === signature) {
-                proactiveTimeoutRef.current = null;
-                return;
-            }
-
-            beginProactive();
-            
-            // DEBUG: Log content preview to trace stale content issues
-            const contentLines = freshContent.split('\n');
-            const leadingBlankCount = contentLines.findIndex(l => l.trim() !== '');
-            const effectiveLeadingBlank = leadingBlankCount === -1 ? contentLines.length : leadingBlankCount;
-            
-            console.log('[page.jsx] === FAST (STATIC+SEMANTIC) ANALYSIS START ===');
-            console.log('[page.jsx] Slug:', slug);
-            console.log('[page.jsx] File:', currentFilePath);
-            console.log('[page.jsx] Language:', normalizedLang);
-            console.log('[page.jsx] Version:', requestVersion);
-            console.log('[page.jsx] Content chars:', freshContent.length);
-            console.log('[page.jsx] Content lines:', contentLines.length);
-            console.log('[page.jsx] Leading blank lines:', effectiveLeadingBlank);
-            console.log('[page.jsx] First non-blank line:', contentLines[effectiveLeadingBlank]?.substring(0, 50) || 'N/A');
-            console.log('[page.jsx] NOTE: Fast pipeline (static+semantic only)');
-            
-            // Use the new unified intelligence pipeline
-            // - Layer A: Static analysis (syntax patterns)
-            // - Layer B: Semantic analysis (CppSemanticAnalyzer, etc.)
-            // - Layer C: AI analysis (optional, auto-triggered when errors found)
-            analyzeUnified({
-                slug,
-                filePath: currentFilePath,
-                lang: normalizedLang,
-                content: freshContent,
-                layers: ['static', 'semantic'],
-                triggerAiOnErrors: false,
-                includeAi: false,
-                version: freshContentHash,           // Use content hash for robust stale detection
-            })
-                .then((result) => {
-                    if (proactiveTimeoutRef.current) proactiveTimeoutRef.current = null;
-                    // STALE DETECTION: Check if version (hash) matches current content hash
-                    // We re-compute hash from current editor content to be absolutely sure
-                    const currentEditorContent = editor ? editor.getValue() : (typeof currentContent === 'string' ? currentContent : '');
-                    const currentEditorHash = computeContentHash(currentEditorContent);
-                    
-                    if (result?.version !== undefined && result.version !== currentEditorHash) {
-                        console.log(`[page.jsx] Ignoring stale diagnostics (hash ${result.version} != current ${currentEditorHash})`);
-                        endProactive();
-                        return;
-                    }
-                    
-                    // Note: Content hash comparison removed - client and server use different algorithms
-                    // Version-based staleness detection is sufficient and more reliable
-                    
-                    console.log('[page.jsx] === FAST ANALYSIS RESULT ===');
-                    console.log('[page.jsx] Layers run:', result?.layers_run);
-                    console.log('[page.jsx] Summary:', result?.summary);
-                    console.log('[page.jsx] Time:', result?.analysis_time_ms, 'ms');
-                    console.log('[page.jsx] Content hash from server:', result?.content_hash);
-
-                    // DEBUG: Backend echo of what it actually analyzed
-                    if (result?.content_debug) {
-                        console.log('[page.jsx] Backend content_debug:', result.content_debug);
-                    }
-                    
-                    const diags = result?.diagnostics || [];
-                    console.log('[page.jsx] Diagnostics count:', diags.length);
-                    
-                    // DEBUG: Print every error and the code line it refers to
-                    // Use currentEditorContent which is the most up-to-date content from Monaco
-                    const sourceLines = (typeof currentEditorContent === 'string' ? currentEditorContent : '').split('\n');
-                    console.log('[page.jsx] Current content lines:', sourceLines.length);
-
-                    // SECURITY GATE: If backend didn't analyze the same snapshot Monaco is showing,
-                    // do NOT apply any diagnostics. This avoids ghost/stale markers.
-                    const countLeadingEmpty = (lines) => {
-                        let n = 0;
-                        while (n < lines.length && lines[n] === '') n++;
-                        return n;
-                    };
-                    const editorLeadingEmpty = countLeadingEmpty(sourceLines);
-                    const backendDebug = result?.content_debug;
-                    if (
-                        backendDebug &&
-                        (backendDebug.line_count !== sourceLines.length || backendDebug.leading_blank_lines !== editorLeadingEmpty)
-                    ) {
-                        console.warn('[page.jsx] Rejecting diagnostics: backend analyzed different content fingerprint than Monaco shows');
-                        console.warn('[page.jsx]   Monaco:', { line_count: sourceLines.length, leading_blank_lines: editorLeadingEmpty });
-                        console.warn('[page.jsx]   Backend:', backendDebug);
-                        // Allow retry on next tick
-                        lastFastHashMapRef.current.delete(currentFilePath);
-                        endProactive();
-                        setTimeout(() => setEditorVersion(v => v + 1), 50);
+                    // If content is empty now, skip (Y.js might still be syncing)
+                    if (freshContent.length === 0) {
+                        console.log('[page.jsx] Skipping analysis - content became empty, waiting for sync');
                         return;
                     }
 
-                    let codeMismatchCount = 0;
-                    diags.forEach((d, i) => {
-                        const lineIdx = d.range?.start ?? d.location?.line ?? 0;
-                        // Adjust for 0-based vs 1-based if needed (usually 0-based in API)
-                        const codeLine = sourceLines[lineIdx] ?? "<LINE OUT OF BOUNDS>";
-                        console.log(`[page.jsx]   [DIAG #${i}] Line ${lineIdx} (display as ${lineIdx + 1}): ${d.message}`);
-                        console.log(`[page.jsx]     Frontend code at line ${lineIdx}: "${codeLine.trim()}"`);
-                        console.log(`[page.jsx]     Backend code at line ${lineIdx}: "${d.codeAtLine || 'N/A'}"`);
-                        if (codeLine.trim() !== (d.codeAtLine || '').trim()) {
-                            console.warn(`[page.jsx]     ⚠️ CODE MISMATCH! Frontend and backend see different content!`);
-                            codeMismatchCount++;
-                        }
-                        console.log(`[page.jsx]     Source: ${d.source || d.tier}`);
-                    });
+                    // DEBUG: Detect if content changed significantly during debounce (indicates Y.js sync race)
+                    if (contentHash !== freshContentHash) {
+                        const initialLines = contentToAnalyze.split('\n').length;
+                        const freshLines = freshContent.split('\n').length;
+                        console.log(`[page.jsx] Content changed during debounce: initial ${initialLines} lines -> fresh ${freshLines} lines (using fresh)`);
+                    }
 
-                    if (codeMismatchCount > 0) {
-                        console.warn(`[page.jsx] Rejecting diagnostics due to ${codeMismatchCount} codeAtLine mismatches`);
-                        // Allow retry; current snapshot should win
-                        lastFastHashMapRef.current.delete(currentFilePath);
-                        endProactive();
-                        setTimeout(() => setEditorVersion(v => v + 1), 50);
+                    const langSource =
+                        activeFile.language ||
+                        (activeFile.name ? getFileLanguage(activeFile.name) : undefined) ||
+                        'plaintext';
+                    const normalizedLang = langSource.toLowerCase();
+                    const signature = `fast::${slug}::${currentFilePath}::${freshContentHash}`;
+
+                    if (lastFastSignatureRef.current === signature) {
+                        proactiveTimeoutRef.current = null;
                         return;
                     }
-                    
-                    // Filter out stale diagnostics where originalText no longer matches current code
-                    const filteredDiags = diags.filter(d => {
-                        // Keep diagnostics without originalText (can't verify staleness)
-                        if (!d.originalText) return true;
-                        
-                        const loc = d.location || {};
-                        const lineNum = loc.line ?? 0;
-                        const endLineNum = loc.endLine ?? lineNum;
-                        const col = loc.column ?? 0;
-                        const endCol = loc.endColumn ?? col;
-                        
-                        // Extract text at diagnostic location from current content
-                        let currentTextAtLocation = '';
-                        try {
-                            if (lineNum === endLineNum && lineNum < sourceLines.length) {
-                                currentTextAtLocation = sourceLines[lineNum].substring(col, endCol);
-                            } else if (lineNum < sourceLines.length) {
-                                // Multi-line
-                                const textParts = [];
-                                for (let i = lineNum; i <= Math.min(endLineNum, sourceLines.length - 1); i++) {
-                                    if (i === lineNum) textParts.push(sourceLines[i].substring(col));
-                                    else if (i === endLineNum) textParts.push(sourceLines[i].substring(0, endCol));
-                                    else textParts.push(sourceLines[i]);
-                                }
-                                currentTextAtLocation = textParts.join('\n');
+
+                    beginProactive();
+
+                    // DEBUG: Log content preview to trace stale content issues
+                    const contentLines = freshContent.split('\n');
+                    const leadingBlankCount = contentLines.findIndex(l => l.trim() !== '');
+                    const effectiveLeadingBlank = leadingBlankCount === -1 ? contentLines.length : leadingBlankCount;
+
+                    console.log('[page.jsx] === FAST (STATIC+SEMANTIC) ANALYSIS START ===');
+                    console.log('[page.jsx] Slug:', slug);
+                    console.log('[page.jsx] File:', currentFilePath);
+                    console.log('[page.jsx] Language:', normalizedLang);
+                    console.log('[page.jsx] Version:', requestVersion);
+                    console.log('[page.jsx] Content chars:', freshContent.length);
+                    console.log('[page.jsx] Content lines:', contentLines.length);
+                    console.log('[page.jsx] Leading blank lines:', effectiveLeadingBlank);
+                    console.log('[page.jsx] First non-blank line:', contentLines[effectiveLeadingBlank]?.substring(0, 50) || 'N/A');
+                    console.log('[page.jsx] NOTE: Fast pipeline (static+semantic only)');
+
+                    // Use the new unified intelligence pipeline
+                    // - Layer A: Static analysis (syntax patterns)
+                    // - Layer B: Semantic analysis (CppSemanticAnalyzer, etc.)
+                    // - Layer C: AI analysis (optional, auto-triggered when errors found)
+                    analyzeUnified({
+                        slug,
+                        filePath: currentFilePath,
+                        lang: normalizedLang,
+                        content: freshContent,
+                        layers: ['static', 'semantic'],
+                        triggerAiOnErrors: false,
+                        includeAi: false,
+                        version: freshContentHash,           // Use content hash for robust stale detection
+                    })
+                        .then((result) => {
+                            if (proactiveTimeoutRef.current) proactiveTimeoutRef.current = null;
+                            // STALE DETECTION: Check if version (hash) matches current content hash
+                            // We re-compute hash from current editor content to be absolutely sure
+                            const currentEditorContent = editor ? editor.getValue() : (typeof currentContent === 'string' ? currentContent : '');
+                            const currentEditorHash = computeContentHash(currentEditorContent);
+
+                            if (result?.version !== undefined && result.version !== currentEditorHash) {
+                                console.log(`[page.jsx] Ignoring stale diagnostics (hash ${result.version} != current ${currentEditorHash})`);
+                                endProactive();
+                                return;
                             }
-                        } catch (e) {
-                            return true; // Keep on error
-                        }
 
-                        // FORCE FILTER: If an AI diagnostic points to purely whitespace, it is almost certainly a ghost error.
-                        // This overrides any other check because AI logic errors should not attach to empty space.
-                        // We check for 'ai' tier or source containing 'ai'.
-                        const isAiDiagnostic = d.tier === 'ai' || (d.source && d.source.toLowerCase().includes('ai'));
-                        if (isAiDiagnostic && !currentTextAtLocation.trim()) {
-                            console.log(`[page.jsx] Filtering ghost AI diagnostic on whitespace at line ${lineNum}`);
-                            return false;
-                        }
-                        
-                        // If originalText is missing, we can't verify staleness strictly.
-                        if (!d.originalText) {
-                            return true;
-                        }
-                        
-                        // If text changed, diagnostic is stale
-                        const isStale = currentTextAtLocation !== d.originalText;
-                        if (isStale) {
-                            console.log(`[page.jsx] Filtering stale diagnostic at line ${lineNum}: originalText doesn't match current code`);
-                            console.log(`[page.jsx]   Expected: "${d.originalText}"`);
-                            console.log(`[page.jsx]   Actual: "${currentTextAtLocation}"`);
-                        }
-                        return !isStale;
-                    });
-                    
-                    console.log(`[page.jsx] After staleness filter: ${filteredDiags.length} diagnostics (removed ${diags.length - filteredDiags.length} stale)`);
-                    
-                    // Normalize diagnostics to consistent format
-                    const normalizedDiags = filteredDiags.map((d, idx) => ({
-                        ...d,
-                        // Strict VFS snapshot gating: only render diagnostics that match
-                        // the exact Monaco snapshot the backend analyzed.
-                        __analysisVersion: result?.version ?? freshContentHash,
-                        __id: d.__id || d.id || `${contentHash}::${idx}`,
-                        filePath: d.filePath || d.file || currentFilePath,
-                        // Normalize location field for ProblemsPanel compatibility
-                        // IMPORTANT: Use ?? instead of || to handle 0 as valid value
-                        location: d.location || {
-                            line: d.range?.start ?? 0,
-                            column: d.range?.startColumn ?? 0,
-                            endLine: d.range?.end ?? d.range?.start ?? 0,
-                            endColumn: d.range?.endColumn ?? 0,
-                        },
-                        // Map source to tier for backward compatibility
-                        tier: d.tier || (d.source?.toLowerCase().includes('ai') ? 'ai' :
-                              d.source?.toLowerCase().includes('semantic') ? 'semantic' : 'static'),
-                    }));
+                            // Note: Content hash comparison removed - client and server use different algorithms
+                            // Version-based staleness detection is sufficient and more reliable
 
-                    // Replace NON-AI diagnostics for this file only (keep AI until AI pass arrives)
-                    setDiagnostics(prev => {
-                        const currentNorm = normalizePath(currentFilePath || '');
-                        const otherFileDiags = prev.filter(d => normalizePath(d.filePath || '') !== currentNorm);
-                        const sameFileAi = prev.filter(d => {
-                            const isSameFile = normalizePath(d.filePath || '') === currentNorm;
-                            if (!isSameFile) return false;
-                            const isAi = d.tier === 'ai' || (d.source && String(d.source).toLowerCase().includes('ai'));
-                            return isAi;
+                            console.log('[page.jsx] === FAST ANALYSIS RESULT ===');
+                            console.log('[page.jsx] Layers run:', result?.layers_run);
+                            console.log('[page.jsx] Summary:', result?.summary);
+                            console.log('[page.jsx] Time:', result?.analysis_time_ms, 'ms');
+                            console.log('[page.jsx] Content hash from server:', result?.content_hash);
+
+                            // DEBUG: Backend echo of what it actually analyzed
+                            if (result?.content_debug) {
+                                console.log('[page.jsx] Backend content_debug:', result.content_debug);
+                            }
+
+                            const diags = result?.diagnostics || [];
+                            console.log('[page.jsx] Diagnostics count:', diags.length);
+
+                            // DEBUG: Print every error and the code line it refers to
+                            // Use currentEditorContent which is the most up-to-date content from Monaco
+                            const sourceLines = (typeof currentEditorContent === 'string' ? currentEditorContent : '').split('\n');
+                            console.log('[page.jsx] Current content lines:', sourceLines.length);
+
+                            // SECURITY GATE: If backend didn't analyze the same snapshot Monaco is showing,
+                            // do NOT apply any diagnostics. This avoids ghost/stale markers.
+                            const countLeadingEmpty = (lines) => {
+                                let n = 0;
+                                while (n < lines.length && lines[n] === '') n++;
+                                return n;
+                            };
+                            const editorLeadingEmpty = countLeadingEmpty(sourceLines);
+                            const backendDebug = result?.content_debug;
+                            if (
+                                backendDebug &&
+                                (backendDebug.line_count !== sourceLines.length || backendDebug.leading_blank_lines !== editorLeadingEmpty)
+                            ) {
+                                console.warn('[page.jsx] Rejecting diagnostics: backend analyzed different content fingerprint than Monaco shows');
+                                console.warn('[page.jsx]   Monaco:', { line_count: sourceLines.length, leading_blank_lines: editorLeadingEmpty });
+                                console.warn('[page.jsx]   Backend:', backendDebug);
+                                // Allow retry on next tick
+                                lastFastHashMapRef.current.delete(currentFilePath);
+                                endProactive();
+                                setTimeout(() => setEditorVersion(v => v + 1), 50);
+                                return;
+                            }
+
+                            let codeMismatchCount = 0;
+                            diags.forEach((d, i) => {
+                                const lineIdx = d.range?.start ?? d.location?.line ?? 0;
+                                // Adjust for 0-based vs 1-based if needed (usually 0-based in API)
+                                const codeLine = sourceLines[lineIdx] ?? "<LINE OUT OF BOUNDS>";
+                                console.log(`[page.jsx]   [DIAG #${i}] Line ${lineIdx} (display as ${lineIdx + 1}): ${d.message}`);
+                                console.log(`[page.jsx]     Frontend code at line ${lineIdx}: "${codeLine.trim()}"`);
+                                console.log(`[page.jsx]     Backend code at line ${lineIdx}: "${d.codeAtLine || 'N/A'}"`);
+                                if (codeLine.trim() !== (d.codeAtLine || '').trim()) {
+                                    console.warn(`[page.jsx]     ⚠️ CODE MISMATCH! Frontend and backend see different content!`);
+                                    codeMismatchCount++;
+                                }
+                                console.log(`[page.jsx]     Source: ${d.source || d.tier}`);
+                            });
+
+                            if (codeMismatchCount > 0) {
+                                console.warn(`[page.jsx] Rejecting diagnostics due to ${codeMismatchCount} codeAtLine mismatches`);
+                                // Allow retry; current snapshot should win
+                                lastFastHashMapRef.current.delete(currentFilePath);
+                                endProactive();
+                                setTimeout(() => setEditorVersion(v => v + 1), 50);
+                                return;
+                            }
+
+                            // Filter out stale diagnostics where originalText no longer matches current code
+                            const filteredDiags = diags.filter(d => {
+                                // Keep diagnostics without originalText (can't verify staleness)
+                                if (!d.originalText) return true;
+
+                                const loc = d.location || {};
+                                const lineNum = loc.line ?? 0;
+                                const endLineNum = loc.endLine ?? lineNum;
+                                const col = loc.column ?? 0;
+                                const endCol = loc.endColumn ?? col;
+
+                                // Extract text at diagnostic location from current content
+                                let currentTextAtLocation = '';
+                                try {
+                                    if (lineNum === endLineNum && lineNum < sourceLines.length) {
+                                        currentTextAtLocation = sourceLines[lineNum].substring(col, endCol);
+                                    } else if (lineNum < sourceLines.length) {
+                                        // Multi-line
+                                        const textParts = [];
+                                        for (let i = lineNum; i <= Math.min(endLineNum, sourceLines.length - 1); i++) {
+                                            if (i === lineNum) textParts.push(sourceLines[i].substring(col));
+                                            else if (i === endLineNum) textParts.push(sourceLines[i].substring(0, endCol));
+                                            else textParts.push(sourceLines[i]);
+                                        }
+                                        currentTextAtLocation = textParts.join('\n');
+                                    }
+                                } catch (e) {
+                                    return true; // Keep on error
+                                }
+
+                                // FORCE FILTER: If an AI diagnostic points to purely whitespace, it is almost certainly a ghost error.
+                                // This overrides any other check because AI logic errors should not attach to empty space.
+                                // We check for 'ai' tier or source containing 'ai'.
+                                const isAiDiagnostic = d.tier === 'ai' || (d.source && d.source.toLowerCase().includes('ai'));
+                                if (isAiDiagnostic && !currentTextAtLocation.trim()) {
+                                    console.log(`[page.jsx] Filtering ghost AI diagnostic on whitespace at line ${lineNum}`);
+                                    return false;
+                                }
+
+                                // If originalText is missing, we can't verify staleness strictly.
+                                if (!d.originalText) {
+                                    return true;
+                                }
+
+                                // If text changed, diagnostic is stale
+                                const isStale = currentTextAtLocation !== d.originalText;
+                                if (isStale) {
+                                    console.log(`[page.jsx] Filtering stale diagnostic at line ${lineNum}: originalText doesn't match current code`);
+                                    console.log(`[page.jsx]   Expected: "${d.originalText}"`);
+                                    console.log(`[page.jsx]   Actual: "${currentTextAtLocation}"`);
+                                }
+                                return !isStale;
+                            });
+
+                            console.log(`[page.jsx] After staleness filter: ${filteredDiags.length} diagnostics (removed ${diags.length - filteredDiags.length} stale)`);
+
+                            // Normalize diagnostics to consistent format
+                            const normalizedDiags = filteredDiags.map((d, idx) => ({
+                                ...d,
+                                // Strict VFS snapshot gating: only render diagnostics that match
+                                // the exact Monaco snapshot the backend analyzed.
+                                __analysisVersion: result?.version ?? freshContentHash,
+                                __id: d.__id || d.id || `${contentHash}::${idx}`,
+                                filePath: d.filePath || d.file || currentFilePath,
+                                // Normalize location field for ProblemsPanel compatibility
+                                // IMPORTANT: Use ?? instead of || to handle 0 as valid value
+                                location: d.location || {
+                                    line: d.range?.start ?? 0,
+                                    column: d.range?.startColumn ?? 0,
+                                    endLine: d.range?.end ?? d.range?.start ?? 0,
+                                    endColumn: d.range?.endColumn ?? 0,
+                                },
+                                // Map source to tier for backward compatibility
+                                tier: d.tier || (d.source?.toLowerCase().includes('ai') ? 'ai' :
+                                    d.source?.toLowerCase().includes('semantic') ? 'semantic' : 'static'),
+                            }));
+
+                            // Replace NON-AI diagnostics for this file only (keep AI until AI pass arrives)
+                            setDiagnostics(prev => {
+                                const currentNorm = normalizePath(currentFilePath || '');
+                                const otherFileDiags = prev.filter(d => normalizePath(d.filePath || '') !== currentNorm);
+                                const sameFileAi = prev.filter(d => {
+                                    const isSameFile = normalizePath(d.filePath || '') === currentNorm;
+                                    if (!isSameFile) return false;
+                                    const isAi = d.tier === 'ai' || (d.source && String(d.source).toLowerCase().includes('ai'));
+                                    return isAi;
+                                });
+                                console.log('[page.jsx] Setting', normalizedDiags.length, 'diagnostics for', currentFilePath);
+                                return [...otherFileDiags, ...sameFileAi, ...normalizedDiags];
+                            });
+
+                            // Update hash map with the content we actually analyzed
+                            lastFastHashMapRef.current.set(currentFilePath, freshContentHash);
+
+                            // Clear pending schedule marker (only if it matches what we scheduled).
+                            if (pendingFastSignatureRef.current === scheduledFastSignature) {
+                                pendingFastSignatureRef.current = '';
+                            }
+
+                            lastFastSignatureRef.current = signature;
+                            endProactive();
+                        })
+                        .catch((err) => {
+                            if (proactiveTimeoutRef.current) proactiveTimeoutRef.current = null;
+                            console.error('[page.jsx] Fast analysis failed:', err);
+                            // Allow retry if a transient/network error happened
+                            lastFastHashMapRef.current.delete(currentFilePath);
+                            if (pendingFastSignatureRef.current === scheduledFastSignature) {
+                                pendingFastSignatureRef.current = '';
+                            }
+                            endProactive();
                         });
-                        console.log('[page.jsx] Setting', normalizedDiags.length, 'diagnostics for', currentFilePath);
-                        return [...otherFileDiags, ...sameFileAi, ...normalizedDiags];
-                    });
-
-                    // Update hash map with the content we actually analyzed
-                    lastFastHashMapRef.current.set(currentFilePath, freshContentHash);
-
-                    // Clear pending schedule marker (only if it matches what we scheduled).
-                    if (pendingFastSignatureRef.current === scheduledFastSignature) {
-                        pendingFastSignatureRef.current = '';
-                    }
-
-                    lastFastSignatureRef.current = signature;
-                    endProactive();
-                })
-                .catch((err) => {
-                    if (proactiveTimeoutRef.current) proactiveTimeoutRef.current = null;
-                    console.error('[page.jsx] Fast analysis failed:', err);
-                    // Allow retry if a transient/network error happened
-                    lastFastHashMapRef.current.delete(currentFilePath);
-                    if (pendingFastSignatureRef.current === scheduledFastSignature) {
-                        pendingFastSignatureRef.current = '';
-                    }
-                    endProactive();
-                });
                 }, 100); // 100ms debounce for responsiveness
             }
         }
@@ -1360,7 +1377,7 @@ export default function EditorPage({ params }) {
                 aiTimeoutRef.current = null;
             }
         };
-      }, [
+    }, [
         currentContent,
         activeFile,
         hasLoadedInitialFile,
@@ -1372,19 +1389,19 @@ export default function EditorPage({ params }) {
         computeContentHash,
         editorVersion,
         editor,
-      ]); 
-      
+    ]);
+
 
     // Track focused file and content changes for workspace analysis
     useEffect(() => {
         if (!activeFile || !hasLoadedInitialFile) return;
-        
+
         const filePath = activeFile?.path || activeFile?.name;
         if (filePath) {
             setWorkspaceFocusFile(filePath);
         }
     }, [activeFile, hasLoadedInitialFile, setWorkspaceFocusFile]);
-    
+
     // NOTE: Workspace analysis is DISABLED because it runs without related files context,
     // causing false positives (e.g., "test228 is not defined" when it IS defined in a header).
     // The proactive analysis (above) already handles single-file analysis with related files.
@@ -1412,13 +1429,13 @@ export default function EditorPage({ params }) {
     const mergedDiagnostics = useMemo(() => {
         // Start with single-file diagnostics (these are more immediate/responsive)
         const merged = [...diagnostics];
-        
+
         // Add cross-file diagnostics from workspace analysis
         // Filter to avoid duplicates by comparing message + location
         const existingKeys = new Set(
             diagnostics.map(d => `${d.message}::${d.location?.line}::${d.location?.column}`)
         );
-        
+
         for (const d of workspaceDiagnostics) {
             const key = `${d.message}::${d.location?.line}::${d.location?.column}`;
             if (!existingKeys.has(key)) {
@@ -1426,7 +1443,7 @@ export default function EditorPage({ params }) {
                 existingKeys.add(key);
             }
         }
-        
+
         return merged;
     }, [diagnostics, workspaceDiagnostics]);
 
@@ -1434,9 +1451,9 @@ export default function EditorPage({ params }) {
     const diagnosticSummary = useMemo(() => {
         const errors = mergedDiagnostics.filter(d => d.severity === 'error').length;
         const warnings = mergedDiagnostics.filter(d => d.severity === 'warning').length;
-        return { 
-            errors, 
-            warnings, 
+        return {
+            errors,
+            warnings,
             total: mergedDiagnostics.length,
             workspaceErrors: workspaceSummary.errors,
             workspaceWarnings: workspaceSummary.warnings,
@@ -1575,12 +1592,12 @@ export default function EditorPage({ params }) {
     const detectReactNativeProject = useCallback(async () => {
         try {
             // Look for package.json in the workspace (handle various path formats)
-            const packageJsonFile = rawFiles?.find(f => 
-                f.name === 'package.json' && 
+            const packageJsonFile = rawFiles?.find(f =>
+                f.name === 'package.json' &&
                 (!f.path || f.path === 'package.json' || f.path === '/package.json')
             );
             if (!packageJsonFile) return false;
-            
+
             // Fetch content
             const cached = fileCache.get('package.json');
             let content = cached;
@@ -1588,7 +1605,7 @@ export default function EditorPage({ params }) {
                 content = await api.fetchFileContent(slug, 'package.json');
             }
             if (!content) return false;
-            
+
             const pkg = JSON.parse(content);
             const deps = { ...pkg.dependencies, ...pkg.devDependencies };
             return !!(deps['react-native'] || deps['expo']);
@@ -1607,19 +1624,19 @@ export default function EditorPage({ params }) {
     // Helper to detect if workspace is a Flutter project (checks pubspec.yaml)
     const detectFlutterProject = useCallback(async () => {
         try {
-            const pubspecFile = rawFiles?.find(f => 
-                f.name === 'pubspec.yaml' && 
+            const pubspecFile = rawFiles?.find(f =>
+                f.name === 'pubspec.yaml' &&
                 (!f.path || f.path === 'pubspec.yaml' || f.path === '/pubspec.yaml')
             );
             if (!pubspecFile) return false;
-            
+
             const cached = fileCache.get('pubspec.yaml');
             let content = cached;
             if (content === undefined) {
                 content = await api.fetchFileContent(slug, 'pubspec.yaml');
             }
             if (!content) return false;
-            
+
             return content.includes('sdk: flutter');
         } catch (e) {
             console.debug('Failed to detect Flutter project', e);
@@ -1713,7 +1730,7 @@ export default function EditorPage({ params }) {
             dispatch(setEmulatorPreviewVisible(true));
             setEmulatorRunNonce((v) => v + 1); // remount to simulate a fresh boot
         }
-        
+
         // Derive project root from active file's directory path
         // e.g., "mobile/app.tsx" -> "mobile", "src/screens/Home.tsx" -> "src/screens"
         let projectRoot = null;
@@ -1748,8 +1765,8 @@ export default function EditorPage({ params }) {
         } catch (err) {
             const msg = err?.message || String(err);
             if (msg.includes('cancelled by user') || msg.includes('Cancelled')) {
-                 console.log('Build cancelled (probably due to restart/stop)');
-                 return;
+                console.log('Build cancelled (probably due to restart/stop)');
+                return;
             }
             console.error('Compile failed', err);
             appendBuildLog(`error: ${msg}`);
@@ -2072,266 +2089,260 @@ export default function EditorPage({ params }) {
     }
 
     return (
-    <DockablePanelProvider workspaceId={slug}>
-    <div className="flex flex-col h-screen overflow-hidden" style={{ background: 'var(--bg-sidebar)', color: 'var(--text-primary)' }}>
-        <div className="flex flex-col flex-1 min-h-0 overflow-hidden" style={{ background: 'var(--bg-editor)', color: 'var(--text-primary)' }}>
-            {/* Hydrate workspace-specific tabs from localStorage */}
-            <WorkspaceHydrator slug={slug} />
+        <DockablePanelProvider workspaceId={slug}>
+            <div className="flex flex-col h-screen overflow-hidden" style={{ background: 'var(--bg-sidebar)', color: 'var(--text-primary)' }}>
+                <div className="flex flex-col flex-1 min-h-0 overflow-hidden" style={{ background: 'var(--bg-editor)', color: 'var(--text-primary)' }}>
+                    {/* Hydrate workspace-specific tabs from localStorage */}
+                    <WorkspaceHydrator slug={slug} />
 
-            <TopNav
-                title={activeFile ? activeFile.name : 'Synthi Workspace'}
-                onRun={handleRun}
-                runInGuiMode={runInGuiMode}
-                setRunInGuiMode={setRunInGuiMode}
-                hmrEnabled={hmrEnabled}
-                setHmrEnabled={setHmrEnabled}
-                onStop={handleStop}
-                onReload={handleRestart}
-                isRunning={isCompiling}
-                onToggleTerminal={() => dispatch(toggleTerminal())}
-                onUndo={handleUndo}
-                onRedo={handleRedo}
-                onToggleChat={handleToggleChat}
-                chatVisible={chatVisible}
-                onCopyLineUp={handleCopyLineUp}
-                onCopyLineDown={handleCopyLineDown}
-                onMoveLineUp={handleMoveLineUp}
-                onMoveLineDown={handleMoveLineDown}
-                onDuplicateSelection={handleDuplicateSelection}
-            />
-
-            {/* Collaboration: guest banner when viewing another user's session */}
-            <GuestBanner />
-
-            {buildLogs.length > 0 && (
-                <div className="border-b border-[#1a1a1e] bg-[#09090b] px-3 py-2 text-xs font-mono text-[#D7DAE0] max-h-28 overflow-auto">
-                    {buildLogs.map((line, idx) => (
-                        <div key={idx} className="leading-5 whitespace-pre-wrap">
-                            {line}
-                        </div>
-                    ))}
-                </div>
-            )}
-
-            <DraggableVideoWidget
-                guiConfig={guiConfig}
-                setGuiConfig={setGuiConfig}
-                isGuiRunning={isGuiRunning}
-                setIsGuiRunning={setIsGuiRunning}
-                isHmrRecompiling={isHmrRecompiling}
-                mediaStream={mediaStream}
-                sendGuiEvent={sendGuiEvent}
-            />
-
-            {/* ─── Layout: either new docking WM or legacy rigid panels ─── */}
-            {USE_DOCKING_WM ? (
-                <div className="flex-1 min-h-0">
-                    <DockableWorkspace
-                        workspaceSlug={slug}
-                        defaultPreset="classic"
-                        panelProps={{
-                            editor,
-                            activeFile,
-                            currentCode: currentContent,
-                            diagnostics: mergedDiagnostics,
-                            diagnosticSummary,
-                            isAnalyzing: isAnalyzingProactive || isWorkspaceAnalyzing,
-                            onSuggest: (s) => setLatestCompletion(s),
-                            onBusy: (b) => setAiBusy(Boolean(b)),
-                            clearSignal: completionClearSignal,
-                            onCloseProblems: () => setShowProblemsPanel(false),
-                            onToggleOrientation: toggleTreeOrientation,
-                            onOpenScm: () => setSidebarView('scm'),
-                            editorProps: {
-                                innerRef: setEditor,
-                                slug,
-                                showTerminal,
-                                analyzeCode,
-                                analyzeUnified,
-                                lastResult,
-                                isAnalyzing: isAnalyzingGateway,
-                                connectionMeta,
-                                latestCompletion,
-                                completionClearSignal,
-                                onRun: handleRun,
-                                onSave: handleSave,
-                                onToggleTerminal: () => dispatch(toggleTerminal()),
-                                onEditorMount: handleEditorMount,
-                                analysisResult: lastResult,
-                                diagnostics: mergedDiagnostics,
-                                onAiDiagnosticsRecalibrated: handleAiDiagnosticsRecalibrated,
-                                removeDiagnosticByLocation,
-                                aiBusy,
-                                onClearCompletion: handleClearLatestCompletion,
-                                chatVisible,
-                                collabHostId,
-                            },
-                        }}
+                    <TopNav
+                        title={activeFile ? activeFile.name : 'Synthi Workspace'}
+                        onRun={handleRun}
+                        runInGuiMode={runInGuiMode}
+                        setRunInGuiMode={setRunInGuiMode}
+                        hmrEnabled={hmrEnabled}
+                        setHmrEnabled={setHmrEnabled}
+                        onStop={handleStop}
+                        onReload={handleRestart}
+                        isRunning={isCompiling}
+                        onToggleTerminal={() => dispatch(toggleTerminal())}
+                        onUndo={handleUndo}
+                        onRedo={handleRedo}
+                        onToggleChat={handleToggleChat}
+                        chatVisible={chatVisible}
+                        onCopyLineUp={handleCopyLineUp}
+                        onCopyLineDown={handleCopyLineDown}
+                        onMoveLineUp={handleMoveLineUp}
+                        onMoveLineDown={handleMoveLineDown}
+                        onDuplicateSelection={handleDuplicateSelection}
                     />
-                </div>
-            ) : (
-            <ResizablePanelGroup direction="vertical" className="flex-1 min-h-0">
-                <ResizablePanel defaultSize={showProblemsPanel ? 75 : 100} minSize={20}>
-                    <ResizablePanelGroup
-                        direction="horizontal"
-                        className="h-full w-full"
-                        key={panelGroupKey}
-                    >
-                        {treeOnRight ? (
-                            <>
-                                {EditorPanelComponent}
 
-                                <ResizableHandle className="!pointer-events-auto bg-[#1a1a1e] hover:bg-[#327464] w-px z-50" />
+                    {/* Collaboration: guest banner when viewing another user's session */}
+                    <GuestBanner />
 
-                                {FileTreePanel}
+                    {buildLogs.length > 0 && (
+                        <div className="border-b border-[#1a1a1e] bg-[#09090b] px-3 py-2 text-xs font-mono text-[#D7DAE0] max-h-28 overflow-auto">
+                            {buildLogs.map((line, idx) => (
+                                <div key={idx} className="leading-5 whitespace-pre-wrap">
+                                    {line}
+                                </div>
+                            ))}
+                        </div>
+                    )}
 
-                                {chatVisible && (
-                                    <>
-                                        <ResizableHandle className="!pointer-events-auto bg-[#1a1a1e] hover:bg-[#327464] w-px z-50" />
-                                        {ChatPanel}
-                                    </>
-                                )}
-                            </>
-                        ) : (
-                            <>
-                                {FileTreePanel}
+                    <DraggableVideoWidget
+                        guiConfig={guiConfig}
+                        setGuiConfig={setGuiConfig}
+                        isGuiRunning={isGuiRunning}
+                        setIsGuiRunning={setIsGuiRunning}
+                        isHmrRecompiling={isHmrRecompiling}
+                        mediaStream={mediaStream}
+                        sendGuiEvent={sendGuiEvent}
+                    />
 
-                                <ResizableHandle className="!pointer-events-auto bg-[#1a1a1e] hover:bg-[#327464] w-px z-50" />
-
-                                {EditorPanelComponent}
-
-                                {chatVisible && (
-                                    <>
-                                        <ResizableHandle className="!pointer-events-auto bg-[#1a1a1e] hover:bg-[#327464] w-px z-50" />
-                                        {ChatPanel}
-                                    </>
-                                )}
-                            </>
-                        )}
-                    </ResizablePanelGroup>
-                </ResizablePanel>
-
-                {/* Docked Problems Panel - container always present when panel shown, collapses when floating */}
-                {showProblemsPanel && (
-                    <>
-                        <ResizableHandle 
-                            className={cn(
-                                "!pointer-events-auto bg-[#1a1a1e] hover:bg-[#3A7AFE] h-px z-50",
-                                !isProblemsPanelDocked && "opacity-0 pointer-events-none"
-                            )} 
-                        />
-                        <ResizablePanel 
-                            key={`problems-dock-${isProblemsPanelDocked ? 'docked' : 'floating'}`}
-                            defaultSize={isProblemsPanelDocked ? 25 : 0} 
-                            minSize={isProblemsPanelDocked ? 10 : 0}
-                            maxSize={isProblemsPanelDocked ? 100 : 0}
-                            collapsible={true}
-                            collapsedSize={0}
-                            className={cn(
-                                !isProblemsPanelDocked && "!h-0 !min-h-0 !max-h-0 overflow-hidden"
-                            )}
-                        >
-                            <div 
-                                className={cn(
-                                    "h-full",
-                                    !isProblemsPanelDocked && "opacity-0"
-                                )} 
-                                id="problems-panel-dock-slot" 
+                    {/* ─── Layout: either new docking WM or legacy rigid panels ─── */}
+                    {USE_DOCKING_WM ? (
+                        <div className="flex-1 min-h-0">
+                            <DockableWorkspace
+                                workspaceSlug={slug}
+                                defaultPreset="classic"
+                                panelProps={{
+                                    editor,
+                                    activeFile,
+                                    currentCode: currentContent,
+                                    diagnostics: mergedDiagnostics,
+                                    diagnosticSummary,
+                                    isAnalyzing: isAnalyzingProactive || isWorkspaceAnalyzing,
+                                    onSuggest: (s) => setLatestCompletion(s),
+                                    onBusy: (b) => setAiBusy(Boolean(b)),
+                                    clearSignal: completionClearSignal,
+                                    onCloseProblems: () => setShowProblemsPanel(false),
+                                    onToggleOrientation: toggleTreeOrientation,
+                                    onOpenScm: () => setSidebarView('scm'),
+                                    editorProps: {
+                                        innerRef: setEditor,
+                                        slug,
+                                        showTerminal,
+                                        analyzeCode,
+                                        analyzeUnified,
+                                        lastResult,
+                                        isAnalyzing: isAnalyzingGateway,
+                                        connectionMeta,
+                                        latestCompletion,
+                                        completionClearSignal,
+                                        onRun: handleRun,
+                                        onSave: handleSave,
+                                        onToggleTerminal: () => dispatch(toggleTerminal()),
+                                        onEditorMount: handleEditorMount,
+                                        analysisResult: lastResult,
+                                        diagnostics: mergedDiagnostics,
+                                        onAiDiagnosticsRecalibrated: handleAiDiagnosticsRecalibrated,
+                                        removeDiagnosticByLocation,
+                                        aiBusy,
+                                        onClearCompletion: handleClearLatestCompletion,
+                                        chatVisible,
+                                        collabHostId,
+                                    },
+                                }}
                             />
-                        </ResizablePanel>
-                    </>
-                )}
-            </ResizablePanelGroup>
-            )}
+                        </div>
+                    ) : (
+                        <ResizablePanelGroup direction="vertical" className="flex-1 min-h-0">
+                            <ResizablePanel minSize={20} defaultSize={75}>
+                                <ResizablePanelGroup
+                                    direction="horizontal"
+                                    className="h-full w-full"
+                                    key={panelGroupKey}
+                                >
+                                    {treeOnRight ? (
+                                        <>
+                                            {EditorPanelComponent}
 
-        </div>
+                                            <ResizableHandle className="!pointer-events-auto bg-[#1a1a1e] hover:bg-[#327464] w-px z-50" />
 
-        {/* Single Problems Panel instance - renders to dock slot or as floating */}
-        {showProblemsPanel && (
-            <DockablePanel
-                id="problems-panel"
-                title="Problems"
-                icon={AlertCircle}
-                defaultState={PANEL_STATE.DOCKED}
-                defaultPosition={DOCK_POSITION.BOTTOM}
-                defaultFloatingPosition={{ x: 200, y: 200 }}
-                defaultFloatingSize={{ width: 600, height: 400 }}
-                isOpen={showProblemsPanel}
-                onOpenChange={setShowProblemsPanel}
-                onDockedChange={setIsProblemsPanelDocked}
-                workspaceId={slug}
-                dockSlotId="problems-panel-dock-slot"
-                className="h-full rounded-none border-0"
-            >
-                <ProblemsPanel
-                    diagnostics={mergedDiagnostics}
-                    summary={diagnosticSummary}
-                    isAnalyzing={isAnalyzingProactive || isWorkspaceAnalyzing}
-                    filePath={activeFile?.path || activeFile?.name || 'Current File'}
-                    onClose={() => setShowProblemsPanel(false)}
-                    onNavigate={(location) => {
-                        const targetFile = location.filePath;
-                        const currentFile = activeFile?.path || activeFile?.name;
-                        
-                        if (targetFile && targetFile !== currentFile) {
-                            const findFile = (files, path) => {
-                                for (const file of files || []) {
-                                    if (file.isFolder && file.children) {
-                                        const found = findFile(file.children, path);
-                                        if (found) return found;
-                                    } else if (file.path === path || file.name === path) {
-                                        return file;
+                                            {FileTreePanel}
+
+                                            {chatVisible && (
+                                                <>
+                                                    <ResizableHandle className="!pointer-events-auto bg-[#1a1a1e] hover:bg-[#327464] w-px z-50" />
+                                                    {ChatPanel}
+                                                </>
+                                            )}
+                                        </>
+                                    ) : (
+                                        <>
+                                            {FileTreePanel}
+
+                                            <ResizableHandle className="!pointer-events-auto bg-[#1a1a1e] hover:bg-[#327464] w-px z-50" />
+
+                                            {EditorPanelComponent}
+
+                                            {chatVisible && (
+                                                <>
+                                                    <ResizableHandle className="!pointer-events-auto bg-[#1a1a1e] hover:bg-[#327464] w-px z-50" />
+                                                    {ChatPanel}
+                                                </>
+                                            )}
+                                        </>
+                                    )}
+                                </ResizablePanelGroup>
+                            </ResizablePanel>
+
+                            {/* Problems dock slot — always present, expanded/collapsed imperatively for smooth animation */}
+                            <ResizableHandle
+                                className={cn(
+                                    "!pointer-events-auto bg-[#1a1a1e] hover:bg-[#3A7AFE] h-px z-50 transition-opacity duration-300",
+                                    (!showProblemsPanel || !isProblemsPanelDocked) && "opacity-0 pointer-events-none"
+                                )}
+                            />
+                            <ResizablePanel
+                                ref={problemsPanelRef}
+                                defaultSize={0}
+                                minSize={10}
+                                collapsible={true}
+                                collapsedSize={0}
+                                style={{ transition: 'flex 300ms cubic-bezier(0.4, 0, 0.2, 1)' }}
+                            >
+                                <div
+                                    className={cn(
+                                        "h-full transition-opacity duration-300",
+                                        (!showProblemsPanel || !isProblemsPanelDocked) && "opacity-0"
+                                    )}
+                                    id="problems-panel-dock-slot"
+                                />
+                            </ResizablePanel>
+                        </ResizablePanelGroup>
+                    )}
+
+                </div>
+
+                {/* Single Problems Panel instance - renders to dock slot or as floating */}
+                {showProblemsPanel && (
+                    <DockablePanel
+                        id="problems-panel"
+                        title="Problems"
+                        icon={AlertCircle}
+                        defaultState={PANEL_STATE.DOCKED}
+                        openMode={USE_DOCKING_WM ? 'restore' : 'docked'}
+                        defaultPosition={DOCK_POSITION.BOTTOM}
+                        defaultFloatingPosition={{ x: 200, y: 200 }}
+                        defaultFloatingSize={{ width: 600, height: 400 }}
+                        isOpen={showProblemsPanel}
+                        onOpenChange={setShowProblemsPanel}
+                        onDockedChange={setIsProblemsPanelDocked}
+                        workspaceId={slug}
+                        dockSlotId={USE_DOCKING_WM ? undefined : 'problems-panel-dock-slot'}
+                        className="h-full rounded-none border-0"
+                    >
+                        <ProblemsPanel
+                            diagnostics={mergedDiagnostics}
+                            summary={diagnosticSummary}
+                            isAnalyzing={isAnalyzingProactive || isWorkspaceAnalyzing}
+                            filePath={activeFile?.path || activeFile?.name || 'Current File'}
+                            onClose={() => setShowProblemsPanel(false)}
+                            onNavigate={(location) => {
+                                const targetFile = location.filePath;
+                                const currentFile = activeFile?.path || activeFile?.name;
+
+                                if (targetFile && targetFile !== currentFile) {
+                                    const findFile = (files, path) => {
+                                        for (const file of files || []) {
+                                            if (file.isFolder && file.children) {
+                                                const found = findFile(file.children, path);
+                                                if (found) return found;
+                                            } else if (file.path === path || file.name === path) {
+                                                return file;
+                                            }
+                                        }
+                                        return null;
+                                    };
+
+                                    const fileToSelect = findFile(rawFiles, targetFile);
+                                    if (fileToSelect) {
+                                        dispatch(selectFileThunk(fileToSelect));
+                                        setTimeout(() => {
+                                            if (editor) {
+                                                const position = {
+                                                    lineNumber: (location.line ?? 0) + 1,
+                                                    column: (location.column ?? 0) + 1,
+                                                };
+                                                editor.setPosition(position);
+                                                editor.revealPositionInCenter(position);
+                                                editor.focus();
+                                            }
+                                        }, 100);
                                     }
+                                } else if (editor) {
+                                    const position = {
+                                        lineNumber: (location.line ?? 0) + 1,
+                                        column: (location.column ?? 0) + 1,
+                                    };
+                                    editor.setPosition(position);
+                                    editor.revealPositionInCenter(position);
+                                    editor.focus();
                                 }
-                                return null;
-                            };
-                            
-                            const fileToSelect = findFile(rawFiles, targetFile);
-                            if (fileToSelect) {
-                                dispatch(selectFileThunk(fileToSelect));
-                                setTimeout(() => {
-                                    if (editor) {
-                                        const position = {
-                                            lineNumber: (location.line ?? 0) + 1,
-                                            column: (location.column ?? 0) + 1,
-                                        };
-                                        editor.setPosition(position);
-                                        editor.revealPositionInCenter(position);
-                                        editor.focus();
-                                    }
-                                }, 100);
-                            }
-                        } else if (editor) {
-                            const position = {
-                                lineNumber: (location.line ?? 0) + 1,
-                                column: (location.column ?? 0) + 1,
-                            };
-                            editor.setPosition(position);
-                            editor.revealPositionInCenter(position);
-                            editor.focus();
-                        }
-                    }}
-                    className="h-full rounded-none border-0"
+                            }}
+                            className="h-full rounded-none border-0"
+                        />
+                    </DockablePanel>
+                )}
+
+                {/* Status Bar */}
+                <StatusBar
+                    slug={slug}
+                    diagnosticSummary={diagnosticSummary}
+                    isAnalyzing={isAnalyzingProactive || isWorkspaceAnalyzing}
+                    onProblemsClick={() => setShowProblemsPanel(prev => !prev)}
+                    extensionStatusBarItems={extensionStatusBarItems}
+                    vscodeServerState={vscodeServerState}
                 />
-            </DockablePanel>
-        )}
 
-        {/* Status Bar */}
-        <StatusBar
-            slug={slug}
-            diagnosticSummary={diagnosticSummary}
-            isAnalyzing={isAnalyzingProactive || isWorkspaceAnalyzing}
-            onProblemsClick={() => setShowProblemsPanel(prev => !prev)}
-            extensionStatusBarItems={extensionStatusBarItems}
-            vscodeServerState={vscodeServerState}
-        />
+                {/* Error Overlay */}
+                <ErrorOverlay />
 
-        {/* Error Overlay */}
-        <ErrorOverlay />
-
-        {/* Floating Emulator Window - rendered outside panel layout */}
-        {FloatingEmulator}
-    </div>
-    </DockablePanelProvider>
-);
+                {/* Floating Emulator Window - rendered outside panel layout */}
+                {FloatingEmulator}
+            </div>
+        </DockablePanelProvider>
+    );
 }
