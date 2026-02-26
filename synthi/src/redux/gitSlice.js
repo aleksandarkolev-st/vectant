@@ -62,12 +62,23 @@ export const fetchGitStatus = createAsyncThunk(
 
 export const checkoutBranch = createAsyncThunk(
     'git/checkout',
-    async ({ slug, branch, create }, { dispatch }) => {
-        await gitClient.checkout(slug, branch, create);
-        // Refresh status AND unpushed so the UI immediately reflects the
-        // correct ahead/behind count for the newly active branch.
-        dispatch(fetchGitStatus(slug));
-        dispatch(fetchUnpushedCommits({ slug, max: 50 }));
+    async ({ slug, branch, create, mode }, { dispatch, rejectWithValue }) => {
+        try {
+            await gitClient.checkout(slug, branch, create, mode);
+            // Refresh status AND unpushed so the UI immediately reflects the
+            // correct ahead/behind count for the newly active branch.
+            dispatch(fetchGitStatus(slug));
+            dispatch(fetchUnpushedCommits({ slug, max: 50 }));
+            dispatch(fetchIncomingCommits({ slug, max: 50 }));
+            dispatch(fetchCommitHistory({ slug }));
+        } catch (err) {
+            const code = err?.code || err?.response?.code || '';
+            const message = err?.message || err?.response?.message || 'Checkout failed';
+            if (code === 'UNCOMMITTED_CHANGES' || /would be overwritten|local changes/i.test(message)) {
+                return rejectWithValue({ code: 'UNCOMMITTED_CHANGES', message, branch, create });
+            }
+            throw err;
+        }
     }
 );
 
@@ -250,6 +261,14 @@ export const stageLines = createAsyncThunk(
     }
 );
 
+export const discardLines = createAsyncThunk(
+    'git/discardLines',
+    async ({ slug, filePath, patch }, { dispatch }) => {
+        await gitClient.discardLines(slug, filePath, patch);
+        dispatch(forceRefreshGitStatus(slug));
+    }
+);
+
 export const fetchFileDiff = createAsyncThunk(
     'git/fetchFileDiff',
     async ({ slug, filePath }) => {
@@ -283,6 +302,7 @@ export const pushChanges = createAsyncThunk(
         await gitClient.push(slug, token, force);
         dispatch(fetchGitStatus(slug));
         dispatch(fetchUnpushedCommits({ slug, max: 50 }));
+        dispatch(fetchIncomingCommits({ slug, max: 50 }));
         dispatch(fetchCommitHistory({ slug }));
         dispatch(fetchRemotes(slug));
     }
@@ -539,6 +559,8 @@ const gitSlice = createSlice({
         // Commit detail for the expanded commit in history
         commitDetail: null,
         commitDetailLoading: false,
+        // Checkout conflict — when checkout fails due to dirty tree
+        checkoutConflict: null, // { branch, create }
     },
     reducers: {
         clearError: (state) => {
@@ -552,6 +574,9 @@ const gitSlice = createSlice({
         },
         closeConflictResolver: (state) => {
             state.conflictResolverFile = null;
+        },
+        clearCheckoutConflict: (state) => {
+            state.checkoutConflict = null;
         },
     },
     extraReducers: (builder) => {
@@ -633,6 +658,19 @@ const gitSlice = createSlice({
         // ── User-initiated action thunks ──────────────────────
         // These write to actionError on failure and clear it on next attempt.
         builder
+            .addCase(checkoutBranch.pending, (state) => { state.loading = true; state.actionError = null; state.actionErrorCode = null; state.checkoutConflict = null; })
+            .addCase(checkoutBranch.fulfilled, (state) => { state.loading = false; state.checkoutConflict = null; })
+            .addCase(checkoutBranch.rejected, (state, action) => {
+                state.loading = false;
+                if (action.payload?.code === 'UNCOMMITTED_CHANGES') {
+                    state.checkoutConflict = { branch: action.payload.branch, create: action.payload.create };
+                    state.actionError = action.payload.message;
+                    state.actionErrorCode = 'UNCOMMITTED_CHANGES';
+                } else {
+                    state.actionError = action.error?.message || 'Checkout failed';
+                    state.actionErrorCode = action.error?.code || null;
+                }
+            })
             .addCase(initRepo.pending, (state) => { state.loading = true; state.actionError = null; state.actionErrorCode = null; })
             .addCase(initRepo.fulfilled, (state) => { state.loading = false; })
             .addCase(initRepo.rejected, (state, action) => { state.loading = false; state.actionError = action.error.message; state.actionErrorCode = action.error.code || null; })
@@ -648,6 +686,9 @@ const gitSlice = createSlice({
             .addCase(stageLines.pending, (state) => { state.loading = true; state.actionError = null; state.actionErrorCode = null; })
             .addCase(stageLines.fulfilled, (state) => { state.loading = false; })
             .addCase(stageLines.rejected, (state, action) => { state.loading = false; state.actionError = action.error.message; state.actionErrorCode = action.error.code || null; })
+            .addCase(discardLines.pending, (state) => { state.loading = true; state.actionError = null; state.actionErrorCode = null; })
+            .addCase(discardLines.fulfilled, (state) => { state.loading = false; })
+            .addCase(discardLines.rejected, (state, action) => { state.loading = false; state.actionError = action.error.message; state.actionErrorCode = action.error.code || null; })
             .addCase(cherryPickCommit.pending, (state) => { state.loading = true; state.actionError = null; state.actionErrorCode = null; })
             .addCase(cherryPickCommit.fulfilled, (state) => { state.loading = false; })
             .addCase(cherryPickCommit.rejected, (state, action) => { state.loading = false; state.actionError = action.error.message; state.actionErrorCode = action.error.code || null; })
@@ -795,5 +836,5 @@ const gitSlice = createSlice({
     },
 });
 
-export const { clearError, openConflictResolver, closeConflictResolver } = gitSlice.actions;
+export const { clearError, openConflictResolver, closeConflictResolver, clearCheckoutConflict } = gitSlice.actions;
 export default gitSlice.reducer;
