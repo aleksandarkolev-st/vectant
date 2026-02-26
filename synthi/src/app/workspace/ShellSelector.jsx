@@ -37,7 +37,7 @@ const FALLBACK_SHELLS = [
  *   collabServerUrl      - Base URL for the collab server (to fetch available shells)
  *   className            - Additional CSS classes
  */
-export default function ShellSelector({ onSelect, collabServerUrl = 'http://localhost:1234', className = '' }) {
+export default function ShellSelector({ onSelect, onSetDefault, currentDefault, collabServerUrl = 'http://localhost:1234', className = '' }) {
   const [open, setOpen] = useState(false);
   const [shells, setShells] = useState([]);
   const [defaultShell, setDefaultShell] = useState(null);
@@ -136,35 +136,59 @@ export default function ShellSelector({ onSelect, collabServerUrl = 'http://loca
               {shells.map((shell) => {
                 const meta = SHELL_META[shell.key] || { icon: '>', color: '#888', label: shell.label };
                 const isDefault = shell.key === defaultShell;
+                const isUserDefault = shell.key === currentDefault;
                 return (
-                  <button
-                    key={shell.key}
-                    className="w-full flex items-center gap-3 px-3 py-2 text-xs transition-colors hover:bg-white/5"
-                    style={{ color: 'var(--text-primary)' }}
-                    onClick={() => handleSelect(shell.key)}
-                    role="option"
-                  >
-                    {/* Shell icon */}
-                    <span
-                      className="w-5 h-5 flex items-center justify-center rounded text-[10px] font-bold"
-                      style={{ background: `${meta.color}20`, color: meta.color }}
+                  <div key={shell.key} className="flex items-center group/item">
+                    <button
+                      className="flex-1 flex items-center gap-3 px-3 py-2 text-xs transition-colors hover:bg-white/5"
+                      style={{ color: 'var(--text-primary)' }}
+                      onClick={() => handleSelect(shell.key)}
+                      role="option"
                     >
-                      {meta.icon}
-                    </span>
-
-                    {/* Label */}
-                    <span className="flex-1 text-left">{meta.label}</span>
-
-                    {/* Default badge */}
-                    {isDefault && (
+                      {/* Shell icon */}
                       <span
-                        className="text-[9px] px-1.5 py-0.5 rounded font-medium"
-                        style={{ background: 'var(--accent-primary)', color: 'white', opacity: 0.8 }}
+                        className="w-5 h-5 flex items-center justify-center rounded text-[10px] font-bold"
+                        style={{ background: `${meta.color}20`, color: meta.color }}
                       >
-                        Default
+                        {meta.icon}
                       </span>
+
+                      {/* Label */}
+                      <span className="flex-1 text-left">{meta.label}</span>
+
+                      {/* User default badge */}
+                      {isUserDefault && (
+                        <span
+                          className="text-[9px] px-1.5 py-0.5 rounded font-medium"
+                          style={{ background: 'var(--accent-primary)', color: 'white', opacity: 0.8 }}
+                        >
+                          Default
+                        </span>
+                      )}
+
+                      {/* System default badge (only if user hasn't set one matching this) */}
+                      {isDefault && !isUserDefault && (
+                        <span
+                          className="text-[9px] px-1.5 py-0.5 rounded font-medium"
+                          style={{ color: 'var(--text-muted)', background: 'var(--bg-sidebar)' }}
+                        >
+                          System
+                        </span>
+                      )}
+                    </button>
+
+                    {/* Set as default button - appears on hover */}
+                    {!isUserDefault && onSetDefault && (
+                      <button
+                        className="px-2 py-1 text-[9px] rounded opacity-0 group-hover/item:opacity-100 transition-opacity mr-1"
+                        style={{ color: 'var(--text-muted)' }}
+                        onClick={(e) => { e.stopPropagation(); onSetDefault(shell.key); }}
+                        title={`Set ${meta.label} as default`}
+                      >
+                        Set Default
+                      </button>
                     )}
-                  </button>
+                  </div>
                 );
               })}
             </div>

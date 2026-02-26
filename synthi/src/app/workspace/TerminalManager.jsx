@@ -1,16 +1,27 @@
 'use client';
 
-import React, { useState, useRef, useEffect, useCallback } from 'react';
+import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import dynamic from 'next/dynamic';
-import { SplitSquareHorizontal, Plus, X, TerminalSquare, Bot } from 'lucide-react';
+import { SplitSquareHorizontal, Plus, X, TerminalSquare, Bot, Settings } from 'lucide-react';
 import { useDispatch } from 'react-redux';
 import { fetchFilesThunk } from '@/redux/workspaceSlice';
 import ShellSelector, { getShellMeta } from './ShellSelector';
 
 const TerminalPane = dynamic(() => import('./TerminalPane.jsx'), { ssr: false });
 
+/** localStorage key for remembering the user's preferred default shell */
+const DEFAULT_SHELL_KEY = 'synthi-default-shell';
+
+function getStoredDefaultShell() {
+  try { return localStorage.getItem(DEFAULT_SHELL_KEY) || null; } catch (_) { return null; }
+}
+function setStoredDefaultShell(shellKey) {
+  try { if (shellKey) localStorage.setItem(DEFAULT_SHELL_KEY, shellKey); else localStorage.removeItem(DEFAULT_SHELL_KEY); } catch (_) {}
+}
+
 export default function TerminalManager({ visible, onCloseAll, workspaceSlug = '' }) {
-  const [terminals, setTerminals] = useState([{ id: 'term-1', label: 'PowerShell', split: false, shellType: null }]);
+  const [defaultShellPref, setDefaultShellPref] = useState(() => getStoredDefaultShell());
+  const [terminals, setTerminals] = useState([{ id: 'term-1', label: getShellMeta(getStoredDefaultShell())?.label || 'Terminal', split: false, shellType: getStoredDefaultShell() }]);
   const [activeId, setActiveId] = useState('term-1');
   const [editingTabId, setEditingTabId] = useState(null);
   const [editingName, setEditingName] = useState('');
@@ -70,15 +81,17 @@ export default function TerminalManager({ visible, onCloseAll, workspaceSlug = '
     if (!visible) return;
     // Ensure at least one terminal exists
     if (terminals.length === 0) {
-      setTerminals([{ id: 'term-1', label: 'PowerShell', split: false, shellType: null }]);
+      const effectiveShell = defaultShellPref;
+      setTerminals([{ id: 'term-1', label: getShellMeta(effectiveShell)?.label || 'Terminal', split: false, shellType: effectiveShell }]);
       setActiveId('term-1');
     }
   }, [visible, terminals.length]);
 
   const addTerminal = (shellType = null) => {
-    const meta = shellType ? getShellMeta(shellType) : { label: 'Terminal' };
+    const effectiveShell = shellType || defaultShellPref;
+    const meta = effectiveShell ? getShellMeta(effectiveShell) : { label: 'Terminal' };
     const id = `term-${Date.now()}`;
-    const newTerm = { id, label: meta.label, split: false, shellType };
+    const newTerm = { id, label: meta.label, split: false, shellType: effectiveShell };
     setTerminals(prev => [...prev, newTerm]);
     setActiveId(id);
   };
@@ -209,7 +222,11 @@ export default function TerminalManager({ visible, onCloseAll, workspaceSlug = '
         >
           <Plus className="w-4 h-4" strokeWidth={2} />
         </button>
-        <ShellSelector onSelect={(shellKey) => addTerminal(shellKey)} />
+        <ShellSelector
+          onSelect={(shellKey) => addTerminal(shellKey)}
+          currentDefault={defaultShellPref}
+          onSetDefault={(shellKey) => { setDefaultShellPref(shellKey); setStoredDefaultShell(shellKey); }}
+        />
         <button 
           className="w-8 h-8 flex items-center justify-center rounded th-btn-ghost transition-colors" 
           onClick={toggleSplit} 
