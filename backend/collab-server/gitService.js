@@ -2012,8 +2012,11 @@ class GitService {
             mergeTreeOutput = e?.message || '';
         }
 
-        // 4. Parse the output — if it contains conflict markers, there are conflicts
-        const hasConflicts = mergeTreeOutput.includes('<<<<<<<') || mergeTreeOutput.includes('changed in both');
+        // 4. Parse the output — if it contains conflict markers, there are conflicts.
+        //    NOTE: We intentionally only check for '<<<<<<< ' conflict markers.
+        //    'changed in both' appears in merge-tree output even for cleanly
+        //    merged files and caused false-positive conflict detection.
+        const hasConflicts = mergeTreeOutput.includes('<<<<<<<');
 
         // 5. Extract conflicted file names from merge-tree output
         //    merge-tree output contains lines like "+++ b/<filename>" or
