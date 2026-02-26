@@ -3,3 +3,9 @@
 export { HealingToast } from './HealingToast';
 export { HealingIndicator } from './HealingIndicator';
 export { HealingSettingsPanel } from './HealingSettingsPanel';
+export { HealingPendingPanel } from './HealingPendingPanel';
+export {
+  showHealingDecorations,
+  injectHealingStyles,
+  removeHealingStyles,
+} from './healingDecorations';
