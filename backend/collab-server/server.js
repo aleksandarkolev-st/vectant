@@ -458,10 +458,10 @@ class ValidatingPersistence {
           
           // Ensure directory exists
           const dirPath = path.dirname(fullPath);
-          await fs.mkdir(dirPath, { recursive: true });
+          await fsPromises.mkdir(dirPath, { recursive: true });
           
           // Write to disk
-          await fs.writeFile(fullPath, content, 'utf-8');
+          await fsPromises.writeFile(fullPath, content, 'utf-8');
           
           // Update hash cache
           fileHashCache.set(docName, { hash: computeHash(content), timestamp: Date.now() });
