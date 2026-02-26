@@ -157,8 +157,6 @@ function ContextMenu({ x, y, commit, onClose, onAction }) {
 /* ─── Commit Detail Pane ────────────────────────────── */
 
 function CommitDetailPane({ detail, loading, onClose, onFileClick }) {
-  const [showDiff, setShowDiff] = useState(false);
-
   if (loading) {
     return (
       <div className="border-t border-[#27272a] bg-[#111113] p-4 flex items-center gap-2">
@@ -221,12 +219,6 @@ function CommitDetailPane({ detail, loading, onClose, onFileClick }) {
             {totalInsertions > 0 && <span className="text-emerald-400 text-[10px] font-mono">+{totalInsertions}</span>}
             {totalDeletions > 0 && <span className="text-red-400 text-[10px] font-mono">−{totalDeletions}</span>}
           </div>
-          <button
-            onClick={() => setShowDiff(!showDiff)}
-            className="text-[10px] text-[#3b82f6] hover:text-[#60a5fa]"
-          >
-            {showDiff ? 'Hide diff' : 'Show diff'}
-          </button>
         </div>
         {/* Insertions/deletions bar */}
         {totalChanges > 0 && (
@@ -238,48 +230,35 @@ function CommitDetailPane({ detail, loading, onClose, onFileClick }) {
             <span className="text-[9px] text-[#52525b] flex-shrink-0">{totalChanges} changes</span>
           </div>
         )}
-        {files.length > 0 && (
+        {files.length > 0 ? (
           <ul className="space-y-0.5 mb-2">
-            {files.map((f, i) => (
-              <li key={i}
-                className="flex items-center gap-1.5 text-[11px] px-1 py-0.5 hover:bg-[#27272a] rounded cursor-pointer"
-                onClick={() => onFileClick?.(f.file, detail.hash)}
-                title={`Click to open diff for ${f.file}`}
-              >
-                <span className={`w-3 text-center font-mono text-[10px] flex-shrink-0 ${
-                  f.insertions > 0 && f.deletions > 0 ? 'text-amber-400' :
-                  f.insertions > 0 ? 'text-emerald-400' : 'text-red-400'
-                }`}>
-                  {f.insertions > 0 && f.deletions > 0 ? 'M' : f.insertions > 0 ? 'A' : 'D'}
-                </span>
-                <span className="text-[#e4e4e7] truncate flex-1">{f.file}</span>
-                {f.insertions > 0 && <span className="text-emerald-400 text-[10px]">+{f.insertions}</span>}
-                {f.deletions > 0 && <span className="text-red-400 text-[10px]">-{f.deletions}</span>}
-              </li>
-            ))}
+            {files.map((f, i) => {
+              const fileName = typeof f === 'string' ? f : f.file;
+              const ins = typeof f === 'object' ? (f.insertions || 0) : 0;
+              const del = typeof f === 'object' ? (f.deletions || 0) : 0;
+              return (
+                <li key={i}
+                  className="flex items-center gap-1.5 text-[11px] px-1 py-0.5 hover:bg-[#27272a] rounded cursor-pointer group"
+                  onClick={() => onFileClick?.(fileName, detail.hash)}
+                  title={`Click to open diff in editor for ${fileName}`}
+                >
+                  <span className={`w-3 text-center font-mono text-[10px] flex-shrink-0 ${
+                    ins > 0 && del > 0 ? 'text-amber-400' :
+                    ins > 0 ? 'text-emerald-400' : 'text-red-400'
+                  }`}>
+                    {ins > 0 && del > 0 ? 'M' : ins > 0 ? 'A' : 'D'}
+                  </span>
+                  <span className="text-[#e4e4e7] truncate flex-1 group-hover:text-[#3b82f6] transition-colors">{fileName}</span>
+                  {ins > 0 && <span className="text-emerald-400 text-[10px]">+{ins}</span>}
+                  {del > 0 && <span className="text-red-400 text-[10px]">-{del}</span>}
+                  <ExternalLink className="w-2.5 h-2.5 text-[#52525b] opacity-0 group-hover:opacity-100 flex-shrink-0 transition-opacity" />
+                </li>
+              );
+            })}
           </ul>
+        ) : (
+          <p className="text-[10px] text-[#52525b] italic">No changed files</p>
         )}
-
-        {/* Inline diff */}
-        {showDiff && detail.diff && (
-          <div className="mt-2 border border-[#27272a] rounded overflow-hidden">
-            <pre className="text-[10px] font-mono leading-[16px] overflow-auto max-h-[300px] p-2">
-              {detail.diff.split('\n').map((line, i) => {
-                const color = line.startsWith('+') && !line.startsWith('+++')
-                  ? 'text-emerald-400 bg-emerald-500/10'
-                  : line.startsWith('-') && !line.startsWith('---')
-                    ? 'text-red-400 bg-red-500/10'
-                    : line.startsWith('@@')
-                      ? 'text-[#6366f1] bg-[#6366f1]/5'
-                      : line.startsWith('diff --git')
-                        ? 'text-[#3b82f6] font-bold'
-                        : 'text-[#71717a]';
-                return (
-                  <div key={i} className={`${color} px-1`}>{line || ' '}</div>
-                );
-              })}
-            </pre>
-          </div>
         )}
       </div>
     </div>
