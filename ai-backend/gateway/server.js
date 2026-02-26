@@ -20,6 +20,14 @@ const backendUnifiedAnalyzeUrl = new URL("/analyze/unified", backendUrl).toStrin
 const backendWorkspaceAnalyzeUrl = new URL("/analyze/workspace", backendUrl).toString();
 const backendWorkspaceIncrementalUrl = new URL("/analyze/workspace/incremental", backendUrl).toString();
 
+// Self-healing endpoints
+const backendHealAnalyzeUrl = new URL("/heal/analyze", backendUrl).toString();
+const backendHealApplyUrl = new URL("/heal/apply", backendUrl).toString();
+const backendHealContainerUrl = new URL("/heal/container", backendUrl).toString();
+const backendHealConfigUrl = new URL("/heal/config", backendUrl).toString();
+const backendHealStatsUrl = new URL("/heal/stats", backendUrl).toString();
+const backendHealRulesUrl = new URL("/heal/rules", backendUrl).toString();
+
 const server = http.createServer(handleHttpRequest);
 const wss = new WebSocketServer({
   server,
@@ -132,6 +140,24 @@ async function handleClientMessage(socket, raw) {
       break;
     case "analyze/workspace/incremental":
       await forwardWorkspaceIncrementalAnalysis(socket, data, requestId);
+      break;
+    case "heal/analyze":
+      await forwardHealAnalyze(socket, data, requestId);
+      break;
+    case "heal/apply":
+      await forwardHealApply(socket, data, requestId);
+      break;
+    case "heal/container":
+      await forwardHealContainer(socket, data, requestId);
+      break;
+    case "heal/config":
+      await forwardHealConfig(socket, data, requestId);
+      break;
+    case "heal/stats":
+      await forwardHealStats(socket, requestId);
+      break;
+    case "heal/rules":
+      await forwardHealRules(socket, requestId);
       break;
     default:
       sendError(socket, `Unsupported action: ${action}`, { requestId });
@@ -1046,6 +1072,242 @@ async function forwardWorkspaceIncrementalAnalysis(socket, data, requestId) {
     requestId,
     data: responseJson,
   });
+}
+
+// =============================================================================
+// Self-Healing Forwarding Functions
+// =============================================================================
+
+async function forwardHealAnalyze(socket, data, requestId) {
+  const code = data?.code;
+  const lang = data?.lang;
+
+  if (typeof code !== "string" || typeof lang !== "string") {
+    sendError(socket, "`code` and `lang` are required for healing analysis", { requestId });
+    return;
+  }
+
+  try {
+    const backendResponse = await fetch(backendHealAnalyzeUrl, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        code,
+        lang: lang.toLowerCase(),
+        file_path: data?.filePath || data?.file_path || "untitled",
+        auto_apply: data?.autoApply ?? false,
+      }),
+    });
+
+    const responseText = await backendResponse.text();
+
+    if (!backendResponse.ok) {
+      sendError(socket, "Healing analysis backend error", {
+        requestId,
+        detail: responseText,
+        status: backendResponse.status,
+      });
+      return;
+    }
+
+    let responseJson;
+    try {
+      responseJson = JSON.parse(responseText);
+    } catch (err) {
+      sendError(socket, "Healing response was not valid JSON", { requestId, detail: err.message });
+      return;
+    }
+
+    safeSend(socket, {
+      type: "response",
+      action: "heal/analyze",
+      requestId,
+      data: responseJson,
+    });
+  } catch (err) {
+    console.error("[Heal] analyze forward error:", err);
+    sendError(socket, "Healing analysis request failed", { requestId, detail: err.message });
+  }
+}
+
+async function forwardHealApply(socket, data, requestId) {
+  const code = data?.code;
+  const lang = data?.lang;
+
+  if (typeof code !== "string" || typeof lang !== "string") {
+    sendError(socket, "`code` and `lang` are required for healing apply", { requestId });
+    return;
+  }
+
+  try {
+    const backendResponse = await fetch(backendHealApplyUrl, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        code,
+        lang: lang.toLowerCase(),
+        file_path: data?.filePath || data?.file_path || "untitled",
+        fix_ids: data?.fixIds || data?.fix_ids || null,
+      }),
+    });
+
+    const responseText = await backendResponse.text();
+
+    if (!backendResponse.ok) {
+      sendError(socket, "Healing apply backend error", {
+        requestId,
+        detail: responseText,
+        status: backendResponse.status,
+      });
+      return;
+    }
+
+    let responseJson;
+    try {
+      responseJson = JSON.parse(responseText);
+    } catch (err) {
+      sendError(socket, "Healing apply response was not valid JSON", { requestId, detail: err.message });
+      return;
+    }
+
+    safeSend(socket, {
+      type: "response",
+      action: "heal/apply",
+      requestId,
+      data: responseJson,
+    });
+  } catch (err) {
+    console.error("[Heal] apply forward error:", err);
+    sendError(socket, "Healing apply request failed", { requestId, detail: err.message });
+  }
+}
+
+async function forwardHealContainer(socket, data, requestId) {
+  const slug = data?.slug;
+  const filePath = data?.filePath || data?.file_path;
+  const lang = data?.lang;
+
+  if (!slug || !filePath || !lang) {
+    sendError(socket, "`slug`, `filePath`, and `lang` are required for container healing", { requestId });
+    return;
+  }
+
+  try {
+    const backendResponse = await fetch(backendHealContainerUrl, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        slug,
+        file_path: filePath,
+        lang: lang.toLowerCase(),
+      }),
+    });
+
+    const responseText = await backendResponse.text();
+
+    if (!backendResponse.ok) {
+      sendError(socket, "Container healing backend error", {
+        requestId,
+        detail: responseText,
+        status: backendResponse.status,
+      });
+      return;
+    }
+
+    let responseJson;
+    try {
+      responseJson = JSON.parse(responseText);
+    } catch (err) {
+      sendError(socket, "Container healing response was not valid JSON", { requestId, detail: err.message });
+      return;
+    }
+
+    safeSend(socket, {
+      type: "response",
+      action: "heal/container",
+      requestId,
+      data: responseJson,
+    });
+  } catch (err) {
+    console.error("[Heal] container forward error:", err);
+    sendError(socket, "Container healing request failed", { requestId, detail: err.message });
+  }
+}
+
+async function forwardHealConfig(socket, data, requestId) {
+  try {
+    const hasUpdates = data && Object.keys(data).length > 0;
+    const method = hasUpdates ? "POST" : "GET";
+    const fetchOpts = { method, headers: { "content-type": "application/json" } };
+    if (hasUpdates) {
+      fetchOpts.body = JSON.stringify(data);
+    }
+
+    const backendResponse = await fetch(backendHealConfigUrl, fetchOpts);
+    const responseText = await backendResponse.text();
+
+    if (!backendResponse.ok) {
+      sendError(socket, "Healing config backend error", { requestId, detail: responseText });
+      return;
+    }
+
+    const responseJson = JSON.parse(responseText);
+    safeSend(socket, {
+      type: "response",
+      action: "heal/config",
+      requestId,
+      data: responseJson,
+    });
+  } catch (err) {
+    console.error("[Heal] config forward error:", err);
+    sendError(socket, "Healing config request failed", { requestId, detail: err.message });
+  }
+}
+
+async function forwardHealStats(socket, requestId) {
+  try {
+    const backendResponse = await fetch(backendHealStatsUrl, { method: "GET" });
+    const responseText = await backendResponse.text();
+
+    if (!backendResponse.ok) {
+      sendError(socket, "Healing stats backend error", { requestId, detail: responseText });
+      return;
+    }
+
+    const responseJson = JSON.parse(responseText);
+    safeSend(socket, {
+      type: "response",
+      action: "heal/stats",
+      requestId,
+      data: responseJson,
+    });
+  } catch (err) {
+    console.error("[Heal] stats forward error:", err);
+    sendError(socket, "Healing stats request failed", { requestId, detail: err.message });
+  }
+}
+
+async function forwardHealRules(socket, requestId) {
+  try {
+    const backendResponse = await fetch(backendHealRulesUrl, { method: "GET" });
+    const responseText = await backendResponse.text();
+
+    if (!backendResponse.ok) {
+      sendError(socket, "Healing rules backend error", { requestId, detail: responseText });
+      return;
+    }
+
+    const responseJson = JSON.parse(responseText);
+    safeSend(socket, {
+      type: "response",
+      action: "heal/rules",
+      requestId,
+      data: responseJson,
+    });
+  } catch (err) {
+    console.error("[Heal] rules forward error:", err);
+    sendError(socket, "Healing rules request failed", { requestId, detail: err.message });
+  }
 }
 
 function sendError(socket, message, extra = {}) {
