@@ -197,9 +197,9 @@ export default function TerminalManager({ visible, onCloseAll, workspaceSlug = '
               }}
             >
               <div className={`h-full w-full ${t.split ? 'grid grid-cols-2 gap-0' : ''}`}>
-                <TerminalPane key={`${t.id}-main`} terminalId={t.id} paneSide="main" workspaceSlug={workspaceSlug} onFsChange={handleFsChange} fixedSessionId={t.fixedSessionId || null} />
+                <TerminalPane key={`${t.id}-main`} terminalId={t.id} paneSide="main" workspaceSlug={workspaceSlug} onFsChange={handleFsChange} fixedSessionId={t.fixedSessionId || null} shellType={t.shellType || null} />
                 {t.split && (
-                  <TerminalPane key={`${t.id}-split`} terminalId={t.id} paneSide="split" workspaceSlug={workspaceSlug} onFsChange={handleFsChange} />
+                  <TerminalPane key={`${t.id}-split`} terminalId={t.id} paneSide="split" workspaceSlug={workspaceSlug} onFsChange={handleFsChange} shellType={t.shellType || null} />
                 )}
               </div>
             </div>
