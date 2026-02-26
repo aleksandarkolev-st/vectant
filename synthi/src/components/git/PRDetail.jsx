@@ -7,7 +7,7 @@ import {
   fetchRepoLabels, fetchRepoCollaborators, setActivePR, clearActionError, fetchRepoBranches,
   fetchPRList,
 } from '@/redux/prSlice';
-import { checkoutBranch, mergeBranchForConflicts, fetchGitStatus, fetchRemote } from '@/redux/gitSlice';
+import { checkoutBranch, mergeBranchForConflicts, fetchGitStatus, fetchRemote, checkMergeConflicts } from '@/redux/gitSlice';
 import {
   ChevronLeft, GitMerge, GitPullRequest, Circle, CheckCircle2,
   XCircle, RefreshCw, MessageSquare, FileText, GitCommit, CheckSquare,
@@ -269,6 +269,42 @@ function MergePanel({ slug, owner, repo, pr, files, onFileClick }) {
   const [commitMsg, setCommitMsg] = useState('');
   const [showOptions, setShowOptions] = useState(false);
 
+  // ── Fast in-memory conflict detection via git merge-tree ──
+  // Instead of waiting for GitHub's lazy mergeable computation (~1 minute),
+  // we run `git merge-tree` locally which completes in milliseconds.
+  const [localConflictCheck, setLocalConflictCheck] = useState(null); // { hasConflicts, conflictedFiles }
+  const [localConflictLoading, setLocalConflictLoading] = useState(true);
+
+  useEffect(() => {
+    if (!pr || pr.merged || pr.state === 'closed') return;
+    if (!pr.base?.ref || !pr.head?.ref) return;
+
+    let cancelled = false;
+    setLocalConflictLoading(true);
+
+    dispatch(checkMergeConflicts({
+      slug,
+      baseBranch: pr.base.ref,
+      headBranch: pr.head.ref,
+    })).then(result => {
+      if (cancelled) return;
+      if (checkMergeConflicts.fulfilled.match(result)) {
+        setLocalConflictCheck(result.payload);
+      } else {
+        // If local check fails, fall back to GitHub's mergeable field
+        setLocalConflictCheck(null);
+      }
+      setLocalConflictLoading(false);
+    }).catch(() => {
+      if (!cancelled) {
+        setLocalConflictCheck(null);
+        setLocalConflictLoading(false);
+      }
+    });
+
+    return () => { cancelled = true; };
+  }, [pr?.number, pr?.base?.ref, pr?.head?.ref, slug, dispatch]);
+
   const handleMerge = async () => {
     const result = await dispatch(mergePR({
       owner, repo, prNumber: pr.number, slug,
@@ -289,8 +325,12 @@ function MergePanel({ slug, owner, repo, pr, files, onFileClick }) {
   if (!pr || pr.merged) return null;
   if (pr.state === 'closed') return null;
 
-  const hasConflicts = pr.mergeable === false && pr.mergeable_state === 'dirty';
-  const isChecking = pr.mergeable == null || pr.mergeable_state === 'unknown';
+  // Use local merge-tree check if available (instant), fall back to GitHub's
+  // lazily-computed mergeable field.
+  const hasConflicts = localConflictCheck
+    ? localConflictCheck.hasConflicts
+    : (pr.mergeable === false && pr.mergeable_state === 'dirty');
+  const isChecking = localConflictLoading && localConflictCheck === null && (pr.mergeable == null || pr.mergeable_state === 'unknown');
   const isBlocked = pr.mergeable_state === 'blocked';
 
   const methodLabels = {
@@ -299,11 +339,11 @@ function MergePanel({ slug, owner, repo, pr, files, onFileClick }) {
     rebase: 'Rebase and merge',
   };
 
-  // Identify conflicted files — GitHub marks them with status 'conflicted' or
-  // we detect them from the `conflicts` attribute on file objects.
-  const conflictedFiles = (files || []).filter(f =>
-    f.status === 'conflicted' || f.conflicts
-  );
+  // Identify conflicted files — prefer local merge-tree results (instant),
+  // fall back to GitHub API file objects.
+  const conflictedFiles = localConflictCheck?.conflictedFiles?.length > 0
+    ? localConflictCheck.conflictedFiles.map(f => ({ filename: f }))
+    : (files || []).filter(f => f.status === 'conflicted' || f.conflicts);
 
   return (
     <div className="space-y-2">
