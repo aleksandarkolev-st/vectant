@@ -327,11 +327,22 @@ function MergePanel({ slug, owner, repo, pr, files, onFileClick }) {
 
   // Use local merge-tree check if available (instant), fall back to GitHub's
   // lazily-computed mergeable field.
+  //
+  // IMPORTANT: If the local check is still loading, we must NOT allow the
+  // merge button.  And if the local check errored (null result), we treat
+  // mergeability as *unknown* rather than trusting GitHub's often-stale
+  // `mergeable` field — the user can retry or wait for the GitHub field to
+  // settle, but we never let a stale `mergeable: true` override our check.
+  const localCheckFailed = !localConflictLoading && localConflictCheck === null;
   const hasConflicts = localConflictCheck
     ? localConflictCheck.hasConflicts
-    : (pr.mergeable === false && pr.mergeable_state === 'dirty');
-  const isChecking = localConflictLoading && localConflictCheck === null && (pr.mergeable == null || pr.mergeable_state === 'unknown');
+    : localCheckFailed
+      ? (pr.mergeable === false || pr.mergeable_state === 'dirty' || pr.mergeable == null)
+      : false; // still loading — handled by isChecking/canMerge below
+  const isChecking = localConflictLoading || (localConflictCheck === null && (pr.mergeable == null || pr.mergeable_state === 'unknown'));
   const isBlocked = pr.mergeable_state === 'blocked';
+  // Only allow merge when we have a definitive "no conflicts" answer
+  const canMerge = !hasConflicts && !isChecking && !isBlocked;
 
   const methodLabels = {
     merge: 'Create a merge commit',
@@ -446,25 +457,25 @@ function MergePanel({ slug, owner, repo, pr, files, onFileClick }) {
       <div
         className="rounded-lg p-3 border"
         style={{
-          background: hasConflicts ? 'rgba(161,161,170,0.04)' : 'rgba(52,211,153,0.04)',
-          borderColor: hasConflicts ? 'rgba(161,161,170,0.2)' : 'rgba(52,211,153,0.2)',
+          background: canMerge ? 'rgba(52,211,153,0.04)' : 'rgba(161,161,170,0.04)',
+          borderColor: canMerge ? 'rgba(52,211,153,0.2)' : 'rgba(161,161,170,0.2)',
         }}
       >
         <div className="flex items-center gap-2 mb-2">
-          <GitMerge className={`w-4 h-4 ${hasConflicts ? 'text-[#71717a]' : 'text-emerald-400'}`} />
-          <span className={`text-xs font-semibold ${hasConflicts ? 'text-[#71717a]' : 'text-emerald-400'}`}>
-            {hasConflicts ? 'Resolve conflicts to merge' : 'Ready to merge'}
+          <GitMerge className={`w-4 h-4 ${canMerge ? 'text-emerald-400' : 'text-[#71717a]'}`} />
+          <span className={`text-xs font-semibold ${canMerge ? 'text-emerald-400' : 'text-[#71717a]'}`}>
+            {isChecking ? 'Checking mergeability…' : hasConflicts ? 'Resolve conflicts to merge' : canMerge ? 'Ready to merge' : 'Cannot merge'}
           </span>
         </div>
 
         <div className="flex gap-2">
           <button
             onClick={handleMerge}
-            disabled={mergePRLoading || hasConflicts}
+            disabled={mergePRLoading || !canMerge}
             className="flex-1 py-2 rounded-lg text-xs font-semibold transition disabled:opacity-50 disabled:cursor-not-allowed"
-            style={{ background: hasConflicts ? '#3f3f46' : '#238636', color: '#fff' }}
+            style={{ background: canMerge ? '#238636' : '#3f3f46', color: '#fff' }}
           >
-            {mergePRLoading ? 'Merging…' : methodLabels[method]}
+            {mergePRLoading ? 'Merging…' : isChecking ? 'Checking…' : methodLabels[method]}
           </button>
           <button
             onClick={() => setShowOptions(v => !v)}
