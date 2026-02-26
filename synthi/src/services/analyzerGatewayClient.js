@@ -403,6 +403,31 @@ export class AnalyzerGatewayClient {
   }
 
   /**
+   * List available healing configuration presets.
+   * @returns {Promise<Object>} Preset names and their config values
+   */
+  healPresets() {
+    return this._sendRequest('heal/presets', {});
+  }
+
+  /**
+   * Apply a named healing configuration preset.
+   * @param {string} presetName - e.g. "conservative", "balanced", "aggressive"
+   * @returns {Promise<Object>} Applied config
+   */
+  healApplyPreset(presetName) {
+    return this._sendRequest('heal/preset', { preset: presetName });
+  }
+
+  /**
+   * Get Prometheus-compatible healing metrics.
+   * @returns {Promise<Object>} Raw metrics text
+   */
+  healMetrics() {
+    return this._sendRequest('heal/metrics', {});
+  }
+
+  /**
    * Run workspace-level multi-file analysis
    * @param {Object} payload - Workspace analysis request
    * @param {string} payload.workspaceId - Unique workspace identifier
