@@ -162,6 +162,10 @@ export const gitClient = {
         return this.request(slug, 'stage-lines', { filePath, patch });
     },
 
+    async unstageLines(slug, filePath, patch) {
+        return this.request(slug, 'unstage-lines', { filePath, patch });
+    },
+
     async discardLines(slug, filePath, patch) {
         return this.request(slug, 'discard-lines', { filePath, patch });
     },

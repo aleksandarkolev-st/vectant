@@ -16,7 +16,7 @@
 
 import { useEffect, useCallback, useRef } from 'react';
 import { useAppDispatch, useAppSelector } from '@/redux/hooks';
-import { stageLines, discardLines } from '@/redux/gitSlice';
+import { stageLines, unstageLines } from '@/redux/gitSlice';
 import { gitClient } from '@/services/gitClient';
 import { toast } from 'sonner';
 
@@ -331,9 +331,9 @@ export default function DiffGutterStaging({ diffEditorRef, isCommitDiff, filePat
                 return;
             }
 
-            // Use discardLines with --cached semantics to unstage from index
-            const result = await dispatch(discardLines({ slug, filePath, patch }));
-            if (discardLines.fulfilled.match(result)) {
+            // Use unstageLines to reverse-apply the patch from the index
+            const result = await dispatch(unstageLines({ slug, filePath, patch }));
+            if (unstageLines.fulfilled.match(result)) {
                 const lineCount = endLine - startLine + 1;
                 // Mark this hunk as unstaged
                 stagedHunksRef.current.delete(hunkKey(startLine, endLine));

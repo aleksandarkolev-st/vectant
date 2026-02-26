@@ -1273,6 +1273,31 @@ class GitService {
         }, userId);
     }
 
+    // Unstage specific lines/hunks from the index by reverse-applying a patch
+    // with --cached (index only, no working tree changes).
+    // This is the inverse of stageLines — toggling a hunk back to unstaged.
+    async unstageLines(slug, filePath, patch, userId) {
+        return this.withLock(slug, async () => {
+            try {
+                const git = this.getGit(slug, userId);
+                const repoPath = this.getEffectiveRepoPath(slug, userId);
+
+                const tmpDir = path.join(repoPath, '.git');
+                const tmpPatch = path.join(tmpDir, `_unstage_${Date.now()}.patch`);
+                fs.writeFileSync(tmpPatch, patch, 'utf8');
+
+                try {
+                    await git.raw(['apply', '--cached', '--reverse', '--unidiff-zero', tmpPatch]);
+                } finally {
+                    try { fs.unlinkSync(tmpPatch); } catch (_) {}
+                }
+                return this.getStatus(slug, userId);
+            } catch (e) {
+                throw this.mapGitError(e, slug);
+            }
+        }, userId);
+    }
+
     async unstageFile(slug, filePath, userId) {
         return this.withLock(slug, async () => {
             const git = this.getGit(slug, userId);

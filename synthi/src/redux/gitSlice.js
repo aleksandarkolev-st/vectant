@@ -290,6 +290,14 @@ export const stageLines = createAsyncThunk(
     }
 );
 
+export const unstageLines = createAsyncThunk(
+    'git/unstageLines',
+    async ({ slug, filePath, patch }, { dispatch }) => {
+        await gitClient.unstageLines(slug, filePath, patch);
+        dispatch(forceRefreshGitStatus(slug));
+    }
+);
+
 export const discardLines = createAsyncThunk(
     'git/discardLines',
     async ({ slug, filePath, patch }, { dispatch }) => {

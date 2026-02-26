@@ -2671,6 +2671,10 @@ const server = http.createServer(async (req, res) => {
                     result = await gitService.stageLines(slug, data.filePath, data.patch, effectiveUserId);
                     broadcastGitStatusChanged(slug, undefined, notifyScope, { immediate: true });
                     break;
+                case 'unstage-lines':
+                    result = await gitService.unstageLines(slug, data.filePath, data.patch, effectiveUserId);
+                    broadcastGitStatusChanged(slug, undefined, notifyScope, { immediate: true });
+                    break;
                 case 'discard-lines':
                     result = await gitService.discardLines(slug, data.filePath, data.patch, effectiveUserId);
                     broadcastFileReverted(slug, data.filePath ? [data.filePath] : [], notifyScope);
