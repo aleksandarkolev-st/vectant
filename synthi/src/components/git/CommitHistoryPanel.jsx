@@ -259,7 +259,6 @@ function CommitDetailPane({ detail, loading, onClose, onFileClick }) {
         ) : (
           <p className="text-[10px] text-[#52525b] italic">No changed files</p>
         )}
-        )}
       </div>
     </div>
   );
