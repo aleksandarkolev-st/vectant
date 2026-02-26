@@ -1967,16 +1967,13 @@ class GitService {
         const remoteHead = `origin/${bareHead}`;
 
         // 1. Fetch both branches so remote-tracking refs are up-to-date.
-        //    IMPORTANT: When fetching by URL (token embedded) rather than by
-        //    remote name, Git only updates FETCH_HEAD — it does NOT update the
-        //    remote-tracking refs (origin/<branch>).  We must supply explicit
-        //    refspecs so that origin/<base> and origin/<head> point at the
-        //    latest remote commits.  Without this, merge-base and merge-tree
-        //    operate on stale local refs, producing false "no conflict" results.
+        //    Use explicit refspecs so that origin/<branch> refs are updated
+        //    even when fetching by URL (which only updates FETCH_HEAD).
         const refspecs = [
             `+refs/heads/${bareBase}:refs/remotes/origin/${bareBase}`,
             `+refs/heads/${bareHead}:refs/remotes/origin/${bareHead}`,
         ];
+        let fetchOk = false;
         try {
             const effectiveToken = token || await this._extractTokenFromRemoteUrl(git);
             if (effectiveToken) {
@@ -1997,85 +1994,61 @@ class GitService {
             } else {
                 await git.raw(['fetch', 'origin', ...refspecs]);
             }
+            fetchOk = true;
         } catch (fetchErr) {
-            console.warn(`[GitService] checkMergeConflicts: fetch failed: ${fetchErr.message}`);
-            // Continue — refs may already be available locally
+            console.warn(`[GitService] checkMergeConflicts: fetch failed — conflict result may be stale: ${fetchErr.message}`);
         }
 
-        // 2. Run the conflict check.
-        //    Prefer the NEW merge-tree form (Git ≥ 2.38) which uses the same
-        //    ort merge strategy as `git merge`, so the pre-check result matches
-        //    what the actual merge will do.  Fall back to the legacy 3-argument
-        //    form for older Git installations.
-        let hasConflicts = false;
-        let mergeTreeOutput = '';
-
-        // --- Attempt: new merge-tree (--write-tree, 2 branch args) ----------
-        let newFormWorked = false;
+        // 2. Find the merge base between the two branches
+        let mergeBase;
         try {
-            mergeTreeOutput = await git.raw([
-                'merge-tree', '--write-tree', remoteBase, remoteHead,
-            ]);
-            // Exit code 0 → clean merge, no conflicts
-            hasConflicts = false;
-            newFormWorked = true;
+            mergeBase = (await git.raw(['merge-base', remoteBase, remoteHead])).trim();
         } catch (e) {
-            // Non-zero exit code.  Git ≥ 2.38 returns exit-code 1 for
-            // conflicts and prints "CONFLICT ..." lines.  Older Git versions
-            // that don't understand --write-tree will error with "unknown
-            // option" or similar — we detect that and fall back below.
-            const out = [e?.message, e?.git?.stdOut, e?.git?.stdErr]
-                .filter(Boolean).join('\n');
-            if (/CONFLICT/i.test(out)) {
-                hasConflicts = true;
-                mergeTreeOutput = out;
-                newFormWorked = true;
-            }
-            // else: --write-tree not supported → fall through to legacy form
+            // No common ancestor — cannot determine mergeability
+            return { hasConflicts: false, conflictedFiles: [], error: 'No common ancestor found', fetchFailed: !fetchOk };
         }
 
-        // --- Fallback: legacy 3-argument merge-tree -------------------------
-        if (!newFormWorked) {
-            let mergeBase;
-            try {
-                mergeBase = (await git.raw(['merge-base', remoteBase, remoteHead])).trim();
-            } catch (e) {
-                return { hasConflicts: false, conflictedFiles: [], error: 'No common ancestor found' };
-            }
-            try {
-                mergeTreeOutput = await git.raw(['merge-tree', mergeBase, remoteBase, remoteHead]);
-            } catch (e) {
-                mergeTreeOutput = e?.message || '';
-            }
-            hasConflicts = mergeTreeOutput.includes('<<<<<<<');
+        // 3. Run git merge-tree (legacy 3-argument form).
+        //    This is the most reliable cross-version approach: it operates
+        //    entirely in-memory (no working tree / index changes), always
+        //    exits 0, and embeds <<<<<<< conflict markers directly in its
+        //    output when the merge has conflicts.
+        //
+        //    We intentionally do NOT use the newer --write-tree form because
+        //    simple-git's .raw() drops stdout on non-zero exit, making it
+        //    impossible to read the CONFLICT lines reliably.
+        let mergeTreeOutput = '';
+        try {
+            mergeTreeOutput = await git.raw(['merge-tree', mergeBase, remoteBase, remoteHead]);
+        } catch (e) {
+            // Some git versions may throw on the legacy form too
+            mergeTreeOutput = e?.message || e?.toString() || '';
         }
 
-        // 3. Extract conflicted file names from the output.
-        //    New form:    "CONFLICT (content): Merge conflict in <file>"
-        //    Legacy form: "+++ b/<file>" near conflict markers
+        // 4. Parse — check for conflict markers AND the "changed in both"
+        //    section header that is FOLLOWED by conflict markers.
+        //    The string 'changed in both' alone is NOT proof of a conflict
+        //    (clean merges of the same file also produce it), so we only
+        //    treat it as a conflict signal when <<<<<<< markers are present.
+        const hasConflicts = mergeTreeOutput.includes('<<<<<<<');
+
+        // 5. Extract conflicted file names
         const conflictedFiles = [];
         if (hasConflicts) {
-            const seen = new Set();
+            const filePattern = /\+\+\+ b\/(.+)/g;
             let match;
-
-            // New-form pattern: "CONFLICT ... in <filename>"
-            const conflictRe = /CONFLICT[^:]*:.*?\bin\s+(.+)/gm;
-            while ((match = conflictRe.exec(mergeTreeOutput)) !== null) {
+            const seen = new Set();
+            while ((match = filePattern.exec(mergeTreeOutput)) !== null) {
                 const file = match[1].trim();
-                if (file && !seen.has(file)) { seen.add(file); conflictedFiles.push(file); }
-            }
-
-            // Legacy-form pattern: "+++ b/<filename>"
-            if (conflictedFiles.length === 0) {
-                const fileRe = /\+\+\+ b\/(.+)/g;
-                while ((match = fileRe.exec(mergeTreeOutput)) !== null) {
-                    const file = match[1].trim();
-                    if (!seen.has(file)) { seen.add(file); conflictedFiles.push(file); }
+                if (!seen.has(file)) {
+                    seen.add(file);
+                    conflictedFiles.push(file);
                 }
             }
         }
 
-        return { hasConflicts, conflictedFiles };
+        console.log(`[GitService] checkMergeConflicts: ${bareBase}..${bareHead} → fetchOk=${fetchOk}, mergeBase=${mergeBase?.slice(0, 8)}, hasConflicts=${hasConflicts}, files=${conflictedFiles.length}, outputLen=${mergeTreeOutput.length}`);
+        return { hasConflicts, conflictedFiles, fetchFailed: !fetchOk };
     }
 
     // Get the content for each version of a conflicted file
