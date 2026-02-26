@@ -940,6 +940,61 @@ class GitService {
         return this.withLock(slug, async () => {
             const git = this.getGit(slug, userId);
             try {
+                // ── Ensure we have the latest remote refs ──
+                // If the branch doesn't exist locally (e.g. a PR head branch
+                // like "MAZNA"), we need to fetch first so git knows about
+                // the remote-tracking ref. Without this, git checkout fails
+                // with: error: pathspec '<branch>' did not match any file(s).
+                if (!create) {
+                    try {
+                        const branchSummary = await git.branch();
+                        const localExists = branchSummary.all.includes(branchName);
+                        if (!localExists) {
+                            // Fetch the specific branch from origin
+                            try {
+                                const token = await this._extractTokenFromRemoteUrl(git);
+                                if (token) {
+                                    const remotes = await git.getRemotes(true);
+                                    const remoteUrl = remotes?.[0]?.refs?.fetch || remotes?.[0]?.refs?.push || '';
+                                    if (remoteUrl.startsWith('https://')) {
+                                        try {
+                                            const u = new URL(remoteUrl);
+                                            u.username = 'x-access-token';
+                                            u.password = token;
+                                            await git.raw(['fetch', u.toString(), branchName]);
+                                        } catch (_) {
+                                            await git.raw(['-c', `http.extraheader=Authorization: Bearer ${token}`, 'fetch', 'origin', branchName]);
+                                        }
+                                    } else {
+                                        await git.raw(['-c', `http.extraheader=Authorization: Bearer ${token}`, 'fetch', 'origin', branchName]);
+                                    }
+                                } else {
+                                    await git.fetch('origin', branchName);
+                                }
+                            } catch (fetchErr) {
+                                console.warn(`[GitService] checkout: fetch origin ${branchName} failed: ${fetchErr.message}`);
+                                // Continue — branch may exist locally under a different listing
+                            }
+
+                            // After fetch, check if it's now available as a remote-tracking branch.
+                            // If so, create a local tracking branch automatically.
+                            try {
+                                const remoteBranch = `origin/${branchName}`;
+                                await git.raw(['rev-parse', '--verify', remoteBranch]);
+                                // Remote-tracking branch exists — create local branch tracking it
+                                await git.raw(['checkout', '-b', branchName, '--track', remoteBranch]);
+                                this._archiveGitAsync(slug, userId);
+                                return this.getStatus(slug, userId);
+                            } catch (_) {
+                                // Remote-tracking branch doesn't exist either — fall through
+                                // to the normal checkout which will produce the appropriate error
+                            }
+                        }
+                    } catch (_) {
+                        // git.branch() failed — continue with normal checkout
+                    }
+                }
+
                 // mode: 'stash' — stash before checkout, pop after
                 // mode: 'force' — discard local changes (git checkout -f)
                 if (mode === 'stash') {
