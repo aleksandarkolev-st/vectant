@@ -265,6 +265,16 @@ export const gitClient = {
         return this.request(slug, 'merge-branch', data);
     },
 
+    /**
+     * In-memory merge conflict detection using git merge-tree.
+     * Runs in milliseconds — no working tree changes.
+     */
+    async checkMergeConflicts(slug, baseBranch, headBranch, token) {
+        const data = { baseBranch, headBranch };
+        if (token) data.token = token;
+        return this.request(slug, 'check-merge-conflicts', data);
+    },
+
     async cherryPick(slug, hash) {
         return this.request(slug, 'cherry-pick', { hash });
     },

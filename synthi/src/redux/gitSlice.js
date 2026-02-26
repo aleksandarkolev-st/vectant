@@ -246,6 +246,19 @@ export const mergeBranchForConflicts = createAsyncThunk(
     }
 );
 
+/**
+ * In-memory merge conflict check using git merge-tree.
+ * Runs in milliseconds — no working tree or index changes.
+ * Returns { hasConflicts, conflictedFiles }.
+ */
+export const checkMergeConflicts = createAsyncThunk(
+    'git/checkMergeConflicts',
+    async ({ slug, baseBranch, headBranch }) => {
+        const token = getGitToken(slug);
+        return await gitClient.checkMergeConflicts(slug, baseBranch, headBranch, token);
+    }
+);
+
 export const fetchCommitDetail = createAsyncThunk(
     'git/fetchCommitDetail',
     async ({ slug, hash }) => {
