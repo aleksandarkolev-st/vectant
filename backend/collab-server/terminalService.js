@@ -84,6 +84,60 @@ function getDefaultShell() {
  * Known shell types mapped to their executable names per platform.
  * Each entry has { win32, unix, args, label }.
  */
+// ─── Git Bash Discovery (Windows) ───────────────────────────────────────────
+
+/** Cache for the discovered Git Bash executable path */
+let _gitBashPath = undefined; // undefined = not yet searched, null = not found
+
+/**
+ * Find the Git Bash executable on Windows by checking common install locations
+ * and falling back to `where git` to locate the Git installation.
+ */
+function findGitBash() {
+  if (_gitBashPath !== undefined) return _gitBashPath;
+
+  const candidates = [
+    path.join(process.env.ProgramFiles || 'C:\\Program Files', 'Git', 'bin', 'bash.exe'),
+    path.join(process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)', 'Git', 'bin', 'bash.exe'),
+    path.join(os.homedir(), 'AppData', 'Local', 'Programs', 'Git', 'bin', 'bash.exe'),
+    path.join(os.homedir(), 'scoop', 'apps', 'git', 'current', 'bin', 'bash.exe'),
+    'C:\\Git\\bin\\bash.exe',
+    'C:\\Program Files\\Git\\bin\\bash.exe',
+    'C:\\Program Files (x86)\\Git\\bin\\bash.exe',
+  ];
+
+  // Check each candidate
+  for (const p of candidates) {
+    try {
+      if (fs.existsSync(p)) {
+        _gitBashPath = p;
+        console.log(`[Terminal] Git Bash found at: ${p}`);
+        return p;
+      }
+    } catch (_) { /* skip */ }
+  }
+
+  // Fall back: use `where git` to discover the Git installation directory
+  try {
+    const { execSync } = require('child_process');
+    const gitPath = execSync('where git', { encoding: 'utf-8', timeout: 3000 }).split('\n')[0].trim();
+    if (gitPath) {
+      // git.exe is usually at <git-root>/cmd/git.exe — bash.exe is at <git-root>/bin/bash.exe
+      const gitRoot = path.dirname(path.dirname(gitPath));
+      const bashPath = path.join(gitRoot, 'bin', 'bash.exe');
+      if (fs.existsSync(bashPath)) {
+        _gitBashPath = bashPath;
+        console.log(`[Terminal] Git Bash found via \`where git\`: ${bashPath}`);
+        return bashPath;
+      }
+    }
+  } catch (_) { /* where git failed */ }
+
+  _gitBashPath = null;
+  console.log('[Terminal] Git Bash not found on this system');
+  return null;
+}
+
 const SHELL_REGISTRY = {
   powershell: {
     win32: 'powershell.exe',
@@ -110,10 +164,12 @@ const SHELL_REGISTRY = {
     label: 'Bash',
   },
   gitbash: {
-    win32: 'C:\\Program Files\\Git\\bin\\bash.exe',
+    // Resolved dynamically — see resolveShellType()
+    win32: null,
     unix: null,
     args: { win32: ['--login', '-i'], unix: [] },
     label: 'Git Bash',
+    dynamic: true, // marker for dynamic resolution
   },
   zsh: {
     win32: null,
@@ -146,6 +202,15 @@ function resolveShellType(shellType) {
   if (!entry) return null;
 
   const platform = os.platform() === 'win32' ? 'win32' : 'unix';
+
+  // Dynamic resolution for gitbash
+  if (entry.dynamic && shellType.toLowerCase() === 'gitbash') {
+    if (platform !== 'win32') return null;
+    const gitBashPath = findGitBash();
+    if (!gitBashPath) return null;
+    return { executable: gitBashPath, args: entry.args.win32 || [], label: entry.label };
+  }
+
   const executable = entry[platform];
   if (!executable) return null;
 
@@ -162,6 +227,17 @@ function getAvailableShells() {
   const available = [];
 
   for (const [key, entry] of Object.entries(SHELL_REGISTRY)) {
+    // Dynamic entries (gitbash) — resolve at runtime
+    if (entry.dynamic && key === 'gitbash') {
+      if (platform === 'win32') {
+        const gitBashPath = findGitBash();
+        if (gitBashPath) {
+          available.push({ key, label: entry.label, executable: gitBashPath });
+        }
+      }
+      continue;
+    }
+
     const executable = entry[platform];
     if (!executable) continue;
 
@@ -174,8 +250,6 @@ function getAvailableShells() {
         }
       } else {
         // For non-absolute executables, assume available (they're on PATH)
-        // A more thorough check would use `which` or `where`, but this is
-        // fast enough for the common case.
         available.push({ key, label: entry.label, executable });
       }
     } catch (_) { /* skip */ }
