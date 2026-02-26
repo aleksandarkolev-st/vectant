@@ -385,6 +385,24 @@ export class AnalyzerGatewayClient {
   }
 
   /**
+   * Batch-analyse multiple files for healing issues.
+   * @param {Object} payload - Batch request
+   * @param {Array} payload.files - Files to analyse [{filePath, language, code, priority?}]
+   * @returns {Promise<Object>} Aggregated batch result
+   */
+  healBatch(payload) {
+    return this._sendRequest('heal/batch', payload);
+  }
+
+  /**
+   * Get healing cache statistics.
+   * @returns {Promise<Object>} Cache hit rate and size
+   */
+  healCacheStats() {
+    return this._sendRequest('heal/cache/stats', {});
+  }
+
+  /**
    * Run workspace-level multi-file analysis
    * @param {Object} payload - Workspace analysis request
    * @param {string} payload.workspaceId - Unique workspace identifier
