@@ -294,6 +294,96 @@ export class AnalyzerGatewayClient {
     return this._sendRequest('analyze/proactive/quick', payload);
   }
 
+  // ==========================================================================
+  // Self-Healing API
+  // ==========================================================================
+
+  /**
+   * Analyze code for auto-healable micro-issues.
+   * 
+   * Returns detected fixes (missing colons, unused imports, etc.)
+   * without applying them, unless autoApply is true.
+   * 
+   * @param {Object} payload - Healing request
+   * @param {string} payload.code - Code to analyze
+   * @param {string} payload.lang - Language identifier
+   * @param {string} [payload.filePath] - File path
+   * @param {boolean} [payload.autoApply=false] - Auto-apply safe fixes
+   * @returns {Promise<Object>} Healing result with fixes
+   */
+  healAnalyze(payload) {
+    return this._sendRequest('heal/analyze', {
+      code: payload.code,
+      lang: payload.lang,
+      filePath: payload.filePath || 'untitled',
+      autoApply: payload.autoApply || false,
+    });
+  }
+
+  /**
+   * Apply healing fixes to code.
+   * 
+   * Can apply all safe fixes or specific fix IDs.
+   * 
+   * @param {Object} payload - Apply request
+   * @param {string} payload.code - Current code
+   * @param {string} payload.lang - Language identifier
+   * @param {string} [payload.filePath] - File path
+   * @param {string[]} [payload.fixIds] - Specific fix IDs to apply (null = all safe)
+   * @returns {Promise<Object>} Result with healed code
+   */
+  healApply(payload) {
+    return this._sendRequest('heal/apply', {
+      code: payload.code,
+      lang: payload.lang,
+      filePath: payload.filePath || 'untitled',
+      fixIds: payload.fixIds || null,
+    });
+  }
+
+  /**
+   * Container-first healing: analyze file from container filesystem.
+   * 
+   * @param {Object} payload - Container healing request
+   * @param {string} payload.slug - Workspace slug
+   * @param {string} payload.filePath - File path in workspace
+   * @param {string} payload.lang - Language identifier
+   * @returns {Promise<Object>} Healing result
+   */
+  healContainer(payload) {
+    return this._sendRequest('heal/container', {
+      slug: payload.slug,
+      filePath: payload.filePath,
+      lang: payload.lang,
+    });
+  }
+
+  /**
+   * Get or update healing configuration.
+   * 
+   * @param {Object} [config] - Config updates (omit for GET)
+   * @returns {Promise<Object>} Current configuration
+   */
+  healConfig(config = null) {
+    return this._sendRequest('heal/config', config || {});
+  }
+
+  /**
+   * Get healing statistics.
+   * @returns {Promise<Object>} Healing stats
+   */
+  healStats() {
+    return this._sendRequest('heal/stats', {});
+  }
+
+  /**
+   * List all registered healing rules.
+   * @returns {Promise<Object>} List of rules
+   */
+  healRules() {
+    return this._sendRequest('heal/rules', {});
+  }
+
   /**
    * Run workspace-level multi-file analysis
    * @param {Object} payload - Workspace analysis request
