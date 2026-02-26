@@ -2261,7 +2261,7 @@ export default function EditorPage({ params }) {
                         title="Problems"
                         icon={AlertCircle}
                         defaultState={PANEL_STATE.DOCKED}
-                        openMode={USE_DOCKING_WM ? 'restore' : 'docked'}
+                        openMode="docked"
                         defaultPosition={DOCK_POSITION.BOTTOM}
                         defaultFloatingPosition={{ x: 200, y: 200 }}
                         defaultFloatingSize={{ width: 600, height: 400 }}
@@ -2269,7 +2269,7 @@ export default function EditorPage({ params }) {
                         onOpenChange={setShowProblemsPanel}
                         onDockedChange={setIsProblemsPanelDocked}
                         workspaceId={slug}
-                        dockSlotId={USE_DOCKING_WM ? undefined : 'problems-panel-dock-slot'}
+                        dockSlotId="problems-panel-dock-slot"
                         className="h-full rounded-none border-0"
                     >
                         <ProblemsPanel
