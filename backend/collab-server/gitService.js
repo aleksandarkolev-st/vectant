@@ -705,11 +705,13 @@ class GitService {
                     }
                     if (!cloneSucceeded) throw lastError;
                     
-                    // NOTE: We intentionally preserve the original remote URL
-                    // (including any embedded credentials) so that push/pull
-                    // operations can authenticate without requiring a separate
-                    // token configuration step.  Security-conscious setups can
-                    // use SSH keys or credential helpers instead.
+                    // Strip credentials from the remote URL in the cloned repo
+                    // so tokens are never persisted on disk.  Auth is handled
+                    // transiently via extraheader / _extractTokenFromRemoteUrl.
+                    try {
+                        const clonedGit = simpleGit(repoPath);
+                        await clonedGit.remote(['set-url', 'origin', cleanRepoUrl]);
+                    } catch (_) {}
                 }
             } else {
                 await git.clone(cleanRepoUrl, repoPath);
@@ -737,11 +739,11 @@ class GitService {
                     const bareGit = simpleGit();
                     await bareGit.clone(repoPath, barePath, ['--bare', '--no-hardlinks']);
                     console.log(`[GitService] Created bare repo at ${barePath}`);
-                    // Preserve the remote URL (with credentials if present)
-                    // on the bare repo so user repos inherit it.
+                    // Set the clean URL (no credentials) on the bare repo.
+                    // Auth is handled transiently at push/pull time.
                     try {
                         const bGit = simpleGit(barePath);
-                        await bGit.remote(['set-url', 'origin', repoUrl]);
+                        await bGit.remote(['set-url', 'origin', cleanRepoUrl]);
                     } catch (_) {}
                 } catch (e) {
                     console.warn(`[GitService] Failed to create bare repo: ${e.message}`);
