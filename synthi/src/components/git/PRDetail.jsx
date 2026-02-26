@@ -161,7 +161,7 @@ function CommentBox({ onSubmit, placeholder = 'Leave a comment…', submitLabel 
           onKeyDown={e => {
             if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) handleSubmit();
             handleMarkdownKeyDown(e, textareaRef);
-          }}}
+          }}
         />
       ) : (
         <div className="px-3 py-2 min-h-[72px]"
