@@ -259,6 +259,12 @@ export const gitClient = {
         return this.request(slug, 'abort-merge');
     },
 
+    async mergeBranch(slug, branch, token) {
+        const data = { branch };
+        if (token) data.token = token;
+        return this.request(slug, 'merge-branch', data);
+    },
+
     async cherryPick(slug, hash) {
         return this.request(slug, 'cherry-pick', { hash });
     },

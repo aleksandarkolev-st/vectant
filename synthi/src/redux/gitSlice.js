@@ -230,6 +230,22 @@ export const rebaseContinue = createAsyncThunk(
     }
 );
 
+/**
+ * Merge a branch into the current branch to create a conflict state.
+ * Used by the PR conflict resolution flow ("Resolve in Synthi").
+ * Performs: fetch → merge <targetBranch> → refresh status.
+ */
+export const mergeBranchForConflicts = createAsyncThunk(
+    'git/mergeBranchForConflicts',
+    async ({ slug, branch }, { dispatch }) => {
+        const token = getGitToken(slug);
+        const result = await gitClient.mergeBranch(slug, branch, token);
+        dispatch(fetchGitStatus(slug));
+        dispatch(fetchCommitHistory({ slug }));
+        return result;
+    }
+);
+
 export const fetchCommitDetail = createAsyncThunk(
     'git/fetchCommitDetail',
     async ({ slug, hash }) => {
