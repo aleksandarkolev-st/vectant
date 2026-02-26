@@ -1684,6 +1684,215 @@ except ImportError as e:
     logger.warning(f"Code Intelligence module not available: {e}")
 
 
+# =============================================================================
+# Self-Healing System
+# =============================================================================
+from analyzer.proactive.healing import SelfHealingEngine, HealingConfig
+from analyzer.proactive.healing.engine import get_healing_engine
+
+class HealingAnalyzeRequest(BaseModel):
+    """Request for self-healing analysis."""
+    code: str
+    lang: str
+    file_path: Optional[str] = "untitled"
+    auto_apply: Optional[bool] = False  # Whether to auto-apply safe fixes
+
+
+class HealingApplyRequest(BaseModel):
+    """Request to apply specific healing fixes."""
+    code: str
+    lang: str
+    file_path: Optional[str] = "untitled"
+    fix_ids: Optional[List[str]] = None  # Specific fix IDs to apply (None = all safe)
+
+
+class HealingConfigUpdateRequest(BaseModel):
+    """Request to update healing configuration."""
+    enabled: Optional[bool] = None
+    min_confidence: Optional[float] = None
+    max_fixes_per_pass: Optional[int] = None
+    cooldown_ms: Optional[int] = None
+    debounce_ms: Optional[int] = None
+    auto_apply_safe: Optional[bool] = None
+    auto_heal_categories: Optional[List[str]] = None
+
+
+@app.post("/heal/analyze")
+async def heal_analyze(req: HealingAnalyzeRequest):
+    """
+    Analyze code for auto-healable micro-issues.
+    
+    Returns detected fixes without applying them.
+    If auto_apply is True, also returns the healed code.
+    """
+    engine = get_healing_engine()
+    
+    try:
+        result = await engine.analyze(
+            code=req.code,
+            language=req.lang.lower(),
+            file_path=req.file_path or "untitled",
+        )
+        
+        response = result.to_dict()
+        
+        # Optionally auto-apply safe fixes
+        if req.auto_apply and result.safe_fixes:
+            healed_code, applied = engine.apply_safe_fixes(req.code, result)
+            response["healedCode"] = healed_code
+            response["appliedFixes"] = [f.to_dict() for f in applied]
+            response["wasHealed"] = len(applied) > 0
+        else:
+            response["wasHealed"] = False
+        
+        return response
+    except Exception as e:
+        logger.error(f"[Healing] Analysis error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/heal/apply")
+async def heal_apply(req: HealingApplyRequest):
+    """
+    Apply healing fixes to code.
+    
+    Can apply all safe fixes or specific fix IDs.
+    """
+    engine = get_healing_engine()
+    
+    try:
+        # First analyze to get current fixes
+        result = await engine.analyze(
+            code=req.code,
+            language=req.lang.lower(),
+            file_path=req.file_path or "untitled",
+        )
+        
+        if req.fix_ids:
+            # Apply specific fixes
+            fix_map = {f.fix_id: f for f in result.fixes}
+            fixes_to_apply = [fix_map[fid] for fid in req.fix_ids if fid in fix_map]
+        else:
+            # Apply all safe fixes
+            fixes_to_apply = result.safe_fixes
+        
+        # Apply fixes bottom-up
+        code = req.code
+        applied = []
+        for fix in sorted(fixes_to_apply, key=lambda f: (f.line, f.column), reverse=True):
+            try:
+                code = engine.apply_fix(code, fix)
+                applied.append(fix)
+            except Exception as e:
+                logger.warning(f"[Healing] Fix application error: {e}")
+        
+        return {
+            "healedCode": code,
+            "appliedFixes": [f.to_dict() for f in applied],
+            "appliedCount": len(applied),
+            "contentHash": result.content_hash,
+        }
+    except Exception as e:
+        logger.error(f"[Healing] Apply error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/heal/container")
+async def heal_container(req: ContainerAnalysisRequest):
+    """
+    Container-first healing: fetch content from container filesystem
+    and analyze for auto-healable issues.
+    """
+    engine = get_healing_engine()
+    
+    try:
+        content = await fetch_file_from_container(req.slug, req.file_path)
+        if content is None:
+            raise HTTPException(status_code=404, detail=f"File not found: {req.file_path}")
+        
+        result = await engine.analyze(
+            code=content,
+            language=req.lang.lower(),
+            file_path=req.file_path,
+        )
+        
+        response = result.to_dict()
+        
+        # Auto-apply safe fixes for container mode
+        if result.safe_fixes:
+            healed_code, applied = engine.apply_safe_fixes(content, result)
+            response["healedCode"] = healed_code
+            response["appliedFixes"] = [f.to_dict() for f in applied]
+            response["wasHealed"] = len(applied) > 0
+        else:
+            response["wasHealed"] = False
+        
+        return response
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"[Healing] Container analysis error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/heal/config")
+async def get_heal_config():
+    """Get current healing configuration."""
+    engine = get_healing_engine()
+    return engine.config.to_dict()
+
+
+@app.post("/heal/config")
+async def update_heal_config(req: HealingConfigUpdateRequest):
+    """Update healing configuration."""
+    engine = get_healing_engine()
+    
+    updates = {}
+    if req.enabled is not None:
+        updates["enabled"] = req.enabled
+    if req.min_confidence is not None:
+        updates["min_confidence"] = req.min_confidence
+    if req.max_fixes_per_pass is not None:
+        updates["max_fixes_per_pass"] = req.max_fixes_per_pass
+    if req.cooldown_ms is not None:
+        updates["cooldown_ms"] = req.cooldown_ms
+    if req.debounce_ms is not None:
+        updates["debounce_ms"] = req.debounce_ms
+    if req.auto_apply_safe is not None:
+        updates["auto_apply_safe"] = req.auto_apply_safe
+    
+    engine.update_config(**updates)
+    return engine.config.to_dict()
+
+
+@app.get("/heal/stats")
+async def get_heal_stats():
+    """Get healing system statistics."""
+    engine = get_healing_engine()
+    return engine.stats.to_dict()
+
+
+@app.get("/heal/rules")
+async def list_heal_rules():
+    """List all registered healing rules."""
+    from analyzer.proactive.healing.rule_registry import get_registry
+    registry = get_registry()
+    return {
+        "rules": [
+            {
+                "ruleId": rule.rule_id,
+                "category": rule.category.value,
+                "languages": list(rule.languages),
+                "description": rule.description,
+                "enabled": rule.enabled,
+            }
+            for rule in registry.list_rules()
+        ],
+        "totalRules": registry.rule_count,
+        "enabledRules": registry.enabled_rule_count,
+    }
+
+
 @app.get("/")
 def root():
     return {
@@ -1695,6 +1904,7 @@ def root():
             "streaming",
             "provenance_tracking",
             "code_intelligence",
+            "self_healing",
         ],
     }
 
