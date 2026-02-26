@@ -1920,6 +1920,96 @@ class GitService {
         }, userId);
     }
 
+    /**
+     * Check for merge conflicts between two branches using `git merge-tree`.
+     * This runs entirely in-memory (no working tree changes) and executes
+     * in milliseconds — orders of magnitude faster than a physical merge.
+     *
+     * @param {string} slug       Workspace slug
+     * @param {string} baseBranch The base branch (e.g. 'main', 'origin/main')
+     * @param {string} headBranch The head/PR branch (e.g. 'feature', 'origin/feature')
+     * @param {string} userId     User identifier
+     * @param {string} [token]    Optional auth token for the fetch step
+     * @returns {{ hasConflicts: boolean, conflictedFiles: string[] }}
+     */
+    async checkMergeConflicts(slug, baseBranch, headBranch, userId, token) {
+        const git = this.getGit(slug, userId);
+
+        // Normalise branch names — ensure we reference remote-tracking branches
+        const bareBase = baseBranch.replace(/^origin\//, '');
+        const bareHead = headBranch.replace(/^origin\//, '');
+        const remoteBase = `origin/${bareBase}`;
+        const remoteHead = `origin/${bareHead}`;
+
+        // 1. Fetch both branches so remote-tracking refs are up-to-date
+        try {
+            const effectiveToken = token || await this._extractTokenFromRemoteUrl(git);
+            if (effectiveToken) {
+                const remotes = await git.getRemotes(true);
+                const remoteUrl = remotes?.[0]?.refs?.fetch || remotes?.[0]?.refs?.push || '';
+                if (remoteUrl.startsWith('https://')) {
+                    try {
+                        const u = new URL(remoteUrl);
+                        u.username = 'x-access-token';
+                        u.password = effectiveToken;
+                        await git.raw(['fetch', u.toString(), bareBase, bareHead]);
+                    } catch (_) {
+                        await git.raw(['-c', `http.extraheader=Authorization: Bearer ${effectiveToken}`, 'fetch', 'origin', bareBase, bareHead]);
+                    }
+                } else {
+                    await git.raw(['-c', `http.extraheader=Authorization: Bearer ${effectiveToken}`, 'fetch', 'origin', bareBase, bareHead]);
+                }
+            } else {
+                await git.fetch('origin', [bareBase, bareHead]);
+            }
+        } catch (fetchErr) {
+            console.warn(`[GitService] checkMergeConflicts: fetch failed: ${fetchErr.message}`);
+            // Continue — refs may already be available locally
+        }
+
+        // 2. Find the merge base between the two branches
+        let mergeBase;
+        try {
+            mergeBase = (await git.raw(['merge-base', remoteBase, remoteHead])).trim();
+        } catch (e) {
+            // No common ancestor — treat as unable to determine
+            return { hasConflicts: false, conflictedFiles: [], error: 'No common ancestor found' };
+        }
+
+        // 3. Run git merge-tree (3-argument form for maximum compatibility).
+        //    This operates on Git tree objects entirely in-memory without
+        //    touching the working directory or index.
+        let mergeTreeOutput = '';
+        try {
+            mergeTreeOutput = await git.raw(['merge-tree', mergeBase, remoteBase, remoteHead]);
+        } catch (e) {
+            // merge-tree may exit non-zero on some git versions when there are conflicts
+            mergeTreeOutput = e?.message || '';
+        }
+
+        // 4. Parse the output — if it contains conflict markers, there are conflicts
+        const hasConflicts = mergeTreeOutput.includes('<<<<<<<') || mergeTreeOutput.includes('changed in both');
+
+        // 5. Extract conflicted file names from merge-tree output
+        //    merge-tree output contains lines like "+++ b/<filename>" or
+        //    "changed in both" sections with filenames
+        const conflictedFiles = [];
+        if (hasConflicts) {
+            const filePattern = /\+\+\+ b\/(.+)/g;
+            let match;
+            const seen = new Set();
+            while ((match = filePattern.exec(mergeTreeOutput)) !== null) {
+                const file = match[1];
+                if (!seen.has(file)) {
+                    seen.add(file);
+                    conflictedFiles.push(file);
+                }
+            }
+        }
+
+        return { hasConflicts, conflictedFiles };
+    }
+
     // Get the content for each version of a conflicted file
     async getConflictVersions(slug, filePath, userId) {
         try {

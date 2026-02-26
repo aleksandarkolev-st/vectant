@@ -2751,6 +2751,13 @@ const server = http.createServer(async (req, res) => {
                     broadcastFileTreeChanged(slug, notifyScope);
                     broadcastGitStatusChanged(slug, undefined, notifyScope, { immediate: true });
                     break;
+                case 'check-merge-conflicts':
+                    // In-memory merge conflict detection using git merge-tree.
+                    // No working tree changes — runs in milliseconds.
+                    result = await gitService.checkMergeConflicts(
+                        slug, data.baseBranch, data.headBranch, effectiveUserId, data.token
+                    );
+                    break;
                 case 'conflict-versions':
                     result = await gitService.getConflictVersions(slug, data.filePath, effectiveUserId);
                     break;
