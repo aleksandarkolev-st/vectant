@@ -26,6 +26,7 @@ from .types import (
 )
 from .classifier import HealingClassifier
 from .rule_registry import HealingRuleRegistry, get_registry
+from .cache import HealingCache
 
 # Import rules to trigger registration
 from . import rules  # noqa: F401
@@ -58,6 +59,7 @@ class SelfHealingEngine:
             min_confidence=self._config.min_confidence,
         )
         self._stats = HealingStats()
+        self._cache = HealingCache()
         self._event_listeners: List[Callable[[HealingEvent], None]] = []
         self._last_heal_time: Dict[str, float] = {}  # file_path -> timestamp
         self._applied_fixes: Dict[str, List[HealingFix]] = {}  # file_path -> fixes
@@ -115,6 +117,12 @@ class SelfHealingEngine:
         
         start_time = time.perf_counter()
         content_hash = self._compute_hash(code)
+        
+        # Check cache first
+        cached = self._cache.get(content_hash, language)
+        if cached is not None:
+            logger.debug(f"Cache hit for {file_path}")
+            return cached
         
         # Check cooldown
         if self._is_on_cooldown(file_path):
@@ -205,6 +213,9 @@ class SelfHealingEngine:
             f"({result.auto_fixable_count} auto-fixable) "
             f"in {elapsed_ms:.1f}ms for {file_path}"
         )
+        
+        # Cache the result
+        self._cache.put(result)
         
         return result
     
