@@ -12,6 +12,8 @@ const TerminalPane = dynamic(() => import('./TerminalPane.jsx'), { ssr: false })
 export default function TerminalManager({ visible, onCloseAll, workspaceSlug = '' }) {
   const [terminals, setTerminals] = useState([{ id: 'term-1', label: 'PowerShell', split: false, shellType: null }]);
   const [activeId, setActiveId] = useState('term-1');
+  const [editingTabId, setEditingTabId] = useState(null);
+  const [editingName, setEditingName] = useState('');
   const dragRef = useRef(null);
   const dispatch = useDispatch();
   const fsRefreshTimer = useRef(null);
@@ -116,6 +118,24 @@ export default function TerminalManager({ visible, onCloseAll, workspaceSlug = '
     if (onCloseAll) onCloseAll();
   };
 
+  const startRenaming = (id, currentLabel) => {
+    setEditingTabId(id);
+    setEditingName(currentLabel);
+  };
+
+  const commitRename = () => {
+    if (editingTabId && editingName.trim()) {
+      setTerminals(prev => prev.map(t => t.id === editingTabId ? { ...t, label: editingName.trim() } : t));
+    }
+    setEditingTabId(null);
+    setEditingName('');
+  };
+
+  const cancelRename = () => {
+    setEditingTabId(null);
+    setEditingName('');
+  };
+
   const header = (
     <div className="h-10 flex items-center justify-between px-2 border-b select-none" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-sidebar)' }} ref={dragRef}>
       {/* Tabs */}
@@ -134,6 +154,7 @@ export default function TerminalManager({ visible, onCloseAll, workspaceSlug = '
               ? { color: 'var(--text-primary)', borderTop: '2px solid var(--accent-primary)' }
               : { color: 'var(--text-secondary)' }} 
             onClick={() => setActiveId(t.id)}
+            onDoubleClick={() => startRenaming(t.id, t.label)}
           >
             {t.isAi ? (
               <Bot className="w-3.5 h-3.5" style={{ color: 'var(--accent-primary)' }} strokeWidth={2} />
@@ -148,7 +169,24 @@ export default function TerminalManager({ visible, onCloseAll, workspaceSlug = '
             ) : (
               <TerminalSquare className="w-3.5 h-3.5" strokeWidth={2} />
             )}
-            <span className="text-xs font-medium">{t.label}</span>
+            {editingTabId === t.id ? (
+              <input
+                className="text-xs font-medium bg-transparent border-b outline-none w-20"
+                style={{ borderColor: 'var(--accent-primary)', color: 'var(--text-primary)' }}
+                value={editingName}
+                onChange={(e) => setEditingName(e.target.value)}
+                onBlur={commitRename}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') commitRename();
+                  if (e.key === 'Escape') cancelRename();
+                }}
+                autoFocus
+                onClick={(e) => e.stopPropagation()}
+                maxLength={30}
+              />
+            ) : (
+              <span className="text-xs font-medium">{t.label}</span>
+            )}
             {/* Close button - appears on hover, safe position */}
             <button 
               className="w-5 h-5 flex items-center justify-center rounded opacity-0 group-hover:opacity-100 hover:bg-[#ef4444]/20 hover:text-[#ef4444] transition-all ml-1"
