@@ -267,6 +267,20 @@ export class CompilerClient {
             // ignore
         }
 
+        // Dispatch structured program output event for the Output panel.
+        // stdout/stderr lines are forwarded with their type so the panel can
+        // distinguish program output from build system messages.
+        try {
+            const p = JSON.parse(text);
+            if (p && (p.type === 'stdout' || p.type === 'stderr') && p.line != null) {
+                if (typeof window !== 'undefined' && window.dispatchEvent) {
+                    window.dispatchEvent(new CustomEvent('synthi:program-output', {
+                        detail: { type: p.type, line: p.line, sessionId: p.sessionId }
+                    }));
+                }
+            }
+        } catch (_) { /* not JSON — ignore */ }
+
         this.logHandlers.forEach((fn) => {
             try { fn(text); } catch (e) { /* ignore */ }
         });
@@ -1251,9 +1265,13 @@ export class CompilerClient {
                     // Extract clean display text from structured messages.
                     // stdout/stderr JSON from the runner carries the actual output in `.line`.
                     // Internal status messages (stage/done) should not clutter the build log.
+                    // lsp-stderr is diagnostic noise from the language server — always hide.
                     let displayLine = line;
                     if (parsed) {
-                        if ((parsed.type === 'stdout' || parsed.type === 'stderr') && parsed.line != null) {
+                        if (parsed.type === 'lsp-stderr' || parsed.type === 'hmr-status') {
+                            // Internal diagnostic / HMR noise — suppress entirely
+                            displayLine = null;
+                        } else if ((parsed.type === 'stdout' || parsed.type === 'stderr') && parsed.line != null) {
                             displayLine = String(parsed.line);
                         } else if (parsed.status === 'done' || parsed.status === 'error') {
                             // Internal completion signals — don't forward to user-visible log.
