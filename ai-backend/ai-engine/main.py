@@ -1953,6 +1953,58 @@ async def heal_cache_stats():
     return engine._cache.stats
 
 
+@app.get("/heal/presets")
+async def list_heal_presets():
+    """List all available healing configuration presets."""
+    from analyzer.proactive.healing.config_schema import list_presets, get_preset
+    presets = list_presets()
+    return {
+        "presets": {
+            name: get_preset(name) for name in presets
+        },
+        "available": presets,
+    }
+
+
+@app.post("/heal/preset")
+async def apply_heal_preset(payload: dict):
+    """Apply a named healing configuration preset."""
+    from analyzer.proactive.healing.config_schema import get_preset as fetch_preset
+    from analyzer.proactive.healing.engine import get_healing_engine
+
+    name = payload.get("preset")
+    if not name:
+        raise HTTPException(status_code=400, detail="Missing 'preset' field")
+
+    preset = fetch_preset(name)
+    if not preset:
+        raise HTTPException(status_code=404, detail=f"Unknown preset: {name}")
+
+    engine = get_healing_engine()
+    engine.update_config(**preset)
+    return {
+        "applied": name,
+        "config": engine.config.to_dict(),
+    }
+
+
+@app.get("/heal/metrics")
+async def heal_metrics():
+    """Get Prometheus-compatible healing metrics."""
+    from analyzer.proactive.healing.metrics_export import HealingMetrics
+    from analyzer.proactive.healing.engine import get_healing_engine
+    from fastapi.responses import PlainTextResponse
+
+    engine = get_healing_engine()
+    metrics = HealingMetrics(
+        rules_executed_total=engine.stats.get("rulesExecuted", 0),
+        fixes_detected_total=engine.stats.get("totalDetected", 0),
+        fixes_applied_total=engine.stats.get("totalApplied", 0),
+        active_rules_count=engine.stats.get("activeRules", 0),
+    )
+    return PlainTextResponse(content=metrics.to_prometheus(), media_type="text/plain")
+
+
 @app.get("/")
 def root():
     return {
