@@ -55,6 +55,7 @@ import { SYNTHI_THEME } from './theme';
 import { useTheme } from '@/components/ThemeProvider';
 import { ConflictBanner } from './ConflictBanner';
 import MergeConflictEditor from '@/components/git/MergeConflictEditor';
+import DiffGutterStaging from './DiffGutterStaging';
 import { useSessionPermissions } from '@/hooks/useCollabSession';
 import { initSynthiFileSystem, updateFile as updateVirtualFile, disposeSynthiFileSystem } from './SynthiFileSystemProvider';
 import { registerMonarchTokenizers } from './languageTokenizers';
@@ -250,6 +251,7 @@ const EditorPanel = ({
     // Track whether the DiffEditor has ever been activated — once true, we keep
     // it mounted (hidden) to avoid React unmount crash in passive effects.
     const [diffModeEverActive, setDiffModeEverActive] = useState(false);
+    const diffEditorRef = useRef(null);
     const latestCodeRef = useRef(code);
     const pendingContentFrameRef = useRef(null);
     const pendingPositionFrameRef = useRef(null);
@@ -3699,7 +3701,11 @@ const EditorPanel = ({
                                                     <div className="flex items-center gap-2 min-w-0">
                                                         <span className="font-medium truncate" style={{ color: 'var(--text-primary)' }}>{activeFile?.name || 'Unknown'}</span>
                                                         <span style={{ color: 'var(--text-dim, var(--text-muted))' }}>•</span>
-                                                        <span className="whitespace-nowrap" style={{ color: 'var(--text-secondary)' }}>Working Copy ↔ HEAD</span>
+                                                        <span className="whitespace-nowrap" style={{ color: 'var(--text-secondary)' }}>
+                                                            {activeFile?.commitDiff
+                                                                ? `${activeFile.commitHash?.substring(0, 7)}~1 ↔ ${activeFile.commitHash?.substring(0, 7)}`
+                                                                : 'Working Copy ↔ HEAD'}
+                                                        </span>
                                                     </div>
                                                     <button
                                                         onClick={() => dispatch(setDiffMode(false))}
@@ -3730,6 +3736,14 @@ const EditorPanel = ({
                                                         beforeMount={(monaco) => {
                                                             monaco.editor.defineTheme('synthi-theme', SYNTHI_THEME);
                                                         }}
+                                                        onMount={(editor) => {
+                                                            diffEditorRef.current = editor;
+                                                        }}
+                                                    />
+                                                    <DiffGutterStaging
+                                                        diffEditorRef={diffEditorRef}
+                                                        isCommitDiff={!!activeFile?.commitDiff}
+                                                        filePath={activeFile?.path}
                                                     />
                                                 </div>
                                             </div>
