@@ -55,7 +55,6 @@ import { SYNTHI_THEME } from './theme';
 import { useTheme } from '@/components/ThemeProvider';
 import { ConflictBanner } from './ConflictBanner';
 import MergeConflictEditor from '@/components/git/MergeConflictEditor';
-import DiffGutterStaging from './DiffGutterStaging';
 import { useSessionPermissions } from '@/hooks/useCollabSession';
 import { initSynthiFileSystem, updateFile as updateVirtualFile, disposeSynthiFileSystem } from './SynthiFileSystemProvider';
 import { registerMonarchTokenizers } from './languageTokenizers';
@@ -3741,11 +3740,6 @@ const EditorPanel = ({
                                                         onMount={(editor) => {
                                                             diffEditorRef.current = editor;
                                                         }}
-                                                    />
-                                                    <DiffGutterStaging
-                                                        diffEditorRef={diffEditorRef}
-                                                        isCommitDiff={!!activeFile?.commitDiff}
-                                                        filePath={activeFile?.path}
                                                     />
                                                 </div>
                                             </div>
