@@ -1364,12 +1364,43 @@ class GitService {
                         pushArgs.push(authUrl, currentBranch);
                         console.log(`[GitService][push] Executing: git ${pushArgs.map(a => a === authUrl ? maskedUrl : a).join(' ')}`);
                         await git.raw(pushArgs);
+
+                        // Set upstream tracking so git status reports ahead/behind correctly
+                        const remoteName = updatedRemotes?.[0]?.name || 'origin';
+                        try {
+                            await git.raw(['branch', `--set-upstream-to=${remoteName}/${currentBranch}`, currentBranch]);
+                        } catch (_) {}
+
+                        // Update local remote refs so the remote branch SHA matches HEAD
+                        try {
+                            await git.raw(['fetch', authUrl, `${currentBranch}:refs/remotes/${remoteName}/${currentBranch}`]);
+                        } catch (_) {
+                            // Fallback: just update the ref directly
+                            try {
+                                const headHash = (await git.raw(['rev-parse', 'HEAD'])).trim();
+                                await git.raw(['update-ref', `refs/remotes/${remoteName}/${currentBranch}`, headHash]);
+                            } catch (__) {}
+                        }
                     } else {
                         // Fallback to extraheader (non-GitHub forges)
                         console.log(`[GitService][push] Falling back to extraheader auth for ${remoteUrl}`);
                         const pushArgs = ['-c', `http.extraheader=Authorization: Bearer ${effectiveToken}`, 'push'];
                         if (force) pushArgs.push('--force-with-lease');
                         await git.raw(pushArgs);
+
+                        // Set upstream tracking
+                        const branchSummary = await git.branchLocal();
+                        const currentBranch = branchSummary.current;
+                        const remoteName = updatedRemotes?.[0]?.name || 'origin';
+                        if (currentBranch) {
+                            try {
+                                await git.raw(['branch', `--set-upstream-to=${remoteName}/${currentBranch}`, currentBranch]);
+                            } catch (_) {}
+                            try {
+                                const headHash = (await git.raw(['rev-parse', 'HEAD'])).trim();
+                                await git.raw(['update-ref', `refs/remotes/${remoteName}/${currentBranch}`, headHash]);
+                            } catch (_) {}
+                        }
                     }
                 } else {
                     console.log(`[GitService][push] No token — pushing without auth. remote=${remoteUrl}`);
@@ -1377,6 +1408,16 @@ class GitService {
                         await git.push({ '--force-with-lease': null });
                     } else {
                         await git.push();
+                    }
+
+                    // Set upstream tracking for no-token push as well
+                    const branchSummary = await git.branchLocal();
+                    const currentBranch = branchSummary.current;
+                    const remoteName = updatedRemotes?.[0]?.name || 'origin';
+                    if (currentBranch) {
+                        try {
+                            await git.raw(['branch', `--set-upstream-to=${remoteName}/${currentBranch}`, currentBranch]);
+                        } catch (_) {}
                     }
                 }
             } catch (e) {
@@ -1747,6 +1788,74 @@ class GitService {
             } catch (e) {
                 throw this.mapGitError(e, slug);
             }
+        }, userId);
+    }
+
+    /**
+     * Merge a branch into the current branch.
+     * This is used by the PR conflict resolution flow — it intentionally
+     * allows conflicts so the user can resolve them in the Source Control panel.
+     *
+     * @param {string} slug     Workspace slug
+     * @param {string} branch   Branch to merge (e.g. 'main', 'origin/main')
+     * @param {string} userId   User identifier
+     * @param {string} [token]  Optional auth token for the fetch step
+     * @returns {{ status, hasConflicts, conflictedFiles }}
+     */
+    async mergeBranch(slug, branch, userId, token) {
+        return this.withLock(slug, async () => {
+            const git = this.getGit(slug, userId);
+
+            // 1. Fetch latest remote state so merge has up-to-date refs
+            try {
+                const effectiveToken = token || await this._extractTokenFromRemoteUrl(git);
+                if (effectiveToken) {
+                    const remotes = await git.getRemotes(true);
+                    const remoteUrl = remotes?.[0]?.refs?.fetch || remotes?.[0]?.refs?.push || '';
+                    if (remoteUrl.startsWith('https://')) {
+                        try {
+                            const u = new URL(remoteUrl);
+                            u.username = 'x-access-token';
+                            u.password = effectiveToken;
+                            await git.raw(['fetch', u.toString()]);
+                        } catch (_) {
+                            await git.raw(['-c', `http.extraheader=Authorization: Bearer ${effectiveToken}`, 'fetch']);
+                        }
+                    } else {
+                        await git.raw(['-c', `http.extraheader=Authorization: Bearer ${effectiveToken}`, 'fetch']);
+                    }
+                } else {
+                    await git.fetch();
+                }
+            } catch (fetchErr) {
+                console.warn(`[GitService] mergeBranch: fetch before merge failed: ${fetchErr.message}`);
+                // Continue — merge might still work with local refs
+            }
+
+            // 2. Attempt merge.  We allow conflicts (exit code 1 with CONFLICTS).
+            let mergeResult;
+            let hasConflicts = false;
+            try {
+                mergeResult = await git.merge([branch]);
+            } catch (e) {
+                const msg = (e?.message || '').toLowerCase();
+                // Git merge exits non-zero on conflicts — this is expected
+                if (msg.includes('conflict') || msg.includes('automatic merge failed') || msg.includes('merge_msg')) {
+                    hasConflicts = true;
+                } else {
+                    throw this.mapGitError(e, slug);
+                }
+            }
+
+            // 3. Read updated status
+            const status = await this.getStatus(slug, userId);
+            const conflictedFiles = (status?.conflictedFiles || []).map(f => typeof f === 'string' ? f : f.path || f);
+
+            return {
+                status,
+                hasConflicts: hasConflicts || (status?.hasConflicts ?? false) || conflictedFiles.length > 0,
+                conflictedFiles,
+            };
         }, userId);
     }
 
