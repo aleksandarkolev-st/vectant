@@ -1,15 +1,14 @@
 'use client';
 /**
- * DiffGutterStaging — Interactive gutter actions for the Monaco DiffEditor.
+ * DiffGutterStaging — JetBrains/IntelliJ-style interactive staging for Monaco DiffEditor.
  *
  * Architecture:
- *   1. Uses Monaco's `deltaDecorations` API to add custom CSS classes
- *      (`glyphMarginClassName`) to every changed hunk in the modified editor.
- *   2. Attaches an `editor.onMouseDown` listener on the modified editor
- *      that intercepts glyph-margin clicks (`GUTTER_GLYPH_MARGIN`),
- *      preventing the default read-only editor warning.
- *   3. On gutter click, determines the line number, finds the enclosing hunk,
- *      and triggers selective staging via the backend.
+ *   1. Suppresses the read-only tooltip on the modified editor.
+ *   2. Uses `deltaDecorations` with checkbox-style glyphs (☐) on hunk start
+ *      lines.  Gutter clicks stage the **entire enclosing hunk**.
+ *   3. Registers a custom context-menu action ("Stage Selected Lines") via
+ *      `modifiedEditor.addAction()` so users can highlight specific lines,
+ *      right-click, and stage only that selection — matching IntelliJ parity.
  */
 
 import { useEffect, useCallback, useRef } from 'react';
@@ -26,43 +25,56 @@ function ensureStyles() {
     const style = document.createElement('style');
     style.id = STYLE_ID;
     style.textContent = `
+        /* ── Checkbox-style glyph for added hunks ── */
         .diff-gutter-stage-add {
-            background: rgba(16, 185, 129, 0.35) !important;
+            background: rgba(16, 185, 129, 0.18) !important;
             cursor: pointer !important;
+            border-radius: 3px;
         }
         .diff-gutter-stage-add::after {
-            content: '+';
+            content: '☐';
             display: flex;
             align-items: center;
             justify-content: center;
             width: 100%;
             height: 100%;
-            color: #10b981;
-            font-weight: 700;
-            font-size: 14px;
+            color: #34d399;
+            font-size: 15px;
+            line-height: 1;
             pointer-events: none;
         }
         .diff-gutter-stage-add:hover {
-            background: rgba(16, 185, 129, 0.55) !important;
+            background: rgba(16, 185, 129, 0.40) !important;
         }
+        .diff-gutter-stage-add:hover::after {
+            content: '☑';
+            color: #10b981;
+        }
+
+        /* ── Checkbox-style glyph for deleted hunks ── */
         .diff-gutter-stage-del {
-            background: rgba(239, 68, 68, 0.30) !important;
+            background: rgba(239, 68, 68, 0.18) !important;
             cursor: pointer !important;
+            border-radius: 3px;
         }
         .diff-gutter-stage-del::after {
-            content: '−';
+            content: '☐';
             display: flex;
             align-items: center;
             justify-content: center;
             width: 100%;
             height: 100%;
-            color: #ef4444;
-            font-weight: 700;
-            font-size: 14px;
+            color: #f87171;
+            font-size: 15px;
+            line-height: 1;
             pointer-events: none;
         }
         .diff-gutter-stage-del:hover {
-            background: rgba(239, 68, 68, 0.50) !important;
+            background: rgba(239, 68, 68, 0.40) !important;
+        }
+        .diff-gutter-stage-del:hover::after {
+            content: '☑';
+            color: #ef4444;
         }
         .diff-gutter-margin-highlight {
             background: rgba(52, 211, 153, 0.06) !important;
