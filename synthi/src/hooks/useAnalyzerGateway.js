@@ -341,6 +341,134 @@ export function useAnalyzerGateway({
   const resetResult = useCallback(() => setLastResult(null), []);
   const resetError = useCallback(() => setLastError(null), []);
 
+  // ==========================================================================
+  // Self-Healing API
+  // ==========================================================================
+
+  /**
+   * Analyze code for auto-healable micro-issues.
+   * Returns fixes without applying them (unless autoApply=true).
+   * 
+   * @param {Object} options - Healing options
+   * @param {string} options.code - The code to analyze
+   * @param {string} options.lang - The programming language
+   * @param {string} [options.filePath] - The file path
+   * @param {boolean} [options.autoApply=false] - Auto-apply safe fixes
+   * @returns {Promise<Object>} Healing result with fixes
+   */
+  const healAnalyze = useCallback(async ({ code, lang, filePath, autoApply = false } = {}) => {
+    if (!clientRef.current) {
+      throw new SynthiException('Gateway client is not ready yet');
+    }
+    if (typeof code !== 'string') {
+      throw new SynthiException('`code` must be a string');
+    }
+    if (!lang) {
+      throw new SynthiException('`lang` is required for healing');
+    }
+
+    try {
+      const response = await clientRef.current.healAnalyze({
+        code,
+        lang: lang.toLowerCase(),
+        filePath: filePath || 'untitled',
+        autoApply,
+      });
+      return response?.data ?? response;
+    } catch (error) {
+      console.error('[healAnalyze] Error:', error);
+      throw error;
+    }
+  }, []);
+
+  /**
+   * Apply healing fixes to code.
+   * 
+   * @param {Object} options - Apply options
+   * @param {string} options.code - Current code
+   * @param {string} options.lang - Programming language
+   * @param {string} [options.filePath] - File path
+   * @param {string[]} [options.fixIds] - Specific fix IDs (null = all safe)
+   * @returns {Promise<Object>} Result with healed code
+   */
+  const healApply = useCallback(async ({ code, lang, filePath, fixIds } = {}) => {
+    if (!clientRef.current) {
+      throw new SynthiException('Gateway client is not ready yet');
+    }
+
+    try {
+      const response = await clientRef.current.healApply({
+        code,
+        lang: lang.toLowerCase(),
+        filePath: filePath || 'untitled',
+        fixIds: fixIds || null,
+      });
+      return response?.data ?? response;
+    } catch (error) {
+      console.error('[healApply] Error:', error);
+      throw error;
+    }
+  }, []);
+
+  /**
+   * Container-first healing.
+   * 
+   * @param {Object} options - Container healing options
+   * @param {string} options.slug - Workspace slug
+   * @param {string} options.filePath - File path
+   * @param {string} options.lang - Programming language
+   * @returns {Promise<Object>} Healing result
+   */
+  const healContainer = useCallback(async ({ slug, filePath, lang } = {}) => {
+    if (!clientRef.current) {
+      throw new SynthiException('Gateway client is not ready yet');
+    }
+
+    try {
+      const response = await clientRef.current.healContainer({
+        slug,
+        filePath,
+        lang: lang.toLowerCase(),
+      });
+      return response?.data ?? response;
+    } catch (error) {
+      console.error('[healContainer] Error:', error);
+      throw error;
+    }
+  }, []);
+
+  /**
+   * Get or update healing configuration.
+   */
+  const healConfig = useCallback(async (updates = null) => {
+    if (!clientRef.current) {
+      throw new SynthiException('Gateway client is not ready yet');
+    }
+    try {
+      const response = await clientRef.current.healConfig(updates);
+      return response?.data ?? response;
+    } catch (error) {
+      console.error('[healConfig] Error:', error);
+      throw error;
+    }
+  }, []);
+
+  /**
+   * Get healing statistics.
+   */
+  const healStats = useCallback(async () => {
+    if (!clientRef.current) {
+      throw new SynthiException('Gateway client is not ready yet');
+    }
+    try {
+      const response = await clientRef.current.healStats();
+      return response?.data ?? response;
+    } catch (error) {
+      console.error('[healStats] Error:', error);
+      throw error;
+    }
+  }, []);
+
   const connectionMeta = useMemo(
     () => ({
       status: connectionStatus,
@@ -360,6 +488,12 @@ export function useAnalyzerGateway({
     analyzeProactive,
     analyzeContainer, // Container-First analysis
     analyzeUnified,   // Unified Intelligence Pipeline (RECOMMENDED)
+    // Self-Healing
+    healAnalyze,
+    healApply,
+    healContainer,
+    healConfig,
+    healStats,
     resetResult,
     resetError,
     clientReady: Boolean(clientRef.current),
