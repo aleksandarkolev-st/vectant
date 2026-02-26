@@ -7,7 +7,7 @@ import {
   fetchRepoLabels, fetchRepoCollaborators, setActivePR, clearActionError, fetchRepoBranches,
   fetchPRList,
 } from '@/redux/prSlice';
-import { checkoutBranch, mergeBranchForConflicts, fetchGitStatus } from '@/redux/gitSlice';
+import { checkoutBranch, mergeBranchForConflicts, fetchGitStatus, fetchRemote } from '@/redux/gitSlice';
 import {
   ChevronLeft, GitMerge, GitPullRequest, Circle, CheckCircle2,
   XCircle, RefreshCw, MessageSquare, FileText, GitCommit, CheckSquare,
@@ -340,13 +340,17 @@ function MergePanel({ slug, owner, repo, pr, files, onFileClick }) {
               onClick={async () => {
                 try {
                   toast.info('Setting up conflict resolution…');
-                  // 1. Checkout the PR head branch
+                  // 1. Fetch latest remote refs so the local repo knows
+                  //    about the PR head branch (prevents pathspec errors).
+                  await dispatch(fetchRemote(slug));
+                  // 2. Checkout the PR head branch
                   await dispatch(checkoutBranch({ slug, branch: pr.head?.ref }));
-                  // 2. Merge the target (base) branch to surface conflicts locally
+                  // 3. Merge the remote-tracking base branch to surface conflicts locally.
+                  //    Always reference origin/<branch> to avoid pathspec errors.
                   const mergeResult = await dispatch(mergeBranchForConflicts({ slug, branch: `origin/${pr.base?.ref}` })).unwrap();
-                  // 3. Refresh git status so the Source Control panel shows conflicts
+                  // 4. Refresh git status so the Source Control panel shows conflicts
                   dispatch(fetchGitStatus(slug));
-                  // 4. Switch sidebar to Source Control
+                  // 5. Switch sidebar to Source Control
                   window.dispatchEvent(new CustomEvent('synthi:switch-sidebar', { detail: 'scm' }));
                   if (mergeResult?.hasConflicts) {
                     toast.info('Resolve the merge conflicts in the Source Control panel, then commit and push.');
