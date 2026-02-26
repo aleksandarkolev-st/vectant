@@ -29,6 +29,9 @@ const backendHealStatsUrl = new URL("/heal/stats", backendUrl).toString();
 const backendHealRulesUrl = new URL("/heal/rules", backendUrl).toString();
 const backendHealBatchUrl = new URL("/heal/batch", backendUrl).toString();
 const backendHealCacheStatsUrl = new URL("/heal/cache/stats", backendUrl).toString();
+const backendHealPresetsUrl = new URL("/heal/presets", backendUrl).toString();
+const backendHealPresetApplyUrl = new URL("/heal/preset", backendUrl).toString();
+const backendHealMetricsUrl = new URL("/heal/metrics", backendUrl).toString();
 
 const server = http.createServer(handleHttpRequest);
 const wss = new WebSocketServer({
@@ -166,6 +169,15 @@ async function handleClientMessage(socket, raw) {
       break;
     case "heal/cache/stats":
       await forwardHealCacheStats(socket, requestId);
+      break;
+    case "heal/presets":
+      await forwardHealPresets(socket, requestId);
+      break;
+    case "heal/preset":
+      await forwardHealPresetApply(socket, data, requestId);
+      break;
+    case "heal/metrics":
+      await forwardHealMetrics(socket, requestId);
       break;
     default:
       sendError(socket, `Unsupported action: ${action}`, { requestId });
@@ -1365,6 +1377,78 @@ async function forwardHealCacheStats(socket, requestId) {
   } catch (err) {
     console.error("[Heal] cache stats forward error:", err);
     sendError(socket, "Healing cache stats request failed", { requestId, detail: err.message });
+  }
+}
+
+async function forwardHealPresets(socket, requestId) {
+  try {
+    const backendResponse = await fetch(backendHealPresetsUrl, { method: "GET" });
+    const responseText = await backendResponse.text();
+
+    if (!backendResponse.ok) {
+      sendError(socket, "Healing presets backend error", { requestId, detail: responseText });
+      return;
+    }
+
+    const responseJson = JSON.parse(responseText);
+    safeSend(socket, {
+      type: "response",
+      action: "heal/presets",
+      requestId,
+      data: responseJson,
+    });
+  } catch (err) {
+    console.error("[Heal] presets forward error:", err);
+    sendError(socket, "Healing presets request failed", { requestId, detail: err.message });
+  }
+}
+
+async function forwardHealPresetApply(socket, data, requestId) {
+  try {
+    const backendResponse = await fetch(backendHealPresetApplyUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ preset: data.preset }),
+    });
+    const responseText = await backendResponse.text();
+
+    if (!backendResponse.ok) {
+      sendError(socket, "Healing preset apply backend error", { requestId, detail: responseText });
+      return;
+    }
+
+    const responseJson = JSON.parse(responseText);
+    safeSend(socket, {
+      type: "response",
+      action: "heal/preset",
+      requestId,
+      data: responseJson,
+    });
+  } catch (err) {
+    console.error("[Heal] preset apply forward error:", err);
+    sendError(socket, "Healing preset apply request failed", { requestId, detail: err.message });
+  }
+}
+
+async function forwardHealMetrics(socket, requestId) {
+  try {
+    const backendResponse = await fetch(backendHealMetricsUrl, { method: "GET" });
+    const responseText = await backendResponse.text();
+
+    if (!backendResponse.ok) {
+      sendError(socket, "Healing metrics backend error", { requestId, detail: responseText });
+      return;
+    }
+
+    safeSend(socket, {
+      type: "response",
+      action: "heal/metrics",
+      requestId,
+      data: { raw: responseText },
+    });
+  } catch (err) {
+    console.error("[Heal] metrics forward error:", err);
+    sendError(socket, "Healing metrics request failed", { requestId, detail: err.message });
   }
 }
 
