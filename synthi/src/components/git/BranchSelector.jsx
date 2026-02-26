@@ -107,14 +107,20 @@ export function BranchSelector({ slug }) {
         }
     }, [slug, dispatch]);
 
-    const handleValueChange = useCallback((value) => {
+    const handleValueChange = useCallback(async (value) => {
         if (value === 'create-new') {
             const branchName = prompt("Enter new branch name:");
             if (branchName) {
-                dispatch(checkoutBranch({ slug, branch: branchName, create: true }));
+                const result = await dispatch(checkoutBranch({ slug, branch: branchName, create: true }));
+                if (checkoutBranch.fulfilled.match(result)) {
+                    dispatch(refreshWorkspaceThunk());
+                }
             }
         } else {
-            dispatch(checkoutBranch({ slug, branch: value }));
+            const result = await dispatch(checkoutBranch({ slug, branch: value }));
+            if (checkoutBranch.fulfilled.match(result)) {
+                dispatch(refreshWorkspaceThunk());
+            }
         }
     }, [slug, dispatch]);
 
