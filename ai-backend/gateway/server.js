@@ -27,6 +27,8 @@ const backendHealContainerUrl = new URL("/heal/container", backendUrl).toString(
 const backendHealConfigUrl = new URL("/heal/config", backendUrl).toString();
 const backendHealStatsUrl = new URL("/heal/stats", backendUrl).toString();
 const backendHealRulesUrl = new URL("/heal/rules", backendUrl).toString();
+const backendHealBatchUrl = new URL("/heal/batch", backendUrl).toString();
+const backendHealCacheStatsUrl = new URL("/heal/cache/stats", backendUrl).toString();
 
 const server = http.createServer(handleHttpRequest);
 const wss = new WebSocketServer({
@@ -158,6 +160,12 @@ async function handleClientMessage(socket, raw) {
       break;
     case "heal/rules":
       await forwardHealRules(socket, requestId);
+      break;
+    case "heal/batch":
+      await forwardHealBatch(socket, data, requestId);
+      break;
+    case "heal/cache/stats":
+      await forwardHealCacheStats(socket, requestId);
       break;
     default:
       sendError(socket, `Unsupported action: ${action}`, { requestId });
@@ -1307,6 +1315,56 @@ async function forwardHealRules(socket, requestId) {
   } catch (err) {
     console.error("[Heal] rules forward error:", err);
     sendError(socket, "Healing rules request failed", { requestId, detail: err.message });
+  }
+}
+
+async function forwardHealBatch(socket, data, requestId) {
+  try {
+    const backendResponse = await fetch(backendHealBatchUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(data),
+    });
+    const responseText = await backendResponse.text();
+
+    if (!backendResponse.ok) {
+      sendError(socket, "Healing batch backend error", { requestId, detail: responseText });
+      return;
+    }
+
+    const responseJson = JSON.parse(responseText);
+    safeSend(socket, {
+      type: "response",
+      action: "heal/batch",
+      requestId,
+      data: responseJson,
+    });
+  } catch (err) {
+    console.error("[Heal] batch forward error:", err);
+    sendError(socket, "Healing batch request failed", { requestId, detail: err.message });
+  }
+}
+
+async function forwardHealCacheStats(socket, requestId) {
+  try {
+    const backendResponse = await fetch(backendHealCacheStatsUrl, { method: "GET" });
+    const responseText = await backendResponse.text();
+
+    if (!backendResponse.ok) {
+      sendError(socket, "Healing cache stats backend error", { requestId, detail: responseText });
+      return;
+    }
+
+    const responseJson = JSON.parse(responseText);
+    safeSend(socket, {
+      type: "response",
+      action: "heal/cache/stats",
+      requestId,
+      data: responseJson,
+    });
+  } catch (err) {
+    console.error("[Heal] cache stats forward error:", err);
+    sendError(socket, "Healing cache stats request failed", { requestId, detail: err.message });
   }
 }
 
