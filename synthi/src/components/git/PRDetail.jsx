@@ -260,7 +260,7 @@ function ReviewPanel({ slug, owner, repo, prNumber }) {
 }
 
 // ── MergePanel ────────────────────────────────────────────────────────────────
-function MergePanel({ slug, owner, repo, pr }) {
+function MergePanel({ slug, owner, repo, pr, files, onFileClick }) {
   const dispatch = useDispatch();
   const { mergePRLoading } = useSelector(s => s.pr);
   const [method, setMethod] = useState('merge');
@@ -288,85 +288,158 @@ function MergePanel({ slug, owner, repo, pr }) {
   if (!pr || pr.merged) return null;
   if (pr.state === 'closed') return null;
 
+  const hasConflicts = pr.mergeable === false || pr.mergeable_state === 'dirty';
+  const isChecking = pr.mergeable === null && pr.mergeable_state === 'unknown';
+  const isBlocked = pr.mergeable_state === 'blocked';
+
   const methodLabels = {
     merge: 'Create a merge commit',
     squash: 'Squash and merge',
     rebase: 'Rebase and merge',
   };
 
+  // Identify conflicted files — GitHub marks them with status 'conflicted' or
+  // we detect them from the `conflicts` attribute on file objects.
+  const conflictedFiles = (files || []).filter(f =>
+    f.status === 'conflicted' || f.conflicts
+  );
+
   return (
-    <div
-      className="rounded-lg p-3 border"
-      style={{ background: 'rgba(52,211,153,0.04)', borderColor: 'rgba(52,211,153,0.2)' }}
-    >
-      <div className="flex items-center gap-2 mb-2">
-        <GitMerge className="w-4 h-4 text-emerald-400" />
-        <span className="text-xs font-semibold text-emerald-400">Ready to merge</span>
-      </div>
-
-      <div className="flex gap-2">
-        <button
-          onClick={handleMerge}
-          disabled={mergePRLoading}
-          className="flex-1 py-2 rounded-lg text-xs font-semibold transition disabled:opacity-50"
-          style={{ background: '#238636', color: '#fff' }}
-        >
-          {mergePRLoading ? 'Merging…' : methodLabels[method]}
-        </button>
-        <button
-          onClick={() => setShowOptions(v => !v)}
-          className="px-2 py-2 rounded-lg text-xs border transition"
-          style={{ borderColor: 'rgba(52,211,153,0.3)', color: 'text-emerald-400' }}
-        >
-          <ChevronDown className="w-3.5 h-3.5" />
-        </button>
-      </div>
-
-      {showOptions && (
+    <div className="space-y-2">
+      {/* ── Merge Conflicts Warning ────────── */}
+      {hasConflicts && (
         <div
-          className="mt-2 rounded-lg border overflow-hidden"
-          style={{ borderColor: 'var(--border-medium)', background: 'var(--bg-elevated)' }}
+          className="rounded-lg p-3 border"
+          style={{ background: 'rgba(245,158,66,0.06)', borderColor: 'rgba(245,158,66,0.25)' }}
         >
-          {['merge', 'squash', 'rebase'].map(m => (
-            <button
-              key={m}
-              onClick={() => { setMethod(m); setShowOptions(false); }}
-              className="flex items-center gap-2 w-full px-3 py-2 text-xs text-left hover:opacity-80 transition border-b last:border-b-0"
-              style={{
-                borderColor: 'var(--border-subtle)',
-                background: m === method ? 'color-mix(in srgb, var(--accent-primary) 8%, transparent)' : 'transparent',
-                color: 'var(--text-primary)',
-              }}
-            >
-              {m === method && <CheckCircle2 className="w-3 h-3 text-emerald-400 flex-shrink-0" />}
-              {m !== method && <div className="w-3 h-3 flex-shrink-0" />}
-              {methodLabels[m]}
-            </button>
-          ))}
+          <div className="flex items-center gap-2 mb-1.5">
+            <AlertCircle className="w-4 h-4 text-amber-400" />
+            <span className="text-xs font-semibold text-amber-400">Merge Conflicts</span>
+          </div>
+          <p className="text-[11px] leading-relaxed mb-2" style={{ color: 'var(--text-secondary)' }}>
+            This branch has conflicts that must be resolved before merging.
+            {conflictedFiles.length > 0 ? ` ${conflictedFiles.length} conflicted file${conflictedFiles.length !== 1 ? 's' : ''}:` : ''}
+          </p>
+          {conflictedFiles.length > 0 && (
+            <ul className="space-y-0.5 mb-2">
+              {conflictedFiles.map((f, i) => (
+                <li
+                  key={i}
+                  className="flex items-center gap-1.5 px-2 py-1 rounded text-[11px] cursor-pointer hover:bg-amber-500/10 transition-colors"
+                  onClick={() => onFileClick?.(f.filename)}
+                >
+                  <AlertCircle className="w-3 h-3 text-amber-400 flex-shrink-0" />
+                  <span className="truncate" style={{ color: 'var(--text-primary)' }}>{f.filename}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+          <p className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
+            Resolve conflicts locally and push, or use the GitHub web editor.
+          </p>
         </div>
       )}
 
-      {/* Custom commit title/message for merge/squash */}
-      {(method === 'merge' || method === 'squash') && (
-        <div className="mt-2 space-y-1.5">
-          <input
-            type="text"
-            value={commitTitle}
-            onChange={e => setCommitTitle(e.target.value)}
-            placeholder={`Merge pull request #${pr.number} from ${pr.head?.label}`}
-            className="w-full px-2 py-1.5 text-xs rounded-lg border outline-none"
-            style={{ background: 'var(--bg-app)', borderColor: 'var(--border-medium)', color: 'var(--text-primary)' }}
-          />
-          <textarea
-            value={commitMsg}
-            onChange={e => setCommitMsg(e.target.value)}
-            placeholder="Optional commit message…"
-            rows={2}
-            className="w-full px-2 py-1.5 text-xs rounded-lg border outline-none resize-none"
-            style={{ background: 'var(--bg-app)', borderColor: 'var(--border-medium)', color: 'var(--text-primary)' }}
-          />
+      {/* ── Checking mergeability spinner ──── */}
+      {isChecking && (
+        <div className="rounded-lg p-3 border flex items-center gap-2" style={{ background: 'var(--bg-panel)', borderColor: 'var(--border-subtle)' }}>
+          <RefreshCw className="w-3.5 h-3.5 animate-spin text-yellow-400" />
+          <span className="text-xs" style={{ color: 'var(--text-secondary)' }}>Checking merge status…</span>
         </div>
       )}
+
+      {/* ── Blocked by branch protection ──── */}
+      {isBlocked && !hasConflicts && (
+        <div className="rounded-lg p-3 border" style={{ background: 'rgba(239,68,68,0.06)', borderColor: 'rgba(239,68,68,0.25)' }}>
+          <div className="flex items-center gap-2">
+            <Lock className="w-4 h-4 text-red-400" />
+            <span className="text-xs font-semibold text-red-400">Merge blocked</span>
+          </div>
+          <p className="text-[11px] mt-1" style={{ color: 'var(--text-secondary)' }}>
+            Branch protection rules prevent merging. Required status checks or reviews may be missing.
+          </p>
+        </div>
+      )}
+
+      {/* ── Merge controls ────────────────── */}
+      <div
+        className="rounded-lg p-3 border"
+        style={{
+          background: hasConflicts ? 'rgba(161,161,170,0.04)' : 'rgba(52,211,153,0.04)',
+          borderColor: hasConflicts ? 'rgba(161,161,170,0.2)' : 'rgba(52,211,153,0.2)',
+        }}
+      >
+        <div className="flex items-center gap-2 mb-2">
+          <GitMerge className={`w-4 h-4 ${hasConflicts ? 'text-[#71717a]' : 'text-emerald-400'}`} />
+          <span className={`text-xs font-semibold ${hasConflicts ? 'text-[#71717a]' : 'text-emerald-400'}`}>
+            {hasConflicts ? 'Resolve conflicts to merge' : 'Ready to merge'}
+          </span>
+        </div>
+
+        <div className="flex gap-2">
+          <button
+            onClick={handleMerge}
+            disabled={mergePRLoading || hasConflicts}
+            className="flex-1 py-2 rounded-lg text-xs font-semibold transition disabled:opacity-50 disabled:cursor-not-allowed"
+            style={{ background: hasConflicts ? '#3f3f46' : '#238636', color: '#fff' }}
+          >
+            {mergePRLoading ? 'Merging…' : methodLabels[method]}
+          </button>
+          <button
+            onClick={() => setShowOptions(v => !v)}
+            className="px-2 py-2 rounded-lg text-xs border transition"
+            style={{ borderColor: 'rgba(52,211,153,0.3)', color: 'text-emerald-400' }}
+          >
+            <ChevronDown className="w-3.5 h-3.5" />
+          </button>
+        </div>
+
+        {showOptions && (
+          <div
+            className="mt-2 rounded-lg border overflow-hidden"
+            style={{ borderColor: 'var(--border-medium)', background: 'var(--bg-elevated)' }}
+          >
+            {['merge', 'squash', 'rebase'].map(m => (
+              <button
+                key={m}
+                onClick={() => { setMethod(m); setShowOptions(false); }}
+                className="flex items-center gap-2 w-full px-3 py-2 text-xs text-left hover:opacity-80 transition border-b last:border-b-0"
+                style={{
+                  borderColor: 'var(--border-subtle)',
+                  background: m === method ? 'color-mix(in srgb, var(--accent-primary) 8%, transparent)' : 'transparent',
+                  color: 'var(--text-primary)',
+                }}
+              >
+                {m === method && <CheckCircle2 className="w-3 h-3 text-emerald-400 flex-shrink-0" />}
+                {m !== method && <div className="w-3 h-3 flex-shrink-0" />}
+                {methodLabels[m]}
+              </button>
+            ))}
+          </div>
+        )}
+
+        {/* Custom commit title/message for merge/squash */}
+        {!hasConflicts && (method === 'merge' || method === 'squash') && (
+          <div className="mt-2 space-y-1.5">
+            <input
+              type="text"
+              value={commitTitle}
+              onChange={e => setCommitTitle(e.target.value)}
+              placeholder={`Merge pull request #${pr.number} from ${pr.head?.label}`}
+              className="w-full px-2 py-1.5 text-xs rounded-lg border outline-none"
+              style={{ background: 'var(--bg-app)', borderColor: 'var(--border-medium)', color: 'var(--text-primary)' }}
+            />
+            <textarea
+              value={commitMsg}
+              onChange={e => setCommitMsg(e.target.value)}
+              placeholder="Optional commit message…"
+              rows={2}
+              className="w-full px-2 py-1.5 text-xs rounded-lg border outline-none resize-none"
+              style={{ background: 'var(--bg-app)', borderColor: 'var(--border-medium)', color: 'var(--text-primary)' }}
+            />
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -568,7 +641,7 @@ export function PRDetail({ slug, onBack }) {
         )}
         {pr && tab === 'review' && (
           <div className="p-3 space-y-4">
-            <MergePanel slug={slug} owner={owner} repo={repo} pr={pr} />
+            <MergePanel slug={slug} owner={owner} repo={repo} pr={pr} files={prFiles} />
             <ReviewPanel slug={slug} owner={owner} repo={repo} prNumber={pr.number} />
           </div>
         )}
