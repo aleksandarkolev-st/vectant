@@ -78,6 +78,112 @@ function getDefaultShell() {
   return process.env.SHELL || '/bin/bash';
 }
 
+// ─── Shell Registry ─────────────────────────────────────────────────────────
+
+/**
+ * Known shell types mapped to their executable names per platform.
+ * Each entry has { win32, unix, args, label }.
+ */
+const SHELL_REGISTRY = {
+  powershell: {
+    win32: 'powershell.exe',
+    unix: 'pwsh',
+    args: { win32: [], unix: [] },
+    label: 'PowerShell',
+  },
+  pwsh: {
+    win32: 'pwsh.exe',
+    unix: 'pwsh',
+    args: { win32: [], unix: [] },
+    label: 'PowerShell 7',
+  },
+  cmd: {
+    win32: 'cmd.exe',
+    unix: null,
+    args: { win32: [], unix: [] },
+    label: 'Command Prompt',
+  },
+  bash: {
+    win32: 'bash.exe',  // Git Bash or WSL
+    unix: '/bin/bash',
+    args: { win32: [], unix: ['--login'] },
+    label: 'Bash',
+  },
+  gitbash: {
+    win32: 'C:\\Program Files\\Git\\bin\\bash.exe',
+    unix: null,
+    args: { win32: ['--login', '-i'], unix: [] },
+    label: 'Git Bash',
+  },
+  zsh: {
+    win32: null,
+    unix: '/bin/zsh',
+    args: { win32: [], unix: ['--login'] },
+    label: 'Zsh',
+  },
+  fish: {
+    win32: null,
+    unix: '/usr/bin/fish',
+    args: { win32: [], unix: ['--login'] },
+    label: 'Fish',
+  },
+  sh: {
+    win32: null,
+    unix: '/bin/sh',
+    args: { win32: [], unix: [] },
+    label: 'sh',
+  },
+};
+
+/**
+ * Resolve a shell type key (e.g. 'bash', 'powershell') to an executable path
+ * and arguments for the current platform. Returns null if the shell type is
+ * not available on this platform.
+ */
+function resolveShellType(shellType) {
+  if (!shellType) return null;
+  const entry = SHELL_REGISTRY[shellType.toLowerCase()];
+  if (!entry) return null;
+
+  const platform = os.platform() === 'win32' ? 'win32' : 'unix';
+  const executable = entry[platform];
+  if (!executable) return null;
+
+  const args = entry.args?.[platform] || [];
+  return { executable, args, label: entry.label };
+}
+
+/**
+ * Detect which shells are available on the current system.
+ * Returns an array of { key, label, executable } for shells that exist on disk.
+ */
+function getAvailableShells() {
+  const platform = os.platform() === 'win32' ? 'win32' : 'unix';
+  const available = [];
+
+  for (const [key, entry] of Object.entries(SHELL_REGISTRY)) {
+    const executable = entry[platform];
+    if (!executable) continue;
+
+    // Check if the executable exists
+    try {
+      // Absolute paths: check directly. Relative names: rely on PATH
+      if (path.isAbsolute(executable)) {
+        if (fs.existsSync(executable)) {
+          available.push({ key, label: entry.label, executable });
+        }
+      } else {
+        // For non-absolute executables, assume available (they're on PATH)
+        // A more thorough check would use `which` or `where`, but this is
+        // fast enough for the common case.
+        available.push({ key, label: entry.label, executable });
+      }
+    } catch (_) { /* skip */ }
+  }
+
+  return available;
+}
+
 // ─── PTY Factory (swap-point for Docker in the future) ──────────────────────
 
 // ─── SDK / Tool Path Discovery ──────────────────────────────────────────────
@@ -234,9 +340,11 @@ function getSdkPaths() {
  * @param {object} [opts.env] - Extra environment variables
  * @returns {{ ptyProcess: IPty, shell: string }}
  */
-function createPtyProcess({ cwd, cols = 80, rows = 24, env = {} }) {
-  const shell = getDefaultShell();
-  const shellArgs = os.platform() === 'win32' ? [] : ['--login'];
+function createPtyProcess({ cwd, cols = 80, rows = 24, env = {}, shellType = null }) {
+  // Resolve requested shell type, or fall back to platform default
+  const resolved = shellType ? resolveShellType(shellType) : null;
+  const shell = resolved ? resolved.executable : getDefaultShell();
+  const shellArgs = resolved ? resolved.args : (os.platform() === 'win32' ? [] : ['--login']);
 
   // Build a clean environment: inherit process.env, add overrides, strip
   // anything that could leak server internals.
@@ -668,5 +776,8 @@ module.exports = {
   activeSessions,
   broadcastToAll,
   getDefaultShell,
+  getAvailableShells,
+  resolveShellType,
   resolveWorkspaceCwd,
+  SHELL_REGISTRY,
 };
