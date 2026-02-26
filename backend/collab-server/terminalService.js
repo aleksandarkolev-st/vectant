@@ -510,6 +510,7 @@ function createTerminalWSS() {
     const requestedUserId = parsedUrl.searchParams.get('userId') || '';
     const initialCols = parseInt(parsedUrl.searchParams.get('cols'), 10) || 80;
     const initialRows = parseInt(parsedUrl.searchParams.get('rows'), 10) || 24;
+    const requestedShellType = parsedUrl.searchParams.get('shell') || null;
 
     // ── Check for existing headless session (AI-created terminal) ───────
     const existingSession = requestedSessionId && activeSessions.get(requestedSessionId);
@@ -618,7 +619,7 @@ function createTerminalWSS() {
     const sessionId = requestedSessionId || crypto.randomUUID();
     const cwd = resolveWorkspaceCwd(workspaceSlug, requestedUserId);
 
-    console.log(`[Terminal] New session ${sessionId} | workspace=${workspaceSlug} | userId=${requestedUserId} | cwd=${cwd}`);
+    console.log(`[Terminal] New session ${sessionId} | workspace=${workspaceSlug} | userId=${requestedUserId} | cwd=${cwd} | shell=${requestedShellType || 'default'}`);
 
 
     // ── Spawn PTY ───────────────────────────────────────────────────────
@@ -628,6 +629,7 @@ function createTerminalWSS() {
         cwd,
         cols: initialCols,
         rows: initialRows,
+        shellType: requestedShellType,
       }));
     } catch (err) {
       console.error(`[Terminal] Failed to spawn PTY for session ${sessionId}:`, err.message);
