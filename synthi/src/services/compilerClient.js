@@ -128,6 +128,7 @@ export class CompilerClient {
     _mapLanguage(filename = '') {
         const ext = filename.split('.').pop().toLowerCase();
         if (['c', 'cpp', 'cc', 'cxx', 'hpp', 'h'].includes(ext)) return 'cpp';
+        if (ext === 'java') return 'java';
         if (ext === 'rs') return 'rust';
         if (ext === 'ts' || ext === 'tsx') return 'ts';
         if (ext === 'dart') return 'dart';
@@ -1247,8 +1248,21 @@ export class CompilerClient {
                     // If the worker included a sessionId and it doesn't match this run, ignore.
                     if (parsed && parsed.sessionId && parsed.sessionId !== sessionId) return;
 
-                    // Forward raw log line to caller callback if provided
-                    try { if (onLog) onLog(line); } catch (e) { /* ignore */ }
+                    // Extract clean display text from structured messages.
+                    // stdout/stderr JSON from the runner carries the actual output in `.line`.
+                    // Internal status messages (stage/done) should not clutter the build log.
+                    let displayLine = line;
+                    if (parsed) {
+                        if ((parsed.type === 'stdout' || parsed.type === 'stderr') && parsed.line != null) {
+                            displayLine = String(parsed.line);
+                        } else if (parsed.status === 'done' || parsed.status === 'error') {
+                            // Internal completion signals — don't forward to user-visible log.
+                            displayLine = null;
+                        }
+                    }
+
+                    // Forward clean log line to caller callback if provided
+                    try { if (onLog && displayLine != null) onLog(displayLine); } catch (e) { /* ignore */ }
 
                     // Determine which sessionId to expose to UI consumers: prefer worker-provided sessionId
                     const sidToExpose = parsed && parsed.sessionId ? parsed.sessionId : sessionId;
@@ -1261,7 +1275,8 @@ export class CompilerClient {
                     // Emit a stream event for UI consumers that want session-scoped streaming
                     try {
                         if (typeof window !== 'undefined' && window.dispatchEvent) {
-                            const ev = new CustomEvent('synthi:build-stream', { detail: { sessionId: sidToExpose, line } });
+                            const streamLine = displayLine != null ? displayLine : line;
+                            const ev = new CustomEvent('synthi:build-stream', { detail: { sessionId: sidToExpose, line: streamLine } });
                             window.dispatchEvent(ev);
                         }
                     } catch (e) { /* ignore */ }
