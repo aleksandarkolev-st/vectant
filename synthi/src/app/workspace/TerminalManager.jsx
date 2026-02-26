@@ -5,11 +5,12 @@ import dynamic from 'next/dynamic';
 import { SplitSquareHorizontal, Plus, X, TerminalSquare, Bot } from 'lucide-react';
 import { useDispatch } from 'react-redux';
 import { fetchFilesThunk } from '@/redux/workspaceSlice';
+import ShellSelector, { getShellMeta } from './ShellSelector';
 
 const TerminalPane = dynamic(() => import('./TerminalPane.jsx'), { ssr: false });
 
 export default function TerminalManager({ visible, onCloseAll, workspaceSlug = '' }) {
-  const [terminals, setTerminals] = useState([{ id: 'term-1', label: 'Terminal 1', split: false }]);
+  const [terminals, setTerminals] = useState([{ id: 'term-1', label: 'PowerShell', split: false, shellType: null }]);
   const [activeId, setActiveId] = useState('term-1');
   const dragRef = useRef(null);
   const dispatch = useDispatch();
@@ -67,15 +68,15 @@ export default function TerminalManager({ visible, onCloseAll, workspaceSlug = '
     if (!visible) return;
     // Ensure at least one terminal exists
     if (terminals.length === 0) {
-      setTerminals([{ id: 'term-1', label: 'Terminal 1', split: false }]);
+      setTerminals([{ id: 'term-1', label: 'PowerShell', split: false, shellType: null }]);
       setActiveId('term-1');
     }
   }, [visible, terminals.length]);
 
-  const addTerminal = () => {
-    const nextIndex = terminals.length + 1;
+  const addTerminal = (shellType = null) => {
+    const meta = shellType ? getShellMeta(shellType) : { label: 'Terminal' };
     const id = `term-${Date.now()}`;
-    const newTerm = { id, label: `Terminal ${nextIndex}`, split: false };
+    const newTerm = { id, label: meta.label, split: false, shellType };
     setTerminals(prev => [...prev, newTerm]);
     setActiveId(id);
   };
@@ -154,11 +155,12 @@ export default function TerminalManager({ visible, onCloseAll, workspaceSlug = '
       <div className="flex items-center gap-1">
         <button 
           className="w-8 h-8 flex items-center justify-center rounded th-btn-ghost transition-colors" 
-          onClick={addTerminal} 
-          title="New Terminal"
+          onClick={() => addTerminal()} 
+          title="New Terminal (Default Shell)"
         >
           <Plus className="w-4 h-4" strokeWidth={2} />
         </button>
+        <ShellSelector onSelect={(shellKey) => addTerminal(shellKey)} />
         <button 
           className="w-8 h-8 flex items-center justify-center rounded th-btn-ghost transition-colors" 
           onClick={toggleSplit} 
