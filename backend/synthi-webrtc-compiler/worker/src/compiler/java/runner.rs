@@ -106,7 +106,7 @@ pub async fn run_java(
     let needs_javafx =
         source_content.contains("javafx.") || source_content.contains("import javafx");
 
-    let mut cmd = Command::new("java");
+    let mut cmd = crate::infra::utils::system_command("java");
     cmd.arg("-cp").arg(classes_dir);
 
     if needs_javafx {
@@ -149,7 +149,7 @@ pub async fn run_java(
     // Stdout → data channel
     let ctx_out = ctx.clone();
     let sid_out = session_id.to_string();
-    tokio::spawn(async move {
+    let stdout_handle = tokio::spawn(async move {
         let mut reader = BufReader::new(stdout).lines();
         while let Ok(Some(line)) = reader.next_line().await {
             let _ = log_tx_stdout.send(line.clone());
@@ -168,7 +168,7 @@ pub async fn run_java(
     // Stderr → data channel
     let ctx_err = ctx.clone();
     let sid_err = session_id.to_string();
-    tokio::spawn(async move {
+    let stderr_handle = tokio::spawn(async move {
         let mut reader = BufReader::new(stderr).lines();
         while let Ok(Some(line)) = reader.next_line().await {
             eprintln!("[JavaRunner stderr] {}", line);
@@ -327,6 +327,22 @@ pub async fn run_java(
             });
             let _ = ctx.log_dc.send_text(gui_start.to_string()).await;
         }
+    }
+
+    // ── For console apps, wait for the process output before "done" ──
+    // GUI apps run indefinitely, so we send "done" right away.
+    // Console apps finish quickly; we must wait for stdout/stderr to
+    // flush so the frontend receives all output before unsubscribing.
+    if !req.is_gui {
+        // Release the mutex so the I/O tasks can proceed unblocked
+        drop(guard);
+
+        // Wait for stdout and stderr reader tasks to finish
+        // (they end when the JVM closes its pipes, i.e. on exit)
+        let _ = stdout_handle.await;
+        let _ = stderr_handle.await;
+
+        eprintln!("[JavaRunner] Console process finished, sending done");
     }
 
     // ── Send build-status "done" ──────────────────────────────────
