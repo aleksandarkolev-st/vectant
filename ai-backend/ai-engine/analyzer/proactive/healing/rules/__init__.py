@@ -41,3 +41,9 @@ from . import deprecation
 from . import performance
 from . import testing
 from . import encoding
+from . import module_structure
+from . import magic_numbers
+from . import api_patterns
+from . import react_patterns
+from . import accessibility
+from . import concurrency
