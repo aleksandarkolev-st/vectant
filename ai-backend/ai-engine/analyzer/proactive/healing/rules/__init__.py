@@ -28,3 +28,7 @@ from . import variables
 from . import loops
 from . import conditionals
 from . import logging_debug
+from . import complexity
+from . import syntax_consistency
+from . import documentation
+from . import async_patterns
