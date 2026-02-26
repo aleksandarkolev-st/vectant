@@ -162,11 +162,10 @@ export const saveFileContentThunk = createAsyncThunk(
         let contentToSave = currentContent;
 
         // Skip ONLY when content truly hasn't changed (after normalization).
-        // When content is the same, still refresh git status so the Source
-        // Control panel picks up any out-of-band changes (e.g. from Yjs auto-
-        // flush or terminal-level edits).
+        // No git-status refresh here — there was no disk write, so nothing
+        // changed from git's perspective.  Out-of-band changes (terminal edits,
+        // Yjs flush) are caught by the FS-watcher-based refresh instead.
         if (normalizeTrailing(contentToSave) === normalizeTrailing(state.savedContent)) {
-            dispatch(fetchGitStatus(slug));
             return contentToSave; // fulfilled reducer marks as saved
         }
 
