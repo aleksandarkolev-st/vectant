@@ -2,26 +2,74 @@
 /**
  * DiffGutterStaging — Interactive gutter actions for the Monaco DiffEditor.
  *
- * When the diff shows a working-copy comparison (not a historical commit diff),
- * this component overlays the modified editor with hover-activated buttons that
- * allow staging or reverting individual hunks or lines directly from the diff view.
- *
  * Architecture:
- *   1. We hook into Monaco's DiffEditor to read the computed line changes.
- *   2. For each contiguous block of changes (hunk), we render a floating
- *      "Stage Hunk" / "Revert Hunk" button aligned to the first line of
- *      the hunk in the gutter margin.
- *   3. Individual lines show a "+" gutter icon on hover to stage just that line.
- *   4. Staging is performed by building a unified-diff patch and dispatching
- *      the `stageLines` thunk (same backend path as HunkStagingView).
+ *   1. Uses Monaco's `deltaDecorations` API to add custom CSS classes
+ *      (`glyphMarginClassName`) to every changed hunk in the modified editor.
+ *   2. Attaches an `editor.onMouseDown` listener on the modified editor
+ *      that intercepts glyph-margin clicks (`GUTTER_GLYPH_MARGIN`),
+ *      preventing the default read-only editor warning.
+ *   3. On gutter click, determines the line number, finds the enclosing hunk,
+ *      and triggers selective staging via the backend.
  */
 
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useEffect, useCallback, useRef } from 'react';
 import { useAppDispatch, useAppSelector } from '@/redux/hooks';
 import { stageLines } from '@/redux/gitSlice';
 import { gitClient } from '@/services/gitClient';
 import { toast } from 'sonner';
-import { Plus } from 'lucide-react';
+
+/* ── CSS injected once into the document head ─────────────────── */
+const STYLE_ID = 'diff-gutter-staging-styles';
+function ensureStyles() {
+    if (typeof document === 'undefined') return;
+    if (document.getElementById(STYLE_ID)) return;
+    const style = document.createElement('style');
+    style.id = STYLE_ID;
+    style.textContent = `
+        .diff-gutter-stage-add {
+            background: rgba(16, 185, 129, 0.35) !important;
+            cursor: pointer !important;
+        }
+        .diff-gutter-stage-add::after {
+            content: '+';
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            width: 100%;
+            height: 100%;
+            color: #10b981;
+            font-weight: 700;
+            font-size: 14px;
+            pointer-events: none;
+        }
+        .diff-gutter-stage-add:hover {
+            background: rgba(16, 185, 129, 0.55) !important;
+        }
+        .diff-gutter-stage-del {
+            background: rgba(239, 68, 68, 0.30) !important;
+            cursor: pointer !important;
+        }
+        .diff-gutter-stage-del::after {
+            content: '−';
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            width: 100%;
+            height: 100%;
+            color: #ef4444;
+            font-weight: 700;
+            font-size: 14px;
+            pointer-events: none;
+        }
+        .diff-gutter-stage-del:hover {
+            background: rgba(239, 68, 68, 0.50) !important;
+        }
+        .diff-gutter-margin-highlight {
+            background: rgba(52, 211, 153, 0.06) !important;
+        }
+    `;
+    document.head.appendChild(style);
+}
 
 /**
  * Parse a unified diff string into hunks for patch construction.
@@ -94,10 +142,8 @@ function buildPatchForRange(header, hunks, startLine, endLine) {
                 selected.push(line);
                 hasSelection = true;
             } else if (line.type === 'remove') {
-                // Unselected remove → context
                 selected.push({ ...line, type: 'context', raw: ' ' + line.content });
             }
-            // Unselected add → skip
         }
 
         if (!hasSelection) continue;
@@ -148,77 +194,17 @@ function getHunkRanges(lineChanges) {
 export default function DiffGutterStaging({ diffEditorRef, isCommitDiff, filePath }) {
     const dispatch = useAppDispatch();
     const slug = useAppSelector(state => state.workspace.slug);
-    const [hunks, setHunks] = useState([]);
-    const [hoveredHunk, setHoveredHunk] = useState(null);
-    const [staging, setStaging] = useState(false);
-    const containerRef = useRef(null);
-    const [scrollTop, setScrollTop] = useState(0);
+    const decorationsRef = useRef([]);
+    const hunksRef = useRef([]);
+    const stagingRef = useRef(false);
 
-    // Don't render gutter for commit diffs (read-only)
     const enabled = !isCommitDiff && !!filePath && !!slug;
-
-    // Refresh hunks when the diff editor computes changes
-    useEffect(() => {
-        if (!enabled) { setHunks([]); return; }
-        const editor = diffEditorRef?.current;
-        if (!editor) return;
-
-        const updateHunks = () => {
-            try {
-                const changes = editor.getLineChanges();
-                setHunks(getHunkRanges(changes));
-            } catch (_) {}
-        };
-
-        updateHunks();
-        const disposable = editor.onDidUpdateDiff?.(() => updateHunks());
-
-        // Track scroll position of the modified editor for overlay positioning
-        const modifiedEditor = editor.getModifiedEditor?.();
-        let scrollDisposable;
-        if (modifiedEditor) {
-            scrollDisposable = modifiedEditor.onDidScrollChange?.((e) => {
-                setScrollTop(e.scrollTop);
-            });
-        }
-
-        return () => {
-            disposable?.dispose?.();
-            scrollDisposable?.dispose?.();
-        };
-    }, [enabled, diffEditorRef]);
-
-    // Get the line height from the modified editor
-    const getLineHeight = useCallback(() => {
-        try {
-            const editor = diffEditorRef?.current;
-            const modifiedEditor = editor?.getModifiedEditor?.();
-            if (modifiedEditor) {
-                return modifiedEditor.getOption?.(/* lineHeight */ 66) || 19;
-            }
-        } catch (_) {}
-        return 19;
-    }, [diffEditorRef]);
-
-    // Get the top coordinate of a line in the modified editor (viewport-relative)
-    const getLineTop = useCallback((lineNumber) => {
-        try {
-            const editor = diffEditorRef?.current;
-            const modifiedEditor = editor?.getModifiedEditor?.();
-            if (modifiedEditor) {
-                const top = modifiedEditor.getTopForLineNumber(lineNumber);
-                return top - scrollTop;
-            }
-        } catch (_) {}
-        return (lineNumber - 1) * getLineHeight();
-    }, [diffEditorRef, scrollTop, getLineHeight]);
 
     // Stage a range of lines
     const handleStageRange = useCallback(async (startLine, endLine) => {
-        if (staging || !slug || !filePath) return;
-        setStaging(true);
+        if (stagingRef.current || !slug || !filePath) return;
+        stagingRef.current = true;
         try {
-            // Fetch the raw diff for this file
             const rawDiff = await gitClient.getDiff(slug, filePath, false);
             const diffText = typeof rawDiff === 'string' ? rawDiff : rawDiff?.raw || '';
             const parsed = parseDiffToHunks(diffText);
@@ -239,75 +225,122 @@ export default function DiffGutterStaging({ diffEditorRef, isCommitDiff, filePat
         } catch (e) {
             toast.error(e.message || 'Staging failed');
         } finally {
-            setStaging(false);
+            stagingRef.current = false;
         }
-    }, [staging, slug, filePath, dispatch]);
+    }, [slug, filePath, dispatch]);
 
-    if (!enabled || hunks.length === 0) return null;
+    // Wire up Monaco decorations + gutter click handler
+    useEffect(() => {
+        if (!enabled) return;
+        ensureStyles();
 
-    const lineHeight = getLineHeight();
+        const editor = diffEditorRef?.current;
+        if (!editor) return;
+        const modifiedEditor = editor.getModifiedEditor?.();
+        if (!modifiedEditor) return;
 
-    return (
-        <div
-            ref={containerRef}
-            className="absolute left-0 top-0 bottom-0 pointer-events-none"
-            style={{ width: '100%', zIndex: 50 }}
-        >
-            {hunks.map((hunk, i) => {
-                const top = getLineTop(hunk.startLine);
-                const height = (hunk.endLine - hunk.startLine + 1) * lineHeight;
-                const isHovered = hoveredHunk === i;
+        // Enable the glyph margin on the modified editor so our decorations are visible
+        modifiedEditor.updateOptions({ glyphMargin: true });
 
-                // Skip hunks that are outside the viewport
-                if (top + height < -50 || top > window.innerHeight + 50) return null;
+        const disposables = [];
 
-                return (
-                    <div
-                        key={`${hunk.startLine}-${hunk.endLine}`}
-                        className="absolute pointer-events-auto"
-                        style={{
-                            top: top + 0, // offset for diff editor header
-                            left: 0,
-                            height,
-                            display: 'flex',
-                            alignItems: 'flex-start',
-                            paddingTop: 2,
-                        }}
-                        onMouseEnter={() => setHoveredHunk(i)}
-                        onMouseLeave={() => setHoveredHunk(null)}
-                    >
-                        {/* Gutter stripe — colored bar indicating the change region */}
-                        <div
-                            className="w-1 rounded-full flex-shrink-0 ml-0.5 transition-opacity"
-                            style={{
-                                height: height - 4,
-                                marginTop: 2,
-                                background: hunk.isDeletion ? '#ef4444' : '#10b981',
-                                opacity: isHovered ? 1 : 0.4,
-                            }}
-                        />
+        // Apply decorations for current hunks
+        const applyDecorations = () => {
+            try {
+                const lineChanges = editor.getLineChanges();
+                const newHunks = getHunkRanges(lineChanges);
+                hunksRef.current = newHunks;
 
-                        {/* Hunk action buttons — visible on hover */}
-                        {isHovered && (
-                            <div
-                                className="flex items-center gap-0.5 ml-1 flex-shrink-0"
-                                style={{ marginTop: -1 }}
-                            >
-                                <button
-                                    onMouseDown={(e) => { e.stopPropagation(); e.preventDefault(); }}
-                                    onClick={(e) => { e.stopPropagation(); handleStageRange(hunk.startLine, hunk.endLine); }}
-                                    disabled={staging}
-                                    className="flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-medium transition-colors bg-emerald-600/90 hover:bg-emerald-500 text-white disabled:opacity-50 shadow-sm"
-                                    title={`Stage hunk (lines ${hunk.startLine}–${hunk.endLine})`}
-                                >
-                                    <Plus className="w-2.5 h-2.5" />
-                                    Stage Hunk
-                                </button>
-                            </div>
-                        )}
-                    </div>
+                const decorations = [];
+                for (const hunk of newHunks) {
+                    // Glyph margin decoration — clickable "+" or "−" marker
+                    const glyphClass = hunk.isDeletion ? 'diff-gutter-stage-del' : 'diff-gutter-stage-add';
+                    decorations.push({
+                        range: {
+                            startLineNumber: hunk.startLine,
+                            startColumn: 1,
+                            endLineNumber: hunk.startLine,
+                            endColumn: 1,
+                        },
+                        options: {
+                            glyphMarginClassName: glyphClass,
+                            glyphMarginHoverMessage: {
+                                value: `**Stage hunk** (lines ${hunk.startLine}–${hunk.endLine})\n\nClick to stage this change`,
+                            },
+                            stickiness: 1, // NeverGrowsWhenTypingAtEdges
+                        },
+                    });
+
+                    // Highlight the margin for the full hunk range
+                    decorations.push({
+                        range: {
+                            startLineNumber: hunk.startLine,
+                            startColumn: 1,
+                            endLineNumber: hunk.endLine,
+                            endColumn: 1,
+                        },
+                        options: {
+                            marginClassName: 'diff-gutter-margin-highlight',
+                            stickiness: 1,
+                        },
+                    });
+                }
+
+                // deltaDecorations replaces old decorations atomically
+                decorationsRef.current = modifiedEditor.deltaDecorations(
+                    decorationsRef.current,
+                    decorations
                 );
-            })}
-        </div>
-    );
+            } catch (_) {}
+        };
+
+        applyDecorations();
+
+        // Re-apply when diff updates
+        const diffDisposable = editor.onDidUpdateDiff?.(() => applyDecorations());
+        if (diffDisposable) disposables.push(diffDisposable);
+
+        // Handle gutter clicks on the modified editor
+        const mouseDisposable = modifiedEditor.onMouseDown((e) => {
+            // Check if the click target is the glyph margin
+            // Monaco MouseTargetType:  GUTTER_GLYPH_MARGIN = 2
+            const GUTTER_GLYPH_MARGIN = 2;
+            if (e.target?.type !== GUTTER_GLYPH_MARGIN) return;
+
+            const lineNumber = e.target?.position?.lineNumber;
+            if (!lineNumber) return;
+
+            // Prevent the default "read-only editor" message
+            e.event?.preventDefault?.();
+            e.event?.stopPropagation?.();
+
+            // Find which hunk this line belongs to
+            const hunk = hunksRef.current.find(
+                h => lineNumber >= h.startLine && lineNumber <= h.endLine
+            );
+
+            if (hunk) {
+                handleStageRange(hunk.startLine, hunk.endLine);
+            } else {
+                // Clicked on a gutter line outside a hunk — stage the single line
+                handleStageRange(lineNumber, lineNumber);
+            }
+        });
+        disposables.push(mouseDisposable);
+
+        return () => {
+            // Clean up decorations
+            try {
+                decorationsRef.current = modifiedEditor.deltaDecorations(
+                    decorationsRef.current,
+                    []
+                );
+            } catch (_) {}
+            // Dispose all listeners
+            for (const d of disposables) d?.dispose?.();
+        };
+    }, [enabled, diffEditorRef, handleStageRange]);
+
+    // This component manages Monaco state imperatively — no DOM to render
+    return null;
 }

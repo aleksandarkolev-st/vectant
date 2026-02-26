@@ -3732,7 +3732,8 @@ const EditorPanel = ({
                                                             ...EDITOR_OPTIONS,
                                                             readOnly: true,
                                                             readOnlyMessage: { value: '' },
-                                                            renderSideBySide: true
+                                                            renderSideBySide: true,
+                                                            glyphMargin: true,
                                                         }}
                                                         beforeMount={(monaco) => {
                                                             monaco.editor.defineTheme('synthi-theme', SYNTHI_THEME);
