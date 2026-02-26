@@ -1806,7 +1806,13 @@ class GitService {
         return this.withLock(slug, async () => {
             const git = this.getGit(slug, userId);
 
-            // 1. Fetch latest remote state so merge has up-to-date refs
+            // Normalise: strip leading "origin/" so we always work with the
+            // bare branch name and prefix it ourselves where needed.
+            const bareBranch = branch.replace(/^origin\//, '');
+            const remoteBranch = `origin/${bareBranch}`;
+
+            // 1. Fetch the specific branch from origin so the remote-tracking
+            //    ref is guaranteed to exist and be up-to-date.
             try {
                 const effectiveToken = token || await this._extractTokenFromRemoteUrl(git);
                 if (effectiveToken) {
@@ -1817,26 +1823,26 @@ class GitService {
                             const u = new URL(remoteUrl);
                             u.username = 'x-access-token';
                             u.password = effectiveToken;
-                            await git.raw(['fetch', u.toString()]);
+                            await git.raw(['fetch', u.toString(), bareBranch]);
                         } catch (_) {
-                            await git.raw(['-c', `http.extraheader=Authorization: Bearer ${effectiveToken}`, 'fetch']);
+                            await git.raw(['-c', `http.extraheader=Authorization: Bearer ${effectiveToken}`, 'fetch', 'origin', bareBranch]);
                         }
                     } else {
-                        await git.raw(['-c', `http.extraheader=Authorization: Bearer ${effectiveToken}`, 'fetch']);
+                        await git.raw(['-c', `http.extraheader=Authorization: Bearer ${effectiveToken}`, 'fetch', 'origin', bareBranch]);
                     }
                 } else {
-                    await git.fetch();
+                    await git.fetch('origin', bareBranch);
                 }
             } catch (fetchErr) {
-                console.warn(`[GitService] mergeBranch: fetch before merge failed: ${fetchErr.message}`);
+                console.warn(`[GitService] mergeBranch: fetch origin ${bareBranch} failed: ${fetchErr.message}`);
                 // Continue — merge might still work with local refs
             }
 
-            // 2. Attempt merge.  We allow conflicts (exit code 1 with CONFLICTS).
+            // 2. Attempt merge against the remote-tracking branch.
             let mergeResult;
             let hasConflicts = false;
             try {
-                mergeResult = await git.merge([branch]);
+                mergeResult = await git.merge([remoteBranch]);
             } catch (e) {
                 const msg = (e?.message || '').toLowerCase();
                 // Git merge exits non-zero on conflicts — this is expected
