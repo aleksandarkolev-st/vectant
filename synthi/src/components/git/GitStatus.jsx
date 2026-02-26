@@ -35,6 +35,19 @@ import dynamic from 'next/dynamic';
 
 const HunkStagingView = dynamic(() => import('./HunkStagingView'), { ssr: false });
 
+const COMMIT_TYPES = [
+  { type: 'feat', label: 'Feature', emoji: '✨', desc: 'New feature' },
+  { type: 'fix', label: 'Fix', emoji: '🐛', desc: 'Bug fix' },
+  { type: 'docs', label: 'Docs', emoji: '📝', desc: 'Documentation' },
+  { type: 'style', label: 'Style', emoji: '💄', desc: 'Code style/formatting' },
+  { type: 'refactor', label: 'Refactor', emoji: '♻️', desc: 'Code refactoring' },
+  { type: 'perf', label: 'Perf', emoji: '⚡', desc: 'Performance improvement' },
+  { type: 'test', label: 'Test', emoji: '✅', desc: 'Tests' },
+  { type: 'build', label: 'Build', emoji: '📦', desc: 'Build system' },
+  { type: 'ci', label: 'CI', emoji: '🔧', desc: 'CI/CD' },
+  { type: 'chore', label: 'Chore', emoji: '🔨', desc: 'Maintenance' },
+];
+
 /* ─────────────── tiny sub-components ─────────────── */
 
 /** GitHub / GitLab / Bitbucket / Azure logo SVGs (16×16) */
@@ -209,6 +222,7 @@ export function GitStatus({ slug }) {
   const [searchQuery, setSearchQuery] = useState('');
   const [showSearch, setShowSearch] = useState(false);
   const [securityDismissed, setSecurityDismissed] = useState(false);
+  const [showCommitTypes, setShowCommitTypes] = useState(false);
   const searchInputRef = useRef(null);
 
   // ── docking WM helpers for opening PR panel ────
@@ -686,6 +700,33 @@ export function GitStatus({ slug }) {
     '--graph-4': '#8b5cf6', '--graph-5': '#06b6d4', '--graph-6': '#f43f5e', '--graph-7': '#84cc16',
   };
 
+  // ── Keyboard shortcuts for git operations ──────
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      // Only activate when focus is within the git panel or commit input
+      const isGitPanel = e.target.closest?.('[data-git-panel]');
+      if (!isGitPanel) return;
+
+      // Ctrl+Enter = Commit
+      if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey) {
+        e.preventDefault();
+        if (message && (amendMode || staged.length > 0)) handleCommit();
+      }
+      // Ctrl+Shift+Enter = Commit & Push
+      if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && e.shiftKey && !e.altKey) {
+        e.preventDefault();
+        if (message && (amendMode || staged.length > 0)) handleCommitAndPush();
+      }
+      // Ctrl+Shift+P = Push (when not in a text input)
+      if (e.key === 'p' && (e.ctrlKey || e.metaKey) && e.shiftKey && e.target.tagName !== 'INPUT' && e.target.tagName !== 'TEXTAREA') {
+        e.preventDefault();
+        handlePush(false);
+      }
+    };
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, [message, amendMode, staged, handleCommit, handleCommitAndPush, handlePush]);
+
   // ── No git ─────────────────────────────────────
   if (status === null) {
     return (
@@ -720,48 +761,6 @@ export function GitStatus({ slug }) {
       </div>
     );
   }
-
-  const [showCommitTypes, setShowCommitTypes] = useState(false);
-
-  const COMMIT_TYPES = [
-    { type: 'feat', label: 'Feature', emoji: '✨', desc: 'New feature' },
-    { type: 'fix', label: 'Fix', emoji: '🐛', desc: 'Bug fix' },
-    { type: 'docs', label: 'Docs', emoji: '📝', desc: 'Documentation' },
-    { type: 'style', label: 'Style', emoji: '💄', desc: 'Code style/formatting' },
-    { type: 'refactor', label: 'Refactor', emoji: '♻️', desc: 'Code refactoring' },
-    { type: 'perf', label: 'Perf', emoji: '⚡', desc: 'Performance improvement' },
-    { type: 'test', label: 'Test', emoji: '✅', desc: 'Tests' },
-    { type: 'build', label: 'Build', emoji: '📦', desc: 'Build system' },
-    { type: 'ci', label: 'CI', emoji: '🔧', desc: 'CI/CD' },
-    { type: 'chore', label: 'Chore', emoji: '🔨', desc: 'Maintenance' },
-  ];
-
-  // ── Keyboard shortcuts for git operations ──────
-  useEffect(() => {
-    const handleKeyDown = (e) => {
-      // Only activate when focus is within the git panel or commit input
-      const isGitPanel = e.target.closest?.('[data-git-panel]');
-      if (!isGitPanel) return;
-
-      // Ctrl+Enter = Commit
-      if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey) {
-        e.preventDefault();
-        if (message && (amendMode || staged.length > 0)) handleCommit();
-      }
-      // Ctrl+Shift+Enter = Commit & Push
-      if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && e.shiftKey && !e.altKey) {
-        e.preventDefault();
-        if (message && (amendMode || staged.length > 0)) handleCommitAndPush();
-      }
-      // Ctrl+Shift+P = Push (when not in a text input)
-      if (e.key === 'p' && (e.ctrlKey || e.metaKey) && e.shiftKey && e.target.tagName !== 'INPUT' && e.target.tagName !== 'TEXTAREA') {
-        e.preventDefault();
-        handlePush(false);
-      }
-    };
-    document.addEventListener('keydown', handleKeyDown);
-    return () => document.removeEventListener('keydown', handleKeyDown);
-  }, [message, amendMode, staged, handleCommit, handleCommitAndPush, handlePush]);
 
   // ──────────────── RENDER ────────────────────────
 
