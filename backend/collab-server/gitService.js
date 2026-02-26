@@ -911,8 +911,19 @@ class GitService {
         return this.withLock(slug, async () => {
             const git = this.getGit(slug, userId);
             try {
-                if (token) {
-                    await git.raw(['-c', `http.extraheader=Authorization: Bearer ${token}`, 'push', 'origin', `refs/tags/${name}`]);
+                const effectiveToken = token || await this._extractTokenFromRemoteUrl(git);
+                if (effectiveToken) {
+                    const remotes = await git.getRemotes(true);
+                    const remoteUrl = remotes?.[0]?.refs?.push || remotes?.[0]?.refs?.fetch || '';
+                    let authUrl = null;
+                    if (remoteUrl.startsWith('https://')) {
+                        try { const u = new URL(remoteUrl); u.username = 'x-access-token'; u.password = effectiveToken; authUrl = u.toString(); } catch (_) {}
+                    }
+                    if (authUrl) {
+                        await git.raw(['push', authUrl, `refs/tags/${name}`]);
+                    } else {
+                        await git.raw(['-c', `http.extraheader=Authorization: Bearer ${effectiveToken}`, 'push', 'origin', `refs/tags/${name}`]);
+                    }
                 } else {
                     await git.push('origin', `refs/tags/${name}`);
                 }
@@ -944,8 +955,21 @@ class GitService {
         return this.withLock(slug, async () => {
             try {
                 const git = this.getGit(slug, userId);
-                if (token) {
-                    await git.raw(['-c', `http.extraheader=Authorization: Bearer ${token}`, 'fetch']);
+                const effectiveToken = token || await this._extractTokenFromRemoteUrl(git);
+                if (effectiveToken) {
+                    const remotes = await git.getRemotes(true);
+                    const remoteUrl = remotes?.[0]?.refs?.fetch || remotes?.[0]?.refs?.push || '';
+                    let authUrl = null;
+                    if (remoteUrl.startsWith('https://')) {
+                        try { const u = new URL(remoteUrl); u.username = 'x-access-token'; u.password = effectiveToken; authUrl = u.toString(); } catch (_) {}
+                    }
+                    if (authUrl) {
+                        const remoteName = remotes?.[0]?.name || 'origin';
+                        // Temporarily set the remote URL, fetch, then restore
+                        await git.raw(['fetch', authUrl]);
+                    } else {
+                        await git.raw(['-c', `http.extraheader=Authorization: Bearer ${effectiveToken}`, 'fetch']);
+                    }
                 } else {
                     await git.fetch();
                 }
@@ -1226,10 +1250,27 @@ class GitService {
                 effectiveToken = await this._extractTokenFromRemoteUrl(git);
             }
 
-            // If a token is provided, configure git to use it for this operation
-            const extraHeaderConfig = effectiveToken
-                ? ['-c', `http.extraheader=Authorization: Bearer ${effectiveToken}`]
-                : [];
+            /**
+             * Build an authenticated push URL by embedding the token directly
+             * into the HTTPS remote URL.  GitHub (and most Git forges) reject
+             * the `Authorization: Bearer` header for HTTPS pushes but accept
+             * URL-embedded credentials in the form:
+             *    https://x-access-token:<TOKEN>@github.com/owner/repo.git
+             *
+             * We resolve the remote URL, strip any existing credentials, then
+             * embed the token.  The authenticated URL is used as the push
+             * target via `git push <url> <branch>` (a transient URL — it is
+             * never persisted to the remote config).
+             */
+            const _buildAuthUrl = (remoteUrl, tkn) => {
+                if (!remoteUrl || !tkn || !remoteUrl.startsWith('https://')) return null;
+                try {
+                    const u = new URL(remoteUrl);
+                    u.username = 'x-access-token';
+                    u.password = tkn;
+                    return u.toString();
+                } catch (_) { return null; }
+            };
 
             try {
                 // If no remotes configured, attempt to auto-add from workspace metadata
@@ -1249,11 +1290,33 @@ class GitService {
                     }
                 }
 
+                // Resolve the remote URL for logging / URL-based auth
+                const updatedRemotes = await git.getRemotes(true);
+                const remoteUrl = updatedRemotes?.[0]?.refs?.push || updatedRemotes?.[0]?.refs?.fetch || '';
+
                 if (effectiveToken) {
-                    const pushArgs = [...extraHeaderConfig, 'push'];
-                    if (force) pushArgs.push('--force-with-lease');
-                    await git.raw(pushArgs);
+                    const authUrl = _buildAuthUrl(remoteUrl, effectiveToken);
+                    const maskedUrl = authUrl ? authUrl.replace(effectiveToken, '***') : '(no auth url)';
+                    console.log(`[GitService][push] slug=${slug} force=${force} remote=${updatedRemotes?.[0]?.name} authUrl=${maskedUrl}`);
+
+                    if (authUrl) {
+                        // Push using the transient authenticated URL
+                        const branchSummary = await git.branchLocal();
+                        const currentBranch = branchSummary.current || 'HEAD';
+                        const pushArgs = ['push'];
+                        if (force) pushArgs.push('--force-with-lease');
+                        pushArgs.push(authUrl, currentBranch);
+                        console.log(`[GitService][push] Executing: git ${pushArgs.map(a => a === authUrl ? maskedUrl : a).join(' ')}`);
+                        await git.raw(pushArgs);
+                    } else {
+                        // Fallback to extraheader (non-GitHub forges)
+                        console.log(`[GitService][push] Falling back to extraheader auth for ${remoteUrl}`);
+                        const pushArgs = ['-c', `http.extraheader=Authorization: Bearer ${effectiveToken}`, 'push'];
+                        if (force) pushArgs.push('--force-with-lease');
+                        await git.raw(pushArgs);
+                    }
                 } else {
+                    console.log(`[GitService][push] No token — pushing without auth. remote=${remoteUrl}`);
                     if (force) {
                         await git.push({ '--force-with-lease': null });
                     } else {
@@ -1262,6 +1325,7 @@ class GitService {
                 }
             } catch (e) {
                 const msg = (e.message || '').toLowerCase();
+                console.error(`[GitService][push] Error: ${e.message}`);
 
                 // Handle 'no upstream branch' by attempting to set upstream automatically
                 if (msg.includes('no upstream branch') || msg.includes('set-upstream') || msg.includes('no configured push destination') || msg.includes('no configured remote')) {
@@ -1273,17 +1337,31 @@ class GitService {
                         if (!remoteToUse) {
                             throw new RemoteNotConfiguredError();
                         }
+                        const remoteUrl = remotes[0]?.refs?.push || remotes[0]?.refs?.fetch || '';
                         try {
                             if (effectiveToken) {
-                                const pushArgs = [...extraHeaderConfig, 'push', '--set-upstream', remoteToUse, currentBranch];
-                                if (force) pushArgs.push('--force-with-lease');
-                                await git.raw(pushArgs);
+                                const authUrl = _buildAuthUrl(remoteUrl, effectiveToken);
+                                if (authUrl) {
+                                    const pushArgs = ['push', '--set-upstream'];
+                                    if (force) pushArgs.push('--force-with-lease');
+                                    pushArgs.push(authUrl, currentBranch);
+                                    console.log(`[GitService][push] set-upstream with authUrl for branch ${currentBranch}`);
+                                    await git.raw(pushArgs);
+
+                                    // After successful push to URL, also set the named remote tracking
+                                    try { await git.raw(['branch', `--set-upstream-to=${remoteToUse}/${currentBranch}`, currentBranch]); } catch (_) {}
+                                } else {
+                                    const pushArgs = ['-c', `http.extraheader=Authorization: Bearer ${effectiveToken}`, 'push', '--set-upstream', remoteToUse, currentBranch];
+                                    if (force) pushArgs.push('--force-with-lease');
+                                    await git.raw(pushArgs);
+                                }
                             } else {
                                 const opts = ['--set-upstream'];
                                 if (force) opts.push('--force-with-lease');
                                 await git.push(remoteToUse, currentBranch, opts);
                             }
                         } catch (pushErr) {
+                            console.error(`[GitService][push] set-upstream push failed: ${pushErr.message}`);
                             throw this.mapGitError(pushErr, slug);
                         }
                     } else {
@@ -1366,8 +1444,26 @@ class GitService {
 
                 let pullResult;
                 if (effectiveToken) {
-                    // Use git raw command with extraheader for token auth
-                    const output = await git.raw(['-c', `http.extraheader=Authorization: Bearer ${effectiveToken}`, 'pull']);
+                    // Build authenticated URL for pull (same approach as push)
+                    const remotes = await git.getRemotes(true);
+                    const remoteUrl = remotes?.[0]?.refs?.fetch || remotes?.[0]?.refs?.push || '';
+                    let authUrl = null;
+                    if (remoteUrl.startsWith('https://')) {
+                        try {
+                            const u = new URL(remoteUrl);
+                            u.username = 'x-access-token';
+                            u.password = effectiveToken;
+                            authUrl = u.toString();
+                        } catch (_) {}
+                    }
+                    if (authUrl) {
+                        const branchSummary = await git.branchLocal();
+                        const currentBranch = branchSummary.current || 'HEAD';
+                        console.log(`[GitService][pull] Using URL-based auth for ${slug}`);
+                        await git.raw(['pull', authUrl, currentBranch]);
+                    } else {
+                        await git.raw(['-c', `http.extraheader=Authorization: Bearer ${effectiveToken}`, 'pull']);
+                    }
                     pullResult = { summary: { changes: 0, insertions: 0, deletions: 0 } };
                 } else {
                     pullResult = await git.pull();
@@ -1537,6 +1633,10 @@ class GitService {
             const showOutput = await git.show(['--format=%H%n%an%n%ae%n%aI%n%s%n%b', '--stat', hash]);
             const diff = await git.show(['--format=', '--patch', hash]);
 
+            // Also get numeric stat for per-file insertions/deletions
+            let numstat = '';
+            try { numstat = await git.raw(['show', '--format=', '--numstat', hash]); } catch (_) {}
+
             const lines = showOutput.split('\n');
             const commitHash = lines[0] || '';
             const author_name = lines[1] || '';
@@ -1551,9 +1651,26 @@ class GitService {
             }
             const body = lines.slice(5, bodyEnd).join('\n').trim();
 
+            // Parse numstat for structured per-file stats
+            const fileStats = {};
+            for (const nl of (numstat || '').split('\n').filter(Boolean)) {
+                const [ins, del, file] = nl.split('\t');
+                if (file) {
+                    fileStats[file] = {
+                        insertions: ins === '-' ? 0 : parseInt(ins) || 0,
+                        deletions: del === '-' ? 0 : parseInt(del) || 0,
+                    };
+                }
+            }
+
             // Stat lines come after the body blank line
             const statLines = lines.slice(bodyEnd + 1).filter(l => l.trim() !== '' && !l.includes('changed'));
-            const files = statLines.map(l => l.trim().split(/\s+\|/)[0].trim()).filter(Boolean);
+            const files = statLines.map(l => {
+                const name = l.trim().split(/\s+\|/)[0].trim();
+                if (!name) return null;
+                const stats = fileStats[name] || { insertions: 0, deletions: 0 };
+                return { file: name, ...stats };
+            }).filter(Boolean);
 
             return { hash: commitHash, author_name, author_email, date, subject, body, files, diff };
         } catch (e) {
@@ -1684,21 +1801,44 @@ class GitService {
             const { page = 1, limit = 50 } = options;
             const skip = (page - 1) * limit;
             
-            // Get log with pagination
-            const log = await git.log({ 
-                n: limit,
-                '--skip': skip
-            });
+            // Use a custom format that includes parent hashes (%P) for the
+            // commit graph.  simple-git's default log() omits parents, so
+            // the frontend receives no branching information and renders a
+            // single vertical line.
+            const SEP = '---COMMIT_SEP---';
+            const FIELD = '---FIELD---';
+            // Format: hash | parents | author_name | author_email | date | subject | body
+            const fmt = [`--format=${SEP}%H${FIELD}%P${FIELD}%aN${FIELD}%aE${FIELD}%aI${FIELD}%s${FIELD}%b`];
+            const logArgs = ['log', ...fmt, `-n`, `${limit}`];
+            if (skip > 0) logArgs.push(`--skip=${skip}`);
+            
+            const rawOutput = await git.raw(logArgs);
+            
+            // Parse the raw output into commit objects
+            const all = rawOutput
+                .split(SEP)
+                .filter(Boolean)
+                .map(block => {
+                    const parts = block.split(FIELD);
+                    return {
+                        hash: (parts[0] || '').trim(),
+                        parents: (parts[1] || '').trim(),       // space-separated parent hashes
+                        author_name: (parts[2] || '').trim(),
+                        author_email: (parts[3] || '').trim(),
+                        date: (parts[4] || '').trim(),
+                        message: (parts[5] || '').trim(),
+                        body: (parts[6] || '').trim(),
+                    };
+                })
+                .filter(c => c.hash);   // drop any empty entries
             
             // Get total count for pagination info
-            let total = log.total;
-            if (!total) {
-                try {
-                    const countResult = await git.raw(['rev-list', '--count', 'HEAD']);
-                    total = parseInt(countResult.trim()) || 0;
-                } catch {
-                    total = log.all.length;
-                }
+            let total;
+            try {
+                const countResult = await git.raw(['rev-list', '--count', 'HEAD']);
+                total = parseInt(countResult.trim()) || 0;
+            } catch {
+                total = all.length;
             }
             
             // Collect branch & tag refs mapped to commit hashes
@@ -1711,11 +1851,9 @@ class GitService {
                     const hash = line.substring(0, spaceIdx);
                     const name = line.substring(spaceIdx + 1);
                     if (!refs[hash]) refs[hash] = [];
-                    const isTag = name.startsWith('refs/tags/') || !name.includes('/');
                     // Classify ref type
                     let type = 'branch';
                     if (name.startsWith('origin/') || name.startsWith('upstream/')) type = 'remote';
-                    // Tags from for-each-ref under refs/tags/ will appear without prefix
                     if (name.startsWith('v') && /^v?\d/.test(name)) type = 'tag';
                     refs[hash].push({ name, type });
                 }
@@ -1734,12 +1872,12 @@ class GitService {
             } catch { /* refs decoration is best-effort */ }
             
             return { 
-                all: log.all, 
+                all, 
                 total,
                 refs,
                 page,
                 limit,
-                hasMore: skip + log.all.length < total
+                hasMore: skip + all.length < total
             };
         } catch (e) {
             throw this.mapGitError(e, slug);
