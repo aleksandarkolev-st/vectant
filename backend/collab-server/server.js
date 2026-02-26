@@ -2744,6 +2744,13 @@ const server = http.createServer(async (req, res) => {
                     await invalidateDocsForSlug(slug, null, notifyScope);
                     broadcastFileTreeChanged(slug, notifyScope);
                     break;
+                case 'merge-branch':
+                    result = await gitService.mergeBranch(slug, data.branch, effectiveUserId, data.token);
+                    broadcastFileReverted(slug, [], notifyScope);
+                    await invalidateDocsForSlug(slug, null, notifyScope);
+                    broadcastFileTreeChanged(slug, notifyScope);
+                    broadcastGitStatusChanged(slug, undefined, notifyScope, { immediate: true });
+                    break;
                 case 'conflict-versions':
                     result = await gitService.getConflictVersions(slug, data.filePath, effectiveUserId);
                     break;
