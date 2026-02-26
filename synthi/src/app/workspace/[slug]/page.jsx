@@ -37,6 +37,9 @@ const EditorPanel = dynamic(() => import('./Editor/Editor.jsx'), {
 
 import { getFileLanguage } from '@/utils/fileUtils';
 import { useAnalyzerGateway } from '@/hooks/useAnalyzerGateway';
+import { useSelfHealing } from '@/hooks/useSelfHealing';
+import { useHealingUndo } from '@/hooks/useHealingUndo';
+import { HealingToast } from '@/components/healing/HealingToast';
 import { useWorkspaceAnalysis } from '@/hooks/useWorkspaceAnalysis';
 import { useCompiler } from '@/hooks/useCompiler';
 import { useCodeIntelIndex } from '@/hooks/useCodeIntelIndex';
@@ -117,11 +120,25 @@ export default function EditorPage({ params }) {
     const [isHmrRecompiling, setIsHmrRecompiling] = useState(false);
     const [runInGuiMode, setRunInGuiMode] = useState(false);
     const [editor, setEditor] = useState(null);
+    const editorRef = useRef(null); // Ref wrapper for editor state (used by useSelfHealing)
     // Track editor content version to force re-analysis on every change (including remote/undo)
     const [editorVersion, setEditorVersion] = useState(0);
-    const { analyzeCode, analyzeProactive, analyzeContainer, analyzeUnified, lastResult, isAnalyzing: isAnalyzingGateway, connectionMeta } = useAnalyzerGateway();
+    const gateway = useAnalyzerGateway();
+    const { analyzeCode, analyzeProactive, analyzeContainer, analyzeUnified, lastResult, isAnalyzing: isAnalyzingGateway, connectionMeta } = gateway;
     const { client, compile, mediaStream, cancelMobileJob, isCompiling, status: compilerStatus } = useCompiler();
     useHMR();
+
+    // ─── Self-Healing system ───────────────────────────────
+    const activeFilePath = activeFile?.path || '';
+    const activeLanguage = activeFile?.name ? getFileLanguage(activeFile.name) : 'plaintext';
+    const { selfEditFlagRef } = useSelfHealing({
+        editorRef,
+        gateway,
+        filePath: activeFilePath,
+        language: activeLanguage,
+        active: !!editor && !!activeFile,
+    });
+    const { undoLastFix } = useHealingUndo({ editorRef });
 
     // ─── Extension system ──────────────────────────────────
     const {
@@ -1932,6 +1949,7 @@ export default function EditorPage({ params }) {
 
     const handleEditorMount = useCallback((editorInstance) => {
         setEditor(editorInstance);
+        editorRef.current = editorInstance; // Keep ref in sync for useSelfHealing
         // Wait until file is loaded, then capture snapshot
         if (activeFile && !hasInitialSnapshot) {
             const currentValue = editorInstance.getValue();
@@ -2349,6 +2367,9 @@ export default function EditorPage({ params }) {
                         />
                     </DockablePanel>
                 )}
+
+                {/* Self-Healing Toast Bridge */}
+                <HealingToast onUndo={undoLastFix} />
 
                 {/* Status Bar */}
                 <StatusBar
