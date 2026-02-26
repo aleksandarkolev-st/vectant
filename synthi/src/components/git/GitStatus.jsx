@@ -1427,7 +1427,7 @@ export function GitStatus({ slug }) {
       {hasChanges && (
         <div className="p-2 border-t border-[#27272a]">
           <div className="space-y-1.5">
-            <div className="flex gap-1.5 relative">
+            <div className="flex flex-wrap gap-1.5 relative">
               <button onClick={() => setShowCommitTypes(!showCommitTypes)}
                 className={`p-1 rounded text-xs transition-colors flex-shrink-0 ${showCommitTypes ? 'bg-[#27272a] text-[#e4e4e7]' : 'text-[#a1a1aa] hover:text-[#e4e4e7] hover:bg-[#27272a]'}`}
                 title="Conventional Commit type">
@@ -1453,7 +1453,7 @@ export function GitStatus({ slug }) {
               )}
               <input type="text" value={message} onChange={e => setMessage(e.target.value)}
                 placeholder={amendMode ? "New commit message (amend)…" : "Commit message…"}
-                className="flex-1 bg-[#18181b] border border-[#3f3f46] rounded px-2 py-1 text-xs text-[#e4e4e7] focus:outline-none focus:border-[#3b82f6] font-mono"
+                className="flex-1 min-w-0 bg-[#18181b] border border-[#3f3f46] rounded px-2 py-1 text-xs text-[#e4e4e7] focus:outline-none focus:border-[#3b82f6] font-mono"
                 onKeyDown={e => e.key === 'Enter' && !e.shiftKey && handleCommit()} />
               <button onClick={() => setShowCommitBody(!showCommitBody)}
                 className={`p-1 rounded text-xs transition-colors ${showCommitBody ? 'bg-[#27272a] text-[#e4e4e7]' : 'text-[#a1a1aa] hover:text-[#e4e4e7] hover:bg-[#27272a]'}`}
