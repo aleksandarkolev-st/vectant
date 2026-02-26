@@ -7,6 +7,7 @@ import {
   fetchRepoLabels, fetchRepoCollaborators, setActivePR, clearActionError, fetchRepoBranches,
   fetchPRList,
 } from '@/redux/prSlice';
+import { checkoutBranch, mergeBranchForConflicts, fetchGitStatus } from '@/redux/gitSlice';
 import {
   ChevronLeft, GitMerge, GitPullRequest, Circle, CheckCircle2,
   XCircle, RefreshCw, MessageSquare, FileText, GitCommit, CheckSquare,
@@ -100,7 +101,7 @@ function TabButton({ active, onClick, icon: Icon, label, count }) {
   return (
     <button
       onClick={onClick}
-      className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium transition-all border-b-2 -mb-px"
+      className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium transition-all border-b-2 -mb-px flex-shrink-0"
       style={{
         borderBottomColor: active ? 'var(--accent-primary)' : 'transparent',
         color: active ? 'var(--accent-primary)' : 'var(--text-muted)',
@@ -336,9 +337,25 @@ function MergePanel({ slug, owner, repo, pr, files, onFileClick }) {
           )}
           <div className="flex items-center gap-2 mt-2">
             <button
-              onClick={() => {
-                // Checkout the PR branch locally to resolve conflicts
-                toast.info(`Checkout the '${pr.head?.ref}' branch locally, resolve conflicts, and push.`);
+              onClick={async () => {
+                try {
+                  toast.info('Setting up conflict resolution…');
+                  // 1. Checkout the PR head branch
+                  await dispatch(checkoutBranch({ slug, branch: pr.head?.ref }));
+                  // 2. Merge the target (base) branch to surface conflicts locally
+                  const mergeResult = await dispatch(mergeBranchForConflicts({ slug, branch: `origin/${pr.base?.ref}` })).unwrap();
+                  // 3. Refresh git status so the Source Control panel shows conflicts
+                  dispatch(fetchGitStatus(slug));
+                  // 4. Switch sidebar to Source Control
+                  window.dispatchEvent(new CustomEvent('synthi:switch-sidebar', { detail: 'scm' }));
+                  if (mergeResult?.hasConflicts) {
+                    toast.info('Resolve the merge conflicts in the Source Control panel, then commit and push.');
+                  } else {
+                    toast.success('Merge completed without conflicts. Push when ready.');
+                  }
+                } catch (err) {
+                  toast.error(err?.message || 'Failed to set up conflict resolution.');
+                }
               }}
               className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-medium border transition-colors hover:opacity-90"
               style={{ background: 'rgba(59,130,246,0.10)', borderColor: 'rgba(59,130,246,0.30)', color: '#60a5fa' }}
@@ -604,7 +621,7 @@ export function PRDetail({ slug, onBack }) {
 
         {/* Tab bar */}
         {pr && (
-          <div className="flex gap-0 mt-2 border-b -mx-3 px-3" style={{ borderColor: 'var(--border-subtle)' }}>
+          <div className="flex flex-nowrap gap-0 mt-2 border-b -mx-3 px-3 overflow-x-auto whitespace-nowrap scrollbar-none" style={{ borderColor: 'var(--border-subtle)' }}>
             <TabButton active={tab === 'overview'} onClick={() => setTab('overview')} icon={FileText} label="Overview" />
             <TabButton active={tab === 'files'} onClick={() => setTab('files')} icon={FileText} label="Files" count={prFiles.length} />
             <TabButton active={tab === 'commits'} onClick={() => setTab('commits')} icon={GitCommit} label="Commits" count={prCommits.length} />
