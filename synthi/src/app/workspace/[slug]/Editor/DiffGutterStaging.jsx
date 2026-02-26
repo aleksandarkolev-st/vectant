@@ -209,6 +209,7 @@ export default function DiffGutterStaging({ diffEditorRef, isCommitDiff, filePat
     const decorationsRef = useRef([]);
     const hunksRef = useRef([]);
     const stagingRef = useRef(false);
+    const handleStageRangeRef = useRef(null);
 
     const enabled = !isCommitDiff && !!filePath && !!slug;
 
@@ -241,6 +242,12 @@ export default function DiffGutterStaging({ diffEditorRef, isCommitDiff, filePat
         }
     }, [slug, filePath, dispatch]);
 
+    // Keep a ref to the latest handleStageRange so the context-menu action
+    // (which is registered once) always calls the current closure.
+    useEffect(() => {
+        handleStageRangeRef.current = handleStageRange;
+    }, [handleStageRange]);
+
     // Wire up Monaco decorations + gutter click handler
     useEffect(() => {
         if (!enabled) return;
@@ -258,6 +265,36 @@ export default function DiffGutterStaging({ diffEditorRef, isCommitDiff, filePat
         });
 
         const disposables = [];
+
+        // ── Context-menu action: "Stage Selected Lines" (IntelliJ parity) ──
+        const actionDisposable = modifiedEditor.addAction({
+            id: 'stage-selected-lines',
+            label: 'Stage Selected Lines',
+            contextMenuGroupId: 'navigation',
+            contextMenuOrder: 0,
+            precondition: undefined,
+            run: () => {
+                const selections = modifiedEditor.getSelections();
+                if (!selections || selections.length === 0) return;
+
+                // Compute the union of all selected line ranges
+                let minLine = Infinity;
+                let maxLine = -Infinity;
+                for (const sel of selections) {
+                    const start = sel.startLineNumber;
+                    // If the cursor is at column 1 of the end line with no
+                    // text selected on that line, exclude it.
+                    let end = sel.endLineNumber;
+                    if (sel.endColumn === 1 && end > start) end--;
+                    if (start < minLine) minLine = start;
+                    if (end > maxLine) maxLine = end;
+                }
+                if (minLine > maxLine) return;
+
+                handleStageRangeRef.current?.(minLine, maxLine);
+            },
+        });
+        disposables.push(actionDisposable);
 
         // Apply decorations for current hunks
         const applyDecorations = () => {
