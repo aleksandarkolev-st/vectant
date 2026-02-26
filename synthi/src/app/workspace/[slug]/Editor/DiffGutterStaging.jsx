@@ -251,7 +251,7 @@ export default function DiffGutterStaging({ diffEditorRef, isCommitDiff, filePat
         <div
             ref={containerRef}
             className="absolute left-0 top-0 bottom-0 pointer-events-none"
-            style={{ width: '100%', zIndex: 5 }}
+            style={{ width: '100%', zIndex: 50 }}
         >
             {hunks.map((hunk, i) => {
                 const top = getLineTop(hunk.startLine);
@@ -294,7 +294,8 @@ export default function DiffGutterStaging({ diffEditorRef, isCommitDiff, filePat
                                 style={{ marginTop: -1 }}
                             >
                                 <button
-                                    onClick={() => handleStageRange(hunk.startLine, hunk.endLine)}
+                                    onMouseDown={(e) => { e.stopPropagation(); e.preventDefault(); }}
+                                    onClick={(e) => { e.stopPropagation(); handleStageRange(hunk.startLine, hunk.endLine); }}
                                     disabled={staging}
                                     className="flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-medium transition-colors bg-emerald-600/90 hover:bg-emerald-500 text-white disabled:opacity-50 shadow-sm"
                                     title={`Stage hunk (lines ${hunk.startLine}–${hunk.endLine})`}

@@ -3717,7 +3717,7 @@ const EditorPanel = ({
                                                         <X className="w-4 h-4" />
                                                     </button>
                                                 </div>
-                                                <div className="flex-1 min-h-0">
+                                                <div className="flex-1 min-h-0 relative overflow-hidden">
                                                     <DiffEditor
                                                         height="100%"
                                                         original={originalContent || ''}
@@ -3731,6 +3731,7 @@ const EditorPanel = ({
                                                         options={{
                                                             ...EDITOR_OPTIONS,
                                                             readOnly: true,
+                                                            readOnlyMessage: { value: '' },
                                                             renderSideBySide: true
                                                         }}
                                                         beforeMount={(monaco) => {
