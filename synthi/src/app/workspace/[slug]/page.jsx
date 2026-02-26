@@ -2140,55 +2140,53 @@ export default function EditorPage({ params }) {
                         sendGuiEvent={sendGuiEvent}
                     />
 
-                    {/* ─── Layout: either new docking WM or legacy rigid panels ─── */}
-                    {USE_DOCKING_WM ? (
-                        <div className="flex-1 min-h-0">
-                            <DockableWorkspace
-                                workspaceSlug={slug}
-                                defaultPreset="classic"
-                                panelProps={{
-                                    editor,
-                                    activeFile,
-                                    currentCode: currentContent,
-                                    diagnostics: mergedDiagnostics,
-                                    diagnosticSummary,
-                                    isAnalyzing: isAnalyzingProactive || isWorkspaceAnalyzing,
-                                    onSuggest: (s) => setLatestCompletion(s),
-                                    onBusy: (b) => setAiBusy(Boolean(b)),
-                                    clearSignal: completionClearSignal,
-                                    onCloseProblems: () => setShowProblemsPanel(false),
-                                    onToggleOrientation: toggleTreeOrientation,
-                                    onOpenScm: () => setSidebarView('scm'),
-                                    editorProps: {
-                                        innerRef: setEditor,
-                                        slug,
-                                        showTerminal,
-                                        analyzeCode,
-                                        analyzeUnified,
-                                        lastResult,
-                                        isAnalyzing: isAnalyzingGateway,
-                                        connectionMeta,
-                                        latestCompletion,
-                                        completionClearSignal,
-                                        onRun: handleRun,
-                                        onSave: handleSave,
-                                        onToggleTerminal: () => dispatch(toggleTerminal()),
-                                        onEditorMount: handleEditorMount,
-                                        analysisResult: lastResult,
+                    {/* ─── Layout: outer vertical group (shared) → main content + bottom problems dock ─── */}
+                    <ResizablePanelGroup direction="vertical" className="flex-1 min-h-0">
+                        <ResizablePanel minSize={20} defaultSize={75}>
+                            {USE_DOCKING_WM ? (
+                                <DockableWorkspace
+                                    workspaceSlug={slug}
+                                    defaultPreset="classic"
+                                    panelProps={{
+                                        editor,
+                                        activeFile,
+                                        currentCode: currentContent,
                                         diagnostics: mergedDiagnostics,
-                                        onAiDiagnosticsRecalibrated: handleAiDiagnosticsRecalibrated,
-                                        removeDiagnosticByLocation,
-                                        aiBusy,
-                                        onClearCompletion: handleClearLatestCompletion,
-                                        chatVisible,
-                                        collabHostId,
-                                    },
-                                }}
-                            />
-                        </div>
-                    ) : (
-                        <ResizablePanelGroup direction="vertical" className="flex-1 min-h-0">
-                            <ResizablePanel minSize={20} defaultSize={75}>
+                                        diagnosticSummary,
+                                        isAnalyzing: isAnalyzingProactive || isWorkspaceAnalyzing,
+                                        onSuggest: (s) => setLatestCompletion(s),
+                                        onBusy: (b) => setAiBusy(Boolean(b)),
+                                        clearSignal: completionClearSignal,
+                                        onCloseProblems: () => setShowProblemsPanel(false),
+                                        onToggleOrientation: toggleTreeOrientation,
+                                        onOpenScm: () => setSidebarView('scm'),
+                                        editorProps: {
+                                            innerRef: setEditor,
+                                            slug,
+                                            showTerminal,
+                                            analyzeCode,
+                                            analyzeUnified,
+                                            lastResult,
+                                            isAnalyzing: isAnalyzingGateway,
+                                            connectionMeta,
+                                            latestCompletion,
+                                            completionClearSignal,
+                                            onRun: handleRun,
+                                            onSave: handleSave,
+                                            onToggleTerminal: () => dispatch(toggleTerminal()),
+                                            onEditorMount: handleEditorMount,
+                                            analysisResult: lastResult,
+                                            diagnostics: mergedDiagnostics,
+                                            onAiDiagnosticsRecalibrated: handleAiDiagnosticsRecalibrated,
+                                            removeDiagnosticByLocation,
+                                            aiBusy,
+                                            onClearCompletion: handleClearLatestCompletion,
+                                            chatVisible,
+                                            collabHostId,
+                                        },
+                                    }}
+                                />
+                            ) : (
                                 <ResizablePanelGroup
                                     direction="horizontal"
                                     className="h-full w-full"
@@ -2226,33 +2224,33 @@ export default function EditorPage({ params }) {
                                         </>
                                     )}
                                 </ResizablePanelGroup>
-                            </ResizablePanel>
+                            )}
+                        </ResizablePanel>
 
-                            {/* Problems dock slot — always present, expanded/collapsed imperatively for smooth animation */}
-                            <ResizableHandle
+                        {/* Problems dock slot — always present, expanded/collapsed imperatively for smooth animation */}
+                        <ResizableHandle
+                            className={cn(
+                                "!pointer-events-auto bg-[#1a1a1e] hover:bg-[#3A7AFE] h-px z-50 transition-opacity duration-300",
+                                (!showProblemsPanel || !isProblemsPanelDocked) && "opacity-0 pointer-events-none"
+                            )}
+                        />
+                        <ResizablePanel
+                            ref={problemsPanelRef}
+                            defaultSize={0}
+                            minSize={10}
+                            collapsible={true}
+                            collapsedSize={0}
+                            style={{ transition: 'flex 300ms cubic-bezier(0.4, 0, 0.2, 1)' }}
+                        >
+                            <div
                                 className={cn(
-                                    "!pointer-events-auto bg-[#1a1a1e] hover:bg-[#3A7AFE] h-px z-50 transition-opacity duration-300",
-                                    (!showProblemsPanel || !isProblemsPanelDocked) && "opacity-0 pointer-events-none"
+                                    "h-full transition-opacity duration-300",
+                                    (!showProblemsPanel || !isProblemsPanelDocked) && "opacity-0"
                                 )}
+                                id="problems-panel-dock-slot"
                             />
-                            <ResizablePanel
-                                ref={problemsPanelRef}
-                                defaultSize={0}
-                                minSize={10}
-                                collapsible={true}
-                                collapsedSize={0}
-                                style={{ transition: 'flex 300ms cubic-bezier(0.4, 0, 0.2, 1)' }}
-                            >
-                                <div
-                                    className={cn(
-                                        "h-full transition-opacity duration-300",
-                                        (!showProblemsPanel || !isProblemsPanelDocked) && "opacity-0"
-                                    )}
-                                    id="problems-panel-dock-slot"
-                                />
-                            </ResizablePanel>
-                        </ResizablePanelGroup>
-                    )}
+                        </ResizablePanel>
+                    </ResizablePanelGroup>
 
                 </div>
 
