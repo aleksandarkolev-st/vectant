@@ -1893,6 +1893,66 @@ async def list_heal_rules():
     }
 
 
+@app.post("/heal/batch")
+async def batch_heal(payload: dict):
+    """Batch analyse multiple files at once."""
+    from analyzer.proactive.healing.batch_engine import BatchHealingEngine, BatchFileEntry
+    from analyzer.proactive.healing.engine import get_healing_engine
+
+    files = payload.get("files", [])
+    if not files:
+        return {"error": "No files provided"}
+
+    entries = [
+        BatchFileEntry(
+            file_path=f["filePath"],
+            language=f["language"],
+            code=f["code"],
+            priority=f.get("priority", 0),
+        )
+        for f in files
+    ]
+
+    batch_engine = BatchHealingEngine(engine=get_healing_engine())
+    result = await batch_engine.analyze_batch(entries)
+
+    return {
+        "totalFiles": result.total_files,
+        "analyzedFiles": result.analyzed_files,
+        "totalFixes": result.total_fixes,
+        "autoFixable": result.auto_fixable,
+        "skippedFiles": result.skipped_files,
+        "elapsedMs": round(result.elapsed_ms, 1),
+        "files": {
+            path: {
+                "fixes": len(hr.fixes),
+                "autoFixable": hr.auto_fixable_count,
+                "fixDetails": [
+                    {
+                        "ruleId": f.rule_id,
+                        "category": f.category.value,
+                        "severity": f.severity.value,
+                        "description": f.description,
+                        "line": f.line,
+                        "isSafe": f.is_safe,
+                    }
+                    for f in hr.fixes
+                ],
+            }
+            for path, hr in result.file_results.items()
+        },
+        "errors": result.errors,
+    }
+
+
+@app.get("/heal/cache/stats")
+async def heal_cache_stats():
+    """Get healing cache statistics."""
+    from analyzer.proactive.healing.engine import get_healing_engine
+    engine = get_healing_engine()
+    return engine._cache.stats
+
+
 @app.get("/")
 def root():
     return {
