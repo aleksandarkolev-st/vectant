@@ -394,6 +394,9 @@ export default function EditorPage({ params }) {
                         if (message && message.toLowerCase().includes('workspace not found')) {
                             setWorkspaceMissing(true);
                             setWorkspaceMissingMessage(message);
+                        } else if (result.error && (result.error.name === 'AbortError' || result.error.message?.includes('Aborted due to condition'))) {
+                            // Condition failed (e.g. redundant fetch prevented) - ignore
+                            return;
                         } else {
                             // Non-404 errors: log and do not display the not-found modal
                             console.error('Failed to fetch workspace files:', message);
