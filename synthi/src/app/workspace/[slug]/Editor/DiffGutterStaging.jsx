@@ -251,8 +251,11 @@ export default function DiffGutterStaging({ diffEditorRef, isCommitDiff, filePat
         const modifiedEditor = editor.getModifiedEditor?.();
         if (!modifiedEditor) return;
 
-        // Enable the glyph margin on the modified editor so our decorations are visible
-        modifiedEditor.updateOptions({ glyphMargin: true });
+        // ── Suppress the read-only tooltip on the modified side ──
+        modifiedEditor.updateOptions({
+            glyphMargin: true,
+            readOnlyMessage: { value: '' },
+        });
 
         const disposables = [];
 
