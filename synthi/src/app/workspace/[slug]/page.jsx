@@ -1690,6 +1690,13 @@ export default function EditorPage({ params }) {
 
         setBuildLogs([`Running build for ${filename}...`]);
 
+        // Auto-switch to the Output panel in the docking WM so users see program output
+        try {
+            if (typeof window !== 'undefined' && window.dispatchEvent) {
+                window.dispatchEvent(new CustomEvent('synthi:show-output-panel'));
+            }
+        } catch (_) { /* ignore */ }
+
         // Define a getter for content that checks current editor state, cache, or API
         const getContentForDependency = async (path) => {
             // If it's the active file, use the current editor content (which might be unsaved)
