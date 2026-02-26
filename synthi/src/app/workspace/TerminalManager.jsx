@@ -120,7 +120,9 @@ export default function TerminalManager({ visible, onCloseAll, workspaceSlug = '
     <div className="h-10 flex items-center justify-between px-2 border-b select-none" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-sidebar)' }} ref={dragRef}>
       {/* Tabs */}
       <div className="flex items-center gap-1 overflow-x-auto">
-        {terminals.map(t => (
+        {terminals.map(t => {
+          const shellMeta = t.shellType ? getShellMeta(t.shellType) : null;
+          return (
           <div 
             key={t.id} 
             className={`group flex items-center gap-2 h-8 px-3 cursor-pointer transition-all duration-150 ${
@@ -135,6 +137,14 @@ export default function TerminalManager({ visible, onCloseAll, workspaceSlug = '
           >
             {t.isAi ? (
               <Bot className="w-3.5 h-3.5" style={{ color: 'var(--accent-primary)' }} strokeWidth={2} />
+            ) : shellMeta ? (
+              <span
+                className="w-4 h-4 flex items-center justify-center rounded text-[9px] font-bold flex-shrink-0"
+                style={{ background: `${shellMeta.color}20`, color: shellMeta.color }}
+                title={shellMeta.label}
+              >
+                {shellMeta.icon}
+              </span>
             ) : (
               <TerminalSquare className="w-3.5 h-3.5" strokeWidth={2} />
             )}
@@ -148,7 +158,8 @@ export default function TerminalManager({ visible, onCloseAll, workspaceSlug = '
               <X className="w-3 h-3" strokeWidth={2} />
             </button>
           </div>
-        ))}
+          );
+        })}
       </div>
       
       {/* Actions - Larger click targets */}
