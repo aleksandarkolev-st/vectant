@@ -32,3 +32,12 @@ from . import complexity
 from . import syntax_consistency
 from . import documentation
 from . import async_patterns
+from . import security
+from . import classes
+from . import function_patterns
+from . import exception_patterns
+from . import resource_management
+from . import deprecation
+from . import performance
+from . import testing
+from . import encoding
