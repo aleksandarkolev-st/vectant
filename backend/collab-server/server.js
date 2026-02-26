@@ -2533,7 +2533,7 @@ const server = http.createServer(async (req, res) => {
             // Validate file paths before processing any action that accepts one.
             // This prevents path-traversal attacks (e.g. "../../etc/passwd").
             const FILE_PATH_ACTIONS = [
-              'discard', 'stage', 'stage-lines', 'unstage', 'sync',
+              'discard', 'discard-lines', 'stage', 'stage-lines', 'unstage', 'sync',
               'file-content', 'resolve-ours', 'resolve-theirs',
               'mark-resolved', 'conflict-versions', 'read-file', 'write-file',
             ];
@@ -2645,7 +2645,7 @@ const server = http.createServer(async (req, res) => {
                     result = await gitService.getBranches(slug, effectiveUserId);
                     break;
                 case 'checkout':
-                    result = await gitService.checkout(slug, data.branch, data.create, effectiveUserId);
+                    result = await gitService.checkout(slug, data.branch, data.create, effectiveUserId, data.mode);
                     // Broadcast BEFORE invalidation so clients destroy stale
                     // Yjs docs before WS close triggers provider reconnect.
                     broadcastFileReverted(slug, [], notifyScope);
@@ -2669,6 +2669,14 @@ const server = http.createServer(async (req, res) => {
                     break;
                 case 'stage-lines':
                     result = await gitService.stageLines(slug, data.filePath, data.patch, effectiveUserId);
+                    broadcastGitStatusChanged(slug, undefined, notifyScope, { immediate: true });
+                    break;
+                case 'discard-lines':
+                    result = await gitService.discardLines(slug, data.filePath, data.patch, effectiveUserId);
+                    broadcastFileReverted(slug, data.filePath ? [data.filePath] : [], notifyScope);
+                    if (data.filePath) {
+                      await invalidateDocsForSlug(slug, [data.filePath], notifyScope);
+                    }
                     broadcastGitStatusChanged(slug, undefined, notifyScope, { immediate: true });
                     break;
                 case 'unstage':

@@ -934,18 +934,49 @@ class GitService {
         }, userId);
     }
 
-    async checkout(slug, branchName, create = false, userId) {
+    async checkout(slug, branchName, create = false, userId, mode = 'normal') {
         return this.withLock(slug, async () => {
             const git = this.getGit(slug, userId);
             try {
-                if (create) {
-                    await git.checkoutLocalBranch(branchName);
+                // mode: 'stash' — stash before checkout, pop after
+                // mode: 'force' — discard local changes (git checkout -f)
+                if (mode === 'stash') {
+                    await git.stash(['push', '-m', `auto-stash before checkout to ${branchName}`]);
+                    try {
+                        if (create) await git.checkoutLocalBranch(branchName);
+                        else await git.checkout(branchName);
+                        // Try to pop the stash; if it conflicts leave it in the stash list
+                        try { await git.stash(['pop']); } catch (_popErr) {
+                            console.warn(`[Git] Stash pop after checkout to '${branchName}' conflicted — stash preserved`);
+                        }
+                    } catch (checkoutErr) {
+                        // Restore stash if checkout itself failed
+                        try { await git.stash(['pop']); } catch (_) {}
+                        throw checkoutErr;
+                    }
+                } else if (mode === 'force') {
+                    if (create) {
+                        // For create + force: create the branch then force-checkout
+                        await git.checkout(['-B', branchName]);
+                    } else {
+                        await git.checkout(['-f', branchName]);
+                    }
                 } else {
-                    await git.checkout(branchName);
+                    if (create) {
+                        await git.checkoutLocalBranch(branchName);
+                    } else {
+                        await git.checkout(branchName);
+                    }
                 }
                 this._archiveGitAsync(slug, userId);
                 return this.getStatus(slug, userId);
             } catch (e) {
+                const msg = (e.message || '').toLowerCase();
+                if (msg.includes('would be overwritten') || msg.includes('your local changes')) {
+                    const err = new Error('Your local changes would be overwritten by checkout. Commit, stash, or discard them first.');
+                    err.code = 'UNCOMMITTED_CHANGES';
+                    throw err;
+                }
                 throw this.mapGitError(e, slug);
             }
         }, userId);
@@ -1153,6 +1184,29 @@ class GitService {
                     await git.raw(['apply', '--cached', '--unidiff-zero', tmpPatch]);
                 } finally {
                     // Always clean up the temp patch file
+                    try { fs.unlinkSync(tmpPatch); } catch (_) {}
+                }
+                return this.getStatus(slug, userId);
+            } catch (e) {
+                throw this.mapGitError(e, slug);
+            }
+        }, userId);
+    }
+
+    // Discard (revert) selected lines from the working tree by reverse-applying a patch
+    async discardLines(slug, filePath, patch, userId) {
+        return this.withLock(slug, async () => {
+            try {
+                const git = this.getGit(slug, userId);
+                const repoPath = this.getEffectiveRepoPath(slug, userId);
+
+                const tmpDir = path.join(repoPath, '.git');
+                const tmpPatch = path.join(tmpDir, `_discard_${Date.now()}.patch`);
+                fs.writeFileSync(tmpPatch, patch, 'utf8');
+
+                try {
+                    await git.raw(['apply', '--reverse', '--unidiff-zero', tmpPatch]);
+                } finally {
                     try { fs.unlinkSync(tmpPatch); } catch (_) {}
                 }
                 return this.getStatus(slug, userId);
@@ -1651,26 +1705,29 @@ class GitService {
             }
             const body = lines.slice(5, bodyEnd).join('\n').trim();
 
-            // Parse numstat for structured per-file stats
-            const fileStats = {};
+            // Build file list from numstat (reliable, machine-readable)
+            const files = [];
             for (const nl of (numstat || '').split('\n').filter(Boolean)) {
-                const [ins, del, file] = nl.split('\t');
-                if (file) {
-                    fileStats[file] = {
-                        insertions: ins === '-' ? 0 : parseInt(ins) || 0,
-                        deletions: del === '-' ? 0 : parseInt(del) || 0,
-                    };
+                const parts = nl.split('\t');
+                if (parts.length < 3) continue;
+                const [ins, del, ...rest] = parts;
+                // Handle renames: numstat shows "old => new" or "{old => new}/path"
+                let file = rest.join('\t');
+                if (!file) continue;
+                // For renames with arrow notation, extract the new name
+                const renameMatch = file.match(/\{(.+?) => (.+?)\}(.*)/);
+                if (renameMatch) {
+                    const prefix = file.substring(0, file.indexOf('{'));
+                    file = prefix + renameMatch[2] + renameMatch[3];
+                } else if (file.includes(' => ')) {
+                    file = file.split(' => ').pop();
                 }
+                files.push({
+                    file: file.trim(),
+                    insertions: ins === '-' ? 0 : parseInt(ins) || 0,
+                    deletions: del === '-' ? 0 : parseInt(del) || 0,
+                });
             }
-
-            // Stat lines come after the body blank line
-            const statLines = lines.slice(bodyEnd + 1).filter(l => l.trim() !== '' && !l.includes('changed'));
-            const files = statLines.map(l => {
-                const name = l.trim().split(/\s+\|/)[0].trim();
-                if (!name) return null;
-                const stats = fileStats[name] || { insertions: 0, deletions: 0 };
-                return { file: name, ...stats };
-            }).filter(Boolean);
 
             return { hash: commitHash, author_name, author_email, date, subject, body, files, diff };
         } catch (e) {

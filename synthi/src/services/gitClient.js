@@ -138,8 +138,8 @@ export const gitClient = {
         return this.request(slug, 'branches');
     },
 
-    async checkout(slug, branch, create = false) {
-        return this.request(slug, 'checkout', { branch, create });
+    async checkout(slug, branch, create = false, mode = 'normal') {
+        return this.request(slug, 'checkout', { branch, create, mode });
     },
 
     async fetch(slug, token) {
@@ -160,6 +160,10 @@ export const gitClient = {
 
     async stageLines(slug, filePath, patch) {
         return this.request(slug, 'stage-lines', { filePath, patch });
+    },
+
+    async discardLines(slug, filePath, patch) {
+        return this.request(slug, 'discard-lines', { filePath, patch });
     },
 
     async unstageFile(slug, filePath) {
