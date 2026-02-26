@@ -288,8 +288,8 @@ function MergePanel({ slug, owner, repo, pr, files, onFileClick }) {
   if (!pr || pr.merged) return null;
   if (pr.state === 'closed') return null;
 
-  const hasConflicts = pr.mergeable === false || pr.mergeable_state === 'dirty';
-  const isChecking = pr.mergeable === null && pr.mergeable_state === 'unknown';
+  const hasConflicts = pr.mergeable === false && pr.mergeable_state === 'dirty';
+  const isChecking = pr.mergeable == null || pr.mergeable_state === 'unknown';
   const isBlocked = pr.mergeable_state === 'blocked';
 
   const methodLabels = {
@@ -334,9 +334,29 @@ function MergePanel({ slug, owner, repo, pr, files, onFileClick }) {
               ))}
             </ul>
           )}
-          <p className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
-            Resolve conflicts locally and push, or use the GitHub web editor.
-          </p>
+          <div className="flex items-center gap-2 mt-2">
+            <button
+              onClick={() => {
+                // Checkout the PR branch locally to resolve conflicts
+                toast.info(`Checkout the '${pr.head?.ref}' branch locally, resolve conflicts, and push.`);
+              }}
+              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-medium border transition-colors hover:opacity-90"
+              style={{ background: 'rgba(59,130,246,0.10)', borderColor: 'rgba(59,130,246,0.30)', color: '#60a5fa' }}
+            >
+              <ArrowRightLeft className="w-3 h-3" />
+              Resolve in Synthi
+            </button>
+            <a
+              href={pr.html_url ? `${pr.html_url}/conflicts` : '#'}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-medium border transition-colors hover:opacity-90"
+              style={{ borderColor: 'var(--border-medium)', color: 'var(--text-secondary)' }}
+            >
+              <ExternalLink className="w-3 h-3" />
+              Open in GitHub
+            </a>
+          </div>
         </div>
       )}
 
