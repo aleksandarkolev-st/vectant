@@ -340,33 +340,6 @@ export function GitStatus({ slug }) {
     return () => { clearInterval(interval); window.removeEventListener('focus', handleFocus); };
   }, [slug, dispatch, refreshGitData]);
 
-  // ── Keyboard shortcuts for git operations ──────
-  useEffect(() => {
-    const handleKeyDown = (e) => {
-      // Only activate when focus is within the git panel or commit input
-      const isGitPanel = e.target.closest?.('[data-git-panel]');
-      if (!isGitPanel) return;
-
-      // Ctrl+Enter = Commit
-      if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey) {
-        e.preventDefault();
-        if (message && (amendMode || staged.length > 0)) handleCommit();
-      }
-      // Ctrl+Shift+Enter = Commit & Push
-      if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && e.shiftKey && !e.altKey) {
-        e.preventDefault();
-        if (message && (amendMode || staged.length > 0)) handleCommitAndPush();
-      }
-      // Ctrl+Shift+P = Push (when not in a text input)
-      if (e.key === 'p' && (e.ctrlKey || e.metaKey) && e.shiftKey && e.target.tagName !== 'INPUT' && e.target.tagName !== 'TEXTAREA') {
-        e.preventDefault();
-        handlePush(false);
-      }
-    };
-    document.addEventListener('keydown', handleKeyDown);
-    return () => document.removeEventListener('keydown', handleKeyDown);
-  }, [message, amendMode, staged]);
-
   // ── handlers ───────────────────────────────────
   const handleSync = async () => {
     if (!slug) return;
@@ -762,6 +735,33 @@ export function GitStatus({ slug }) {
     { type: 'ci', label: 'CI', emoji: '🔧', desc: 'CI/CD' },
     { type: 'chore', label: 'Chore', emoji: '🔨', desc: 'Maintenance' },
   ];
+
+  // ── Keyboard shortcuts for git operations ──────
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      // Only activate when focus is within the git panel or commit input
+      const isGitPanel = e.target.closest?.('[data-git-panel]');
+      if (!isGitPanel) return;
+
+      // Ctrl+Enter = Commit
+      if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey) {
+        e.preventDefault();
+        if (message && (amendMode || staged.length > 0)) handleCommit();
+      }
+      // Ctrl+Shift+Enter = Commit & Push
+      if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && e.shiftKey && !e.altKey) {
+        e.preventDefault();
+        if (message && (amendMode || staged.length > 0)) handleCommitAndPush();
+      }
+      // Ctrl+Shift+P = Push (when not in a text input)
+      if (e.key === 'p' && (e.ctrlKey || e.metaKey) && e.shiftKey && e.target.tagName !== 'INPUT' && e.target.tagName !== 'TEXTAREA') {
+        e.preventDefault();
+        handlePush(false);
+      }
+    };
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, [message, amendMode, staged, handleCommit, handleCommitAndPush, handlePush]);
 
   // ──────────────── RENDER ────────────────────────
 
