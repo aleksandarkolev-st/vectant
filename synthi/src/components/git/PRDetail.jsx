@@ -325,21 +325,29 @@ function MergePanel({ slug, owner, repo, pr, files, onFileClick }) {
   if (!pr || pr.merged) return null;
   if (pr.state === 'closed') return null;
 
-  // Use local merge-tree check if available (instant), fall back to GitHub's
-  // lazily-computed mergeable field.
-  //
-  // IMPORTANT: If the local check is still loading, we must NOT allow the
-  // merge button.  And if the local check errored (null result), we treat
-  // mergeability as *unknown* rather than trusting GitHub's often-stale
-  // `mergeable` field — the user can retry or wait for the GitHub field to
-  // settle, but we never let a stale `mergeable: true` override our check.
-  const localCheckFailed = !localConflictLoading && localConflictCheck === null;
-  const hasConflicts = localConflictCheck
-    ? localConflictCheck.hasConflicts
-    : localCheckFailed
-      ? (pr.mergeable === false || pr.mergeable_state === 'dirty' || pr.mergeable == null)
-      : false; // still loading — handled by isChecking/canMerge below
-  const isChecking = localConflictLoading || (localConflictCheck === null && (pr.mergeable == null || pr.mergeable_state === 'unknown'));
+  // Use local merge-tree check if available, fall back to GitHub's lazy
+  // mergeable field.  Trust the local check ONLY if the fetch succeeded
+  // (fetchFailed === false).  When the fetch failed the local result may
+  // be based on stale refs, so we fall through to GitHub's API field.
+  const localCheckSucceeded = localConflictCheck != null && !localConflictCheck.fetchFailed && !localConflictCheck.error;
+  const localCheckFailed = !localConflictLoading && !localCheckSucceeded;
+
+  let hasConflicts;
+  if (localCheckSucceeded) {
+    // Local check ran against fresh remote refs — trust it
+    hasConflicts = localConflictCheck.hasConflicts;
+  } else if (localCheckFailed) {
+    // Local check either errored, wasn't attempted, or ran against stale
+    // refs.  Fall back to GitHub's mergeable field.  Treat null/unknown as
+    // possibly conflicting so we don't let a stale `true` through.
+    hasConflicts = pr.mergeable !== true || pr.mergeable_state === 'dirty';
+  } else {
+    // Still loading
+    hasConflicts = false; // guarded by isChecking below
+  }
+
+  const isChecking = localConflictLoading
+    || (!localCheckSucceeded && (pr.mergeable == null || pr.mergeable_state === 'unknown'));
   const isBlocked = pr.mergeable_state === 'blocked';
   // Only allow merge when we have a definitive "no conflicts" answer
   const canMerge = !hasConflicts && !isChecking && !isBlocked;
