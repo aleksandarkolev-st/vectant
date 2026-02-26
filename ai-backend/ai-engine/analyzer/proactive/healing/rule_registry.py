@@ -1,9 +1,10 @@
 """
 Healing Rule Registry
 
-Central registry for all healing rules. Each rule detects a specific
-type of micro-issue and produces a HealingFix. Rules are organized
-by language and category.
+Central registry for all healing rules. Every rule is universal —
+it receives the language as a parameter and decides internally
+whether and how to handle it. The `languages` field is kept only
+for documentation / metadata but is no longer used to filter.
 """
 
 from __future__ import annotations
@@ -24,29 +25,29 @@ class HealingRule:
         self,
         rule_id: str,
         category: HealingCategory,
-        languages: Set[str],
-        detect_func: HealingRuleFunc,
+        languages: Set[str] = None,
+        detect_func: HealingRuleFunc = None,
         description: str = "",
         enabled: bool = True,
     ):
         self.rule_id = rule_id
         self.category = category
-        self.languages = languages
+        self.languages = languages or {"*"}
         self.detect_func = detect_func
         self.description = description
         self.enabled = enabled
     
     def applies_to(self, language: str) -> bool:
-        """Check if this rule applies to the given language."""
-        if "*" in self.languages:
-            return True
-        return language.lower() in self.languages
+        """All rules are universal. Always returns True.
+        
+        Rules handle language dispatch internally — they receive the
+        language parameter and decide for themselves what to do.
+        """
+        return True
     
     def detect(self, code: str, language: str, file_path: str = "") -> List[HealingFix]:
-        """Run the detection function."""
+        """Run the detection function. Language filtering is done inside the rule."""
         if not self.enabled:
-            return []
-        if not self.applies_to(language):
             return []
         fixes = self.detect_func(code, language, file_path)
         # Tag each fix with the rule ID
@@ -135,17 +136,23 @@ class HealingRuleRegistry:
 def healing_rule(
     rule_id: str,
     category: HealingCategory,
-    languages: Set[str],
+    languages: Set[str] = None,
+    name: str = "",
     description: str = "",
 ):
-    """Decorator to register a function as a healing rule."""
+    """Decorator to register a universal healing rule.
+    
+    All rules are universal by default (languages={"*"}).
+    The `languages` parameter is metadata-only; actual language
+    dispatch happens inside the rule function itself.
+    """
     def decorator(func: HealingRuleFunc) -> HealingRuleFunc:
         rule = HealingRule(
             rule_id=rule_id,
             category=category,
-            languages=languages,
+            languages=languages or {"*"},
             detect_func=func,
-            description=description,
+            description=description or name,
         )
         HealingRuleRegistry.get_instance().register(rule)
         return func
