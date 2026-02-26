@@ -6,6 +6,7 @@ import gitReducer from './gitSlice';
 import extensionReducer from './extensionSlice';
 import themeReducer from './themeSlice';
 import layoutReducer from '@/components/docking-wm/state/layout-slice';
+import healingReducer, { initialHealingState } from './healingSlice';
 
 import { enableMapSet } from 'immer';
 
@@ -17,6 +18,7 @@ enableMapSet();
 const UI_STORAGE_KEY = 'synthi:ui';
 const EXPANDED_FOLDERS_KEY = 'synthi:expandedFolders';
 const THEME_STORAGE_KEY = 'synthi:theme';
+const HEALING_STORAGE_KEY = 'synthi:healing';
 
 // Workspace-specific storage key helpers
 const getOpenTabsKey = (slug) => `synthi:openTabs:${slug}`;
@@ -61,6 +63,18 @@ export function loadThemePrefs() {
     return JSON.parse(raw);
   } catch (e) {
     console.warn('Failed to load theme prefs from localStorage', e);
+    return undefined;
+  }
+}
+
+export function loadHealingPrefs() {
+  if (typeof window === 'undefined' || !window.localStorage) return undefined;
+  try {
+    const raw = localStorage.getItem(HEALING_STORAGE_KEY);
+    if (!raw) return undefined;
+    return JSON.parse(raw);
+  } catch (e) {
+    console.warn('Failed to load healing prefs from localStorage', e);
     return undefined;
   }
 }
@@ -144,6 +158,19 @@ function saveActiveTab(slug, activeFile) {
   }
 }
 
+function saveHealingPrefs(healingState) {
+  if (typeof window === 'undefined' || !window.localStorage) return;
+  try {
+    const toSave = {
+      enabled: !!healingState.enabled,
+      config: healingState.config || {},
+    };
+    localStorage.setItem(HEALING_STORAGE_KEY, JSON.stringify(toSave));
+  } catch (e) {
+    console.warn('Failed to save healing prefs to localStorage', e);
+  }
+}
+
 export const store = configureStore({
   reducer: {
     workspace: workspaceReducer,
@@ -152,6 +179,7 @@ export const store = configureStore({
     extensions: extensionReducer,
     theme: themeReducer,
     layout: layoutReducer,
+    healing: healingReducer,
   },
   // We need to disable the serializable check for the Map used in fileContentCache
   middleware: (getDefaultMiddleware) =>
@@ -182,6 +210,9 @@ if (typeof window !== 'undefined') {
   let lastThemeId = '';
   let lastUserThemes = '{}';
   let lastUserOverrides = '{}';
+
+  // Track healing preferences for persistence
+  let lastHealingSnapshot = '';
 
   store.subscribe(() => {
     try {
@@ -259,6 +290,18 @@ if (typeof window !== 'undefined') {
           }
         } catch (_) {}
       }
+
+      // Persist healing preferences when changed
+      try {
+        const healing = state?.healing;
+        if (healing) {
+          const healSnapshot = `${healing.enabled}|${healing.config?.minConfidence}|${(healing.config?.autoHealCategories || []).join(',')}`;
+          if (healSnapshot !== lastHealingSnapshot) {
+            lastHealingSnapshot = healSnapshot;
+            saveHealingPrefs(healing);
+          }
+        }
+      } catch (_) {}
     } catch (e) {
       // ignore subscription errors
     }
