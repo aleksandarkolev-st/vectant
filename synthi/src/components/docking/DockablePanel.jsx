@@ -331,6 +331,7 @@ export function DockablePanel({
   onDockedChange, // Callback: tells parent if panel is docked (true) or floating/auto-hide (false)
   workspaceId,
   dockSlotId, // ID of the DOM element to portal docked content into
+  openMode = 'restore', // 'restore' | 'docked'
   className,
 }) {
   // State
@@ -345,6 +346,7 @@ export function DockablePanel({
   const [showDockZones, setShowDockZones] = useState(false);
   const [activeDockZone, setActiveDockZone] = useState(null);
   const [dockSlot, setDockSlot] = useState(null);
+  const [slotTimedOut, setSlotTimedOut] = useState(false); // fallback if dock slot never appears
 
   // Refs
   const panelRef = useRef(null);
@@ -358,33 +360,65 @@ export function DockablePanel({
     }
   }, [externalIsOpen]);
 
+  // Optional behavior: always open in docked mode (ignore persisted floating/auto-hide state on open).
+  useEffect(() => {
+    if (openMode !== 'docked') return;
+    if (externalIsOpen) {
+      setPanelState(PANEL_STATE.DOCKED);
+      setIsPinned(true);
+      setIsAutoHideExpanded(false);
+    }
+  }, [openMode, externalIsOpen]);
+
   // Find dock slot element when dockSlotId provided
   useEffect(() => {
-    if (!dockSlotId) return;
-    
-    // Use RAF to ensure DOM is ready
+    if (!dockSlotId) {
+      setSlotTimedOut(false);
+      setDockSlot(null);
+      return;
+    }
+
+    setSlotTimedOut(false);
+    let rafId;
+    let attempts = 0;
+    const MAX_ATTEMPTS = 30; // ~30 RAF frames ≈ 500ms at 60fps
+
+    // Use RAF to ensure DOM is ready, with a bounded retry count.
     const findSlot = () => {
       const slot = document.getElementById(dockSlotId);
       if (slot) {
         setDockSlot(slot);
+        setSlotTimedOut(false);
+      } else if (++attempts < MAX_ATTEMPTS) {
+        rafId = requestAnimationFrame(findSlot);
       } else {
-        // Retry on next frame if not found
-        requestAnimationFrame(findSlot);
+        // Dock slot was never found — enable inline fallback so the
+        // panel renders instead of staying invisible.
+        console.warn(`[DockablePanel] dock slot "${dockSlotId}" not found after ${MAX_ATTEMPTS} frames — falling back to inline render`);
+        setSlotTimedOut(true);
       }
     };
-    
+
     findSlot();
-    
-    // Also observe for the slot being added/removed
+
+    // Also observe for the slot being added/removed later
     const observer = new MutationObserver(() => {
       const slot = document.getElementById(dockSlotId);
-      setDockSlot(slot || null);
+      if (slot) {
+        setDockSlot(slot);
+        setSlotTimedOut(false);
+      } else {
+        setDockSlot(null);
+      }
     });
-    
+
     observer.observe(document.body, { childList: true, subtree: true });
-    
-    return () => observer.disconnect();
-  }, [dockSlotId, panelState, isOpen]);
+
+    return () => {
+      cancelAnimationFrame(rafId);
+      observer.disconnect();
+    };
+  }, [dockSlotId]); // intentionally omit panelState/isOpen — slot is always in DOM
 
   // Notify parent of docked state changes
   useEffect(() => {
@@ -406,7 +440,7 @@ export function DockablePanel({
     if (savedState) {
       try {
         const parsed = JSON.parse(savedState);
-        setPanelState(parsed.panelState ?? defaultState);
+        setPanelState(openMode === 'docked' ? PANEL_STATE.DOCKED : (parsed.panelState ?? defaultState));
         setDockPosition(parsed.dockPosition ?? defaultPosition);
         setFloatingPosition(parsed.floatingPosition ?? defaultFloatingPosition);
         setFloatingSize(parsed.floatingSize ?? defaultFloatingSize);
@@ -416,7 +450,7 @@ export function DockablePanel({
         console.error('Failed to parse panel state:', e);
       }
     }
-  }, [id, workspaceId]);
+  }, [id, workspaceId, openMode]);
 
   // Save state on change (NOT isOpen - parent controls that)
   useEffect(() => {
@@ -626,21 +660,20 @@ export function DockablePanel({
   // Docked state
   if (!isOpen) return null;
 
-  // If dockSlotId is provided, render into that slot via portal
-  if (dockSlotId && dockSlot) {
-    return (
-      <>
-        {createPortal(renderPanelContent(false), dockSlot)}
-      </>
-    );
+  // If dockSlotId is provided, render via portal into the slot.
+  // While the slot hasn't been found yet, return null to avoid a full-screen flash.
+  // If the slot is never found (timeout), fall back to inline rendering.
+  if (dockSlotId) {
+    if (dockSlot) {
+      return createPortal(renderPanelContent(false), dockSlot);
+    }
+    // Slot not found yet — if we haven't timed out, keep waiting (null)
+    if (!slotTimedOut) return null;
+    // Timed out — render inline as a last resort
   }
 
-  // Fallback: render inline
-  return (
-    <>
-      {renderPanelContent(false)}
-    </>
-  );
+  // Fallback: render inline (no dockSlotId configured, or slot timed out)
+  return renderPanelContent(false);
 }
 
 /**
