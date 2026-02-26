@@ -14,6 +14,11 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useSelector, useDispatch } from 'react-redux';
 
 import {
+  showHealingDecorations,
+  injectHealingStyles,
+} from '@/components/healing/healingDecorations';
+
+import {
   selectHealingEnabled,
   selectHealingConfig,
   selectHealingStatus,
@@ -83,6 +88,7 @@ export function useSelfHealing({
   const inflightRef = useRef(false);
   const mountedRef = useRef(true);
   const fixCountRef = useRef(0);  // fixes applied in current pass
+  const lastDecoDisposable = useRef(null);
 
   // ── Track whether we just applied a fix (to avoid re-triggering) ────
   const selfEditFlagRef = useRef(false);
@@ -93,10 +99,12 @@ export function useSelfHealing({
   // ── Cleanup ─────────────────────────────────────────────────────────
   useEffect(() => {
     mountedRef.current = true;
+    injectHealingStyles();
     return () => {
       mountedRef.current = false;
       if (debounceTimer.current) clearTimeout(debounceTimer.current);
       if (cooldownTimer.current) clearTimeout(cooldownTimer.current);
+      if (lastDecoDisposable.current) lastDecoDisposable.current.dispose();
     };
   }, []);
 
@@ -336,6 +344,19 @@ export function useSelfHealing({
       }
 
       fixCountRef.current += appliedCount;
+
+      // Show healing line decorations on applied fixes
+      if (appliedCount > 0) {
+        const healedRanges = sorted.slice(0, appliedCount).map((f) => ({
+          startLine: (f.start_line ?? f.startLine ?? 0) + 1,
+          endLine: (f.end_line ?? f.endLine ?? f.start_line ?? f.startLine ?? 0) + 1,
+        }));
+        if (lastDecoDisposable.current) lastDecoDisposable.current.dispose();
+        const editor = editorRef?.current;
+        if (editor) {
+          lastDecoDisposable.current = showHealingDecorations(editor, healedRanges);
+        }
+      }
 
       // Enter cooldown
       dispatch(setHealingStatus('cooldown'));
