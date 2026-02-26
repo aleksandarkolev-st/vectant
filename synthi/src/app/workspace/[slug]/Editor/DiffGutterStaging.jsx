@@ -343,7 +343,7 @@ export default function DiffGutterStaging({ diffEditorRef, isCommitDiff, filePat
                     decorationsRef.current,
                     decorations
                 );
-            } catch (_) {}
+            } catch (_) { /* editor may be disposed */ }
         };
 
         applyDecorations();
@@ -352,31 +352,27 @@ export default function DiffGutterStaging({ diffEditorRef, isCommitDiff, filePat
         const diffDisposable = editor.onDidUpdateDiff?.(() => applyDecorations());
         if (diffDisposable) disposables.push(diffDisposable);
 
-        // Handle gutter clicks on the modified editor
+        // ── Gutter clicks → stage entire enclosing hunk only ──
         const mouseDisposable = modifiedEditor.onMouseDown((e) => {
-            // Check if the click target is the glyph margin
-            // Monaco MouseTargetType:  GUTTER_GLYPH_MARGIN = 2
+            // Monaco MouseTargetType: GUTTER_GLYPH_MARGIN = 2
             const GUTTER_GLYPH_MARGIN = 2;
             if (e.target?.type !== GUTTER_GLYPH_MARGIN) return;
 
             const lineNumber = e.target?.position?.lineNumber;
             if (!lineNumber) return;
 
-            // Prevent the default "read-only editor" message
+            // Prevent the default read-only editor message
             e.event?.preventDefault?.();
             e.event?.stopPropagation?.();
 
-            // Find which hunk this line belongs to
+            // Find the enclosing hunk — gutter click always stages the full hunk
             const hunk = hunksRef.current.find(
                 h => lineNumber >= h.startLine && lineNumber <= h.endLine
             );
-
             if (hunk) {
                 handleStageRange(hunk.startLine, hunk.endLine);
-            } else {
-                // Clicked on a gutter line outside a hunk — stage the single line
-                handleStageRange(lineNumber, lineNumber);
             }
+            // If no enclosing hunk was found, do nothing (no single-line fallback)
         });
         disposables.push(mouseDisposable);
 
@@ -387,8 +383,8 @@ export default function DiffGutterStaging({ diffEditorRef, isCommitDiff, filePat
                     decorationsRef.current,
                     []
                 );
-            } catch (_) {}
-            // Dispose all listeners
+            } catch (_) { /* editor may be disposed */ }
+            // Dispose all listeners and the context-menu action
             for (const d of disposables) d?.dispose?.();
         };
     }, [enabled, diffEditorRef, handleStageRange]);
