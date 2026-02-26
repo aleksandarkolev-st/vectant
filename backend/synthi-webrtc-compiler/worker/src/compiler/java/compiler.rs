@@ -38,6 +38,10 @@ pub async fn compile_java(
 
     // Write the primary source (req.source) as the primary file
     let primary_path = workspace.join(&req.filename);
+    // Ensure parent directories exist (e.g. src/com/example/)
+    if let Some(parent) = primary_path.parent() {
+        tokio::fs::create_dir_all(parent).await?;
+    }
     tokio::fs::write(&primary_path, &req.source).await?;
     java_files.push(primary_path);
 
@@ -63,10 +67,20 @@ pub async fn compile_java(
     let needs_javafx = source_content.contains("javafx.")
         || source_content.contains("import javafx");
 
+    // ── Step 2b: Detect source root for -sourcepath ───────────────
+    // Java packages must match the directory structure. For example,
+    // `src/com/example/HelloWorld.java` with `package com.example;`
+    // has source root `src/`.  We derive this by stripping the package
+    // path from the file's parent directory.
+    let source_root = detect_source_root(&req.filename, source_content, workspace);
+    eprintln!("[JavaCompile] Detected source root: {:?}", source_root);
+
     // ── Step 3: Run javac ─────────────────────────────────────────
     let mut cmd = system_command("javac");
     cmd.arg("-d")
         .arg(&classes_dir)
+        .arg("-sourcepath")
+        .arg(&source_root)
         .arg("-Xlint:all");
 
     // Auto-add JavaFX module path if needed
@@ -142,7 +156,7 @@ pub async fn compile_java(
     }
 
     // ── Step 5: Derive main class name ────────────────────────────
-    let main_class = derive_main_class(&req.filename);
+    let main_class = derive_main_class(&req.filename, &req.source);
 
     eprintln!("[JavaCompile] Success — main class: {}", main_class);
 
@@ -153,14 +167,25 @@ pub async fn compile_java(
     })
 }
 
-/// Derive the fully-qualified main class name from a filename.
-/// `"Main.java"` → `"Main"`, `"com/example/App.java"` → `"com.example.App"`
-fn derive_main_class(filename: &str) -> String {
-    let stem = filename
-        .strip_suffix(".java")
-        .unwrap_or(filename);
-    // Convert path separators to dots for package-qualified names
-    stem.replace('/', ".").replace('\\', ".")
+/// Derive the fully-qualified main class name from a filename and source code.
+///
+/// Parses the `package` declaration from the source to get the correct
+/// fully-qualified name. Falls back to the simple class name if no package
+/// declaration is found.
+///
+/// `("src/com/example/HelloWorld.java", "package com.example;...")` → `"com.example.HelloWorld"`
+/// `("Main.java", "public class Main {...")` → `"Main"`
+fn derive_main_class(filename: &str, source: &str) -> String {
+    let simple_name = std::path::Path::new(filename)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("Main")
+        .to_string();
+
+    match extract_package(source) {
+        Some(pkg) => format!("{}.{}", pkg, simple_name),
+        None => simple_name,
+    }
 }
 
 /// Send a compile status message to the frontend.
@@ -176,4 +201,65 @@ async fn send_compile_status(ctx: &CompileContext, session_id: &str, success: bo
         .log_dc
         .send_text(serde_json::to_string(&payload).unwrap_or_default())
         .await;
+}
+
+/// Detect the source root directory for javac's `-sourcepath`.
+///
+/// Given `filename = "src/com/example/HelloWorld.java"` and a source file
+/// containing `package com.example;`, the package path is `com/example`.
+/// Stripping that from the file's parent directory (`src/com/example`) gives
+/// us the source root `src/`.
+///
+/// Falls back to the workspace root if detection fails or there's no package.
+fn detect_source_root(filename: &str, source: &str, workspace: &Path) -> PathBuf {
+    // Extract package name from source
+    let package = extract_package(source);
+
+    if let Some(pkg) = package {
+        if !pkg.is_empty() {
+            // Convert package to path: "com.example" → "com/example"
+            let pkg_path = pkg.replace('.', "/");
+
+            // The file's parent directory (relative to workspace)
+            let file_parent = Path::new(filename).parent().unwrap_or(Path::new(""));
+            let parent_str = file_parent.to_string_lossy().replace('\\', "/");
+
+            // Strip the package path suffix from the parent directory
+            // e.g. "src/com/example" - "com/example" = "src"
+            if let Some(root) = parent_str.strip_suffix(&pkg_path) {
+                let root = root.trim_end_matches('/');
+                if root.is_empty() {
+                    return workspace.to_path_buf();
+                }
+                return workspace.join(root);
+            }
+        }
+    }
+
+    // No package or couldn't deduce — use workspace root
+    workspace.to_path_buf()
+}
+
+/// Extract the package name from Java source code.
+/// Returns `Some("com.example")` for `package com.example;`, or `None`.
+fn extract_package(source: &str) -> Option<String> {
+    for line in source.lines() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("package ") {
+            if let Some(pkg) = rest.strip_suffix(';') {
+                let pkg = pkg.trim();
+                if !pkg.is_empty() {
+                    return Some(pkg.to_string());
+                }
+            }
+        }
+        // Package declaration must come before imports/class
+        if trimmed.starts_with("import ")
+            || trimmed.starts_with("public ")
+            || trimmed.starts_with("class ")
+        {
+            break;
+        }
+    }
+    None
 }
