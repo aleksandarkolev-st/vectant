@@ -106,6 +106,41 @@ export function commitWebUrl(remoteUrl, hash) {
   return `${base}/commit/${hash}`;
 }
 
+/**
+ * Extract an embedded access token from a remote URL.
+ * Returns the raw token string, or null if none found.
+ *
+ *   https://ghp_abc123@github.com/o/r  →  'ghp_abc123'
+ *   https://user:TOKEN@github.com/o/r  →  'TOKEN'
+ */
+export function extractTokenFromUrl(url) {
+  if (!url) return null;
+  try {
+    const parsed = new URL(url);
+    if (parsed.password) return decodeURIComponent(parsed.password);
+    if (parsed.username && parsed.username !== 'git' && parsed.username !== 'oauth2' && parsed.username !== 'x-access-token') {
+      return decodeURIComponent(parsed.username);
+    }
+  } catch { /* not a valid URL */ }
+  return null;
+}
+
+/**
+ * Strip embedded credentials from a URL, returning a clean HTTPS URL.
+ *   https://ghp_abc123@github.com/o/r  →  https://github.com/o/r
+ */
+export function stripTokenFromUrl(url) {
+  if (!url) return url;
+  try {
+    const parsed = new URL(url);
+    parsed.username = '';
+    parsed.password = '';
+    return parsed.toString();
+  } catch {
+    return url;
+  }
+}
+
 // ─── Conventional commits ───────────────────────────────────────
 
 const CC_REGEX = /^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\([^)]*\))?(!)?:\s*/i;

@@ -24,7 +24,7 @@ import { getFileLanguage } from '@/utils/fileUtils';
 import {
   maskRemoteUrl, urlContainsToken, detectProvider, humanRemoteUrl,
   commitWebUrl, parseConventionalCommit, ccColor, groupCommitsByDate,
-  buildCommitGraph, relativeTime
+  buildCommitGraph, relativeTime, extractTokenFromUrl, stripTokenFromUrl
 } from './gitUtils';
 import {
   openTab, activateTabAction, setFocusedTabGroup,
@@ -614,7 +614,14 @@ export function GitStatus({ slug }) {
   const handleCloneRepo = async () => {
     if (!slug || !cloneUrl) return;
     try {
-      await dispatch(cloneRepo({ slug, repoUrl: cloneUrl, token: null }));
+      // Extract token from URL (if embedded) and pass it separately
+      const embeddedToken = extractTokenFromUrl(cloneUrl);
+      const cleanUrl = embeddedToken ? stripTokenFromUrl(cloneUrl) : cloneUrl;
+      await dispatch(cloneRepo({ slug, repoUrl: cleanUrl, token: embeddedToken }));
+      // Persist the token globally so all future git ops can use it
+      if (embeddedToken) {
+        localStorage.setItem('synthi:global-github-token', embeddedToken);
+      }
       dispatch(fetchFilesThunk(slug));
       dispatch(fetchGitStatus(slug));
       setCloneUrl('');
