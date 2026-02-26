@@ -4,16 +4,19 @@
  *
  * Architecture:
  *   1. Suppresses the read-only tooltip on the modified editor.
- *   2. Uses `deltaDecorations` with checkbox-style glyphs (☐) on hunk start
- *      lines.  Gutter clicks stage the **entire enclosing hunk**.
+ *   2. Uses `deltaDecorations` with checkbox-style glyphs on hunk start lines.
+ *      Gutter clicks **toggle** the staging state of the entire enclosing hunk:
+ *      ☐ (unchecked / unstaged) ↔ ☑ (checked / staged).
  *   3. Registers a custom context-menu action ("Stage Selected Lines") via
  *      `modifiedEditor.addAction()` so users can highlight specific lines,
  *      right-click, and stage only that selection — matching IntelliJ parity.
+ *   4. Tracks per-hunk checked/unchecked state in React `useRef` so the
+ *      checkbox visually reflects whether each hunk has been staged.
  */
 
 import { useEffect, useCallback, useRef } from 'react';
 import { useAppDispatch, useAppSelector } from '@/redux/hooks';
-import { stageLines } from '@/redux/gitSlice';
+import { stageLines, discardLines } from '@/redux/gitSlice';
 import { gitClient } from '@/services/gitClient';
 import { toast } from 'sonner';
 
@@ -25,7 +28,7 @@ function ensureStyles() {
     const style = document.createElement('style');
     style.id = STYLE_ID;
     style.textContent = `
-        /* ── Checkbox-style glyph for added hunks ── */
+        /* ── Unchecked checkbox glyph for added hunks (☐) ── */
         .diff-gutter-stage-add {
             background: rgba(16, 185, 129, 0.18) !important;
             cursor: pointer !important;
@@ -51,7 +54,33 @@ function ensureStyles() {
             color: #10b981;
         }
 
-        /* ── Checkbox-style glyph for deleted hunks ── */
+        /* ── Checked checkbox glyph for added hunks (☑) ── */
+        .diff-gutter-stage-add-checked {
+            background: rgba(16, 185, 129, 0.30) !important;
+            cursor: pointer !important;
+            border-radius: 3px;
+        }
+        .diff-gutter-stage-add-checked::after {
+            content: '☑';
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            width: 100%;
+            height: 100%;
+            color: #10b981;
+            font-size: 15px;
+            line-height: 1;
+            pointer-events: none;
+        }
+        .diff-gutter-stage-add-checked:hover {
+            background: rgba(16, 185, 129, 0.45) !important;
+        }
+        .diff-gutter-stage-add-checked:hover::after {
+            content: '☐';
+            color: #34d399;
+        }
+
+        /* ── Unchecked checkbox glyph for deleted hunks (☐) ── */
         .diff-gutter-stage-del {
             background: rgba(239, 68, 68, 0.18) !important;
             cursor: pointer !important;
@@ -76,8 +105,41 @@ function ensureStyles() {
             content: '☑';
             color: #ef4444;
         }
+
+        /* ── Checked checkbox glyph for deleted hunks (☑) ── */
+        .diff-gutter-stage-del-checked {
+            background: rgba(239, 68, 68, 0.30) !important;
+            cursor: pointer !important;
+            border-radius: 3px;
+        }
+        .diff-gutter-stage-del-checked::after {
+            content: '☑';
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            width: 100%;
+            height: 100%;
+            color: #ef4444;
+            font-size: 15px;
+            line-height: 1;
+            pointer-events: none;
+        }
+        .diff-gutter-stage-del-checked:hover {
+            background: rgba(239, 68, 68, 0.45) !important;
+        }
+        .diff-gutter-stage-del-checked:hover::after {
+            content: '☐';
+            color: #f87171;
+        }
+
+        /* ── Margin highlight for unstaged hunks ── */
         .diff-gutter-margin-highlight {
             background: rgba(52, 211, 153, 0.06) !important;
+        }
+
+        /* ── Margin highlight for staged hunks ── */
+        .diff-gutter-margin-highlight-staged {
+            background: rgba(16, 185, 129, 0.14) !important;
         }
     `;
     document.head.appendChild(style);
@@ -210,8 +272,16 @@ export default function DiffGutterStaging({ diffEditorRef, isCommitDiff, filePat
     const hunksRef = useRef([]);
     const stagingRef = useRef(false);
     const handleStageRangeRef = useRef(null);
+    const handleUnstageRangeRef = useRef(null);
+    // Track which hunks are checked (staged) — keyed by "startLine:endLine"
+    const stagedHunksRef = useRef(new Set());
+    // Reference to applyDecorations so it can be called after toggle
+    const applyDecorationsRef = useRef(null);
 
     const enabled = !isCommitDiff && !!filePath && !!slug;
+
+    /** Generate a stable key for a hunk based on its line range */
+    const hunkKey = (startLine, endLine) => `${startLine}:${endLine}`;
 
     // Stage a range of lines
     const handleStageRange = useCallback(async (startLine, endLine) => {
@@ -231,7 +301,11 @@ export default function DiffGutterStaging({ diffEditorRef, isCommitDiff, filePat
             const result = await dispatch(stageLines({ slug, filePath, patch }));
             if (stageLines.fulfilled.match(result)) {
                 const lineCount = endLine - startLine + 1;
+                // Mark this hunk as staged
+                stagedHunksRef.current.add(hunkKey(startLine, endLine));
                 toast.success(`Staged ${lineCount} line${lineCount > 1 ? 's' : ''}`);
+                // Re-apply decorations to reflect new checked state
+                applyDecorationsRef.current?.();
             } else {
                 toast.error(result.error?.message || 'Failed to stage lines');
             }
@@ -242,11 +316,54 @@ export default function DiffGutterStaging({ diffEditorRef, isCommitDiff, filePat
         }
     }, [slug, filePath, dispatch]);
 
-    // Keep a ref to the latest handleStageRange so the context-menu action
+    // Unstage (reverse-apply) a range of lines from the index
+    const handleUnstageRange = useCallback(async (startLine, endLine) => {
+        if (stagingRef.current || !slug || !filePath) return;
+        stagingRef.current = true;
+        try {
+            const rawDiff = await gitClient.getDiff(slug, filePath, false);
+            const diffText = typeof rawDiff === 'string' ? rawDiff : rawDiff?.raw || '';
+            const parsed = parseDiffToHunks(diffText);
+            const patch = buildPatchForRange(parsed.header, parsed.hunks, startLine, endLine);
+
+            if (!patch) {
+                toast.error('Could not build unstage patch for selected range');
+                return;
+            }
+
+            // Use discardLines with --cached semantics to unstage from index
+            const result = await dispatch(discardLines({ slug, filePath, patch }));
+            if (discardLines.fulfilled.match(result)) {
+                const lineCount = endLine - startLine + 1;
+                // Mark this hunk as unstaged
+                stagedHunksRef.current.delete(hunkKey(startLine, endLine));
+                toast.success(`Unstaged ${lineCount} line${lineCount > 1 ? 's' : ''}`);
+                // Re-apply decorations to reflect new unchecked state
+                applyDecorationsRef.current?.();
+            } else {
+                toast.error(result.error?.message || 'Failed to unstage lines');
+            }
+        } catch (e) {
+            toast.error(e.message || 'Unstaging failed');
+        } finally {
+            stagingRef.current = false;
+        }
+    }, [slug, filePath, dispatch]);
+
+    // Keep refs to the latest handlers so the context-menu action
     // (which is registered once) always calls the current closure.
     useEffect(() => {
         handleStageRangeRef.current = handleStageRange;
     }, [handleStageRange]);
+
+    useEffect(() => {
+        handleUnstageRangeRef.current = handleUnstageRange;
+    }, [handleUnstageRange]);
+
+    // Reset staged-hunks state when the file changes
+    useEffect(() => {
+        stagedHunksRef.current = new Set();
+    }, [filePath]);
 
     // Wire up Monaco decorations + gutter click handler
     useEffect(() => {
@@ -296,7 +413,7 @@ export default function DiffGutterStaging({ diffEditorRef, isCommitDiff, filePat
         });
         disposables.push(actionDisposable);
 
-        // Apply decorations for current hunks
+        // Apply decorations for current hunks — reflects checked/unchecked state
         const applyDecorations = () => {
             try {
                 const lineChanges = editor.getLineChanges();
@@ -305,8 +422,18 @@ export default function DiffGutterStaging({ diffEditorRef, isCommitDiff, filePat
 
                 const decorations = [];
                 for (const hunk of newHunks) {
-                    // Glyph margin decoration — clickable "+" or "−" marker
-                    const glyphClass = hunk.isDeletion ? 'diff-gutter-stage-del' : 'diff-gutter-stage-add';
+                    const key = `${hunk.startLine}:${hunk.endLine}`;
+                    const isStaged = stagedHunksRef.current.has(key);
+
+                    // Glyph margin decoration — checkbox reflects staging state
+                    let glyphClass;
+                    if (hunk.isDeletion) {
+                        glyphClass = isStaged ? 'diff-gutter-stage-del-checked' : 'diff-gutter-stage-del';
+                    } else {
+                        glyphClass = isStaged ? 'diff-gutter-stage-add-checked' : 'diff-gutter-stage-add';
+                    }
+
+                    const hoverAction = isStaged ? 'Unstage' : 'Stage';
                     decorations.push({
                         range: {
                             startLineNumber: hunk.startLine,
@@ -317,7 +444,7 @@ export default function DiffGutterStaging({ diffEditorRef, isCommitDiff, filePat
                         options: {
                             glyphMarginClassName: glyphClass,
                             glyphMarginHoverMessage: {
-                                value: `**Stage hunk** (lines ${hunk.startLine}–${hunk.endLine})\n\nClick to stage this change`,
+                                value: `**${hoverAction} hunk** (lines ${hunk.startLine}–${hunk.endLine})\n\nClick to ${hoverAction.toLowerCase()} this change`,
                             },
                             stickiness: 1, // NeverGrowsWhenTypingAtEdges
                         },
@@ -332,7 +459,9 @@ export default function DiffGutterStaging({ diffEditorRef, isCommitDiff, filePat
                             endColumn: 1,
                         },
                         options: {
-                            marginClassName: 'diff-gutter-margin-highlight',
+                            marginClassName: isStaged
+                                ? 'diff-gutter-margin-highlight-staged'
+                                : 'diff-gutter-margin-highlight',
                             stickiness: 1,
                         },
                     });
@@ -346,13 +475,15 @@ export default function DiffGutterStaging({ diffEditorRef, isCommitDiff, filePat
             } catch (_) { /* editor may be disposed */ }
         };
 
+        applyDecorationsRef.current = applyDecorations;
+
         applyDecorations();
 
         // Re-apply when diff updates
         const diffDisposable = editor.onDidUpdateDiff?.(() => applyDecorations());
         if (diffDisposable) disposables.push(diffDisposable);
 
-        // ── Gutter clicks → stage entire enclosing hunk only ──
+        // ── Gutter clicks → toggle staging state of the enclosing hunk ──
         const mouseDisposable = modifiedEditor.onMouseDown((e) => {
             // Monaco MouseTargetType: GUTTER_GLYPH_MARGIN = 2
             const GUTTER_GLYPH_MARGIN = 2;
@@ -365,12 +496,20 @@ export default function DiffGutterStaging({ diffEditorRef, isCommitDiff, filePat
             e.event?.preventDefault?.();
             e.event?.stopPropagation?.();
 
-            // Find the enclosing hunk — gutter click always stages the full hunk
+            // Find the enclosing hunk — gutter click always toggles the full hunk
             const hunk = hunksRef.current.find(
                 h => lineNumber >= h.startLine && lineNumber <= h.endLine
             );
             if (hunk) {
-                handleStageRange(hunk.startLine, hunk.endLine);
+                const key = hunkKey(hunk.startLine, hunk.endLine);
+                const isCurrentlyStaged = stagedHunksRef.current.has(key);
+                if (isCurrentlyStaged) {
+                    // Toggle OFF → unstage the hunk
+                    handleUnstageRange(hunk.startLine, hunk.endLine);
+                } else {
+                    // Toggle ON → stage the hunk
+                    handleStageRange(hunk.startLine, hunk.endLine);
+                }
             }
             // If no enclosing hunk was found, do nothing (no single-line fallback)
         });
@@ -384,10 +523,11 @@ export default function DiffGutterStaging({ diffEditorRef, isCommitDiff, filePat
                     []
                 );
             } catch (_) { /* editor may be disposed */ }
+            applyDecorationsRef.current = null;
             // Dispose all listeners and the context-menu action
             for (const d of disposables) d?.dispose?.();
         };
-    }, [enabled, diffEditorRef, handleStageRange]);
+    }, [enabled, diffEditorRef, handleStageRange, handleUnstageRange]);
 
     // This component manages Monaco state imperatively — no DOM to render
     return null;
