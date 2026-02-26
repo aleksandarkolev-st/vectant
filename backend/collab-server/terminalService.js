@@ -90,23 +90,42 @@ function getDefaultShell() {
 let _gitBashPath = undefined; // undefined = not yet searched, null = not found
 
 /**
- * Find the Git Bash executable on Windows by checking common install locations
- * and falling back to `where git` to locate the Git installation.
+ * Find the Git Bash executable on Windows.
+ * Uses the same discovery strategy as VS Code:
+ *   1. Windows Registry (HKLM\SOFTWARE\GitForWindows — most reliable)
+ *   2. Common install paths (Program Files, scoop, etc.)
+ *   3. `where git` to derive the install root
  */
 function findGitBash() {
   if (_gitBashPath !== undefined) return _gitBashPath;
 
+  const { execSync } = require('child_process');
+
+  // 1. Windows Registry — most reliable, this is how VS Code finds Git
+  try {
+    const regOutput = execSync(
+      'REG QUERY "HKLM\\SOFTWARE\\GitForWindows" /v InstallPath',
+      { encoding: 'utf-8', timeout: 3000, windowsHide: true }
+    );
+    const match = regOutput.match(/InstallPath\s+REG_SZ\s+(.+)/i);
+    if (match) {
+      const bashPath = path.join(match[1].trim(), 'bin', 'bash.exe');
+      if (fs.existsSync(bashPath)) {
+        _gitBashPath = bashPath;
+        console.log(`[Terminal] Git Bash found via Registry: ${bashPath}`);
+        return bashPath;
+      }
+    }
+  } catch (_) { /* Registry query failed */ }
+
+  // 2. Common install locations
   const candidates = [
     path.join(process.env.ProgramFiles || 'C:\\Program Files', 'Git', 'bin', 'bash.exe'),
     path.join(process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)', 'Git', 'bin', 'bash.exe'),
     path.join(os.homedir(), 'AppData', 'Local', 'Programs', 'Git', 'bin', 'bash.exe'),
     path.join(os.homedir(), 'scoop', 'apps', 'git', 'current', 'bin', 'bash.exe'),
     'C:\\Git\\bin\\bash.exe',
-    'C:\\Program Files\\Git\\bin\\bash.exe',
-    'C:\\Program Files (x86)\\Git\\bin\\bash.exe',
   ];
-
-  // Check each candidate
   for (const p of candidates) {
     try {
       if (fs.existsSync(p)) {
@@ -117,12 +136,10 @@ function findGitBash() {
     } catch (_) { /* skip */ }
   }
 
-  // Fall back: use `where git` to discover the Git installation directory
+  // 3. `where git` fallback — derive install root from git.exe location
   try {
-    const { execSync } = require('child_process');
-    const gitPath = execSync('where git', { encoding: 'utf-8', timeout: 3000 }).split('\n')[0].trim();
+    const gitPath = execSync('where git', { encoding: 'utf-8', timeout: 3000, windowsHide: true }).split('\n')[0].trim();
     if (gitPath) {
-      // git.exe is usually at <git-root>/cmd/git.exe — bash.exe is at <git-root>/bin/bash.exe
       const gitRoot = path.dirname(path.dirname(gitPath));
       const bashPath = path.join(gitRoot, 'bin', 'bash.exe');
       if (fs.existsSync(bashPath)) {
@@ -135,6 +152,47 @@ function findGitBash() {
 
   _gitBashPath = null;
   console.log('[Terminal] Git Bash not found on this system');
+  return null;
+}
+
+/** Cache for discovered bash executable path (WSL / PATH-based) */
+let _bashPath = undefined;
+
+/**
+ * Find a working bash.exe on Windows.
+ * Filters out the WindowsApps WSL stub (which fails if WSL is not installed).
+ * Falls back to Git Bash's bash.exe if no other bash is available.
+ */
+function findBashExe() {
+  if (_bashPath !== undefined) return _bashPath;
+
+  const { execSync } = require('child_process');
+
+  // `where bash.exe` may return multiple results, one per line
+  try {
+    const output = execSync('where bash.exe', { encoding: 'utf-8', timeout: 3000, windowsHide: true });
+    const paths = output.split('\n').map(l => l.trim()).filter(Boolean);
+    for (const p of paths) {
+      // Skip the WindowsApps stub — it only works when WSL is actually installed
+      if (p.toLowerCase().includes('windowsapps')) continue;
+      if (fs.existsSync(p)) {
+        _bashPath = p;
+        console.log(`[Terminal] bash.exe found in PATH: ${p}`);
+        return p;
+      }
+    }
+  } catch (_) { /* where bash.exe failed */ }
+
+  // Fall back to Git Bash's bash.exe
+  const gitBash = findGitBash();
+  if (gitBash) {
+    _bashPath = gitBash;
+    console.log(`[Terminal] bash.exe using Git Bash: ${gitBash}`);
+    return gitBash;
+  }
+
+  _bashPath = null;
+  console.log('[Terminal] No working bash.exe found');
   return null;
 }
 
@@ -158,10 +216,11 @@ const SHELL_REGISTRY = {
     label: 'Command Prompt',
   },
   bash: {
-    win32: 'bash.exe',  // Git Bash or WSL
+    win32: null,  // Resolved dynamically — see resolveShellType()
     unix: '/bin/bash',
-    args: { win32: [], unix: ['--login'] },
+    args: { win32: ['--login'], unix: ['--login'] },
     label: 'Bash',
+    dynamic: true, // needs runtime resolution on Windows
   },
   gitbash: {
     // Resolved dynamically — see resolveShellType()
@@ -203,12 +262,17 @@ function resolveShellType(shellType) {
 
   const platform = os.platform() === 'win32' ? 'win32' : 'unix';
 
-  // Dynamic resolution for gitbash
-  if (entry.dynamic && shellType.toLowerCase() === 'gitbash') {
-    if (platform !== 'win32') return null;
-    const gitBashPath = findGitBash();
-    if (!gitBashPath) return null;
-    return { executable: gitBashPath, args: entry.args.win32 || [], label: entry.label };
+  // Dynamic resolution on Windows
+  if (entry.dynamic && platform === 'win32') {
+    const key = shellType.toLowerCase();
+    let exe = null;
+    if (key === 'gitbash') {
+      exe = findGitBash();
+    } else if (key === 'bash') {
+      exe = findBashExe();
+    }
+    if (!exe) return null;
+    return { executable: exe, args: entry.args.win32 || [], label: entry.label };
   }
 
   const executable = entry[platform];
@@ -227,13 +291,22 @@ function getAvailableShells() {
   const available = [];
 
   for (const [key, entry] of Object.entries(SHELL_REGISTRY)) {
-    // Dynamic entries (gitbash) — resolve at runtime
-    if (entry.dynamic && key === 'gitbash') {
+    // Dynamic entries — resolve at runtime
+    if (entry.dynamic) {
       if (platform === 'win32') {
-        const gitBashPath = findGitBash();
-        if (gitBashPath) {
-          available.push({ key, label: entry.label, executable: gitBashPath });
+        let exe = null;
+        if (key === 'gitbash') exe = findGitBash();
+        else if (key === 'bash') exe = findBashExe();
+        if (exe) {
+          available.push({ key, label: entry.label, executable: exe });
         }
+      } else if (entry.unix) {
+        // On Unix, dynamic entries still have a unix path
+        try {
+          if (fs.existsSync(entry.unix)) {
+            available.push({ key, label: entry.label, executable: entry.unix });
+          }
+        } catch (_) {}
       }
       continue;
     }
@@ -241,18 +314,22 @@ function getAvailableShells() {
     const executable = entry[platform];
     if (!executable) continue;
 
-    // Check if the executable exists
+    // Check if the executable actually exists
     try {
-      // Absolute paths: check directly. Relative names: rely on PATH
       if (path.isAbsolute(executable)) {
         if (fs.existsSync(executable)) {
           available.push({ key, label: entry.label, executable });
         }
       } else {
-        // For non-absolute executables, assume available (they're on PATH)
-        available.push({ key, label: entry.label, executable });
+        // Verify non-absolute executables are actually in PATH
+        const { execSync } = require('child_process');
+        const cmd = platform === 'win32' ? `where ${executable}` : `which ${executable}`;
+        const result = execSync(cmd, { encoding: 'utf-8', timeout: 2000, windowsHide: true }).trim();
+        if (result) {
+          available.push({ key, label: entry.label, executable });
+        }
       }
-    } catch (_) { /* skip */ }
+    } catch (_) { /* not in PATH — skip */ }
   }
 
   return available;
