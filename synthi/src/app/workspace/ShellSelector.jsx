@@ -42,7 +42,9 @@ export default function ShellSelector({ onSelect, onSetDefault, currentDefault, 
   const [shells, setShells] = useState([]);
   const [defaultShell, setDefaultShell] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [dropdownPos, setDropdownPos] = useState({ top: 0, left: 0 });
   const dropdownRef = useRef(null);
+  const triggerRef = useRef(null);
 
   // Fetch available shells from server
   useEffect(() => {
@@ -69,16 +71,34 @@ export default function ShellSelector({ onSelect, onSetDefault, currentDefault, 
     return () => { cancelled = true; };
   }, [collabServerUrl]);
 
-  // Close dropdown on outside click
+  // Close dropdown on outside click — check both trigger and floating panel
   useEffect(() => {
     if (!open) return;
     function handleClick(e) {
-      if (dropdownRef.current && !dropdownRef.current.contains(e.target)) {
+      const inTrigger = triggerRef.current && triggerRef.current.contains(e.target);
+      const inDropdown = dropdownRef.current && dropdownRef.current.contains(e.target);
+      if (!inTrigger && !inDropdown) {
         setOpen(false);
       }
     }
     document.addEventListener('mousedown', handleClick);
     return () => document.removeEventListener('mousedown', handleClick);
+  }, [open]);
+
+  // Reposition on scroll/resize while open
+  useEffect(() => {
+    if (!open) return;
+    function reposition() {
+      if (!triggerRef.current) return;
+      const rect = triggerRef.current.getBoundingClientRect();
+      setDropdownPos({ top: rect.top, left: rect.left });
+    }
+    window.addEventListener('scroll', reposition, true);
+    window.addEventListener('resize', reposition);
+    return () => {
+      window.removeEventListener('scroll', reposition, true);
+      window.removeEventListener('resize', reposition);
+    };
   }, [open]);
 
   // Close on Escape
@@ -91,17 +111,28 @@ export default function ShellSelector({ onSelect, onSetDefault, currentDefault, 
     return () => document.removeEventListener('keydown', handleKey);
   }, [open]);
 
+  const handleToggle = useCallback((e) => {
+    e.stopPropagation();
+    if (!open && triggerRef.current) {
+      const rect = triggerRef.current.getBoundingClientRect();
+      // Open upward: position the bottom of the dropdown at the top of the button
+      setDropdownPos({ top: rect.top, left: rect.left });
+    }
+    setOpen(prev => !prev);
+  }, [open]);
+
   const handleSelect = useCallback((shellKey) => {
     setOpen(false);
     if (onSelect) onSelect(shellKey);
   }, [onSelect]);
 
   return (
-    <div ref={dropdownRef} className={`relative ${className}`}>
-      {/* Trigger button — small dropdown arrow next to the + */}
+    <div className={`relative ${className}`}>
+      {/* Trigger button */}
       <button
+        ref={triggerRef}
         className="w-6 h-8 flex items-center justify-center rounded th-btn-ghost transition-colors"
-        onClick={() => setOpen(prev => !prev)}
+        onClick={handleToggle}
         title="Select Shell Type"
         aria-haspopup="listbox"
         aria-expanded={open}
@@ -109,13 +140,17 @@ export default function ShellSelector({ onSelect, onSetDefault, currentDefault, 
         <ChevronDown className="w-3.5 h-3.5" strokeWidth={2} />
       </button>
 
-      {/* Dropdown menu */}
+      {/* Dropdown — rendered with fixed positioning to escape overflow:hidden parents */}
       {open && (
         <div
-          className="absolute bottom-full mb-1 left-0 z-50 min-w-[200px] rounded-md border shadow-lg overflow-hidden"
+          ref={dropdownRef}
+          className="fixed z-[9999] min-w-[200px] rounded-md border shadow-xl overflow-hidden"
           style={{
             background: 'var(--bg-elevated)',
             borderColor: 'var(--border-subtle)',
+            // Anchor bottom of dropdown to top of the trigger button
+            bottom: `calc(100vh - ${dropdownPos.top}px + 4px)`,
+            left: `${dropdownPos.left}px`,
           }}
           role="listbox"
         >
