@@ -1392,18 +1392,11 @@ export function GitStatus({ slug }) {
                             {!isUntracked && (
                               <button onClick={(e) => {
                                 e.stopPropagation();
-                                // Open diff view in the main editor for selective staging
-                                const diffFile = {
-                                  name: file.path.split('/').pop(),
-                                  path: file.path,
-                                  originalPath: file.from || file.path,
-                                  language: getFileLanguage(file.path),
-                                  selectiveStaging: true, // flag for HunkStagingView integration
-                                };
-                                dispatch(openDiffThunk(diffFile));
+                                // Toggle inline hunk staging view in the SCM panel
+                                setHunkStagingFile(showHunkStaging ? null : file.path);
                               }}
-                                className="hover:bg-[#3b82f6]/10 p-0.5 rounded transition-colors text-[#a1a1aa] hover:text-[#3b82f6]"
-                                title="Stage Selected Lines (opens diff in editor)">
+                                className={`hover:bg-[#3b82f6]/10 p-0.5 rounded transition-colors ${showHunkStaging ? 'text-[#3b82f6] bg-[#3b82f6]/10' : 'text-[#a1a1aa] hover:text-[#3b82f6]'}`}
+                                title={showHunkStaging ? 'Close selective staging' : 'Stage selected lines'}>
                                 <Edit3 className="w-3 h-3" strokeWidth={1.5} />
                               </button>
                             )}
@@ -1413,6 +1406,16 @@ export function GitStatus({ slug }) {
                             </button>
                           </div>
                         </div>
+                        {/* Inline hunk staging view — React DOM, no Monaco dependency */}
+                        {showHunkStaging && (
+                          <div className="ml-4 mr-1 mt-0.5 mb-1 border border-[#27272a] rounded-md overflow-hidden">
+                            <HunkStagingView
+                              slug={slug}
+                              filePath={file.path}
+                              onClose={() => setHunkStagingFile(null)}
+                            />
+                          </div>
+                        )}
                       </li>
                     );
                   })}
