@@ -70,12 +70,16 @@ function CollabJoinContent({ params }) {
         const resolvedSessionId = collabSessionService.sessionId || sessionId;
         const resolvedGuestId = detail?.guestId || collabSessionService._userId || '';
         const resolvedHostId = detail?.hostId || collabSessionService._hostId || '';
+        const resolvedHostName = collabSessionService.session?.hostName || sessionInfo?.hostName || null;
+        const resolvedPermissions = detail?.permissions || null;
         try {
           sessionStorage.setItem('synthi-pending-guest-session', JSON.stringify({
             sessionId: resolvedSessionId,
             guestId: resolvedGuestId,
             hostId: resolvedHostId,
             slug: hostSlug,
+            hostName: resolvedHostName,
+            permissions: resolvedPermissions,
           }));
         } catch (_) {}
         // Redirect to the host's workspace after short delay

@@ -55,6 +55,7 @@ import { SYNTHI_THEME } from './theme';
 import { useTheme } from '@/components/ThemeProvider';
 import { ConflictBanner } from './ConflictBanner';
 import MergeConflictEditor from '@/components/git/MergeConflictEditor';
+import UnsavedChangesDialog from '@/components/ui/UnsavedChangesDialog';
 import { useSessionPermissions } from '@/hooks/useCollabSession';
 import { initSynthiFileSystem, updateFile as updateVirtualFile, disposeSynthiFileSystem } from './SynthiFileSystemProvider';
 import { registerMonarchTokenizers } from './languageTokenizers';
@@ -250,6 +251,7 @@ const EditorPanel = ({
     // Track whether the DiffEditor has ever been activated — once true, we keep
     // it mounted (hidden) to avoid React unmount crash in passive effects.
     const [diffModeEverActive, setDiffModeEverActive] = useState(false);
+    const diffEditorRef = useRef(null);
     const latestCodeRef = useRef(code);
     const pendingContentFrameRef = useRef(null);
     const pendingPositionFrameRef = useRef(null);
@@ -260,6 +262,8 @@ const EditorPanel = ({
     // P2: Cached content hash — avoid O(n) FNV-1a on every keystroke
     const contentHashRef = useRef({ content: '', hash: '00000000' });
     const [tabContext, setTabContext] = useState({ visible: false, x: 0, y: 0, file: null, index: -1 });
+    // Unsaved-changes dialog state: { path, name } of the file pending close, or null
+    const [pendingClose, setPendingClose] = useState(null);
     const [lspStatus, setLspStatus] = useState('Idle');
     const [servicesReady, setServicesReady] = useState(false);
     const slug = useAppSelector(state => state.workspace.slug);
@@ -2673,6 +2677,25 @@ const EditorPanel = ({
         if (onSave) onSave(latestCodeRef.current ?? code);
     }, [activeFile, dispatch, onSave, compilerClient, code, slug]);
 
+    // ── Close-tab guard: prompt when a file has unsaved changes ──────
+    // For the *active* file we check the live `isUnsaved` selector.
+    // For background tabs we fall back to the per-tab `file.isUnsaved` flag.
+    const handleCloseTab = useCallback((file) => {
+        if (autoSaveEnabled) {
+            // Auto-save is on — just close, content is already flushed.
+            dispatch(closeFile(file.path));
+            return;
+        }
+        const dirty = activeFile?.path === file.path
+            ? isUnsaved
+            : file.isUnsaved;
+        if (dirty) {
+            setPendingClose({ path: file.path, name: file.name });
+        } else {
+            dispatch(closeFile(file.path));
+        }
+    }, [autoSaveEnabled, activeFile, isUnsaved, dispatch]);
+
     // Auto-save mode: persist edits after a short idle period.
     // Flush the pending Redux debounce first (same as handleSave does for
     // Ctrl+S) so saveFileContentThunk reads the absolute latest content.
@@ -3465,7 +3488,7 @@ const EditorPanel = ({
 
                                                     {/* Close button — uses theme variables for text and hover backgrounds */}
                                                     <button
-                                                        onClick={(e) => { e.stopPropagation(); dispatch(closeFile(file.path)); }}
+                                                        onClick={(e) => { e.stopPropagation(); handleCloseTab(file); }}
                                                         className={`absolute inset-0 items-center justify-center rounded-full transition-all duration-150 hidden group-hover:flex 
                                                             ${isActive 
                                                                 ? 'text-[var(--text-primary)] opacity-80 hover:opacity-100 hover:bg-[var(--hover-bg-active)]' 
@@ -3502,7 +3525,7 @@ const EditorPanel = ({
                                         onMouseLeave={() => setTabContext({ visible: false, x: 0, y: 0, file: null, index: -1 })}
                                     >
                                         <div className="rounded-lg shadow-lg text-sm border" style={{ background: TAB_TOKENS.activeBg, borderColor: TAB_TOKENS.borderSubtle, color: TAB_TOKENS.textPrimary }}>
-                                            <div className="px-3 py-2 cursor-pointer rounded-t-lg transition-colors" style={{ ':hover': undefined }} onClick={() => { if (tabContext.file) dispatch(closeFile(tabContext.file.path)); setTabContext({ visible: false, x: 0, y: 0, file: null, index: -1 }); }}>Close</div>
+                                            <div className="px-3 py-2 cursor-pointer rounded-t-lg transition-colors" style={{ ':hover': undefined }} onClick={() => { if (tabContext.file) handleCloseTab(tabContext.file); setTabContext({ visible: false, x: 0, y: 0, file: null, index: -1 }); }}>Close</div>
                                             <div className="px-3 py-2 cursor-pointer transition-colors" onClick={() => {
                                                 if (tabContext.file) {
                                                     const keep = tabContext.file.path;
@@ -3699,7 +3722,11 @@ const EditorPanel = ({
                                                     <div className="flex items-center gap-2 min-w-0">
                                                         <span className="font-medium truncate" style={{ color: 'var(--text-primary)' }}>{activeFile?.name || 'Unknown'}</span>
                                                         <span style={{ color: 'var(--text-dim, var(--text-muted))' }}>•</span>
-                                                        <span className="whitespace-nowrap" style={{ color: 'var(--text-secondary)' }}>Working Copy ↔ HEAD</span>
+                                                        <span className="whitespace-nowrap" style={{ color: 'var(--text-secondary)' }}>
+                                                            {activeFile?.commitDiff
+                                                                ? `${activeFile.commitHash?.substring(0, 7)}~1 ↔ ${activeFile.commitHash?.substring(0, 7)}`
+                                                                : 'Working Copy ↔ HEAD'}
+                                                        </span>
                                                     </div>
                                                     <button
                                                         onClick={() => dispatch(setDiffMode(false))}
@@ -3711,7 +3738,7 @@ const EditorPanel = ({
                                                         <X className="w-4 h-4" />
                                                     </button>
                                                 </div>
-                                                <div className="flex-1 min-h-0">
+                                                <div className="flex-1 min-h-0 relative overflow-hidden">
                                                     <DiffEditor
                                                         height="100%"
                                                         original={originalContent || ''}
@@ -3725,10 +3752,15 @@ const EditorPanel = ({
                                                         options={{
                                                             ...EDITOR_OPTIONS,
                                                             readOnly: true,
-                                                            renderSideBySide: true
+                                                            readOnlyMessage: { value: '' },
+                                                            renderSideBySide: true,
+                                                            glyphMargin: true,
                                                         }}
                                                         beforeMount={(monaco) => {
                                                             monaco.editor.defineTheme('synthi-theme', SYNTHI_THEME);
+                                                        }}
+                                                        onMount={(editor) => {
+                                                            diffEditorRef.current = editor;
                                                         }}
                                                     />
                                                 </div>
@@ -3926,7 +3958,26 @@ const EditorPanel = ({
     );
 
     if (dockingMode) {
-        return editorUI;
+        return (<>
+            {editorUI}
+            {pendingClose && (
+                <UnsavedChangesDialog
+                    fileName={pendingClose.name}
+                    onSave={() => {
+                        // Save then close
+                        dispatch(saveFileContentThunk()).then(() => {
+                            dispatch(closeFile(pendingClose.path));
+                        });
+                        setPendingClose(null);
+                    }}
+                    onDiscard={() => {
+                        dispatch(closeFile(pendingClose.path));
+                        setPendingClose(null);
+                    }}
+                    onCancel={() => setPendingClose(null)}
+                />
+            )}
+        </>);
     }
 
     return (
@@ -3945,6 +3996,22 @@ const EditorPanel = ({
                     </>
                 )}
             </ResizablePanelGroup>
+            {pendingClose && (
+                <UnsavedChangesDialog
+                    fileName={pendingClose.name}
+                    onSave={() => {
+                        dispatch(saveFileContentThunk()).then(() => {
+                            dispatch(closeFile(pendingClose.path));
+                        });
+                        setPendingClose(null);
+                    }}
+                    onDiscard={() => {
+                        dispatch(closeFile(pendingClose.path));
+                        setPendingClose(null);
+                    }}
+                    onCancel={() => setPendingClose(null)}
+                />
+            )}
         </ResizablePanel>
     );
 };

@@ -404,6 +404,21 @@ class ValidatingPersistence {
     this.docObservers = new Map(); // docName -> { ydoc, observer, flushTimer }
     // Debounce interval for disk writes (ms)
     this.FLUSH_DEBOUNCE_MS = config.FLUSH_DEBOUNCE_MS;
+    // Track in-flight bindState promises so the connection handler can
+    // buffer sync messages until the doc is fully initialised.
+    this._bindingDocs = new Map(); // docName -> { promise, resolve }
+    // TTL timers: keep docs alive after last client disconnects to avoid
+    // stale-CRDT-merge on fast reconnects.
+    this._keepAliveTimers = new Map(); // docName -> timer
+  }
+
+  /**
+   * Returns a Promise that resolves once bindState() for `docName` has
+   * finished (or immediately if no bind is in progress).
+   */
+  waitForBindState(docName) {
+    const entry = this._bindingDocs.get(docName);
+    return entry ? entry.promise : Promise.resolve();
   }
 
   /**
@@ -458,10 +473,10 @@ class ValidatingPersistence {
           
           // Ensure directory exists
           const dirPath = path.dirname(fullPath);
-          await fs.mkdir(dirPath, { recursive: true });
+          await fsPromises.mkdir(dirPath, { recursive: true });
           
           // Write to disk
-          await fs.writeFile(fullPath, content, 'utf-8');
+          await fsPromises.writeFile(fullPath, content, 'utf-8');
           
           // Update hash cache
           fileHashCache.set(docName, { hash: computeHash(content), timestamp: Date.now() });
@@ -660,6 +675,30 @@ class ValidatingPersistence {
   }
 
   async bindState(docName, ydoc) {
+    // Register a Promise that the connection handler can await to buffer
+    // sync messages until this async initialisation is complete.  Without
+    // this, y-websocket's getYDoc() returns the doc immediately (it does
+    // NOT await bindState), so client sync messages race with our file
+    // validation — the CRDT merge of stale client items + fresh server
+    // items doubles the content.
+    let bindResolve;
+    const bindPromise = new Promise(r => { bindResolve = r; });
+    this._bindingDocs.set(docName, { promise: bindPromise, resolve: bindResolve });
+
+    try {
+      return await this._doBindState(docName, ydoc);
+    } finally {
+      // Always resolve — even if bindState threw — so buffered messages
+      // aren't stuck forever.
+      const entry = this._bindingDocs.get(docName);
+      if (entry && entry.resolve === bindResolve) {
+        entry.resolve();
+        this._bindingDocs.delete(docName);
+      }
+    }
+  }
+
+  async _doBindState(docName, ydoc) {
     // First, bind the persisted state (if any)
     if (this.inner.bindState) {
       await this.inner.bindState(docName, ydoc);
@@ -720,17 +759,19 @@ class ValidatingPersistence {
       // stale CRDT state via the sync protocol, which Yjs merges into this
       // doc — causing content duplication.  Install a one-shot update
       // handler that detects unexpected growth and re-resets the doc.
-      // Active for 10 seconds after reset, then auto-removed.
+      // Active for 30 seconds after reset, then auto-removed.
       //
-      // Instead of a pure length heuristic (which destroys legitimate
-      // large pastes), check for the classic doubling signature: the
-      // content contains the original text repeated.
+      // Improved detection: Instead of requiring the classic "doubling
+      // signature" (which misses many duplication patterns), we check
+      // whether the content is the original text repeated N times, OR
+      // whether the length grew by more than half the expected size from
+      // sync-protocol origins only (not local edits).
       const resetLength = actualContent.length;
-      const GROWTH_THRESHOLD = 1.3; // Flag if content grows >30% beyond expected
+      const GROWTH_THRESHOLD = 1.5; // Flag if content grows >50% beyond expected
       let guardRemoved = false;
       let reResetCount = 0;
       let hasLocalEdit = false;
-      const MAX_RE_RESETS = 5; // prevent infinite reset loops
+      const MAX_RE_RESETS = 10; // prevent infinite reset loops
       const staleGuard = (_update, origin) => {
         if (guardRemoved) return;
         // Once a local (non-sync-protocol) edit arrives, the doc is
@@ -744,12 +785,23 @@ class ValidatingPersistence {
         try {
           const currentText = ydoc.getText(YTEXT_TYPE).toString();
           if (currentText.length > resetLength * GROWTH_THRESHOLD && resetLength > 0 && reResetCount < MAX_RE_RESETS) {
-            // Extra verification: check for doubling signature
-            // (text starts with or contains the original content repeated)
-            const looksDoubled = currentText.startsWith(actualContent + actualContent.charAt(0))
+            // Check for N× repetition of the canonical content
+            const isExactRepeat = currentText.length >= resetLength * 2
+              && currentText.length % resetLength === 0
+              && currentText === actualContent.repeat(currentText.length / resetLength);
+
+            // Fallback: check for doubling signature (partial match)
+            const looksDoubled = isExactRepeat
+              || currentText.startsWith(actualContent + actualContent.charAt(0))
               || currentText.endsWith(actualContent.charAt(actualContent.length - 1) + actualContent)
               || currentText.includes(actualContent.slice(0, Math.min(200, actualContent.length)) + actualContent.slice(0, Math.min(50, actualContent.length)));
-            if (!looksDoubled) return; // Legitimate growth — let it through
+
+            // Aggressive fallback: if growth is >2× and it's from sync
+            // protocol, it's almost certainly a stale merge.
+            const extremeGrowth = currentText.length >= resetLength * 2;
+
+            if (!looksDoubled && !extremeGrowth) return; // Legitimate growth — let it through
+
             reResetCount++;
             console.warn(`[Collab] STALE MERGE detected for ${filePath}: expected ~${resetLength} chars, got ${currentText.length}. Re-resetting (attempt ${reResetCount}).`);
             ydoc.transact(() => {
@@ -765,7 +817,7 @@ class ValidatingPersistence {
       setTimeout(() => {
         guardRemoved = true;
         try { ydoc.off('update', staleGuard); } catch (_) {}
-      }, 10000);
+      }, 30000);
     } else {
       fileHashCache.set(docName, { hash: actualHash, timestamp: Date.now() });
     }
@@ -818,10 +870,93 @@ class ValidatingPersistence {
 
     // Do NOT flush to disk on close in manual-save mode.
     // Persisting unsaved buffers to git worktrees causes unexpected source-control changes.
+
+    // ── Keep-alive: re-add the doc to the y-websocket docs map ────────
+    // y-websocket's closeConn() calls docs.delete(docName) synchronously
+    // BEFORE writeState resolves, then chains .then(() => doc.destroy()).
+    // If a client reconnects before destroy fires, getYDoc() creates a
+    // NEW empty doc, and the CRDT merge of stale client items + fresh
+    // server items doubles the content.
+    //
+    // Fix: re-add the doc to the docs map (via microtask — runs after
+    // the synchronous docs.delete in closeConn) and block the Promise
+    // from resolving for DOC_KEEPALIVE_MS.  This keeps the doc alive so
+    // reconnecting clients get the SAME doc (same item IDs → sync is a
+    // no-op → no duplication).
+    //
+    // We also monkey-patch ydoc.destroy() so the chained
+    // .then(() => doc.destroy()) in closeConn is safe even if the doc
+    // has gained new connections during the keep-alive window.
+    const DOC_KEEPALIVE_MS = 30_000;
+
+    // Cancel any previous keep-alive for this doc name
+    if (this._keepAliveTimers.has(docName)) {
+      clearTimeout(this._keepAliveTimers.get(docName));
+      this._keepAliveTimers.delete(docName);
+    }
+
+    // Protect ydoc.destroy() — must not fire while connections exist
+    // or while the keep-alive timer is running (waiting for potential reconnect).
+    // When invalidateDocsForSlug runs, it calls clearDocument() first which
+    // cancels the timer, then calls destroy() — the guard allows it through.
+    const persistSelf = this;
+    if (!ydoc._origDestroy) {
+      const origDestroy = ydoc.destroy.bind(ydoc);
+      ydoc._origDestroy = origDestroy;
+      ydoc.destroy = function () {
+        // If connections were re-established during keep-alive, skip destroy
+        if (this.conns && this.conns.size > 0) return;
+        // If the keep-alive timer is still running, skip — writeState's
+        // blocked Promise hasn't resolved yet, and .then(destroy) will
+        // call us again after the timer fires and self-removes.
+        if (persistSelf._keepAliveTimers.has(docName)) return;
+        // Clean up docs map entry if still pointing to us
+        if (yWsDocs && yWsDocs.has(docName) && yWsDocs.get(docName) === this) {
+          yWsDocs.delete(docName);
+        }
+        origDestroy();
+      };
+    }
+
+    // Re-add to docs map after closeConn's synchronous delete
+    queueMicrotask(() => {
+      if (yWsDocs && !yWsDocs.has(docName)) {
+        yWsDocs.set(docName, ydoc);
+      }
+    });
+
+    // Schedule real cleanup after TTL — remove the timer entry and
+    // destroy the doc if still idle.  This fires slightly BEFORE the
+    // writeState Promise resolves (below), so closeConn's chained
+    // .then(() => doc.destroy()) is effectively a harmless no-op.
+    this._keepAliveTimers.set(docName, setTimeout(() => {
+      this._keepAliveTimers.delete(docName);
+      // Destroy now if still idle
+      if (yWsDocs && yWsDocs.has(docName) && yWsDocs.get(docName) === ydoc) {
+        if (!ydoc.conns || ydoc.conns.size === 0) {
+          yWsDocs.delete(docName);
+          if (ydoc._origDestroy) ydoc._origDestroy();
+        }
+      }
+    }, DOC_KEEPALIVE_MS));
+
+    // Block the Promise from resolving during the keep-alive window + a
+    // small buffer so the timer fires first and handles cleanup.
+    // closeConn chains .then(() => doc.destroy()) after writeState, so
+    // delaying resolution delays the destroy call.
+    await new Promise(r => setTimeout(r, DOC_KEEPALIVE_MS + 500));
   }
 
   async clearDocument(docName) {
     fileHashCache.delete(docName);
+
+    // Cancel any keep-alive timer so that invalidateDocsForSlug's
+    // subsequent wsDoc.destroy() isn't blocked by our monkey-patch.
+    if (this._keepAliveTimers.has(docName)) {
+      clearTimeout(this._keepAliveTimers.get(docName));
+      this._keepAliveTimers.delete(docName);
+    }
+
     if (this.inner.clearDocument) {
       await this.inner.clearDocument(docName);
     }
@@ -2533,7 +2668,7 @@ const server = http.createServer(async (req, res) => {
             // Validate file paths before processing any action that accepts one.
             // This prevents path-traversal attacks (e.g. "../../etc/passwd").
             const FILE_PATH_ACTIONS = [
-              'discard', 'stage', 'stage-lines', 'unstage', 'sync',
+              'discard', 'discard-lines', 'stage', 'stage-lines', 'unstage', 'sync',
               'file-content', 'resolve-ours', 'resolve-theirs',
               'mark-resolved', 'conflict-versions', 'read-file', 'write-file',
             ];
@@ -2558,6 +2693,9 @@ const server = http.createServer(async (req, res) => {
                     break;
                 case 'remove-remote':
                     result = await gitService.removeRemote(slug, data.name, effectiveUserId);
+                    break;
+                case 'set-remote-url':
+                    result = await gitService.setRemoteUrl(slug, data.name, data.url, effectiveUserId);
                     break;
                 case 'remotes':
                     result = await gitService.getRemotes(slug, effectiveUserId);
@@ -2642,7 +2780,7 @@ const server = http.createServer(async (req, res) => {
                     result = await gitService.getBranches(slug, effectiveUserId);
                     break;
                 case 'checkout':
-                    result = await gitService.checkout(slug, data.branch, data.create, effectiveUserId);
+                    result = await gitService.checkout(slug, data.branch, data.create, effectiveUserId, data.mode);
                     // Broadcast BEFORE invalidation so clients destroy stale
                     // Yjs docs before WS close triggers provider reconnect.
                     broadcastFileReverted(slug, [], notifyScope);
@@ -2650,10 +2788,10 @@ const server = http.createServer(async (req, res) => {
                     broadcastFileTreeChanged(slug, notifyScope);
                     break;
                 case 'fetch':
-                    result = await gitService.fetch(slug, effectiveUserId);
+                    result = await gitService.fetch(slug, effectiveUserId, data.token);
                     break;
                 case 'commit':
-                    result = await gitService.commit(slug, data.message, effectiveUserId);
+                    result = await gitService.commit(slug, data.message, effectiveUserId, data.amend);
                     broadcastGitStatusChanged(slug, undefined, notifyScope, { immediate: true });
                     break;
                 case 'stage':
@@ -2668,6 +2806,18 @@ const server = http.createServer(async (req, res) => {
                     result = await gitService.stageLines(slug, data.filePath, data.patch, effectiveUserId);
                     broadcastGitStatusChanged(slug, undefined, notifyScope, { immediate: true });
                     break;
+                case 'unstage-lines':
+                    result = await gitService.unstageLines(slug, data.filePath, data.patch, effectiveUserId);
+                    broadcastGitStatusChanged(slug, undefined, notifyScope, { immediate: true });
+                    break;
+                case 'discard-lines':
+                    result = await gitService.discardLines(slug, data.filePath, data.patch, effectiveUserId);
+                    broadcastFileReverted(slug, data.filePath ? [data.filePath] : [], notifyScope);
+                    if (data.filePath) {
+                      await invalidateDocsForSlug(slug, [data.filePath], notifyScope);
+                    }
+                    broadcastGitStatusChanged(slug, undefined, notifyScope, { immediate: true });
+                    break;
                 case 'unstage':
                     result = await gitService.unstageFile(slug, data.filePath, effectiveUserId);
                     broadcastGitStatusChanged(slug, undefined, notifyScope, { immediate: true });
@@ -2677,11 +2827,11 @@ const server = http.createServer(async (req, res) => {
                     broadcastGitStatusChanged(slug, undefined, notifyScope, { immediate: true });
                     break;
                 case 'push':
-                    result = await gitService.push(slug, effectiveUserId);
+                    result = await gitService.push(slug, effectiveUserId, data.token, data.force);
                     broadcastGitStatusChanged(slug, undefined, notifyScope, { immediate: true });
                     break;
                 case 'pull':
-                    result = await gitService.pull(slug, effectiveUserId);
+                    result = await gitService.pull(slug, effectiveUserId, data.token);
                     // Broadcast BEFORE invalidation so clients destroy stale
                     // Yjs docs before WS close triggers provider reconnect.
                     broadcastFileReverted(slug, [], notifyScope);
@@ -2733,6 +2883,20 @@ const server = http.createServer(async (req, res) => {
                     await invalidateDocsForSlug(slug, null, notifyScope);
                     broadcastFileTreeChanged(slug, notifyScope);
                     break;
+                case 'merge-branch':
+                    result = await gitService.mergeBranch(slug, data.branch, effectiveUserId, data.token);
+                    broadcastFileReverted(slug, [], notifyScope);
+                    await invalidateDocsForSlug(slug, null, notifyScope);
+                    broadcastFileTreeChanged(slug, notifyScope);
+                    broadcastGitStatusChanged(slug, undefined, notifyScope, { immediate: true });
+                    break;
+                case 'check-merge-conflicts':
+                    // In-memory merge conflict detection using git merge-tree.
+                    // No working tree changes — runs in milliseconds.
+                    result = await gitService.checkMergeConflicts(
+                        slug, data.baseBranch, data.headBranch, effectiveUserId, data.token
+                    );
+                    break;
                 case 'conflict-versions':
                     result = await gitService.getConflictVersions(slug, data.filePath, effectiveUserId);
                     break;
@@ -2778,6 +2942,54 @@ const server = http.createServer(async (req, res) => {
                     break;
                 case 'stash-drop':
                     result = await gitService.stashDrop(slug, data.index, effectiveUserId);
+                    break;
+                case 'interactive-rebase':
+                    result = await gitService.interactiveRebase(slug, data.baseCommit, data.operations, effectiveUserId);
+                    broadcastFileReverted(slug, [], notifyScope);
+                    await invalidateDocsForSlug(slug, null, notifyScope);
+                    broadcastFileTreeChanged(slug, notifyScope);
+                    broadcastGitStatusChanged(slug, undefined, notifyScope, { immediate: true });
+                    break;
+                case 'rebase-abort':
+                    result = await gitService.rebaseAbort(slug, effectiveUserId);
+                    broadcastFileReverted(slug, [], notifyScope);
+                    await invalidateDocsForSlug(slug, null, notifyScope);
+                    broadcastFileTreeChanged(slug, notifyScope);
+                    broadcastGitStatusChanged(slug, undefined, notifyScope, { immediate: true });
+                    break;
+                case 'rebase-continue':
+                    result = await gitService.rebaseContinue(slug, effectiveUserId);
+                    broadcastFileReverted(slug, [], notifyScope);
+                    await invalidateDocsForSlug(slug, null, notifyScope);
+                    broadcastFileTreeChanged(slug, notifyScope);
+                    broadcastGitStatusChanged(slug, undefined, notifyScope, { immediate: true });
+                    break;
+                case 'cherry-pick':
+                    result = await gitService.cherryPick(slug, data.hash, effectiveUserId);
+                    broadcastFileReverted(slug, [], notifyScope);
+                    await invalidateDocsForSlug(slug, null, notifyScope);
+                    broadcastFileTreeChanged(slug, notifyScope);
+                    break;
+                case 'tags':
+                    result = await gitService.getTags(slug, effectiveUserId);
+                    break;
+                case 'create-tag':
+                    result = await gitService.createTag(slug, data.name, data.ref || 'HEAD', data.message, effectiveUserId);
+                    break;
+                case 'delete-tag':
+                    result = await gitService.deleteTag(slug, data.name, effectiveUserId);
+                    break;
+                case 'push-tag':
+                    result = await gitService.pushTag(slug, data.name, effectiveUserId, data.token);
+                    break;
+                case 'revert':
+                    result = await gitService.revertCommit(slug, data.hash, effectiveUserId);
+                    broadcastFileReverted(slug, [], notifyScope);
+                    await invalidateDocsForSlug(slug, null, notifyScope);
+                    broadcastFileTreeChanged(slug, notifyScope);
+                    break;
+                case 'commit-detail':
+                    result = await gitService.getCommitDetail(slug, data.hash, effectiveUserId);
                     break;
                 case 'sync':
                     // Sync a single file — explicit save action from the client.
@@ -2896,6 +3108,53 @@ const server = http.createServer(async (req, res) => {
                     }
                     result = { success: true, cleared: filesToClear.length };
                     break;
+                case 'github-info': {
+                    // Extract owner/repo from the git remote URL for this workspace.
+                    // Used by the PR panel to know which GitHub repo to query.
+                    try {
+                        const git = gitService.getGit(slug, effectiveUserId);
+                        const remotes = await git.getRemotes(true);
+                        const origin = remotes.find(r => r.name === 'origin') || remotes[0];
+                        if (!origin || !origin.refs?.fetch) {
+                            result = { error: 'no_remote', message: 'No remote configured for this workspace.' };
+                            break;
+                        }
+                        const remoteUrl = origin.refs.fetch;
+
+                        // Parse various remote URL formats:
+                        //   https://github.com/owner/repo.git
+                        //   git@github.com:owner/repo.git
+                        //   https://token@github.com/owner/repo.git
+                        let owner = null;
+                        let repo = null;
+                        let provider = 'unknown';
+                        let htmlUrl = null;
+
+                        const cleanUrl = remoteUrl.replace(/^https?:\/\/[^@]+@/, 'https://'); // strip embedded credentials
+
+                        const httpsMatch = cleanUrl.match(/https?:\/\/(github\.com|gitlab\.com|bitbucket\.org)\/([^/]+)\/([^/]+?)(?:\.git)?(?:\/)?$/i);
+                        const sshMatch = cleanUrl.match(/git@(github\.com|gitlab\.com|bitbucket\.org):([^/]+)\/([^/]+?)(?:\.git)?$/i);
+
+                        if (httpsMatch) {
+                            const host = httpsMatch[1].toLowerCase();
+                            owner = httpsMatch[2];
+                            repo = httpsMatch[3];
+                            provider = host === 'github.com' ? 'github' : host === 'gitlab.com' ? 'gitlab' : 'bitbucket';
+                            htmlUrl = `https://${host}/${owner}/${repo}`;
+                        } else if (sshMatch) {
+                            const host = sshMatch[1].toLowerCase();
+                            owner = sshMatch[2];
+                            repo = sshMatch[3];
+                            provider = host === 'github.com' ? 'github' : host === 'gitlab.com' ? 'gitlab' : 'bitbucket';
+                            htmlUrl = `https://${host}/${owner}/${repo}`;
+                        }
+
+                        result = { owner, repo, provider, remoteUrl: cleanUrl, htmlUrl };
+                    } catch (e) {
+                        result = { error: 'parse_failed', message: e.message };
+                    }
+                    break;
+                }
                 default:
                     res.writeHead(404);
                     res.end('Unknown action');
@@ -3067,10 +3326,60 @@ wss.on('connection', (ws, req) => {
     purgeLegacyRoomState(parsed.slug, parsed.filePath).catch(() => {});
   }
 
-  // setupWSConnection handles the y-websocket protocol for a Y.Doc room
+  // ── Message buffering: prevent CRDT merge during async bindState ───
+  // y-websocket's getYDoc() calls persistence.bindState() WITHOUT awaiting.
+  // This means sync messages from the client are processed while bindState
+  // (which reads from disk and may reset the Y.Doc) is still running.
+  // If the client has stale CRDT items, they get merged into the doc
+  // before the server can validate — causing content duplication.
+  //
+  // Fix: wrap the WS so that any 'message' events received before
+  // bindState completes are buffered and replayed afterwards.
+  const messageBuffer = [];
+  let bindReady = false;
+  let messageHandler = null;
+  const originalOn = ws.on.bind(ws);
+  ws.on = function (event, fn) {
+    if (event === 'message' && !bindReady) {
+      messageHandler = fn;
+      return originalOn.call(ws, 'message', function (data) {
+        if (bindReady) {
+          fn.call(this, data);
+        } else {
+          messageBuffer.push(data);
+        }
+      });
+    }
+    return originalOn.call(ws, event, fn);
+  };
+
+  // setupWSConnection handles the y-websocket protocol for a Y.Doc room.
+  // Inside it, getYDoc() fires bindState() (async, not awaited) and then
+  // immediately registers the message handler via ws.on('message', ...).
   setupWSConnection(ws, req, {
     persistence,
     docName: roomName,
+  });
+
+  // Wait for bindState to complete, then replay buffered messages.
+  persistence.waitForBindState(roomName).then(() => {
+    bindReady = true;
+    // Restore native .on so future calls bypass our wrapper
+    ws.on = originalOn;
+    // Replay any messages that arrived during bindState
+    if (messageBuffer.length > 0 && messageHandler) {
+      console.log(`[Collab] Replaying ${messageBuffer.length} buffered messages for ${roomName}`);
+      for (const data of messageBuffer) {
+        try { messageHandler.call(ws, data); } catch (e) {
+          console.error('[Collab] Error replaying buffered message:', e?.message);
+        }
+      }
+    }
+    messageBuffer.length = 0;
+  }).catch(() => {
+    // Ensure we unblock even on error
+    bindReady = true;
+    ws.on = originalOn;
   });
 
   // Populate the user display name cache from awareness state changes.
