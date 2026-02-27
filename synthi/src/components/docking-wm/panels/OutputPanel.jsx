@@ -144,6 +144,8 @@ const OutputPanel = memo(function OutputPanel() {
         if (parsed && (parsed.status === 'done' || parsed.status === 'error')) return;
         // HMR status messages are internal — skip
         if (parsed && parsed.type === 'hmr-status') return;
+        // GUI start/end signals are internal — skip
+        if (parsed && (parsed.type === 'run-gui-start' || parsed.type === 'run-gui-end')) return;
         // If it has .line, extract it (e.g. stderr from compilation)
         if (parsed && parsed.line != null) {
           appendLines([makeLine(String(parsed.line), parsed.type === 'stderr' ? 'stderr' : 'system')]);
