@@ -1,6 +1,6 @@
 @import "tailwindcss";
 @import "tw-animate-css";
-@import 'xterm/css/xterm.css';
+@import "xterm/css/xterm.css";
 
 @custom-variant dark (&:is(.dark *));
 
@@ -28,18 +28,23 @@
   --text-secondary: #9ba2b8;
   --text-muted: #5a6178;
   --text-dim: #3d4256;
-  
+
   /* Synthi Brand Accent - Teal #327464 */
   --accent-primary: #327464;
   --accent-secondary: #3d8b78;
   --accent-tertiary: #4a9e8a;
-  --accent-gradient: linear-gradient(135deg, #327464 0%, #3d8b78 50%, #4a9e8a 100%);
+  --accent-gradient: linear-gradient(
+    135deg,
+    #327464 0%,
+    #3d8b78 50%,
+    #4a9e8a 100%
+  );
   --accent-glow: 0 0 20px rgba(50, 116, 100, 0.4);
   --accent-danger: #ff5757;
   --accent-danger-soft: #ff575720;
   --accent-success: #4ade80;
   --accent-warning: #fbbf24;
-  
+
   /* Synthi Syntax Highlighting - Unique Pastel Theme with better contrast */
   --syntax-keyword: #3a8574;
   --syntax-string: #a8e6cf;
@@ -48,17 +53,21 @@
   --syntax-preprocessor: #b8a8f0;
   --syntax-number: #f5d142;
   --syntax-type: #8ad4ff;
-  
+
   /* Shadows for depth */
   --shadow-panel: 0 2px 8px rgba(0, 0, 0, 0.6);
   --shadow-dropdown: 0 4px 16px rgba(0, 0, 0, 0.7);
   --shadow-glow: 0 0 15px rgba(50, 116, 100, 0.2);
-  
+
   --radius: 0.625rem;
-  
+
   /* Synthi Brand Font - SF Pro */
-  --font-ui: 'SF Pro Display', 'SF Pro', -apple-system, BlinkMacSystemFont, var(--font-geist-sans), system-ui, sans-serif;
-  --font-brand: 'SF Pro Display', 'SF Pro', -apple-system, BlinkMacSystemFont, var(--font-geist-sans), system-ui, sans-serif;
+  --font-ui:
+    "SF Pro Display", "SF Pro", -apple-system, BlinkMacSystemFont,
+    var(--font-geist-sans), system-ui, sans-serif;
+  --font-brand:
+    "SF Pro Display", "SF Pro", -apple-system, BlinkMacSystemFont,
+    var(--font-geist-sans), system-ui, sans-serif;
 }
 
 @theme inline {
@@ -176,15 +185,23 @@
   body {
     @apply bg-background text-foreground;
   }
-  
+
   /* Global selection colors - theme accent */
   ::selection {
-    background-color: color-mix(in srgb, var(--accent-primary) 35%, transparent);
+    background-color: color-mix(
+      in srgb,
+      var(--accent-primary) 35%,
+      transparent
+    );
     color: inherit;
   }
-  
+
   ::-moz-selection {
-    background-color: color-mix(in srgb, var(--accent-primary) 35%, transparent);
+    background-color: color-mix(
+      in srgb,
+      var(--accent-primary) 35%,
+      transparent
+    );
     color: inherit;
   }
 }
@@ -201,7 +218,9 @@
   background: var(--bg-elevated);
   border: 1px solid var(--border-subtle);
   border-radius: 4px;
-  font-family: 'JetBrains Mono', 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  font-family:
+    "JetBrains Mono", "Geist Mono", ui-monospace, SFMono-Regular, Menlo, Monaco,
+    Consolas, "Liberation Mono", "Courier New", monospace;
   font-size: 11px;
   line-height: 1.4;
   color: var(--text-primary);
@@ -248,7 +267,11 @@
   color: var(--syntax-preprocessor);
   filter: brightness(1.15);
   text-decoration-color: var(--syntax-preprocessor);
-  background-color: color-mix(in srgb, var(--syntax-preprocessor) 12%, transparent);
+  background-color: color-mix(
+    in srgb,
+    var(--syntax-preprocessor) 12%,
+    transparent
+  );
 }
 
 .ai-nav-method {
@@ -286,7 +309,8 @@
 /* Firefox */
 * {
   scrollbar-width: thin;
-  scrollbar-color: color-mix(in srgb, var(--accent-primary) 50%, transparent) color-mix(in srgb, var(--bg-surface) 50%, transparent);
+  scrollbar-color: color-mix(in srgb, var(--accent-primary) 50%, transparent)
+    color-mix(in srgb, var(--bg-surface) 50%, transparent);
 }
 
 /* Utility to hide scrollbars */
@@ -322,7 +346,9 @@
   border-radius: 6px;
   padding: 8px 10px;
   margin: 0;
-  font-family: 'JetBrains Mono', 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-family:
+    "JetBrains Mono", "Geist Mono", ui-monospace, SFMono-Regular, Menlo, Monaco,
+    Consolas, monospace;
   font-size: 11px;
   line-height: 1.45;
 }
@@ -433,7 +459,9 @@
   border-radius: 6px;
   padding: 8px 10px;
   margin: 0;
-  font-family: 'JetBrains Mono', 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-family:
+    "JetBrains Mono", "Geist Mono", ui-monospace, SFMono-Regular, Menlo, Monaco,
+    Consolas, monospace;
   font-size: 11px;
   line-height: 1.45;
 }
@@ -462,7 +490,9 @@
   border-radius: 8px;
   padding: 12px 14px;
   margin: 0;
-  font-family: 'JetBrains Mono', 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-family:
+    "JetBrains Mono", "Geist Mono", ui-monospace, SFMono-Regular, Menlo, Monaco,
+    Consolas, monospace;
   font-size: 12px;
   line-height: 1.6;
 }
@@ -480,14 +510,22 @@
   height: 20px !important;
   pointer-events: none;
   z-index: 2000;
-  transition: top 80ms ease-out, left 80ms ease-out;
+  transition:
+    top 80ms ease-out,
+    left 80ms ease-out;
   animation: cursor-fade-in 0.2s ease-out;
   border-radius: 1px;
 }
 
 @keyframes cursor-fade-in {
-  from { opacity: 0; transform: scaleY(0.4); }
-  to { opacity: 1; transform: scaleY(1); }
+  from {
+    opacity: 0;
+    transform: scaleY(0.4);
+  }
+  to {
+    opacity: 1;
+    transform: scaleY(1);
+  }
 }
 
 /* The name tag */
@@ -516,8 +554,14 @@
 }
 
 @keyframes label-fade-in {
-  from { opacity: 0; transform: translateY(4px); }
-  to { opacity: 0.9; transform: translateY(0); }
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 0.9;
+    transform: translateY(0);
+  }
 }
 
 /* ===== SYNTHI BRAND CUSTOM STYLES ===== */
@@ -582,18 +626,21 @@
 /* Active line glow for editor */
 .synthi-active-line-glow {
   border-left: 2px solid var(--accent-primary) !important;
-  box-shadow: inset 4px 0 8px -4px color-mix(in srgb, var(--accent-primary) 30%, transparent) !important;
+  box-shadow: inset 4px 0 8px -4px
+    color-mix(in srgb, var(--accent-primary) 30%, transparent) !important;
 }
 
 /* Custom focus ring for Synthi */
 .synthi-focus-ring:focus {
   outline: none;
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent-primary) 50%, transparent);
+  box-shadow: 0 0 0 2px
+    color-mix(in srgb, var(--accent-primary) 50%, transparent);
 }
 
 /* Synthi loading animation */
 @keyframes synthi-pulse {
-  0%, 100% {
+  0%,
+  100% {
     opacity: 1;
   }
   50% {
@@ -613,49 +660,97 @@
 }
 
 .synthi-gradient-border::before {
-  content: '';
+  content: "";
   position: absolute;
   inset: -1px;
   border-radius: 13px;
   padding: 1px;
   background: var(--accent-gradient);
-  -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
-  mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  pointer-events: none;
+  -webkit-mask:
+    linear-gradient(#fff 0 0) content-box,
+    linear-gradient(#fff 0 0);
+  mask:
+    linear-gradient(#fff 0 0) content-box,
+    linear-gradient(#fff 0 0);
   -webkit-mask-composite: xor;
   mask-composite: exclude;
 }
 
 /* Tab active indicator animation */
 @keyframes tab-glow {
-  0%, 100% {
-    box-shadow: 0 0 8px color-mix(in srgb, var(--accent-primary) 40%, transparent);
+  0%,
+  100% {
+    box-shadow: 0 0 8px
+      color-mix(in srgb, var(--accent-primary) 40%, transparent);
   }
   50% {
-    box-shadow: 0 0 16px color-mix(in srgb, var(--accent-primary) 60%, transparent);
+    box-shadow: 0 0 16px
+      color-mix(in srgb, var(--accent-primary) 60%, transparent);
   }
 }
 
 /* Animated tab border - gradient rotation */
 @keyframes tab-border-rotate {
   0% {
-    background: linear-gradient(var(--bg-app), var(--bg-app)) padding-box, 
-                linear-gradient(0deg, var(--accent-primary), var(--accent-secondary), var(--accent-tertiary), var(--accent-primary)) border-box;
+    background:
+      linear-gradient(var(--bg-app), var(--bg-app)) padding-box,
+      linear-gradient(
+          0deg,
+          var(--accent-primary),
+          var(--accent-secondary),
+          var(--accent-tertiary),
+          var(--accent-primary)
+        )
+        border-box;
   }
   25% {
-    background: linear-gradient(var(--bg-app), var(--bg-app)) padding-box, 
-                linear-gradient(90deg, var(--accent-primary), var(--accent-secondary), var(--accent-tertiary), var(--accent-primary)) border-box;
+    background:
+      linear-gradient(var(--bg-app), var(--bg-app)) padding-box,
+      linear-gradient(
+          90deg,
+          var(--accent-primary),
+          var(--accent-secondary),
+          var(--accent-tertiary),
+          var(--accent-primary)
+        )
+        border-box;
   }
   50% {
-    background: linear-gradient(var(--bg-app), var(--bg-app)) padding-box, 
-                linear-gradient(180deg, var(--accent-primary), var(--accent-secondary), var(--accent-tertiary), var(--accent-primary)) border-box;
+    background:
+      linear-gradient(var(--bg-app), var(--bg-app)) padding-box,
+      linear-gradient(
+          180deg,
+          var(--accent-primary),
+          var(--accent-secondary),
+          var(--accent-tertiary),
+          var(--accent-primary)
+        )
+        border-box;
   }
   75% {
-    background: linear-gradient(var(--bg-app), var(--bg-app)) padding-box, 
-                linear-gradient(270deg, var(--accent-primary), var(--accent-secondary), var(--accent-tertiary), var(--accent-primary)) border-box;
+    background:
+      linear-gradient(var(--bg-app), var(--bg-app)) padding-box,
+      linear-gradient(
+          270deg,
+          var(--accent-primary),
+          var(--accent-secondary),
+          var(--accent-tertiary),
+          var(--accent-primary)
+        )
+        border-box;
   }
   100% {
-    background: linear-gradient(var(--bg-app), var(--bg-app)) padding-box, 
-                linear-gradient(360deg, var(--accent-primary), var(--accent-secondary), var(--accent-tertiary), var(--accent-primary)) border-box;
+    background:
+      linear-gradient(var(--bg-app), var(--bg-app)) padding-box,
+      linear-gradient(
+          360deg,
+          var(--accent-primary),
+          var(--accent-secondary),
+          var(--accent-tertiary),
+          var(--accent-primary)
+        )
+        border-box;
   }
 }
 
@@ -674,13 +769,18 @@
 
 /* Tab glow pulse animation */
 @keyframes tab-glow-pulse {
-  0%, 100% {
+  0%,
+  100% {
     opacity: 0.5;
-    box-shadow: 0 0 8px color-mix(in srgb, var(--accent-primary) 25%, transparent), inset 0 0 4px color-mix(in srgb, var(--accent-primary) 5%, transparent);
+    box-shadow:
+      0 0 8px color-mix(in srgb, var(--accent-primary) 25%, transparent),
+      inset 0 0 4px color-mix(in srgb, var(--accent-primary) 5%, transparent);
   }
   50% {
     opacity: 0.8;
-    box-shadow: 0 0 16px color-mix(in srgb, var(--accent-primary) 40%, transparent), inset 0 0 8px color-mix(in srgb, var(--accent-primary) 10%, transparent);
+    box-shadow:
+      0 0 16px color-mix(in srgb, var(--accent-primary) 40%, transparent),
+      inset 0 0 8px color-mix(in srgb, var(--accent-primary) 10%, transparent);
   }
 }
 
@@ -723,7 +823,9 @@
 /* Ghost button — secondary text, elevated bg on hover */
 .th-btn-ghost {
   color: var(--text-secondary);
-  transition: background 150ms, color 150ms;
+  transition:
+    background 150ms,
+    color 150ms;
 }
 .th-btn-ghost:hover {
   background: var(--bg-elevated);
@@ -733,7 +835,11 @@
 /* Active / toggled button state */
 .th-btn-active {
   color: var(--accent-primary) !important;
-  background: color-mix(in srgb, var(--accent-primary) 8%, transparent) !important;
+  background: color-mix(
+    in srgb,
+    var(--accent-primary) 8%,
+    transparent
+  ) !important;
   border: 1px solid color-mix(in srgb, var(--accent-primary) 25%, transparent) !important;
 }
 
@@ -745,7 +851,8 @@
 }
 .th-input:focus {
   border-color: var(--accent-primary);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent-primary) 20%, transparent);
+  box-shadow: 0 0 0 2px
+    color-mix(in srgb, var(--accent-primary) 20%, transparent);
 }
 .th-input::placeholder {
   color: var(--text-muted);
@@ -768,7 +875,9 @@
 /* Quick action row — text primary, hover accent bg+text */
 .th-action {
   color: var(--text-primary);
-  transition: background 150ms, color 150ms;
+  transition:
+    background 150ms,
+    color 150ms;
 }
 .th-action:hover {
   color: var(--accent-primary);
@@ -777,7 +886,11 @@
 
 /* Toggle switch */
 .th-toggle-on {
-  background: linear-gradient(to right, var(--accent-primary), var(--accent-secondary));
+  background: linear-gradient(
+    to right,
+    var(--accent-primary),
+    var(--accent-secondary)
+  );
 }
 .th-toggle-off {
   background: var(--bg-elevated);
@@ -789,11 +902,21 @@
 }
 
 /* Container backgrounds (for inline-style-free usage) */
-.th-bg-app       { background: var(--bg-app); }
-.th-bg-sidebar   { background: var(--bg-sidebar); }
-.th-bg-panel     { background: var(--bg-panel); }
-.th-bg-editor    { background: var(--bg-editor); }
-.th-bg-elevated  { background: var(--bg-elevated); }
+.th-bg-app {
+  background: var(--bg-app);
+}
+.th-bg-sidebar {
+  background: var(--bg-sidebar);
+}
+.th-bg-panel {
+  background: var(--bg-panel);
+}
+.th-bg-editor {
+  background: var(--bg-editor);
+}
+.th-bg-elevated {
+  background: var(--bg-elevated);
+}
 
 /* ===== Typography Hierarchy System ===== */
 .synthi-heading {
@@ -830,9 +953,34 @@
   opacity: 0.85;
 }
 
+/* ── Dashboard tab overrides ── */
+[data-synthi-tab][data-state="active"] {
+  background: color-mix(
+    in srgb,
+    var(--accent-primary) 15%,
+    transparent
+  ) !important;
+  color: var(--accent-tertiary) !important;
+  border-color: color-mix(
+    in srgb,
+    var(--accent-primary) 30%,
+    transparent
+  ) !important;
+}
+[data-synthi-tab][data-state="inactive"] {
+  color: var(--text-muted);
+  background: transparent;
+  border-color: transparent;
+}
+[data-synthi-tab][data-state="inactive"]:hover {
+  color: var(--text-secondary);
+  background: color-mix(in srgb, var(--accent-primary) 5%, transparent);
+}
+
 /* Chevron animation for AI chat input controls */
 @keyframes chevron-float {
-  0%, 100% {
+  0%,
+  100% {
     transform: translateY(0px);
   }
   50% {
@@ -841,7 +989,8 @@
 }
 
 @keyframes chevron-bounce {
-  0%, 100% {
+  0%,
+  100% {
     transform: rotate(180deg) translateY(0px);
   }
   50% {
@@ -850,7 +999,8 @@
 }
 
 @keyframes bounce-subtle {
-  0%, 100% {
+  0%,
+  100% {
     transform: translateY(0px);
   }
   50% {
@@ -875,7 +1025,7 @@
   background-color: rgba(50, 116, 100, 0.1);
   border-left: 3px solid var(--accent-primary);
   color: var(--text-primary);
-  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  font-family: "JetBrains Mono", "Fira Code", monospace;
   font-size: 13px;
   line-height: 1.6;
   padding: 4px 8px;
@@ -919,8 +1069,14 @@
 }
 
 @keyframes fadeIn {
-  from { opacity: 0; transform: translateY(2px); }
-  to { opacity: 1; transform: translateY(0); }
+  from {
+    opacity: 0;
+    transform: translateY(2px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 /* ===== Monaco Editor Hover Widget Styling ===== */
@@ -985,7 +1141,11 @@
 }
 
 .monaco-hover .actions .action-item:hover {
-  background-color: color-mix(in srgb, var(--accent-primary) 15%, transparent) !important;
+  background-color: color-mix(
+    in srgb,
+    var(--accent-primary) 15%,
+    transparent
+  ) !important;
   text-decoration: none !important;
 }
 

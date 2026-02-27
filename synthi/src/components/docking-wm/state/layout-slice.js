@@ -7,13 +7,8 @@
  * in layout-ops.js, keeping this slice as a thin wrapper.
  */
 
-import { createSlice, createSelector } from '@reduxjs/toolkit';
-import {
-  NODE_TYPE,
-  DIRECTION,
-  DROP_ZONE,
-  LAYOUT_VERSION,
-} from '../types';
+import { createSlice, createSelector } from "@reduxjs/toolkit";
+import { NODE_TYPE, DIRECTION, DROP_ZONE, LAYOUT_VERSION } from "../types";
 import {
   createEmptyLayout,
   createDefaultIDELayout,
@@ -22,7 +17,7 @@ import {
   createSplitNode,
   createFloatingWindow,
   normalizeSizes,
-} from '../utils/layout-node';
+} from "../utils/layout-node";
 import {
   splitNode,
   addTabToGroup,
@@ -40,14 +35,14 @@ import {
   dockPopout,
   handleDrop,
   cleanupEmptyNodes,
-} from '../utils/layout-ops';
+} from "../utils/layout-ops";
 import {
   getNode,
   findTabGroup,
   getAllTabGroups,
   findFirstTabGroup,
   validateLayout,
-} from '../utils/layout-query';
+} from "../utils/layout-query";
 
 // ─── Initial State ──────────────────────────────────────
 
@@ -56,7 +51,7 @@ const initialState = createEmptyLayout();
 // ─── Slice ──────────────────────────────────────────────
 
 const layoutSlice = createSlice({
-  name: 'layout',
+  name: "layout",
   initialState,
   reducers: {
     /**
@@ -93,19 +88,25 @@ const layoutSlice = createSlice({
       // ── Dedup guard: never allow two tabs of the same panelType ──
       // Check docked tabs first
       for (const [nodeId, node] of Object.entries(state.nodes)) {
-        if (node.type !== 'tabgroup') continue;
+        if (node.type !== "tabgroup") continue;
         for (const existingTabId of node.tabs || []) {
           const existingTab = state.tabs[existingTabId];
           if (existingTab && existingTab.panelType === panelType) {
             // For extension-view, also match on containerId
-            if (panelType === 'extension-view') {
+            if (panelType === "extension-view") {
               if (existingTab.data?.containerId !== data?.containerId) continue;
             }
             // Tab already exists — focus it instead of creating a duplicate
             let next = { ...state, focusedTabGroupId: nodeId };
             const group = next.nodes[nodeId];
             if (group && group.activeTabId !== existingTabId) {
-              next = { ...next, nodes: { ...next.nodes, [nodeId]: { ...group, activeTabId: existingTabId } } };
+              next = {
+                ...next,
+                nodes: {
+                  ...next.nodes,
+                  [nodeId]: { ...group, activeTabId: existingTabId },
+                },
+              };
             }
             return next;
           }
@@ -115,7 +116,7 @@ const layoutSlice = createSlice({
       for (const fw of Object.values(state.floating || {})) {
         const floatTab = state.tabs[fw.tabId];
         if (floatTab && floatTab.panelType === panelType) {
-          if (panelType === 'extension-view') {
+          if (panelType === "extension-view") {
             if (floatTab.data?.containerId !== data?.containerId) continue;
           }
           // Already floating — bring to front
@@ -127,7 +128,9 @@ const layoutSlice = createSlice({
       const newState = { ...state, tabs: { ...state.tabs, [tab.id]: tab } };
 
       const groupId =
-        targetTabGroupId || state.focusedTabGroupId || getAllTabGroups(state)[0]?.id;
+        targetTabGroupId ||
+        state.focusedTabGroupId ||
+        getAllTabGroups(state)[0]?.id;
 
       if (!groupId) return state;
 
@@ -301,10 +304,56 @@ const layoutSlice = createSlice({
      * Payload: { tabGroupId }
      */
     setFocusedTabGroup(state, action) {
-      const id = typeof action.payload === 'string'
-        ? action.payload
-        : action.payload?.tabGroupId ?? null;
+      const id =
+        typeof action.payload === "string"
+          ? action.payload
+          : (action.payload?.tabGroupId ?? null);
       return { ...state, focusedTabGroupId: id };
+    },
+
+    // ── Editor Recovery ───────────────────────────────
+
+    /**
+     * Restore the editor panel when it has been closed.
+     * Creates a new editor tab and splits the first tab group to the RIGHT
+     * so the editor appears in its own center panel, matching the default layout.
+     */
+    restoreEditorPanel(state) {
+      // Don't duplicate — if an editor tab already exists, just focus it
+      for (const [nid, node] of Object.entries(state.nodes)) {
+        if (node.type !== "tabgroup") continue;
+        for (const tid of node.tabs || []) {
+          const t = state.tabs[tid];
+          if (t && t.panelType === "editor") {
+            return { ...state, focusedTabGroupId: nid };
+          }
+        }
+      }
+
+      // Create the editor tab
+      const tab = createTab({
+        panelType: "editor",
+        title: "Editor",
+        closable: false,
+      });
+      let next = { ...state, tabs: { ...state.tabs, [tab.id]: tab } };
+
+      // Find the first tab group (typically the sidebar) and split RIGHT
+      const firstGroup = getAllTabGroups(next)[0];
+      if (!firstGroup) {
+        // Fallback: layout is empty — make editor the root
+        const group = createTabGroupNode({
+          tabs: [tab.id],
+          activeTabId: tab.id,
+        });
+        next.nodes = { ...next.nodes, [group.id]: group };
+        next.rootId = group.id;
+        next.focusedTabGroupId = group.id;
+        return next;
+      }
+
+      // splitNode creates a new tab group, splits the target, and places the new tab
+      return splitNode(next, firstGroup.id, tab.id, DROP_ZONE.RIGHT, 0.75);
     },
 
     // ── Batch cleanup ──────────────────────────────────
@@ -340,6 +389,7 @@ export const {
   setDragSource,
   handleDropAction,
   setFocusedTabGroup,
+  restoreEditorPanel,
   cleanupLayout,
 } = layoutSlice.actions;
 
@@ -373,40 +423,38 @@ export const selectPopouts = (state) => state.layout.popouts;
 export const selectMaximizedNodeId = (state) => state.layout.maximizedNodeId;
 
 /** Select focused tab group ID */
-export const selectFocusedTabGroupId = (state) => state.layout.focusedTabGroupId;
+export const selectFocusedTabGroupId = (state) =>
+  state.layout.focusedTabGroupId;
 
 /** Select drag source tab ID */
 export const selectDragSourceTabId = (state) => state.layout.dragSourceTabId;
 
 /** Select all tab groups (memoized) */
-export const selectAllTabGroups = createSelector(
-  [selectNodes],
-  (nodes) =>
-    Object.values(nodes).filter((n) => n.type === NODE_TYPE.TAB_GROUP)
+export const selectAllTabGroups = createSelector([selectNodes], (nodes) =>
+  Object.values(nodes).filter((n) => n.type === NODE_TYPE.TAB_GROUP),
 );
 
 /** Select all floating windows as array (memoized) */
 export const selectFloatingWindows = createSelector(
   [selectFloating],
-  (floating) => Object.values(floating)
+  (floating) => Object.values(floating),
 );
 
 /** Select all popout windows as array (memoized) */
-export const selectPopoutWindows = createSelector(
-  [selectPopouts],
-  (popouts) => Object.values(popouts)
+export const selectPopoutWindows = createSelector([selectPopouts], (popouts) =>
+  Object.values(popouts),
 );
 
 /** Select whether any tab is being dragged */
 export const selectIsDragging = createSelector(
   [selectDragSourceTabId],
-  (tabId) => tabId !== null
+  (tabId) => tabId !== null,
 );
 
 /** Select the focused tab group node */
 export const selectFocusedTabGroup = createSelector(
   [selectNodes, selectFocusedTabGroupId],
-  (nodes, focusedId) => (focusedId ? nodes[focusedId] : null)
+  (nodes, focusedId) => (focusedId ? nodes[focusedId] : null),
 );
 
 /** Select tabs for a specific tab group (factory selector) */
@@ -416,7 +464,7 @@ export const makeSelectTabGroupTabs = (tabGroupId) =>
     (group, tabs) => {
       if (!group || group.type !== NODE_TYPE.TAB_GROUP) return [];
       return group.tabs.map((tid) => tabs[tid]).filter(Boolean);
-    }
+    },
   );
 
 // ─── Reducer ────────────────────────────────────────────
