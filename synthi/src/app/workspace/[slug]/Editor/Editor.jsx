@@ -4,7 +4,7 @@ import { useCallback, useEffect, useLayoutEffect, useState, useRef, useMemo } fr
 import Editor, { DiffEditor, loader } from '@monaco-editor/react';
 import { getMonacoLanguage } from '@/utils/languageMapper';
 import dynamic from 'next/dynamic';
-import { useAppDispatch, useAppSelector } from '@/redux/hooks';
+import { useAppDispatch, useAppSelector, useAppStore } from '@/redux/hooks';
 import {
     selectActiveFile,
     selectCurrentContent,
@@ -213,6 +213,7 @@ const EditorPanel = ({
     dockingMode = false,
 }) => {
     const dispatch = useAppDispatch();
+    const store = useAppStore();
 
     //Global state access djsaiodjasiodjasiodjasiodjaoidjasoidjsaiodjasiodjasjdnsaj
     const activeFile = useAppSelector(selectActiveFile);
@@ -2314,22 +2315,21 @@ const EditorPanel = ({
             //    handler before this DOM event was dispatched.
             await new Promise(r => queueMicrotask(r));
 
-            // 4b. Immediately restore the pre-revert snapshot so the editor
-            //     never shows a blank while selectFileThunk loads fresh content.
-            //     This keeps the old content visible as a placeholder rather
-            //     than an empty whitespace flash.
-            if (preRevertSnapshot !== null) {
-                try {
-                    const modelNow = editorInstance?.getModel?.();
-                    if (modelNow) {
-                        modelNow.pushEditOperations([], [{
-                            range: modelNow.getFullModelRange(),
-                            text: preRevertSnapshot,
-                        }], () => null);
-                        latestCodeRef.current = preRevertSnapshot;
-                    }
-                } catch (_) {}
-            }
+            // 4b. Clear the Monaco model completely BEFORE fetching fresh
+            //     content.  Using applyEdits (not pushEditOperations) so we
+            //     don't pollute the undo stack.  This prevents any stale
+            //     CRDT merge from appending to old content on reconnect. 
+            //     Show the pre-revert snapshot as placeholder to avoid blank.
+            try {
+                const modelNow = editorInstance?.getModel?.();
+                if (modelNow && preRevertSnapshot !== null) {
+                    modelNow.applyEdits([{
+                        range: modelNow.getFullModelRange(),
+                        text: preRevertSnapshot,
+                    }]);
+                    latestCodeRef.current = preRevertSnapshot;
+                }
+            } catch (_) {}
 
             // 5. Re-select the file — this fetches clean content from the
             //    server and updates Redux (savedContent, currentContent).
@@ -2339,16 +2339,24 @@ const EditorPanel = ({
 
             // 6. Force-set the Monaco model to the clean content so the editor
             //    doesn't flash stale text before the binding kicks in.
+            //    Use model.setValue() for a complete replacement — this ensures
+            //    no residual CRDT merge content survives the transition.
             try {
                 const model = editorInstance?.getModel?.();
                 if (model) {
-                    const cleanContent = model.getValue();
-                    latestCodeRef.current = cleanContent;
+                    const freshContent = store.getState()?.workspace?.currentContent;
+                    if (typeof freshContent === 'string') {
+                        model.setValue(freshContent);
+                        latestCodeRef.current = freshContent;
+                    } else {
+                        latestCodeRef.current = model.getValue();
+                    }
                 }
             } catch (_) {}
 
-            // 7. Release the revert lock after a brief settling period
-            setTimeout(() => { revertLockRef.current = false; }, 200);
+            // 7. Release the revert lock after a longer settling period to
+            //    cover the Yjs provider reconnect + initial sync window.
+            setTimeout(() => { revertLockRef.current = false; }, 600);
         };
 
         window.addEventListener('synthi:file-reverted', handler);
