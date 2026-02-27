@@ -14,12 +14,27 @@ use crate::infra::messages::CompileRequest;
 ///   3. For GUI apps: reuses the Xvfb/GStreamer video pipeline
 pub async fn handle_java_request(
     ctx: &CompileContext,
-    req: CompileRequest,
+    mut req: CompileRequest,
     session_id: String,
 ) -> Result<serde_json::Value> {
     eprintln!("[Java] ╔══════════════════════════════════════════╗");
     eprintln!("[Java] ║  Java Pipeline — compile + run           ║");
     eprintln!("[Java] ╚══════════════════════════════════════════╝");
+
+    // ── Auto-detect GUI mode from source imports ──────────────────
+    // If the source references Swing, AWT, or JavaFX, force GUI mode so the
+    // runner spawns Xvfb + GStreamer and streams to the in-app preview.
+    if !req.is_gui {
+        let has_gui_in = |s: &str| -> bool {
+            s.contains("javax.swing") || s.contains("java.awt") || s.contains("javafx.")
+        };
+        let has_gui = has_gui_in(&req.source)
+            || req.files.iter().any(|f| has_gui_in(&f.content));
+        if has_gui {
+            eprintln!("[Java] Auto-detected GUI imports (main or deps) — enabling GUI mode");
+            req.is_gui = true;
+        }
+    }
 
     // Notify frontend
     let payload = serde_json::json!({
