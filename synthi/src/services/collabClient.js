@@ -778,6 +778,11 @@ class CollabClient {
     // This wrapper destroys the doc on code 4000 BEFORE the provider's
     // onclose handler can schedule a reconnect, so the provider sees
     // shouldConnect === false and aborts.
+    //
+    // For non-4000 closes (network blip, ping timeout), the server-side
+    // message buffering + doc TTL keep-alive prevent doubling.  We reset
+    // the _seeded flag here so that the client knows to wait for server
+    // content on reconnect rather than seeding independently.
     const self = this;
     // Capture the entry reference (set after provider creation) so the
     // microtask only destroys THIS specific entry, not a newer fresh
@@ -796,6 +801,17 @@ class CollabClient {
               const current = self.docs.get(key);
               if (current && current === entryRef) {
                 self.destroyDocument(slug, path);
+              }
+            });
+          } else if (event.code !== 1000) {
+            // Non-clean close (network blip, ping timeout, etc.)
+            // Reset _seeded so attachEditor waits for server content
+            // on reconnect rather than racing it.
+            queueMicrotask(() => {
+              const current = self.docs.get(key);
+              if (current && current === entryRef) {
+                console.log('[Collab] WS close', event.code, '— resetting seed flag for', key);
+                current._seeded = false;
               }
             });
           }
