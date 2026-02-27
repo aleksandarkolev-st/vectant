@@ -2723,9 +2723,29 @@ const EditorPanel = ({
 
     // Latch diffModeEverActive so the DiffEditor stays mounted (hidden) once
     // the user first opens it — avoids React passive-unmount crash.
+    // Also generate a unique diffSessionKey per diff activation to prevent
+    // Monaco model URI collisions between files.
+    const [diffSessionKey, setDiffSessionKey] = useState(0);
     useEffect(() => {
-        if (diffMode) setDiffModeEverActive(true);
+        if (diffMode) {
+            setDiffModeEverActive(true);
+            setDiffSessionKey(k => k + 1);
+        }
     }, [diffMode]);
+
+    // Snapshot diff content when diff mode activates so the DiffEditor
+    // is fully decoupled from live editing state (prevents false "unsaved"
+    // indicator and contamination between files).
+    const diffSnapshotRef = useRef({ original: '', modified: '', path: '' });
+    useEffect(() => {
+        if (diffMode && activeFile) {
+            diffSnapshotRef.current = {
+                original: originalContent || '',
+                modified: code ?? '',
+                path: activeFile.path || '',
+            };
+        }
+    }, [diffMode, activeFile?.path]); // intentionally NOT depending on code/originalContent
 
     // Git status refresh — in manual-save mode, status updates after explicit save.
     // In auto-save mode, status updates after each debounced autosave write.
@@ -3750,15 +3770,14 @@ const EditorPanel = ({
                                                 </div>
                                                 <div className="flex-1 min-h-0 relative overflow-hidden">
                                                     <DiffEditor
+                                                        key={`diff-${diffSessionKey}`}
                                                         height="100%"
-                                                        original={originalContent || ''}
-                                                        modified={code ?? ''}
+                                                        original={diffSnapshotRef.current.original}
+                                                        modified={diffSnapshotRef.current.modified}
                                                         language={activeLanguage}
                                                         theme="synthi-theme"
-                                                        originalModelPath={activeFile ? `inmemory://synthi/diff/original/${activeFile.path}` : undefined}
-                                                        modifiedModelPath={activeFile ? `inmemory://synthi/diff/modified/${activeFile.path}` : undefined}
-                                                        keepCurrentOriginalModel={true}
-                                                        keepCurrentModifiedModel={true}
+                                                        originalModelPath={activeFile ? `inmemory://synthi/diff/original/${activeFile.path}?v=${diffSessionKey}` : undefined}
+                                                        modifiedModelPath={activeFile ? `inmemory://synthi/diff/modified/${activeFile.path}?v=${diffSessionKey}` : undefined}
                                                         options={{
                                                             ...EDITOR_OPTIONS,
                                                             readOnly: true,
