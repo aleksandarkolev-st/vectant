@@ -200,6 +200,26 @@ export class CompilerClient {
                 if (typeof window !== 'undefined' && window.dispatchEvent) {
                     window.dispatchEvent(new CustomEvent('synthi:gui-start', { detail: parsed }));
                 }
+                // The backend just called replace_track() — the real GStreamer
+                // video is now flowing through the existing transceiver.  Re-emit
+                // the media-track event so the <video> element in the GUI widget
+                // gets a fresh srcObject assignment and calls play().  Without
+                // this, the video can stay frozen on the placeholder (white).
+                try {
+                    if (this.currentStreams && this.currentStreams.length > 0) {
+                        const stream = this.currentStreams[0];
+                        const vt = stream?.getVideoTracks?.();
+                        if (vt && vt.length > 0) {
+                            // Create a fresh MediaStream so React detects the change
+                            const freshStream = new MediaStream(stream.getTracks());
+                            this.currentStreams = [freshStream];
+                            window.dispatchEvent(new CustomEvent('synthi:media-track', {
+                                detail: { track: vt[0], streams: [freshStream] }
+                            }));
+                            console.debug('[CompilerClient] Re-emitted media-track after gui-start');
+                        }
+                    }
+                } catch (_) {}
             } else if (parsed && parsed.type === 'run-gui-end') {
                 console.log('[CompilerClient] Dispatching synthi:gui-end', parsed);
                 if (typeof window !== 'undefined' && window.dispatchEvent) {
@@ -1245,9 +1265,9 @@ export class CompilerClient {
 
                 // Mobile emulator streams video over WebRTC. If the browser connected earlier without
                 // negotiating an m=video section, ontrack will never fire. Ensure recvonly video now.
-                if (effectiveTarget === 'react-native-emulator') {
+                if (effectiveTarget === 'react-native-emulator' || isGui) {
                     // Fire-and-forget; we don't want to block the job on renegotiation.
-                    this._ensureRecvTransceivers({ video: true, audio: false, forceRenegotiate: true, sessionId, onLog: (l) => clientLog(l, sessionId) })
+                    this._ensureRecvTransceivers({ video: true, audio: isGui, forceRenegotiate: true, sessionId, onLog: (l) => clientLog(l, sessionId) })
                         .catch(() => {});
                 }
 
@@ -1268,8 +1288,8 @@ export class CompilerClient {
                     // lsp-stderr is diagnostic noise from the language server — always hide.
                     let displayLine = line;
                     if (parsed) {
-                        if (parsed.type === 'lsp-stderr' || parsed.type === 'hmr-status') {
-                            // Internal diagnostic / HMR noise — suppress entirely
+                        if (parsed.type === 'lsp-stderr' || parsed.type === 'hmr-status' || parsed.type === 'run-gui-start' || parsed.type === 'run-gui-end') {
+                            // Internal diagnostic / HMR / GUI-signal noise — suppress entirely
                             displayLine = null;
                         } else if ((parsed.type === 'stdout' || parsed.type === 'stderr') && parsed.line != null) {
                             displayLine = String(parsed.line);

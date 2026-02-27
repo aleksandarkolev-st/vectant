@@ -1129,10 +1129,11 @@ async fn create_peer(
         let placeholder_video = Arc::new(TrackLocalStaticRTP::new(
             RTCRtpCodecCapability {
                 mime_type: "video/H264".to_owned(),
-                // Keep fmtp_line minimal — the real track (created by GStreamer) will
-                // replace this via replace_track() and carry the encoder's actual params.
-                // Overly specific profile-level-id here can cause SDP mismatches on
-                // some browsers if the negotiated profile differs.
+                // Constrained Baseline Level 3.1 — universally supported by
+                // all browsers.  Must match what x264enc actually produces
+                // (profile=constrained-baseline in the GStreamer capsfilter)
+                // so the browser's decoder accepts the RTP stream.
+                sdp_fmtp_line: "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f".to_owned(),
                 ..Default::default()
             },
             "video".to_owned(),
