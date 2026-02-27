@@ -76,6 +76,8 @@ function PRListItem({ pr, onClick }) {
             <span className="flex items-center gap-1 text-[10px]" style={{ color: 'var(--text-muted)' }}>
               <GitBranch className="w-3 h-3" />
               <span className="font-mono truncate max-w-[80px]">{pr.head?.ref}</span>
+              <span className="opacity-50">→</span>
+              <span className="font-mono truncate max-w-[80px]">{pr.base?.ref}</span>
             </span>
 
             {/* Time */}

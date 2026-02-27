@@ -840,9 +840,9 @@ function OverviewTab({ pr, slug, owner, repo, onEditTitle, editingTitle, newTitl
           </span>
           <span className="flex items-center gap-1">
             <GitBranch className="w-3 h-3" />
-            <code className="font-mono">{pr.head?.label}</code>
+            <code className="font-mono">{pr.head?.ref}</code>
             <ArrowRightLeft className="w-3 h-3" />
-            <code className="font-mono">{pr.base?.label}</code>
+            <code className="font-mono">{pr.base?.ref}</code>
           </span>
           <span>{pr.commits} commit{pr.commits !== 1 ? 's' : ''}</span>
           <span className="text-emerald-400">+{pr.additions}</span>
