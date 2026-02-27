@@ -59,13 +59,43 @@ pub async fn run_java(
         }
 
         if can_reuse {
-            eprintln!("[JavaRunner] Reusing Xvfb and GStreamer pipeline");
-            reused_xvfb = state.xvfb_process;
-            reused_pipeline = state.gst_pipeline;
-            reused_wsl_display = state.wsl_display_str;
-            reused_gst_display = state.gst_display_str;
-            video_track_opt = state.video_track;
-            audio_track_opt = state.audio_track;
+            // Verify the stored display is still responsive before reusing.
+            // TCP probe is the most reliable check — abstract UNIX sockets
+            // don't leave a file in /tmp/.X11-unix/ so we can't stat them.
+            let display_ok = {
+                let num = state.wsl_display_str.trim_start_matches("127.0.0.1:").trim_start_matches(':');
+                let port: u16 = 6000 + num.parse::<u16>().unwrap_or(99);
+                // Try file socket first (cheapest), then TCP
+                std::path::Path::new(&format!("/tmp/.X11-unix/X{}", num)).exists()
+                    || tokio::net::TcpStream::connect(("127.0.0.1", port)).await.is_ok()
+            };
+
+            if display_ok {
+                eprintln!("[JavaRunner] Reusing Xvfb (display={} OK)", state.wsl_display_str);
+                reused_xvfb = state.xvfb_process;
+                reused_wsl_display = state.wsl_display_str;
+                reused_gst_display = state.gst_display_str;
+                // Always restart GStreamer for GUI — the window XID changes
+                // between JVM runs so the old pipeline captures a stale window.
+                if state.is_gui {
+                    eprintln!("[JavaRunner] Tearing down old GStreamer (GUI XID changed)");
+                    if let Some(pipeline) = state.gst_pipeline {
+                        let _ = pipeline.set_state(gst::State::Null);
+                    }
+                } else {
+                    reused_pipeline = state.gst_pipeline;
+                    video_track_opt = state.video_track;
+                    audio_track_opt = state.audio_track;
+                }
+            } else {
+                eprintln!("[JavaRunner] Reuse requested but display {} is dead — full teardown", state.wsl_display_str);
+                if let Some(pipeline) = state.gst_pipeline {
+                    let _ = pipeline.set_state(gst::State::Null);
+                }
+                if let Some(mut xvfb) = state.xvfb_process {
+                    let _ = xvfb.kill().await;
+                }
+            }
         } else {
             eprintln!("[JavaRunner] Full teardown (mode/resolution changed)");
             if let Some(pipeline) = state.gst_pipeline {
@@ -77,7 +107,11 @@ pub async fn run_java(
         }
     }
 
-    // ── Xvfb + GStreamer setup (GUI only) ─────────────────────────
+    // ── Xvfb setup (GUI only) ─────────────────────────────────────
+    // GStreamer is ALWAYS deferred until after Java spawns, so we can
+    // find the actual JFrame window and capture it by XID.  This avoids
+    // the Xvfb root-capture problem entirely (neither XShm nor XGetImage
+    // on Xvfb root includes child windows without a working compositor).
     let mut wsl_display_str = reused_wsl_display;
     let mut gst_display_str = reused_gst_display;
     let mut xvfb_process: Option<tokio::process::Child> = reused_xvfb;
@@ -86,19 +120,12 @@ pub async fn run_java(
     if req.is_gui {
         // Start Xvfb if not reused
         if xvfb_process.is_none() {
-            xvfb_process = Some(start_xvfb(ctx, session_id, req_width, req_height).await?);
-            wsl_display_str = ":99".to_string();
-            gst_display_str = wsl_display_str.clone();
+            let (child, tcp_display, _local_display, _comp) = start_xvfb(ctx, session_id, req_width, req_height).await?;
+            xvfb_process = Some(child);
+            wsl_display_str = tcp_display.clone();  // Java, xdotool, matchbox-wm use TCP
+            gst_display_str = tcp_display;           // ximagesrc also uses TCP + remote=true + XID
         }
-
-        // Start GStreamer if not reused
-        if gst_pipeline.is_none() {
-            let (pipeline, v_track, a_track) =
-                start_gstreamer(&gst_display_str, session_id).await?;
-            gst_pipeline = Some(pipeline);
-            video_track_opt = Some(v_track);
-            audio_track_opt = Some(a_track);
-        }
+        // GStreamer start is deferred until after Java spawns (see below)
     }
 
     // ── Build `java` command ──────────────────────────────────────
@@ -119,10 +146,20 @@ pub async fn run_java(
         }
     }
 
+    // For GUI apps, force AWT into non-headless mode.  Container JREs
+    // often default to headless=true which silently prevents Swing/AWT
+    // from creating visible windows on X11.
+    if req.is_gui {
+        cmd.arg("-Djava.awt.headless=false");
+        cmd.arg("-Dsun.java2d.xrender=false");  // avoid Xrender bugs over TCP
+    }
+
     cmd.arg(main_class);
 
     if req.is_gui {
         cmd.env("DISPLAY", &wsl_display_str);
+        cmd.env("AWT_TOOLKIT", "XToolkit");     // force X11 toolkit
+        cmd.env("GDK_BACKEND", "x11");           // GTK fallback
     }
 
     cmd.stdin(Stdio::piped())
@@ -131,12 +168,170 @@ pub async fn run_java(
         .kill_on_drop(true);
 
     eprintln!(
-        "[JavaRunner] Spawning: java -cp {:?} {} (GUI={})",
-        classes_dir, main_class, req.is_gui
+        "[JavaRunner] Spawning: java -cp {:?} {} {} (GUI={}, DISPLAY={})",
+        classes_dir,
+        if req.is_gui { "-Djava.awt.headless=false -Dsun.java2d.xrender=false" } else { "" },
+        main_class,
+        req.is_gui,
+        if req.is_gui { &wsl_display_str } else { &String::new() }
     );
 
     let mut child = cmd.spawn().context("Failed to spawn java — is openjdk installed?")?;
 
+    // ── Deferred GStreamer start — find JFrame window by XID ──────
+    // We ALWAYS defer GStreamer start until after Java spawns.  This
+    // lets us find the actual JFrame window and capture it by XID,
+    // which reliably returns the Swing-painted content regardless of
+    // compositor availability.  Root capture on Xvfb is broken:
+    //   - XShmGetImage(root) reads the raw framebuffer which does NOT
+    //     include child windows' content
+    //   - XGetImage(root) also doesn't include child windows
+    //   - xcompmgr compositing doesn't reliably update the Xvfb framebuffer
+    // By capturing the JFrame window directly, XGetImage returns the
+    // window's own painted pixels — Swing paints all components onto
+    // one X window, so we get the full UI.
+    if req.is_gui && gst_pipeline.is_none() {
+        eprintln!("[JavaRunner] Waiting for Java GUI window to appear (XID capture)...");
+        let xid = find_gui_window(&wsl_display_str, req_width, req_height, 8000).await;
+
+        let capture_xid = if let Some(xid) = xid {
+            eprintln!("[JavaRunner] Will capture window XID={}", xid);
+            Some(xid)
+        } else {
+            eprintln!("[JavaRunner] WARNING: No window found for XID capture, falling back to root");
+            None
+        };
+
+        let (pipeline, v_track, a_track) =
+            start_gstreamer(&wsl_display_str, session_id, capture_xid).await?;
+        gst_pipeline = Some(pipeline);
+        video_track_opt = Some(v_track);
+        audio_track_opt = Some(a_track);
+    }
+
+    // Delayed X11 window diagnostic for GUI apps.
+    // After 3 seconds, check if any windows appeared on the display,
+    // take a screenshot to verify content, and log window details.
+    if req.is_gui {
+        let diag_display = wsl_display_str.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+
+            // 1. Count windows
+            match Command::new("xdotool")
+                .arg("search")
+                .arg("--name")
+                .arg("")
+                .env("DISPLAY", &diag_display)
+                .output()
+                .await
+            {
+                Ok(out) => {
+                    let stdout_str = String::from_utf8_lossy(&out.stdout);
+                    let win_count = stdout_str.trim().lines().count();
+                    eprintln!(
+                        "[JavaRunner] X11 window check (3s): {} windows on DISPLAY={}",
+                        win_count, diag_display
+                    );
+                    if win_count == 0 {
+                        eprintln!(
+                            "[JavaRunner] WARNING: No windows found! Java may not have created a visible window."
+                        );
+                    }
+                }
+                Err(e) => {
+                    eprintln!("[JavaRunner] xdotool search failed: {}", e);
+                }
+            }
+
+            // 2. Capture screenshot to a temp file and check if it's uniform
+            let screenshot_path = "/tmp/_synthi_diag_screenshot.xwd";
+            if let Ok(xwd_out) = Command::new("xwd")
+                .arg("-root")
+                .arg("-silent")
+                .arg("-out").arg(screenshot_path)
+                .env("DISPLAY", &diag_display)
+                .output()
+                .await
+            {
+                if xwd_out.status.success() {
+                    if let Ok(meta) = std::fs::metadata(screenshot_path) {
+                        let size = meta.len();
+                        // 800x600x3 ≈ 1.44 MB raw.  An xwd of a uniform
+                        // image will be roughly that size (XWD is uncompressed).
+                        // But we can sample a few pixel values to check diversity.
+                        eprintln!(
+                            "[JavaRunner] Screenshot (xwd): {} bytes — {}",
+                            size,
+                            if size > 100_000 { "has content" } else { "suspiciously small" }
+                        );
+                    }
+                    // Sample a few bytes from the pixel area to check color
+                    if let Ok(data) = std::fs::read(screenshot_path) {
+                        // XWD header is variable length; pixel data starts after it.
+                        // Check if there are at least 2 distinct byte values in a
+                        // sample region (simplistic diversity check).
+                        let start = std::cmp::min(200, data.len());
+                        let end = std::cmp::min(start + 3000, data.len());
+                        let sample = &data[start..end];
+                        let mut vals = std::collections::HashSet::new();
+                        for &b in sample.iter().step_by(3) {
+                            vals.insert(b);
+                        }
+                        eprintln!(
+                            "[JavaRunner] Screenshot pixel diversity: {} distinct values in sample (1=uniform, >3=has content)",
+                            vals.len()
+                        );
+                        // Log first few distinct values
+                        let first_vals: Vec<_> = vals.iter().take(5).collect();
+                        eprintln!("[JavaRunner] Sample pixel values: {:?}", first_vals);
+                    }
+                    let _ = std::fs::remove_file(screenshot_path);
+                } else {
+                    let err_str = String::from_utf8_lossy(&xwd_out.stderr);
+                    eprintln!("[JavaRunner] xwd failed: {}", err_str.trim());
+                }
+            }
+
+            // 3. List window tree for debugging (root + largest child's children)
+            if let Ok(tree) = Command::new("xwininfo")
+                .arg("-root")
+                .arg("-children")
+                .env("DISPLAY", &diag_display)
+                .output()
+                .await
+            {
+                let tree_str = String::from_utf8_lossy(&tree.stdout);
+                for line in tree_str.lines().take(25) {
+                    eprintln!("[JavaRunner] xwininfo: {}", line);
+                }
+
+                // Also inspect the largest child's sub-tree (matchbox frame)
+                // to see if the JFrame is reparented inside it
+                for line in tree_str.lines() {
+                    let trimmed = line.trim();
+                    if trimmed.starts_with("0x") && trimmed.contains("800x600") {
+                        if let Some(xid_str) = trimmed.split_whitespace().next() {
+                            eprintln!("[JavaRunner] Inspecting matchbox frame {} children:", xid_str);
+                            if let Ok(sub) = Command::new("xwininfo")
+                                .arg("-id").arg(xid_str)
+                                .arg("-children")
+                                .env("DISPLAY", &diag_display)
+                                .output()
+                                .await
+                            {
+                                let sub_str = String::from_utf8_lossy(&sub.stdout);
+                                for sline in sub_str.lines().take(20) {
+                                    eprintln!("[JavaRunner]   frame-child: {}", sline);
+                                }
+                            }
+                        }
+                        break;
+                    }
+                }
+            }
+        });
+    }
     // ── Capture I/O ───────────────────────────────────────────────
     let stdout = child.stdout.take().unwrap();
     let stderr = child.stderr.take().unwrap();
@@ -289,16 +484,26 @@ pub async fn run_java(
     if req.is_gui {
         if let Some(state) = guard.as_ref() {
             let transceivers = ctx.pc.get_transceivers().await;
+            eprintln!("[JavaRunner] Attaching tracks to {} transceivers", transceivers.len());
+            let mut video_replaced = false;
+            let mut audio_replaced = false;
             if let Some(track) = &state.video_track {
                 for t in &transceivers {
                     if t.kind() == webrtc::rtp_transceiver::rtp_codec::RTPCodecType::Video {
-                        let _ = t
+                        match t
                             .sender()
                             .await
                             .replace_track(Some(
                                 Arc::clone(track) as Arc<dyn TrackLocal + Send + Sync>,
                             ))
-                            .await;
+                            .await
+                        {
+                            Ok(_) => {
+                                eprintln!("[JavaRunner] ✓ Video track replaced successfully");
+                                video_replaced = true;
+                            }
+                            Err(e) => eprintln!("[JavaRunner] ✗ Video replace_track error: {}", e),
+                        }
                         break;
                     }
                 }
@@ -306,16 +511,29 @@ pub async fn run_java(
             if let Some(track) = &state.audio_track {
                 for t in &transceivers {
                     if t.kind() == webrtc::rtp_transceiver::rtp_codec::RTPCodecType::Audio {
-                        let _ = t
+                        match t
                             .sender()
                             .await
                             .replace_track(Some(
                                 Arc::clone(track) as Arc<dyn TrackLocal + Send + Sync>,
                             ))
-                            .await;
+                            .await
+                        {
+                            Ok(_) => {
+                                eprintln!("[JavaRunner] ✓ Audio track replaced successfully");
+                                audio_replaced = true;
+                            }
+                            Err(e) => eprintln!("[JavaRunner] ✗ Audio replace_track error: {}", e),
+                        }
                         break;
                     }
                 }
+            }
+            if !video_replaced {
+                eprintln!("[JavaRunner] WARNING: No video transceiver found to replace!");
+            }
+            if !audio_replaced {
+                eprintln!("[JavaRunner] WARNING: No audio transceiver found to replace!");
             }
 
             // Signal frontend to show GUI widget
@@ -367,12 +585,23 @@ pub async fn run_java(
 // that both pipelines share identical Xvfb/GStreamer behaviour.
 // ════════════════════════════════════════════════════════════════
 
+/// Start Xvfb and matchbox-window-manager.
+/// Returns `(child, tcp_display, local_display)` where:
+///   - `tcp_display` is a TCP-based DISPLAY (e.g. `127.0.0.1:99.0`) for
+///     clients like Java that need TCP to connect.
+///   - `local_display` is a local DISPLAY (`:99`) that enables XShm for
+///     ximagesrc screen capture.  XShm reads the framebuffer directly
+///     and inherently sees all child windows, unlike XGetImage which
+///     may return only the root background on Xvfb.
+///   - `has_compositor` is true if xcompmgr (or similar) was started
+///     successfully.  Without a compositor, the caller should use
+///     window-specific (XID) capture instead of root capture.
 async fn start_xvfb(
     ctx: &CompileContext,
     session_id: &str,
     width: u32,
     height: u32,
-) -> Result<tokio::process::Child> {
+) -> Result<(tokio::process::Child, String, String, bool)> {
     for tool in GUI_TOOLS {
         if Command::new(tool).arg("--version").output().await.is_err() {
             let msg = format!(
@@ -392,9 +621,38 @@ async fn start_xvfb(
         }
     }
 
-    let display_num = 99;
+    let display_num: u32 = 99;
 
-    // Clean up stale lock files
+    // Ensure /tmp/.X11-unix exists with sticky-bit permissions.
+    {
+        let dir = std::path::Path::new("/tmp/.X11-unix");
+        if !dir.exists() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o1777));
+        }
+    }
+
+    // Kill any stale Xvfb on this display before cleaning up lock files
+    let _ = Command::new("pkill")
+        .arg("-f")
+        .arg(format!("Xvfb :{}", display_num))
+        .output()
+        .await;
+    tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+
+    // Also kill stale matchbox-window-manager instances
+    let _ = Command::new("pkill")
+        .arg("-f")
+        .arg("matchbox-window-manager")
+        .output()
+        .await;
+    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+    // Clean up stale lock / socket files
     for path in &[
         format!("/tmp/.X11-unix/X{}", display_num),
         format!("/tmp/.X{}-lock", display_num),
@@ -404,54 +662,411 @@ async fn start_xvfb(
         }
     }
 
+    // Start Xvfb with TCP enabled as a safety net.
+    // We deliberately DO NOT pass `-nolisten local` — abstract UNIX sockets
+    // (a Linux kernel feature, no filesystem permissions needed) are the
+    // preferred transport for local X11 connections because they:
+    //   1. Always work in containers (no /tmp/.X11-unix permission issues)
+    //   2. Support XShm (shared-memory screen capture for ximagesrc)
+    //   3. Are lower-latency than TCP
+    // `-listen tcp` is kept as an explicit fallback in case abstract sockets
+    // fail for any reason.  We omit `-listen unix` since the file-based
+    // socket in /tmp/.X11-unix often fails due to directory permissions.
     let mut xvfb_cmd = Command::new("Xvfb");
     xvfb_cmd
         .arg(format!(":{}", display_num))
-        .arg("-screen")
-        .arg("0")
-        .arg(format!("{}x{}x24", width, height))
+        .arg("-screen").arg("0").arg(format!("{}x{}x24", width, height))
         .arg("-ac")
+        .arg("-listen").arg("tcp")
+        .arg("+extension").arg("Composite")   // ensure Composite ext for xcompmgr
+        .arg("+extension").arg("RENDER")      // RENDER used by compositors
         .kill_on_drop(true);
 
     let child = xvfb_cmd.spawn().context("Failed to spawn Xvfb")?;
-    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
 
-    // Start Window Manager
+    // Wait for Xvfb to be ready.  Check both the UNIX socket and TCP port.
+    let socket_path = format!("/tmp/.X11-unix/X{}", display_num);
+    let tcp_port: u16 = 6000 + display_num as u16;
+    let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(5);
+
+    let mut display_str = String::new();
+    loop {
+        // 1. Prefer UNIX file socket (lowest latency, XShm works)
+        if std::path::Path::new(&socket_path).exists() {
+            display_str = format!(":{}", display_num);
+            eprintln!("[JavaRunner] Xvfb ready via UNIX file socket: {}", socket_path);
+            break;
+        }
+        // 2. TCP probe — Xvfb is running on TCP.
+        //    We previously tried DISPLAY=:N (abstract sockets) here, but
+        //    in many container environments abstract sockets are not
+        //    available or not enabled by Xvfb.  Java AWT then silently
+        //    fails to connect and no window appears.
+        //    Use the explicit TCP address which is guaranteed to work.
+        if tokio::net::TcpStream::connect(("127.0.0.1", tcp_port)).await.is_ok() {
+            display_str = format!("127.0.0.1:{}.0", display_num);
+            eprintln!(
+                "[JavaRunner] Xvfb TCP port {} responding; using DISPLAY={}",
+                tcp_port, display_str
+            );
+            break;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            // Last resort — try TCP address anyway since it's the most reliable
+            display_str = format!("127.0.0.1:{}.0", display_num);
+            eprintln!(
+                "[JavaRunner] WARNING: Xvfb not confirmed after 5s, using DISPLAY={}",
+                display_str
+            );
+            break;
+        }
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    }
+
+    // Diagnostic: verify X11 display is accessible via the chosen transport
+    {
+        let xdpy_out = Command::new("xdpyinfo")
+            .env("DISPLAY", &display_str)
+            .output()
+            .await;
+        match xdpy_out {
+            Ok(out) if out.status.success() => {
+                eprintln!("[JavaRunner] xdpyinfo on DISPLAY={} OK", display_str);
+            }
+            Ok(out) => {
+                let stderr_text = String::from_utf8_lossy(&out.stderr);
+                eprintln!(
+                    "[JavaRunner] xdpyinfo FAILED on DISPLAY={}: {}",
+                    display_str,
+                    stderr_text.trim()
+                );
+            }
+            Err(e) => {
+                eprintln!("[JavaRunner] xdpyinfo not found or failed to run: {}", e);
+            }
+        }
+    }
+
+    // Start Window Manager on the same display
     let mut wm_cmd = Command::new("matchbox-window-manager");
     wm_cmd
         .arg("-use_titlebar")
         .arg("no")
         .arg("-use_cursor")
         .arg("no")
-        .env("DISPLAY", format!(":{}", display_num));
+        .env("DISPLAY", &display_str);
     // WM must outlive this scope — intentionally not setting kill_on_drop
     let _wm = wm_cmd.spawn().context("Failed to spawn matchbox-window-manager")?;
 
-    tokio::time::sleep(tokio::time::Duration::from_millis(700)).await;
+    // Start xcompmgr — a lightweight compositing manager.
+    // CRITICAL: Xvfb does NOT composite child windows into the root window
+    // framebuffer by default.  Both XGetImage and XShmGetImage on root
+    // return only the root background (white/red) without any child window
+    // content.  This is a well-known Xvfb limitation.  xcompmgr uses the
+    // X Composite extension to redirect all child windows off-screen and
+    // then paints them back onto the root window, making ximagesrc work.
+    //
+    // If no compositor is available, the caller falls back to window-
+    // specific capture (ximagesrc xid=<window_id>), which captures a
+    // single window's content directly and does NOT need compositing.
+    let mut compositor_ok = false;
 
-    eprintln!("[JavaRunner] Xvfb + WM started on :{}", display_num);
-    Ok(child)
+    // Helper closure to try spawning a compositor
+    let try_spawn_compositor = |name: &str, args: &[&str], display: &str| -> bool {
+        let mut cmd = std::process::Command::new(name);
+        for arg in args {
+            cmd.arg(arg);
+        }
+        cmd.env("DISPLAY", display)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        cmd.spawn().is_ok()
+    };
+
+    // 1. Try xcompmgr directly
+    if try_spawn_compositor("xcompmgr", &[], &display_str) {
+        eprintln!("[JavaRunner] xcompmgr compositor started");
+        compositor_ok = true;
+    } else {
+        // 2. Try auto-installing xcompmgr (tiny package, ~50KB)
+        eprintln!("[JavaRunner] xcompmgr not found, attempting apt-get install...");
+        let install_result = tokio::time::timeout(
+            tokio::time::Duration::from_secs(15),
+            Command::new("sh")
+                .arg("-c")
+                .arg("apt-get install -y -qq xcompmgr 2>&1")
+                .env("DEBIAN_FRONTEND", "noninteractive")
+                .output(),
+        )
+        .await;
+
+        match install_result {
+            Ok(Ok(out)) if out.status.success() => {
+                eprintln!("[JavaRunner] xcompmgr installed via apt-get");
+                if try_spawn_compositor("xcompmgr", &[], &display_str) {
+                    eprintln!("[JavaRunner] xcompmgr compositor started after install");
+                    compositor_ok = true;
+                }
+            }
+            Ok(Ok(out)) => {
+                let stderr_text = String::from_utf8_lossy(&out.stderr);
+                eprintln!("[JavaRunner] apt-get install xcompmgr failed: {}", stderr_text.lines().next().unwrap_or(""));
+            }
+            Ok(Err(e)) => eprintln!("[JavaRunner] apt-get command failed: {}", e),
+            Err(_) => eprintln!("[JavaRunner] apt-get install timed out (15s)"),
+        }
+
+        // 3. Try picom / compton as fallbacks
+        if !compositor_ok {
+            if try_spawn_compositor("picom", &["--backend", "xrender", "--no-fading", "--no-vsync"], &display_str) {
+                eprintln!("[JavaRunner] picom compositor started");
+                compositor_ok = true;
+            } else if try_spawn_compositor("compton", &["--backend", "xrender"], &display_str) {
+                eprintln!("[JavaRunner] compton compositor started");
+                compositor_ok = true;
+            } else {
+                eprintln!(
+                    "[JavaRunner] WARNING: No compositor available! \
+                     Will use window-specific (XID) capture as fallback."
+                );
+            }
+        }
+    }
+
+    // Set root window to red so we can diagnose capture issues:
+    // Red = ximagesrc captures root but not child windows (compositor issue)
+    // Gray = Java frame is rendered but Swing components aren't painting
+    // Swing UI = everything works!
+    let _ = Command::new("xsetroot")
+        .arg("-solid").arg("#FF0000")
+        .env("DISPLAY", &display_str)
+        .output()
+        .await;
+
+    // Give the WM and compositor a moment to register with X
+    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+
+    eprintln!("[JavaRunner] Xvfb + WM + compositor started, DISPLAY={}", display_str);
+
+    // `display_str` is the TCP address for X11 clients (Java, matchbox-wm).
+    // For GStreamer ximagesrc we use `:N` (local/abstract socket) which
+    // enables XShm — shared-memory screen capture that reads the framebuffer
+    // directly and inherently sees all child windows.  The existing C++
+    // runner uses this same approach and it works.
+    let local_display = format!(":{}", display_num);
+    eprintln!(
+        "[JavaRunner] Display strings: tcp={} local={} compositor={} (local for GStreamer XShm)",
+        display_str, local_display, compositor_ok
+    );
+    Ok((child, display_str, local_display, compositor_ok))
+}
+
+/// Poll for the main GUI window on the given display.
+///
+/// Uses `xwininfo -root -children` (not xdotool) to reliably parse the
+/// window tree.  Finds the matchbox-wm frame (screen-sized child of root),
+/// then inspects its children to find the JFrame reparented inside it.
+///
+/// We capture the JFrame's X window because Swing paints ALL components
+/// onto one X window, so XGetImage on it returns the full UI.
+///
+/// Returns the XID of the Java window, or the matchbox frame as fallback,
+/// or `None` if no suitable window is found within the timeout.
+async fn find_gui_window(
+    display: &str,
+    expected_width: u32,
+    expected_height: u32,
+    timeout_ms: u64,
+) -> Option<u64> {
+    let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_millis(timeout_ms);
+    let expected_geo = format!("{}x{}", expected_width, expected_height);
+
+    loop {
+        // Step 1: Find the matchbox frame (direct child of root, screen-sized)
+        // Uses xwininfo which outputs geometry like: 0x6000ff (has no name): ()  800x600+0+0
+        let mut matchbox_frame_xid: Option<u64> = None;
+
+        if let Ok(output) = Command::new("xwininfo")
+            .arg("-root")
+            .arg("-children")
+            .env("DISPLAY", display)
+            .output()
+            .await
+        {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+
+            for line in stdout.lines() {
+                let trimmed = line.trim();
+                // xwininfo child lines start with "0x..."
+                if !trimmed.starts_with("0x") {
+                    continue;
+                }
+
+                // Look for the expected geometry pattern (e.g. "800x600+")
+                let geo_pattern = format!("{}+", expected_geo);
+                if !trimmed.contains(&geo_pattern) {
+                    continue;
+                }
+
+                // Parse XID from "0x6000ff ..."
+                let hex_str = trimmed.split_whitespace().next().unwrap_or("");
+                let hex_digits = hex_str.trim_start_matches("0x");
+                if let Ok(xid) = u64::from_str_radix(hex_digits, 16) {
+                    // Skip tiny or internal windows (matchbox's own 5x5 window)
+                    eprintln!(
+                        "[JavaRunner] find_gui_window: candidate root child 0x{:x} — {}",
+                        xid,
+                        trimmed.chars().take(80).collect::<String>()
+                    );
+                    matchbox_frame_xid = Some(xid);
+                    break;
+                }
+            }
+        }
+
+        // Step 2: If we found the matchbox frame, look for the JFrame inside
+        if let Some(frame_xid) = matchbox_frame_xid {
+            eprintln!(
+                "[JavaRunner] Found matchbox frame: xid=0x{:x} ({})",
+                frame_xid, expected_geo
+            );
+
+            // List children of the matchbox frame
+            if let Ok(children_out) = Command::new("xwininfo")
+                .arg("-id").arg(format!("0x{:x}", frame_xid))
+                .arg("-children")
+                .env("DISPLAY", display)
+                .output()
+                .await
+            {
+                let children_text = String::from_utf8_lossy(&children_out.stdout);
+                let mut best_child_xid: Option<u64> = None;
+                let mut best_child_area: u64 = 0;
+
+                for cline in children_text.lines() {
+                    let ctrimmed = cline.trim();
+                    if !ctrimmed.starts_with("0x") {
+                        continue;
+                    }
+
+                    // Parse XID
+                    let hex_str = ctrimmed.split_whitespace().next().unwrap_or("");
+                    let hex_digits = hex_str.trim_start_matches("0x");
+                    let child_xid: u64 = match u64::from_str_radix(hex_digits, 16) {
+                        Ok(v) => v,
+                        Err(_) => continue,
+                    };
+
+                    // Parse geometry: look for WxH+X+Y pattern
+                    let mut child_w: u64 = 0;
+                    let mut child_h: u64 = 0;
+                    for word in ctrimmed.split_whitespace() {
+                        if word.contains('x') && word.contains('+') {
+                            let geo_part = word.split('+').next().unwrap_or("");
+                            let parts: Vec<&str> = geo_part.split('x').collect();
+                            if parts.len() == 2 {
+                                child_w = parts[0].parse().unwrap_or(0);
+                                child_h = parts[1].parse().unwrap_or(0);
+                            }
+                        }
+                    }
+
+                    let area = child_w * child_h;
+                    eprintln!(
+                        "[JavaRunner]   frame child: xid=0x{:x} size={}x{}",
+                        child_xid, child_w, child_h
+                    );
+
+                    if area > best_child_area && child_w > 10 && child_h > 10 {
+                        best_child_area = area;
+                        best_child_xid = Some(child_xid);
+                    }
+                }
+
+                if let Some(child_xid) = best_child_xid {
+                    eprintln!(
+                        "[JavaRunner] Found JFrame inside matchbox: xid=0x{:x} ({}x? area={})",
+                        child_xid, best_child_area / expected_height as u64, best_child_area
+                    );
+                    return Some(child_xid);
+                }
+
+                // No sizeable child yet — JFrame may not be reparented yet
+                eprintln!(
+                    "[JavaRunner] Matchbox frame found but no JFrame child yet, retrying..."
+                );
+            }
+        }
+
+        if tokio::time::Instant::now() >= deadline {
+            // Last resort: return the matchbox frame itself
+            if let Some(frame_xid) = matchbox_frame_xid {
+                eprintln!(
+                    "[JavaRunner] Timeout: using matchbox frame 0x{:x} as fallback",
+                    frame_xid
+                );
+                return Some(frame_xid);
+            }
+            eprintln!("[JavaRunner] find_gui_window: no suitable window found within {}ms", timeout_ms);
+            return None;
+        }
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;
+    }
 }
 
 async fn start_gstreamer(
     display: &str,
     _session_id: &str,
+    window_xid: Option<u64>,
 ) -> Result<(gst::Pipeline, Arc<TrackLocalStaticRTP>, Arc<TrackLocalStaticRTP>)> {
     let encoders = [
-        ("nvh264enc preset=low-latency-hp zerolatency=true", "rtph264pay", "video/H264"),
-        ("vaapih264enc", "rtph264pay", "video/H264"),
-        ("x264enc tune=zerolatency speed-preset=ultrafast bitrate=2000 key-int-max=60 ! video/x-h264,stream-format=byte-stream", "rtph264pay", "video/H264"),
+        ("nvh264enc preset=low-latency-hp zerolatency=true ! video/x-h264,stream-format=byte-stream,profile=constrained-baseline", "rtph264pay", "video/H264"),
+        ("vaapih264enc ! video/x-h264,stream-format=byte-stream,profile=constrained-baseline", "rtph264pay", "video/H264"),
+        ("x264enc tune=zerolatency speed-preset=ultrafast bitrate=2000 key-int-max=60 ! video/x-h264,stream-format=byte-stream,profile=constrained-baseline", "rtph264pay", "video/H264"),
         ("vp8enc deadline=1 cpu-used=4 end-usage=cbr target-bitrate=2000000", "rtpvp8pay", "video/VP8"),
     ];
 
     let mut pipeline_opt: Option<gst::Pipeline> = None;
     let mut selected_mime = "video/H264".to_string();
 
+    // Build the ximagesrc element string based on capture mode:
+    //
+    // 1. With window_xid: capture a specific window directly.
+    //    XGetImage on the JFrame window returns Swing-painted content.
+    //    Swing is a lightweight toolkit: all components are painted on
+    //    a single X window, so XGetImage gets the full UI.
+    //
+    // 2. Without window_xid: capture root window (last resort).
+    //    This is unlikely to show child windows on Xvfb.
+    //
+    // Always use remote=true since we're always on TCP display.
+    let ximagesrc_str = if let Some(xid) = window_xid {
+        eprintln!(
+            "[JavaRunner] ximagesrc: capturing JFrame window xid=0x{:x} on display={}",
+            xid, display
+        );
+        format!(
+            "ximagesrc display-name=\"{}\" xid=0x{:x} use-damage=0 remote=true",
+            display, xid
+        )
+    } else {
+        eprintln!(
+            "[JavaRunner] ximagesrc: capturing root on display={} (last resort)",
+            display
+        );
+        format!(
+            "ximagesrc display-name=\"{}\" use-damage=0 remote=true",
+            display
+        )
+    };
+
+    // Try each encoder with the configured ximagesrc
     for (encoder, payloader, mime) in &encoders {
         let pipeline_str = format!(
-            "ximagesrc display-name=\"{}\" use-damage=0 ! video/x-raw,framerate=30/1 ! videoscale ! videoconvert ! {} ! {} name=video_pay ! appsink name=video_sink sync=false \
+            "{} ! video/x-raw,framerate=30/1 ! videoscale ! videoconvert ! {} ! {} name=video_pay ! appsink name=video_sink sync=false \
              audiotestsrc is-live=true wave=silence ! opusenc ! rtpopuspay name=audio_pay ! appsink name=audio_sink sync=false",
-            display, encoder, payloader
+            ximagesrc_str, encoder, payloader
         );
 
         if let Ok(elem) = gst::parse_launch(&pipeline_str) {
@@ -465,10 +1080,49 @@ async fn start_gstreamer(
                             continue;
                         }
                     }
-                    eprintln!("[JavaRunner] Encoder {} started", encoder);
+                    let mode_str = if window_xid.is_some() { "XID" } else { "root" };
+                    eprintln!(
+                        "[JavaRunner] Encoder {} started ({} capture on {})",
+                        encoder, mode_str, display
+                    );
                     pipeline_opt = Some(pipe);
                     selected_mime = mime.to_string();
                     break;
+                }
+            }
+        }
+    }
+
+    // If primary capture failed AND we weren't using XID, try root with remote=true as last resort
+    if pipeline_opt.is_none() && window_xid.is_none() {
+        eprintln!(
+            "[JavaRunner] Primary ximagesrc failed, last resort: root capture on display={}",
+            display
+        );
+
+        for (encoder, payloader, mime) in &encoders {
+            let pipeline_str = format!(
+                "ximagesrc display-name=\"{}\" use-damage=0 remote=true ! video/x-raw,framerate=30/1 ! videoscale ! videoconvert ! {} ! {} name=video_pay ! appsink name=video_sink sync=false \
+                 audiotestsrc is-live=true wave=silence ! opusenc ! rtpopuspay name=audio_pay ! appsink name=audio_sink sync=false",
+                display, encoder, payloader
+            );
+
+            if let Ok(elem) = gst::parse_launch(&pipeline_str) {
+                if let Ok(pipe) = elem.dynamic_cast::<gst::Pipeline>() {
+                    if pipe.set_state(gst::State::Playing).is_ok() {
+                        let bus = pipe.bus().unwrap();
+                        if let Some(msg) = bus.timed_pop(gst::ClockTime::from_mseconds(500)) {
+                            if let gst::MessageView::Error(err) = msg.view() {
+                                eprintln!("[JavaRunner] Encoder {} failed (TCP+remote): {}", encoder, err.error());
+                                let _ = pipe.set_state(gst::State::Null);
+                                continue;
+                            }
+                        }
+                        eprintln!("[JavaRunner] Encoder {} started (root fallback on {})", encoder, display);
+                        pipeline_opt = Some(pipe);
+                        selected_mime = mime.to_string();
+                        break;
+                    }
                 }
             }
         }
@@ -518,13 +1172,27 @@ async fn start_gstreamer(
 
     let vt = video_track.clone();
     tokio::spawn(async move {
+        let mut frame_count: u64 = 0;
         while let Some(data) = v_rx.recv().await {
+            frame_count += 1;
+            if frame_count <= 10 || frame_count == 30 || frame_count == 100 || frame_count % 500 == 0 {
+                eprintln!(
+                    "[JavaRunner] Video RTP packet #{}, size={} bytes",
+                    frame_count, data.len()
+                );
+            }
             if let Err(e) = vt.write(&data).await {
                 if e.to_string().contains("closed") {
+                    eprintln!("[JavaRunner] Video track closed after {} packets", frame_count);
                     break;
+                }
+                // Log first few write errors — often indicates track not yet bound
+                if frame_count <= 5 {
+                    eprintln!("[JavaRunner] Video write error (packet #{}): {}", frame_count, e);
                 }
             }
         }
+        eprintln!("[JavaRunner] Video writer task ended, total packets: {}", frame_count);
     });
 
     // Audio track
