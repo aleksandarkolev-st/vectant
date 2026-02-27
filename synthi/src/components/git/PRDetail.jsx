@@ -315,8 +315,10 @@ function MergePanel({ slug, owner, repo, pr, files, onFileClick }) {
     if (mergePR.fulfilled.match(result)) {
       toast.success('Pull request merged!');
       dispatch(fetchPRList({ owner, repo, state: 'open', slug }));
-      // Refresh detail to show updated state
-      dispatch(fetchPRDetail({ owner, repo, prNumber: pr.number, slug }));
+      // Delay detail refetch — GitHub API may not propagate merge instantly
+      setTimeout(() => {
+        dispatch(fetchPRDetail({ owner, repo, prNumber: pr.number, slug }));
+      }, 2000);
     } else {
       toast.error(result.payload?.error || 'Merge failed. Check if all requirements are satisfied.');
     }

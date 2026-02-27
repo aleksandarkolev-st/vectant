@@ -425,7 +425,12 @@ const prSlice = createSlice({
       })
       .addCase(fetchPRDetail.fulfilled, (state, { payload }) => {
         state.prDetailLoading = false;
-        state.activePR = payload.pr;
+        // Preserve optimistic merged state when GitHub API hasn't propagated yet
+        if (state.activePR?.merged && !payload.pr.merged && state.activePR?.number === payload.pr.number) {
+          state.activePR = { ...payload.pr, merged: true, state: 'closed' };
+        } else {
+          state.activePR = payload.pr;
+        }
         state.prFiles = payload.files;
         state.prCommits = payload.commits;
         state.prReviews = payload.reviews;
