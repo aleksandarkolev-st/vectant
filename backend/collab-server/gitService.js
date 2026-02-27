@@ -1238,7 +1238,7 @@ class GitService {
                 fs.writeFileSync(tmpPatch, patch, 'utf8');
 
                 try {
-                    await git.raw(['apply', '--cached', '--unidiff-zero', tmpPatch]);
+                    await git.raw(['apply', '--cached', '--unidiff-zero', '--recount', '--ignore-whitespace', tmpPatch]);
                 } finally {
                     // Always clean up the temp patch file
                     try { fs.unlinkSync(tmpPatch); } catch (_) {}
@@ -1262,7 +1262,7 @@ class GitService {
                 fs.writeFileSync(tmpPatch, patch, 'utf8');
 
                 try {
-                    await git.raw(['apply', '--reverse', '--unidiff-zero', tmpPatch]);
+                    await git.raw(['apply', '--reverse', '--unidiff-zero', '--recount', '--ignore-whitespace', tmpPatch]);
                 } finally {
                     try { fs.unlinkSync(tmpPatch); } catch (_) {}
                 }
@@ -1287,7 +1287,7 @@ class GitService {
                 fs.writeFileSync(tmpPatch, patch, 'utf8');
 
                 try {
-                    await git.raw(['apply', '--cached', '--reverse', '--unidiff-zero', tmpPatch]);
+                    await git.raw(['apply', '--cached', '--reverse', '--unidiff-zero', '--recount', '--ignore-whitespace', tmpPatch]);
                 } finally {
                     try { fs.unlinkSync(tmpPatch); } catch (_) {}
                 }
