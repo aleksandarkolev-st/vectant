@@ -64,7 +64,7 @@ const gitService = require('./gitService');
 const repoCache = require('./repoCache');
 const sessionManager = require('./SessionManager');
 const { extractSessionContext, requireGitActionPermission, wsRequirePermission, wsDenyAction, wsAttachContext } = require('./permissionMiddleware');
-const { acquireStagingLock, releaseStagingLock } = require('./fsWatcherService');
+const { acquireStagingLock, releaseStagingLock, pauseWatcher, resumeWatcher } = require('./fsWatcherService');
 
 // ── User block list (in-memory) ──────────────────────────────────────────────
 // blockedBy: userId → Set<blockedUserId>
@@ -2845,12 +2845,17 @@ const server = http.createServer(async (req, res) => {
                     result = await gitService.getBranches(slug, effectiveUserId);
                     break;
                 case 'checkout':
-                    result = await gitService.checkout(slug, data.branch, data.create, effectiveUserId, data.mode);
-                    // Broadcast BEFORE invalidation so clients destroy stale
-                    // Yjs docs before WS close triggers provider reconnect.
-                    broadcastFileReverted(slug, [], notifyScope);
-                    await invalidateDocsForSlug(slug, null, notifyScope);
-                    broadcastFileTreeChanged(slug, notifyScope);
+                    pauseWatcher(slug);
+                    try {
+                      result = await gitService.checkout(slug, data.branch, data.create, effectiveUserId, data.mode);
+                      // Broadcast BEFORE invalidation so clients destroy stale
+                      // Yjs docs before WS close triggers provider reconnect.
+                      broadcastFileReverted(slug, [], notifyScope);
+                      await invalidateDocsForSlug(slug, null, notifyScope);
+                      broadcastFileTreeChanged(slug, notifyScope);
+                    } finally {
+                      resumeWatcher(slug);
+                    }
                     break;
                 case 'fetch':
                     result = await gitService.fetch(slug, effectiveUserId, data.token);
@@ -2911,17 +2916,27 @@ const server = http.createServer(async (req, res) => {
                     broadcastGitStatusChanged(slug, undefined, notifyScope, { immediate: true });
                     break;
                 case 'push':
-                    result = await gitService.push(slug, effectiveUserId, data.token, data.force);
-                    broadcastGitStatusChanged(slug, undefined, notifyScope, { immediate: true });
+                    pauseWatcher(slug);
+                    try {
+                      result = await gitService.push(slug, effectiveUserId, data.token, data.force);
+                      broadcastGitStatusChanged(slug, undefined, notifyScope, { immediate: true });
+                    } finally {
+                      resumeWatcher(slug);
+                    }
                     break;
                 case 'pull':
-                    result = await gitService.pull(slug, effectiveUserId, data.token);
-                    // Broadcast BEFORE invalidation so clients destroy stale
-                    // Yjs docs before WS close triggers provider reconnect.
-                    broadcastFileReverted(slug, [], notifyScope);
-                    await invalidateDocsForSlug(slug, null, notifyScope);
-                    broadcastFileTreeChanged(slug, notifyScope);
-                    broadcastGitStatusChanged(slug, undefined, notifyScope, { immediate: true });
+                    pauseWatcher(slug);
+                    try {
+                      result = await gitService.pull(slug, effectiveUserId, data.token);
+                      // Broadcast BEFORE invalidation so clients destroy stale
+                      // Yjs docs before WS close triggers provider reconnect.
+                      broadcastFileReverted(slug, [], notifyScope);
+                      await invalidateDocsForSlug(slug, null, notifyScope);
+                      broadcastFileTreeChanged(slug, notifyScope);
+                      broadcastGitStatusChanged(slug, undefined, notifyScope, { immediate: true });
+                    } finally {
+                      resumeWatcher(slug);
+                    }
                     break;
                 case 'discard':
                     result = await gitService.discardChange(slug, data.filePath, effectiveUserId);
@@ -2935,13 +2950,18 @@ const server = http.createServer(async (req, res) => {
                     broadcastGitStatusChanged(slug, undefined, notifyScope, { immediate: true });
                     break;
                 case 'discard-all':
-                    result = await gitService.discardAll(slug, effectiveUserId);
-                    // Broadcast BEFORE invalidation so clients destroy stale
-                    // Yjs docs before WS close triggers provider reconnect.
-                    broadcastFileReverted(slug, [], notifyScope);
-                    await invalidateDocsForSlug(slug, null, notifyScope);
-                    broadcastFileTreeChanged(slug, notifyScope);
-                    broadcastGitStatusChanged(slug, undefined, notifyScope, { immediate: true });
+                    pauseWatcher(slug);
+                    try {
+                      result = await gitService.discardAll(slug, effectiveUserId);
+                      // Broadcast BEFORE invalidation so clients destroy stale
+                      // Yjs docs before WS close triggers provider reconnect.
+                      broadcastFileReverted(slug, [], notifyScope);
+                      await invalidateDocsForSlug(slug, null, notifyScope);
+                      broadcastFileTreeChanged(slug, notifyScope);
+                      broadcastGitStatusChanged(slug, undefined, notifyScope, { immediate: true });
+                    } finally {
+                      resumeWatcher(slug);
+                    }
                     break;
                 // Merge conflict resolution
                 case 'resolve-ours':
@@ -2968,11 +2988,16 @@ const server = http.createServer(async (req, res) => {
                     broadcastFileTreeChanged(slug, notifyScope);
                     break;
                 case 'merge-branch':
-                    result = await gitService.mergeBranch(slug, data.branch, effectiveUserId, data.token);
-                    broadcastFileReverted(slug, [], notifyScope);
-                    await invalidateDocsForSlug(slug, null, notifyScope);
-                    broadcastFileTreeChanged(slug, notifyScope);
-                    broadcastGitStatusChanged(slug, undefined, notifyScope, { immediate: true });
+                    pauseWatcher(slug);
+                    try {
+                      result = await gitService.mergeBranch(slug, data.branch, effectiveUserId, data.token);
+                      broadcastFileReverted(slug, [], notifyScope);
+                      await invalidateDocsForSlug(slug, null, notifyScope);
+                      broadcastFileTreeChanged(slug, notifyScope);
+                      broadcastGitStatusChanged(slug, undefined, notifyScope, { immediate: true });
+                    } finally {
+                      resumeWatcher(slug);
+                    }
                     break;
                 case 'check-merge-conflicts':
                     // In-memory merge conflict detection using git merge-tree.
@@ -3013,40 +3038,65 @@ const server = http.createServer(async (req, res) => {
                     result = await gitService.stashPush(slug, data.message, effectiveUserId);
                     break;
                 case 'stash-pop':
-                    result = await gitService.stashPop(slug, data.index, effectiveUserId);
-                    broadcastFileReverted(slug, [], notifyScope);
-                    await invalidateDocsForSlug(slug, null, notifyScope);
-                    broadcastFileTreeChanged(slug, notifyScope);
+                    pauseWatcher(slug);
+                    try {
+                      result = await gitService.stashPop(slug, data.index, effectiveUserId);
+                      broadcastFileReverted(slug, [], notifyScope);
+                      await invalidateDocsForSlug(slug, null, notifyScope);
+                      broadcastFileTreeChanged(slug, notifyScope);
+                    } finally {
+                      resumeWatcher(slug);
+                    }
                     break;
                 case 'stash-apply':
-                    result = await gitService.stashApply(slug, data.index, effectiveUserId);
-                    broadcastFileReverted(slug, [], notifyScope);
-                    await invalidateDocsForSlug(slug, null, notifyScope);
-                    broadcastFileTreeChanged(slug, notifyScope);
+                    pauseWatcher(slug);
+                    try {
+                      result = await gitService.stashApply(slug, data.index, effectiveUserId);
+                      broadcastFileReverted(slug, [], notifyScope);
+                      await invalidateDocsForSlug(slug, null, notifyScope);
+                      broadcastFileTreeChanged(slug, notifyScope);
+                    } finally {
+                      resumeWatcher(slug);
+                    }
                     break;
                 case 'stash-drop':
                     result = await gitService.stashDrop(slug, data.index, effectiveUserId);
                     break;
                 case 'interactive-rebase':
-                    result = await gitService.interactiveRebase(slug, data.baseCommit, data.operations, effectiveUserId);
-                    broadcastFileReverted(slug, [], notifyScope);
-                    await invalidateDocsForSlug(slug, null, notifyScope);
-                    broadcastFileTreeChanged(slug, notifyScope);
-                    broadcastGitStatusChanged(slug, undefined, notifyScope, { immediate: true });
+                    pauseWatcher(slug);
+                    try {
+                      result = await gitService.interactiveRebase(slug, data.baseCommit, data.operations, effectiveUserId);
+                      broadcastFileReverted(slug, [], notifyScope);
+                      await invalidateDocsForSlug(slug, null, notifyScope);
+                      broadcastFileTreeChanged(slug, notifyScope);
+                      broadcastGitStatusChanged(slug, undefined, notifyScope, { immediate: true });
+                    } finally {
+                      resumeWatcher(slug);
+                    }
                     break;
                 case 'rebase-abort':
-                    result = await gitService.rebaseAbort(slug, effectiveUserId);
-                    broadcastFileReverted(slug, [], notifyScope);
-                    await invalidateDocsForSlug(slug, null, notifyScope);
-                    broadcastFileTreeChanged(slug, notifyScope);
-                    broadcastGitStatusChanged(slug, undefined, notifyScope, { immediate: true });
+                    pauseWatcher(slug);
+                    try {
+                      result = await gitService.rebaseAbort(slug, effectiveUserId);
+                      broadcastFileReverted(slug, [], notifyScope);
+                      await invalidateDocsForSlug(slug, null, notifyScope);
+                      broadcastFileTreeChanged(slug, notifyScope);
+                      broadcastGitStatusChanged(slug, undefined, notifyScope, { immediate: true });
+                    } finally {
+                      resumeWatcher(slug);
+                    }
                     break;
                 case 'rebase-continue':
-                    result = await gitService.rebaseContinue(slug, effectiveUserId);
-                    broadcastFileReverted(slug, [], notifyScope);
-                    await invalidateDocsForSlug(slug, null, notifyScope);
-                    broadcastFileTreeChanged(slug, notifyScope);
-                    broadcastGitStatusChanged(slug, undefined, notifyScope, { immediate: true });
+                    pauseWatcher(slug);
+                    try {
+                      result = await gitService.rebaseContinue(slug, effectiveUserId);
+                      broadcastFileReverted(slug, [], notifyScope);
+                      await invalidateDocsForSlug(slug, null, notifyScope);
+                      broadcastFileTreeChanged(slug, notifyScope);
+                      broadcastGitStatusChanged(slug, undefined, notifyScope, { immediate: true });
+                    } finally {
+                      resumeWatcher(slug);
+                    }
                     break;
                 case 'cherry-pick':
                     result = await gitService.cherryPick(slug, data.hash, effectiveUserId);
