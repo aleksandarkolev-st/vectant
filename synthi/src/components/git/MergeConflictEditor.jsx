@@ -20,19 +20,19 @@ const THEME = {
     textAccent:    '#4aba9a',
 
     // Current (ours) — teal-green tint
-    currentBg:        'rgba(58, 133, 116, 0.10)',
-    currentHeaderBg:  'rgba(58, 133, 116, 0.18)',
-    currentGutter:    'rgba(58, 133, 116, 0.50)',
+    currentBg:        'rgba(58, 133, 116, 0.18)',
+    currentHeaderBg:  'rgba(58, 133, 116, 0.30)',
+    currentGutter:    'rgba(58, 133, 116, 0.65)',
     currentLabel:     '#4aba9a',
 
     // Incoming (theirs) — blue tint
-    incomingBg:       'rgba(122, 184, 248, 0.10)',
-    incomingHeaderBg: 'rgba(122, 184, 248, 0.18)',
-    incomingGutter:   'rgba(122, 184, 248, 0.50)',
+    incomingBg:       'rgba(122, 184, 248, 0.18)',
+    incomingHeaderBg: 'rgba(122, 184, 248, 0.30)',
+    incomingGutter:   'rgba(122, 184, 248, 0.65)',
     incomingLabel:    '#7cb8f8',
 
     // Separator
-    separatorBg:   'rgba(77, 81, 104, 0.20)',
+    separatorBg:   'rgba(77, 81, 104, 0.30)',
 
     // Action buttons
     acceptBtn:      'rgba(74, 186, 154, 0.12)',
@@ -149,7 +149,7 @@ function ConflictActionBar({ onAcceptCurrent, onAcceptIncoming, onAcceptBoth }) 
 
 // ── Single code line renderer ───────────────────────────────────────────────
 
-function CodeLine({ lineNumber, text, bgColor, gutterColor, isMarker, markerLabel }) {
+function CodeLine({ lineNumber, text, bgColor, gutterColor, isMarker, markerLabel, markerColor }) {
     return (
         <div
             className="flex items-stretch font-mono text-[13px] leading-[20px] min-h-[20px]"
@@ -167,7 +167,7 @@ function CodeLine({ lineNumber, text, bgColor, gutterColor, isMarker, markerLabe
             {/* Content */}
             <div className="flex-1 px-3 whitespace-pre overflow-x-auto">
                 {isMarker ? (
-                    <span style={{ color: THEME.textMuted, fontStyle: 'italic', fontSize: 11 }}>
+                    <span style={{ color: markerColor || THEME.textMuted, fontWeight: 600, fontSize: 12, letterSpacing: '0.01em' }}>
                         {markerLabel || text}
                     </span>
                 ) : (
@@ -412,7 +412,8 @@ export default function MergeConflictEditor({ slug, filePath, onClose, onResolve
                                 bgColor={THEME.currentHeaderBg}
                                 gutterColor={THEME.currentGutter}
                                 isMarker
-                                markerLabel={`Current Change — ${conflict.oursLabel}`}
+                                markerLabel={`◀ Current Change — ${conflict.oursLabel}`}
+                                markerColor={THEME.currentLabel}
                             />
 
                             {/* Current (ours) lines */}
@@ -433,6 +434,7 @@ export default function MergeConflictEditor({ slug, filePath, onClose, onResolve
                                 bgColor={THEME.separatorBg}
                                 isMarker
                                 markerLabel="═══════════════════════════════════════════"
+                                markerColor="#8b8fb0"
                             />
 
                             {/* Incoming (theirs) lines */}
@@ -453,7 +455,8 @@ export default function MergeConflictEditor({ slug, filePath, onClose, onResolve
                                 bgColor={THEME.incomingHeaderBg}
                                 gutterColor={THEME.incomingGutter}
                                 isMarker
-                                markerLabel={`Incoming Change — ${conflict.theirsLabel}`}
+                                markerLabel={`▶ Incoming Change — ${conflict.theirsLabel}`}
+                                markerColor={THEME.incomingLabel}
                             />
                         </div>
                     );
