@@ -3,9 +3,9 @@ import { useDispatch, useSelector } from 'react-redux';
 import {
   fetchGitStatus, fetchRemote, commitChanges, pushChanges, pullChanges,
   stageFile, unstageFile, discardChange, initRepo, cloneRepo,
-  addRemote, removeRemote, fetchRemotes, fetchCommitHistory,
+  addRemote, removeRemote, setRemoteUrl, fetchRemotes, fetchCommitHistory,
   fetchUnpushedCommits, fetchIncomingCommits, fetchStashList,
-  stashPush, stashPop, stashDrop, clearError, stageAll, unstageAll,
+  stashPush, stashPop, stashApply, stashDrop, clearError, stageAll, unstageAll,
   discardAll, resolveConflictOurs, resolveConflictTheirs,
   markResolved, abortMerge, openConflictResolver
 } from '@/redux/gitSlice';
@@ -13,16 +13,40 @@ import { refreshWorkspaceThunk, openDiffThunk, fetchFilesThunk, selectFileThunk 
 import {
   RefreshCw, Check, CheckCircle2, UploadCloud, Plus, Minus, DownloadCloud,
   Undo2, Globe, Trash2, Copy, Archive, ArchiveRestore,
-  AlertTriangle, GitMerge, X, Edit3, Search, ChevronDown, ChevronRight,
-  ExternalLink, ShieldAlert, ArrowUpCircle, ArrowDownCircle
+  AlertTriangle, GitMerge, X, Edit3, Search, ChevronDown, ChevronRight, ShieldAlert,
+  ExternalLink, ArrowUpCircle, ArrowDownCircle, GitPullRequest, Key, Maximize2
 } from 'lucide-react';
+import { fetchGithubInfo, fetchPRList, setActivePR, setHasToken } from '@/redux/prSlice';
+import { getStoredToken } from '@/services/prClient';
+import { GitHubTokenModal } from './GitHubTokenModal';
 import { toast } from 'sonner';
 import { getFileLanguage } from '@/utils/fileUtils';
 import {
   maskRemoteUrl, urlContainsToken, detectProvider, humanRemoteUrl,
   commitWebUrl, parseConventionalCommit, ccColor, groupCommitsByDate,
-  buildCommitGraph, relativeTime
+  buildCommitGraph, relativeTime, extractTokenFromUrl, stripTokenFromUrl
 } from './gitUtils';
+import {
+  openTab, activateTabAction, setFocusedTabGroup,
+  selectNodes, selectTabs,
+} from '@/components/docking-wm/state/layout-slice';
+import { IDE_PANEL } from '@/components/docking-wm/panels/ide-panels';
+import dynamic from 'next/dynamic';
+
+const HunkStagingView = dynamic(() => import('./HunkStagingView'), { ssr: false });
+
+const COMMIT_TYPES = [
+  { type: 'feat', label: 'Feature', emoji: '✨', desc: 'New feature' },
+  { type: 'fix', label: 'Fix', emoji: '🐛', desc: 'Bug fix' },
+  { type: 'docs', label: 'Docs', emoji: '📝', desc: 'Documentation' },
+  { type: 'style', label: 'Style', emoji: '💄', desc: 'Code style/formatting' },
+  { type: 'refactor', label: 'Refactor', emoji: '♻️', desc: 'Code refactoring' },
+  { type: 'perf', label: 'Perf', emoji: '⚡', desc: 'Performance improvement' },
+  { type: 'test', label: 'Test', emoji: '✅', desc: 'Tests' },
+  { type: 'build', label: 'Build', emoji: '📦', desc: 'Build system' },
+  { type: 'ci', label: 'CI', emoji: '🔧', desc: 'CI/CD' },
+  { type: 'chore', label: 'Chore', emoji: '🔨', desc: 'Maintenance' },
+];
 
 /* ─────────────── tiny sub-components ─────────────── */
 
@@ -178,23 +202,125 @@ export function GitStatus({ slug }) {
     status, loading, error, actionError, actionErrorCode,
     remotes, stashList, commitHistory, unpushedCommits, incomingCommits,
   } = useSelector(s => s.git);
+  const { githubInfo, prList, prListLoading, hasToken: prHasToken } = useSelector(s => s.pr);
+  const [showTokenModalFromSCM, setShowTokenModalFromSCM] = useState(false);
+
   const [message, setMessage] = useState('');
   const [commitBody, setCommitBody] = useState('');
   const [showCommitBody, setShowCommitBody] = useState(false);
   const [showAddRemote, setShowAddRemote] = useState(false);
   const [newRemoteName, setNewRemoteName] = useState('origin');
   const [newRemoteUrl, setNewRemoteUrl] = useState('');
+  const [editingRemote, setEditingRemote] = useState(null);   // remote name being edited
+  const [editRemoteUrl, setEditRemoteUrl] = useState('');      // edited URL value
   const [showAllCommits, setShowAllCommits] = useState(false);
+  const [hunkStagingFile, setHunkStagingFile] = useState(null); // file path for hunk staging
+  const [amendMode, setAmendMode] = useState(false);
   const [stashMessage, setStashMessage] = useState('');
   const [cloneUrl, setCloneUrl] = useState('');
   const [showClone, setShowClone] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [showSearch, setShowSearch] = useState(false);
   const [securityDismissed, setSecurityDismissed] = useState(false);
+  const [showCommitTypes, setShowCommitTypes] = useState(false);
   const searchInputRef = useRef(null);
 
+  // ── docking WM helpers for opening PR panel ────
+  const dockNodes = useSelector(selectNodes);
+  const dockTabs = useSelector(selectTabs);
+
+  /** Open (or focus) the Pull Requests panel in the docking layout */
+  const openPRPanel = useCallback(() => {
+    // Check if a PR tab already exists
+    const panelType = IDE_PANEL.PULL_REQUESTS;
+    let existing = null;
+    for (const [nodeId, node] of Object.entries(dockNodes)) {
+      if (node.type !== 'tabgroup') continue;
+      for (const tId of node.tabs || []) {
+        const t = dockTabs[tId];
+        if (t && t.panelType === panelType) {
+          existing = { tabId: tId, groupId: nodeId };
+          break;
+        }
+      }
+      if (existing) break;
+    }
+
+    if (existing) {
+      dispatch(setFocusedTabGroup(existing.groupId));
+      dispatch(activateTabAction({ tabId: existing.tabId }));
+      return;
+    }
+
+    // Find a sidebar group to open the tab in
+    const SIDEBAR_PANELS = new Set(['explorer', 'search', 'git', 'extensions', 'extension-view', 'chat', 'pullrequests', 'settings']);
+    const groups = Object.entries(dockNodes).filter(([, n]) => n.type === 'tabgroup');
+    let targetGroupId = null;
+    for (const [groupId, group] of groups) {
+      for (const tId of group.tabs || []) {
+        const t = dockTabs[tId];
+        if (t && SIDEBAR_PANELS.has(t.panelType)) {
+          targetGroupId = groupId;
+          break;
+        }
+      }
+      if (targetGroupId) break;
+    }
+    if (!targetGroupId && groups.length > 0) targetGroupId = groups[0][0];
+
+    if (targetGroupId) {
+      dispatch(openTab({
+        panelType,
+        title: 'Pull Requests',
+        targetTabGroupId: targetGroupId,
+      }));
+      dispatch(setFocusedTabGroup(targetGroupId));
+    }
+  }, [dispatch, dockNodes, dockTabs]);
+
+  /** Open (or focus) the Commit History panel in the bottom area */
+  const openCommitHistoryPanel = useCallback(() => {
+    const panelType = IDE_PANEL.COMMIT_HISTORY;
+    // Check if already open
+    for (const [nodeId, node] of Object.entries(dockNodes)) {
+      if (node.type !== 'tabgroup') continue;
+      for (const tId of node.tabs || []) {
+        const t = dockTabs[tId];
+        if (t && t.panelType === panelType) {
+          dispatch(setFocusedTabGroup(nodeId));
+          dispatch(activateTabAction({ tabId: tId }));
+          return;
+        }
+      }
+    }
+    // Find a bottom-area group (terminal, problems, output)
+    const BOTTOM_PANELS = new Set(['terminal', 'problems', 'output']);
+    const groups = Object.entries(dockNodes).filter(([, n]) => n.type === 'tabgroup');
+    let targetGroupId = null;
+    for (const [groupId, group] of groups) {
+      for (const tId of group.tabs || []) {
+        const t = dockTabs[tId];
+        if (t && BOTTOM_PANELS.has(t.panelType)) {
+          targetGroupId = groupId;
+          break;
+        }
+      }
+      if (targetGroupId) break;
+    }
+    if (!targetGroupId && groups.length > 0) targetGroupId = groups[0][0];
+
+    if (targetGroupId) {
+      dispatch(openTab({
+        panelType,
+        title: 'Commit History',
+        targetTabGroupId: targetGroupId,
+      }));
+      dispatch(setFocusedTabGroup(targetGroupId));
+    }
+  }, [dispatch, dockNodes, dockTabs]);
+
   // ── data refresh ───────────────────────────────
-  const refreshGitData = useCallback(() => {
+  const refreshGitData = useCallback(async () => {
     if (!slug) return;
     dispatch(fetchGitStatus(slug));
     dispatch(fetchRemotes(slug));
@@ -202,6 +328,19 @@ export function GitStatus({ slug }) {
     dispatch(fetchUnpushedCommits({ slug, max: 50 }));
     dispatch(fetchIncomingCommits({ slug, max: 50 }));
     dispatch(fetchStashList(slug));
+    
+    // Check stored token
+    const storedToken = getStoredToken(slug);
+    if (storedToken) dispatch(setHasToken(true));
+    
+    // Also fetch PR info if available
+    const infoResult = await dispatch(fetchGithubInfo(slug));
+    if (fetchGithubInfo.fulfilled.match(infoResult)) {
+      const info = infoResult.payload;
+      if (info?.owner && info.repo && storedToken) {
+        dispatch(fetchPRList({ owner: info.owner, repo: info.repo, slug }));
+      }
+    }
   }, [slug, dispatch]);
 
   useEffect(() => {
@@ -226,6 +365,22 @@ export function GitStatus({ slug }) {
     if (fetchRemote.fulfilled.match(result)) toast.success('Fetched latest from remote');
   };
 
+  const handleRefreshPRs = async () => {
+    const token = getStoredToken(slug);
+    if (!token) return;
+    
+    let info = githubInfo;
+    if (!info?.owner || !info?.repo) {
+      const infoResult = await dispatch(fetchGithubInfo(slug));
+      if (fetchGithubInfo.fulfilled.match(infoResult)) {
+        info = infoResult.payload;
+      }
+    }
+    if (info?.owner && info?.repo) {
+      dispatch(fetchPRList({ owner: info.owner, repo: info.repo, slug }));
+    }
+  };
+
   const handleAddRemote = async () => {
     if (!slug || !newRemoteName || !newRemoteUrl) return;
     const valid = newRemoteUrl.startsWith('http://') || newRemoteUrl.startsWith('https://') || newRemoteUrl.includes('@');
@@ -243,6 +398,28 @@ export function GitStatus({ slug }) {
       const result = await dispatch(removeRemote({ slug, name }));
       if (removeRemote.fulfilled.match(result)) toast.success(`Remote '${name}' removed`);
     }
+  };
+
+  const handleEditRemoteStart = (remote) => {
+    setEditingRemote(remote.name);
+    setEditRemoteUrl(remote.refs?.push || '');
+  };
+
+  const handleEditRemoteSave = async () => {
+    if (!slug || !editingRemote || !editRemoteUrl) return;
+    const valid = editRemoteUrl.startsWith('http://') || editRemoteUrl.startsWith('https://') || editRemoteUrl.includes('@');
+    if (!valid) { toast.error('Please enter a valid remote URL (https://... or git@...)'); return; }
+    const result = await dispatch(setRemoteUrl({ slug, name: editingRemote, url: editRemoteUrl }));
+    if (setRemoteUrl.fulfilled.match(result)) {
+      toast.success(`Remote '${editingRemote}' URL updated`);
+      setEditingRemote(null);
+      setEditRemoteUrl('');
+    }
+  };
+
+  const handleEditRemoteCancel = () => {
+    setEditingRemote(null);
+    setEditRemoteUrl('');
   };
 
   const handlePull = async () => {
@@ -266,13 +443,20 @@ export function GitStatus({ slug }) {
     }
   };
 
-  const handlePush = async () => {
+  const handlePush = async (force = false) => {
     if (!slug) return;
-    const result = await dispatch(pushChanges(slug));
+    if (force && !window.confirm('Force push will overwrite remote history. This uses --force-with-lease for safety. Continue?')) return;
+    const result = await dispatch(pushChanges(force ? { slug, force: true } : slug));
     if (pushChanges.fulfilled.match(result)) {
-      toast.success('Pushed to remote');
+      toast.success(force ? 'Force pushed to remote' : 'Pushed to remote');
     } else if (pushChanges.rejected.match(result)) {
-      toast.error(result.payload?.message || result.error?.message || 'Push failed');
+      const errMsg = result.payload?.message || result.error?.message || 'Push failed';
+      // Suggest force push if rejected due to non-fast-forward
+      if (!force && /non-fast-forward|rejected|fetch first|cannot lock ref/i.test(errMsg)) {
+        toast.error('Push rejected — remote has changes. Try Force Push (uses --force-with-lease).', { duration: 6000 });
+      } else {
+        toast.error(errMsg);
+      }
     }
   };
 
@@ -285,9 +469,10 @@ export function GitStatus({ slug }) {
     setMessage('');
     setCommitBody('');
     setShowCommitBody(false);
-    const resultAction = await dispatch(commitChanges({ slug, message: fullMessage }));
+    setAmendMode(false);
+    const resultAction = await dispatch(commitChanges({ slug, message: fullMessage, amend: amendMode }));
     if (commitChanges.fulfilled.match(resultAction)) {
-      toast.success(`Committed: ${prevMessage}`);
+      toast.success(amendMode ? `Amended commit` : `Committed: ${prevMessage}`);
     } else {
       // Restore the message on failure so the user doesn't lose their input
       setMessage(prevMessage);
@@ -295,6 +480,32 @@ export function GitStatus({ slug }) {
       if (prevBody) setShowCommitBody(true);
       const errMsg = resultAction?.error?.message || 'Commit failed';
       toast.error(errMsg);
+    }
+  };
+
+  const handleCommitAndPush = async () => {
+    if (!slug || !message) return;
+    const fullMessage = commitBody ? `${message}\n\n${commitBody}` : message;
+    const prevMessage = message;
+    const prevBody = commitBody;
+    setMessage('');
+    setCommitBody('');
+    setShowCommitBody(false);
+    setAmendMode(false);
+    const commitResult = await dispatch(commitChanges({ slug, message: fullMessage, amend: amendMode }));
+    if (commitChanges.fulfilled.match(commitResult)) {
+      toast.success(amendMode ? 'Amended commit' : `Committed: ${prevMessage}`);
+      const pushResult = await dispatch(pushChanges(slug));
+      if (pushChanges.fulfilled.match(pushResult)) {
+        toast.success('Pushed to remote');
+      } else {
+        toast.error(pushResult?.error?.message || 'Push failed after commit');
+      }
+    } else {
+      setMessage(prevMessage);
+      setCommitBody(prevBody);
+      if (prevBody) setShowCommitBody(true);
+      toast.error(commitResult?.error?.message || 'Commit failed');
     }
   };
 
@@ -309,6 +520,13 @@ export function GitStatus({ slug }) {
     if (!slug) return;
     const result = await dispatch(stashPop({ slug, index }));
     if (stashPop.fulfilled.match(result)) toast.success('Stash applied and removed');
+    dispatch(refreshWorkspaceThunk());
+  };
+  const handleStashApply = async (index = 0) => {
+    if (!slug) return;
+    const result = await dispatch(stashApply({ slug, index }));
+    if (stashApply.fulfilled.match(result)) toast.success('Stash applied (kept in list)');
+    else toast.error(result?.error?.message || 'Failed to apply stash');
     dispatch(refreshWorkspaceThunk());
   };
   const handleStashDrop = async (index = 0) => {
@@ -396,7 +614,14 @@ export function GitStatus({ slug }) {
   const handleCloneRepo = async () => {
     if (!slug || !cloneUrl) return;
     try {
-      await dispatch(cloneRepo({ slug, repoUrl: cloneUrl, token: null }));
+      // Extract token from URL (if embedded) and pass it separately
+      const embeddedToken = extractTokenFromUrl(cloneUrl);
+      const cleanUrl = embeddedToken ? stripTokenFromUrl(cloneUrl) : cloneUrl;
+      await dispatch(cloneRepo({ slug, repoUrl: cleanUrl, token: embeddedToken }));
+      // Persist the token globally so all future git ops can use it
+      if (embeddedToken) {
+        localStorage.setItem('synthi:global-github-token', embeddedToken);
+      }
       dispatch(fetchFilesThunk(slug));
       dispatch(fetchGitStatus(slug));
       setCloneUrl('');
@@ -482,6 +707,33 @@ export function GitStatus({ slug }) {
     '--graph-4': '#8b5cf6', '--graph-5': '#06b6d4', '--graph-6': '#f43f5e', '--graph-7': '#84cc16',
   };
 
+  // ── Keyboard shortcuts for git operations ──────
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      // Only activate when focus is within the git panel or commit input
+      const isGitPanel = e.target.closest?.('[data-git-panel]');
+      if (!isGitPanel) return;
+
+      // Ctrl+Enter = Commit
+      if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey) {
+        e.preventDefault();
+        if (message && (amendMode || staged.length > 0)) handleCommit();
+      }
+      // Ctrl+Shift+Enter = Commit & Push
+      if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && e.shiftKey && !e.altKey) {
+        e.preventDefault();
+        if (message && (amendMode || staged.length > 0)) handleCommitAndPush();
+      }
+      // Ctrl+Shift+P = Push (when not in a text input)
+      if (e.key === 'p' && (e.ctrlKey || e.metaKey) && e.shiftKey && e.target.tagName !== 'INPUT' && e.target.tagName !== 'TEXTAREA') {
+        e.preventDefault();
+        handlePush(false);
+      }
+    };
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, [message, amendMode, staged, handleCommit, handleCommitAndPush, handlePush]);
+
   // ── No git ─────────────────────────────────────
   if (status === null) {
     return (
@@ -521,7 +773,8 @@ export function GitStatus({ slug }) {
 
 
   return (
-    <div className="flex flex-col h-full w-full overflow-hidden" style={graphStyle}>
+    <>
+    <div data-git-panel className="flex flex-col h-full w-full overflow-hidden" style={graphStyle}>
       {/* ── Header ────────────────────────────────── */}
       <div className="px-2 py-1.5 font-semibold text-xs uppercase tracking-wider text-[#a1a1aa] border-b border-[#27272a] flex justify-between items-center">
         <span>Source Control</span>
@@ -530,7 +783,8 @@ export function GitStatus({ slug }) {
             className="hover:bg-[#27272a] p-1 rounded text-[#a1a1aa] hover:text-[#e4e4e7] transition-colors disabled:opacity-50">
             <DownloadCloud className="w-3 h-3" strokeWidth={1.5} />
           </button>
-          <button onClick={handlePush} disabled={loading} title="Push to Remote"
+          <button onClick={() => handlePush(false)} onContextMenu={e => { e.preventDefault(); handlePush(true); }} disabled={loading}
+            title="Push to Remote (right-click for Force Push)"
             className="hover:bg-[#27272a] p-1 rounded text-[#a1a1aa] hover:text-[#e4e4e7] transition-colors disabled:opacity-50">
             <UploadCloud className="w-3 h-3" strokeWidth={1.5} />
           </button>
@@ -692,26 +946,60 @@ export function GitStatus({ slug }) {
                 const hasTokenInUrl = urlContainsToken(remote.refs?.push);
                 const displayUrl = hasTokenInUrl ? maskRemoteUrl(remote.refs?.push) : humanRemoteUrl(remote.refs?.push);
                 const cleanWebUrl = remote.refs?.push?.replace(/\.git$/, '').replace(/https?:\/\/[^@/]+@/, 'https://');
+                const isEditing = editingRemote === remote.name;
 
                 return (
-                  <li key={remote.name} className="flex items-center gap-1.5 px-1.5 py-1 hover:bg-[#27272a] rounded group transition-colors">
-                    <ProviderIcon provider={provider} className="w-3.5 h-3.5 text-[#a1a1aa] flex-shrink-0" />
-                    <span className="text-xs font-medium text-[#e4e4e7]">{remote.name}</span>
-                    <span className="text-[10px] text-[#52525b] truncate flex-1 text-right" title={remote.refs?.push}>
-                      {displayUrl}
-                    </span>
-                    <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0">
-                      {cleanWebUrl?.startsWith('https') && (
-                        <a href={cleanWebUrl} target="_blank" rel="noreferrer"
-                          className="hover:bg-[#3f3f46] p-0.5 rounded text-[#a1a1aa] hover:text-[#e4e4e7]" title="Open in browser">
-                          <ExternalLink className="w-3 h-3" />
-                        </a>
-                      )}
-                      <button onClick={() => handleRemoveRemoteClick(remote.name)}
-                        className="hover:bg-red-500/10 p-0.5 rounded text-[#a1a1aa] hover:text-red-400" title="Remove remote">
-                        <Trash2 className="w-3 h-3" strokeWidth={1.5} />
-                      </button>
-                    </div>
+                  <li key={remote.name} className="px-1.5 py-1 hover:bg-[#27272a] rounded group transition-colors">
+                    {isEditing ? (
+                      <div className="space-y-1.5">
+                        <div className="flex items-center gap-1.5">
+                          <ProviderIcon provider={provider} className="w-3.5 h-3.5 text-[#a1a1aa] flex-shrink-0" />
+                          <span className="text-xs font-medium text-[#e4e4e7]">{remote.name}</span>
+                        </div>
+                        <input
+                          className="w-full bg-[#09090b] border border-[#3b82f6] rounded px-2 py-1 text-xs text-[#e4e4e7] focus:outline-none focus:ring-1 focus:ring-[#3b82f6]"
+                          value={editRemoteUrl}
+                          onChange={e => setEditRemoteUrl(e.target.value)}
+                          onKeyDown={e => { if (e.key === 'Enter') handleEditRemoteSave(); if (e.key === 'Escape') handleEditRemoteCancel(); }}
+                          autoFocus
+                          placeholder="https://github.com/user/repo.git"
+                        />
+                        <div className="flex gap-1.5">
+                          <button onClick={handleEditRemoteSave} disabled={loading}
+                            className="border border-[#3b82f6] bg-transparent hover:bg-[#3b82f6]/10 disabled:opacity-50 text-[#3b82f6] px-2 py-0.5 rounded text-xs flex-1 transition-colors">
+                            {loading ? <RefreshCw className="w-3 h-3 animate-spin mx-auto" /> : 'Save'}
+                          </button>
+                          <button onClick={handleEditRemoteCancel}
+                            className="border border-[#3f3f46] bg-transparent hover:bg-[#27272a] text-[#a1a1aa] px-2 py-0.5 rounded text-xs flex-1 transition-colors">
+                            Cancel
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="flex items-center gap-1.5">
+                        <ProviderIcon provider={provider} className="w-3.5 h-3.5 text-[#a1a1aa] flex-shrink-0" />
+                        <span className="text-xs font-medium text-[#e4e4e7]">{remote.name}</span>
+                        <span className="text-[10px] text-[#52525b] truncate flex-1 text-right" title={remote.refs?.push}>
+                          {displayUrl}
+                        </span>
+                        <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0">
+                          {cleanWebUrl?.startsWith('https') && (
+                            <a href={cleanWebUrl} target="_blank" rel="noreferrer"
+                              className="hover:bg-[#3f3f46] p-0.5 rounded text-[#a1a1aa] hover:text-[#e4e4e7]" title="Open in browser">
+                              <ExternalLink className="w-3 h-3" />
+                            </a>
+                          )}
+                          <button onClick={() => handleEditRemoteStart(remote)}
+                            className="hover:bg-[#3b82f6]/10 p-0.5 rounded text-[#a1a1aa] hover:text-[#3b82f6]" title="Edit remote URL">
+                            <Edit3 className="w-3 h-3" strokeWidth={1.5} />
+                          </button>
+                          <button onClick={() => handleRemoveRemoteClick(remote.name)}
+                            className="hover:bg-red-500/10 p-0.5 rounded text-[#a1a1aa] hover:text-red-400" title="Remove remote">
+                            <Trash2 className="w-3 h-3" strokeWidth={1.5} />
+                          </button>
+                        </div>
+                      </div>
+                    )}
                   </li>
                 );
               })}
@@ -744,10 +1032,17 @@ export function GitStatus({ slug }) {
                   </li>
                 ))}
               </ul>
-              <button onClick={handlePush}
-                className="mt-1.5 w-full border border-[#3b82f6]/40 bg-transparent hover:bg-[#3b82f6]/10 text-[#3b82f6] py-0.5 rounded text-xs transition-colors">
-                Push {unpushedCommits.length} commit{unpushedCommits.length > 1 ? 's' : ''}
-              </button>
+              <div className="mt-1.5 flex gap-1">
+                <button onClick={() => handlePush(false)}
+                  className="flex-1 border border-[#3b82f6]/40 bg-transparent hover:bg-[#3b82f6]/10 text-[#3b82f6] py-0.5 rounded text-xs transition-colors">
+                  Push {unpushedCommits.length} commit{unpushedCommits.length > 1 ? 's' : ''}
+                </button>
+                <button onClick={() => handlePush(true)}
+                  className="border border-amber-500/40 bg-transparent hover:bg-amber-500/10 text-amber-400 py-0.5 px-1.5 rounded text-xs transition-colors"
+                  title="Force Push (--force-with-lease)">
+                  <ShieldAlert className="w-3 h-3" />
+                </button>
+              </div>
             </>
           ) : (
             <div className="text-[10px] text-[#52525b] px-1 italic">Nothing to push</div>
@@ -801,7 +1096,10 @@ export function GitStatus({ slug }) {
                   <code className="font-mono text-[10px] text-[#a1a1aa] flex-shrink-0">stash@{`{${idx}}`}</code>
                   <span className="truncate text-xs text-[#e4e4e7] flex-1">{s.message || 'WIP'}</span>
                   <div className="flex gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0">
-                    <button onClick={() => handleStashPop(idx)} className="hover:bg-[#27272a] p-0.5 rounded text-[#a1a1aa] hover:text-[#e4e4e7]" title="Pop stash">
+                    <button onClick={() => handleStashApply(idx)} className="hover:bg-[#27272a] p-0.5 rounded text-[#a1a1aa] hover:text-emerald-400" title="Apply stash (keep)">
+                      <Check className="w-3 h-3" strokeWidth={1.5} />
+                    </button>
+                    <button onClick={() => handleStashPop(idx)} className="hover:bg-[#27272a] p-0.5 rounded text-[#a1a1aa] hover:text-[#e4e4e7]" title="Pop stash (apply & remove)">
                       <ArchiveRestore className="w-3 h-3" strokeWidth={1.5} />
                     </button>
                     <button onClick={() => handleStashDrop(idx)} className="hover:bg-red-500/10 p-0.5 rounded text-[#a1a1aa] hover:text-red-400" title="Drop stash">
@@ -813,6 +1111,131 @@ export function GitStatus({ slug }) {
             </ul>
           ) : (
             <div className="text-[10px] text-[#52525b] px-1 italic">No stashed changes</div>
+          )}
+        </SectionHeader>
+
+        {/* ── Pull Requests ──────────────────────── */}
+        <SectionHeader 
+          title="Pull Requests" 
+          count={prList.filter(p => p.state === 'open').length} 
+          defaultOpen={true}
+          actions={
+            <div className="flex items-center gap-0.5">
+              {prHasToken && githubInfo?.provider === 'github' && (
+                <button 
+                  onClick={() => {
+                    openPRPanel();
+                    // Small delay to let view switch, then trigger create
+                    setTimeout(() => window.dispatchEvent(new CustomEvent('synthi:pr-action', { detail: 'create' })), 100);
+                  }}
+                  className="p-0.5 rounded hover:bg-[#27272a] text-[#71717a] hover:text-emerald-400" 
+                  title="Create Pull Request"
+                >
+                  <Plus className="w-3 h-3" />
+                </button>
+              )}
+              <button 
+                onClick={() => openPRPanel()}
+                className="p-0.5 rounded hover:bg-[#27272a] text-[#71717a] hover:text-[#a1a1aa]" 
+                title="Open Pull Requests panel"
+              >
+                <Maximize2 className="w-3 h-3" />
+              </button>
+              <button 
+                onClick={() => {
+                  if (githubInfo?.htmlUrl) {
+                    window.open(githubInfo.htmlUrl + '/pulls', '_blank');
+                  } else {
+                    openPRPanel();
+                  }
+                }}
+                className="p-0.5 rounded hover:bg-[#27272a] text-[#71717a] hover:text-[#a1a1aa]" 
+                title="Manage PRs on GitHub"
+              >
+                <ExternalLink className="w-3 h-3" />
+              </button>
+              <button onClick={handleRefreshPRs} className="p-0.5 rounded hover:bg-[#27272a] text-[#71717a] hover:text-[#a1a1aa]" title="Refresh PRs">
+                <RefreshCw className={`w-3 h-3 ${prListLoading ? 'animate-spin' : ''}`} />
+              </button>
+            </div>
+          }
+        >
+          {/* No token state */}
+          {!prHasToken && githubInfo?.provider === 'github' && (
+            <div className="px-1.5 py-1.5">
+              <p className="text-[10px] text-[#71717a] mb-1.5">Connect GitHub to manage pull requests</p>
+              <button 
+                onClick={() => setShowTokenModalFromSCM(true)}
+                className="flex items-center gap-1 text-[10px] px-2 py-1 rounded border border-[#3f3f46] hover:bg-[#27272a] text-[#a1a1aa] hover:text-[#e4e4e7] transition-colors"
+              >
+                <Key className="w-2.5 h-2.5" />
+                Add GitHub Token
+              </button>
+            </div>
+          )}
+
+          {/* No GitHub remote */}
+          {githubInfo && githubInfo.provider !== 'github' && (
+            <div className="text-[10px] text-[#52525b] px-1 italic">
+              {githubInfo.provider ? `${githubInfo.provider} remote detected — PRs supported for GitHub only` : 'No GitHub remote configured'}
+            </div>
+          )}
+
+          {/* Has token + GitHub remote — show PRs */}
+          {prHasToken && githubInfo?.provider === 'github' && (
+            <>
+              {prListLoading && prList.length === 0 ? (
+                <div className="flex items-center gap-1.5 px-1.5 py-1 text-[10px] text-[#71717a]">
+                  <RefreshCw className="w-2.5 h-2.5 animate-spin" /> Loading PRs…
+                </div>
+              ) : prList.filter(p => p.state === 'open').length > 0 ? (
+                <ul className="space-y-0.5">
+                  {prList.filter(p => p.state === 'open').slice(0, 5).map(pr => (
+                    <li key={pr.id} className="group flex items-center gap-1.5 px-1.5 py-1 rounded hover:bg-[#27272a] cursor-pointer"
+                      onClick={() => {
+                        dispatch(setActivePR(pr));
+                        openPRPanel();
+                      }}>
+                      <GitPullRequest className="w-3 h-3 text-emerald-500 flex-shrink-0" />
+                      <span className="truncate text-xs text-[#e4e4e7] flex-1">
+                        <span className="text-[#71717a] mr-1">#{pr.number}</span>
+                        {pr.title}
+                      </span>
+                      <span className="text-[9px] text-[#52525b] flex-shrink-0">{relativeTime(pr.updated_at)}</span>
+                    </li>
+                  ))}
+                  {prList.filter(p => p.state === 'open').length > 5 && (
+                    <li className="px-1.5 py-0.5">
+                      <button 
+                        onClick={() => openPRPanel()}
+                        className="text-[10px] text-[#71717a] hover:text-[#a1a1aa] underline"
+                      >
+                        View all {prList.filter(p => p.state === 'open').length} pull requests →
+                      </button>
+                    </li>
+                  )}
+                </ul>
+              ) : (
+                <div className="px-1.5 py-1.5">
+                  <div className="text-[10px] text-[#52525b] italic mb-1.5">No open pull requests</div>
+                  <button 
+                    onClick={() => {
+                      openPRPanel();
+                      setTimeout(() => window.dispatchEvent(new CustomEvent('synthi:pr-action', { detail: 'create' })), 100);
+                    }}
+                    className="flex items-center gap-1 text-[10px] px-2 py-1 rounded border border-emerald-600/40 hover:bg-emerald-600/10 text-emerald-400 transition-colors"
+                  >
+                    <Plus className="w-2.5 h-2.5" />
+                    Create Pull Request
+                  </button>
+                </div>
+              )}
+            </>
+          )}
+
+          {/* No info yet / loading */}
+          {!githubInfo && !prListLoading && (
+            <div className="text-[10px] text-[#52525b] px-1 italic">Detecting remote…</div>
           )}
         </SectionHeader>
 
@@ -837,6 +1260,11 @@ export function GitStatus({ slug }) {
                 ? `${filteredCommits.length}/${allCommits.length}`
                 : allCommits.length}
             </span>
+            <button onClick={openCommitHistoryPanel}
+              className="p-0.5 rounded text-[#71717a] hover:text-[#e4e4e7] hover:bg-[#27272a] transition-colors flex-shrink-0"
+              title="Open full Commit History panel">
+              <Maximize2 className="w-3 h-3" />
+            </button>
           </div>
 
           {dateGroups.length > 0 ? (
@@ -942,28 +1370,55 @@ export function GitStatus({ slug }) {
                   </button>
                 </div>
                 <ul className="space-y-0.5">
-                  {changes.map(file => (
-                    <li key={`changes-${file.path}`}
-                      className="flex items-center justify-between hover:bg-[#27272a] px-1.5 py-1 rounded group cursor-pointer transition-colors"
-                      onClick={() => handleFileClick(file)}>
-                      <div className="flex items-center gap-1.5 overflow-hidden min-w-0">
-                        <span className="w-3 text-center font-mono text-[10px] text-amber-400 flex-shrink-0">
-                          {file.working_dir === '?' ? 'U' : 'M'}
-                        </span>
-                        <span className="truncate text-xs text-[#e4e4e7]" title={file.path}>{file.path}</span>
-                      </div>
-                      <div className="flex gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0">
-                        <button onClick={(e) => handleDiscard(e, file.path)}
-                          className="hover:bg-[#3f3f46] p-0.5 rounded text-[#a1a1aa] hover:text-[#e4e4e7]" title="Discard Changes">
-                          <Undo2 className="w-3 h-3" strokeWidth={1.5} />
-                        </button>
-                        <button onClick={(e) => handleStage(e, file.path)}
-                          className="hover:bg-[#3f3f46] p-0.5 rounded text-[#a1a1aa] hover:text-[#e4e4e7]" title="Stage">
-                          <Plus className="w-3 h-3" strokeWidth={1.5} />
-                        </button>
-                      </div>
-                    </li>
-                  ))}
+                  {changes.map(file => {
+                    const isUntracked = file.working_dir === '?';
+                    const showHunkStaging = hunkStagingFile === file.path;
+                    return (
+                      <li key={`changes-${file.path}`} className="space-y-0">
+                        <div
+                          className="flex items-center justify-between hover:bg-[#27272a] px-1.5 py-1 rounded group cursor-pointer transition-colors"
+                          onClick={() => handleFileClick(file)}>
+                          <div className="flex items-center gap-1.5 overflow-hidden min-w-0">
+                            <span className="w-3 text-center font-mono text-[10px] text-amber-400 flex-shrink-0">
+                              {isUntracked ? 'U' : 'M'}
+                            </span>
+                            <span className="truncate text-xs text-[#e4e4e7]" title={file.path}>{file.path}</span>
+                          </div>
+                          <div className="flex gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0">
+                            <button onClick={(e) => handleDiscard(e, file.path)}
+                              className="hover:bg-[#3f3f46] p-0.5 rounded text-[#a1a1aa] hover:text-[#e4e4e7]" title="Discard Changes">
+                              <Undo2 className="w-3 h-3" strokeWidth={1.5} />
+                            </button>
+                            {!isUntracked && (
+                              <button onClick={(e) => {
+                                e.stopPropagation();
+                                // Toggle inline hunk staging view in the SCM panel
+                                setHunkStagingFile(showHunkStaging ? null : file.path);
+                              }}
+                                className={`hover:bg-[#3b82f6]/10 p-0.5 rounded transition-colors ${showHunkStaging ? 'text-[#3b82f6] bg-[#3b82f6]/10' : 'text-[#a1a1aa] hover:text-[#3b82f6]'}`}
+                                title={showHunkStaging ? 'Close selective staging' : 'Stage selected lines'}>
+                                <Edit3 className="w-3 h-3" strokeWidth={1.5} />
+                              </button>
+                            )}
+                            <button onClick={(e) => handleStage(e, file.path)}
+                              className="hover:bg-[#3f3f46] p-0.5 rounded text-[#a1a1aa] hover:text-[#e4e4e7]" title="Stage">
+                              <Plus className="w-3 h-3" strokeWidth={1.5} />
+                            </button>
+                          </div>
+                        </div>
+                        {/* Inline hunk staging view — React DOM, no Monaco dependency */}
+                        {showHunkStaging && (
+                          <div className="ml-4 mr-1 mt-0.5 mb-1 border border-[#27272a] rounded-md overflow-hidden">
+                            <HunkStagingView
+                              slug={slug}
+                              filePath={file.path}
+                              onClose={() => setHunkStagingFile(null)}
+                            />
+                          </div>
+                        )}
+                      </li>
+                    );
+                  })}
                 </ul>
               </SectionHeader>
             )}
@@ -975,20 +1430,48 @@ export function GitStatus({ slug }) {
       {hasChanges && (
         <div className="p-2 border-t border-[#27272a]">
           <div className="space-y-1.5">
-            <div className="flex gap-1.5">
+            <div className="flex flex-wrap gap-1.5 relative">
+              <button onClick={() => setShowCommitTypes(!showCommitTypes)}
+                className={`p-1 rounded text-xs transition-colors flex-shrink-0 ${showCommitTypes ? 'bg-[#27272a] text-[#e4e4e7]' : 'text-[#a1a1aa] hover:text-[#e4e4e7] hover:bg-[#27272a]'}`}
+                title="Conventional Commit type">
+                <ChevronDown className="w-3 h-3" />
+              </button>
+              {showCommitTypes && (
+                <div className="absolute left-0 bottom-full mb-1 z-50 bg-[#1c1c1e] border border-[#3f3f46] rounded-lg shadow-xl py-1 min-w-[180px]">
+                  {COMMIT_TYPES.map(ct => (
+                    <button key={ct.type}
+                      onClick={() => {
+                        const scope = prompt(`Scope (optional, e.g. auth, api):`);
+                        const prefix = scope?.trim() ? `${ct.type}(${scope.trim()}): ` : `${ct.type}: `;
+                        setMessage(prefix + message.replace(/^(feat|fix|docs|style|refactor|perf|test|build|ci|chore)(\([^)]*\))?:\s*/i, ''));
+                        setShowCommitTypes(false);
+                      }}
+                      className="w-full text-left px-3 py-1 text-xs hover:bg-[#27272a] text-[#e4e4e7] flex items-center gap-2">
+                      <span>{ct.emoji}</span>
+                      <span className="font-medium">{ct.type}</span>
+                      <span className="text-[#52525b] text-[10px]">{ct.desc}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
               <input type="text" value={message} onChange={e => setMessage(e.target.value)}
-                placeholder="Commit message…"
-                className="flex-1 bg-[#18181b] border border-[#3f3f46] rounded px-2 py-1 text-xs text-[#e4e4e7] focus:outline-none focus:border-[#3b82f6] font-mono"
+                placeholder={amendMode ? "New commit message (amend)…" : "Commit message…"}
+                className="flex-1 min-w-0 bg-[#18181b] border border-[#3f3f46] rounded px-2 py-1 text-xs text-[#e4e4e7] focus:outline-none focus:border-[#3b82f6] font-mono"
                 onKeyDown={e => e.key === 'Enter' && !e.shiftKey && handleCommit()} />
               <button onClick={() => setShowCommitBody(!showCommitBody)}
                 className={`p-1 rounded text-xs transition-colors ${showCommitBody ? 'bg-[#27272a] text-[#e4e4e7]' : 'text-[#a1a1aa] hover:text-[#e4e4e7] hover:bg-[#27272a]'}`}
                 title="Add description">
                 <Edit3 className="w-3 h-3" />
               </button>
-              <button onClick={handleCommit} disabled={!message || staged.length === 0}
+              <button onClick={handleCommit} disabled={!message || (!amendMode && staged.length === 0)}
                 className="border border-[#3b82f6] bg-transparent hover:bg-[#3b82f6]/10 disabled:opacity-50 disabled:cursor-not-allowed text-[#3b82f6] p-1 rounded transition-colors"
-                title="Commit Staged">
+                title={amendMode ? "Amend Last Commit" : "Commit Staged"}>
                 <Check className="w-4 h-4" strokeWidth={1.5} />
+              </button>
+              <button onClick={handleCommitAndPush} disabled={!message || (!amendMode && staged.length === 0)}
+                className="border border-emerald-500 bg-transparent hover:bg-emerald-500/10 disabled:opacity-50 disabled:cursor-not-allowed text-emerald-500 p-1 rounded transition-colors"
+                title="Commit & Push">
+                <UploadCloud className="w-4 h-4" strokeWidth={1.5} />
               </button>
             </div>
             {showCommitBody && (
@@ -997,9 +1480,43 @@ export function GitStatus({ slug }) {
                 className="w-full bg-[#18181b] border border-[#3f3f46] rounded px-2 py-1 text-xs text-[#e4e4e7] focus:outline-none focus:border-[#3b82f6] resize-none font-mono"
                 rows={3} />
             )}
+            {/* Amend toggle */}
+            <div className="flex items-center gap-1.5">
+              <label className="flex items-center gap-1 cursor-pointer text-[10px] text-[#71717a] hover:text-[#a1a1aa]">
+                <input type="checkbox" checked={amendMode} onChange={e => {
+                  const enabled = e.target.checked;
+                  setAmendMode(enabled);
+                  // Pre-fill with last commit message when enabling amend
+                  if (enabled && unpushedCommits?.length > 0 && !message) {
+                    const lastMsg = unpushedCommits[0]?.message || '';
+                    const [subject, ...bodyParts] = lastMsg.split('\n\n');
+                    setMessage(subject || '');
+                    if (bodyParts.length) {
+                      setCommitBody(bodyParts.join('\n\n'));
+                      setShowCommitBody(true);
+                    }
+                  }
+                }}
+                  className="w-3 h-3 rounded accent-[#3b82f6]" />
+                <span>Amend last commit</span>
+              </label>
+            </div>
           </div>
         </div>
       )}
     </div>
+
+    {/* Token modal from SCM panel */}
+    {showTokenModalFromSCM && (
+      <GitHubTokenModal
+        slug={slug}
+        onClose={() => setShowTokenModalFromSCM(false)}
+        onSuccess={() => {
+          setShowTokenModalFromSCM(false);
+          handleRefreshPRs();
+        }}
+      />
+    )}
+    </>
   );
 }

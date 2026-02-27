@@ -13,6 +13,7 @@ import {
   Files,
   Search,
   GitBranch,
+  GitPullRequest,
   Puzzle,
   Settings,
   Sparkles,
@@ -48,6 +49,7 @@ const TOP_ITEMS = [
   { id: 'git',        panelType: IDE_PANEL.GIT,        label: 'Source Control',  Icon: GitBranch },
   { id: 'extensions', panelType: IDE_PANEL.EXTENSIONS, label: 'Extensions',      Icon: Puzzle },
   { id: 'chat',       panelType: IDE_PANEL.CHAT,       label: 'AI Chat',         Icon: MessageSquare },
+  { id: 'pullrequests', panelType: IDE_PANEL.PULL_REQUESTS, label: 'Pull Requests', Icon: GitPullRequest },
 ];
 
 // Bottom items removed — Terminal, Problems, Output are accessed via other means
@@ -92,7 +94,7 @@ export const DockingActivityBar = memo(function DockingActivityBar() {
 
     // Find a sidebar group — look for a group that already has sidebar-type tabs
     const groups = Object.entries(nodes).filter(([, n]) => n.type === 'tabgroup');
-    const SIDEBAR_PANELS = new Set(['explorer', 'search', 'git', 'extensions', 'extension-view', 'chat']);
+    const SIDEBAR_PANELS = new Set(['explorer', 'search', 'git', 'extensions', 'extension-view', 'chat', 'pullrequests']);
     let targetGroupId = null;
     for (const [groupId, group] of groups) {
       for (const tId of group.tabs || []) {

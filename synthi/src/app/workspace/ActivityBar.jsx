@@ -1,6 +1,6 @@
 "use client";
 
-import { Files, Search, GitBranch, Puzzle, Settings, Sparkles, Box } from "lucide-react";
+import { Files, Search, GitBranch, GitPullRequest, Puzzle, Settings, Sparkles, Box } from "lucide-react";
 
 /**
  * @param {Object} props
@@ -15,6 +15,7 @@ export default function ActivityBar({ active = "explorer", onSelect, badges = {}
     { id: "explorer", label: "Explorer", Icon: Files },
     { id: "search", label: "Search", Icon: Search },
     { id: "scm", label: "Source Control", Icon: GitBranch },
+    { id: "pullrequests", label: "Pull Requests", Icon: GitPullRequest },
     { id: "extensions", label: "Extensions", Icon: Puzzle },
   ];
 

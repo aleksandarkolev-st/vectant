@@ -17,6 +17,8 @@ import SynthiException from '@/components/SynthiException';
 import { fileCache } from '@/services/fileCache';
 import { loadScheduler } from '@/services/loadScheduler';
 import { perfMeasureToConsole, perfOnce } from '@/services/perfMarkers';
+import { openTab, selectNodes, selectTabs } from '@/components/docking-wm/state/layout-slice';
+import { IDE_PANEL } from '@/components/docking-wm/panels/ide-panels';
 
 // --- Initial State and Utilities ---
 
@@ -27,6 +29,47 @@ import { perfMeasureToConsole, perfOnce } from '@/services/perfMarkers';
  * inline re-definitions (DRY).
  */
 const normalizeTrailing = (s) => (typeof s === 'string' ? s.replace(/[\r\n]+$/, '') : '');
+
+/**
+ * Ensure the main editor panel tab exists in the docking layout.
+ * If it was closed, re-open it in the center area so that file
+ * selection / diff-open requests have somewhere to render.
+ */
+function ensureEditorPanel(dispatch, getState) {
+    const layoutState = getState().layout;
+    if (!layoutState) return;
+    const nodes = layoutState.nodes || {};
+    const tabs = layoutState.tabs || {};
+    // Check if an editor panel tab already exists
+    for (const node of Object.values(nodes)) {
+        if (node.type !== 'tabgroup') continue;
+        for (const tabId of node.tabs || []) {
+            const t = tabs[tabId];
+            if (t && t.panelType === IDE_PANEL.EDITOR) return; // already open
+        }
+    }
+    // Also check floating windows
+    for (const fw of Object.values(layoutState.floating || {})) {
+        const t = tabs[fw.tabId];
+        if (t && t.panelType === IDE_PANEL.EDITOR) return;
+    }
+    // Editor panel is missing — re-open it in the center area
+    const groups = Object.entries(nodes).filter(([, n]) => n.type === 'tabgroup');
+    const SIDEBAR = new Set(['explorer', 'search', 'git', 'extensions', 'extension-view', 'chat', 'pullrequests', 'settings']);
+    let targetGroupId = null;
+    // Prefer a center group (one that does not contain sidebar panels)
+    for (const [gid, group] of groups) {
+        const hasSidebar = (group.tabs || []).some(tid => {
+            const t = tabs[tid];
+            return t && SIDEBAR.has(t.panelType);
+        });
+        if (!hasSidebar) { targetGroupId = gid; break; }
+    }
+    if (!targetGroupId && groups.length > 0) targetGroupId = groups[0][0];
+    if (targetGroupId) {
+        dispatch(openTab({ panelType: IDE_PANEL.EDITOR, title: 'Editor', closable: true, targetTabGroupId: targetGroupId }));
+    }
+}
 
 export const initialWorkspaceState = {
     slug: null,
@@ -119,11 +162,10 @@ export const saveFileContentThunk = createAsyncThunk(
         let contentToSave = currentContent;
 
         // Skip ONLY when content truly hasn't changed (after normalization).
-        // When content is the same, still refresh git status so the Source
-        // Control panel picks up any out-of-band changes (e.g. from Yjs auto-
-        // flush or terminal-level edits).
+        // No git-status refresh here — there was no disk write, so nothing
+        // changed from git's perspective.  Out-of-band changes (terminal edits,
+        // Yjs flush) are caught by the FS-watcher-based refresh instead.
         if (normalizeTrailing(contentToSave) === normalizeTrailing(state.savedContent)) {
-            dispatch(fetchGitStatus(slug));
             return contentToSave; // fulfilled reducer marks as saved
         }
 
@@ -167,7 +209,9 @@ export const saveFileContentThunk = createAsyncThunk(
 // 3. File Selection (Manages cache and fetches content)
 export const selectFileThunk = createAsyncThunk(
     'workspace/selectFile',
-    async (file, { getState }) => {
+    async (file, { dispatch, getState }) => {
+        // Ensure the editor panel exists in the docking layout
+        ensureEditorPanel(dispatch, getState);
         const state = getState().workspace;
         const gitState = getState().git;
         const slug = state.slug;
@@ -459,6 +503,8 @@ export const deleteItemThunk = createAsyncThunk(
 export const openDiffThunk = createAsyncThunk(
     'workspace/openDiff',
     async (file, { dispatch, getState }) => {
+        // Ensure the editor panel exists in the docking layout
+        ensureEditorPanel(dispatch, getState);
         const state = getState().workspace;
         const slug = state.slug;
 
@@ -494,6 +540,36 @@ export const openDiffThunk = createAsyncThunk(
         }
 
         return { file, currentContent, originalContent };
+    }
+);
+
+// 8. Open Commit File Diff — compare file at commit vs parent commit (read-only)
+export const openCommitFileDiffThunk = createAsyncThunk(
+    'workspace/openCommitFileDiff',
+    async ({ filePath, commitHash }, { dispatch, getState }) => {
+        ensureEditorPanel(dispatch, getState);
+        const slug = getState().workspace.slug;
+
+        // Fetch content at this commit and its parent
+        let afterContent = '';
+        let beforeContent = '';
+        try {
+            const res = await gitClient.getFileContent(slug, filePath, commitHash);
+            afterContent = res.content ?? '';
+        } catch (_) { /* new file — no content at this commit */ }
+
+        try {
+            const res = await gitClient.getFileContent(slug, filePath, `${commitHash}~1`);
+            beforeContent = res.content ?? '';
+        } catch (_) { /* file didn't exist in parent — added in this commit */ }
+
+        const file = {
+            path: filePath,
+            name: filePath.split('/').pop(),
+            commitDiff: true,           // flag so editor knows this is read-only historical diff
+            commitHash,
+        };
+        return { file, currentContent: afterContent, originalContent: beforeContent };
     }
 );
 
@@ -739,6 +815,14 @@ const workspaceSlice = createSlice({
                 
                 // Update cache
                 try { fileCache.set(file.path, currentContent); } catch (_) {}
+            })
+            .addCase(openCommitFileDiffThunk.fulfilled, (state, action) => {
+                const { file, currentContent, originalContent } = action.payload;
+                state.activeFile = file;
+                state.currentContent = currentContent;
+                state.savedContent = currentContent; // read-only, no unsaved marker
+                state.originalContent = originalContent;
+                state.diffMode = true;
             })
             .addCase(selectFileThunk.fulfilled, (state, action) => {
                 const { file, content, fromCache } = action.payload;
