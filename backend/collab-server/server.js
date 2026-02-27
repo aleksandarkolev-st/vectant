@@ -64,6 +64,7 @@ const gitService = require('./gitService');
 const repoCache = require('./repoCache');
 const sessionManager = require('./SessionManager');
 const { extractSessionContext, requireGitActionPermission, wsRequirePermission, wsDenyAction, wsAttachContext } = require('./permissionMiddleware');
+const { acquireStagingLock, releaseStagingLock } = require('./fsWatcherService');
 
 // ── User block list (in-memory) ──────────────────────────────────────────────
 // blockedBy: userId → Set<blockedUserId>
@@ -1066,6 +1067,70 @@ function validateFilePath(filePath) {
     throw new Error(`filePath traversal rejected: ${filePath}`);
   }
   return normalized;
+}
+
+/**
+ * Force-flush any in-memory Yjs document content for a specific file to disk.
+ * Called before selective staging (git apply) so the patch always matches the
+ * actual file on disk, preventing "patch does not apply" errors caused by
+ * unflushed editor changes.
+ *
+ * @param {string} slug - workspace slug
+ * @param {string} filePath - file path within the repo
+ * @param {object} scope - { userId, sessionId } for doc name matching
+ */
+async function flushYjsDocForFile(slug, filePath, scope = {}) {
+  if (!slug || !filePath) return;
+
+  // Try the most likely doc name first (user-scoped)
+  const docName = buildDocName(slug, filePath, scope);
+  const entry = persistence.docObservers.get(docName);
+  if (entry && entry.text) {
+    // Cancel any pending debounced flush — we're writing immediately
+    if (entry.flushTimer) { clearTimeout(entry.flushTimer); entry.flushTimer = null; }
+    if (entry.diskFlushTimer) { clearTimeout(entry.diskFlushTimer); entry.diskFlushTimer = null; }
+
+    const content = entry.text.toString();
+    const effectiveUser = scope.userId || null;
+    if (effectiveUser) {
+      const repoPath = gitService.getEffectiveRepoPath(slug, effectiveUser);
+      if (fs.existsSync(repoPath)) {
+        const fullPath = path.join(repoPath, filePath);
+        await fsPromises.mkdir(path.dirname(fullPath), { recursive: true });
+        await fsPromises.writeFile(fullPath, content, 'utf-8');
+        entry.lastDiskWrite = Date.now();
+        entry.dirty = false;
+        const docKey = buildDocName(slug, filePath, scope);
+        fileHashCache.set(docKey, { hash: computeHash(content), timestamp: Date.now() });
+        console.log(`[Collab] Pre-stage flush: ${filePath} (${content.length} chars)`);
+      }
+    }
+    return;
+  }
+
+  // Fallback: scan all doc observers for any doc matching this slug+filePath
+  for (const [dn, obs] of persistence.docObservers.entries()) {
+    const parsed = parseDocName(dn);
+    if (!parsed || parsed.slug !== slug || parsed.filePath !== filePath) continue;
+    if (obs.text) {
+      if (obs.flushTimer) { clearTimeout(obs.flushTimer); obs.flushTimer = null; }
+      if (obs.diskFlushTimer) { clearTimeout(obs.diskFlushTimer); obs.diskFlushTimer = null; }
+      const content = obs.text.toString();
+      const uid = resolveEffectiveUserForDoc(parsed);
+      if (uid) {
+        const repoPath = gitService.getEffectiveRepoPath(slug, uid);
+        if (fs.existsSync(repoPath)) {
+          const fullPath = path.join(repoPath, filePath);
+          await fsPromises.mkdir(path.dirname(fullPath), { recursive: true });
+          await fsPromises.writeFile(fullPath, content, 'utf-8');
+          obs.lastDiskWrite = Date.now();
+          obs.dirty = false;
+          fileHashCache.set(dn, { hash: computeHash(content), timestamp: Date.now() });
+          console.log(`[Collab] Pre-stage flush (scan): ${filePath} (${content.length} chars)`);
+        }
+      }
+    }
+  }
 }
 
 async function invalidateDocsForSlug(slug, filePaths = null, scope = {}) {
@@ -2795,7 +2860,12 @@ const server = http.createServer(async (req, res) => {
                     broadcastGitStatusChanged(slug, undefined, notifyScope, { immediate: true });
                     break;
                 case 'stage':
+                    // Acquire staging lock to suppress FS watcher events during staging
+                    acquireStagingLock(slug, data.filePath);
+                    // Force-flush Yjs content to disk before staging
+                    await flushYjsDocForFile(slug, data.filePath, notifyScope);
                     result = await gitService.stageFile(slug, data.filePath, effectiveUserId);
+                    releaseStagingLock(slug, data.filePath);
                     broadcastGitStatusChanged(slug, undefined, notifyScope, { immediate: true });
                     break;
                 case 'stage-all':
@@ -2803,15 +2873,27 @@ const server = http.createServer(async (req, res) => {
                     broadcastGitStatusChanged(slug, undefined, notifyScope, { immediate: true });
                     break;
                 case 'stage-lines':
+                    // Acquire staging lock to suppress FS watcher events during staging
+                    acquireStagingLock(slug, data.filePath);
+                    // Force-flush Yjs content to disk before patching so the
+                    // working tree matches the editor state exactly.
+                    await flushYjsDocForFile(slug, data.filePath, notifyScope);
                     result = await gitService.stageLines(slug, data.filePath, data.patch, effectiveUserId);
+                    releaseStagingLock(slug, data.filePath);
                     broadcastGitStatusChanged(slug, undefined, notifyScope, { immediate: true });
                     break;
                 case 'unstage-lines':
+                    acquireStagingLock(slug, data.filePath);
+                    await flushYjsDocForFile(slug, data.filePath, notifyScope);
                     result = await gitService.unstageLines(slug, data.filePath, data.patch, effectiveUserId);
+                    releaseStagingLock(slug, data.filePath);
                     broadcastGitStatusChanged(slug, undefined, notifyScope, { immediate: true });
                     break;
                 case 'discard-lines':
+                    acquireStagingLock(slug, data.filePath);
+                    await flushYjsDocForFile(slug, data.filePath, notifyScope);
                     result = await gitService.discardLines(slug, data.filePath, data.patch, effectiveUserId);
+                    releaseStagingLock(slug, data.filePath);
                     broadcastFileReverted(slug, data.filePath ? [data.filePath] : [], notifyScope);
                     if (data.filePath) {
                       await invalidateDocsForSlug(slug, [data.filePath], notifyScope);
@@ -2819,7 +2901,9 @@ const server = http.createServer(async (req, res) => {
                     broadcastGitStatusChanged(slug, undefined, notifyScope, { immediate: true });
                     break;
                 case 'unstage':
+                    acquireStagingLock(slug, data.filePath);
                     result = await gitService.unstageFile(slug, data.filePath, effectiveUserId);
+                    releaseStagingLock(slug, data.filePath);
                     broadcastGitStatusChanged(slug, undefined, notifyScope, { immediate: true });
                     break;
                 case 'unstage-all':
