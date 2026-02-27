@@ -51,9 +51,10 @@ function GraphColumn({ graphNode, rowHeight = 36, totalLanes }) {
       {graphNode.activeLanes.map((lane, idx) => {
         if (lane === null) return null;
         const x = idx * colW + colW / 2 + 3;
+        const laneColor = graphNode.activeLaneColors?.[idx] || GRAPH_COLORS[idx % GRAPH_COLORS.length];
         return (
           <line key={`lane-${idx}`} x1={x} y1={0} x2={x} y2={rowHeight}
-            stroke={GRAPH_COLORS[idx % GRAPH_COLORS.length]} strokeWidth={1.5} opacity={0.35} />
+            stroke={laneColor} strokeWidth={1.5} opacity={0.35} />
         );
       })}
       {/* Current commit's own vertical rail (above and below node) */}
@@ -65,18 +66,20 @@ function GraphColumn({ graphNode, rowHeight = 36, totalLanes }) {
       {graphNode.mergeFromCols.map((mc, i) => {
         const mx = mc * colW + colW / 2 + 3;
         const d = `M ${mx} 0 C ${mx} ${cy * 0.55}, ${cx} ${cy * 0.45}, ${cx} ${cy}`;
+        const mergeColor = graphNode.activeLaneColors?.[mc] || GRAPH_COLORS[mc % GRAPH_COLORS.length];
         return (
           <path key={`merge-${i}`} d={d} fill="none"
-            stroke={GRAPH_COLORS[mc % GRAPH_COLORS.length]} strokeWidth={1.5} opacity={0.55} />
+            stroke={mergeColor} strokeWidth={1.5} opacity={0.55} />
         );
       })}
       {/* Closing lanes — branches merging into this commit's lane */}
       {(graphNode.closingLanes || []).map((cl, i) => {
         const clx = cl * colW + colW / 2 + 3;
         const d = `M ${clx} 0 C ${clx} ${cy * 0.55}, ${cx} ${cy * 0.45}, ${cx} ${cy}`;
+        const closeColor = graphNode.activeLaneColors?.[cl] || GRAPH_COLORS[cl % GRAPH_COLORS.length];
         return (
           <path key={`close-${i}`} d={d} fill="none"
-            stroke={GRAPH_COLORS[cl % GRAPH_COLORS.length]} strokeWidth={1.5} opacity={0.45} />
+            stroke={closeColor} strokeWidth={1.5} opacity={0.45} />
         );
       })}
       {/* Commit node — merge nodes are larger & hollow, regular commits are solid */}
@@ -401,7 +404,7 @@ export default function CommitHistoryPanel({ slug }) {
   }, [allCommits, searchQuery, authorFilter, dateFrom, dateTo]);
 
   // Build graph
-  const graphNodes = useMemo(() => buildCommitGraph(filteredCommits), [filteredCommits]);
+  const graphNodes = useMemo(() => buildCommitGraph(filteredCommits, refsMap), [filteredCommits, refsMap]);
   const maxLanes = useMemo(() => {
     let max = 0;
     for (const gn of graphNodes) {
