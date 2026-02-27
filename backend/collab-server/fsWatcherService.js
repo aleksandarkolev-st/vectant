@@ -64,6 +64,59 @@ const IGNORED_PATTERNS = [
 // ─── Watcher Registry ───────────────────────────────────────────────────────
 
 /**
+ * Staging lock — files currently involved in a git stage/unstage operation.
+ * While locked, FS watcher events for these paths are suppressed to prevent
+ * the editor from flickering due to race conditions between git index updates,
+ * auto-flush writes, and frontend React state.
+ *
+ * Key: "slug:relative/path" → Value: expiry timestamp (Date.now() + TTL)
+ */
+const stagingLocks = new Map();
+
+/** Default staging lock TTL in ms — auto-expires in case release is missed */
+const STAGING_LOCK_TTL_MS = 5000;
+
+/**
+ * Acquire a staging lock for a specific file.
+ * @param {string} slug
+ * @param {string} filePath - relative path within the repo
+ */
+function acquireStagingLock(slug, filePath) {
+  if (!slug || !filePath) return;
+  const key = `${slug}:${filePath}`;
+  stagingLocks.set(key, Date.now() + STAGING_LOCK_TTL_MS);
+}
+
+/**
+ * Release a staging lock for a specific file (with optional delay).
+ * @param {string} slug
+ * @param {string} filePath
+ * @param {number} [delayMs=800] - delay before releasing to absorb trailing FS events
+ */
+function releaseStagingLock(slug, filePath, delayMs = 800) {
+  if (!slug || !filePath) return;
+  const key = `${slug}:${filePath}`;
+  setTimeout(() => {
+    stagingLocks.delete(key);
+  }, delayMs);
+}
+
+/**
+ * Check if a file is currently staging-locked.
+ * Also cleans up expired locks.
+ */
+function isStagingLocked(slug, relativePath) {
+  const key = `${slug}:${relativePath}`;
+  const expiry = stagingLocks.get(key);
+  if (!expiry) return false;
+  if (Date.now() > expiry) {
+    stagingLocks.delete(key);
+    return false;
+  }
+  return true;
+}
+
+/**
  * @type {Map<string, {
  *   watcher: fs.FSWatcher,
  *   refCount: number,
@@ -206,9 +259,14 @@ function flushEvents(slug) {
   const entry = activeWatchers.get(slug);
   if (!entry || entry.pendingEvents.size === 0) return;
 
-  // Build the event list
+  // Build the event list, skipping staging-locked files
   const events = [];
   for (const [relativePath, eventType] of entry.pendingEvents) {
+    // Skip files currently being staged to prevent editor flickering
+    if (isStagingLocked(slug, relativePath)) {
+      continue;
+    }
+
     if (events.length >= MAX_EVENTS_PER_BATCH) {
       // Too many individual events — just tell the client to do a full refresh
       events.length = 0;
@@ -223,6 +281,9 @@ function flushEvents(slug) {
 
   entry.pendingEvents.clear();
   entry.debounceTimer = null;
+
+  // Only broadcast if there are events left after filtering
+  if (events.length === 0) return;
 
   // Broadcast to all listeners
   const message = { type: 'fs-change', slug, events };
@@ -271,4 +332,7 @@ module.exports = {
   watchWorkspace,
   stopAll,
   activeWatchers,
+  acquireStagingLock,
+  releaseStagingLock,
+  isStagingLocked,
 };
