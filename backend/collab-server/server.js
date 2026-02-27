@@ -3183,13 +3183,16 @@ const server = http.createServer(async (req, res) => {
                   result = fileIndex.getImports(slug, data.filePath || data.path || '');
                   break;
                 case 'file':
-                    const content = await gitService.readFile(slug, data.path, effectiveUserId);
+                    // Normalize path - convert backslashes and strip leading slashes
+                    const filePath_file = (data.path || '').replace(/\\/g, '/').replace(/^\/+/, '');
+                    const content = await gitService.readFile(slug, filePath_file, effectiveUserId);
                     result = { content };
                     break;
                 case 'file-hash':
                     // Get content hash for a file (for VFS validation)
                     try {
-                        const hashContent = await gitService.readFile(slug, data.path, effectiveUserId);
+                        const hashFilePath = (data.path || '').replace(/\\/g, '/').replace(/^\/+/, '');
+                        const hashContent = await gitService.readFile(slug, hashFilePath, effectiveUserId);
                         const hashValue = computeHash(hashContent);
                         result = { hash: hashValue, path: data.path };
                     } catch (e) {
