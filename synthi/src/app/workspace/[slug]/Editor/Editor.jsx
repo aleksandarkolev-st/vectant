@@ -2704,9 +2704,11 @@ const EditorPanel = ({
         }
     }, [autoSaveEnabled, activeFile, isUnsaved, dispatch]);
 
-    // Auto-save mode: persist edits after a short idle period.
-    // Flush the pending Redux debounce first (same as handleSave does for
-    // Ctrl+S) so saveFileContentThunk reads the absolute latest content.
+    // Auto-save mode: persist edits after a period of typing inactivity.
+    // Wait 500ms of quiet before firing the save command so the main UI
+    // thread remains unblocked for typing.  Flush the pending Redux
+    // debounce first (same as handleSave does for Ctrl+S) so
+    // saveFileContentThunk reads the absolute latest content.
     useEffect(() => {
         if (!autoSaveEnabled || !activeFile) return;
         const normalizeTrailing = (s) => (typeof s === 'string' ? s.replace(/[\r\n]+$/, '') : '');
@@ -2715,7 +2717,7 @@ const EditorPanel = ({
             // Safety: ensure Redux has the absolute latest content
             dispatch(updateContent(latestCodeRef.current));
             dispatch(saveFileContentThunk());
-        }, 400);
+        }, 500);
         return () => clearTimeout(timer);
     }, [autoSaveEnabled, activeFile, dispatch, code, savedContent, slug]);
 
