@@ -127,7 +127,7 @@ export function ConflictBanner({
         const newDecorations = [];
         
         conflicts.forEach((conflict, index) => {
-            // Highlight the entire conflict block with a background
+            // Highlight the entire conflict block with a subtle background
             newDecorations.push({
                 range: new monaco.Range(conflict.startLine + 1, 1, conflict.endLine + 2, 1),
                 options: {
@@ -137,6 +137,17 @@ export function ConflictBanner({
                 }
             });
             
+            // <<<<<<< marker line (bold green/teal)
+            newDecorations.push({
+                range: new monaco.Range(conflict.startLine + 1, 1, conflict.startLine + 1, 1),
+                options: {
+                    isWholeLine: true,
+                    className: 'conflict-marker-start-line',
+                    glyphMarginHoverMessage: { value: `**Conflict ${index + 1}** — Current Change (HEAD)` },
+                    marginClassName: 'conflict-ours-margin',
+                }
+            });
+
             // Highlight "ours" section (green-ish)
             const oursEndLine = conflict.startLine + conflict.oursContent.split('\n').length + 1;
             newDecorations.push({
@@ -145,6 +156,16 @@ export function ConflictBanner({
                     isWholeLine: true,
                     className: 'conflict-ours-background',
                     marginClassName: 'conflict-ours-margin',
+                }
+            });
+
+            // ======= separator line
+            const separatorLine = oursEndLine;
+            newDecorations.push({
+                range: new monaco.Range(separatorLine, 1, separatorLine, 1),
+                options: {
+                    isWholeLine: true,
+                    className: 'conflict-marker-sep-line',
                 }
             });
             
@@ -158,14 +179,14 @@ export function ConflictBanner({
                     marginClassName: 'conflict-theirs-margin',
                 }
             });
-            
-            // Add marker at conflict start line
+
+            // >>>>>>> marker line (bold blue)
             newDecorations.push({
-                range: new monaco.Range(conflict.startLine + 1, 1, conflict.startLine + 1, 1),
+                range: new monaco.Range(conflict.endLine + 1, 1, conflict.endLine + 1, 1),
                 options: {
                     isWholeLine: true,
-                    className: 'conflict-marker-line',
-                    glyphMarginHoverMessage: { value: `**Conflict ${index + 1}** - Click buttons in banner to resolve` }
+                    className: 'conflict-marker-end-line',
+                    marginClassName: 'conflict-theirs-margin',
                 }
             });
         });
@@ -178,13 +199,16 @@ export function ConflictBanner({
             const style = document.createElement('style');
             style.id = 'conflict-decoration-styles';
             style.textContent = `
-                .conflict-block-background { background-color: rgba(245, 158, 66, 0.06) !important; }
-                .conflict-ours-background { background-color: rgba(58, 133, 116, 0.12) !important; }
-                .conflict-theirs-background { background-color: rgba(122, 184, 248, 0.12) !important; }
-                .conflict-ours-margin { background-color: rgba(74, 186, 154, 0.45) !important; width: 3px !important; margin-left: 2px; }
-                .conflict-theirs-margin { background-color: rgba(124, 184, 248, 0.45) !important; width: 3px !important; margin-left: 2px; }
-                .conflict-marker-line { background-color: rgba(245, 158, 66, 0.12) !important; }
-                .conflict-glyph-margin { background-color: rgba(245, 158, 66, 0.35) !important; }
+                .conflict-block-background { background-color: rgba(245, 158, 66, 0.08) !important; }
+                .conflict-ours-background { background-color: rgba(58, 133, 116, 0.18) !important; }
+                .conflict-theirs-background { background-color: rgba(122, 184, 248, 0.18) !important; }
+                .conflict-ours-margin { background-color: rgba(74, 186, 154, 0.60) !important; width: 3px !important; margin-left: 2px; }
+                .conflict-theirs-margin { background-color: rgba(124, 184, 248, 0.60) !important; width: 3px !important; margin-left: 2px; }
+                .conflict-marker-line { background-color: rgba(245, 158, 66, 0.15) !important; }
+                .conflict-glyph-margin { background-color: rgba(245, 158, 66, 0.40) !important; }
+                .conflict-marker-start-line { background-color: rgba(58, 133, 116, 0.28) !important; }
+                .conflict-marker-sep-line { background-color: rgba(77, 81, 104, 0.25) !important; }
+                .conflict-marker-end-line { background-color: rgba(122, 184, 248, 0.28) !important; }
             `;
             document.head.appendChild(style);
         }
