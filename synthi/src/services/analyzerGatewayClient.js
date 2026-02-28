@@ -569,6 +569,31 @@ export class AnalyzerGatewayClient {
   }
 
   /**
+   * Get current AI agent configuration.
+   * @returns {Promise<Object>} Config object with min_confidence, validate_fixes, etc.
+   */
+  aiConfig() {
+    return this._sendRequest('heal/ai/config', {});
+  }
+
+  /**
+   * Update AI agent configuration dynamically.
+   * @param {Object} updates - Partial config updates (camelCase keys)
+   * @returns {Promise<Object>} Updated config
+   */
+  aiConfigUpdate(updates) {
+    return this._sendRequest('heal/ai/config/update', updates);
+  }
+
+  /**
+   * Run AI pipeline health check.
+   * @returns {Promise<Object>} { healthy: boolean, checks: {...} }
+   */
+  aiHealth() {
+    return this._sendRequest('heal/ai/health', {});
+  }
+
+  /**
    * Run streaming AI analysis — receives progressive events as fixes are found.
    *
    * @param {Object} payload
