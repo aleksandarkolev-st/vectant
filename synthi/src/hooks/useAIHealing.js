@@ -80,6 +80,7 @@ export function useAIHealing({
   const [error, setError] = useState(null);
   const [stats, setStats] = useState(null);
   const [lastAnalyzedAt, setLastAnalyzedAt] = useState(null);
+  const [policySummary, setPolicySummary] = useState(null);
 
   const mountedRef = useRef(true);
   const lastDecoRef = useRef(null);
@@ -599,6 +600,18 @@ export function useAIHealing({
     }
   }, [gateway]);
 
+  // ── Fetch policy summary from backend (single API response) ─────────
+  const fetchPolicySummary = useCallback(async () => {
+    if (!gateway?.aiPolicyList) return null;
+    try {
+      const result = await gateway.aiPolicyList(aiSuppressedRules.scope);
+      if (mountedRef.current) setPolicySummary(result);
+      return result;
+    } catch {
+      return null;
+    }
+  }, [gateway]);
+
   // ── Feedback reporting (internal helper) ────────────────────────────
   // Fire-and-forget — never blocks the UI.
   const _reportFeedback = useCallback((fix, feedbackType) => {
@@ -686,5 +699,7 @@ export function useAIHealing({
     getSuppressedRules,
     clearAllSuppressed,
     hasSuppressedRules: aiSuppressedRules.count > 0,
+    policySummary,
+    fetchPolicySummary,
   };
 }

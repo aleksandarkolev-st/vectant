@@ -22,12 +22,16 @@ import {
  * @param {Function} props.onUnsuppress       – (ruleId) => void
  * @param {Function} props.onClearAll         – () => void
  * @param {number}   [props.suppressedCount=0] – currently hidden fix count
+ * @param {Object}   [props.policySummary]     – backend summary: { total, escalated_count, by_mode }
+ * @param {Function} [props.onRefresh]         – fetch fresh summary from backend
  */
 export function AISuppressedRulesPanel({
   getSuppressedRules,
   onUnsuppress,
   onClearAll,
   suppressedCount = 0,
+  policySummary,
+  onRefresh,
 }) {
   const [expanded, setExpanded] = useState(false);
 
@@ -36,9 +40,19 @@ export function AISuppressedRulesPanel({
     return getSuppressedRules();
   }, [expanded, getSuppressedRules]);
 
-  const toggleExpand = useCallback(() => setExpanded((e) => !e), []);
+  const toggleExpand = useCallback(() => {
+    setExpanded((e) => {
+      const next = !e;
+      // Fetch fresh summary when expanding
+      if (next && onRefresh) onRefresh();
+      return next;
+    });
+  }, [onRefresh]);
 
-  const totalRules = rules.length;
+  // Prefer backend summary counts when available, fall back to local
+  const totalRules = policySummary?.total_rules ?? rules.length;
+  const escalatedCount = policySummary?.escalated_count ?? 0;
+  const byMode = policySummary?.by_mode ?? {};
 
   if (totalRules === 0 && suppressedCount === 0 && !expanded) {
     return null; // nothing to show
@@ -61,6 +75,11 @@ export function AISuppressedRulesPanel({
           {totalRules > 0 && (
             <span className="bg-white/10 px-1.5 py-0.5 rounded text-[10px] font-mono">
               {totalRules}
+            </span>
+          )}
+          {escalatedCount > 0 && (
+            <span className="bg-amber-500/20 text-amber-400/80 px-1.5 py-0.5 rounded text-[10px] font-mono" title={`${escalatedCount} escalated (manual-only)`}>
+              ⚠ {escalatedCount}
             </span>
           )}
         </div>

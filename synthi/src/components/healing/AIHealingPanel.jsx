@@ -254,6 +254,8 @@ export function AIHealingPanel({ aiHealing }) {
             onUnsuppress={aiHealing.unsuppressRule}
             onClearAll={aiHealing.clearAllSuppressed}
             suppressedCount={aiHealing.suppressedCount ?? 0}
+            policySummary={aiHealing.policySummary}
+            onRefresh={aiHealing.fetchPolicySummary}
           />
         </div>
       )}
