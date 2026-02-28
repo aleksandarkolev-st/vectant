@@ -42,6 +42,8 @@ const backendAIFeedbackUrl = new URL("/heal/ai/feedback", backendUrl).toString()
 const backendAIMemoryUrl = new URL("/heal/ai/memory", backendUrl).toString();
 const backendAIStreamUrl = new URL("/heal/ai/stream", backendUrl).toString();
 const backendAIProjectUrl = new URL("/heal/ai/project", backendUrl).toString();
+const backendAIConfigUrl = new URL("/heal/ai/config", backendUrl).toString();
+const backendAIHealthUrl = new URL("/heal/ai/health", backendUrl).toString();
 
 const server = http.createServer(handleHttpRequest);
 const wss = new WebSocketServer({
@@ -215,6 +217,15 @@ async function handleClientMessage(socket, raw) {
       break;
     case "heal/ai/project":
       await forwardAIProject(socket, data, requestId);
+      break;
+    case "heal/ai/config":
+      await forwardAIConfig(socket, data, requestId);
+      break;
+    case "heal/ai/config/update":
+      await forwardAIConfigUpdate(socket, data, requestId);
+      break;
+    case "heal/ai/health":
+      await forwardAIHealth(socket, requestId);
       break;
     default:
       sendError(socket, `Unsupported action: ${action}`, { requestId });
@@ -1955,6 +1966,78 @@ async function forwardAIProject(socket, data, requestId) {
   } catch (err) {
     console.error("[AI Agent] project forward error:", err);
     sendError(socket, "AI project analysis request failed", { requestId, detail: err.message });
+  }
+}
+
+async function forwardAIConfig(socket, data, requestId) {
+  try {
+    const backendResponse = await fetch(backendAIConfigUrl, { method: "GET" });
+    const responseText = await backendResponse.text();
+    if (!backendResponse.ok) {
+      sendError(socket, "AI config backend error", { requestId, detail: responseText });
+      return;
+    }
+    safeSend(socket, {
+      type: "response",
+      action: "heal/ai/config",
+      requestId,
+      data: JSON.parse(responseText),
+    });
+  } catch (err) {
+    console.error("[AI Agent] config forward error:", err);
+    sendError(socket, "AI config request failed", { requestId, detail: err.message });
+  }
+}
+
+async function forwardAIConfigUpdate(socket, data, requestId) {
+  try {
+    const body = {};
+    if (data?.minConfidence != null) body.min_confidence = data.minConfidence;
+    if (data?.validateFixes != null) body.validate_fixes = data.validateFixes;
+    if (data?.autoAcceptThreshold != null) body.auto_accept_threshold = data.autoAcceptThreshold;
+    if (data?.confidenceDiscount != null) body.confidence_discount = data.confidenceDiscount;
+    if (data?.maxFixesPerFile != null) body.max_fixes_per_file = data.maxFixesPerFile;
+    if (data?.llmTimeout != null) body.llm_timeout = data.llmTimeout;
+
+    const backendResponse = await fetch(backendAIConfigUrl, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const responseText = await backendResponse.text();
+    if (!backendResponse.ok) {
+      sendError(socket, "AI config update backend error", { requestId, detail: responseText });
+      return;
+    }
+    safeSend(socket, {
+      type: "response",
+      action: "heal/ai/config/update",
+      requestId,
+      data: JSON.parse(responseText),
+    });
+  } catch (err) {
+    console.error("[AI Agent] config update forward error:", err);
+    sendError(socket, "AI config update failed", { requestId, detail: err.message });
+  }
+}
+
+async function forwardAIHealth(socket, requestId) {
+  try {
+    const backendResponse = await fetch(backendAIHealthUrl, { method: "GET" });
+    const responseText = await backendResponse.text();
+    if (!backendResponse.ok) {
+      sendError(socket, "AI health backend error", { requestId, detail: responseText });
+      return;
+    }
+    safeSend(socket, {
+      type: "response",
+      action: "heal/ai/health",
+      requestId,
+      data: JSON.parse(responseText),
+    });
+  } catch (err) {
+    console.error("[AI Agent] health forward error:", err);
+    sendError(socket, "AI health request failed", { requestId, detail: err.message });
   }
 }
 
