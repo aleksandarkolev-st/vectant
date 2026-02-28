@@ -20,11 +20,9 @@ function ResizablePanelGroup({
   );
 }
 
-function ResizablePanel({
-  ...props
-}) {
-  return <ResizablePrimitive.Panel data-slot="resizable-panel" {...props} />;
-}
+const ResizablePanel = React.forwardRef(function ResizablePanel(props, ref) {
+  return <ResizablePrimitive.Panel ref={ref} data-slot="resizable-panel" {...props} />;
+});
 
 // Simplified splitter - no pill handle, just 1px line with cursor affordance
 function ResizableHandle({

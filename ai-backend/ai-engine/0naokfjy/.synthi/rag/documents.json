@@ -1,0 +1,53 @@
+{
+  "6e8459c85101766157c1e42d": {
+    "file_path": ".code_intel_current_gen.txt",
+    "file_name": ".code_intel_current_gen.txt",
+    "format": "plain_text",
+    "size_bytes": 20,
+    "content_hash": "c8856f25e6848e2169084699f0de355f028f74008f5160ec593d913ba615cbb1",
+    "language": "",
+    "title": "0naokfjy\\.code_intel",
+    "created_at": 1771878281.9909365,
+    "modified_at": 1771878281.9919522,
+    "ingested_at": 1771878282.0906112,
+    "tags": [],
+    "source": "filesystem",
+    "line_count": 1,
+    "word_count": 1,
+    "section_count": 0
+  },
+  "90fb5d993e0be5751d2b3ff3": {
+    "file_path": ".code_intel/chunking_version.txt",
+    "file_name": "chunking_version.txt",
+    "format": "plain_text",
+    "size_bytes": 1,
+    "content_hash": "d4735e3a265e16eee03f59718b9b5d03019c07d8b6c51f90da3a666eec13ab35",
+    "language": "",
+    "title": "chunking_version",
+    "created_at": 1771878282.004247,
+    "modified_at": 1771878282.0052412,
+    "ingested_at": 1771878282.0914743,
+    "tags": [],
+    "source": "filesystem",
+    "line_count": 1,
+    "word_count": 1,
+    "section_count": 0
+  },
+  "7af2606a158e197df5540b38": {
+    "file_path": ".code_intel/index_generation.txt",
+    "file_name": "index_generation.txt",
+    "format": "plain_text",
+    "size_bytes": 13,
+    "content_hash": "298aa39518ed7aa29e5898a4143c18c3088e8d489d12d0a0031f5f2cf1440210",
+    "language": "",
+    "title": "1771878282005",
+    "created_at": 1771878282.0052412,
+    "modified_at": 1771878282.006238,
+    "ingested_at": 1771878282.0937176,
+    "tags": [],
+    "source": "filesystem",
+    "line_count": 1,
+    "word_count": 1,
+    "section_count": 0
+  }
+}
