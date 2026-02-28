@@ -95,3 +95,86 @@ All `heal/*` actions forwarded from `:7070` → `:8000`.
 5. **Language dispatch is duplicated** across rule files (now mitigated
    by `lang_families.py` but not yet adopted by all 38 modules).
 6. **No throughput benchmarks** — "real-time" claim unvalidated.
+
+---
+
+## v2.0.0 — AI Agent Layer (Agentic Detection)
+
+> Commits 102–128. Adds LLM-powered detection that catches real semantic
+> bugs that regex can never see.
+
+### What changed
+
+The system now has **two detection modes**:
+
+| Mode | Speed | Catches | When to use |
+|------|-------|---------|-------------|
+| **Regex** (v1) | < 5ms | Syntax/style issues | Real-time on every keystroke |
+| **AI** (v2) | 2–10s | Logic errors, null safety, missing awaits, off-by-one, resource leaks | On-demand (Ctrl+Shift+I) or on save |
+| **Hybrid** | 2–10s | Both | Best coverage, moderate latency |
+
+### New backend modules (Python)
+
+| Module | Purpose | Lines |
+|--------|---------|-------|
+| `ai_prompts.py` | Structured prompt templates for Gemini | ~170 |
+| `ai_parser.py` | Parse noisy LLM output → HealingFix | ~360 |
+| `ai_context.py` | Gather imports, related files, project hints | ~410 |
+| `ai_agent.py` | Core agentic loop (detect → calibrate → validate) | ~460 |
+| `ai_memory.py` | Learn from user feedback, auto-suppress | ~285 |
+| `ai_streaming.py` | SSE streaming for long-running analysis | ~190 |
+
+### New API endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/heal/ai/analyze` | AI single-file detection |
+| POST | `/heal/ai/batch` | AI multi-file detection |
+| POST | `/heal/ai/hybrid` | Merged regex + AI |
+| GET | `/heal/ai/stats` | Agent statistics |
+| POST | `/heal/ai/stream` | SSE-streamed analysis |
+| POST | `/heal/ai/feedback` | Submit user feedback |
+| GET | `/heal/ai/memory` | View learned patterns |
+| DELETE | `/heal/ai/memory` | Clear learned patterns |
+
+### Gateway additions
+
+3 new WebSocket forwarding functions:
+`forwardAIFeedback`, `forwardAIMemory`, `forwardAIMemoryClear`
+(Added to the 4 existing: `forwardAIAnalyze`, `forwardAIBatch`,
+`forwardAIHybrid`, `forwardAIStats`).
+
+### Frontend additions
+
+- **Client methods**: `aiFeedback()`, `aiMemory()`, `aiMemoryClear()`
+- **Hooks**: `useAIHealing` (analysis + apply + dismiss + feedback),
+  `useAIHealingKeyboard` (Ctrl+Shift+I/Y/N/M)
+- **Redux**: `ai` sub-state in `healingSlice`, 8 AI-specific selectors
+- **Components**: `AIFixCard`, `AIHealingPanel`, `AIStatsPanel`
+
+### Testing
+
+- **36 new test functions** in `test_ai_agent.py`:
+  - JSON extraction (7), JSON quirk fixing (3), detection parsing (8),
+    validation parsing (4), batch parsing (2), import extraction (5),
+    language detection (5), test-pair finder (3), memory (10),
+    calibration (3).
+- Total test count: **102** (66 v1 + 36 v2).
+
+### Honest assessment
+
+**What's better**:
+- Detects real bugs that regex fundamentally can't see.
+- Learns from user feedback — gets more accurate over time.
+- Integrates cleanly with existing safety classifier and UI.
+
+**What's still limited**:
+- LLM latency (2–10s) means AI mode can't run on every keystroke.
+- Requires network access and Gemini API key.
+- Can hallucinate fixes for correct code (mitigated by validation pass
+  and confidence discounting, but not eliminated).
+- No rate limiting or retry logic on LLM calls.
+- Frontend components are not yet wired into the main editor layout
+  (components exist but integration is per-project).
+- Gateway streaming endpoint (`/heal/ai/stream`) is defined but not
+  yet forwarded through WebSocket (HTTP SSE only).
