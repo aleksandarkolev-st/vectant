@@ -44,6 +44,7 @@ const backendAIStreamUrl = new URL("/heal/ai/stream", backendUrl).toString();
 const backendAIProjectUrl = new URL("/heal/ai/project", backendUrl).toString();
 const backendAIConfigUrl = new URL("/heal/ai/config", backendUrl).toString();
 const backendAIHealthUrl = new URL("/heal/ai/health", backendUrl).toString();
+const backendAICacheClearUrl = new URL("/heal/ai/cache/clear", backendUrl).toString();
 
 const server = http.createServer(handleHttpRequest);
 const wss = new WebSocketServer({
@@ -226,6 +227,9 @@ async function handleClientMessage(socket, raw) {
       break;
     case "heal/ai/health":
       await forwardAIHealth(socket, requestId);
+      break;
+    case "heal/ai/cache/clear":
+      await forwardAICacheClear(socket, requestId);
       break;
     default:
       sendError(socket, `Unsupported action: ${action}`, { requestId });
@@ -2038,6 +2042,30 @@ async function forwardAIHealth(socket, requestId) {
   } catch (err) {
     console.error("[AI Agent] health forward error:", err);
     sendError(socket, "AI health request failed", { requestId, detail: err.message });
+  }
+}
+
+async function forwardAICacheClear(socket, requestId) {
+  try {
+    const backendResponse = await fetch(backendAICacheClearUrl, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{}",
+    });
+    const responseText = await backendResponse.text();
+    if (!backendResponse.ok) {
+      sendError(socket, "AI cache clear backend error", { requestId, detail: responseText });
+      return;
+    }
+    safeSend(socket, {
+      type: "response",
+      action: "heal/ai/cache/clear",
+      requestId,
+      data: JSON.parse(responseText),
+    });
+  } catch (err) {
+    console.error("[AI Agent] cache clear forward error:", err);
+    sendError(socket, "AI cache clear request failed", { requestId, detail: err.message });
   }
 }
 
