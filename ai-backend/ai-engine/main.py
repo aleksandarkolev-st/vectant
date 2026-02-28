@@ -2216,6 +2216,69 @@ class AIFeedbackRequest(BaseModel):
     description: Optional[str] = None
 
 
+class AIProjectAnalyzeRequest(BaseModel):
+    """Request to analyze a changed file and its dependents."""
+    code: str
+    lang: str
+    file_path: str
+    workspace_root: str = ""
+    related_files: Optional[Dict[str, str]] = None  # {path: content}
+    validate_fixes: bool = True
+    min_confidence: Optional[float] = None
+
+
+@app.post("/heal/ai/project")
+async def heal_ai_project(req: AIProjectAnalyzeRequest):
+    """
+    Analyze a file AND its direct dependents for cross-file issues.
+
+    Uses the dependency graph to identify which files import the target
+    file, reads their content, and feeds everything into a single
+    batched AI analysis so the LLM can detect issues that span files
+    (e.g. wrong argument types, renamed exports, missing fields).
+    """
+    from analyzer.proactive.healing.ai_deps import get_dependency_graph
+    from analyzer.proactive.healing.ai_agent import AIHealingAgent, AIAgentConfig
+
+    graph = get_dependency_graph(req.workspace_root)
+
+    # Register/update the target file in the graph
+    graph.add_file(req.file_path, req.code, req.lang.lower())
+
+    # Find files that import this one
+    dependents = graph.dependents_of(req.file_path)
+
+    # Build file map for batch analysis
+    files = {req.file_path: req.code}
+
+    # Add explicitly provided related files
+    if req.related_files:
+        for path, content in req.related_files.items():
+            if path not in files:
+                files[path] = content
+
+    # For dependents not in related_files, we can only flag them
+    missing_dependents = [d for d in dependents if d not in files]
+
+    config = AIAgentConfig(
+        validate_fixes=req.validate_fixes,
+    )
+    if req.min_confidence is not None:
+        config.min_confidence = req.min_confidence
+
+    agent = AIHealingAgent(config=config)
+    result = await agent.detect_batch(files, req.lang.lower())
+
+    return {
+        "fixes": result.get("fixes", []),
+        "stats": result.get("stats", {}),
+        "analyzed_files": list(files.keys()),
+        "dependents_found": list(dependents),
+        "missing_dependents": missing_dependents,
+        "graph_summary": graph.summary(),
+    }
+
+
 @app.post("/heal/ai/feedback")
 async def heal_ai_feedback(req: AIFeedbackRequest):
     """
