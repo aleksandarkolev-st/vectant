@@ -176,6 +176,50 @@ Return ONLY the JSON object.
 """
 
 
+# ── Focused-range detection (selection / function scope) ──────────────
+
+FOCUSED_DETECT_PROMPT = """\
+{system}
+
+The user selected lines {start_line}–{end_line} of `{file_path}` and
+asked the AI to review that specific section.
+
+**Full file** ({language}):
+```{language}
+{code}
+```
+
+**Focus area** (lines {start_line}–{end_line}):
+```{language}
+{focus_code}
+```
+
+{context_section}
+
+Find bugs ONLY in the focus area (lines {start_line}–{end_line}).
+You may use the rest of the file for context but only report issues
+within the selected range.
+
+Respond with a JSON array:
+```json
+[
+  {{
+    "line": <1-indexed, must be between {start_line} and {end_line}>,
+    "end_line": <1-indexed>,
+    "original": "<exact wrong text>",
+    "replacement": "<exact fix>",
+    "description": "<one sentence>",
+    "category": "<logic_error|null_safety|type_mismatch|missing_await|resource_leak|api_misuse|off_by_one|error_handling|variable_misuse|security|concurrency|other>",
+    "severity": "<critical|moderate|low>",
+    "confidence": <0.0–1.0>
+  }}
+]
+```
+
+Return ONLY the JSON array. If no errors found, return: []
+"""
+
+
 # ── Helpers to format prompts ─────────────────────────────────────────
 
 def format_related_files(files: List[Dict[str, str]]) -> str:
@@ -275,4 +319,31 @@ def build_batch_prompt(
     return BATCH_DETECT_PROMPT.format(
         system=AGENT_SYSTEM_PROMPT,
         files_section="\n\n".join(sections),
+    )
+
+
+def build_focused_prompt(
+    code: str,
+    language: str,
+    file_path: str,
+    start_line: int,
+    end_line: int,
+    context_notes: Optional[List[str]] = None,
+) -> str:
+    """Build a focused detection prompt for a selected range."""
+    lines = code.split("\n")
+    # Extract the focused lines (1-indexed to 0-indexed)
+    focus_lines = lines[max(0, start_line - 1):end_line]
+    focus_code = "\n".join(focus_lines)
+    context_section = format_context_notes(context_notes or [])
+
+    return FOCUSED_DETECT_PROMPT.format(
+        system=AGENT_SYSTEM_PROMPT,
+        code=code,
+        language=language,
+        file_path=file_path,
+        start_line=start_line,
+        end_line=end_line,
+        focus_code=focus_code,
+        context_section=context_section,
     )
