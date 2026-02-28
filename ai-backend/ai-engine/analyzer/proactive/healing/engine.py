@@ -1,9 +1,10 @@
 """
-Self-Healing Engine Core
+"""Targeted Auto-Fix Engine
 
-The main engine that coordinates detection, classification, and
-application of auto-healing fixes. This integrates with the existing
-proactive analysis pipeline to provide real-time micro-fixes.
+Coordinates detection, classification, and application of targeted
+code fixes. Integrates with the proactive analysis pipeline to
+auto-suggest and (where safe) auto-apply micro-fixes for syntactic
+and stylistic issues. Uses regex-based heuristic rules, not AST parsing.
 """
 
 from __future__ import annotations
@@ -36,16 +37,18 @@ logger = logging.getLogger("healing.engine")
 
 class SelfHealingEngine:
     """
-    The core self-healing engine.
+    Targeted auto-fix engine.
     
-    Coordinates the detection and classification of micro-fixes.
-    The engine is designed to be:
+    Coordinates detection and classification of micro-fixes.
     
     1. Conservative: Only fixes obvious, safe issues
-    2. Fast: Rules run in < 50ms typically
+    2. Fast: Rules are regex-based, typically < 50ms total
     3. Non-intrusive: Never changes program logic
     4. Transparent: Every fix is logged and can be undone
-    """
+    
+    Detection is regex + line-scanning. No AST, no LSP.
+    Confidence values are hand-tuned heuristics, not calibrated probabilities.
+    "
     
     def __init__(
         self,
@@ -64,6 +67,7 @@ class SelfHealingEngine:
         self._last_heal_time: Dict[str, float] = {}  # file_path -> timestamp
         self._applied_fixes: Dict[str, List[HealingFix]] = {}  # file_path -> fixes
         self._cooldown_locks: Set[str] = set()
+        self._rule_latencies: Dict[str, float] = {}  # rule_id -> last ms
     
     @property
     def config(self) -> HealingConfig:
@@ -139,9 +143,28 @@ class SelfHealingEngine:
         applicable_rules = self._registry.get_rules_for_language(language)
         logger.debug(f"Running {len(applicable_rules)} healing rules for {language}")
         
+        rule_timeout_ms = 10.0  # Per-rule timeout in ms
+        
         for rule in applicable_rules:
             try:
+                rule_start = time.perf_counter()
                 fixes = rule.detect(code, language, file_path)
+                rule_elapsed = (time.perf_counter() - rule_start) * 1000
+                
+                # Record per-rule latency for SLO tracking
+                self._rule_latencies[rule.rule_id] = rule_elapsed
+                
+                if rule_elapsed > rule_timeout_ms:
+                    logger.warning(
+                        f"Rule {rule.rule_id} exceeded timeout: "
+                        f"{rule_elapsed:.1f}ms > {rule_timeout_ms}ms"
+                    )
+                    skipped.append({
+                        "ruleId": rule.rule_id,
+                        "reason": "rule_timeout",
+                        "elapsedMs": round(rule_elapsed, 1),
+                    })
+                    continue  # Drop results from slow rules
                 
                 # Filter by enabled categories
                 for fix in fixes:
@@ -164,6 +187,10 @@ class SelfHealingEngine:
         
         # Classify all fixes for safety
         self._classifier.classify_fixes(all_fixes, code, language)
+        
+        # Resolve overlapping edit conflicts (drop lower-priority overlaps)
+        all_fixes, conflict_skipped = self._resolve_conflicts(all_fixes)
+        skipped.extend(conflict_skipped)
         
         # Deduplicate fixes (same location, same action)
         all_fixes = self._deduplicate_fixes(all_fixes)
@@ -342,6 +369,75 @@ class SelfHealingEngine:
                 unique.append(fix)
         
         return unique
+    
+    def _resolve_conflicts(
+        self, fixes: List[HealingFix]
+    ) -> tuple[List[HealingFix], List[Dict[str, Any]]]:
+        """
+        Detect and resolve overlapping edit ranges.
+        
+        When two fixes touch overlapping line ranges, keep the one with
+        higher severity (then higher confidence as tiebreaker) and drop
+        the other.  Dropped fixes are returned as skipped entries.
+        
+        Returns (kept_fixes, skipped_entries).
+        """
+        if len(fixes) <= 1:
+            return fixes, []
+        
+        severity_rank = {
+            HealingSeverity.CRITICAL: 0,
+            HealingSeverity.MODERATE: 1,
+            HealingSeverity.LOW: 2,
+        }
+        
+        # Sort by start position
+        sorted_fixes = sorted(fixes, key=lambda f: (f.line, f.column))
+        
+        kept: List[HealingFix] = []
+        skipped: List[Dict[str, Any]] = []
+        
+        for fix in sorted_fixes:
+            if not kept:
+                kept.append(fix)
+                continue
+            
+            prev = kept[-1]
+            # Check overlap: prev.end_line >= fix.line means ranges touch
+            if prev.end_line >= fix.line:
+                # Overlap detected — keep higher priority
+                prev_rank = (severity_rank.get(prev.severity, 99), -prev.confidence)
+                fix_rank = (severity_rank.get(fix.severity, 99), -fix.confidence)
+                
+                if fix_rank < prev_rank:
+                    # New fix is higher priority — drop prev, keep new
+                    skipped.append({
+                        "ruleId": prev.rule_id,
+                        "category": prev.category.value,
+                        "reason": "conflict_overlap",
+                        "description": prev.description,
+                        "conflictsWith": fix.rule_id,
+                    })
+                    kept[-1] = fix
+                else:
+                    # Prev is higher priority — drop new fix
+                    skipped.append({
+                        "ruleId": fix.rule_id,
+                        "category": fix.category.value,
+                        "reason": "conflict_overlap",
+                        "description": fix.description,
+                        "conflictsWith": prev.rule_id,
+                    })
+            else:
+                kept.append(fix)
+        
+        if skipped:
+            logger.info(
+                f"Conflict resolution: kept {len(kept)}, "
+                f"dropped {len(skipped)} overlapping fixes"
+            )
+        
+        return kept, skipped
     
     def _is_on_cooldown(self, file_path: str) -> bool:
         """Check if a file is on cooldown."""

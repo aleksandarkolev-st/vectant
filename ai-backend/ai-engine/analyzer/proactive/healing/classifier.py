@@ -1,16 +1,15 @@
 """
-Healing Classifier
+"""Healing Classifier — Safety Gate
 
-Determines whether a detected diagnostic is safe to auto-heal or 
-requires user intervention. This is the safety gate that prevents
-the system from making changes it shouldn't.
+Determines whether a detected fix is safe to auto-apply or requires
+user confirmation. This is the 4-tier safety gate.
 
 Key principles:
 1. Only micro-fixes (1-3 lines affected)
 2. Never change program logic
 3. Never modify inside strings or comments
-4. High confidence required (>= 0.9)
-5. Conservative: when in doubt, DON'T auto-heal
+4. Confidence threshold (>= 0.9, hand-tuned heuristic, NOT calibrated probability)
+5. Conservative: when in doubt, block auto-apply
 """
 
 from __future__ import annotations

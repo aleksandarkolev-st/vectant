@@ -1,8 +1,9 @@
 """
-Type definitions for the Self-Healing system.
+"""Type definitions for the Targeted Auto-Fix system.
 
-These types define the classification of issues that can be auto-healed
-vs. those that require user intervention.
+These types define the classification of issues that can be auto-fixed
+vs. those that require user intervention.  Detection is regex-based;
+confidence values are hand-tuned heuristics, not calibrated probabilities.
 """
 
 from __future__ import annotations

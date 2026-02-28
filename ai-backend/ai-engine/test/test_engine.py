@@ -187,3 +187,101 @@ class TestHealingClassifier:
         classifier.classify_fixes([fix], "x = 1\n", "python")
         # Low confidence should mark as unsafe
         assert fix.is_safe is False
+
+
+# ── Conflict resolution tests ─────────────────────────────────────────
+
+class TestConflictResolution:
+    """Tests for _resolve_conflicts in the engine."""
+
+    def setup_method(self):
+        self.engine = SelfHealingEngine()
+
+    def _make_fix(self, line, end_line, severity, confidence=0.9, rule_id="R"):
+        return HealingFix(
+            category=HealingCategory.TRAILING_WHITESPACE,
+            severity=severity,
+            action=HealingAction.REPLACE,
+            description="test fix",
+            line=line, column=0, end_line=end_line, end_column=10,
+            original_text="old", replacement_text="new",
+            confidence=confidence, rule_id=rule_id,
+        )
+
+    def test_no_conflicts_all_kept(self):
+        fixes = [
+            self._make_fix(0, 0, HealingSeverity.LOW, rule_id="A"),
+            self._make_fix(5, 5, HealingSeverity.LOW, rule_id="B"),
+        ]
+        kept, skipped = self.engine._resolve_conflicts(fixes)
+        assert len(kept) == 2
+        assert len(skipped) == 0
+
+    def test_overlapping_ranges_drop_lower_severity(self):
+        fixes = [
+            self._make_fix(0, 3, HealingSeverity.LOW, rule_id="LOW"),
+            self._make_fix(2, 5, HealingSeverity.CRITICAL, rule_id="CRIT"),
+        ]
+        kept, skipped = self.engine._resolve_conflicts(fixes)
+        assert len(kept) == 1
+        assert kept[0].rule_id == "CRIT"
+        assert len(skipped) == 1
+        assert skipped[0]["reason"] == "conflict_overlap"
+
+    def test_same_severity_uses_confidence_tiebreaker(self):
+        fixes = [
+            self._make_fix(0, 2, HealingSeverity.MODERATE, confidence=0.80, rule_id="LO_CONF"),
+            self._make_fix(1, 3, HealingSeverity.MODERATE, confidence=0.95, rule_id="HI_CONF"),
+        ]
+        kept, skipped = self.engine._resolve_conflicts(fixes)
+        assert len(kept) == 1
+        assert kept[0].rule_id == "HI_CONF"
+
+    def test_exact_same_line_is_conflict(self):
+        fixes = [
+            self._make_fix(5, 5, HealingSeverity.LOW, rule_id="A"),
+            self._make_fix(5, 5, HealingSeverity.CRITICAL, rule_id="B"),
+        ]
+        kept, skipped = self.engine._resolve_conflicts(fixes)
+        assert len(kept) == 1
+        assert kept[0].rule_id == "B"
+
+    def test_empty_list(self):
+        kept, skipped = self.engine._resolve_conflicts([])
+        assert kept == []
+        assert skipped == []
+
+    def test_single_fix(self):
+        fixes = [self._make_fix(0, 0, HealingSeverity.LOW)]
+        kept, skipped = self.engine._resolve_conflicts(fixes)
+        assert len(kept) == 1
+        assert len(skipped) == 0
+
+    def test_three_way_overlap_chain(self):
+        """A overlaps B, B overlaps C — only one survivor."""
+        fixes = [
+            self._make_fix(0, 3, HealingSeverity.LOW, rule_id="A"),
+            self._make_fix(2, 5, HealingSeverity.MODERATE, rule_id="B"),
+            self._make_fix(4, 7, HealingSeverity.CRITICAL, rule_id="C"),
+        ]
+        kept, skipped = self.engine._resolve_conflicts(fixes)
+        # B beats A (overlap 0-3 vs 2-5), then C beats B (overlap 2-5 vs 4-7)
+        assert kept[-1].rule_id == "C"
+        assert len(skipped) >= 1
+
+
+# ── Per-rule timeout tests ────────────────────────────────────────────
+
+class TestRuleTimeout:
+    """Tests for per-rule timeout enforcement."""
+
+    def test_rule_latencies_are_tracked(self):
+        engine = SelfHealingEngine()
+        code = "x = 1   \n"
+        run_async(engine.analyze(code, "python", "test.py"))
+        # At least some rules should have recorded latencies
+        assert len(engine._rule_latencies) > 0
+        # All latencies should be non-negative floats
+        for rule_id, ms in engine._rule_latencies.items():
+            assert isinstance(ms, float)
+            assert ms >= 0
