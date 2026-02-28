@@ -42,7 +42,7 @@ import {
 } from '@/redux/healingSlice';
 
 import { aiFixHistory } from '@/services/aiFixHistory';
-import { aiSuppressedRules } from '@/services/aiSuppressedRules';
+import { aiSuppressedRules, computeFingerprint } from '@/services/aiSuppressedRules';
 
 
 /** Simple unique ID generator */
@@ -76,6 +76,7 @@ export function useAIHealing({
   // ── State ───────────────────────────────────────────────────────────
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [fixes, setFixes] = useState([]);
+  const [suppressedCount, setSuppressedCount] = useState(0);
   const [error, setError] = useState(null);
   const [stats, setStats] = useState(null);
   const [lastAnalyzedAt, setLastAnalyzedAt] = useState(null);
@@ -156,8 +157,9 @@ export function useAIHealing({
       if (!mountedRef.current) return null;
 
       const rawFixes = result?.fixes || [];
-      const detectedFixes = aiSuppressedRules.filterFixes(rawFixes);
+      const { visible: detectedFixes, suppressedCount: suppressed } = aiSuppressedRules.filterFixes(rawFixes);
       setFixes(detectedFixes);
+      setSuppressedCount(suppressed);
       setLastAnalyzedAt(Date.now());
 
       // Show decorations in the editor
@@ -296,13 +298,15 @@ export function useAIHealing({
             const fix = data?.fix || data;
             if (!fix) return;
             accumulated.push(fix);
-            setFixes(aiSuppressedRules.filterFixes([...accumulated]));
+            // Show raw count during stream — filter only on complete
+            setFixes([...accumulated]);
           },
           onComplete: (data) => {
             if (!mountedRef.current) return;
             const rawFinal = data?.fixes || accumulated;
-            const finalFixes = aiSuppressedRules.filterFixes(rawFinal);
+            const { visible: finalFixes, suppressedCount: suppressed } = aiSuppressedRules.filterFixes(rawFinal);
             setFixes(finalFixes);
+            setSuppressedCount(suppressed);
             setLastAnalyzedAt(Date.now());
 
             dispatch(enqueueToast({
@@ -473,34 +477,48 @@ export function useAIHealing({
     }
   }, [editorRef]);
 
-  // ── Suppress a rule (hide current + future matches) ─────────────────
-  const suppressRule = useCallback((ruleId, fix) => {
+  // ── Suppress a fix/rule (policy, NOT feedback) ─────────────────────
+  const suppressRule = useCallback((ruleId, fix, { mode = 'fingerprint' } = {}) => {
     if (!ruleId) return;
-    aiSuppressedRules.suppress(ruleId);
+    aiSuppressedRules.suppress(ruleId, fix, { mode });
 
-    // Remove all fixes matching this rule from current list
-    setFixes((prev) => prev.filter((f) => {
-      const id = f.rule_id || f.ruleId || '';
-      return id !== ruleId;
-    }));
+    // Remove matching fixes from current list
+    setFixes((prev) => {
+      const { visible, suppressedCount: delta } = aiSuppressedRules.filterFixes(prev);
+      setSuppressedCount((c) => c + delta);
+      return visible;
+    });
 
-    // Log feedback so the backend learns too
-    if (fix) _reportFeedback(fix, 'rejected');
+    // Send policy:suppressed to backend (NOT feedback:rejected)
+    if (gateway?.aiPolicySuppress) {
+      gateway.aiPolicySuppress({
+        ruleId,
+        fingerprint: fix ? computeFingerprint(fix) : null,
+        mode,
+        reason: 'user_suppressed',
+      }).catch(() => {});
+    }
 
     dispatch(enqueueToast({
-      message: `Suppressed rule "${ruleId}" — future matches will be hidden`,
+      message: `Suppressed ${mode === 'rule' ? `rule "${ruleId}"` : 'this pattern'} — future matches hidden`,
       type: 'info',
     }));
-  }, [dispatch, _reportFeedback]);
+  }, [dispatch, gateway]);
 
-  // ── Unsuppress a rule ───────────────────────────────────────────────
-  const unsuppressRule = useCallback((ruleId) => {
-    aiSuppressedRules.unsuppress(ruleId);
+  // ── Unsuppress a rule/fingerprint ──────────────────────────────────
+  const unsuppressRule = useCallback((ruleId, fix = null) => {
+    aiSuppressedRules.unsuppress(ruleId, fix);
+    setSuppressedCount(0); // will be recalculated on next analysis
+
+    if (gateway?.aiPolicyUnsuppress) {
+      gateway.aiPolicyUnsuppress({ ruleId }).catch(() => {});
+    }
+
     dispatch(enqueueToast({
       message: `Unsuppressed rule "${ruleId}"`,
       type: 'info',
     }));
-  }, [dispatch]);
+  }, [dispatch, gateway]);
 
   // ── Get suppressed rules list ───────────────────────────────────────
   const getSuppressedRules = useCallback(() => {
@@ -580,6 +598,7 @@ export function useAIHealing({
     // State
     isAnalyzing,
     fixes,
+    suppressedCount,
     error,
     stats,
     lastAnalyzedAt,
