@@ -28,6 +28,7 @@ import {
 } from 'lucide-react';
 import { AIFixCard } from './AIFixCard';
 import { AIConfidenceGate } from './AIConfidenceGate';
+import { AISuppressedRulesPanel } from './AISuppressedRulesPanel';
 
 
 /**
@@ -243,6 +244,16 @@ export function AIHealingPanel({ aiHealing }) {
             />
           </AIConfidenceGate>
         ))}
+      </div>
+
+      {/* ── Suppressed rules panel ──────────────────────────────── */}
+      <div className="px-2 pb-1">
+        <AISuppressedRulesPanel
+          getSuppressedRules={aiHealing.getSuppressedRules}
+          onUnsuppress={aiHealing.unsuppressRule}
+          onClearAll={aiHealing.clearAllSuppressed}
+          suppressedCount={aiHealing.suppressedCount ?? 0}
+        />
       </div>
 
       {/* ── Footer stats ────────────────────────────────────────── */}

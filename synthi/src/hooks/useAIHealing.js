@@ -537,6 +537,21 @@ export function useAIHealing({
     return aiSuppressedRules.all();
   }, []);
 
+  // ── Clear all suppressions ────────────────────────────────────────
+  const clearAllSuppressed = useCallback(() => {
+    aiSuppressedRules.clear();
+    setSuppressedCount(0);
+
+    if (gateway?.aiPolicyClear) {
+      gateway.aiPolicyClear().catch(() => {});
+    }
+
+    dispatch(enqueueToast({
+      message: 'All suppressed rules cleared',
+      type: 'info',
+    }));
+  }, [dispatch, gateway]);
+
   // ── Fetch stats ─────────────────────────────────────────────────────
   const fetchStats = useCallback(async () => {
     if (!gateway?.aiStats) return null;
@@ -634,5 +649,6 @@ export function useAIHealing({
     suppressRule,
     unsuppressRule,
     getSuppressedRules,
+    clearAllSuppressed,
   };
 }
