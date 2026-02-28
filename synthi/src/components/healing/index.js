@@ -37,3 +37,7 @@ export {
   registerAIHoverProvider,
   disposeAIHoverProvider,
 } from './aiHoverProvider';
+export {
+  notifyAIFixes,
+  requestNotificationPermission,
+} from './aiNotifications';
