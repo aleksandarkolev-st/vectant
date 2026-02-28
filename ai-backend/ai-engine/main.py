@@ -2374,6 +2374,16 @@ async def heal_ai_config_update(req: AIConfigUpdate):
     }
 
 
+@app.post("/heal/ai/cache/clear")
+async def heal_ai_cache_clear():
+    """Clear the AI prompt cache (forces fresh LLM calls on next analysis)."""
+    from analyzer.proactive.healing.ai_prompt_cache import get_prompt_cache
+    cache = get_prompt_cache()
+    prev_size = cache.size
+    cache.clear()
+    return {"cleared": True, "entries_removed": prev_size}
+
+
 @app.post("/heal/ai/project")
 async def heal_ai_project(req: AIProjectAnalyzeRequest):
     """
