@@ -44,6 +44,7 @@ const backendAIStreamUrl = new URL("/heal/ai/stream", backendUrl).toString();
 const backendAIProjectUrl = new URL("/heal/ai/project", backendUrl).toString();
 const backendAIConfigUrl = new URL("/heal/ai/config", backendUrl).toString();
 const backendAIHealthUrl = new URL("/heal/ai/health", backendUrl).toString();
+const backendAIRuntimeUrl = new URL("/heal/ai/runtime", backendUrl).toString();
 const backendAICacheClearUrl = new URL("/heal/ai/cache/clear", backendUrl).toString();
 const backendAIPreviewUrl = new URL("/heal/ai/preview", backendUrl).toString();
 const backendAIPolicySuppressUrl = new URL("/heal/ai/policy/suppress", backendUrl).toString();
@@ -198,6 +199,9 @@ async function handleClientMessage(socket, raw) {
       break;
     case "heal/ai/analyze":
       await forwardAIAnalyze(socket, data, requestId);
+      break;
+    case "heal/ai/runtime":
+      await forwardAIRuntime(socket, data, requestId);
       break;
     case "heal/ai/batch":
       await forwardAIBatch(socket, data, requestId);
@@ -1581,6 +1585,66 @@ async function forwardAIAnalyze(socket, data, requestId) {
   } catch (err) {
     console.error("[AI Agent] analyze forward error:", err);
     sendError(socket, "AI analysis request failed", { requestId, detail: err.message });
+  }
+}
+
+async function forwardAIRuntime(socket, data, requestId) {
+  const code = data?.code;
+  const lang = data?.lang;
+  const diagnostics = data?.diagnostics;
+
+  if (typeof code !== "string" || typeof lang !== "string") {
+    sendError(socket, "`code` and `lang` are required for runtime error fixing", { requestId });
+    return;
+  }
+  if (!Array.isArray(diagnostics) || diagnostics.length === 0) {
+    sendError(socket, "`diagnostics` array is required for runtime error fixing", { requestId });
+    return;
+  }
+
+  try {
+    const backendResponse = await fetch(backendAIRuntimeUrl, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        code,
+        lang: lang.toLowerCase(),
+        file_path: data?.filePath || data?.file_path || "untitled",
+        diagnostics,
+        error_output: data?.errorOutput || data?.error_output || null,
+        auto_apply: data?.autoApply ?? true,
+        module: data?.module || null,
+      }),
+    });
+
+    const responseText = await backendResponse.text();
+
+    if (!backendResponse.ok) {
+      sendError(socket, "Runtime error healing backend error", {
+        requestId,
+        detail: responseText,
+        status: backendResponse.status,
+      });
+      return;
+    }
+
+    let responseJson;
+    try {
+      responseJson = JSON.parse(responseText);
+    } catch (err) {
+      sendError(socket, "Runtime error healing response was not valid JSON", { requestId, detail: err.message });
+      return;
+    }
+
+    safeSend(socket, {
+      type: "response",
+      action: "heal/ai/runtime",
+      requestId,
+      data: responseJson,
+    });
+  } catch (err) {
+    console.error("[Runtime Healing] forward error:", err);
+    sendError(socket, "Runtime error healing request failed", { requestId, detail: err.message });
   }
 }
 

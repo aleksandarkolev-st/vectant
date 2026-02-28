@@ -26,6 +26,7 @@ from .ai_prompts import (
     build_validate_prompt,
     build_batch_prompt,
     build_focused_prompt,
+    build_runtime_error_prompt,
     format_related_files,
     format_context_notes,
     AGENT_SYSTEM_PROMPT,
@@ -299,6 +300,91 @@ class AIHealingAgent:
             ]
 
         return results
+
+    # ── Runtime error detection (HMR / compiler errors) ───────────────
+
+    async def detect_runtime_errors(
+        self,
+        file_path: str,
+        source_code: str,
+        diagnostics: List[Dict[str, Any]],
+        language: Optional[str] = None,
+        error_output: Optional[str] = None,
+    ) -> List[HealingFix]:
+        """
+        Fix compiler/runtime errors reported by the build system.
+
+        Unlike detect() which asks the LLM to *find* bugs, this method
+        tells the LLM exactly what the compiler reported and asks it to
+        *fix* those specific errors. This is the core of runtime healing —
+        the HMR system catches a compile error, sends it here, and gets
+        back concrete fixes that can be auto-applied.
+
+        Returns a list of HealingFix objects targeting the reported errors.
+        Skips prompt cache (error context is unique per invocation).
+        Skips validation pass (compiler already confirmed the errors).
+        """
+        start_time = time.time()
+        tel = get_telemetry()
+        tel.count("runtime_error_calls")
+
+        lang = (language or "unknown").lower()
+
+        # Build the error-focused prompt
+        prompt = build_runtime_error_prompt(
+            code=source_code,
+            language=lang,
+            file_path=file_path,
+            diagnostics=diagnostics,
+            error_output=error_output,
+        )
+
+        # Call the LLM (longer timeout for complex errors)
+        raw_response = await self._call_llm(
+            code=source_code,
+            language=lang,
+            prompt=prompt,
+        )
+        self.stats.total_detections += 1
+
+        if not raw_response:
+            logger.warning("Runtime error LLM returned empty response for %s", file_path)
+            return []
+
+        # Parse the response
+        fixes = parse_detection_response(raw_response, source_code, file_path)
+
+        # Lighter calibration: compiler errors are real, so use a
+        # gentler discount than the general detection path.
+        for fix in fixes:
+            fix.confidence = round(fix.confidence * 0.95, 3)  # 5% discount vs 15%
+            fix.confidence = max(0.0, min(1.0, fix.confidence))
+            # Mark as compiler-confirmed in description for downstream trust
+            if "(compiler-confirmed)" not in fix.description:
+                fix.description = f"{fix.description} (compiler-confirmed)"
+
+        # Filter by minimum confidence
+        fixes = [f for f in fixes if f.confidence >= self.config.min_confidence]
+
+        # Policy gate: skip suppressed/escalated rules
+        fixes = await self._apply_policy_gate(fixes)
+
+        # Limit count
+        fixes = fixes[: self.config.max_fixes_per_file]
+
+        # Stats
+        self.stats.total_fixes_proposed += len(fixes)
+        elapsed = (time.time() - start_time) * 1000
+        self.stats.total_latency_ms += elapsed
+        tel.record_timing("runtime_error_detect", elapsed)
+        tel.count("runtime_error_fixes", len(fixes))
+
+        logger.info(
+            f"Runtime error agent: {len(fixes)} fixes for {file_path} "
+            f"({len(diagnostics)} diagnostics, {elapsed:.0f}ms)"
+        )
+
+        return fixes
 
     # ── Validation ────────────────────────────────────────────────────
 

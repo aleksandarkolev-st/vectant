@@ -500,6 +500,33 @@ export class AnalyzerGatewayClient {
   }
 
   /**
+   * Fix compiler/runtime errors using the AI agent.
+   * This is the HMR runtime healing endpoint — send compiler diagnostics
+   * and source code, get back fixed code ready for HMR re-trigger.
+   *
+   * @param {Object} payload - Runtime error request
+   * @param {string} payload.code - Current source code of the broken file
+   * @param {string} payload.lang - Language identifier
+   * @param {string} [payload.filePath] - File path
+   * @param {Array<Object>} payload.diagnostics - Compiler/runtime diagnostics
+   * @param {string} [payload.errorOutput] - Raw compiler output text
+   * @param {boolean} [payload.autoApply=true] - Auto-apply fixes (default true for runtime healing)
+   * @param {string} [payload.module] - HMR module identifier
+   * @returns {Promise<Object>} Runtime healing result with healed code
+   */
+  aiRuntimeHeal(payload) {
+    return this._sendRequest('heal/ai/runtime', {
+      code: payload.code,
+      lang: payload.lang,
+      filePath: payload.filePath || 'untitled',
+      diagnostics: payload.diagnostics,
+      errorOutput: payload.errorOutput || null,
+      autoApply: payload.autoApply ?? true,
+      module: payload.module || null,
+    });
+  }
+
+  /**
    * Get AI agent statistics: LLM calls, latency, acceptance rate.
    * @returns {Promise<Object>} Agent statistics
    */

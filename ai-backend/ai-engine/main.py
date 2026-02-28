@@ -2038,6 +2038,33 @@ class AIHybridRequest(BaseModel):
     auto_apply: Optional[bool] = False
 
 
+class RuntimeErrorDiagnostic(BaseModel):
+    """A single compiler/runtime diagnostic."""
+    severity: Optional[str] = "error"
+    message: str
+    code: Optional[str] = None
+    location: Optional[Dict[str, Any]] = None
+    codeSnippet: Optional[str] = None
+    snippetStartLine: Optional[int] = None
+    suggestions: Optional[List[Dict[str, str]]] = None
+    related: Optional[List[Dict[str, Any]]] = None
+
+
+class AIRuntimeErrorRequest(BaseModel):
+    """Request for runtime/compile error fixing via AI.
+    
+    This is the core of HMR runtime healing: the compiler reported
+    errors, and we need the AI to fix them.
+    """
+    code: str
+    lang: str
+    file_path: Optional[str] = "untitled"
+    diagnostics: List[RuntimeErrorDiagnostic]
+    error_output: Optional[str] = None
+    auto_apply: Optional[bool] = True  # default True for runtime healing
+    module: Optional[str] = None  # HMR module identifier
+
+
 @app.post("/heal/ai/analyze")
 async def heal_ai_analyze(req: AIAnalyzeRequest):
     """
@@ -2077,6 +2104,87 @@ async def heal_ai_analyze(req: AIAnalyzeRequest):
         return response
     except Exception as e:
         logger.error(f"[AI Healing] Analysis error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/heal/ai/runtime")
+async def heal_ai_runtime_error(req: AIRuntimeErrorRequest):
+    """
+    Fix compiler/runtime errors using the AI agent.
+    
+    This is the HMR runtime healing endpoint. When the compiler or
+    runtime reports errors (compile-error, type-error, etc.), the
+    frontend sends the diagnostics here. The AI reads the exact error
+    messages and source code, then produces targeted fixes.
+    
+    Unlike /heal/ai/analyze (which asks the LLM to *find* bugs),
+    this endpoint says "the compiler reported THESE errors — fix them."
+    
+    The response includes healed code ready to be written back to the
+    file so HMR can re-trigger.
+    """
+    engine = get_healing_engine()
+    agent = engine._get_ai_agent()
+    
+    # Convert Pydantic diagnostics to plain dicts for the prompt builder
+    diag_dicts = [d.model_dump() for d in req.diagnostics]
+    
+    try:
+        fixes = await agent.detect_runtime_errors(
+            file_path=req.file_path or "untitled",
+            source_code=req.code,
+            diagnostics=diag_dicts,
+            language=req.lang.lower(),
+            error_output=req.error_output,
+        )
+        
+        response = {
+            "source": "runtime_error_agent",
+            "filePath": req.file_path,
+            "module": req.module,
+            "fixes": [_fix_to_dict(f) for f in fixes],
+            "fixCount": len(fixes),
+            "diagnosticCount": len(req.diagnostics),
+            "wasHealed": False,
+            "healedCode": None,
+            "appliedFixes": [],
+        }
+        
+        # Auto-apply: apply all fixes that are safe
+        if req.auto_apply and fixes:
+            from analyzer.proactive.healing.types import HealingResult
+            temp_result = HealingResult(
+                file_path=req.file_path or "untitled",
+                language=req.lang.lower(),
+                content_hash="",
+                fixes=fixes,
+            )
+            # For runtime errors, lower the safety threshold —
+            # compiler-confirmed errors are real.
+            safe_fixes = [f for f in fixes if f.confidence >= 0.7]
+            if safe_fixes:
+                temp_result_safe = HealingResult(
+                    file_path=req.file_path or "untitled",
+                    language=req.lang.lower(),
+                    content_hash="",
+                    fixes=safe_fixes,
+                )
+                healed_code, applied = engine.apply_safe_fixes(
+                    req.code, temp_result_safe
+                )
+                response["healedCode"] = healed_code
+                response["appliedFixes"] = [_fix_to_dict(f) for f in applied]
+                response["wasHealed"] = len(applied) > 0
+        
+        logger.info(
+            f"[Runtime Healing] {req.file_path}: "
+            f"{len(req.diagnostics)} diagnostics → {len(fixes)} fixes, "
+            f"healed={response['wasHealed']}"
+        )
+        
+        return response
+    except Exception as e:
+        logger.error(f"[Runtime Healing] Error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 

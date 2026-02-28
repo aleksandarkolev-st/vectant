@@ -1,20 +1,22 @@
 # AI-Assisted Deterministic Code Repair Engine — Technical Reference
 
 > **Positioning.** This system is an **AI-assisted deterministic code repair
-> engine with safety gating**. It auto-suggests and, where safe, auto-applies
-> targeted fixes for a narrow class of syntactic, stylistic, and semantic
-> issues. It does not repair arbitrary program defects at runtime.
+> engine with safety gating and HMR-integrated runtime healing**. It
+> auto-suggests and, where safe, auto-applies targeted fixes for syntactic,
+> stylistic, and semantic issues. For compile-time errors caught by HMR, it
+> can automatically fix and re-trigger the build in a closed loop.
 >
 > Comparable to: Cursor auto-fix, Copilot "fix this", automated code review
-> assistants. Not comparable to: runtime self-healing, chaos engineering,
-> or autonomic computing.
+> assistants. The runtime healing layer adds: HMR error interception →
+> AI fix → auto-apply → rebuild, which goes beyond static analysis.
 >
-> The system has two detection modes:
+> The system has three operating modes:
 > 1. **Regex layer** — fast (< 50ms), deterministic, limited to syntax/style.
 > 2. **AI layer** — deliberate (3–8s), LLM-powered, catches semantic bugs.
+> 3. **Runtime healing** — reactive (5–15s loop), fixes real compiler errors via HMR.
 >
 > These are fundamentally different UX interactions and **must not be mixed**.
-> Regex = instant feedback. AI = deliberate inspection.
+> Regex = instant feedback. AI = deliberate inspection. Runtime = automatic recovery.
 
 ---
 
@@ -782,3 +784,101 @@ The system should not be labeled "production-grade" until:
 7. ☐ At least one real-codebase evaluation (100+ files, known bug set) is completed.
 
 Until these are met: **strong foundation, not yet production-grade reliability.**
+---
+
+## 17. Runtime Healing via HMR Integration
+
+### What it is
+
+A closed-loop error recovery system that intercepts **real compiler/runtime
+errors** from the HMR (Hot Module Replacement) pipeline, feeds them to the
+AI agent, and auto-applies fixes — all within the HMR cycle so the user's
+running application recovers without a manual edit.
+
+This is fundamentally different from the general AI detection path
+(`/heal/ai/analyze`) which asks the LLM to *find* bugs. Runtime healing
+says "the compiler already *found* these bugs — now fix them."
+
+### How the loop works
+
+```
+1. User edits code in Monaco editor
+2. File save triggers HMR build via WebRTC worker
+3. Build fails → compile-error diagnostics dispatched on event bus
+4. RuntimeErrorInterceptor catches the errors
+5. Interceptor grabs current source + diagnostics
+6. Sends to POST /heal/ai/runtime (via gateway WebSocket)
+7. AI generates targeted fixes for the specific compiler errors
+8. Backend applies fixes and returns healed code
+9. Interceptor writes healed code back to editor (single undoable edit)
+10. Interceptor dispatches synthi:retry-compile → HMR re-triggers
+11. If build succeeds → loop complete, user sees working code
+12. If build fails again → loop retries (max 3 attempts, then stops)
+```
+
+### Architecture layers
+
+| Layer | File | Role |
+|-------|------|------|
+| **Prompt** | `ai_prompts.py` — `RUNTIME_ERROR_FIX_PROMPT` | Error-targeted prompt: "the compiler reported THESE errors — fix them" |
+| **Agent method** | `ai_agent.py` — `detect_runtime_errors()` | Lighter pipeline: no validation pass, 95% confidence (vs 85% for general), compiler-confirmed flag |
+| **Backend endpoint** | `main.py` — `POST /heal/ai/runtime` | Accepts diagnostics + source, returns healed code. Lower safety threshold (0.7 vs 0.9) since errors are real |
+| **Gateway** | `server.js` — `forwardAIRuntime()` | WebSocket forwarding, validates `diagnostics` array |
+| **Gateway client** | `analyzerGatewayClient.js` — `aiRuntimeHeal()` | Frontend WebSocket client method |
+| **Interceptor** | `runtimeErrorInterceptor.js` | Singleton service: listens to HMR errors, orchestrates heal loop, applies code, triggers retry |
+| **React hook** | `useRuntimeHealing.js` | Reactive state for UI: status, attempt count, results |
+| **UI** | `RuntimeHealingIndicator.jsx` | Overlay showing healing progress, auto-heal toggle |
+
+### Event bus integration
+
+Events consumed by the interceptor:
+
+| Event | Source | When |
+|-------|--------|------|
+| `synthi:compile-error` | `compilerClient.js` → build worker | Compiler reports diagnostics |
+| `synthi:request-ai-fix` | `ErrorOverlay.jsx` → "Fix with AI" button | User manually requests AI fix |
+| `synthi:hmr-status` | `useHMR.js` → HMR runtime | HMR status changes (applied = success signal) |
+
+Events produced by the interceptor:
+
+| Event | When |
+|-------|------|
+| `synthi:runtime-heal-start` | Healing attempt begins |
+| `synthi:runtime-heal-result` | Backend response received |
+| `synthi:runtime-heal-applied` | Fix written to editor successfully |
+| `synthi:runtime-heal-error` | Pipeline error |
+| `synthi:retry-compile` | Requesting HMR re-trigger after fix applied |
+
+### Safety mechanisms
+
+1. **Max 3 attempts per file** — prevents infinite fix-break-fix loops
+2. **Cooldown (2s)** between attempts — avoids hammering the LLM
+3. **Debounce (800ms)** for auto-heal — coalesces rapid compile events
+4. **30s attempt reset** — after 30s of no errors, counter resets
+5. **Single undo** — healed code is applied as one editor edit, `Ctrl+Z` reverts the entire fix
+6. **Auto-heal toggle** — user can disable automatic healing and use manual "Fix with AI" only
+7. **Suppression/escalation** — policy gate still applies (suppressed rules are skipped)
+
+### Performance characteristics
+
+| Metric | Expected |
+|--------|----------|
+| Time to first fix proposal | 3–8s (LLM round-trip) |
+| Editor apply latency | < 50ms (single `executeEdits` call) |
+| HMR re-trigger latency | 300ms delay + normal build time |
+| Full loop (error → fixed & running) | 5–15s depending on error complexity |
+| Max LLM calls per error burst | 3 (attempt limit) |
+
+### What this is NOT
+
+- **Not a general refactoring tool** — only fixes compiler-reported errors
+- **Not deterministic** — uses LLM, so fix quality varies
+- **Not guaranteed** — some errors (e.g., missing external dependencies) cannot be fixed by editing the file
+- **Not for runtime exceptions** — targets compile-time errors, not `try/catch` failures (though crash recovery events could be added later)
+
+### Current limitations
+
+1. Single-file only — cannot fix errors that require changes across multiple files
+2. Requires the broken file to be open in the editor (needs Monaco model for source code)
+3. No AST validation of the AI's fix before applying
+4. No rollback if the fix introduces *new* errors (relies on attempt limit instead)

@@ -220,6 +220,121 @@ Return ONLY the JSON array. If no errors found, return: []
 """
 
 
+# ── Runtime error / HMR compile-error fix prompt ──────────────────────
+
+RUNTIME_ERROR_FIX_PROMPT = """\
+{system}
+
+The compiler/runtime reported errors in `{file_path}` ({language}).
+Your job is to fix ALL of the reported errors. The diagnostics below
+come directly from the compiler — they are real, not guesses.
+
+**Source code** (`{file_path}`):
+```{language}
+{code}
+```
+
+**Compiler/runtime diagnostics:**
+{diagnostics_section}
+
+{error_output_section}
+
+{context_section}
+
+For each error, provide an exact fix. If one replacement fixes multiple
+diagnostics, combine them into a single entry. Always match original
+text EXACTLY (whitespace, indentation, etc.).
+
+Respond with a JSON array:
+```json
+[
+  {{
+    "line": <1-indexed line from the diagnostic>,
+    "end_line": <1-indexed end line>,
+    "original": "<exact text from the source that causes the error>",
+    "replacement": "<exact corrected text>",
+    "description": "<what was wrong and how you fixed it>",
+    "category": "<one of: syntax_error, type_mismatch, missing_import, undefined_reference, logic_error, api_misuse, missing_await, null_safety, other>",
+    "severity": "critical",
+    "confidence": <0.85 to 1.0 — these are real compiler errors, so be confident>
+  }}
+]
+```
+
+Return ONLY the JSON array. If you cannot determine a fix, return: []
+"""
+
+
+def _format_diagnostics(diagnostics: List[Dict[str, Any]]) -> str:
+    """Format compiler diagnostics for prompt injection."""
+    if not diagnostics:
+        return "(no diagnostics provided)"
+    parts = []
+    for i, diag in enumerate(diagnostics, 1):
+        severity = diag.get("severity", "error")
+        message = diag.get("message", "unknown error")
+        code = diag.get("code", "")
+        loc = diag.get("location", {})
+        line = loc.get("line", "?")
+        col = loc.get("column", "?")
+        file_ = loc.get("file", "")
+        snippet = diag.get("codeSnippet", "")
+        suggestions = diag.get("suggestions", [])
+
+        header = f"{i}. [{severity.upper()}] {message}"
+        if code:
+            header += f" (code: {code})"
+        if file_:
+            header += f"\n   Location: {file_}:{line}:{col}"
+        elif line != "?":
+            header += f"\n   Line: {line}, Column: {col}"
+        if snippet:
+            header += f"\n   ```\n   {snippet}\n   ```"
+        if suggestions:
+            for s in suggestions:
+                smsg = s.get("message", "")
+                srep = s.get("replacement", "")
+                header += f"\n   Suggestion: {smsg}"
+                if srep:
+                    header += f"  →  `{srep}`"
+        parts.append(header)
+    return "\n\n".join(parts)
+
+
+def build_runtime_error_prompt(
+    code: str,
+    language: str,
+    file_path: str = "untitled",
+    diagnostics: Optional[List[Dict[str, Any]]] = None,
+    error_output: Optional[str] = None,
+    context_notes: Optional[List[str]] = None,
+) -> str:
+    """Build a prompt specifically for fixing compiler/runtime errors.
+
+    Unlike build_detect_prompt() which asks "find bugs", this says
+    "the compiler reported THESE errors — fix them."
+    """
+    diagnostics_section = _format_diagnostics(diagnostics or [])
+
+    error_output_section = ""
+    if error_output:
+        error_output_section = (
+            f"**Raw compiler/runtime output:**\n```\n{error_output[:6000]}\n```"
+        )
+
+    context_section = format_context_notes(context_notes or [])
+
+    return RUNTIME_ERROR_FIX_PROMPT.format(
+        system=AGENT_SYSTEM_PROMPT,
+        code=code,
+        language=language,
+        file_path=file_path,
+        diagnostics_section=diagnostics_section,
+        error_output_section=error_output_section,
+        context_section=context_section,
+    )
+
+
 # ── Helpers to format prompts ─────────────────────────────────────────
 
 def format_related_files(files: List[Dict[str, str]]) -> str:
