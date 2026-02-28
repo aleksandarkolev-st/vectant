@@ -38,6 +38,9 @@ const backendAIAnalyzeUrl = new URL("/heal/ai/analyze", backendUrl).toString();
 const backendAIBatchUrl = new URL("/heal/ai/batch", backendUrl).toString();
 const backendAIHybridUrl = new URL("/heal/ai/hybrid", backendUrl).toString();
 const backendAIStatsUrl = new URL("/heal/ai/stats", backendUrl).toString();
+const backendAIFeedbackUrl = new URL("/heal/ai/feedback", backendUrl).toString();
+const backendAIMemoryUrl = new URL("/heal/ai/memory", backendUrl).toString();
+const backendAIStreamUrl = new URL("/heal/ai/stream", backendUrl).toString();
 
 const server = http.createServer(handleHttpRequest);
 const wss = new WebSocketServer({
@@ -196,6 +199,15 @@ async function handleClientMessage(socket, raw) {
       break;
     case "heal/ai/stats":
       await forwardAIStats(socket, requestId);
+      break;
+    case "heal/ai/feedback":
+      await forwardAIFeedback(socket, data, requestId);
+      break;
+    case "heal/ai/memory":
+      await forwardAIMemory(socket, requestId);
+      break;
+    case "heal/ai/memory/clear":
+      await forwardAIMemoryClear(socket, requestId);
       break;
     default:
       sendError(socket, `Unsupported action: ${action}`, { requestId });
@@ -1661,6 +1673,119 @@ async function forwardAIStats(socket, requestId) {
   } catch (err) {
     console.error("[AI Agent] stats forward error:", err);
     sendError(socket, "AI stats request failed", { requestId, detail: err.message });
+  }
+}
+
+// ── AI Agent: feedback ──────────────────────────────────────────────
+async function forwardAIFeedback(socket, data, requestId) {
+  const ruleId = data?.ruleId || data?.rule_id;
+  const feedbackType = data?.feedbackType || data?.feedback_type;
+
+  if (typeof ruleId !== "string" || typeof feedbackType !== "string") {
+    sendError(socket, "`ruleId` and `feedbackType` are required for feedback", { requestId });
+    return;
+  }
+
+  try {
+    const backendResponse = await fetch(backendAIFeedbackUrl, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        rule_id: ruleId,
+        feedback_type: feedbackType,
+        file_path: data?.filePath || data?.file_path || null,
+        original_text: data?.originalText || data?.original_text || null,
+        replacement_text: data?.replacementText || data?.replacement_text || null,
+        description: data?.description || null,
+      }),
+    });
+
+    const responseText = await backendResponse.text();
+
+    if (!backendResponse.ok) {
+      sendError(socket, "AI feedback backend error", { requestId, detail: responseText });
+      return;
+    }
+
+    let responseJson;
+    try {
+      responseJson = JSON.parse(responseText);
+    } catch (err) {
+      sendError(socket, "AI feedback response was not valid JSON", { requestId, detail: err.message });
+      return;
+    }
+
+    safeSend(socket, {
+      type: "response",
+      action: "heal/ai/feedback",
+      requestId,
+      data: responseJson,
+    });
+  } catch (err) {
+    console.error("[AI Agent] feedback forward error:", err);
+    sendError(socket, "AI feedback request failed", { requestId, detail: err.message });
+  }
+}
+
+// ── AI Agent: memory summary ────────────────────────────────────────
+async function forwardAIMemory(socket, requestId) {
+  try {
+    const backendResponse = await fetch(backendAIMemoryUrl, { method: "GET" });
+    const responseText = await backendResponse.text();
+
+    if (!backendResponse.ok) {
+      sendError(socket, "AI memory backend error", { requestId, detail: responseText });
+      return;
+    }
+
+    let responseJson;
+    try {
+      responseJson = JSON.parse(responseText);
+    } catch (err) {
+      sendError(socket, "AI memory response was not valid JSON", { requestId, detail: err.message });
+      return;
+    }
+
+    safeSend(socket, {
+      type: "response",
+      action: "heal/ai/memory",
+      requestId,
+      data: responseJson,
+    });
+  } catch (err) {
+    console.error("[AI Agent] memory forward error:", err);
+    sendError(socket, "AI memory request failed", { requestId, detail: err.message });
+  }
+}
+
+// ── AI Agent: clear memory ──────────────────────────────────────────
+async function forwardAIMemoryClear(socket, requestId) {
+  try {
+    const backendResponse = await fetch(backendAIMemoryUrl, { method: "DELETE" });
+    const responseText = await backendResponse.text();
+
+    if (!backendResponse.ok) {
+      sendError(socket, "AI memory clear backend error", { requestId, detail: responseText });
+      return;
+    }
+
+    let responseJson;
+    try {
+      responseJson = JSON.parse(responseText);
+    } catch (err) {
+      sendError(socket, "AI memory clear response was not valid JSON", { requestId, detail: err.message });
+      return;
+    }
+
+    safeSend(socket, {
+      type: "response",
+      action: "heal/ai/memory/clear",
+      requestId,
+      data: responseJson,
+    });
+  } catch (err) {
+    console.error("[AI Agent] memory clear forward error:", err);
+    sendError(socket, "AI memory clear request failed", { requestId, detail: err.message });
   }
 }
 
