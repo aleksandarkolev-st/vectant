@@ -2301,6 +2301,73 @@ class AIProjectAnalyzeRequest(BaseModel):
     min_confidence: Optional[float] = None
 
 
+class AIConfigUpdate(BaseModel):
+    """Dynamic config update for the AI agent."""
+    min_confidence: Optional[float] = None
+    validate_fixes: Optional[bool] = None
+    auto_accept_threshold: Optional[float] = None
+    confidence_discount: Optional[float] = None
+    max_fixes_per_file: Optional[int] = None
+    llm_timeout: Optional[float] = None
+
+
+@app.get("/heal/ai/config")
+async def heal_ai_config_get():
+    """Get current AI agent configuration."""
+    from analyzer.proactive.healing.ai_agent import AIAgentConfig
+    config = AIAgentConfig()
+    return {
+        "min_confidence": config.min_confidence,
+        "validate_fixes": config.validate_fixes,
+        "auto_accept_threshold": config.auto_accept_threshold,
+        "confidence_discount": config.confidence_discount,
+        "max_fixes_per_file": config.max_fixes_per_file,
+        "llm_timeout": config.llm_timeout,
+        "model": config.model,
+    }
+
+
+@app.put("/heal/ai/config")
+async def heal_ai_config_update(req: AIConfigUpdate):
+    """
+    Update AI agent configuration dynamically.
+
+    Only provided fields are updated; omitted fields keep defaults.
+    Note: these changes are per-process and not persisted across restarts.
+    """
+    from analyzer.proactive.healing.ai_agent import AIAgentConfig
+    # Since AIAgentConfig is a dataclass with defaults, we track
+    # the live config on the app state.
+    if not hasattr(app.state, "_ai_config"):
+        app.state._ai_config = AIAgentConfig()
+
+    cfg = app.state._ai_config
+    if req.min_confidence is not None:
+        cfg.min_confidence = req.min_confidence
+    if req.validate_fixes is not None:
+        cfg.validate_fixes = req.validate_fixes
+    if req.auto_accept_threshold is not None:
+        cfg.auto_accept_threshold = req.auto_accept_threshold
+    if req.confidence_discount is not None:
+        cfg.confidence_discount = req.confidence_discount
+    if req.max_fixes_per_file is not None:
+        cfg.max_fixes_per_file = req.max_fixes_per_file
+    if req.llm_timeout is not None:
+        cfg.llm_timeout = req.llm_timeout
+
+    return {
+        "updated": True,
+        "config": {
+            "min_confidence": cfg.min_confidence,
+            "validate_fixes": cfg.validate_fixes,
+            "auto_accept_threshold": cfg.auto_accept_threshold,
+            "confidence_discount": cfg.confidence_discount,
+            "max_fixes_per_file": cfg.max_fixes_per_file,
+            "llm_timeout": cfg.llm_timeout,
+        },
+    }
+
+
 @app.post("/heal/ai/project")
 async def heal_ai_project(req: AIProjectAnalyzeRequest):
     """
