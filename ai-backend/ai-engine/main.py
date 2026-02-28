@@ -2180,6 +2180,12 @@ async def heal_ai_stats():
     if isinstance(stats, dict):
         stats["telemetry"] = tel.snapshot()
 
+    # Augment with prompt cache stats
+    from analyzer.proactive.healing.ai_prompt_cache import get_prompt_cache
+    pcache = get_prompt_cache()
+    if isinstance(stats, dict):
+        stats["prompt_cache"] = pcache.stats()
+
     return stats
 
 
