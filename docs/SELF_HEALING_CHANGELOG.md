@@ -178,3 +178,97 @@ The system now has **two detection modes**:
   (components exist but integration is per-project).
 - Gateway streaming endpoint (`/heal/ai/stream`) is defined but not
   yet forwarded through WebSocket (HTTP SSE only).
+
+---
+
+## v2.1.0 — Production Infrastructure (commits 128–186)
+
+> Hardening, observability, Monaco deep integration, cross-file analysis,
+> caching, and comprehensive testing.
+
+### New backend modules
+
+| Module | Purpose |
+|--------|---------|
+| `ai_rate_limiter.py` | Token-bucket rate limiter (10 req/60s, 15s timeout) |
+| `ai_retry.py` | Exponential backoff (2 retries, 1s base, 8s max, jitter) |
+| `ai_deps.py` | Cross-file dependency graph (JS/TS, Python, Rust imports) |
+| `ai_fix_utils.py` | Fix dedup, merge, grouping, sorting, filtering |
+| `ai_telemetry.py` | Timing buckets, error counters, snapshot API |
+| `ai_prompt_cache.py` | LRU cache (64 entries, 120s TTL) to skip repeat LLM calls |
+
+### New API endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/heal/ai/project` | Cross-file analysis via dependency graph |
+| POST | `/heal/ai/preview` | Dry-run with simulated diff (no edits applied) |
+| GET | `/heal/ai/health` | Pipeline health check (LLM, memory, limiter, deps) |
+| GET | `/heal/ai/config` | Current agent configuration |
+| PUT | `/heal/ai/config` | Update config at runtime |
+| POST | `/heal/ai/cache/clear` | Flush prompt cache |
+
+### Gateway additions
+
+6 new WebSocket routes: `project`, `stream` (SSE-to-WS bridge), `config`,
+`config/update`, `health`, `cache/clear`, `preview`.
+
+Total AI gateway routes: **15**.
+
+### Frontend additions
+
+**Services:**
+- `aiFixHistory.js` — session-scoped audit log (max 200 entries, sessionStorage)
+
+**Monaco integration:**
+- `AIInlineWidget.js` — clickable inline hints per fix line
+- `aiDiagnostics.js` — squiggly underlines via Monaco markers
+- `aiCodeActions.js` — Ctrl+. quick-fix lightbulb provider
+- `aiHoverProvider.js` — rich hover tooltip with severity table + diff
+
+**UI components:**
+- `AIDiffPreview.jsx` — Monaco diff editor (side-by-side or inline)
+- `AIConfidenceGate.jsx` — confidence-gated wrapper with visual tiers
+- `AIActivityTimeline.jsx` — compact timeline of fix actions
+- `AIFixCard` now has rich Monaco diff toggle
+- `AIHealingPanel` wraps fixes with `AIConfidenceGate`
+- `AIStatsPanel` includes `AIActivityTimeline`
+
+**Hooks:**
+- `useAIAutoAnalysis` — debounced auto-analysis on content change
+- `useAISelectionAnalysis` — analyze selected range only
+- `useAIHealing` — now manages hover provider lifecycle
+
+**Client methods:**
+- `aiStream()`, `aiProject()`, `aiConfig()`, `aiConfigUpdate()`,
+  `aiHealth()`, `aiCacheClear()`, `aiPreview()`
+
+### Testing
+
+| Test file | Tests | Focus |
+|-----------|-------|-------|
+| `test_ai_deps.py` | 13 | Import parsing, graph operations, singleton |
+| `test_ai_fix_utils.py` | 18 | Dedup, merge, group, sort, filter |
+| `test_ai_telemetry.py` | 11 | Timing, counters, errors, snapshot |
+| `test_ai_prompt_cache.py` | 11 | LRU, TTL, eviction, stats |
+| `test_ai_streaming.py` | 5 | SSE events, progress, error handling |
+| `test_integration_healing.py` | 28 | End-to-end pipeline |
+
+Total test count: **~220** (66 v1 + 36 v2 + ~118 v2.1).
+
+### What's better vs v2.0
+
+| v2.0 gap | v2.1 fix |
+|----------|----------|
+| No rate limiting | Token-bucket 10 req/60s |
+| No retry logic | Exponential backoff + jitter |
+| No observability | Telemetry module + stats exposure |
+| Duplicate LLM calls waste tokens | Prompt cache (LRU, 120s TTL) |
+| No cross-file awareness | Dependency graph + project endpoint |
+| SSE not bridged to WebSocket | Gateway SSE-to-WS bridge |
+| No audit trail | Fix history service + timeline UI |
+| No Monaco hover info | Rich hover provider |
+| Fixes not confidence-gated | AIConfidenceGate wrapper |
+| No diff preview | AIDiffPreview + AIFixCard rich diff |
+| Gateway streaming missing | Now forwarded via SSE bridge |
+| Config not runtime-adjustable | GET/PUT /heal/ai/config |
