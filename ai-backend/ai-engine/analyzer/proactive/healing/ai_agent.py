@@ -39,6 +39,7 @@ from .ai_context import (
     AnalysisContext,
 )
 from .ai_memory import AIAgentMemory, get_agent_memory
+from .ai_rate_limiter import get_rate_limiter, RateLimitExceeded
 from .types import HealingFix, HealingSeverity
 
 logger = logging.getLogger("healing.ai_agent")
@@ -365,12 +366,21 @@ class AIHealingAgent:
         prompt: str,
     ) -> Optional[str]:
         """
-        Call the LLM with timeout and error handling.
+        Call the LLM with rate limiting, timeout, and error handling.
 
         Returns the raw response text, or None on failure.
         """
         provider = self._get_provider()
         self.stats.total_llm_calls += 1
+
+        # Acquire a rate-limit token (waits up to 15s, then raises)
+        limiter = get_rate_limiter()
+        try:
+            await limiter.acquire()
+        except RateLimitExceeded as e:
+            logger.warning(f"LLM rate limit exceeded: {e}")
+            self.stats.total_llm_errors += 1
+            return None
 
         try:
             result = await asyncio.wait_for(
