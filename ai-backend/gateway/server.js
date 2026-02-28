@@ -209,6 +209,9 @@ async function handleClientMessage(socket, raw) {
     case "heal/ai/memory/clear":
       await forwardAIMemoryClear(socket, requestId);
       break;
+    case "heal/ai/stream":
+      await forwardAIStream(socket, data, requestId);
+      break;
     default:
       sendError(socket, `Unsupported action: ${action}`, { requestId });
   }
@@ -1786,6 +1789,115 @@ async function forwardAIMemoryClear(socket, requestId) {
   } catch (err) {
     console.error("[AI Agent] memory clear forward error:", err);
     sendError(socket, "AI memory clear request failed", { requestId, detail: err.message });
+  }
+}
+
+/**
+ * Forward an SSE streaming AI analysis request.
+ *
+ * The backend endpoint /heal/ai/stream returns `text/event-stream`.
+ * We consume the SSE events and relay each one as a WebSocket message so
+ * the browser client receives progressive updates without HTTP streaming.
+ */
+async function forwardAIStream(socket, data, requestId) {
+  const code = data?.code;
+  const lang = data?.lang;
+
+  if (typeof code !== "string" || !code.trim()) {
+    sendError(socket, "`code` must be a non-empty string", { requestId });
+    return;
+  }
+
+  try {
+    const body = {
+      code,
+      lang: lang || "plaintext",
+      file_path: data?.filePath || data?.file_path || "",
+      workspace_root: data?.workspaceRoot || data?.workspace_root || "",
+      auto_apply: data?.autoApply ?? false,
+      validate_fixes: data?.validateFixes ?? true,
+    };
+    if (data?.minConfidence != null) body.min_confidence = data.minConfidence;
+
+    const backendResponse = await fetch(backendAIStreamUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+
+    if (!backendResponse.ok) {
+      const errText = await backendResponse.text();
+      sendError(socket, "AI stream backend error", { requestId, detail: errText });
+      return;
+    }
+
+    // Read the SSE body as a stream of text chunks
+    const reader = backendResponse.body;
+    const decoder = new TextDecoder("utf-8");
+    let buffer = "";
+
+    for await (const chunk of reader) {
+      buffer += typeof chunk === "string" ? chunk : decoder.decode(chunk, { stream: true });
+
+      // Split on double-newline (SSE event boundary)
+      const parts = buffer.split("\n\n");
+      buffer = parts.pop(); // keep incomplete tail
+
+      for (const part of parts) {
+        const dataLine = part
+          .split("\n")
+          .find((l) => l.startsWith("data: "));
+        if (!dataLine) continue;
+
+        const jsonStr = dataLine.slice(6); // strip "data: "
+        let parsed;
+        try {
+          parsed = JSON.parse(jsonStr);
+        } catch {
+          // Non-JSON SSE event — skip
+          continue;
+        }
+
+        safeSend(socket, {
+          type: "stream",
+          action: "heal/ai/stream",
+          requestId,
+          event: parsed.event || parsed.type || "data",
+          data: parsed,
+        });
+      }
+    }
+
+    // Flush any remaining buffer
+    if (buffer.trim()) {
+      const dataLine = buffer
+        .split("\n")
+        .find((l) => l.startsWith("data: "));
+      if (dataLine) {
+        try {
+          const parsed = JSON.parse(dataLine.slice(6));
+          safeSend(socket, {
+            type: "stream",
+            action: "heal/ai/stream",
+            requestId,
+            event: parsed.event || "data",
+            data: parsed,
+          });
+        } catch {
+          // ignore
+        }
+      }
+    }
+
+    // Send stream-end marker
+    safeSend(socket, {
+      type: "stream_end",
+      action: "heal/ai/stream",
+      requestId,
+    });
+  } catch (err) {
+    console.error("[AI Agent] stream forward error:", err);
+    sendError(socket, "AI stream request failed", { requestId, detail: err.message });
   }
 }
 
