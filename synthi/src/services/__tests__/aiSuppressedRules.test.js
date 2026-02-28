@@ -139,6 +139,44 @@ describe('filterFixes', () => {
     expect(visible).toEqual([]);
     expect(suppressedCount).toBe(0);
   });
+
+  it('does NOT mutate the input array', () => {
+    const fixes = [
+      makeFix(),
+      makeFix({ rule_id: 'RULE_B', original_text: 'other' }),
+    ];
+    const snapshot = [...fixes];
+    aiSuppressedRules.suppress('RULE_A', fixes[0]);
+
+    aiSuppressedRules.filterFixes(fixes);
+    expect(fixes).toEqual(snapshot);
+    expect(fixes).toHaveLength(2);
+  });
+
+  it('preserves original ordering of non-suppressed fixes', () => {
+    const fixes = [
+      makeFix({ rule_id: 'C', original_text: 'c', line: 30 }),
+      makeFix({ rule_id: 'A', original_text: 'a', line: 10 }),
+      makeFix({ rule_id: 'B', original_text: 'b', line: 20 }),
+    ];
+    aiSuppressedRules.suppress('A', fixes[1]);
+
+    const { visible } = aiSuppressedRules.filterFixes(fixes);
+    expect(visible.map((f) => f.rule_id)).toEqual(['C', 'B']);
+  });
+
+  it('is stable across repeated calls with same input', () => {
+    const fixes = [
+      makeFix({ rule_id: 'X', original_text: 'x' }),
+      makeFix({ rule_id: 'Y', original_text: 'y' }),
+    ];
+    aiSuppressedRules.suppress('X', fixes[0]);
+
+    const r1 = aiSuppressedRules.filterFixes(fixes);
+    const r2 = aiSuppressedRules.filterFixes(fixes);
+    expect(r1.visible.map((f) => f.rule_id)).toEqual(r2.visible.map((f) => f.rule_id));
+    expect(r1.suppressedCount).toBe(r2.suppressedCount);
+  });
 });
 
 
@@ -226,5 +264,78 @@ describe('clear()', () => {
     aiSuppressedRules.clear();
     expect(aiSuppressedRules.all()).toEqual([]);
     expect(aiSuppressedRules.count).toBe(0);
+  });
+});
+
+
+// ── isEscalated ─────────────────────────────────────────────────────
+
+describe('isEscalated()', () => {
+  it('returns false for non-existent rule', () => {
+    expect(aiSuppressedRules.isEscalated(makeFix({ rule_id: 'NOPE' }))).toBe(false);
+  });
+
+  it('returns false for a freshly suppressed rule', () => {
+    const fix = makeFix();
+    aiSuppressedRules.suppress('RULE_A', fix);
+    expect(aiSuppressedRules.isEscalated(fix)).toBe(false);
+  });
+
+  it('returns true when mergeRemote provides escalated entry', () => {
+    aiSuppressedRules.mergeRemote({
+      version: 2,
+      entries: {
+        RULE_ESC: {
+          mode: 'rule',
+          fingerprints: [],
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          ttl: null,
+          reason: 'escalated test',
+          escalated: true,
+        },
+      },
+    });
+    const fix = makeFix({ rule_id: 'RULE_ESC' });
+    expect(aiSuppressedRules.isEscalated(fix)).toBe(true);
+  });
+});
+
+
+// ── count (getter, not method) ──────────────────────────────────────
+
+describe('count', () => {
+  it('is a property getter, not a function', () => {
+    // Accessing .count should not require ()
+    expect(typeof aiSuppressedRules.count).toBe('number');
+    // Confirm it's a getter on the prototype, not an own enumerable prop
+    const descriptor = Object.getOwnPropertyDescriptor(
+      Object.getPrototypeOf(aiSuppressedRules),
+      'count',
+    );
+    expect(descriptor?.get).toBeInstanceOf(Function);
+    expect(descriptor?.set).toBeUndefined();
+  });
+
+  it('reflects current entry count', () => {
+    expect(aiSuppressedRules.count).toBe(0);
+    aiSuppressedRules.suppress('R1', makeFix());
+    expect(aiSuppressedRules.count).toBe(1);
+    aiSuppressedRules.suppress('R2', makeFix({ rule_id: 'R2' }));
+    expect(aiSuppressedRules.count).toBe(2);
+    aiSuppressedRules.clear();
+    expect(aiSuppressedRules.count).toBe(0);
+  });
+});
+
+
+// ── scope getter ────────────────────────────────────────────────────
+
+describe('scope', () => {
+  it('returns env and workspaceId from current config', () => {
+    const { env, workspaceId } = aiSuppressedRules.scope;
+    // default values before configure()
+    expect(env).toBeDefined();
+    expect(workspaceId).toBeDefined();
   });
 });
