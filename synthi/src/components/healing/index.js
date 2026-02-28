@@ -21,3 +21,8 @@ export {
   createAIInlineWidgets,
   disposeAIInlineWidgets,
 } from './AIInlineWidget';
+export {
+  setAIDiagnostics,
+  clearAIDiagnostics,
+  getAIDiagnosticCount,
+} from './aiDiagnostics';
