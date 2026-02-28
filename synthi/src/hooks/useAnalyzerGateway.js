@@ -578,6 +578,50 @@ export function useAnalyzerGateway({
     }
   }, []);
 
+  const aiFeedback = useCallback(async ({ ruleId, feedbackType, filePath, originalText, replacementText, description } = {}) => {
+    if (!clientRef.current) {
+      throw new SynthiException('Gateway client is not ready yet');
+    }
+    if (!ruleId || !feedbackType) {
+      throw new SynthiException('ruleId and feedbackType are required for feedback');
+    }
+    try {
+      const response = await clientRef.current.aiFeedback({
+        ruleId, feedbackType, filePath, originalText, replacementText, description,
+      });
+      return response?.data ?? response;
+    } catch (error) {
+      console.error('[aiFeedback] Error:', error);
+      throw error;
+    }
+  }, []);
+
+  const aiMemory = useCallback(async () => {
+    if (!clientRef.current) {
+      throw new SynthiException('Gateway client is not ready yet');
+    }
+    try {
+      const response = await clientRef.current.aiMemory();
+      return response?.data ?? response;
+    } catch (error) {
+      console.error('[aiMemory] Error:', error);
+      throw error;
+    }
+  }, []);
+
+  const aiMemoryClear = useCallback(async () => {
+    if (!clientRef.current) {
+      throw new SynthiException('Gateway client is not ready yet');
+    }
+    try {
+      const response = await clientRef.current.aiMemoryClear();
+      return response?.data ?? response;
+    } catch (error) {
+      console.error('[aiMemoryClear] Error:', error);
+      throw error;
+    }
+  }, []);
+
   const connectionMeta = useMemo(
     () => ({
       status: connectionStatus,
@@ -608,6 +652,9 @@ export function useAnalyzerGateway({
     aiBatch,
     aiHybrid,
     aiStats,
+    aiFeedback,
+    aiMemory,
+    aiMemoryClear,
     resetResult,
     resetError,
     clientReady: Boolean(clientRef.current),
