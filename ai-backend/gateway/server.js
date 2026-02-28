@@ -45,6 +45,7 @@ const backendAIProjectUrl = new URL("/heal/ai/project", backendUrl).toString();
 const backendAIConfigUrl = new URL("/heal/ai/config", backendUrl).toString();
 const backendAIHealthUrl = new URL("/heal/ai/health", backendUrl).toString();
 const backendAICacheClearUrl = new URL("/heal/ai/cache/clear", backendUrl).toString();
+const backendAIPreviewUrl = new URL("/heal/ai/preview", backendUrl).toString();
 
 const server = http.createServer(handleHttpRequest);
 const wss = new WebSocketServer({
@@ -230,6 +231,9 @@ async function handleClientMessage(socket, raw) {
       break;
     case "heal/ai/cache/clear":
       await forwardAICacheClear(socket, requestId);
+      break;
+    case "heal/ai/preview":
+      await forwardAIPreview(socket, data, requestId);
       break;
     default:
       sendError(socket, `Unsupported action: ${action}`, { requestId });
@@ -2066,6 +2070,40 @@ async function forwardAICacheClear(socket, requestId) {
   } catch (err) {
     console.error("[AI Agent] cache clear forward error:", err);
     sendError(socket, "AI cache clear request failed", { requestId, detail: err.message });
+  }
+}
+
+async function forwardAIPreview(socket, data, requestId) {
+  const code = data?.code;
+  const lang = data?.lang;
+  if (typeof code !== "string" || typeof lang !== "string") {
+    sendError(socket, "`code` and `lang` are required for AI preview", { requestId });
+    return;
+  }
+  try {
+    const backendResponse = await fetch(backendAIPreviewUrl, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        code,
+        lang: lang.toLowerCase(),
+        file_path: data?.filePath || data?.file_path || "untitled",
+      }),
+    });
+    const responseText = await backendResponse.text();
+    if (!backendResponse.ok) {
+      sendError(socket, "AI preview backend error", { requestId, detail: responseText });
+      return;
+    }
+    safeSend(socket, {
+      type: "response",
+      action: "heal/ai/preview",
+      requestId,
+      data: JSON.parse(responseText),
+    });
+  } catch (err) {
+    console.error("[AI Agent] preview forward error:", err);
+    sendError(socket, "AI preview request failed", { requestId, detail: err.message });
   }
 }
 
