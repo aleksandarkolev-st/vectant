@@ -40,6 +40,7 @@ from .ai_context import (
 )
 from .ai_memory import AIAgentMemory, get_agent_memory
 from .ai_rate_limiter import get_rate_limiter, RateLimitExceeded
+from .ai_retry import with_retry
 from .types import HealingFix, HealingSeverity
 
 logger = logging.getLogger("healing.ai_agent")
@@ -383,25 +384,33 @@ class AIHealingAgent:
             return None
 
         try:
-            result = await asyncio.wait_for(
-                provider.ask_llm(
-                    code=code,
-                    lang=language,
-                    prompt=prompt,
-                    model=self.config.model,
-                    api_key=self.config.api_key,
+            result = await with_retry(
+                coroutine_fn=lambda: asyncio.wait_for(
+                    provider.ask_llm(
+                        code=code,
+                        lang=language,
+                        prompt=prompt,
+                        model=self.config.model,
+                        api_key=self.config.api_key,
+                    ),
+                    timeout=self.config.llm_timeout,
                 ),
-                timeout=self.config.llm_timeout,
+                max_retries=2,
+                base_delay=1.0,
+                max_delay=8.0,
+                on_retry=lambda attempt, exc, delay: logger.info(
+                    f"LLM retry {attempt + 1}/2 in {delay:.1f}s ({exc})"
+                ),
             )
             return result
         except asyncio.TimeoutError:
             logger.warning(
-                f"LLM call timed out after {self.config.llm_timeout}s"
+                f"LLM call timed out after {self.config.llm_timeout}s (after retries)"
             )
             self.stats.total_llm_errors += 1
             return None
         except Exception as e:
-            logger.error(f"LLM call failed: {e}")
+            logger.error(f"LLM call failed after retries: {e}")
             self.stats.total_llm_errors += 1
             return None
 
