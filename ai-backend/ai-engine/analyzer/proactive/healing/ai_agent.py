@@ -38,6 +38,7 @@ from .ai_context import (
     collect_context,
     AnalysisContext,
 )
+from .ai_memory import AIAgentMemory, get_agent_memory
 from .types import HealingFix, HealingSeverity
 
 logger = logging.getLogger("healing.ai_agent")
@@ -120,6 +121,7 @@ class AIHealingAgent:
         self.config = config or AIAgentConfig()
         self.stats = AIAgentStats()
         self._provider = None
+        self._memory = get_agent_memory()
 
     def _get_provider(self):
         """Lazy-init the LLM provider."""
@@ -397,30 +399,44 @@ class AIHealingAgent:
 
     def _calibrate_confidence(self, fixes: List[HealingFix]) -> List[HealingFix]:
         """
-        Apply confidence discount to counteract LLM over-confidence.
+        Apply confidence calibration using both discount factor and
+        historical user feedback from the agent memory.
 
-        LLMs tend to report 0.9+ confidence even for uncertain fixes.
-        We apply a multiplicative discount to bring scores closer to
-        their actual reliability.
+        1. Apply base discount (LLMs are over-confident)
+        2. Apply memory adjustment (boost accepted patterns, penalize rejected)
+        3. Filter out suppressed patterns (user always rejects)
         """
         discount = self.config.confidence_discount
+        calibrated = []
 
         for fix in fixes:
-            original_conf = fix.confidence
+            # Skip suppressed patterns
+            if self._memory.is_suppressed(fix.rule_id):
+                logger.debug(f"Suppressed fix: {fix.rule_id} — {fix.description}")
+                self.stats.total_fixes_rejected += 1
+                continue
+
+            # Base discount
             fix.confidence = round(fix.confidence * discount, 3)
 
-            # Boost for high-severity issues (logic errors are more likely real)
+            # Memory-based adjustment
+            memory_adj = self._memory.get_confidence_adjustment(fix.rule_id)
+            fix.confidence = round(fix.confidence * memory_adj, 3)
+            fix.confidence = max(0.0, min(1.0, fix.confidence))
+
+            # Boost for high-severity issues
             if fix.severity == HealingSeverity.CRITICAL:
                 fix.confidence = min(1.0, fix.confidence * 1.1)
 
             # Track for stats
             self.stats._confidence_sum += fix.confidence
+            calibrated.append(fix)
 
-        total = self.stats.total_fixes_proposed + len(fixes)
+        total = self.stats.total_fixes_proposed + len(calibrated)
         if total > 0:
             self.stats.avg_confidence = self.stats._confidence_sum / total
 
-        return fixes
+        return calibrated
 
     # ── Helpers ────────────────────────────────────────────────────────
 
