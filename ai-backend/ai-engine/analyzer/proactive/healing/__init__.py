@@ -23,6 +23,7 @@ from .engine import SelfHealingEngine
 from .rule_registry import HealingRuleRegistry
 from .ai_agent import AIHealingAgent, AIAgentConfig
 from .ai_memory import AIAgentMemory, get_agent_memory
+from .ai_deps import DependencyGraph, get_dependency_graph
 
 __all__ = [
     "HealingCategory",
@@ -40,4 +41,6 @@ __all__ = [
     "AIAgentConfig",
     "AIAgentMemory",
     "get_agent_memory",
+    "DependencyGraph",
+    "get_dependency_graph",
 ]
