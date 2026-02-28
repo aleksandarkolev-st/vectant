@@ -46,6 +46,9 @@ const backendAIConfigUrl = new URL("/heal/ai/config", backendUrl).toString();
 const backendAIHealthUrl = new URL("/heal/ai/health", backendUrl).toString();
 const backendAICacheClearUrl = new URL("/heal/ai/cache/clear", backendUrl).toString();
 const backendAIPreviewUrl = new URL("/heal/ai/preview", backendUrl).toString();
+const backendAIPolicySuppressUrl = new URL("/heal/ai/policy/suppress", backendUrl).toString();
+const backendAIPolicyUnsuppressUrl = new URL("/heal/ai/policy/unsuppress", backendUrl).toString();
+const backendAIPolicyListUrl = new URL("/heal/ai/policy", backendUrl).toString();
 
 const server = http.createServer(handleHttpRequest);
 const wss = new WebSocketServer({
@@ -234,6 +237,18 @@ async function handleClientMessage(socket, raw) {
       break;
     case "heal/ai/preview":
       await forwardAIPreview(socket, data, requestId);
+      break;
+    case "heal/ai/policy/suppress":
+      await forwardAIPolicySuppress(socket, data, requestId);
+      break;
+    case "heal/ai/policy/unsuppress":
+      await forwardAIPolicyUnsuppress(socket, data, requestId);
+      break;
+    case "heal/ai/policy":
+      await forwardAIPolicyList(socket, requestId);
+      break;
+    case "heal/ai/policy/clear":
+      await forwardAIPolicyClear(socket, requestId);
       break;
     default:
       sendError(socket, `Unsupported action: ${action}`, { requestId });
@@ -2104,6 +2119,117 @@ async function forwardAIPreview(socket, data, requestId) {
   } catch (err) {
     console.error("[AI Agent] preview forward error:", err);
     sendError(socket, "AI preview request failed", { requestId, detail: err.message });
+  }
+}
+
+// ── AI Policy: suppress ──────────────────────────────────────────────
+async function forwardAIPolicySuppress(socket, data, requestId) {
+  const ruleId = data?.ruleId || data?.rule_id;
+  if (typeof ruleId !== "string") {
+    sendError(socket, "`ruleId` is required for policy suppress", { requestId });
+    return;
+  }
+  try {
+    const resp = await fetch(backendAIPolicySuppressUrl, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        ruleId,
+        fingerprint: data?.fingerprint || null,
+        mode: data?.mode || "fingerprint",
+        reason: data?.reason || null,
+        ttl: data?.ttl ?? null,
+      }),
+    });
+    const text = await resp.text();
+    if (!resp.ok) {
+      sendError(socket, "AI policy suppress backend error", { requestId, detail: text });
+      return;
+    }
+    safeSend(socket, {
+      type: "response",
+      action: "heal/ai/policy/suppress",
+      requestId,
+      data: JSON.parse(text),
+    });
+  } catch (err) {
+    console.error("[AI Policy] suppress forward error:", err);
+    sendError(socket, "AI policy suppress failed", { requestId, detail: err.message });
+  }
+}
+
+// ── AI Policy: unsuppress ────────────────────────────────────────────
+async function forwardAIPolicyUnsuppress(socket, data, requestId) {
+  const ruleId = data?.ruleId || data?.rule_id;
+  if (typeof ruleId !== "string") {
+    sendError(socket, "`ruleId` is required for policy unsuppress", { requestId });
+    return;
+  }
+  try {
+    const resp = await fetch(backendAIPolicyUnsuppressUrl, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        ruleId,
+        fingerprint: data?.fingerprint || null,
+      }),
+    });
+    const text = await resp.text();
+    if (!resp.ok) {
+      sendError(socket, "AI policy unsuppress backend error", { requestId, detail: text });
+      return;
+    }
+    safeSend(socket, {
+      type: "response",
+      action: "heal/ai/policy/unsuppress",
+      requestId,
+      data: JSON.parse(text),
+    });
+  } catch (err) {
+    console.error("[AI Policy] unsuppress forward error:", err);
+    sendError(socket, "AI policy unsuppress failed", { requestId, detail: err.message });
+  }
+}
+
+// ── AI Policy: list ──────────────────────────────────────────────────
+async function forwardAIPolicyList(socket, requestId) {
+  try {
+    const resp = await fetch(backendAIPolicyListUrl, { method: "GET" });
+    const text = await resp.text();
+    if (!resp.ok) {
+      sendError(socket, "AI policy list backend error", { requestId, detail: text });
+      return;
+    }
+    safeSend(socket, {
+      type: "response",
+      action: "heal/ai/policy",
+      requestId,
+      data: JSON.parse(text),
+    });
+  } catch (err) {
+    console.error("[AI Policy] list forward error:", err);
+    sendError(socket, "AI policy list failed", { requestId, detail: err.message });
+  }
+}
+
+// ── AI Policy: clear ─────────────────────────────────────────────────
+async function forwardAIPolicyClear(socket, requestId) {
+  try {
+    const resp = await fetch(backendAIPolicyListUrl, { method: "DELETE" });
+    const text = await resp.text();
+    if (!resp.ok) {
+      sendError(socket, "AI policy clear backend error", { requestId, detail: text });
+      return;
+    }
+    safeSend(socket, {
+      type: "response",
+      action: "heal/ai/policy/clear",
+      requestId,
+      data: JSON.parse(text),
+    });
+  } catch (err) {
+    console.error("[AI Policy] clear forward error:", err);
+    sendError(socket, "AI policy clear failed", { requestId, detail: err.message });
   }
 }
 
