@@ -499,9 +499,21 @@ export function useAIHealing({
       }).catch(() => {});
     }
 
+    // Toast with Undo affordance
+    const label = mode === 'rule' ? `rule "${ruleId}"` : 'this pattern';
     dispatch(enqueueToast({
-      message: `Suppressed ${mode === 'rule' ? `rule "${ruleId}"` : 'this pattern'} — future matches hidden`,
+      message: `Suppressed ${label}`,
       type: 'info',
+      undoAction: {
+        label: 'Undo',
+        ruleId,
+        // The fix reference is needed for fingerprint-mode undo
+        fixSnapshot: fix ? {
+          rule_id: fix.rule_id || fix.ruleId,
+          category: fix.category,
+          original_text: fix.original_text || fix.originalText,
+        } : null,
+      },
     }));
   }, [dispatch, gateway]);
 

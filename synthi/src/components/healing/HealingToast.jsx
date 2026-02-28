@@ -37,8 +37,9 @@ function formatCategory(cat) {
  *
  * @param {Object} props
  * @param {Function} [props.onUndo] – callback when user clicks "Undo" on a toast
+ * @param {Function} [props.onUndoSuppress] – callback({ruleId, fixSnapshot}) for suppress-undo
  */
-export function HealingToast({ onUndo }) {
+export function HealingToast({ onUndo, onUndoSuppress }) {
   const dispatch = useDispatch();
   const nextToast = useSelector(selectNextToast);
   const enabled = useSelector(selectHealingEnabled);
@@ -50,7 +51,7 @@ export function HealingToast({ onUndo }) {
     if (nextToast.id === lastToastId.current) return;
     lastToastId.current = nextToast.id;
 
-    const { type, message, details, fixCount, undoable } = nextToast;
+    const { type, message, details, fixCount, undoable, undoAction } = nextToast;
 
     // Determine toast variant based on type
     if (type === 'healing') {
@@ -75,6 +76,19 @@ export function HealingToast({ onUndo }) {
         description: details,
         duration: 5000,
         icon: '⚠️',
+      });
+    } else if (type === 'info' && undoAction && onUndoSuppress) {
+      // Suppress-style toast with Undo affordance
+      toast.info(message, {
+        duration: 6000,
+        icon: '🚫',
+        action: {
+          label: undoAction.label || 'Undo',
+          onClick: () => onUndoSuppress({
+            ruleId: undoAction.ruleId,
+            fixSnapshot: undoAction.fixSnapshot,
+          }),
+        },
       });
     } else {
       toast(message, {
