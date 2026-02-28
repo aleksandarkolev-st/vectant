@@ -1,16 +1,20 @@
-# Targeted Auto-Fix System — Technical Reference
+# AI-Assisted Deterministic Code Repair Engine — Technical Reference
 
-> **Naming note.** This document avoids the term "self-healing."
-> The system **auto-suggests and, where safe, auto-applies targeted fixes**
-> for a narrow class of syntactic and stylistic issues. It does not
-> repair arbitrary program defects. The marketing label "self-healing"
-> overstates what regex-based heuristic rules can guarantee.
+> **Positioning.** This system is an **AI-assisted deterministic code repair
+> engine with safety gating**. It auto-suggests and, where safe, auto-applies
+> targeted fixes for a narrow class of syntactic, stylistic, and semantic
+> issues. It does not repair arbitrary program defects at runtime.
 >
-> **Update (AI Agent layer).** Commits 102–127 added a second detection mode
-> that uses an LLM (Gemini) instead of regex. This catches real semantic bugs —
-> logic errors, null-safety, missing awaits, off-by-one, etc. — that regex
-> can never detect. The regex rules remain for fast, obvious syntax fixes.
-> The two modes can run together in *hybrid* mode.
+> Comparable to: Cursor auto-fix, Copilot "fix this", automated code review
+> assistants. Not comparable to: runtime self-healing, chaos engineering,
+> or autonomic computing.
+>
+> The system has two detection modes:
+> 1. **Regex layer** — fast (< 50ms), deterministic, limited to syntax/style.
+> 2. **AI layer** — deliberate (3–8s), LLM-powered, catches semantic bugs.
+>
+> These are fundamentally different UX interactions and **must not be mixed**.
+> Regex = instant feedback. AI = deliberate inspection.
 
 ---
 
@@ -196,7 +200,21 @@ The engine now includes an `_resolve_conflicts` step that:
 
 ## 6. Performance characteristics and SLOs
 
-### Estimated values (code-inspection, not benchmarked under load)
+### ⚠ Two fundamentally different performance profiles
+
+**Regex and AI have different latency by orders of magnitude.
+Their UX semantics must not be mixed.**
+
+- **Regex** = instant feedback, runs on every keystroke/save, results appear inline
+  before the user's eyes leave the editor.
+- **AI** = deliberate inspection, user-triggered or on-save, results appear after
+  a visible loading state. The user expects to wait.
+
+Mixing these into a single "analyzing…" spinner that sometimes takes 12ms and
+sometimes 8s will feel broken. The frontend must treat them as separate modes
+with separate UX affordances.
+
+### Regex layer — estimated values
 
 | Metric | Estimate | Basis |
 |--------|----------|-------|
@@ -207,7 +225,23 @@ The engine now includes an `_resolve_conflicts` step that:
 | Memory base | ~50MB | Python process + compiled regexes + registry |
 | Memory per cached result | ~0.2KB | Fix metadata only, no source code stored |
 
-### Target SLOs (to be validated)
+### AI layer — realistic expectations
+
+| Metric | Realistic range | Basis |
+|--------|----------------|-------|
+| p50 analysis latency | 3–5s | Gemini Flash Lite round-trip + JSON parse |
+| p95 analysis latency | 5–8s | Network variance + large context windows |
+| p99 with validation pass | 8–15s | 2× LLM calls + semaphore queuing |
+| Timeout ceiling | 30s | `asyncio.wait_for` hard cap |
+| SSE first-fix latency | 2–4s | Streaming reduces perceived wait |
+| Prompt cache hit | < 2s | SHA-256 cache bypass skips LLM entirely |
+| Batch (5 files) | 10–20s | Single LLM call but larger prompt |
+
+**AI p95 will not be < 2s.** It will be 3–8s depending on model load,
+context size, and whether validation is enabled. This is inherent to
+LLM round-trips and cannot be optimized away without model changes.
+
+### Regex SLOs (plausible, achievable)
 
 | SLO | Target | Enforcement |
 |-----|--------|-------------|
@@ -217,11 +251,23 @@ The engine now includes an `_resolve_conflicts` step that:
 | False-positive rate | ≤ 5% / rule | Requires revert-rate tracking (not yet implemented) |
 | Memory per 1k cached files | ≤ 500KB | LRU cap: 256 entries |
 
+### AI SLOs (aspirational, not yet validated)
+
+| SLO | Target | Status |
+|-----|--------|--------|
+| Analysis p50 | ≤ 5s | Plausible with cache + Flash Lite |
+| Analysis p95 | ≤ 10s | Requires monitoring to validate |
+| SSE first-event | ≤ 3s | Depends on LLM streaming support |
+| Validation p95 | ≤ 8s | Bounded by semaphore concurrency (3) |
+| False-positive rate | ≤ 10% | Requires empirical measurement |
+
 ### Known gaps
 
-- **No per-rule timeout.** Catastrophic regex backtracking can block indefinitely.
+- **No per-rule timeout for regex.** Catastrophic backtracking can block indefinitely.
 - **Batch engine is async but single-threaded.** No `ProcessPoolExecutor`.
 - **No latency percentile tracking in production yet.** `metrics_export.py` exists but is not wired to a collector.
+- **No formal SLA monitoring.** Telemetry exists but isn't hooked to alerting.
+- **AI latency is model-dependent.** Switching from Flash Lite to a larger model will change all numbers.
 
 ---
 
@@ -235,7 +281,9 @@ The engine now includes an `_resolve_conflicts` step that:
 | `test_cache.py` | 10 | LRU eviction, TTL, invalidation, hit/miss, stats, thread safety |
 | `test_batch_engine.py` | 9 | Empty/single/multi batch, oversize skip, priority, cancel, progress |
 | `test_integration_healing.py` | 13 | E2E pipeline: Python/JS/Go, empty files, binary, 20k lines, presets |
-| **Total** | **66** | |
+| `test_ai_policy.py` | 14 | Per-user suppression: suppress/unsuppress, escalation, TTL, persistence |
+| `aiSuppressedRules.test.js` | 25+ | Fingerprinting, filterFixes contract, immutability, ordering, isEscalated, count getter |
+| **Total** | **~105** | |
 
 ### Coverage gaps
 
@@ -243,12 +291,33 @@ The engine now includes an `_resolve_conflicts` step that:
 |------|----------|-------|
 | Engine + infrastructure | ~70% (estimated) | Core paths well-tested |
 | Individual rule logic | ~10–15% | ~10 of 100+ rules have dedicated tests |
-| Gateway WebSocket | 0% | All 11 forwarding functions untested |
+| Gateway WebSocket | 0% | All 11+ forwarding functions untested |
 | Frontend hooks/components | 0% | No Jest/RTL setup |
 | Conflict/overlap | 0% | No test for overlapping edits |
 | Per-language rule coverage | Low | Most rules tested only with Python/JS |
+| AI parser robustness | 0% | No fuzz testing of malformed LLM output |
+| Streaming interruption | 0% | No test for partial SSE delivery |
+| Adversarial prompts | 0% | No test for prompt injection / garbage input |
+| Rollback scenarios | 0% | No test for undo/revert after failed apply |
+| Suppression offline resilience | Partial | Pending ops queue tested locally, not E2E |
 
 **Overall effective coverage: ~20–25%.** This is underpowered.
+
+### Pre-production test requirements
+
+Before this system can be considered production-grade, the following fuzz/stress
+tests must exist:
+
+| Category | What to fuzz | Expected behavior |
+|----------|-------------|-------------------|
+| **Malformed JSON responses** | LLM returns truncated JSON, extra commas, wrong types, missing fields, nested markdown fences, empty string, null | Parser returns `[]` (no fixes), never crashes |
+| **Partial streaming interruptions** | SSE connection drops mid-event, server sends partial JSON chunk, timeout after 2 of 5 fixes | Client receives whatever fixes arrived, shows error for remainder, no UI hang |
+| **Conflicting overlapping fixes** | Rule A replaces lines 5–7, Rule B replaces lines 6–8, Rule C inserts at line 7 | Conflict resolver keeps highest-severity, drops others to `skipped_issues` |
+| **Adversarial prompt injection** | Code contains strings like `"ignore previous instructions"`, embedded JSON that mimics fix format | Parser validates against source lines, rejects fabricated fixes |
+| **Rollback after partial apply** | 3 of 5 fixes applied, 4th fails (line no longer exists) | First 3 remain applied, 4th and 5th skipped, undo stack contains all 3 |
+| **Concurrent analysis** | Two analyses on same file finish simultaneously | Dedup prevents double-apply, later result wins or is discarded |
+| **Cache poisoning** | Cached result for old code served after edit | Content-hash key prevents this, but test must verify |
+| **Backend scoping** | Two users suppress same rule in different workspaces | Policies are isolated, no cross-contamination |
 
 ---
 
@@ -601,3 +670,115 @@ All managed by `useAIHealing` hook lifecycle — register on analysis, dispose o
 | GET | `/heal/ai/config` | Current agent config |
 | PUT | `/heal/ai/config` | Update agent config at runtime |
 | POST | `/heal/ai/cache/clear` | Flush prompt cache |
+
+---
+
+## 14. Strategic position
+
+### What this system actually is
+
+An **AI-assisted deterministic code repair engine with safety gating**.
+
+It combines:
+1. **Linter-lite auto-fixer** — regex-based, instant, narrow scope.
+2. **LLM-powered semantic reviewer** — deliberate, broad scope, catches real bugs.
+3. **Safety firewall** — between suggestion and mutation. Four-tier classification,
+   escalation enforcement, suppression policy, undo stack.
+
+### What it is not
+
+- Not runtime self-healing (does not patch running processes).
+- Not chaos engineering (does not inject faults to test resilience).
+- Not autonomic computing (no feedback-driven self-tuning without human input).
+
+### Comparable systems
+
+| System | Similarity |
+|--------|-----------|
+| Cursor auto-fix | LLM-powered fix suggestions with auto-apply |
+| Copilot "fix this" | AI-generated fixes for flagged issues |
+| Code review bots (CodeRabbit, etc.) | Automated review with actionable suggestions |
+| ESLint --fix | Deterministic auto-apply for pattern-matched issues |
+
+This system is closest to **ESLint --fix + Cursor auto-fix** in a unified pipeline
+with a shared safety gate.
+
+---
+
+## 15. Engineering maturity assessment
+
+### What makes this serious (not a toy)
+
+The system has production-grade infrastructure that is uncommon in prototypes:
+
+| Capability | Module | Why it matters |
+|-----------|--------|---------------|
+| Rate limiting | `ai_rate_limiter.py` | Prevents API cost runaway |
+| Retry with jitter | `ai_retry.py` | Handles transient failures without thundering herd |
+| Memory / suppression | `ai_memory.py`, `ai_policy.py` | Learns from user feedback, respects user preferences |
+| Conflict resolution | `_resolve_conflicts()` | Prevents corrupted output from overlapping edits |
+| SSE streaming | `ai_streaming.py` | Progressive delivery reduces perceived latency |
+| Telemetry | `ai_telemetry.py` | Timing, error counts, pipeline observability |
+| Prompt cache | `ai_prompt_cache.py` | Avoids redundant LLM calls, reduces cost |
+| Dependency graph | `ai_deps.py` | Cross-file analysis via import resolution |
+| Hybrid merging | `ai_fix_utils.py` | Combines regex + AI results with dedup |
+| Pending ops queue | `aiSuppressedRules.js` | Offline resilience for suppression policy |
+| Scoped backend policy | `ai_policy.py` | Per-user, per-workspace, per-env isolation |
+| Escalation enforcement | `useAIHealing.js` | Defense-in-depth: both backend and frontend gates |
+
+This is structured engineering, not hobby-level scaffolding.
+
+### Architecture quality
+
+The pipeline has clean separation of concerns across 9 stages:
+
+```
+Detection → Parsing → Calibration → Validation → Classification
+     → Conflict resolution → Application → Telemetry → Memory
+```
+
+Each stage is independently testable, replaceable, and configurable.
+AI detection was added without modifying the regex engine, classifier,
+or UI layer. This modularity is the system's strongest property.
+
+---
+
+## 16. Production readiness — honest gap analysis
+
+### Current state: strong architecture, unproven reliability
+
+| Dimension | Status | Assessment |
+|-----------|--------|------------|
+| Architecture | ✅ Strong | Clean separation, modularity, extensibility |
+| Safety philosophy | ✅ Disciplined | Four-tier classifier, escalation, suppression |
+| Regex layer | ✅ Limited but honest | Does what it claims, doesn't overclaim |
+| AI layer | ✅ Well-structured | Proper pipeline: context → prompt → parse → calibrate → validate |
+| Confidence calibration | ⚠️ Weak | Hand-tuned heuristics, no empirical validation |
+| Testing depth | ⚠️ Insufficient | ~20–25% effective coverage |
+| Production hardening | ⚠️ Incomplete | No adversarial testing, no SLA monitoring |
+
+### What is still missing for production-grade reliability
+
+| Gap | Impact | Effort |
+|-----|--------|--------|
+| **Empirical precision metrics** | Cannot verify false-positive rate claims | Medium — log all applied fixes, track reverts per rule |
+| **Revert-based confidence calibration** | Confidence values are subjective guesses | Medium — compute empirical precision per rule quarterly |
+| **Security / redaction layer** | Code is sent to external LLM without sanitization | High — secrets scanning, PII redaction before prompt |
+| **AST-backed critical rule layer** | Regex cannot verify scope, shadowing, or type info | High — tree-sitter integration for high-value rules |
+| **Formal SLA monitoring** | No alerting on latency regression or error spikes | Low — wire telemetry to Prometheus/Grafana |
+| **Adversarial testing** | Unknown behavior under malicious/degenerate input | Medium — fuzz suite for parser, prompt, streaming |
+| **Project-scale evaluation benchmark** | No end-to-end quality measurement across real codebases | High — curated test corpus with known bugs and fixes |
+
+### Graduation criteria
+
+The system should not be labeled "production-grade" until:
+
+1. ☐ Empirical false-positive rate is measured and < 5% for regex, < 10% for AI.
+2. ☐ Confidence values are calibrated against revert data (at least one cycle).
+3. ☐ Fuzz tests pass for malformed JSON, partial streams, overlapping conflicts.
+4. ☐ Security review: code sent to LLM is screened for secrets/PII.
+5. ☐ SLA monitoring is active with alerts for p95 regression.
+6. ☐ Test coverage reaches ≥ 50% effective (currently ~20–25%).
+7. ☐ At least one real-codebase evaluation (100+ files, known bug set) is completed.
+
+Until these are met: **strong foundation, not yet production-grade reliability.**
