@@ -234,6 +234,9 @@ export function useAIHealing({
         },
       }));
 
+      // Report acceptance feedback to the agent
+      _reportFeedback(fix, 'accepted');
+
       return true;
     } catch (err) {
       console.warn('[AIHealing] applyFix failed:', err);
@@ -270,6 +273,8 @@ export function useAIHealing({
   // ── Dismiss a fix ───────────────────────────────────────────────────
   const dismissFix = useCallback((fix) => {
     setFixes((prev) => prev.filter((f) => f !== fix));
+    // Report rejection feedback to the agent
+    _reportFeedback(fix, 'rejected');
   }, []);
 
   // ── Dismiss all ─────────────────────────────────────────────────────
@@ -288,6 +293,44 @@ export function useAIHealing({
       const result = await gateway.aiStats();
       if (mountedRef.current) setStats(result);
       return result;
+    } catch {
+      return null;
+    }
+  }, [gateway]);
+
+  // ── Feedback reporting (internal helper) ────────────────────────────
+  // Fire-and-forget — never blocks the UI.
+  const _reportFeedback = useCallback((fix, feedbackType) => {
+    if (!gateway?.aiFeedback) return;
+    const ruleId = fix?.rule_id || fix?.ruleId;
+    if (!ruleId) return;
+
+    gateway.aiFeedback({
+      ruleId,
+      feedbackType,
+      filePath,
+      originalText: fix?.original_text || fix?.originalText || null,
+      replacementText: fix?.replacement_text || fix?.replacementText || null,
+      description: fix?.description || null,
+    }).catch((err) => {
+      // Feedback is non-critical — log and move on
+      console.warn('[AIHealing] feedback send failed:', err);
+    });
+  }, [gateway, filePath]);
+
+  /**
+   * Public feedback method — lets UI components report arbitrary
+   * feedback types (e.g. "modified" when user edits the suggestion).
+   */
+  const sendFeedback = useCallback((fix, feedbackType) => {
+    _reportFeedback(fix, feedbackType);
+  }, [_reportFeedback]);
+
+  // ── Fetch memory summary ────────────────────────────────────────────
+  const fetchMemory = useCallback(async () => {
+    if (!gateway?.aiMemory) return null;
+    try {
+      return await gateway.aiMemory();
     } catch {
       return null;
     }
@@ -329,5 +372,7 @@ export function useAIHealing({
     dismissFix,
     dismissAll,
     fetchStats,
+    sendFeedback,
+    fetchMemory,
   };
 }
