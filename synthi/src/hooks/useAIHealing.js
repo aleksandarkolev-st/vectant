@@ -38,6 +38,8 @@ import {
   pushUndo,
 } from '@/redux/healingSlice';
 
+import { aiFixHistory } from '@/services/aiFixHistory';
+
 
 /** Simple unique ID generator */
 function uid() {
@@ -370,6 +372,9 @@ export function useAIHealing({
       // Report acceptance feedback to the agent
       _reportFeedback(fix, 'accepted');
 
+      // Record in audit history
+      aiFixHistory.record({ fix, action: 'applied', filePath });
+
       return true;
     } catch (err) {
       console.warn('[AIHealing] applyFix failed:', err);
@@ -407,6 +412,7 @@ export function useAIHealing({
   const dismissFixInternal = useCallback((fix) => {
     setFixes((prev) => prev.filter((f) => f !== fix));
     _reportFeedback(fix, 'rejected');
+    aiFixHistory.record({ fix, action: 'dismissed', filePath });
   }, []);
 
   // ── Dismiss a fix (public — also refreshes widgets) ─────────────────
@@ -519,5 +525,7 @@ export function useAIHealing({
     fetchStats,
     sendFeedback,
     fetchMemory,
+    getFixHistory: () => aiFixHistory.entries(),
+    getFixHistoryStats: () => aiFixHistory.stats(),
   };
 }
