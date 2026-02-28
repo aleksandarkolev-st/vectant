@@ -83,6 +83,24 @@ export const gitClient = {
             error.details = body?.details || null;
             error.statusCode = response.status;
             error.required = body?.required || null;
+            error.granted = body?.granted || null;
+
+            // ── Permission boundary toast ──
+            // Surface 403 permission_denied as a toast so the user immediately
+            // knows their collab role prevents the action — without having to
+            // look at the error banner.
+            if (response.status === 403 && (error.code === 'permission_denied' || error.code === 'host_only')) {
+                // Dynamic import to avoid circular dep; sonner is side-effect-safe
+                import('sonner').then(({ toast }) => {
+                    toast.error(error.message || 'Permission denied', {
+                        description: error.required
+                            ? `Requires "${error.required}" permission. Ask the session Host.`
+                            : undefined,
+                        duration: 5000,
+                    });
+                }).catch(() => { /* sonner not available */ });
+            }
+
             throw error;
         }
         return body;
@@ -98,6 +116,10 @@ export const gitClient = {
 
     async removeRemote(slug, name) {
         return this.request(slug, 'remove-remote', { name });
+    },
+
+    async setRemoteUrl(slug, name, url) {
+        return this.request(slug, 'set-remote-url', { name, url });
     },
 
     async getRemotes(slug) {
@@ -116,16 +138,16 @@ export const gitClient = {
         return this.request(slug, 'branches');
     },
 
-    async checkout(slug, branch, create = false) {
-        return this.request(slug, 'checkout', { branch, create });
+    async checkout(slug, branch, create = false, mode = 'normal') {
+        return this.request(slug, 'checkout', { branch, create, mode });
     },
 
-    async fetch(slug) {
-        return this.request(slug, 'fetch');
+    async fetch(slug, token) {
+        return this.request(slug, 'fetch', token ? { token } : {});
     },
 
-    async commit(slug, message) {
-        return this.request(slug, 'commit', { message });
+    async commit(slug, message, amend = false) {
+        return this.request(slug, 'commit', { message, amend });
     },
 
     async stageFile(slug, filePath) {
@@ -140,6 +162,14 @@ export const gitClient = {
         return this.request(slug, 'stage-lines', { filePath, patch });
     },
 
+    async unstageLines(slug, filePath, patch) {
+        return this.request(slug, 'unstage-lines', { filePath, patch });
+    },
+
+    async discardLines(slug, filePath, patch) {
+        return this.request(slug, 'discard-lines', { filePath, patch });
+    },
+
     async unstageFile(slug, filePath) {
         return this.request(slug, 'unstage', { filePath });
     },
@@ -148,12 +178,15 @@ export const gitClient = {
         return this.request(slug, 'unstage-all');
     },
 
-    async push(slug) {
-        return this.request(slug, 'push');
+    async push(slug, token, force = false) {
+        const data = {};
+        if (token) data.token = token;
+        if (force) data.force = true;
+        return this.request(slug, 'push', data);
     },
 
-    async pull(slug) {
-        return this.request(slug, 'pull');
+    async pull(slug, token) {
+        return this.request(slug, 'pull', token ? { token } : {});
     },
 
     async discardChange(slug, filePath) {
@@ -230,6 +263,63 @@ export const gitClient = {
         return this.request(slug, 'abort-merge');
     },
 
+    async mergeBranch(slug, branch, token) {
+        const data = { branch };
+        if (token) data.token = token;
+        return this.request(slug, 'merge-branch', data);
+    },
+
+    /**
+     * In-memory merge conflict detection using git merge-tree.
+     * Runs in milliseconds — no working tree changes.
+     */
+    async checkMergeConflicts(slug, baseBranch, headBranch, token) {
+        const data = { baseBranch, headBranch };
+        if (token) data.token = token;
+        return this.request(slug, 'check-merge-conflicts', data);
+    },
+
+    async cherryPick(slug, hash) {
+        return this.request(slug, 'cherry-pick', { hash });
+    },
+
+    async revertCommit(slug, hash) {
+        return this.request(slug, 'revert', { hash });
+    },
+
+    async interactiveRebase(slug, baseCommit, operations) {
+        return this.request(slug, 'interactive-rebase', { baseCommit, operations });
+    },
+
+    async rebaseAbort(slug) {
+        return this.request(slug, 'rebase-abort');
+    },
+
+    async rebaseContinue(slug) {
+        return this.request(slug, 'rebase-continue');
+    },
+
+    // ── Tag management ─────────────────────────────────
+    async getTags(slug) {
+        return this.request(slug, 'tags');
+    },
+
+    async createTag(slug, name, ref = 'HEAD', message) {
+        return this.request(slug, 'create-tag', { name, ref, message });
+    },
+
+    async deleteTag(slug, name) {
+        return this.request(slug, 'delete-tag', { name });
+    },
+
+    async pushTag(slug, name, token) {
+        return this.request(slug, 'push-tag', { name, token });
+    },
+
+    async getCommitDetail(slug, hash) {
+        return this.request(slug, 'commit-detail', { hash });
+    },
+
     async getConflictVersions(slug, filePath) {
         return this.request(slug, 'conflict-versions', { filePath });
     },
@@ -262,5 +352,13 @@ export const gitClient = {
      */
     async clearCollabPersistence(slug, files) {
         return this.request(slug, 'clear-collab', { files });
-    }
+    },
+
+    /**
+     * Get GitHub repo info (owner, repo, provider) extracted from the git remote URL.
+     * Used by the Pull Requests panel.
+     */
+    async getGithubInfo(slug) {
+        return this.request(slug, 'github-info');
+    },
 };

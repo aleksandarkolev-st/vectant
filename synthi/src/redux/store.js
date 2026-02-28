@@ -7,6 +7,7 @@ import extensionReducer from './extensionSlice';
 import themeReducer from './themeSlice';
 import layoutReducer from '@/components/docking-wm/state/layout-slice';
 import healingReducer, { initialHealingState } from './healingSlice';
+import prReducer from './prSlice';
 
 import { enableMapSet } from 'immer';
 
@@ -180,6 +181,7 @@ export const store = configureStore({
     theme: themeReducer,
     layout: layoutReducer,
     healing: healingReducer,
+    pr: prReducer,
   },
   // We need to disable the serializable check for the Map used in fileContentCache
   middleware: (getDefaultMiddleware) =>

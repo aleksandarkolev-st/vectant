@@ -2,6 +2,17 @@ import { createSlice, createAsyncThunk } from '@reduxjs/toolkit';
 import { gitClient } from '@/services/gitClient';
 import collabClient from '@/services/collabClient';
 
+/**
+ * Read the global GitHub token from localStorage.
+ * Falls back to the per-workspace PR token if no global token is set.
+ */
+function getGitToken(slug) {
+    if (typeof window === 'undefined') return null;
+    return localStorage.getItem('synthi:global-github-token')
+        || localStorage.getItem(`synthi:github-token:${slug}`)
+        || null;
+}
+
 // Track a queued re-fetch so that when a fetchGitStatus is in-flight and
 // another request arrives, we automatically re-fetch once the current one
 // finishes rather than silently dropping the request.
@@ -51,12 +62,23 @@ export const fetchGitStatus = createAsyncThunk(
 
 export const checkoutBranch = createAsyncThunk(
     'git/checkout',
-    async ({ slug, branch, create }, { dispatch }) => {
-        await gitClient.checkout(slug, branch, create);
-        // Refresh status AND unpushed so the UI immediately reflects the
-        // correct ahead/behind count for the newly active branch.
-        dispatch(fetchGitStatus(slug));
-        dispatch(fetchUnpushedCommits({ slug, max: 50 }));
+    async ({ slug, branch, create, mode }, { dispatch, rejectWithValue }) => {
+        try {
+            await gitClient.checkout(slug, branch, create, mode);
+            // Refresh status AND unpushed so the UI immediately reflects the
+            // correct ahead/behind count for the newly active branch.
+            dispatch(fetchGitStatus(slug));
+            dispatch(fetchUnpushedCommits({ slug, max: 50 }));
+            dispatch(fetchIncomingCommits({ slug, max: 50 }));
+            dispatch(fetchCommitHistory({ slug }));
+        } catch (err) {
+            const code = err?.code || err?.response?.code || '';
+            const message = err?.message || err?.response?.message || 'Checkout failed';
+            if (code === 'UNCOMMITTED_CHANGES' || /would be overwritten|local changes/i.test(message)) {
+                return rejectWithValue({ code: 'UNCOMMITTED_CHANGES', message, branch, create });
+            }
+            throw err;
+        }
     }
 );
 
@@ -70,7 +92,8 @@ export const syncFileToGit = createAsyncThunk(
 export const fetchRemote = createAsyncThunk(
     'git/fetchRemote',
     async (slug, { dispatch }) => {
-        await gitClient.fetch(slug);
+        const token = getGitToken(slug);
+        await gitClient.fetch(slug, token);
         dispatch(fetchGitStatus(slug));
     }
 );
@@ -123,6 +146,14 @@ export const removeRemote = createAsyncThunk(
     }
 );
 
+export const setRemoteUrl = createAsyncThunk(
+    'git/setRemoteUrl',
+    async ({ slug, name, url }, { dispatch }) => {
+        await gitClient.setRemoteUrl(slug, name, url);
+        dispatch(fetchRemotes(slug));
+    }
+);
+
 export const fetchRemotes = createAsyncThunk(
     'git/fetchRemotes',
     async (slug) => {
@@ -140,13 +171,98 @@ export const cloneRepo = createAsyncThunk(
 
 export const commitChanges = createAsyncThunk(
     'git/commit',
-    async ({ slug, message }, { dispatch }) => {
-        await gitClient.commit(slug, message);
+    async ({ slug, message, amend }, { dispatch }) => {
+        await gitClient.commit(slug, message, amend);
         dispatch(fetchGitStatus(slug));
         dispatch(fetchCommitHistory({ slug }));
         dispatch(fetchUnpushedCommits({ slug, max: 50 }));
         // After a commit (especially merge commit), refresh incoming to clear merged commits
         dispatch(fetchIncomingCommits({ slug, max: 50 }));
+    }
+);
+
+export const cherryPickCommit = createAsyncThunk(
+    'git/cherryPick',
+    async ({ slug, hash }, { dispatch }) => {
+        await gitClient.cherryPick(slug, hash);
+        dispatch(fetchGitStatus(slug));
+        dispatch(fetchCommitHistory({ slug }));
+        dispatch(fetchUnpushedCommits({ slug, max: 50 }));
+    }
+);
+
+export const revertCommit = createAsyncThunk(
+    'git/revert',
+    async ({ slug, hash }, { dispatch }) => {
+        await gitClient.revertCommit(slug, hash);
+        dispatch(fetchGitStatus(slug));
+        dispatch(fetchCommitHistory({ slug }));
+        dispatch(fetchUnpushedCommits({ slug, max: 50 }));
+    }
+);
+
+export const interactiveRebase = createAsyncThunk(
+    'git/interactiveRebase',
+    async ({ slug, baseCommit, operations }, { dispatch }) => {
+        await gitClient.interactiveRebase(slug, baseCommit, operations);
+        dispatch(fetchGitStatus(slug));
+        dispatch(fetchCommitHistory({ slug }));
+        dispatch(fetchUnpushedCommits({ slug, max: 50 }));
+    }
+);
+
+export const rebaseAbort = createAsyncThunk(
+    'git/rebaseAbort',
+    async ({ slug }, { dispatch }) => {
+        await gitClient.rebaseAbort(slug);
+        dispatch(fetchGitStatus(slug));
+        dispatch(fetchCommitHistory({ slug }));
+    }
+);
+
+export const rebaseContinue = createAsyncThunk(
+    'git/rebaseContinue',
+    async ({ slug }, { dispatch }) => {
+        await gitClient.rebaseContinue(slug);
+        dispatch(fetchGitStatus(slug));
+        dispatch(fetchCommitHistory({ slug }));
+        dispatch(fetchUnpushedCommits({ slug, max: 50 }));
+    }
+);
+
+/**
+ * Merge a branch into the current branch to create a conflict state.
+ * Used by the PR conflict resolution flow ("Resolve in Synthi").
+ * Performs: fetch → merge <targetBranch> → refresh status.
+ */
+export const mergeBranchForConflicts = createAsyncThunk(
+    'git/mergeBranchForConflicts',
+    async ({ slug, branch }, { dispatch }) => {
+        const token = getGitToken(slug);
+        const result = await gitClient.mergeBranch(slug, branch, token);
+        dispatch(fetchGitStatus(slug));
+        dispatch(fetchCommitHistory({ slug }));
+        return result;
+    }
+);
+
+/**
+ * In-memory merge conflict check using git merge-tree.
+ * Runs in milliseconds — no working tree or index changes.
+ * Returns { hasConflicts, conflictedFiles }.
+ */
+export const checkMergeConflicts = createAsyncThunk(
+    'git/checkMergeConflicts',
+    async ({ slug, baseBranch, headBranch }) => {
+        const token = getGitToken(slug);
+        return await gitClient.checkMergeConflicts(slug, baseBranch, headBranch, token);
+    }
+);
+
+export const fetchCommitDetail = createAsyncThunk(
+    'git/fetchCommitDetail',
+    async ({ slug, hash }) => {
+        return await gitClient.getCommitDetail(slug, hash);
     }
 );
 
@@ -163,6 +279,37 @@ export const stageAll = createAsyncThunk(
     async (slug, { dispatch }) => {
         await gitClient.stageAll(slug);
         dispatch(forceRefreshGitStatus(slug));
+    }
+);
+
+export const stageLines = createAsyncThunk(
+    'git/stageLines',
+    async ({ slug, filePath, patch }, { dispatch }) => {
+        await gitClient.stageLines(slug, filePath, patch);
+        dispatch(forceRefreshGitStatus(slug));
+    }
+);
+
+export const unstageLines = createAsyncThunk(
+    'git/unstageLines',
+    async ({ slug, filePath, patch }, { dispatch }) => {
+        await gitClient.unstageLines(slug, filePath, patch);
+        dispatch(forceRefreshGitStatus(slug));
+    }
+);
+
+export const discardLines = createAsyncThunk(
+    'git/discardLines',
+    async ({ slug, filePath, patch }, { dispatch }) => {
+        await gitClient.discardLines(slug, filePath, patch);
+        dispatch(forceRefreshGitStatus(slug));
+    }
+);
+
+export const fetchFileDiff = createAsyncThunk(
+    'git/fetchFileDiff',
+    async ({ slug, filePath }) => {
+        return await gitClient.getDiff(slug, filePath, true);
     }
 );
 
@@ -184,10 +331,15 @@ export const unstageAll = createAsyncThunk(
 
 export const pushChanges = createAsyncThunk(
     'git/push',
-    async (slug, { dispatch }) => {
-        await gitClient.push(slug);
+    async (arg, { dispatch }) => {
+        // Support both pushChanges(slug) and pushChanges({ slug, force })
+        const slug = typeof arg === 'string' ? arg : arg.slug;
+        const force = typeof arg === 'object' && arg.force;
+        const token = getGitToken(slug);
+        await gitClient.push(slug, token, force);
         dispatch(fetchGitStatus(slug));
         dispatch(fetchUnpushedCommits({ slug, max: 50 }));
+        dispatch(fetchIncomingCommits({ slug, max: 50 }));
         dispatch(fetchCommitHistory({ slug }));
         dispatch(fetchRemotes(slug));
     }
@@ -197,7 +349,8 @@ export const pullChanges = createAsyncThunk(
     'git/pull',
     async (slug, { dispatch, rejectWithValue }) => {
         try {
-            const result = await gitClient.pull(slug);
+            const token = getGitToken(slug);
+            const result = await gitClient.pull(slug, token);
             dispatch(fetchGitStatus(slug));
             dispatch(fetchUnpushedCommits({ slug, max: 50 }));
             dispatch(fetchCommitHistory({ slug }));
@@ -327,6 +480,42 @@ export const stashDrop = createAsyncThunk(
     }
 );
 
+// ── Tag management ─────────────────────────────────
+export const fetchTags = createAsyncThunk(
+    'git/fetchTags',
+    async (slug) => {
+        return await gitClient.getTags(slug);
+    }
+);
+
+export const createTag = createAsyncThunk(
+    'git/createTag',
+    async ({ slug, name, ref, message }, { dispatch }) => {
+        const result = await gitClient.createTag(slug, name, ref, message);
+        dispatch(fetchTags(slug));
+        dispatch(fetchCommitHistory({ slug }));
+        return result;
+    }
+);
+
+export const deleteTag = createAsyncThunk(
+    'git/deleteTag',
+    async ({ slug, name }, { dispatch }) => {
+        const result = await gitClient.deleteTag(slug, name);
+        dispatch(fetchTags(slug));
+        dispatch(fetchCommitHistory({ slug }));
+        return result;
+    }
+);
+
+export const pushTag = createAsyncThunk(
+    'git/pushTag',
+    async ({ slug, name }) => {
+        const token = getGitToken(slug);
+        return await gitClient.pushTag(slug, name, token);
+    }
+);
+
 // Blame
 export const fetchBlame = createAsyncThunk(
     'git/fetchBlame',
@@ -389,6 +578,7 @@ const gitSlice = createSlice({
         unpushedCommits: [],
         incomingCommits: [],
         stashList: [],
+        tags: [],
         blameData: [],
         currentBranch: 'main',
         loading: false,
@@ -403,6 +593,11 @@ const gitSlice = createSlice({
         // When set, the main editor area renders MergeConflictEditor
         // instead of the standard Monaco editor.
         conflictResolverFile: null,
+        // Commit detail for the expanded commit in history
+        commitDetail: null,
+        commitDetailLoading: false,
+        // Checkout conflict — when checkout fails due to dirty tree
+        checkoutConflict: null, // { branch, create }
     },
     reducers: {
         clearError: (state) => {
@@ -416,6 +611,9 @@ const gitSlice = createSlice({
         },
         closeConflictResolver: (state) => {
             state.conflictResolverFile = null;
+        },
+        clearCheckoutConflict: (state) => {
+            state.checkoutConflict = null;
         },
     },
     extraReducers: (builder) => {
@@ -486,7 +684,8 @@ const gitSlice = createSlice({
         
         builder
             .addCase(fetchStashList.fulfilled, (state, action) => { state.stashList = action.payload || []; })
-            .addCase(fetchBlame.fulfilled, (state, action) => { state.blameData = action.payload || []; });
+            .addCase(fetchBlame.fulfilled, (state, action) => { state.blameData = action.payload || []; })
+            .addCase(fetchTags.fulfilled, (state, action) => { state.tags = action.payload || []; });
         
         builder
             .addCase(fetchRemotes.fulfilled, (state, action) => {
@@ -496,6 +695,19 @@ const gitSlice = createSlice({
         // ── User-initiated action thunks ──────────────────────
         // These write to actionError on failure and clear it on next attempt.
         builder
+            .addCase(checkoutBranch.pending, (state) => { state.loading = true; state.actionError = null; state.actionErrorCode = null; state.checkoutConflict = null; })
+            .addCase(checkoutBranch.fulfilled, (state) => { state.loading = false; state.checkoutConflict = null; })
+            .addCase(checkoutBranch.rejected, (state, action) => {
+                state.loading = false;
+                if (action.payload?.code === 'UNCOMMITTED_CHANGES') {
+                    state.checkoutConflict = { branch: action.payload.branch, create: action.payload.create };
+                    state.actionError = action.payload.message;
+                    state.actionErrorCode = 'UNCOMMITTED_CHANGES';
+                } else {
+                    state.actionError = action.error?.message || 'Checkout failed';
+                    state.actionErrorCode = action.error?.code || null;
+                }
+            })
             .addCase(initRepo.pending, (state) => { state.loading = true; state.actionError = null; state.actionErrorCode = null; })
             .addCase(initRepo.fulfilled, (state) => { state.loading = false; })
             .addCase(initRepo.rejected, (state, action) => { state.loading = false; state.actionError = action.error.message; state.actionErrorCode = action.error.code || null; })
@@ -505,6 +717,27 @@ const gitSlice = createSlice({
             .addCase(addRemote.pending, (state) => { state.loading = true; state.actionError = null; state.actionErrorCode = null; })
             .addCase(addRemote.fulfilled, (state) => { state.loading = false; })
             .addCase(addRemote.rejected, (state, action) => { state.loading = false; state.actionError = action.error.message; state.actionErrorCode = action.error.code || null; })
+            .addCase(setRemoteUrl.pending, (state) => { state.loading = true; state.actionError = null; state.actionErrorCode = null; })
+            .addCase(setRemoteUrl.fulfilled, (state) => { state.loading = false; })
+            .addCase(setRemoteUrl.rejected, (state, action) => { state.loading = false; state.actionError = action.error.message; state.actionErrorCode = action.error.code || null; })
+            .addCase(stageLines.pending, (state) => { state.loading = true; state.actionError = null; state.actionErrorCode = null; })
+            .addCase(stageLines.fulfilled, (state) => { state.loading = false; })
+            .addCase(stageLines.rejected, (state, action) => { state.loading = false; state.actionError = action.error.message; state.actionErrorCode = action.error.code || null; })
+            .addCase(unstageLines.pending, (state) => { state.loading = true; state.actionError = null; state.actionErrorCode = null; })
+            .addCase(unstageLines.fulfilled, (state) => { state.loading = false; })
+            .addCase(unstageLines.rejected, (state, action) => { state.loading = false; state.actionError = action.error.message; state.actionErrorCode = action.error.code || null; })
+            .addCase(discardLines.pending, (state) => { state.loading = true; state.actionError = null; state.actionErrorCode = null; })
+            .addCase(discardLines.fulfilled, (state) => { state.loading = false; })
+            .addCase(discardLines.rejected, (state, action) => { state.loading = false; state.actionError = action.error.message; state.actionErrorCode = action.error.code || null; })
+            .addCase(cherryPickCommit.pending, (state) => { state.loading = true; state.actionError = null; state.actionErrorCode = null; })
+            .addCase(cherryPickCommit.fulfilled, (state) => { state.loading = false; })
+            .addCase(cherryPickCommit.rejected, (state, action) => { state.loading = false; state.actionError = action.error.message; state.actionErrorCode = action.error.code || null; })
+            .addCase(revertCommit.pending, (state) => { state.loading = true; state.actionError = null; state.actionErrorCode = null; })
+            .addCase(revertCommit.fulfilled, (state) => { state.loading = false; })
+            .addCase(revertCommit.rejected, (state, action) => { state.loading = false; state.actionError = action.error.message; state.actionErrorCode = action.error.code || null; })
+            .addCase(fetchCommitDetail.pending, (state) => { state.commitDetailLoading = true; })
+            .addCase(fetchCommitDetail.fulfilled, (state, action) => { state.commitDetailLoading = false; state.commitDetail = action.payload; })
+            .addCase(fetchCommitDetail.rejected, (state) => { state.commitDetailLoading = false; state.commitDetail = null; })
             .addCase(pushChanges.pending, (state) => { state.loading = true; state.actionError = null; state.actionErrorCode = null; })
             .addCase(pushChanges.fulfilled, (state) => { state.loading = false; })
             .addCase(pushChanges.rejected, (state, action) => { state.loading = false; state.actionError = action.error.message; state.actionErrorCode = action.error.code || null; })
@@ -643,5 +876,5 @@ const gitSlice = createSlice({
     },
 });
 
-export const { clearError, openConflictResolver, closeConflictResolver } = gitSlice.actions;
+export const { clearError, openConflictResolver, closeConflictResolver, clearCheckoutConflict } = gitSlice.actions;
 export default gitSlice.reducer;

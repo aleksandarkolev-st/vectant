@@ -106,6 +106,41 @@ export function commitWebUrl(remoteUrl, hash) {
   return `${base}/commit/${hash}`;
 }
 
+/**
+ * Extract an embedded access token from a remote URL.
+ * Returns the raw token string, or null if none found.
+ *
+ *   https://ghp_abc123@github.com/o/r  →  'ghp_abc123'
+ *   https://user:TOKEN@github.com/o/r  →  'TOKEN'
+ */
+export function extractTokenFromUrl(url) {
+  if (!url) return null;
+  try {
+    const parsed = new URL(url);
+    if (parsed.password) return decodeURIComponent(parsed.password);
+    if (parsed.username && parsed.username !== 'git' && parsed.username !== 'oauth2' && parsed.username !== 'x-access-token') {
+      return decodeURIComponent(parsed.username);
+    }
+  } catch { /* not a valid URL */ }
+  return null;
+}
+
+/**
+ * Strip embedded credentials from a URL, returning a clean HTTPS URL.
+ *   https://ghp_abc123@github.com/o/r  →  https://github.com/o/r
+ */
+export function stripTokenFromUrl(url) {
+  if (!url) return url;
+  try {
+    const parsed = new URL(url);
+    parsed.username = '';
+    parsed.password = '';
+    return parsed.toString();
+  } catch {
+    return url;
+  }
+}
+
 // ─── Conventional commits ───────────────────────────────────────
 
 const CC_REGEX = /^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\([^)]*\))?(!)?:\s*/i;
@@ -211,12 +246,15 @@ export function buildCommitGraph(commits) {
   // Assign columns using a simple lane allocator
   const lanes = [];           // ordered list of active commit hashes occupying each lane
   const result = [];
+  const hashToRow = new Map(); // hash → row index for parent lookups
 
   for (let i = 0; i < commits.length; i++) {
     const c = commits[i];
     const hash = c.hash;
     const parents = (c.parents || '').split(/\s+/).filter(Boolean);
     const isMerge = parents.length > 1;
+
+    hashToRow.set(hash, i);
 
     // Find or assign lane for this commit
     let col = lanes.indexOf(hash);
@@ -230,6 +268,9 @@ export function buildCommitGraph(commits) {
         lanes[col] = hash;
       }
     }
+
+    // Track lanes that are being freed / merged at this row
+    const closingLanes = [];
 
     // Replace the current lane with first parent (continuation)
     if (parents.length > 0) {
@@ -254,6 +295,15 @@ export function buildCommitGraph(commits) {
       mergeFromCols.push(pcol);
     }
 
+    // Detect closing lanes — lanes occupied by the same parent hash as current
+    // This happens when a branch merges back
+    for (let li = 0; li < lanes.length; li++) {
+      if (li !== col && lanes[li] === hash) {
+        closingLanes.push(li);
+        lanes[li] = null;
+      }
+    }
+
     // Compact empty trailing lanes
     while (lanes.length > 0 && lanes[lanes.length - 1] === null) lanes.pop();
 
@@ -263,6 +313,7 @@ export function buildCommitGraph(commits) {
       color: GRAPH_COLORS[col % GRAPH_COLORS.length],
       isMerge,
       mergeFromCols,
+      closingLanes,
       activeLanes: [...lanes],
       laneCount: lanes.length,
     });
