@@ -594,6 +594,14 @@ export class AnalyzerGatewayClient {
   }
 
   /**
+   * Clear the AI prompt cache (forces fresh LLM calls on next analysis).
+   * @returns {Promise<Object>} { cleared: boolean, entries_removed: number }
+   */
+  aiCacheClear() {
+    return this._sendRequest('heal/ai/cache/clear', {});
+  }
+
+  /**
    * Run streaming AI analysis — receives progressive events as fixes are found.
    *
    * @param {Object} payload
