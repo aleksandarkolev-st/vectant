@@ -133,3 +133,32 @@ export const selectHealingReady = createSelector(
   [selectHealingEnabled, selectHealingStatus],
   (enabled, status) => enabled && (status === 'idle' || status === 'cooldown')
 );
+
+// ── AI Agent selectors ────────────────────────────────────────────────────
+export const selectAIState = (state) => state.healing?.ai ?? {};
+export const selectAIMode = (state) => state.healing?.ai?.mode ?? 'ai';
+export const selectAIEnabled = (state) => state.healing?.ai?.enabled ?? true;
+export const selectAIAnalyzing = (state) => state.healing?.ai?.isAnalyzing ?? false;
+export const selectAIFixes = (state) => state.healing?.ai?.pendingFixes ?? [];
+export const selectAIStats = (state) => state.healing?.ai?.stats ?? null;
+export const selectAIError = (state) => state.healing?.ai?.error ?? null;
+
+export const selectAIFixCount = createSelector(
+  [selectAIFixes],
+  (fixes) => fixes.length
+);
+
+export const selectAISafeFixCount = createSelector(
+  [selectAIFixes],
+  (fixes) => fixes.filter((f) => f.is_safe || f.isSafe).length
+);
+
+export const selectAISummary = createSelector(
+  [selectAIEnabled, selectAIAnalyzing, selectAIFixes],
+  (enabled, analyzing, fixes) => {
+    if (!enabled) return 'AI Agent: Off';
+    if (analyzing) return 'AI Agent: Analyzing…';
+    if (fixes.length === 0) return 'AI Agent: Ready';
+    return `AI Agent: ${fixes.length} issue${fixes.length === 1 ? '' : 's'}`;
+  }
+);

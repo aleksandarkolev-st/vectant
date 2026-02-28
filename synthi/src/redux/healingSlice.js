@@ -95,6 +95,17 @@ export const initialHealingState = {
 
   // Toast notification queue
   toastQueue: [],
+
+  // ── AI Agent state ──────────────────────────────────────────────────
+  ai: {
+    enabled: true,
+    mode: 'ai', // 'ai' | 'hybrid' | 'off'
+    isAnalyzing: false,
+    lastAnalyzedAt: null,
+    pendingFixes: [],
+    stats: null,
+    error: null,
+  },
 };
 
 // ── Slice ─────────────────────────────────────────────────────────────────
@@ -323,6 +334,39 @@ const healingSlice = createSlice({
     resetHealing() {
       return { ...initialHealingState };
     },
+
+    // ── AI Agent reducers ─────────────────────────────────────────────
+    setAIMode(state, action) {
+      state.ai.mode = action.payload; // 'ai' | 'hybrid' | 'off'
+    },
+    setAIEnabled(state, action) {
+      state.ai.enabled = !!action.payload;
+    },
+    setAIAnalyzing(state, action) {
+      state.ai.isAnalyzing = !!action.payload;
+    },
+    setAIFixes(state, action) {
+      state.ai.pendingFixes = action.payload || [];
+      state.ai.lastAnalyzedAt = Date.now();
+    },
+    clearAIFixes(state) {
+      state.ai.pendingFixes = [];
+    },
+    removeAIFix(state, action) {
+      const fixId = action.payload;
+      state.ai.pendingFixes = state.ai.pendingFixes.filter(
+        (f) => (f.fix_id || f.id) !== fixId
+      );
+    },
+    setAIStats(state, action) {
+      state.ai.stats = action.payload;
+    },
+    setAIError(state, action) {
+      state.ai.error = action.payload;
+    },
+    clearAIError(state) {
+      state.ai.error = null;
+    },
   },
 });
 
@@ -360,6 +404,16 @@ export const {
   resetStats,
   hydrateHealing,
   resetHealing,
+  // AI Agent
+  setAIMode,
+  setAIEnabled,
+  setAIAnalyzing,
+  setAIFixes,
+  clearAIFixes,
+  removeAIFix,
+  setAIStats,
+  setAIError,
+  clearAIError,
 } = healingSlice.actions;
 
 export default healingSlice.reducer;
