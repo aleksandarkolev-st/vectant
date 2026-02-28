@@ -25,6 +25,7 @@ from .ai_prompts import (
     build_detect_prompt,
     build_validate_prompt,
     build_batch_prompt,
+    build_focused_prompt,
     format_related_files,
     format_context_notes,
     AGENT_SYSTEM_PROMPT,
@@ -162,7 +163,17 @@ class AIHealingAgent:
         )
 
         # 2. Build the detection prompt
-        if ctx.related_files:
+        if focus_range:
+            # Focused analysis on a selected range
+            prompt = build_focused_prompt(
+                code=ctx.source_code,
+                language=ctx.language,
+                file_path=file_path,
+                start_line=focus_range[0],
+                end_line=focus_range[1],
+                context_notes=ctx.context_notes,
+            )
+        elif ctx.related_files:
             related_text = format_related_files([
                 {"path": f.path, "content": f.content}
                 for f in ctx.related_files
