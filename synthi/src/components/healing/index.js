@@ -18,6 +18,7 @@ export { AIHealingPanel } from './AIHealingPanel';
 export { AIStatsPanel } from './AIStatsPanel';
 export { AIErrorBoundary } from './AIErrorBoundary';
 export { AIDiffPreview } from './AIDiffPreview';
+export { AIConfidenceGate } from './AIConfidenceGate';
 export {
   createAIInlineWidgets,
   disposeAIInlineWidgets,
