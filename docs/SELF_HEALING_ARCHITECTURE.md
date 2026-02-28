@@ -1,22 +1,26 @@
 # AI-Assisted Deterministic Code Repair Engine — Technical Reference
 
 > **Positioning.** This system is an **AI-assisted deterministic code repair
-> engine with safety gating and HMR-integrated runtime healing**. It
-> auto-suggests and, where safe, auto-applies targeted fixes for syntactic,
-> stylistic, and semantic issues. For compile-time errors caught by HMR, it
-> can automatically fix and re-trigger the build in a closed loop.
+> engine with safety gating, pre-compile syntax fixing, and HMR-integrated
+> runtime healing**. It auto-suggests and, where safe, auto-applies targeted
+> fixes for syntactic, stylistic, and semantic issues. A zero-latency
+> pre-compile pass catches colons/semicolons/brackets before they reach the
+> compiler. For errors that slip through, runtime healing fixes and re-triggers
+> the build in a closed loop.
 >
 > Comparable to: Cursor auto-fix, Copilot "fix this", automated code review
-> assistants. The runtime healing layer adds: HMR error interception →
-> AI fix → auto-apply → rebuild, which goes beyond static analysis.
+> assistants. The pre-compile + runtime healing layers add: save-time syntax
+> fixing → HMR error interception → AI fix → auto-apply → rebuild.
 >
-> The system has three operating modes:
-> 1. **Regex layer** — fast (< 50ms), deterministic, limited to syntax/style.
-> 2. **AI layer** — deliberate (3–8s), LLM-powered, catches semantic bugs.
-> 3. **Runtime healing** — reactive (5–15s loop), fixes real compiler errors via HMR.
+> The system has four operating modes:
+> 1. **Pre-compile** — instant (< 5ms), client-side, catches colons/semicolons/brackets before compile.
+> 2. **Regex layer** — fast (< 50ms), deterministic, limited to syntax/style.
+> 3. **AI layer** — deliberate (3–8s), LLM-powered, catches semantic bugs.
+> 4. **Runtime healing** — reactive (5–15s loop), fixes real compiler errors via HMR.
 >
-> These are fundamentally different UX interactions and **must not be mixed**.
-> Regex = instant feedback. AI = deliberate inspection. Runtime = automatic recovery.
+> These form a defense-in-depth: pre-compile catches obvious syntax tokens,
+> regex catches broader patterns, AI catches semantic bugs, and runtime
+> healing recovers from anything the first three tiers missed.
 
 ---
 
@@ -882,3 +886,109 @@ Events produced by the interceptor:
 2. Requires the broken file to be open in the editor (needs Monaco model for source code)
 3. No AST validation of the AI's fix before applying
 4. No rollback if the fix introduces *new* errors (relies on attempt limit instead)
+
+---
+
+## 18. Pre-Compile Healing — Proactive Syntax Fixing
+
+### What it is
+
+A **zero-latency, client-side syntax fixer** that runs inline with the
+save→compile chain — *before* code reaches the HMR build worker. While
+Section 17 (runtime healing) is **reactive** (waits for the compiler to fail,
+then fixes), pre-compile healing is **proactive** (fixes obvious syntax
+breakers so the compiler never sees them).
+
+This targets the most common "oops" errors: missing colons, missing semicolons,
+unmatched brackets — the small typos that break HMR hot-reload cycles.
+
+### The timing problem it solves
+
+```
+BEFORE (Section 17 — reactive):
+  User saves → compile fires with broken code → compiler error → AI fix (3-8s) → retry
+
+AFTER (Section 18 — proactive):
+  User saves → preCompileHeal() fixes source in <5ms → compile fires with clean code → success
+```
+
+The existing `useSelfHealing` hook runs on an 800ms debounced keystroke timer,
+completely decoupled from the save→compile chain. By the time self-healing
+finishes analyzing, `compile()` has already fired with the unfixed code. The
+pre-compile healer closes this timing gap by running **synchronously** between
+the save trigger and the `compile()` call.
+
+### How it works
+
+```
+1. User hits Ctrl+S (or auto-save triggers)
+2. Editor.jsx handleSave() → calls onSave(latestCode)
+3. page.jsx handleSave(latestCode) receives source code
+4. ── preCompileHeal(source, language) runs here ──
+   a. Language-specific fixers (Python colons, C/Rust semicolons)
+   b. Universal fixers (bracket matching)
+   c. Returns { code, fixes, changed, elapsedMs }
+5. If changed: source = healed code, dispatch synthi:pre-compile-heal event
+6. compile({ source }) receives clean code → build succeeds
+7. Editor.jsx listener applies fixes back to Monaco model (undo-friendly)
+8. PreCompileHealToast shows brief "⚡ Fixed 1 issue" notification
+```
+
+### Architecture layers
+
+| Layer | File | Role |
+|-------|------|------|
+| **Healer module** | `preCompileHealer.js` | Client-side regex fixers: Python colons, C/Rust semicolons, bracket matching. Synchronous, <5ms |
+| **Save hook** | `page.jsx` — `handleSave()` | Calls `preCompileHeal(source, lang)` before `compile()`. Updates `source` variable in-place |
+| **Editor sync** | `Editor.jsx` — `useEffect` listener | Listens for `synthi:pre-compile-heal`, applies line edits back to Monaco model via `executeEdits` |
+| **Toast UI** | `PreCompileHealToast.jsx` | Sonner toast: "⚡ Fixed 2 issues: Missing colon (L5), Missing semicolon (L12)" |
+
+### What it fixes
+
+| Category | Language | Example |
+|----------|----------|---------|
+| Missing colon | Python | `def foo(x)` → `def foo(x):` |
+| Missing colon | Python | `if x > 0` → `if x > 0:` |
+| Missing colon | Python | `class Foo(Base)` → `class Foo(Base):` |
+| Missing colon | Python | `for x in range(10)` → `for x in range(10):` |
+| Missing semicolon | C/C++ | `return 42` → `return 42;` |
+| Missing semicolon | Rust | `let x = 5` → `let x = 5;` |
+| Missing bracket | All | Single unmatched `(` or `{` or `[` → closer appended |
+
+### Safety guarantees
+
+1. **Balanced-only** — colon/semicolon fixes only apply when parentheses are balanced on the line (avoids mangling multi-line signatures)
+2. **Pattern-match gating** — Python colon only added to lines matching known statement patterns (`def`, `class`, `if`, `for`, `while`, etc.)
+3. **Single-bracket only** — bracket closer only added when exactly 1 bracket is unmatched in the entire file (avoids ambiguous cases)
+4. **String exclusion** — lines with unbalanced quotes are skipped (likely inside strings)
+5. **Comment exclusion** — comment lines, preprocessor directives, block comments are all skipped
+6. **Undo-friendly** — editor edits are applied via `executeEdits()` + `pushUndoStop()`, single Ctrl+Z reverts
+
+### Event bus
+
+| Event | Direction | When |
+|-------|-----------|------|
+| `synthi:pre-compile-heal` | page.jsx → Editor.jsx, Toast | Pre-compile healer applied fixes. Payload: `{ fixes, filename, elapsedMs }` |
+
+### Performance characteristics
+
+| Metric | Expected |
+|--------|----------|
+| Heal pass latency | < 5ms for 1000-line file |
+| Network round-trip | None (client-side only) |
+| Editor apply latency | < 10ms (executeEdits) |
+| Total added latency to save | < 15ms (imperceptible) |
+
+### Three-tier healing model
+
+The self-healing system now has three tiers that form a defense-in-depth:
+
+| Tier | When | Speed | Scope |
+|------|------|-------|-------|
+| **Pre-compile** (§18) | Between save and compile | <5ms | Colons, semicolons, brackets — syntax tokens |
+| **Regex + AI** (§2, §10) | On keystroke (800ms debounce) | 50-500ms | Imports, style, broader patterns |
+| **Runtime healing** (§17) | After compiler error | 3-8s | Any compiler error, LLM-powered |
+
+Fixes cascade: pre-compile catches the obvious stuff instantly, the regex/AI
+layer catches more nuanced issues during typing, and runtime healing is the
+last resort for anything the first two tiers missed.
