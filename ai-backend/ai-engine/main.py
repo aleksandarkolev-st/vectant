@@ -25,7 +25,7 @@ for module in ['analyzer.proactive', 'analyzer.proactive.semantic_analyzer', 'an
     logging.getLogger(module).setLevel(logging.INFO)
 import time
 
-from fastapi import FastAPI, HTTPException, BackgroundTasks, Request
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Request, Body
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from analyzer import get_analyzer
@@ -2537,6 +2537,76 @@ async def heal_ai_memory_clear():
     memory = get_agent_memory()
     memory.clear()
     return {"status": "cleared"}
+
+
+# ── AI Policy: Suppression Endpoints ──────────────────────────────────
+
+@app.post("/heal/ai/policy/suppress")
+async def heal_ai_policy_suppress(req: dict = Body(...)):
+    """
+    Record a suppression policy (user preference, NOT model-quality feedback).
+
+    Body: { ruleId, fingerprint?, mode?, reason?, ttl? }
+    """
+    from analyzer.proactive.healing.ai_policy import get_suppression_policy
+
+    rule_id = req.get("ruleId") or req.get("rule_id")
+    if not rule_id:
+        raise HTTPException(status_code=400, detail="ruleId is required")
+
+    policy = get_suppression_policy()
+    entry = await policy.suppress(
+        rule_id=rule_id,
+        fingerprint=req.get("fingerprint"),
+        mode=req.get("mode", "fingerprint"),
+        reason=req.get("reason"),
+        ttl=req.get("ttl"),
+    )
+
+    return {
+        "status": "suppressed",
+        "rule_id": rule_id,
+        "mode": entry.mode,
+        "suppress_count": entry.suppress_count,
+        "escalated": entry.escalated,
+    }
+
+
+@app.post("/heal/ai/policy/unsuppress")
+async def heal_ai_policy_unsuppress(req: dict = Body(...)):
+    """Remove a suppression for a rule/fingerprint."""
+    from analyzer.proactive.healing.ai_policy import get_suppression_policy
+
+    rule_id = req.get("ruleId") or req.get("rule_id")
+    if not rule_id:
+        raise HTTPException(status_code=400, detail="ruleId is required")
+
+    policy = get_suppression_policy()
+    removed = await policy.unsuppress(
+        rule_id=rule_id,
+        fingerprint=req.get("fingerprint"),
+    )
+
+    return {"status": "unsuppressed" if removed else "not_found", "rule_id": rule_id}
+
+
+@app.get("/heal/ai/policy")
+async def heal_ai_policy_list():
+    """List all current suppression policies."""
+    from analyzer.proactive.healing.ai_policy import get_suppression_policy
+
+    policy = get_suppression_policy()
+    return await policy.summary()
+
+
+@app.delete("/heal/ai/policy")
+async def heal_ai_policy_clear():
+    """Clear all suppression policies."""
+    from analyzer.proactive.healing.ai_policy import get_suppression_policy
+
+    policy = get_suppression_policy()
+    count = await policy.clear()
+    return {"status": "cleared", "entries_removed": count}
 
 
 def _fix_to_dict(fix) -> dict:
