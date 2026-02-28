@@ -2,9 +2,15 @@
 """Targeted Auto-Fix Engine
 
 Coordinates detection, classification, and application of targeted
-code fixes. Integrates with the proactive analysis pipeline to
-auto-suggest and (where safe) auto-apply micro-fixes for syntactic
-and stylistic issues. Uses regex-based heuristic rules, not AST parsing.
+code fixes. Supports two detection modes:
+
+1. **Regex mode** (fast, <50ms): Heuristic rules for obvious syntax issues
+2. **AI mode** (slower, <30s): LLM-powered detection for real bugs —
+   logic errors, null safety, missing awaits, off-by-one, etc.
+
+The AI agent is the "truly agentic" layer. It sends code to the LLM,
+collects cross-file context, and validates each fix with a second
+LLM call before proposing it.
 """
 
 from __future__ import annotations
@@ -28,6 +34,7 @@ from .types import (
 from .classifier import HealingClassifier
 from .rule_registry import HealingRuleRegistry, get_registry
 from .cache import HealingCache
+from .ai_agent import AIHealingAgent, AIAgentConfig
 
 # Import rules to trigger registration
 from . import rules  # noqa: F401
@@ -48,6 +55,8 @@ class SelfHealingEngine:
     
     Detection is regex + line-scanning. No AST, no LSP.
     Confidence values are hand-tuned heuristics, not calibrated probabilities.
+    
+    For AI-powered detection, use analyze_with_ai() instead of analyze().
     "
     
     def __init__(
@@ -55,6 +64,7 @@ class SelfHealingEngine:
         config: Optional[HealingConfig] = None,
         registry: Optional[HealingRuleRegistry] = None,
         classifier: Optional[HealingClassifier] = None,
+        ai_config: Optional[AIAgentConfig] = None,
     ):
         self._config = config or HealingConfig()
         self._registry = registry or get_registry()
@@ -68,6 +78,10 @@ class SelfHealingEngine:
         self._applied_fixes: Dict[str, List[HealingFix]] = {}  # file_path -> fixes
         self._cooldown_locks: Set[str] = set()
         self._rule_latencies: Dict[str, float] = {}  # rule_id -> last ms
+        
+        # AI agent — lazy-initialized
+        self._ai_config = ai_config
+        self._ai_agent: Optional[AIHealingAgent] = None
     
     @property
     def config(self) -> HealingConfig:
@@ -246,6 +260,155 @@ class SelfHealingEngine:
         
         return result
     
+    # ── AI-powered analysis ───────────────────────────────────────────
+
+    def _get_ai_agent(self) -> AIHealingAgent:
+        """Lazy-init the AI healing agent."""
+        if self._ai_agent is None:
+            self._ai_agent = AIHealingAgent(self._ai_config)
+        return self._ai_agent
+
+    async def analyze_with_ai(
+        self,
+        code: str,
+        language: str,
+        file_path: str = "untitled",
+        workspace_root: Optional[str] = None,
+        focus_range: Optional[tuple] = None,
+        read_file_fn=None,
+    ) -> HealingResult:
+        """
+        Analyze code using the AI agent (LLM-powered detection).
+
+        This is the agentic alternative to analyze(). Instead of regex
+        rules, it sends the code to an LLM which identifies real bugs:
+        logic errors, null safety, missing awaits, off-by-one, etc.
+
+        Slower than regex (~5-30s vs <50ms) but catches real issues
+        that no regex can find.
+        """
+        if not self._config.enabled:
+            return HealingResult(
+                file_path=file_path,
+                language=language,
+                content_hash=self._compute_hash(code),
+            )
+
+        start_time = time.perf_counter()
+        content_hash = self._compute_hash(code)
+
+        agent = self._get_ai_agent()
+
+        try:
+            ai_fixes = await agent.detect(
+                file_path=file_path,
+                source_code=code,
+                language=language,
+                workspace_root=workspace_root,
+                focus_range=focus_range,
+                read_file_fn=read_file_fn,
+            )
+        except Exception as e:
+            logger.error(f"AI agent detection failed: {e}")
+            ai_fixes = []
+
+        # Classify AI fixes for safety
+        self._classifier.classify_fixes(ai_fixes, code, language)
+
+        # Resolve conflicts
+        ai_fixes, skipped = self._resolve_conflicts(ai_fixes)
+        ai_fixes = self._deduplicate_fixes(ai_fixes)
+
+        elapsed_ms = (time.perf_counter() - start_time) * 1000
+
+        result = HealingResult(
+            file_path=file_path,
+            language=language,
+            content_hash=content_hash,
+            fixes=ai_fixes,
+            skipped_issues=skipped,
+            elapsed_ms=elapsed_ms,
+        )
+
+        for fix in ai_fixes:
+            self._emit_event(HealingEvent(
+                event_type="ai_fix_detected",
+                fix=fix,
+                file_path=file_path,
+                details={"isSafe": fix.is_safe, "source": "ai_agent"},
+            ))
+
+        logger.info(
+            f"AI analysis: {len(ai_fixes)} fixes found "
+            f"({result.auto_fixable_count} auto-fixable) "
+            f"in {elapsed_ms:.1f}ms for {file_path}"
+        )
+
+        return result
+
+    async def analyze_hybrid(
+        self,
+        code: str,
+        language: str,
+        file_path: str = "untitled",
+        workspace_root: Optional[str] = None,
+        read_file_fn=None,
+    ) -> HealingResult:
+        """
+        Run both regex rules AND AI detection, merge results.
+
+        The regex rules run first (fast, <50ms), then the AI agent
+        runs in parallel to find deeper issues. Results are merged
+        with conflict resolution — AI fixes take priority over regex
+        fixes at the same location.
+        """
+        # Run regex analysis first (fast)
+        regex_result = await self.analyze(code, language, file_path)
+
+        # Run AI analysis (slow)
+        ai_result = await self.analyze_with_ai(
+            code, language, file_path,
+            workspace_root=workspace_root,
+            read_file_fn=read_file_fn,
+        )
+
+        # Merge: start with AI fixes, add non-conflicting regex fixes
+        merged_fixes = list(ai_result.fixes)
+        ai_lines = {(f.line, f.end_line) for f in ai_result.fixes}
+
+        for fix in regex_result.fixes:
+            # Check if regex fix overlaps with any AI fix
+            overlaps = any(
+                not (fix.end_line < ai_start or fix.line > ai_end)
+                for ai_start, ai_end in ai_lines
+            )
+            if not overlaps:
+                merged_fixes.append(fix)
+
+        # Re-resolve conflicts on merged set
+        merged_fixes, merge_skipped = self._resolve_conflicts(merged_fixes)
+
+        elapsed_ms = regex_result.elapsed_ms + ai_result.elapsed_ms
+
+        return HealingResult(
+            file_path=file_path,
+            language=language,
+            content_hash=ai_result.content_hash,
+            fixes=merged_fixes,
+            skipped_issues=(
+                regex_result.skipped_issues
+                + ai_result.skipped_issues
+                + merge_skipped
+            ),
+            elapsed_ms=elapsed_ms,
+        )
+
+    def get_ai_stats(self) -> Dict[str, Any]:
+        """Get AI agent statistics."""
+        if self._ai_agent is None:
+            return {"status": "not_initialized"}
+        return self._ai_agent.get_stats()
+
     def apply_fix(
         self,
         code: str,
