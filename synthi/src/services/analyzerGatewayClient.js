@@ -544,6 +544,73 @@ export class AnalyzerGatewayClient {
   }
 
   /**
+   * Run streaming AI analysis — receives progressive events as fixes are found.
+   *
+   * @param {Object} payload
+   * @param {string} payload.code       – file content to analyze
+   * @param {string} payload.lang       – language id
+   * @param {string} [payload.filePath] – workspace-relative file path
+   * @param {Object} callbacks
+   * @param {Function} [callbacks.onProgress] – (data) => void, progress updates
+   * @param {Function} [callbacks.onPartialFix] – (fix) => void, each fix as it arrives
+   * @param {Function} [callbacks.onComplete]  – (data) => void, final result
+   * @param {Function} [callbacks.onError]     – (err) => void, error events
+   * @returns {Promise<void>} resolves when stream ends
+   */
+  aiStream(payload, callbacks = {}) {
+    return new Promise((resolve, reject) => {
+      const requestId = this._sendRequest('heal/ai/stream', {
+        code: payload.code,
+        lang: payload.lang || 'plaintext',
+        filePath: payload.filePath,
+        workspaceRoot: payload.workspaceRoot,
+        validateFixes: payload.validateFixes ?? true,
+        minConfidence: payload.minConfidence,
+      });
+
+      // Listen for stream messages matching this requestId
+      const handler = (event) => {
+        const msg = typeof event.data === 'string' ? JSON.parse(event.data) : event.data;
+        if (!msg || msg.requestId !== requestId) return;
+
+        if (msg.type === 'stream') {
+          const ev = msg.event || msg.data?.event;
+          if (ev === 'progress' && callbacks.onProgress) {
+            callbacks.onProgress(msg.data);
+          } else if (ev === 'partial_fix' && callbacks.onPartialFix) {
+            callbacks.onPartialFix(msg.data);
+          } else if (ev === 'complete' && callbacks.onComplete) {
+            callbacks.onComplete(msg.data);
+          } else if (ev === 'error' && callbacks.onError) {
+            callbacks.onError(msg.data);
+          }
+        }
+
+        if (msg.type === 'stream_end') {
+          cleanup();
+          resolve();
+        }
+      };
+
+      const cleanup = () => {
+        if (this._ws) {
+          this._ws.removeEventListener('message', handler);
+        }
+      };
+
+      if (this._ws) {
+        this._ws.addEventListener('message', handler);
+      }
+
+      // Safety timeout — 60 s
+      setTimeout(() => {
+        cleanup();
+        resolve();
+      }, 60_000);
+    });
+  }
+
+  /**
    * Run workspace-level multi-file analysis
    * @param {Object} payload - Workspace analysis request
    * @param {string} payload.workspaceId - Unique workspace identifier
