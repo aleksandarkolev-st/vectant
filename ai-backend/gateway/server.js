@@ -41,6 +41,7 @@ const backendAIStatsUrl = new URL("/heal/ai/stats", backendUrl).toString();
 const backendAIFeedbackUrl = new URL("/heal/ai/feedback", backendUrl).toString();
 const backendAIMemoryUrl = new URL("/heal/ai/memory", backendUrl).toString();
 const backendAIStreamUrl = new URL("/heal/ai/stream", backendUrl).toString();
+const backendAIProjectUrl = new URL("/heal/ai/project", backendUrl).toString();
 
 const server = http.createServer(handleHttpRequest);
 const wss = new WebSocketServer({
@@ -211,6 +212,9 @@ async function handleClientMessage(socket, raw) {
       break;
     case "heal/ai/stream":
       await forwardAIStream(socket, data, requestId);
+      break;
+    case "heal/ai/project":
+      await forwardAIProject(socket, data, requestId);
       break;
     default:
       sendError(socket, `Unsupported action: ${action}`, { requestId });
@@ -1898,6 +1902,59 @@ async function forwardAIStream(socket, data, requestId) {
   } catch (err) {
     console.error("[AI Agent] stream forward error:", err);
     sendError(socket, "AI stream request failed", { requestId, detail: err.message });
+  }
+}
+
+async function forwardAIProject(socket, data, requestId) {
+  const code = data?.code;
+  const lang = data?.lang;
+  const filePath = data?.filePath || data?.file_path;
+
+  if (typeof code !== "string" || !code.trim()) {
+    sendError(socket, "`code` must be a non-empty string", { requestId });
+    return;
+  }
+
+  try {
+    const body = {
+      code,
+      lang: lang || "plaintext",
+      file_path: filePath || "",
+      workspace_root: data?.workspaceRoot || data?.workspace_root || "",
+      validate_fixes: data?.validateFixes ?? true,
+    };
+    if (data?.relatedFiles) body.related_files = data.relatedFiles;
+    if (data?.minConfidence != null) body.min_confidence = data.minConfidence;
+
+    const backendResponse = await fetch(backendAIProjectUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const responseText = await backendResponse.text();
+
+    if (!backendResponse.ok) {
+      sendError(socket, "AI project analysis backend error", { requestId, detail: responseText });
+      return;
+    }
+
+    let responseJson;
+    try {
+      responseJson = JSON.parse(responseText);
+    } catch (err) {
+      sendError(socket, "AI project response was not valid JSON", { requestId, detail: err.message });
+      return;
+    }
+
+    safeSend(socket, {
+      type: "response",
+      action: "heal/ai/project",
+      requestId,
+      data: responseJson,
+    });
+  } catch (err) {
+    console.error("[AI Agent] project forward error:", err);
+    sendError(socket, "AI project analysis request failed", { requestId, detail: err.message });
   }
 }
 

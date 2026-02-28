@@ -544,6 +544,31 @@ export class AnalyzerGatewayClient {
   }
 
   /**
+   * Run project-level cross-file AI analysis.
+   *
+   * Analyzes the target file AND any files that import it (dependents).
+   *
+   * @param {Object} payload
+   * @param {string} payload.code          – file content
+   * @param {string} payload.lang          – language id
+   * @param {string} payload.filePath      – workspace-relative path
+   * @param {string} [payload.workspaceRoot]
+   * @param {Object} [payload.relatedFiles] – {path: content} for known dependents
+   * @returns {Promise<Object>} { fixes, analyzed_files, dependents_found, graph_summary }
+   */
+  aiProject(payload) {
+    return this._sendRequest('heal/ai/project', {
+      code: payload.code,
+      lang: payload.lang || 'plaintext',
+      filePath: payload.filePath,
+      workspaceRoot: payload.workspaceRoot,
+      relatedFiles: payload.relatedFiles,
+      validateFixes: payload.validateFixes ?? true,
+      minConfidence: payload.minConfidence,
+    });
+  }
+
+  /**
    * Run streaming AI analysis — receives progressive events as fixes are found.
    *
    * @param {Object} payload
