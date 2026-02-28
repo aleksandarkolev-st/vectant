@@ -7,10 +7,15 @@
 //       pattern (ruleId + category + normalised original_text hash).
 //   'rule' — blanket-suppress every fix emitted by a rule_id.
 //
-// Persistence: localStorage (keyed per env + userId) with schema
-// versioning and automatic migration.  Backend sync is handled
-// externally via the /heal/ai/policy/* endpoints — this module
-// focuses on fast local reads/writes.
+// Persistence: localStorage (keyed per env + workspaceId + userId)
+// with schema versioning and automatic migration.
+//
+// Backend is authoritative for TTL expiry and escalation.
+// This module is a local cache — mergeRemote() does a full
+// replace from backend state.  No independent TTL computation.
+//
+// API note: filterFixes(fixes) returns { visible, suppressedCount },
+// NOT a bare array.
 
 const SCHEMA_VERSION = 2;
 
@@ -37,10 +42,11 @@ export function computeFingerprint(fix) {
   return djb2(`${ruleId}\0${category}\0${original}`);
 }
 
-function storageKey(env, userId) {
+function storageKey(env, workspaceId, userId) {
   const e = env || 'default';
+  const w = workspaceId || 'default';
   const u = userId || 'anonymous';
-  return `synthi:ai-suppressed:${e}:${u}`;
+  return `synthi:ai-suppressed:${e}:${w}:${u}`;
 }
 
 // ── Main class ───────────────────────────────────────────────────────
@@ -51,10 +57,11 @@ class AISuppressedRules {
    * @param {string} [opts.env]    – app environment id (e.g. 'prod', 'dev')
    * @param {string} [opts.userId] – current user id for namespacing
    */
-  constructor({ env, userId } = {}) {
+  constructor({ env, workspaceId, userId } = {}) {
     /** @type {Map<string, Object>} ruleId → entry */
     this._entries = new Map();
     this._env = env ?? null;
+    this._workspaceId = workspaceId ?? null;
     this._userId = userId ?? null;
     this._version = SCHEMA_VERSION;
     this._updatedAt = null;
@@ -67,9 +74,10 @@ class AISuppressedRules {
    * Re-key the store when env / userId becomes known.
    * Saves current state under old key, loads from new key.
    */
-  configure({ env, userId }) {
+  configure({ env, workspaceId, userId }) {
     this._save();
     this._env = env ?? this._env;
+    this._workspaceId = workspaceId ?? this._workspaceId;
     this._userId = userId ?? this._userId;
     this._load();
   }
@@ -100,6 +108,7 @@ class AISuppressedRules {
         updatedAt: now,
         ttl,
         reason,
+        escalated: false,
       };
       this._entries.set(ruleId, entry);
     }
@@ -157,10 +166,7 @@ class AISuppressedRules {
 
     const entry = this._entries.get(ruleId);
     if (!entry) return false;
-    if (this._isExpired(entry)) {
-      this._entries.delete(ruleId);
-      return false;
-    }
+    // No local TTL check — backend is authoritative for expiry.
 
     if (entry.mode === 'rule') return true;
     return entry.fingerprints.has(computeFingerprint(fix));
@@ -195,10 +201,6 @@ class AISuppressedRules {
   all() {
     const result = [];
     for (const [ruleId, entry] of this._entries) {
-      if (this._isExpired(entry)) {
-        this._entries.delete(ruleId);
-        continue;
-      }
       result.push({
         ruleId,
         mode: entry.mode,
@@ -207,6 +209,7 @@ class AISuppressedRules {
         updatedAt: entry.updatedAt,
         ttl: entry.ttl,
         reason: entry.reason,
+        escalated: entry.escalated ?? false,
       });
     }
     return result;
@@ -230,7 +233,6 @@ class AISuppressedRules {
   toJSON() {
     const entries = {};
     for (const [ruleId, entry] of this._entries) {
-      if (this._isExpired(entry)) continue;
       entries[ruleId] = {
         mode: entry.mode,
         fingerprints: [...entry.fingerprints],
@@ -238,33 +240,35 @@ class AISuppressedRules {
         updatedAt: entry.updatedAt,
         ttl: entry.ttl,
         reason: entry.reason,
+        escalated: entry.escalated ?? false,
       };
     }
     return { version: this._version, updatedAt: this._updatedAt, entries };
   }
 
-  /** Merge remote state into local (latest-writer-wins per entry). */
+  /**
+   * Full-replace local cache with remote state.
+   * Remote (backend) is authoritative — handles TTL expiry, escalation,
+   * and deletions.  Local-only entries are discarded.
+   */
   mergeRemote(remote) {
     if (!remote?.entries) return;
 
+    this._entries.clear();
+
     for (const [ruleId, re] of Object.entries(remote.entries)) {
-      const local = this._entries.get(ruleId);
-      if (!local || re.updatedAt > local.updatedAt) {
-        this._entries.set(ruleId, {
-          mode: re.mode || 'fingerprint',
-          fingerprints: new Set(re.fingerprints || []),
-          createdAt: re.createdAt || new Date().toISOString(),
-          updatedAt: re.updatedAt || new Date().toISOString(),
-          ttl: re.ttl ?? null,
-          reason: re.reason ?? null,
-        });
-      }
+      this._entries.set(ruleId, {
+        mode: re.mode || 'fingerprint',
+        fingerprints: new Set(re.fingerprints || []),
+        createdAt: re.createdAt || new Date().toISOString(),
+        updatedAt: re.updatedAt || new Date().toISOString(),
+        ttl: re.ttl ?? null,
+        reason: re.reason ?? null,
+        escalated: re.escalated ?? false,
+      });
     }
 
-    if (remote.updatedAt && (!this._updatedAt || remote.updatedAt > this._updatedAt)) {
-      this._updatedAt = remote.updatedAt;
-    }
-
+    this._updatedAt = remote.updatedAt || new Date().toISOString();
     this._save();
   }
 
@@ -272,7 +276,7 @@ class AISuppressedRules {
 
   _save() {
     try {
-      const key = storageKey(this._env, this._userId);
+      const key = storageKey(this._env, this._workspaceId, this._userId);
       localStorage.setItem(key, JSON.stringify(this.toJSON()));
     } catch {
       // localStorage may be unavailable or full
@@ -281,7 +285,7 @@ class AISuppressedRules {
 
   _load() {
     try {
-      const key = storageKey(this._env, this._userId);
+      const key = storageKey(this._env, this._workspaceId, this._userId);
       const raw = localStorage.getItem(key);
       if (!raw) return;
 
@@ -314,6 +318,7 @@ class AISuppressedRules {
           updatedAt: entry.updatedAt || null,
           ttl: entry.ttl ?? null,
           reason: entry.reason ?? null,
+          escalated: entry.escalated ?? false,
         });
       }
     }
@@ -351,11 +356,6 @@ class AISuppressedRules {
     this._save();
   }
 
-  _isExpired(entry) {
-    if (!entry.ttl) return false;
-    const created = new Date(entry.createdAt).getTime();
-    return Date.now() - created > entry.ttl * 1000;
-  }
 }
 
 /** Singleton — reconfigure via .configure() once identity is known. */
