@@ -15,6 +15,7 @@ import {
   AlertTriangle,
   Info,
   Columns,
+  EyeOff,
 } from 'lucide-react';
 import { AIDiffPreview } from './AIDiffPreview';
 
@@ -72,12 +73,13 @@ function ConfidenceBadge({ confidence }) {
 
 /**
  * @param {Object}   props
- * @param {Object}   props.fix       – AI fix object
- * @param {Function} props.onApply   – called when user clicks Apply
- * @param {Function} props.onDismiss – called when user clicks Dismiss
- * @param {number}   [props.index]   – 0-based position in list
+ * @param {Object}   props.fix            – AI fix object
+ * @param {Function} props.onApply        – called when user clicks Apply
+ * @param {Function} props.onDismiss      – called when user clicks Dismiss
+ * @param {Function} [props.onSuppressRule] – called when user clicks Suppress Rule
+ * @param {number}   [props.index]        – 0-based position in list
  */
-export function AIFixCard({ fix, onApply, onDismiss, index }) {
+export function AIFixCard({ fix, onApply, onDismiss, onSuppressRule, index }) {
   const [expanded, setExpanded] = useState(false);
   const [richDiff, setRichDiff] = useState(false);
 
@@ -96,6 +98,9 @@ export function AIFixCard({ fix, onApply, onDismiss, index }) {
 
   const handleApply = useCallback(() => onApply?.(fix), [fix, onApply]);
   const handleDismiss = useCallback(() => onDismiss?.(fix), [fix, onDismiss]);
+  const handleSuppressRule = useCallback(() => {
+    if (ruleId) onSuppressRule?.(ruleId, fix);
+  }, [ruleId, fix, onSuppressRule]);
   const toggleExpand = useCallback(() => setExpanded((e) => !e), []);
 
   return (
@@ -207,6 +212,16 @@ export function AIFixCard({ fix, onApply, onDismiss, index }) {
           <X size={12} />
           Dismiss
         </button>
+        {ruleId && onSuppressRule && (
+          <button
+            onClick={handleSuppressRule}
+            className="flex items-center gap-1 text-xs bg-white/5 hover:bg-red-500/20 text-white/30 hover:text-red-300 px-2.5 py-1 rounded transition-colors ml-auto"
+            title={`Suppress rule "${ruleId}" — hide all future matches`}
+          >
+            <EyeOff size={12} />
+            Suppress
+          </button>
+        )}
       </div>
     </div>
   );

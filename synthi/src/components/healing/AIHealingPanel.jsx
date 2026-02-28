@@ -239,6 +239,7 @@ export function AIHealingPanel({ aiHealing }) {
               index={i}
               onApply={aiHealing.applyFix}
               onDismiss={aiHealing.dismissFix}
+              onSuppressRule={aiHealing.suppressRule}
             />
           </AIConfidenceGate>
         ))}

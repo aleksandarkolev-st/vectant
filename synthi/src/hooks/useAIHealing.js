@@ -42,6 +42,7 @@ import {
 } from '@/redux/healingSlice';
 
 import { aiFixHistory } from '@/services/aiFixHistory';
+import { aiSuppressedRules } from '@/services/aiSuppressedRules';
 
 
 /** Simple unique ID generator */
@@ -154,7 +155,8 @@ export function useAIHealing({
 
       if (!mountedRef.current) return null;
 
-      const detectedFixes = result?.fixes || [];
+      const rawFixes = result?.fixes || [];
+      const detectedFixes = aiSuppressedRules.filterFixes(rawFixes);
       setFixes(detectedFixes);
       setLastAnalyzedAt(Date.now());
 
@@ -294,11 +296,12 @@ export function useAIHealing({
             const fix = data?.fix || data;
             if (!fix) return;
             accumulated.push(fix);
-            setFixes([...accumulated]);
+            setFixes(aiSuppressedRules.filterFixes([...accumulated]));
           },
           onComplete: (data) => {
             if (!mountedRef.current) return;
-            const finalFixes = data?.fixes || accumulated;
+            const rawFinal = data?.fixes || accumulated;
+            const finalFixes = aiSuppressedRules.filterFixes(rawFinal);
             setFixes(finalFixes);
             setLastAnalyzedAt(Date.now());
 
@@ -470,6 +473,40 @@ export function useAIHealing({
     }
   }, [editorRef]);
 
+  // ── Suppress a rule (hide current + future matches) ─────────────────
+  const suppressRule = useCallback((ruleId, fix) => {
+    if (!ruleId) return;
+    aiSuppressedRules.suppress(ruleId);
+
+    // Remove all fixes matching this rule from current list
+    setFixes((prev) => prev.filter((f) => {
+      const id = f.rule_id || f.ruleId || '';
+      return id !== ruleId;
+    }));
+
+    // Log feedback so the backend learns too
+    if (fix) _reportFeedback(fix, 'rejected');
+
+    dispatch(enqueueToast({
+      message: `Suppressed rule "${ruleId}" — future matches will be hidden`,
+      type: 'info',
+    }));
+  }, [dispatch, _reportFeedback]);
+
+  // ── Unsuppress a rule ───────────────────────────────────────────────
+  const unsuppressRule = useCallback((ruleId) => {
+    aiSuppressedRules.unsuppress(ruleId);
+    dispatch(enqueueToast({
+      message: `Unsuppressed rule "${ruleId}"`,
+      type: 'info',
+    }));
+  }, [dispatch]);
+
+  // ── Get suppressed rules list ───────────────────────────────────────
+  const getSuppressedRules = useCallback(() => {
+    return aiSuppressedRules.all();
+  }, []);
+
   // ── Fetch stats ─────────────────────────────────────────────────────
   const fetchStats = useCallback(async () => {
     if (!gateway?.aiStats) return null;
@@ -561,5 +598,10 @@ export function useAIHealing({
     fetchMemory,
     getFixHistory: () => aiFixHistory.entries(),
     getFixHistoryStats: () => aiFixHistory.stats(),
+
+    // Rule suppression
+    suppressRule,
+    unsuppressRule,
+    getSuppressedRules,
   };
 }
