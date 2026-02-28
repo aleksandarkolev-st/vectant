@@ -496,7 +496,12 @@ export function useAIHealing({
         fingerprint: fix ? computeFingerprint(fix) : null,
         mode,
         reason: 'user_suppressed',
-      }).catch(() => {});
+      }).catch(() => {
+        dispatch(enqueueToast({
+          message: 'Backend sync for suppress failed — local-only',
+          type: 'warning',
+        }));
+      });
     }
 
     // Toast with Undo affordance
@@ -523,7 +528,12 @@ export function useAIHealing({
     setSuppressedCount(0); // will be recalculated on next analysis
 
     if (gateway?.aiPolicyUnsuppress) {
-      gateway.aiPolicyUnsuppress({ ruleId }).catch(() => {});
+      gateway.aiPolicyUnsuppress({ ruleId }).catch(() => {
+        dispatch(enqueueToast({
+          message: 'Backend sync for unsuppress failed — local-only',
+          type: 'warning',
+        }));
+      });
     }
 
     dispatch(enqueueToast({
@@ -537,19 +547,27 @@ export function useAIHealing({
     return aiSuppressedRules.all();
   }, []);
 
-  // ── Clear all suppressions ────────────────────────────────────────
-  const clearAllSuppressed = useCallback(() => {
+  // ── Clear all suppressions (optimistic + rollback) ────────────────
+  const clearAllSuppressed = useCallback(async () => {
+    const snapshot = aiSuppressedRules.toJSON();
+
+    // Optimistic: clear immediately for snappy UI
     aiSuppressedRules.clear();
     setSuppressedCount(0);
+    dispatch(enqueueToast({ message: 'Suppressed rules cleared', type: 'info' }));
 
+    // Sync to backend — rollback on failure
     if (gateway?.aiPolicyClear) {
-      gateway.aiPolicyClear().catch(() => {});
+      try {
+        await gateway.aiPolicyClear();
+      } catch {
+        aiSuppressedRules.mergeRemote(snapshot);
+        dispatch(enqueueToast({
+          message: 'Backend sync failed — suppressions restored',
+          type: 'error',
+        }));
+      }
     }
-
-    dispatch(enqueueToast({
-      message: 'All suppressed rules cleared',
-      type: 'info',
-    }));
   }, [dispatch, gateway]);
 
   // ── Fetch stats ─────────────────────────────────────────────────────
@@ -650,5 +668,6 @@ export function useAIHealing({
     unsuppressRule,
     getSuppressedRules,
     clearAllSuppressed,
+    hasSuppressedRules: aiSuppressedRules.count > 0,
   };
 }

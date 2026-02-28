@@ -246,15 +246,17 @@ export function AIHealingPanel({ aiHealing }) {
         ))}
       </div>
 
-      {/* ── Suppressed rules panel ──────────────────────────────── */}
-      <div className="px-2 pb-1">
-        <AISuppressedRulesPanel
-          getSuppressedRules={aiHealing.getSuppressedRules}
-          onUnsuppress={aiHealing.unsuppressRule}
-          onClearAll={aiHealing.clearAllSuppressed}
-          suppressedCount={aiHealing.suppressedCount ?? 0}
-        />
-      </div>
+      {/* ── Suppressed rules panel (zero-cost when nothing suppressed) ── */}
+      {((aiHealing.suppressedCount ?? 0) > 0 || aiHealing.hasSuppressedRules) && (
+        <div className="px-2 pb-1">
+          <AISuppressedRulesPanel
+            getSuppressedRules={aiHealing.getSuppressedRules}
+            onUnsuppress={aiHealing.unsuppressRule}
+            onClearAll={aiHealing.clearAllSuppressed}
+            suppressedCount={aiHealing.suppressedCount ?? 0}
+          />
+        </div>
+      )}
 
       {/* ── Footer stats ────────────────────────────────────────── */}
       {fixCount > 0 && (
