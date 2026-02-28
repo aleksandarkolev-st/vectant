@@ -2169,6 +2169,35 @@ async def heal_ai_stats():
     return engine.get_ai_stats()
 
 
+@app.post("/heal/ai/stream")
+async def heal_ai_stream(req: AIAnalyzeRequest):
+    """
+    Stream AI analysis results via Server-Sent Events (SSE).
+    
+    Returns a stream of events:
+    - progress: status updates with percentage
+    - partial_fix: individual fixes as they're found
+    - complete: final result with all fixes
+    - error: analysis failed
+    """
+    from starlette.responses import StreamingResponse
+    from analyzer.proactive.healing.ai_streaming import stream_ai_analysis
+
+    return StreamingResponse(
+        stream_ai_analysis(
+            code=req.code,
+            language=req.lang.lower(),
+            file_path=req.file_path or "untitled",
+            workspace_root=req.workspace_root,
+        ),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
 def _fix_to_dict(fix) -> dict:
     """Helper to convert a HealingFix to a dict."""
     try:
