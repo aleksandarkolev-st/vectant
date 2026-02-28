@@ -186,6 +186,19 @@ class AISuppressedRules {
   }
 
   /**
+   * Check if a fix's rule has been escalated to manual-only (5+ suppressions).
+   * An escalated fix should NEVER be auto-applied.
+   * @param {Object} fix
+   * @returns {boolean}
+   */
+  isEscalated(fix) {
+    const ruleId = fix?.rule_id || fix?.ruleId || '';
+    if (!ruleId) return false;
+    const entry = this._entries.get(ruleId);
+    return entry?.escalated === true;
+  }
+
+  /**
    * Filter an array of fixes, removing suppressed ones.
    * @returns {{ visible: Array, suppressedCount: number }}
    */

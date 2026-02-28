@@ -363,6 +363,15 @@ export function useAIHealing({
 
   // ── Apply a single fix ──────────────────────────────────────────────
   const applyFix = useCallback((fix) => {
+    // Escalation guard — escalated rules are manual-confirm only
+    if (aiSuppressedRules.isEscalated(fix)) {
+      dispatch(enqueueToast({
+        message: `Rule "${fix.rule_id || fix.ruleId}" is escalated — manual review required`,
+        type: 'warning',
+      }));
+      return false;
+    }
+
     const editor = editorRef?.current;
     if (!editor) return false;
 
@@ -425,7 +434,9 @@ export function useAIHealing({
 
   // ── Apply all safe fixes ────────────────────────────────────────────
   const applyAllSafe = useCallback(() => {
-    const safeFixes = fixes.filter((f) => f.is_safe || f.isSafe);
+    const safeFixes = fixes.filter(
+      (f) => (f.is_safe || f.isSafe) && !aiSuppressedRules.isEscalated(f)
+    );
     let applied = 0;
 
     // Apply in reverse order to preserve line numbers
