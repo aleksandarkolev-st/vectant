@@ -469,6 +469,115 @@ export function useAnalyzerGateway({
     }
   }, []);
 
+  // ─── AI Agent Hooks ────────────────────────────────────────────────
+
+  /**
+   * Analyze code using the AI agent (LLM-powered detection).
+   *
+   * @param {Object} options - AI analysis options
+   * @param {string} options.code - Code to analyze
+   * @param {string} options.lang - Language identifier
+   * @param {string} [options.filePath] - File path
+   * @param {string} [options.workspaceRoot] - Workspace root for context
+   * @param {boolean} [options.autoApply=false] - Auto-apply safe fixes
+   * @param {number} [options.focusStartLine] - Focus range start
+   * @param {number} [options.focusEndLine] - Focus range end
+   * @param {boolean} [options.validateFixes=true] - Run validation pass
+   * @returns {Promise<Object>} AI analysis result with fixes
+   */
+  const aiAnalyze = useCallback(async ({
+    code, lang, filePath, workspaceRoot,
+    autoApply = false, focusStartLine, focusEndLine,
+    validateFixes = true, minConfidence,
+  } = {}) => {
+    if (!clientRef.current) {
+      throw new SynthiException('Gateway client is not ready yet');
+    }
+    if (typeof code !== 'string') {
+      throw new SynthiException('`code` must be a string');
+    }
+    if (!lang) {
+      throw new SynthiException('`lang` is required for AI analysis');
+    }
+
+    try {
+      const response = await clientRef.current.aiAnalyze({
+        code,
+        lang: lang.toLowerCase(),
+        filePath: filePath || 'untitled',
+        workspaceRoot,
+        autoApply,
+        focusStartLine,
+        focusEndLine,
+        validateFixes,
+        minConfidence,
+      });
+      return response?.data ?? response;
+    } catch (error) {
+      console.error('[aiAnalyze] Error:', error);
+      throw error;
+    }
+  }, []);
+
+  /**
+   * Analyze multiple files using the AI agent.
+   */
+  const aiBatch = useCallback(async ({ files, lang, autoApply = false } = {}) => {
+    if (!clientRef.current) {
+      throw new SynthiException('Gateway client is not ready yet');
+    }
+    try {
+      const response = await clientRef.current.aiBatch({ files, lang, autoApply });
+      return response?.data ?? response;
+    } catch (error) {
+      console.error('[aiBatch] Error:', error);
+      throw error;
+    }
+  }, []);
+
+  /**
+   * Run hybrid analysis: regex + AI merged results.
+   */
+  const aiHybrid = useCallback(async ({
+    code, lang, filePath, workspaceRoot, autoApply = false,
+  } = {}) => {
+    if (!clientRef.current) {
+      throw new SynthiException('Gateway client is not ready yet');
+    }
+    if (typeof code !== 'string' || !lang) {
+      throw new SynthiException('`code` and `lang` are required');
+    }
+    try {
+      const response = await clientRef.current.aiHybrid({
+        code,
+        lang: lang.toLowerCase(),
+        filePath: filePath || 'untitled',
+        workspaceRoot,
+        autoApply,
+      });
+      return response?.data ?? response;
+    } catch (error) {
+      console.error('[aiHybrid] Error:', error);
+      throw error;
+    }
+  }, []);
+
+  /**
+   * Get AI agent statistics.
+   */
+  const aiStats = useCallback(async () => {
+    if (!clientRef.current) {
+      throw new SynthiException('Gateway client is not ready yet');
+    }
+    try {
+      const response = await clientRef.current.aiStats();
+      return response?.data ?? response;
+    } catch (error) {
+      console.error('[aiStats] Error:', error);
+      throw error;
+    }
+  }, []);
+
   const connectionMeta = useMemo(
     () => ({
       status: connectionStatus,
@@ -494,6 +603,11 @@ export function useAnalyzerGateway({
     healContainer,
     healConfig,
     healStats,
+    // AI Agent
+    aiAnalyze,
+    aiBatch,
+    aiHybrid,
+    aiStats,
     resetResult,
     resetError,
     clientReady: Boolean(clientRef.current),
