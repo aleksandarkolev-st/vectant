@@ -496,6 +496,7 @@ export function useAIHealing({
         fingerprint: fix ? computeFingerprint(fix) : null,
         mode,
         reason: 'user_suppressed',
+        ...aiSuppressedRules.scope,
       }).then(() => {
         aiSuppressedRules.ackOp(ruleId, 'suppress');
       }).catch(() => {
@@ -530,7 +531,7 @@ export function useAIHealing({
     setSuppressedCount(0); // will be recalculated on next analysis
 
     if (gateway?.aiPolicyUnsuppress) {
-      gateway.aiPolicyUnsuppress({ ruleId }).then(() => {
+      gateway.aiPolicyUnsuppress({ ruleId, ...aiSuppressedRules.scope }).then(() => {
         aiSuppressedRules.ackOp(ruleId, 'unsuppress');
       }).catch(() => {
         dispatch(enqueueToast({
@@ -563,7 +564,7 @@ export function useAIHealing({
     // Sync to backend — rollback on failure
     if (gateway?.aiPolicyClear) {
       try {
-        await gateway.aiPolicyClear();
+        await gateway.aiPolicyClear(aiSuppressedRules.scope);
         aiSuppressedRules.clearPendingOps();
       } catch {
         aiSuppressedRules.mergeRemote(snapshot);

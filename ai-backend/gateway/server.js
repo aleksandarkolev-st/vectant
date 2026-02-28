@@ -245,10 +245,10 @@ async function handleClientMessage(socket, raw) {
       await forwardAIPolicyUnsuppress(socket, data, requestId);
       break;
     case "heal/ai/policy":
-      await forwardAIPolicyList(socket, requestId);
+      await forwardAIPolicyList(socket, data, requestId);
       break;
     case "heal/ai/policy/clear":
-      await forwardAIPolicyClear(socket, requestId);
+      await forwardAIPolicyClear(socket, data, requestId);
       break;
     default:
       sendError(socket, `Unsupported action: ${action}`, { requestId });
@@ -2139,6 +2139,8 @@ async function forwardAIPolicySuppress(socket, data, requestId) {
         mode: data?.mode || "fingerprint",
         reason: data?.reason || null,
         ttl: data?.ttl ?? null,
+        env: data?.env || "development",
+        workspaceId: data?.workspaceId || "default",
       }),
     });
     const text = await resp.text();
@@ -2172,6 +2174,8 @@ async function forwardAIPolicyUnsuppress(socket, data, requestId) {
       body: JSON.stringify({
         ruleId,
         fingerprint: data?.fingerprint || null,
+        env: data?.env || "development",
+        workspaceId: data?.workspaceId || "default",
       }),
     });
     const text = await resp.text();
@@ -2192,9 +2196,12 @@ async function forwardAIPolicyUnsuppress(socket, data, requestId) {
 }
 
 // ── AI Policy: list ──────────────────────────────────────────────────
-async function forwardAIPolicyList(socket, requestId) {
+async function forwardAIPolicyList(socket, data, requestId) {
   try {
-    const resp = await fetch(backendAIPolicyListUrl, { method: "GET" });
+    const env = data?.env || "development";
+    const workspaceId = data?.workspaceId || "default";
+    const url = `${backendAIPolicyListUrl}?env=${encodeURIComponent(env)}&workspaceId=${encodeURIComponent(workspaceId)}`;
+    const resp = await fetch(url, { method: "GET" });
     const text = await resp.text();
     if (!resp.ok) {
       sendError(socket, "AI policy list backend error", { requestId, detail: text });
@@ -2213,9 +2220,12 @@ async function forwardAIPolicyList(socket, requestId) {
 }
 
 // ── AI Policy: clear ─────────────────────────────────────────────────
-async function forwardAIPolicyClear(socket, requestId) {
+async function forwardAIPolicyClear(socket, data, requestId) {
   try {
-    const resp = await fetch(backendAIPolicyListUrl, { method: "DELETE" });
+    const env = data?.env || "development";
+    const workspaceId = data?.workspaceId || "default";
+    const url = `${backendAIPolicyListUrl}?env=${encodeURIComponent(env)}&workspaceId=${encodeURIComponent(workspaceId)}`;
+    const resp = await fetch(url, { method: "DELETE" });
     const text = await resp.text();
     if (!resp.ok) {
       sendError(socket, "AI policy clear backend error", { requestId, detail: text });

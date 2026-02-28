@@ -74,6 +74,14 @@ class AISuppressedRules {
   // ── Public: configure identity (call once at boot) ─────────────────
 
   /**
+   * Current env/workspaceId scope (for including in backend payloads).
+   * @returns {{ env: string|null, workspaceId: string|null }}
+   */
+  get scope() {
+    return { env: this._env, workspaceId: this._workspaceId };
+  }
+
+  /**
    * Re-key the store when env / userId becomes known.
    * Saves current state under old key, loads from new key.
    */

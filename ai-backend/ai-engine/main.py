@@ -2554,7 +2554,10 @@ async def heal_ai_policy_suppress(req: dict = Body(...)):
     if not rule_id:
         raise HTTPException(status_code=400, detail="ruleId is required")
 
-    policy = get_suppression_policy()
+    env = req.get("env", "development")
+    workspace_id = req.get("workspaceId") or req.get("workspace_id", "default")
+
+    policy = get_suppression_policy(env=env, workspace_id=workspace_id)
     entry = await policy.suppress(
         rule_id=rule_id,
         fingerprint=req.get("fingerprint"),
@@ -2581,7 +2584,10 @@ async def heal_ai_policy_unsuppress(req: dict = Body(...)):
     if not rule_id:
         raise HTTPException(status_code=400, detail="ruleId is required")
 
-    policy = get_suppression_policy()
+    env = req.get("env", "development")
+    workspace_id = req.get("workspaceId") or req.get("workspace_id", "default")
+
+    policy = get_suppression_policy(env=env, workspace_id=workspace_id)
     removed = await policy.unsuppress(
         rule_id=rule_id,
         fingerprint=req.get("fingerprint"),
@@ -2591,20 +2597,26 @@ async def heal_ai_policy_unsuppress(req: dict = Body(...)):
 
 
 @app.get("/heal/ai/policy")
-async def heal_ai_policy_list():
+async def heal_ai_policy_list(req: Request):
     """List all current suppression policies."""
     from analyzer.proactive.healing.ai_policy import get_suppression_policy
 
-    policy = get_suppression_policy()
+    env = req.query_params.get("env", "development")
+    workspace_id = req.query_params.get("workspaceId", "default")
+
+    policy = get_suppression_policy(env=env, workspace_id=workspace_id)
     return await policy.summary()
 
 
 @app.delete("/heal/ai/policy")
-async def heal_ai_policy_clear():
+async def heal_ai_policy_clear(req: Request):
     """Clear all suppression policies."""
     from analyzer.proactive.healing.ai_policy import get_suppression_policy
 
-    policy = get_suppression_policy()
+    env = req.query_params.get("env", "development")
+    workspace_id = req.query_params.get("workspaceId", "default")
+
+    policy = get_suppression_policy(env=env, workspace_id=workspace_id)
     count = await policy.clear()
     return {"status": "cleared", "entries_removed": count}
 

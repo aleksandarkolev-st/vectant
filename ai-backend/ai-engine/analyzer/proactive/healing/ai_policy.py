@@ -66,13 +66,23 @@ class AISuppressionPolicy:
     Persists to a JSON file so suppressions survive restarts.
     """
 
-    def __init__(self, persist_dir: Optional[str] = None, user_id: str = "default"):
+    def __init__(
+        self,
+        persist_dir: Optional[str] = None,
+        user_id: str = "default",
+        env: str = "development",
+        workspace_id: str = "default",
+    ):
         self._entries: Dict[str, SuppressionEntry] = {}
         self._user_id = user_id
+        self._env = env
+        self._workspace_id = workspace_id
         self._lock = asyncio.Lock()
 
         if persist_dir:
-            self._persist_path = Path(persist_dir) / f"policy_{user_id}.json"
+            safe_ws = workspace_id.replace("/", "_").replace("\\", "_")
+            filename = f"policy_{env}_{safe_ws}_{user_id}.json"
+            self._persist_path = Path(persist_dir) / filename
         else:
             self._persist_path = None
 
@@ -197,6 +207,8 @@ class AISuppressionPolicy:
             by_mode[m] = by_mode.get(m, 0) + 1
         return {
             "user_id": self._user_id,
+            "env": self._env,
+            "workspace_id": self._workspace_id,
             "total": len(entries),
             "total_rules": len(entries),
             "escalated_count": len(escalated),
@@ -220,7 +232,9 @@ class AISuppressionPolicy:
             self._persist_path.parent.mkdir(parents=True, exist_ok=True)
             data = {
                 "user_id": self._user_id,
-                "version": 1,
+                "env": self._env,
+                "workspace_id": self._workspace_id,
+                "version": 2,
                 "entries": {
                     rid: e.to_dict() for rid, e in self._entries.items()
                 },
@@ -258,11 +272,15 @@ _instances: Dict[str, AISuppressionPolicy] = {}
 def get_suppression_policy(
     persist_dir: Optional[str] = None,
     user_id: str = "default",
+    env: str = "development",
+    workspace_id: str = "default",
 ) -> AISuppressionPolicy:
-    key = f"{persist_dir or ''}::{user_id}"
+    key = f"{persist_dir or ''}::{env}::{workspace_id}::{user_id}"
     if key not in _instances:
         _instances[key] = AISuppressionPolicy(
             persist_dir=persist_dir or os.environ.get("POLICY_PERSIST_DIR"),
             user_id=user_id,
+            env=env,
+            workspace_id=workspace_id,
         )
     return _instances[key]

@@ -654,16 +654,16 @@ export class AnalyzerGatewayClient {
    * List all suppressed rules/fingerprints.
    * @returns {Promise<Object>} { user_id, total_rules, escalated_count, entries }
    */
-  aiPolicyList() {
-    return this._sendRequest('heal/ai/policy', {});
+  aiPolicyList(scope = {}) {
+    return this._sendRequest('heal/ai/policy', scope);
   }
 
   /**
    * Clear all suppression policies.
    * @returns {Promise<Object>} { status, entries_removed }
    */
-  aiPolicyClear() {
-    return this._sendRequest('heal/ai/policy/clear', {});
+  aiPolicyClear(scope = {}) {
+    return this._sendRequest('heal/ai/policy/clear', scope);
   }
 
   /**
