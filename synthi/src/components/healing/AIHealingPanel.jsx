@@ -27,6 +27,7 @@ import {
   ChevronDown,
 } from 'lucide-react';
 import { AIFixCard } from './AIFixCard';
+import { AIConfidenceGate } from './AIConfidenceGate';
 
 
 /**
@@ -229,13 +230,17 @@ export function AIHealingPanel({ aiHealing }) {
         )}
 
         {fixes.map((fix, i) => (
-          <AIFixCard
+          <AIConfidenceGate
             key={fix.fix_id || fix.id || `ai-fix-${i}`}
-            fix={fix}
-            index={i}
-            onApply={aiHealing.applyFix}
-            onDismiss={aiHealing.dismissFix}
-          />
+            confidence={fix.confidence ?? 0}
+          >
+            <AIFixCard
+              fix={fix}
+              index={i}
+              onApply={aiHealing.applyFix}
+              onDismiss={aiHealing.dismissFix}
+            />
+          </AIConfidenceGate>
         ))}
       </div>
 
