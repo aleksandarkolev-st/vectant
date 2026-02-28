@@ -2198,6 +2198,76 @@ async def heal_ai_stream(req: AIAnalyzeRequest):
     )
 
 
+class AIFeedbackRequest(BaseModel):
+    """User feedback on an AI-detected fix."""
+    rule_id: str
+    category: str
+    feedback: str  # "accepted", "rejected", "modified", "auto_applied"
+    confidence: float
+    language: str
+    file_path: Optional[str] = None
+    description: Optional[str] = None
+
+
+@app.post("/heal/ai/feedback")
+async def heal_ai_feedback(req: AIFeedbackRequest):
+    """
+    Record user feedback on an AI-detected fix.
+    
+    This data is used to adjust future confidence scores:
+    patterns the user always rejects get suppressed,
+    patterns they accept get boosted.
+    """
+    from analyzer.proactive.healing.ai_memory import (
+        get_agent_memory, FixFeedback, FeedbackType,
+    )
+
+    valid_types = {
+        FeedbackType.ACCEPTED,
+        FeedbackType.REJECTED,
+        FeedbackType.MODIFIED,
+        FeedbackType.AUTO_APPLIED,
+    }
+    if req.feedback not in valid_types:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid feedback type: {req.feedback}. "
+                   f"Must be one of: {', '.join(valid_types)}",
+        )
+
+    memory = get_agent_memory()
+    memory.record_feedback(FixFeedback(
+        rule_id=req.rule_id,
+        category=req.category,
+        feedback=req.feedback,
+        confidence=req.confidence,
+        language=req.language,
+        file_path=req.file_path,
+        description=req.description,
+    ))
+
+    return {"status": "recorded", "rule_id": req.rule_id, "feedback": req.feedback}
+
+
+@app.get("/heal/ai/memory")
+async def heal_ai_memory():
+    """Get AI agent memory summary (pattern stats, suppressed patterns)."""
+    from analyzer.proactive.healing.ai_memory import get_agent_memory
+
+    memory = get_agent_memory()
+    return memory.get_summary()
+
+
+@app.delete("/heal/ai/memory")
+async def heal_ai_memory_clear():
+    """Clear AI agent memory (reset all learned patterns)."""
+    from analyzer.proactive.healing.ai_memory import get_agent_memory
+
+    memory = get_agent_memory()
+    memory.clear()
+    return {"status": "cleared"}
+
+
 def _fix_to_dict(fix) -> dict:
     """Helper to convert a HealingFix to a dict."""
     try:
