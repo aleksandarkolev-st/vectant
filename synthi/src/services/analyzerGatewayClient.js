@@ -617,6 +617,55 @@ export class AnalyzerGatewayClient {
     });
   }
 
+  // ── AI Policy (suppression) ─────────────────────────────────────────
+
+  /**
+   * Suppress a rule or fingerprinted pattern (policy, not feedback).
+   * @param {Object} payload
+   * @param {string}  payload.ruleId
+   * @param {string}  [payload.fingerprint]
+   * @param {'fingerprint'|'rule'} [payload.mode='fingerprint']
+   * @param {string}  [payload.reason]
+   * @param {number}  [payload.ttl] – seconds
+   * @returns {Promise<Object>} { status, rule_id, mode, suppress_count, escalated }
+   */
+  aiPolicySuppress(payload) {
+    if (!payload?.ruleId) {
+      return Promise.reject(new Error('ruleId is required for policy suppress'));
+    }
+    return this._sendRequest('heal/ai/policy/suppress', payload);
+  }
+
+  /**
+   * Remove a suppression.
+   * @param {Object} payload
+   * @param {string}  payload.ruleId
+   * @param {string}  [payload.fingerprint]
+   * @returns {Promise<Object>} { status, rule_id }
+   */
+  aiPolicyUnsuppress(payload) {
+    if (!payload?.ruleId) {
+      return Promise.reject(new Error('ruleId is required for policy unsuppress'));
+    }
+    return this._sendRequest('heal/ai/policy/unsuppress', payload);
+  }
+
+  /**
+   * List all suppressed rules/fingerprints.
+   * @returns {Promise<Object>} { user_id, total_rules, escalated_count, entries }
+   */
+  aiPolicyList() {
+    return this._sendRequest('heal/ai/policy', {});
+  }
+
+  /**
+   * Clear all suppression policies.
+   * @returns {Promise<Object>} { status, entries_removed }
+   */
+  aiPolicyClear() {
+    return this._sendRequest('heal/ai/policy/clear', {});
+  }
+
   /**
    * Run streaming AI analysis — receives progressive events as fixes are found.
    *
