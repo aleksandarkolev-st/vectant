@@ -2164,9 +2164,16 @@ async def heal_ai_hybrid(req: AIHybridRequest):
 
 @app.get("/heal/ai/stats")
 async def heal_ai_stats():
-    """Get AI agent statistics: LLM calls, latency, acceptance rate."""
+    """Get AI agent statistics: LLM calls, latency, acceptance rate, rate limiter."""
     engine = get_healing_engine()
-    return engine.get_ai_stats()
+    stats = engine.get_ai_stats()
+
+    # Augment with rate limiter stats
+    from analyzer.proactive.healing.ai_rate_limiter import get_rate_limiter
+    limiter = get_rate_limiter()
+    if isinstance(stats, dict):
+        stats["rate_limiter"] = limiter.stats
+    return stats
 
 
 @app.post("/heal/ai/stream")
