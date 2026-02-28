@@ -26,6 +26,8 @@ import {
   clearAIDiagnostics,
   registerAICodeActions,
   disposeAICodeActions,
+  registerAIHoverProvider,
+  disposeAIHoverProvider,
 } from '@/components/healing';
 
 import {
@@ -80,6 +82,7 @@ export function useAIHealing({
   const lastDecoRef = useRef(null);
   const inlineWidgetRef = useRef(null);
   const codeActionsRef = useRef(null);
+  const hoverProviderRef = useRef(null);
 
   // ── Cleanup ─────────────────────────────────────────────────────────
   useEffect(() => {
@@ -89,6 +92,8 @@ export function useAIHealing({
       if (lastDecoRef.current) lastDecoRef.current.dispose();
       disposeAIInlineWidgets(editorRef?.current);
       disposeAICodeActions();
+      disposeAIHoverProvider(hoverProviderRef.current);
+      hoverProviderRef.current = null;
       const model = editorRef?.current?.getModel?.();
       if (model) clearAIDiagnostics(model);
     };
@@ -104,6 +109,8 @@ export function useAIHealing({
     }
     disposeAIInlineWidgets(editorRef?.current);
     disposeAICodeActions();
+    disposeAIHoverProvider(hoverProviderRef.current);
+    hoverProviderRef.current = null;
     const model = editorRef?.current?.getModel?.();
     if (model) clearAIDiagnostics(model);
   }, [filePath]);
@@ -185,6 +192,14 @@ export function useAIHealing({
           { onApply: (fix) => applyFix(fix) },
         );
 
+        // ── Hover provider (rich tooltip on hover) ────────────────
+        if (hoverProviderRef.current) {
+          hoverProviderRef.current.updateFixes(detectedFixes);
+        } else {
+          const monaco = (await import('monaco-editor')).default ?? await import('monaco-editor');
+          hoverProviderRef.current = registerAIHoverProvider(monaco, detectedFixes);
+        }
+
         dispatch(enqueueToast({
           message: `AI found ${detectedFixes.length} issue${detectedFixes.length === 1 ? '' : 's'}`,
           type: 'info',
@@ -194,6 +209,9 @@ export function useAIHealing({
         if (model) clearAIDiagnostics(model);
         disposeAIInlineWidgets(editor);
         disposeAICodeActions();
+        if (hoverProviderRef.current) {
+          hoverProviderRef.current.updateFixes([]);
+        }
 
         dispatch(enqueueToast({
           message: 'AI analysis: no issues found ✓',
@@ -314,6 +332,16 @@ export function useAIHealing({
             });
             const m = editor.getModel();
             if (m) setAIDiagnostics(m, accumulated);
+
+            // Update hover provider with streamed fixes
+            if (hoverProviderRef.current) {
+              hoverProviderRef.current.updateFixes(accumulated);
+            } else {
+              try {
+                const monaco = (await import('monaco-editor')).default ?? await import('monaco-editor');
+                hoverProviderRef.current = registerAIHoverProvider(monaco, accumulated);
+              } catch (_) { /* non-critical */ }
+            }
           }
         }
       }
