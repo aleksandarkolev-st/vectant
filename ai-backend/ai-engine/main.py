@@ -2173,6 +2173,13 @@ async def heal_ai_stats():
     limiter = get_rate_limiter()
     if isinstance(stats, dict):
         stats["rate_limiter"] = limiter.stats
+
+    # Augment with telemetry snapshot
+    from analyzer.proactive.healing.ai_telemetry import get_telemetry
+    tel = get_telemetry()
+    if isinstance(stats, dict):
+        stats["telemetry"] = tel.snapshot()
+
     return stats
 
 
