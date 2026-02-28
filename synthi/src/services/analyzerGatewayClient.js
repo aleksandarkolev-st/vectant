@@ -508,6 +508,42 @@ export class AnalyzerGatewayClient {
   }
 
   /**
+   * Submit feedback for an AI-generated fix.
+   * This teaches the agent to improve over time.
+   * @param {Object} payload - Feedback data
+   * @param {string} payload.ruleId - The AI rule id (e.g. "AI_LOGIC_ERROR")
+   * @param {string} payload.feedbackType - One of: accepted, rejected, modified, auto_applied
+   * @param {string} [payload.filePath] - File the fix was in
+   * @param {string} [payload.originalText] - Original code
+   * @param {string} [payload.replacementText] - Replacement code
+   * @param {string} [payload.description] - Fix description
+   * @returns {Promise<Object>} Feedback acknowledgement
+   */
+  aiFeedback(payload) {
+    if (!payload?.ruleId || !payload?.feedbackType) {
+      return Promise.reject(new Error('ruleId and feedbackType are required'));
+    }
+    return this._sendRequest('heal/ai/feedback', payload);
+  }
+
+  /**
+   * Get the AI agent memory summary — acceptance rates, suppressed patterns.
+   * @returns {Promise<Object>} Memory summary
+   */
+  aiMemory() {
+    return this._sendRequest('heal/ai/memory', {});
+  }
+
+  /**
+   * Clear all AI agent learned patterns.
+   * Resets acceptance rates, un-suppresses everything.
+   * @returns {Promise<Object>} Clear confirmation
+   */
+  aiMemoryClear() {
+    return this._sendRequest('heal/ai/memory/clear', {});
+  }
+
+  /**
    * Run workspace-level multi-file analysis
    * @param {Object} payload - Workspace analysis request
    * @param {string} payload.workspaceId - Unique workspace identifier
