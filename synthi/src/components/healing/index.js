@@ -26,3 +26,7 @@ export {
   clearAIDiagnostics,
   getAIDiagnosticCount,
 } from './aiDiagnostics';
+export {
+  registerAICodeActions,
+  disposeAICodeActions,
+} from './aiCodeActions';
