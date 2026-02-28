@@ -20,6 +20,13 @@ import {
 } from '@/components/healing/healingDecorations';
 
 import {
+  createAIInlineWidgets,
+  disposeAIInlineWidgets,
+  setAIDiagnostics,
+  clearAIDiagnostics,
+} from '@/components/healing';
+
+import {
   selectHealingEnabled,
 } from '@/redux/healingSelectors';
 
@@ -67,6 +74,7 @@ export function useAIHealing({
 
   const mountedRef = useRef(true);
   const lastDecoRef = useRef(null);
+  const inlineWidgetRef = useRef(null);
 
   // ── Cleanup ─────────────────────────────────────────────────────────
   useEffect(() => {
@@ -74,6 +82,9 @@ export function useAIHealing({
     return () => {
       mountedRef.current = false;
       if (lastDecoRef.current) lastDecoRef.current.dispose();
+      disposeAIInlineWidgets(editorRef?.current);
+      const model = editorRef?.current?.getModel?.();
+      if (model) clearAIDiagnostics(model);
     };
   }, []);
 
@@ -85,6 +96,9 @@ export function useAIHealing({
       lastDecoRef.current.dispose();
       lastDecoRef.current = null;
     }
+    disposeAIInlineWidgets(editorRef?.current);
+    const model = editorRef?.current?.getModel?.();
+    if (model) clearAIDiagnostics(model);
   }, [filePath]);
 
   // ── Request AI analysis ─────────────────────────────────────────────
@@ -144,11 +158,27 @@ export function useAIHealing({
 
         lastDecoRef.current = showHealingDecorations(editor, decoFixes);
 
+        // ── Inline widgets (clickable hints at each line) ─────────
+        disposeAIInlineWidgets(editor);
+        createAIInlineWidgets(editor, detectedFixes, {
+          onApply: (fix) => applyFix(fix),
+          onDismiss: (fix) => dismissFixInternal(fix),
+        });
+
+        // ── Monaco diagnostics (squiggly underlines) ──────────────
+        if (model) {
+          setAIDiagnostics(model, detectedFixes);
+        }
+
         dispatch(enqueueToast({
           message: `AI found ${detectedFixes.length} issue${detectedFixes.length === 1 ? '' : 's'}`,
           type: 'info',
         }));
       } else {
+        // Clear any stale markers
+        if (model) clearAIDiagnostics(model);
+        disposeAIInlineWidgets(editor);
+
         dispatch(enqueueToast({
           message: 'AI analysis: no issues found ✓',
           type: 'success',
@@ -270,12 +300,16 @@ export function useAIHealing({
     return applied;
   }, [fixes, applyFix, dispatch]);
 
-  // ── Dismiss a fix ───────────────────────────────────────────────────
-  const dismissFix = useCallback((fix) => {
+  // ── Dismiss a fix (internal, no widget cleanup — used by widget callbacks) ──
+  const dismissFixInternal = useCallback((fix) => {
     setFixes((prev) => prev.filter((f) => f !== fix));
-    // Report rejection feedback to the agent
     _reportFeedback(fix, 'rejected');
   }, []);
+
+  // ── Dismiss a fix (public — also refreshes widgets) ─────────────────
+  const dismissFix = useCallback((fix) => {
+    dismissFixInternal(fix);
+  }, [dismissFixInternal]);
 
   // ── Dismiss all ─────────────────────────────────────────────────────
   const dismissAll = useCallback(() => {
@@ -284,7 +318,13 @@ export function useAIHealing({
       lastDecoRef.current.dispose();
       lastDecoRef.current = null;
     }
-  }, []);
+    const editor = editorRef?.current;
+    if (editor) {
+      disposeAIInlineWidgets(editor);
+      const model = editor.getModel();
+      if (model) clearAIDiagnostics(model);
+    }
+  }, [editorRef]);
 
   // ── Fetch stats ─────────────────────────────────────────────────────
   const fetchStats = useCallback(async () => {
