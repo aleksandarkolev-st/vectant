@@ -11,3 +11,8 @@ export {
   injectHealingStyles,
   removeHealingStyles,
 } from './healingDecorations';
+
+// AI Agent components
+export { AIFixCard } from './AIFixCard';
+export { AIHealingPanel } from './AIHealingPanel';
+export { AIStatsPanel } from './AIStatsPanel';
