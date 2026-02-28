@@ -191,10 +191,16 @@ class AISuppressionPolicy:
     async def summary(self) -> dict:
         entries = await self.list_entries()
         escalated = [e for e in entries if e.get("escalated")]
+        by_mode = {}
+        for e in entries:
+            m = e.get("mode", "fingerprint")
+            by_mode[m] = by_mode.get(m, 0) + 1
         return {
             "user_id": self._user_id,
+            "total": len(entries),
             "total_rules": len(entries),
             "escalated_count": len(escalated),
+            "by_mode": by_mode,
             "entries": entries,
         }
 
@@ -244,19 +250,19 @@ class AISuppressionPolicy:
             logger.warning("Failed to load suppression policy: %s", exc)
 
 
-# ── Module singleton ──────────────────────────────────────────────────
+# ── Module singleton registry ─────────────────────────────────────────
 
-_instance: Optional[AISuppressionPolicy] = None
+_instances: Dict[str, AISuppressionPolicy] = {}
 
 
 def get_suppression_policy(
     persist_dir: Optional[str] = None,
     user_id: str = "default",
 ) -> AISuppressionPolicy:
-    global _instance
-    if _instance is None:
-        _instance = AISuppressionPolicy(
+    key = f"{persist_dir or ''}::{user_id}"
+    if key not in _instances:
+        _instances[key] = AISuppressionPolicy(
             persist_dir=persist_dir or os.environ.get("POLICY_PERSIST_DIR"),
             user_id=user_id,
         )
-    return _instance
+    return _instances[key]

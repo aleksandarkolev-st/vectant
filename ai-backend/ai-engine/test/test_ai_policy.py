@@ -59,7 +59,7 @@ async def test_suppress_is_idempotent(policy):
     await policy.suppress("RULE_A")
     await policy.suppress("RULE_A")
     entries = await policy.list_entries()
-    rule_a_entries = [e for e in entries if e.rule_id == "RULE_A"]
+    rule_a_entries = [e for e in entries if e["rule_id"] == "RULE_A"]
     assert len(rule_a_entries) == 1
 
 
@@ -133,7 +133,7 @@ async def test_persistence_survives_reload(tmp_dir):
     assert await p2.is_suppressed("RULE_P")
 
     entries = await p2.list_entries()
-    assert any(e.rule_id == "RULE_P" and e.reason == "test reason" for e in entries)
+    assert any(e["rule_id"] == "RULE_P" and e["reason"] == "test reason" for e in entries)
 
 
 # ── Corruption recovery ─────────────────────────────────────────────

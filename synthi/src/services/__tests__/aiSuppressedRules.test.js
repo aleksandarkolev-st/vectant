@@ -172,7 +172,7 @@ describe('toJSON / mergeRemote', () => {
     expect(Object.keys(json.entries).length).toBeGreaterThanOrEqual(1);
   });
 
-  it('mergeRemote adds entries from remote', () => {
+  it('mergeRemote full-replaces local state with remote (remote is authority)', () => {
     aiSuppressedRules.suppress('LOCAL_RULE', makeFix());
     const remoteState = {
       version: 2,
@@ -184,14 +184,18 @@ describe('toJSON / mergeRemote', () => {
           updatedAt: new Date().toISOString(),
           ttl: null,
           reason: 'from server',
+          escalated: true,
         },
       },
     };
     aiSuppressedRules.mergeRemote(remoteState);
     const all = aiSuppressedRules.all();
     const ruleIds = all.map((e) => e.ruleId);
-    expect(ruleIds).toContain('LOCAL_RULE');
+    // Local-only entry is discarded (full replace)
+    expect(ruleIds).not.toContain('LOCAL_RULE');
     expect(ruleIds).toContain('REMOTE_RULE');
+    // Escalation flag carried through
+    expect(all.find((e) => e.ruleId === 'REMOTE_RULE').escalated).toBe(true);
   });
 });
 
@@ -199,7 +203,7 @@ describe('toJSON / mergeRemote', () => {
 // ── all() shape ─────────────────────────────────────────────────────
 
 describe('all()', () => {
-  it('returns array of { ruleId, mode, fingerprintCount, createdAt }', () => {
+  it('returns array of { ruleId, mode, fingerprintCount, createdAt, escalated }', () => {
     aiSuppressedRules.suppress('RULE_SHAPE', makeFix());
     const [entry] = aiSuppressedRules.all();
     expect(entry).toMatchObject({
@@ -207,6 +211,7 @@ describe('all()', () => {
       mode: expect.any(String),
       fingerprintCount: expect.any(Number),
       createdAt: expect.any(String),
+      escalated: expect.any(Boolean),
     });
   });
 });
