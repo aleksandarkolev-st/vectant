@@ -12,12 +12,13 @@ import {
   ChevronUp,
   ShieldAlert,
   Fingerprint,
+  AlertTriangle,
 } from 'lucide-react';
 
 
 /**
  * @param {Object}   props
- * @param {Function} props.getSuppressedRules – () => [{ruleId, mode, fingerprintCount, createdAt, ...}]
+ * @param {Function} props.getSuppressedRules – () => [{ruleId, mode, fingerprintCount, createdAt, reason?, escalated?, ...}]
  * @param {Function} props.onUnsuppress       – (ruleId) => void
  * @param {Function} props.onClearAll         – () => void
  * @param {number}   [props.suppressedCount=0] – currently hidden fix count
@@ -76,27 +77,46 @@ export function AISuppressedRulesPanel({
           {rules.map((entry) => (
             <div
               key={entry.ruleId}
-              className="flex items-center justify-between bg-white/5 rounded px-2 py-1.5 group"
+              className="flex items-start justify-between bg-white/5 rounded px-2 py-1.5 group"
             >
-              <div className="flex items-center gap-2 min-w-0">
-                {entry.mode === 'rule' ? (
-                  <ShieldAlert size={11} className="text-red-400/60 shrink-0" title="Blanket rule suppression" />
-                ) : (
-                  <Fingerprint size={11} className="text-blue-400/60 shrink-0" title="Fingerprint-based suppression" />
-                )}
-                <span className="font-mono text-white/60 truncate" title={entry.ruleId}>
-                  {entry.ruleId}
-                </span>
-                {entry.mode === 'fingerprint' && entry.fingerprintCount > 0 && (
-                  <span className="text-[10px] text-white/30">
-                    ({entry.fingerprintCount} pattern{entry.fingerprintCount === 1 ? '' : 's'})
+              <div className="flex flex-col gap-0.5 min-w-0">
+                <div className="flex items-center gap-2">
+                  {entry.mode === 'rule' ? (
+                    <ShieldAlert size={11} className="text-red-400/60 shrink-0" title="Blanket rule suppression" />
+                  ) : (
+                    <Fingerprint size={11} className="text-blue-400/60 shrink-0" title="Fingerprint-based suppression" />
+                  )}
+                  <span className="font-mono text-white/60 truncate" title={entry.ruleId}>
+                    {entry.ruleId}
                   </span>
+                  {entry.mode === 'fingerprint' && entry.fingerprintCount > 0 && (
+                    <span className="text-[10px] text-white/30">
+                      ({entry.fingerprintCount} pattern{entry.fingerprintCount === 1 ? '' : 's'})
+                    </span>
+                  )}
+                </div>
+
+                {/* Reason + escalation */}
+                {(entry.reason || entry.escalated) && (
+                  <div className="flex items-center gap-1.5 ml-5">
+                    {entry.escalated && (
+                      <span className="flex items-center gap-0.5 text-[10px] text-amber-400/70" title="Backend escalated — manual-only">
+                        <AlertTriangle size={9} />
+                        escalated
+                      </span>
+                    )}
+                    {entry.reason && (
+                      <span className="text-[10px] text-white/25 truncate" title={entry.reason}>
+                        {entry.reason}
+                      </span>
+                    )}
+                  </div>
                 )}
               </div>
 
               <button
                 onClick={() => onUnsuppress?.(entry.ruleId)}
-                className="flex items-center gap-1 text-white/30 hover:text-green-400 transition-colors opacity-0 group-hover:opacity-100"
+                className="flex items-center gap-1 text-white/30 hover:text-green-400 transition-colors opacity-0 group-hover:opacity-100 shrink-0 mt-0.5"
                 title={`Unsuppress ${entry.ruleId}`}
               >
                 <Eye size={11} />
