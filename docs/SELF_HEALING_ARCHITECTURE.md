@@ -5,6 +5,12 @@
 > for a narrow class of syntactic and stylistic issues. It does not
 > repair arbitrary program defects. The marketing label "self-healing"
 > overstates what regex-based heuristic rules can guarantee.
+>
+> **Update (AI Agent layer).** Commits 102–127 added a second detection mode
+> that uses an LLM (Gemini) instead of regex. This catches real semantic bugs —
+> logic errors, null-safety, missing awaits, off-by-one, etc. — that regex
+> can never detect. The regex rules remain for fast, obvious syntax fixes.
+> The two modes can run together in *hybrid* mode.
 
 ---
 
@@ -304,3 +310,165 @@ Frontend receives HealingResult
 | GET | `/heal/rules` | List registered rules |
 | GET | `/heal/cache/stats` | Cache performance |
 | GET | `/heal/metrics` | Prometheus metrics |
+| POST | `/heal/ai/analyze` | AI single-file detection |
+| POST | `/heal/ai/batch` | AI multi-file detection |
+| POST | `/heal/ai/hybrid` | Merged regex + AI detection |
+| GET  | `/heal/ai/stats` | AI agent statistics |
+| POST | `/heal/ai/stream` | SSE-streamed AI analysis |
+| POST | `/heal/ai/feedback` | Submit user feedback |
+| GET  | `/heal/ai/memory` | View learned patterns |
+| DELETE | `/heal/ai/memory` | Clear learned patterns |
+
+---
+
+## 10. AI Agent Layer (Agentic Detection)
+
+### 10.1 Why LLM detection?
+
+Regex rules are fast and deterministic, but fundamentally limited:
+- They cannot understand scope, control flow, or type semantics.
+- They miss real bugs: logic errors, null-safety violations, missing awaits,
+  off-by-one errors, resource leaks, API misuse.
+- Their confidence is pattern-based, not meaning-based.
+
+The AI agent layer sends code to a Gemini LLM with structured prompts and
+parses the response into the same `HealingFix` objects that the regex system
+produces. This means the safety classifier, conflict resolver, and UI all
+work unchanged.
+
+### 10.2 Architecture
+
+```
+User code
+  │
+  ├── ai_context.py   ← Collect imports, related files, project hints
+  │     └── AnalysisContext (imports, related_files, project_hints, focus)
+  │
+  ├── ai_prompts.py   ← Build structured LLM prompts
+  │     ├── DETECT_ERRORS_PROMPT (single file)
+  │     ├── DETECT_ERRORS_WITH_CONTEXT_PROMPT (multi-file)
+  │     ├── VALIDATE_FIX_PROMPT (second opinion)
+  │     └── BATCH_DETECT_PROMPT (multiple files)
+  │
+  ├── ai_agent.py     ← Core agentic loop
+  │     ├── detect()       → detect → parse → calibrate → validate → propose
+  │     ├── detect_batch() → multi-file in one LLM call
+  │     ├── _validate_fixes()  → second LLM pass (bounded concurrency)
+  │     └── _calibrate_confidence() → discount + memory + severity
+  │
+  ├── ai_parser.py    ← Parse noisy LLM output into HealingFix
+  │     ├── _extract_json_from_text()
+  │     ├── _fix_json_quirks()
+  │     ├── parse_detection_response()
+  │     ├── parse_validation_response()
+  │     └── parse_batch_response()
+  │
+  ├── ai_memory.py    ← Learn from user feedback
+  │     ├── record_feedback() → update per-rule acceptance stats
+  │     ├── get_confidence_adjustment() → 0.5–1.5x multiplier
+  │     └── is_suppressed() → auto-suppress after 3 rejections
+  │
+  └── ai_streaming.py ← SSE events for long-running analysis
+        └── stream_ai_analysis() → AsyncIterator[SSE events]
+```
+
+### 10.3 Detection pipeline (single file)
+
+1. **Context collection** (`ai_context.py`):
+   - Extract imports via regex per language
+   - Find related files (same directory, test pair)
+   - Detect project framework (package.json, Cargo.toml, etc.)
+   - Apply token budget: 8K per related file, 40K total
+
+2. **Prompt construction** (`ai_prompts.py`):
+   - System prompt: senior code reviewer persona
+   - User prompt: numbered source lines + context + output schema
+   - Required output: JSON array with line, original, replacement, description,
+     category, severity, confidence
+
+3. **LLM call** (`ai_agent.py → _call_llm()`):
+   - Uses existing `ask_llm()` infrastructure (Gemini 2.5 Flash Lite)
+   - 30-second timeout via `asyncio.wait_for`
+   - No retries (fail-fast design)
+
+4. **Response parsing** (`ai_parser.py`):
+   - Handle markdown fences, preamble text, trailing commas
+   - Validate line numbers against source (fuzzy ±3 lines)
+   - Skip no-op fixes (original == replacement)
+   - Map categories/severities, assign `rule_id = AI_{CATEGORY}`
+
+5. **Confidence calibration** (`ai_agent.py → _calibrate_confidence()`):
+   - Base discount: 0.85× (LLM over-confidence correction)
+   - Memory adjustment: 0.5×–1.5× based on acceptance rate
+   - Severity boost: 1.1× for critical issues
+   - Suppressed pattern filter: skip entirely if auto-suppressed
+
+6. **Validation** (optional, `_validate_fixes()`):
+   - Second LLM call per fix: "is this fix correct?"
+   - Bounded concurrency: semaphore = 3
+   - Blended confidence: `original × 0.6 + validation × 0.4`
+   - Fixes rejected by validation are dropped
+
+7. **Safety classification** (existing `HealingClassifier`):
+   - All AI fixes enter as `is_safe = False`
+   - Classifier decides based on category, confidence, context
+   - Auto-accept threshold: confidence ≥ 0.92
+
+### 10.4 Error categories detected by AI
+
+| Category | Example |
+|----------|---------|
+| `logic_error` | `if x > 0 and x > 0` (duplicate condition) |
+| `null_safety` | `user.name.length` without null check |
+| `type_mismatch` | Passing string where number expected |
+| `missing_await` | `const data = fetchData()` (missing await) |
+| `resource_leak` | File handle opened but never closed |
+| `api_misuse` | Wrong argument order in API call |
+| `off_by_one` | `for i in range(len(arr) + 1)` |
+| `error_handling` | Empty catch block swallowing errors |
+| `variable_misuse` | Using wrong variable (`width` vs `height`) |
+| `security` | SQL injection, path traversal |
+| `concurrency` | Race condition, missing lock |
+
+### 10.5 Memory / feedback loop
+
+The agent learns from user feedback:
+
+- **Accepted** → increment accept count for that rule_id
+- **Rejected** → increment reject count
+- **Modified** → user edited the suggestion (counts as partial accept)
+- **Auto-suppression**: 3 rejections with 0 accepts → pattern suppressed
+- **Un-suppression**: acceptance_rate climbs back above 0.3 → un-suppressed
+- **Persistence**: JSON file, max 1000 history entries
+
+### 10.6 Hybrid mode
+
+When `mode = "hybrid"`, both regex rules and AI run on the same file.
+Results are merged with AI taking priority at overlapping line ranges.
+This gives:
+- **Speed**: regex catches obvious issues instantly
+- **Depth**: AI catches semantic bugs that regex can't see
+- **Conflict resolution**: same as regex-only (sort by position, keep higher severity)
+
+### 10.7 Frontend integration
+
+| Layer | AI additions |
+|-------|-------------|
+| **Client** (`analyzerGatewayClient.js`) | `aiAnalyze()`, `aiBatch()`, `aiHybrid()`, `aiStats()`, `aiFeedback()`, `aiMemory()`, `aiMemoryClear()` |
+| **Hooks** (`useAnalyzerGateway.js`) | Same 7 methods, with input validation |
+| **AI Hook** (`useAIHealing.js`) | `analyze()`, `applyFix()`, `applyAllSafe()`, `dismissFix()`, `sendFeedback()`, `fetchMemory()`, auto-analyze on save |
+| **Keyboard** (`useAIHealingKeyboard.js`) | Ctrl+Shift+I (analyze), Y (apply safe), N (dismiss), M (toggle mode) |
+| **Redux** (`healingSlice.js`) | `ai` sub-state: enabled, mode, isAnalyzing, pendingFixes, stats, error |
+| **Selectors** (`healingSelectors.js`) | `selectAIState`, `selectAIMode`, `selectAIEnabled`, `selectAIFixes`, `selectAISummary` |
+| **Components** | `AIFixCard`, `AIHealingPanel`, `AIStatsPanel` |
+
+### 10.8 Honest limitations of the AI agent
+
+| Strength | Weakness |
+|----------|----------|
+| Catches real semantic bugs | 2–10× slower than regex (LLM round-trip) |
+| Language-agnostic (LLM handles any language) | Requires API key and network access |
+| Learns from feedback | Can hallucinate fixes for correct code |
+| Context-aware (imports, related files) | Token budget limits context window |
+| Validation pass reduces false positives | Costs 2× LLM calls when enabled |
+| Works alongside regex in hybrid mode | No offline fallback (regex-only if LLM unavailable) |
