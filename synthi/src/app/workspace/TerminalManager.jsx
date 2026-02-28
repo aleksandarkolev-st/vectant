@@ -1,16 +1,30 @@
 'use client';
 
-import React, { useState, useRef, useEffect, useCallback } from 'react';
+import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import dynamic from 'next/dynamic';
-import { SplitSquareHorizontal, Plus, X, TerminalSquare, Bot } from 'lucide-react';
+import { SplitSquareHorizontal, Plus, X, TerminalSquare, Bot, Settings } from 'lucide-react';
 import { useDispatch } from 'react-redux';
 import { fetchFilesThunk } from '@/redux/workspaceSlice';
+import ShellSelector, { getShellMeta } from './ShellSelector';
 
 const TerminalPane = dynamic(() => import('./TerminalPane.jsx'), { ssr: false });
 
+/** localStorage key for remembering the user's preferred default shell */
+const DEFAULT_SHELL_KEY = 'synthi-default-shell';
+
+function getStoredDefaultShell() {
+  try { return localStorage.getItem(DEFAULT_SHELL_KEY) || null; } catch (_) { return null; }
+}
+function setStoredDefaultShell(shellKey) {
+  try { if (shellKey) localStorage.setItem(DEFAULT_SHELL_KEY, shellKey); else localStorage.removeItem(DEFAULT_SHELL_KEY); } catch (_) {}
+}
+
 export default function TerminalManager({ visible, onCloseAll, workspaceSlug = '' }) {
-  const [terminals, setTerminals] = useState([{ id: 'term-1', label: 'Terminal 1', split: false }]);
+  const [defaultShellPref, setDefaultShellPref] = useState(() => getStoredDefaultShell());
+  const [terminals, setTerminals] = useState([{ id: 'term-1', label: getShellMeta(getStoredDefaultShell())?.label || 'Terminal', split: false, shellType: getStoredDefaultShell() }]);
   const [activeId, setActiveId] = useState('term-1');
+  const [editingTabId, setEditingTabId] = useState(null);
+  const [editingName, setEditingName] = useState('');
   const dragRef = useRef(null);
   const dispatch = useDispatch();
   const fsRefreshTimer = useRef(null);
@@ -67,18 +81,38 @@ export default function TerminalManager({ visible, onCloseAll, workspaceSlug = '
     if (!visible) return;
     // Ensure at least one terminal exists
     if (terminals.length === 0) {
-      setTerminals([{ id: 'term-1', label: 'Terminal 1', split: false }]);
+      const effectiveShell = defaultShellPref;
+      setTerminals([{ id: 'term-1', label: getShellMeta(effectiveShell)?.label || 'Terminal', split: false, shellType: effectiveShell }]);
       setActiveId('term-1');
     }
   }, [visible, terminals.length]);
 
-  const addTerminal = () => {
-    const nextIndex = terminals.length + 1;
+  const addTerminal = (shellType = null) => {
+    const effectiveShell = shellType || defaultShellPref;
+    const meta = effectiveShell ? getShellMeta(effectiveShell) : { label: 'Terminal' };
     const id = `term-${Date.now()}`;
-    const newTerm = { id, label: `Terminal ${nextIndex}`, split: false };
+    // Count existing terminals with same shell type for unique numbering
+    const sameShellCount = terminals.filter(t => 
+      (t.shellType || null) === (effectiveShell || null) && !t.isAi
+    ).length;
+    const label = sameShellCount > 0 ? `${meta.label} ${sameShellCount + 1}` : meta.label;
+    const newTerm = { id, label, split: false, shellType: effectiveShell };
     setTerminals(prev => [...prev, newTerm]);
     setActiveId(id);
   };
+
+  // ── Keyboard shortcut: Ctrl+Shift+` to create new terminal ──────────
+  useEffect(() => {
+    if (!visible) return;
+    const handleKeyDown = (e) => {
+      if (e.ctrlKey && e.shiftKey && e.key === '`') {
+        e.preventDefault();
+        addTerminal();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [visible, defaultShellPref, terminals.length]);
 
   const toggleSplit = () => {
     setTerminals(prev => prev.map(t => t.id === activeId ? { ...t, split: !t.split } : t));
@@ -115,11 +149,31 @@ export default function TerminalManager({ visible, onCloseAll, workspaceSlug = '
     if (onCloseAll) onCloseAll();
   };
 
+  const startRenaming = (id, currentLabel) => {
+    setEditingTabId(id);
+    setEditingName(currentLabel);
+  };
+
+  const commitRename = () => {
+    if (editingTabId && editingName.trim()) {
+      setTerminals(prev => prev.map(t => t.id === editingTabId ? { ...t, label: editingName.trim() } : t));
+    }
+    setEditingTabId(null);
+    setEditingName('');
+  };
+
+  const cancelRename = () => {
+    setEditingTabId(null);
+    setEditingName('');
+  };
+
   const header = (
     <div className="h-10 flex items-center justify-between px-2 border-b select-none" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-sidebar)' }} ref={dragRef}>
       {/* Tabs */}
       <div className="flex items-center gap-1 overflow-x-auto">
-        {terminals.map(t => (
+        {terminals.map(t => {
+          const shellMeta = t.shellType ? getShellMeta(t.shellType) : null;
+          return (
           <div 
             key={t.id} 
             className={`group flex items-center gap-2 h-8 px-3 cursor-pointer transition-all duration-150 ${
@@ -131,13 +185,39 @@ export default function TerminalManager({ visible, onCloseAll, workspaceSlug = '
               ? { color: 'var(--text-primary)', borderTop: '2px solid var(--accent-primary)' }
               : { color: 'var(--text-secondary)' }} 
             onClick={() => setActiveId(t.id)}
+            onDoubleClick={() => startRenaming(t.id, t.label)}
           >
             {t.isAi ? (
               <Bot className="w-3.5 h-3.5" style={{ color: 'var(--accent-primary)' }} strokeWidth={2} />
+            ) : shellMeta ? (
+              <span
+                className="w-4 h-4 flex items-center justify-center rounded text-[9px] font-bold flex-shrink-0"
+                style={{ background: `${shellMeta.color}20`, color: shellMeta.color }}
+                title={shellMeta.label}
+              >
+                {shellMeta.icon}
+              </span>
             ) : (
               <TerminalSquare className="w-3.5 h-3.5" strokeWidth={2} />
             )}
-            <span className="text-xs font-medium">{t.label}</span>
+            {editingTabId === t.id ? (
+              <input
+                className="text-xs font-medium bg-transparent border-b outline-none w-20"
+                style={{ borderColor: 'var(--accent-primary)', color: 'var(--text-primary)' }}
+                value={editingName}
+                onChange={(e) => setEditingName(e.target.value)}
+                onBlur={commitRename}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') commitRename();
+                  if (e.key === 'Escape') cancelRename();
+                }}
+                autoFocus
+                onClick={(e) => e.stopPropagation()}
+                maxLength={30}
+              />
+            ) : (
+              <span className="text-xs font-medium">{t.label}</span>
+            )}
             {/* Close button - appears on hover, safe position */}
             <button 
               className="w-5 h-5 flex items-center justify-center rounded opacity-0 group-hover:opacity-100 hover:bg-[#ef4444]/20 hover:text-[#ef4444] transition-all ml-1"
@@ -147,18 +227,33 @@ export default function TerminalManager({ visible, onCloseAll, workspaceSlug = '
               <X className="w-3 h-3" strokeWidth={2} />
             </button>
           </div>
-        ))}
+          );
+        })}
       </div>
       
       {/* Actions - Larger click targets */}
       <div className="flex items-center gap-1">
+        {/* Terminal count badge */}
+        {terminals.length > 1 && (
+          <span
+            className="text-[9px] px-1.5 py-0.5 rounded font-medium mr-1"
+            style={{ color: 'var(--text-muted)', background: 'var(--bg-elevated)' }}
+          >
+            {terminals.length}
+          </span>
+        )}
         <button 
           className="w-8 h-8 flex items-center justify-center rounded th-btn-ghost transition-colors" 
-          onClick={addTerminal} 
-          title="New Terminal"
+          onClick={() => addTerminal()} 
+          title="New Terminal (Ctrl+Shift+`)"
         >
           <Plus className="w-4 h-4" strokeWidth={2} />
         </button>
+        <ShellSelector
+          onSelect={(shellKey) => addTerminal(shellKey)}
+          currentDefault={defaultShellPref}
+          onSetDefault={(shellKey) => { setDefaultShellPref(shellKey); setStoredDefaultShell(shellKey); }}
+        />
         <button 
           className="w-8 h-8 flex items-center justify-center rounded th-btn-ghost transition-colors" 
           onClick={toggleSplit} 
@@ -195,9 +290,9 @@ export default function TerminalManager({ visible, onCloseAll, workspaceSlug = '
               }}
             >
               <div className={`h-full w-full ${t.split ? 'grid grid-cols-2 gap-0' : ''}`}>
-                <TerminalPane key={`${t.id}-main`} terminalId={t.id} paneSide="main" workspaceSlug={workspaceSlug} onFsChange={handleFsChange} fixedSessionId={t.fixedSessionId || null} />
+                <TerminalPane key={`${t.id}-main`} terminalId={t.id} paneSide="main" workspaceSlug={workspaceSlug} onFsChange={handleFsChange} fixedSessionId={t.fixedSessionId || null} shellType={t.shellType || null} />
                 {t.split && (
-                  <TerminalPane key={`${t.id}-split`} terminalId={t.id} paneSide="split" workspaceSlug={workspaceSlug} onFsChange={handleFsChange} />
+                  <TerminalPane key={`${t.id}-split`} terminalId={t.id} paneSide="split" workspaceSlug={workspaceSlug} onFsChange={handleFsChange} shellType={t.shellType || null} />
                 )}
               </div>
             </div>

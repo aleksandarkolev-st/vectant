@@ -57,7 +57,7 @@ const fsPromises = fs.promises;
 const path = require('path');
 const crypto = require('crypto');
 const gcsSync = require('./gcsSync');
-const { createTerminalWSS, activeSessions: terminalSessions, broadcastToAll: terminalBroadcast } = require('./terminalService');
+const { createTerminalWSS, activeSessions: terminalSessions, broadcastToAll: terminalBroadcast, getAvailableShells } = require('./terminalService');
 const proxyService = require('./proxyService');
 const config = require('./config');
 const gitService = require('./gitService');
@@ -1452,6 +1452,21 @@ const server = http.createServer(async (req, res) => {
   }
 
   // ========================================================================
+  // AVAILABLE-SHELLS ENDPOINT — List shells available on this system
+  // ========================================================================
+  // GET /available-shells
+  // Returns: { shells: [{ key, label, executable }], default: string }
+  if (req.url === '/available-shells' && req.method === 'GET') {
+    const shells = getAvailableShells();
+    const { getDefaultShell } = require('./terminalService');
+    const defaultShell = getDefaultShell();
+    // Determine which key matches the default shell
+    const defaultKey = shells.find(s => defaultShell.includes(s.executable))?.key || shells[0]?.key || 'powershell';
+    res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+    res.end(JSON.stringify({ shells, default: defaultKey }));
+    return;
+  }
+
   // EXEC-TERMINAL ENDPOINT — Execute command in a real PTY terminal
   // ========================================================================
   // POST /exec-terminal/:slug  { command: string, timeout?: number }
