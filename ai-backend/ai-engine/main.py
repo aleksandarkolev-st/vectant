@@ -2741,6 +2741,280 @@ def _fix_to_dict(fix) -> dict:
         }
 
 
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Agentic Self-Healing API endpoints
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+# ── Diagnosis ─────────────────────────────────────────────────────────
+
+@app.post("/heal/agentic/diagnose")
+async def agentic_diagnose(request: Request):
+    """Root-cause diagnosis from error text."""
+    from analyzer.proactive.healing.diagnosis import get_diagnosis_agent, ErrorSource
+    body = await request.json()
+    error_text = body.get("errorText", "")
+    file_path = body.get("filePath", "")
+    language = body.get("language", "")
+    source = body.get("source", "compiler")
+
+    try:
+        src = ErrorSource(source)
+    except ValueError:
+        src = ErrorSource.COMPILER
+
+    agent = get_diagnosis_agent()
+    graph = agent.diagnose(error_text, file_path, language, src)
+    return {"ok": True, "diagnosis": graph.to_dict()}
+
+
+# ── Repair Episodes ──────────────────────────────────────────────────
+
+@app.post("/heal/agentic/episode/create")
+async def create_episode(request: Request):
+    """Create a new repair episode."""
+    from analyzer.proactive.healing.repair_episode import get_episode_store, RepairEpisode
+    body = await request.json()
+    store = get_episode_store()
+    episode = RepairEpisode(
+        file_path=body.get("filePath", ""),
+        error_message=body.get("errorMessage", ""),
+        language=body.get("language", ""),
+    )
+    store.add(episode)
+    return {"ok": True, "episodeId": episode.episode_id, "state": episode.state.value}
+
+
+@app.get("/heal/agentic/episode/{episode_id}")
+async def get_episode(episode_id: str):
+    """Get a repair episode by ID."""
+    from analyzer.proactive.healing.repair_episode import get_episode_store
+    store = get_episode_store()
+    ep = store.get(episode_id)
+    if not ep:
+        return {"ok": False, "error": "Episode not found"}
+    return {"ok": True, "episode": ep.to_dict()}
+
+
+@app.get("/heal/agentic/episodes")
+async def list_episodes():
+    """List recent repair episodes."""
+    from analyzer.proactive.healing.repair_episode import get_episode_store
+    store = get_episode_store()
+    return {"ok": True, "episodes": [e.to_dict() for e in store.recent(20)]}
+
+
+# ── Policy ────────────────────────────────────────────────────────────
+
+@app.post("/heal/agentic/policy/evaluate")
+async def evaluate_policy(request: Request):
+    """Evaluate a repair action against policy."""
+    from analyzer.proactive.healing.policy import get_policy_engine
+    body = await request.json()
+    engine = get_policy_engine()
+    evaluation = engine.evaluate(
+        file_path=body.get("filePath", ""),
+        language=body.get("language", ""),
+        num_files=body.get("numFiles", 1),
+        estimated_lines_changed=body.get("estimatedLinesChanged", 0),
+        step_types=body.get("stepTypes"),
+    )
+    return {"ok": True, "evaluation": evaluation.to_dict()}
+
+
+@app.get("/heal/agentic/policy/status")
+async def policy_status():
+    """Get current policy engine status."""
+    from analyzer.proactive.healing.policy import get_policy_engine
+    return {"ok": True, "status": get_policy_engine().status()}
+
+
+# ── Verification ──────────────────────────────────────────────────────
+
+@app.post("/heal/agentic/verify")
+async def verify_fix(request: Request):
+    """Run verification pipeline on a fix."""
+    from analyzer.proactive.healing.verification import get_verification_pipeline
+    body = await request.json()
+    pipeline = get_verification_pipeline()
+    result = await pipeline.run(
+        file_path=body.get("filePath", ""),
+        original=body.get("original", ""),
+        patched=body.get("patched", ""),
+        language=body.get("language", ""),
+    )
+    return {"ok": True, "verification": result.to_dict()}
+
+
+@app.post("/heal/agentic/guardrails")
+async def check_guardrails(request: Request):
+    """Check semantic guardrails on a patch."""
+    from analyzer.proactive.healing.verification import get_semantic_guardrails
+    body = await request.json()
+    guardrails = get_semantic_guardrails()
+    result = guardrails.check(
+        patched_code=body.get("patched", ""),
+        file_path=body.get("filePath", ""),
+        original_code=body.get("original", ""),
+    )
+    return {"ok": True, "guardrails": result}
+
+
+# ── Telemetry ─────────────────────────────────────────────────────────
+
+@app.get("/heal/agentic/telemetry/calibration")
+async def telemetry_calibration():
+    """Get calibration table for all rules."""
+    from analyzer.proactive.healing.precision_telemetry import get_precision_telemetry
+    telem = get_precision_telemetry()
+    return {"ok": True, "calibration": telem.get_calibration_table()}
+
+
+@app.get("/heal/agentic/telemetry/degrading")
+async def telemetry_degrading():
+    """Get rules with degrading quality."""
+    from analyzer.proactive.healing.precision_telemetry import get_precision_telemetry
+    telem = get_precision_telemetry()
+    return {"ok": True, "degradingRules": telem.get_degrading_rules()}
+
+
+# ── Runtime healing ───────────────────────────────────────────────────
+
+@app.post("/heal/agentic/runtime/ingest")
+async def ingest_runtime_error(request: Request):
+    """Ingest a runtime error for healing."""
+    from analyzer.proactive.healing.runtime_healing import (
+        get_runtime_healing_engine, RuntimeErrorSource, RuntimeErrorSeverity
+    )
+    body = await request.json()
+    engine = get_runtime_healing_engine()
+
+    try:
+        source = RuntimeErrorSource(body.get("source", "terminal"))
+    except ValueError:
+        source = RuntimeErrorSource.TERMINAL
+
+    try:
+        severity = RuntimeErrorSeverity(body.get("severity", "error"))
+    except ValueError:
+        severity = RuntimeErrorSeverity.ERROR
+
+    result = engine.ingest(
+        message=body.get("message", ""),
+        source=source,
+        raw_output=body.get("rawOutput", ""),
+        severity=severity,
+        workspace_id=body.get("workspaceId", ""),
+    )
+    return {"ok": True, "result": result.to_dict()}
+
+
+@app.get("/heal/agentic/runtime/stats")
+async def runtime_stats():
+    """Get runtime healing stats."""
+    from analyzer.proactive.healing.runtime_healing import get_runtime_healing_engine
+    return {"ok": True, "stats": get_runtime_healing_engine().stats}
+
+
+# ── Observability ─────────────────────────────────────────────────────
+
+@app.post("/heal/agentic/observability/error")
+async def record_obs_error(request: Request):
+    """Record an error for observability."""
+    from analyzer.proactive.healing.observability import get_observability_hub
+    hub = get_observability_hub()
+    trigger = hub.record_error()
+    return {"ok": True, "trigger": trigger.to_dict() if trigger else None}
+
+
+@app.post("/heal/agentic/observability/build")
+async def record_obs_build(request: Request):
+    """Record a build duration."""
+    from analyzer.proactive.healing.observability import get_observability_hub
+    body = await request.json()
+    hub = get_observability_hub()
+    trigger = hub.record_build(body.get("durationSec", 0.0))
+    return {"ok": True, "trigger": trigger.to_dict() if trigger else None}
+
+
+@app.post("/heal/agentic/observability/hmr-failure")
+async def record_obs_hmr(request: Request):
+    """Record an HMR failure."""
+    from analyzer.proactive.healing.observability import get_observability_hub
+    body = await request.json()
+    hub = get_observability_hub()
+    trigger = hub.record_hmr_failure(body.get("filePath", ""))
+    return {"ok": True, "trigger": trigger.to_dict() if trigger else None}
+
+
+@app.get("/heal/agentic/observability/stats")
+async def observability_stats():
+    """Get observability hub stats."""
+    from analyzer.proactive.healing.observability import get_observability_hub
+    return {"ok": True, "stats": get_observability_hub().stats}
+
+
+@app.get("/heal/agentic/observability/triggers")
+async def observability_triggers():
+    """Get recent triggers."""
+    from analyzer.proactive.healing.observability import get_observability_hub
+    return {"ok": True, "triggers": get_observability_hub().recent_triggers}
+
+
+# ── Canary rollouts ──────────────────────────────────────────────────
+
+@app.post("/heal/agentic/canary/create")
+async def create_canary(request: Request):
+    """Create a canary rollout."""
+    from analyzer.proactive.healing.canary import get_canary_engine
+    body = await request.json()
+    engine = get_canary_engine()
+    record = engine.create_rollout(
+        canary_files=body.get("canaryFiles", []),
+        remaining_files=body.get("remainingFiles", []),
+        episode_id=body.get("episodeId", ""),
+    )
+    return {"ok": True, "rollout": record.to_dict()}
+
+
+@app.get("/heal/agentic/canary")
+async def list_canaries():
+    """List canary rollouts."""
+    from analyzer.proactive.healing.canary import get_canary_engine
+    return {"ok": True, "rollouts": get_canary_engine().list_rollouts()}
+
+
+@app.get("/heal/agentic/canary/stats")
+async def canary_stats():
+    """Get canary rollout stats."""
+    from analyzer.proactive.healing.canary import get_canary_engine
+    return {"ok": True, "stats": get_canary_engine().stats}
+
+
+# ── Agentic overview ────────────────────────────────────────────────
+
+@app.get("/heal/agentic/status")
+async def agentic_status():
+    """Combined status of all agentic self-healing subsystems."""
+    from analyzer.proactive.healing.repair_episode import get_episode_store
+    from analyzer.proactive.healing.policy import get_policy_engine
+    from analyzer.proactive.healing.precision_telemetry import get_precision_telemetry
+    from analyzer.proactive.healing.runtime_healing import get_runtime_healing_engine
+    from analyzer.proactive.healing.observability import get_observability_hub
+    from analyzer.proactive.healing.canary import get_canary_engine
+
+    return {
+        "ok": True,
+        "agentic": {
+            "episodes": {"recentCount": len(get_episode_store().recent(10))},
+            "policy": get_policy_engine().status(),
+            "telemetry": {"degradingRules": get_precision_telemetry().get_degrading_rules()},
+            "runtime": get_runtime_healing_engine().stats,
+            "observability": get_observability_hub().stats,
+            "canary": get_canary_engine().stats,
+        },
+    }
+
+
 @app.get("/")
 def root():
     return {
@@ -2753,6 +3027,7 @@ def root():
             "provenance_tracking",
             "code_intelligence",
             "self_healing",
+            "agentic_self_healing",
         ],
     }
 
