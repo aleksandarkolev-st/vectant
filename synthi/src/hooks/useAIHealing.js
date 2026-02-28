@@ -496,6 +496,8 @@ export function useAIHealing({
         fingerprint: fix ? computeFingerprint(fix) : null,
         mode,
         reason: 'user_suppressed',
+      }).then(() => {
+        aiSuppressedRules.ackOp(ruleId, 'suppress');
       }).catch(() => {
         dispatch(enqueueToast({
           message: 'Backend sync for suppress failed — local-only',
@@ -528,7 +530,9 @@ export function useAIHealing({
     setSuppressedCount(0); // will be recalculated on next analysis
 
     if (gateway?.aiPolicyUnsuppress) {
-      gateway.aiPolicyUnsuppress({ ruleId }).catch(() => {
+      gateway.aiPolicyUnsuppress({ ruleId }).then(() => {
+        aiSuppressedRules.ackOp(ruleId, 'unsuppress');
+      }).catch(() => {
         dispatch(enqueueToast({
           message: 'Backend sync for unsuppress failed — local-only',
           type: 'warning',
@@ -560,6 +564,7 @@ export function useAIHealing({
     if (gateway?.aiPolicyClear) {
       try {
         await gateway.aiPolicyClear();
+        aiSuppressedRules.clearPendingOps();
       } catch {
         aiSuppressedRules.mergeRemote(snapshot);
         dispatch(enqueueToast({

@@ -18,6 +18,7 @@
 // NOT a bare array.
 
 const SCHEMA_VERSION = 2;
+const MAX_PENDING_OPS = 100;
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
@@ -65,6 +66,8 @@ class AISuppressedRules {
     this._userId = userId ?? null;
     this._version = SCHEMA_VERSION;
     this._updatedAt = null;
+    /** @type {Array<{op: string, ruleId: string, fix?: Object, opts?: Object, ts: string, acked: boolean}>} */
+    this._pendingOps = [];
     this._load();
   }
 
@@ -127,6 +130,7 @@ class AISuppressedRules {
     if (ttl !== null) entry.ttl = ttl;
     this._updatedAt = now;
 
+    this._queueOp({ op: 'suppress', ruleId, mode, reason, ttl });
     this._save();
   }
 
@@ -154,6 +158,7 @@ class AISuppressedRules {
     }
 
     this._updatedAt = new Date().toISOString();
+    this._queueOp({ op: 'unsuppress', ruleId });
     this._save();
   }
 
@@ -247,9 +252,12 @@ class AISuppressedRules {
   }
 
   /**
-   * Full-replace local cache with remote state.
+   * Full-replace local cache with remote state, then replay un-acked
+   * pending ops so offline/inflight mutations are preserved.
+   *
    * Remote (backend) is authoritative — handles TTL expiry, escalation,
-   * and deletions.  Local-only entries are discarded.
+   * and deletions.  But local ops that haven't been acked yet are
+   * replayed on top so they survive flaky networks.
    */
   mergeRemote(remote) {
     if (!remote?.entries) return;
@@ -268,8 +276,78 @@ class AISuppressedRules {
       });
     }
 
+    // Replay un-acked ops on top of remote state
+    const pending = this._pendingOps.filter((op) => !op.acked);
+    for (const op of pending) {
+      if (op.op === 'suppress') {
+        // Re-apply local suppress that backend hasn't seen yet
+        const now = new Date().toISOString();
+        let entry = this._entries.get(op.ruleId);
+        if (!entry) {
+          entry = {
+            mode: op.mode || 'fingerprint',
+            fingerprints: new Set(),
+            createdAt: now,
+            updatedAt: now,
+            ttl: op.ttl ?? null,
+            reason: op.reason ?? null,
+            escalated: false,
+          };
+          this._entries.set(op.ruleId, entry);
+        }
+      } else if (op.op === 'unsuppress') {
+        this._entries.delete(op.ruleId);
+      }
+    }
+
     this._updatedAt = remote.updatedAt || new Date().toISOString();
     this._save();
+  }
+
+  // ── Pending ops queue ──────────────────────────────────────────────
+
+  /** @private Append op to queue (capped). */
+  _queueOp({ op, ruleId, mode, reason, ttl }) {
+    this._pendingOps.push({
+      op,
+      ruleId,
+      mode: mode ?? undefined,
+      reason: reason ?? undefined,
+      ttl: ttl ?? undefined,
+      ts: new Date().toISOString(),
+      acked: false,
+    });
+    // Cap queue to prevent unbounded growth
+    if (this._pendingOps.length > MAX_PENDING_OPS) {
+      this._pendingOps = this._pendingOps.slice(-MAX_PENDING_OPS);
+    }
+  }
+
+  /**
+   * Mark a pending op as acked by the backend.
+   * Call after a successful gateway.aiPolicySuppress / aiPolicyUnsuppress.
+   * @param {string} ruleId
+   * @param {string} op  – 'suppress' | 'unsuppress'
+   */
+  ackOp(ruleId, op) {
+    for (const entry of this._pendingOps) {
+      if (entry.ruleId === ruleId && entry.op === op && !entry.acked) {
+        entry.acked = true;
+        break; // ack oldest matching
+      }
+    }
+    // Prune fully-acked ops
+    this._pendingOps = this._pendingOps.filter((e) => !e.acked);
+  }
+
+  /** Get un-acked ops (for debugging / sync status). */
+  get pendingOps() {
+    return this._pendingOps.filter((e) => !e.acked);
+  }
+
+  /** Clear all pending ops (e.g. after successful full sync). */
+  clearPendingOps() {
+    this._pendingOps = [];
   }
 
   // ── Persistence (localStorage) ─────────────────────────────────────
