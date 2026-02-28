@@ -21,6 +21,8 @@ import logging
 import time
 from typing import Any, Callable, Dict, List, Optional, Set
 
+from .ai_fix_utils import deduplicate_fixes
+
 from .types import (
     HealingCategory,
     HealingSeverity,
@@ -384,6 +386,9 @@ class SelfHealingEngine:
             )
             if not overlaps:
                 merged_fixes.append(fix)
+
+        # Deduplicate (higher-confidence wins for same line+category)
+        merged_fixes = deduplicate_fixes(merged_fixes)
 
         # Re-resolve conflicts on merged set
         merged_fixes, merge_skipped = self._resolve_conflicts(merged_fixes)
