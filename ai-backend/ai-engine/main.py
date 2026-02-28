@@ -2005,6 +2005,182 @@ async def heal_metrics():
     return PlainTextResponse(content=metrics.to_prometheus(), media_type="text/plain")
 
 
+# =============================================================================
+# AI Agent Endpoints (LLM-powered error detection)
+# =============================================================================
+
+class AIAnalyzeRequest(BaseModel):
+    """Request for AI-powered code analysis."""
+    code: str
+    lang: str
+    file_path: Optional[str] = "untitled"
+    workspace_root: Optional[str] = None
+    auto_apply: Optional[bool] = False
+    focus_start_line: Optional[int] = None
+    focus_end_line: Optional[int] = None
+    validate_fixes: Optional[bool] = True
+    min_confidence: Optional[float] = None
+
+
+class AIBatchRequest(BaseModel):
+    """Request for AI batch analysis across multiple files."""
+    files: Dict[str, str]  # path -> source code
+    lang: Optional[str] = None
+    auto_apply: Optional[bool] = False
+
+
+class AIHybridRequest(BaseModel):
+    """Request for hybrid (regex + AI) analysis."""
+    code: str
+    lang: str
+    file_path: Optional[str] = "untitled"
+    workspace_root: Optional[str] = None
+    auto_apply: Optional[bool] = False
+
+
+@app.post("/heal/ai/analyze")
+async def heal_ai_analyze(req: AIAnalyzeRequest):
+    """
+    Analyze code using the AI agent (LLM-powered detection).
+    
+    Sends code to the LLM which identifies real bugs:
+    logic errors, null safety, missing awaits, off-by-one, etc.
+    
+    Slower than regex (~5-30s) but catches real issues.
+    """
+    engine = get_healing_engine()
+    
+    focus_range = None
+    if req.focus_start_line is not None and req.focus_end_line is not None:
+        focus_range = (req.focus_start_line, req.focus_end_line)
+    
+    try:
+        result = await engine.analyze_with_ai(
+            code=req.code,
+            language=req.lang.lower(),
+            file_path=req.file_path or "untitled",
+            workspace_root=req.workspace_root,
+            focus_range=focus_range,
+        )
+        
+        response = result.to_dict()
+        response["source"] = "ai_agent"
+        
+        if req.auto_apply and result.safe_fixes:
+            healed_code, applied = engine.apply_safe_fixes(req.code, result)
+            response["healedCode"] = healed_code
+            response["appliedFixes"] = [f.to_dict() for f in applied]
+            response["wasHealed"] = len(applied) > 0
+        else:
+            response["wasHealed"] = False
+        
+        return response
+    except Exception as e:
+        logger.error(f"[AI Healing] Analysis error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/heal/ai/batch")
+async def heal_ai_batch(req: AIBatchRequest):
+    """
+    Analyze multiple files using the AI agent in a single LLM call.
+    """
+    engine = get_healing_engine()
+    agent = engine._get_ai_agent()
+    
+    try:
+        results = await agent.detect_batch(
+            files=req.files,
+            language=req.lang,
+        )
+        
+        response = {
+            "source": "ai_agent",
+            "results": {},
+        }
+        
+        for path, fixes in results.items():
+            file_result = {
+                "filePath": path,
+                "fixes": [_fix_to_dict(f) for f in fixes],
+                "fixCount": len(fixes),
+            }
+            
+            if req.auto_apply and fixes:
+                source = req.files.get(path, "")
+                from analyzer.proactive.healing.types import HealingResult
+                temp_result = HealingResult(
+                    file_path=path,
+                    language=req.lang or "unknown",
+                    content_hash="",
+                    fixes=fixes,
+                )
+                healed_code, applied = engine.apply_safe_fixes(source, temp_result)
+                file_result["healedCode"] = healed_code
+                file_result["appliedFixes"] = [_fix_to_dict(f) for f in applied]
+            
+            response["results"][path] = file_result
+        
+        return response
+    except Exception as e:
+        logger.error(f"[AI Batch] Analysis error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/heal/ai/hybrid")
+async def heal_ai_hybrid(req: AIHybridRequest):
+    """
+    Run both regex rules AND AI detection, merge results.
+    
+    Regex rules run first (fast), then AI agent finds deeper issues.
+    Results are merged with AI fixes taking priority at overlapping locations.
+    """
+    engine = get_healing_engine()
+    
+    try:
+        result = await engine.analyze_hybrid(
+            code=req.code,
+            language=req.lang.lower(),
+            file_path=req.file_path or "untitled",
+            workspace_root=req.workspace_root,
+        )
+        
+        response = result.to_dict()
+        response["source"] = "hybrid"
+        
+        if req.auto_apply and result.safe_fixes:
+            healed_code, applied = engine.apply_safe_fixes(req.code, result)
+            response["healedCode"] = healed_code
+            response["appliedFixes"] = [f.to_dict() for f in applied]
+            response["wasHealed"] = len(applied) > 0
+        else:
+            response["wasHealed"] = False
+        
+        return response
+    except Exception as e:
+        logger.error(f"[Hybrid Healing] Analysis error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/heal/ai/stats")
+async def heal_ai_stats():
+    """Get AI agent statistics: LLM calls, latency, acceptance rate."""
+    engine = get_healing_engine()
+    return engine.get_ai_stats()
+
+
+def _fix_to_dict(fix) -> dict:
+    """Helper to convert a HealingFix to a dict."""
+    try:
+        return fix.to_dict()
+    except AttributeError:
+        return {
+            "line": fix.line,
+            "description": fix.description,
+            "confidence": fix.confidence,
+        }
+
+
 @app.get("/")
 def root():
     return {
