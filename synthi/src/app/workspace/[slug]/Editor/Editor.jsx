@@ -2711,6 +2711,55 @@ const EditorPanel = ({
         return () => clearTimeout(timer);
     }, [autoSaveEnabled, activeFile, dispatch, code, savedContent, slug]);
 
+    // ── Pre-compile heal: sync fixed code back to the editor ──────────────
+    // When page.jsx's handleSave fixes syntax issues before compilation,
+    // it dispatches `synthi:pre-compile-heal` with the individual line fixes.
+    // We apply those fixes to the Monaco model so the editor stays in sync
+    // with what was actually compiled. Uses the same undo-friendly pattern
+    // as useSelfHealing (executeEdits + pushUndoStop).
+    useEffect(() => {
+        const handler = (e) => {
+            const editor = editorRef?.current;
+            if (!editor) return;
+
+            const model = editor.getModel();
+            if (!model) return;
+
+            const { fixes } = e.detail || {};
+            if (!fixes || fixes.length === 0) return;
+
+            const monaco = typeof window !== 'undefined' && window.monaco;
+            if (!monaco) return;
+
+            // Build edit operations from the fix list
+            const edits = fixes.map((fix) => {
+                const lineNum = fix.line; // 1-indexed
+                if (lineNum < 1 || lineNum > model.getLineCount()) return null;
+
+                const lineContent = model.getLineContent(lineNum);
+                // Only apply if the line still matches the original (hasn't changed)
+                if (lineContent.trimEnd() !== fix.original.trimEnd()) return null;
+
+                return {
+                    range: new monaco.Range(lineNum, 1, lineNum, lineContent.length + 1),
+                    text: fix.fixed,
+                    forceMoveMarkers: true,
+                };
+            }).filter(Boolean);
+
+            if (edits.length === 0) return;
+
+            // Apply with self-edit guard so self-healing doesn't re-trigger
+            editor.executeEdits('pre-compile-heal', edits);
+            editor.pushUndoStop();
+
+            console.log(`[PreCompileHeal] Applied ${edits.length} fix(es) back to editor`);
+        };
+
+        window.addEventListener('synthi:pre-compile-heal', handler);
+        return () => window.removeEventListener('synthi:pre-compile-heal', handler);
+    }, []);
+
     // Latch diffModeEverActive so the DiffEditor stays mounted (hidden) once
     // the user first opens it — avoids React passive-unmount crash.
     useEffect(() => {

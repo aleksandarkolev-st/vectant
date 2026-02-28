@@ -37,6 +37,10 @@ const EditorPanel = dynamic(() => import('./Editor/Editor.jsx'), {
 
 import { getFileLanguage } from '@/utils/fileUtils';
 import { useAnalyzerGateway } from '@/hooks/useAnalyzerGateway';
+import { useSelfHealing } from '@/hooks/useSelfHealing';
+import { useHealingUndo } from '@/hooks/useHealingUndo';
+import { HealingToast } from '@/components/healing/HealingToast';
+import { PreCompileHealToast } from '@/components/healing/PreCompileHealToast';
 import { useWorkspaceAnalysis } from '@/hooks/useWorkspaceAnalysis';
 import { useCompiler } from '@/hooks/useCompiler';
 import { useCodeIntelIndex } from '@/hooks/useCodeIntelIndex';
@@ -45,6 +49,7 @@ import { api } from '@/services/api';
 import { gitClient } from '@/services/gitClient';
 import WorkspaceNotFoundModal from '@/components/WorkspaceNotFoundModal';
 import { fileCache } from '@/services/fileCache';
+import { preCompileHeal, detectLanguage } from '@/services/preCompileHealer';
 import { resolveDependencies } from '@/utils/dependencyResolver';
 import { DraggableVideoWidget } from '@/components/DraggableVideoWidget';
 import { useHMR } from '@/hooks/useHMR';
@@ -119,12 +124,25 @@ export default function EditorPage({ params }) {
     const [isHmrRecompiling, setIsHmrRecompiling] = useState(false);
     const [runInGuiMode, setRunInGuiMode] = useState(false);
     const [editor, setEditor] = useState(null);
+    const editorRef = useRef(null); // Ref wrapper for editor state (used by useSelfHealing)
     // Track editor content version to force re-analysis on every change (including remote/undo)
     const [editorVersion, setEditorVersion] = useState(0);
-    const { analyzeCode, analyzeProactive, analyzeContainer, analyzeUnified, lastResult, isAnalyzing: isAnalyzingGateway, connectionMeta } = useAnalyzerGateway();
+    const gateway = useAnalyzerGateway();
+    const { analyzeCode, analyzeProactive, analyzeContainer, analyzeUnified, lastResult, isAnalyzing: isAnalyzingGateway, connectionMeta } = gateway;
     const { client, compile, mediaStream, cancelMobileJob, isCompiling, status: compilerStatus } = useCompiler();
     useHMR();
 
+    // ─── Self-Healing system ───────────────────────────────
+    const activeFilePath = activeFile?.path || '';
+    const activeLanguage = activeFile?.name ? getFileLanguage(activeFile.name) : 'plaintext';
+    const { selfEditFlagRef } = useSelfHealing({
+        editorRef,
+        gateway,
+        filePath: activeFilePath,
+        language: activeLanguage,
+        active: !!editor && !!activeFile,
+    });
+    const { undoLastFix } = useHealingUndo({ editorRef });
     useEffect(() => {
         const handleSwitchView = (e) => {
             if (e.detail) setSidebarView(e.detail);
@@ -1871,7 +1889,7 @@ export default function EditorPage({ params }) {
         }
 
         // Similar to handleRun but silent and doesn't force terminal open
-        const source = typeof latestCode === 'string' ? latestCode : (typeof currentContent === 'string' ? currentContent : '');
+        let source = typeof latestCode === 'string' ? latestCode : (typeof currentContent === 'string' ? currentContent : '');
         const filename = activeFile?.path || activeFile?.name || 'main';
 
         // Note: CodeIntel re-index is triggered by saveFileContentThunk
@@ -1887,6 +1905,26 @@ export default function EditorPage({ params }) {
         }
 
         console.log(`[HMR] Proceeding with compilation for ${filename}`);
+
+        // ── Pre-compile healing: fix syntax breakers BEFORE they reach the compiler ──
+        // Runs client-side, zero network latency, <5ms. Catches colons, semicolons,
+        // brackets — the small typos that break HMR cycles.
+        const lang = detectLanguage(filename);
+        const healResult = preCompileHeal(source, lang);
+        if (healResult.changed) {
+            source = healResult.code;
+            console.log(`[HMR:PreCompile] Healed ${healResult.fixes.length} syntax issue(s) in ${healResult.elapsedMs.toFixed(1)}ms`);
+            // Notify the UI so a toast/indicator can show what was fixed
+            if (typeof window !== 'undefined') {
+                window.dispatchEvent(new CustomEvent('synthi:pre-compile-heal', {
+                    detail: {
+                        fixes: healResult.fixes,
+                        filename,
+                        elapsedMs: healResult.elapsedMs,
+                    }
+                }));
+            }
+        }
 
         const getContentForDependency = async (path) => {
             if (path === activeFile.path) return typeof latestCode === 'string' ? latestCode : (typeof currentContent === 'string' ? currentContent : '');
@@ -1945,6 +1983,7 @@ export default function EditorPage({ params }) {
 
     const handleEditorMount = useCallback((editorInstance) => {
         setEditor(editorInstance);
+        editorRef.current = editorInstance; // Keep ref in sync for useSelfHealing
         // Wait until file is loaded, then capture snapshot
         if (activeFile && !hasInitialSnapshot) {
             const currentValue = editorInstance.getValue();
@@ -2365,6 +2404,11 @@ export default function EditorPage({ params }) {
                         />
                     </DockablePanel>
                 )}
+
+                {/* Self-Healing Toast Bridge */}
+                <HealingToast onUndo={undoLastFix} />
+                {/* Pre-Compile Heal Toast */}
+                <PreCompileHealToast />
 
                 {/* Status Bar */}
                 <StatusBar

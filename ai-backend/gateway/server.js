@@ -20,6 +20,37 @@ const backendUnifiedAnalyzeUrl = new URL("/analyze/unified", backendUrl).toStrin
 const backendWorkspaceAnalyzeUrl = new URL("/analyze/workspace", backendUrl).toString();
 const backendWorkspaceIncrementalUrl = new URL("/analyze/workspace/incremental", backendUrl).toString();
 
+// Self-healing endpoints
+const backendHealAnalyzeUrl = new URL("/heal/analyze", backendUrl).toString();
+const backendHealApplyUrl = new URL("/heal/apply", backendUrl).toString();
+const backendHealContainerUrl = new URL("/heal/container", backendUrl).toString();
+const backendHealConfigUrl = new URL("/heal/config", backendUrl).toString();
+const backendHealStatsUrl = new URL("/heal/stats", backendUrl).toString();
+const backendHealRulesUrl = new URL("/heal/rules", backendUrl).toString();
+const backendHealBatchUrl = new URL("/heal/batch", backendUrl).toString();
+const backendHealCacheStatsUrl = new URL("/heal/cache/stats", backendUrl).toString();
+const backendHealPresetsUrl = new URL("/heal/presets", backendUrl).toString();
+const backendHealPresetApplyUrl = new URL("/heal/preset", backendUrl).toString();
+const backendHealMetricsUrl = new URL("/heal/metrics", backendUrl).toString();
+
+// AI Agent endpoints
+const backendAIAnalyzeUrl = new URL("/heal/ai/analyze", backendUrl).toString();
+const backendAIBatchUrl = new URL("/heal/ai/batch", backendUrl).toString();
+const backendAIHybridUrl = new URL("/heal/ai/hybrid", backendUrl).toString();
+const backendAIStatsUrl = new URL("/heal/ai/stats", backendUrl).toString();
+const backendAIFeedbackUrl = new URL("/heal/ai/feedback", backendUrl).toString();
+const backendAIMemoryUrl = new URL("/heal/ai/memory", backendUrl).toString();
+const backendAIStreamUrl = new URL("/heal/ai/stream", backendUrl).toString();
+const backendAIProjectUrl = new URL("/heal/ai/project", backendUrl).toString();
+const backendAIConfigUrl = new URL("/heal/ai/config", backendUrl).toString();
+const backendAIHealthUrl = new URL("/heal/ai/health", backendUrl).toString();
+const backendAIRuntimeUrl = new URL("/heal/ai/runtime", backendUrl).toString();
+const backendAICacheClearUrl = new URL("/heal/ai/cache/clear", backendUrl).toString();
+const backendAIPreviewUrl = new URL("/heal/ai/preview", backendUrl).toString();
+const backendAIPolicySuppressUrl = new URL("/heal/ai/policy/suppress", backendUrl).toString();
+const backendAIPolicyUnsuppressUrl = new URL("/heal/ai/policy/unsuppress", backendUrl).toString();
+const backendAIPolicyListUrl = new URL("/heal/ai/policy", backendUrl).toString();
+
 const server = http.createServer(handleHttpRequest);
 const wss = new WebSocketServer({
   server,
@@ -132,6 +163,96 @@ async function handleClientMessage(socket, raw) {
       break;
     case "analyze/workspace/incremental":
       await forwardWorkspaceIncrementalAnalysis(socket, data, requestId);
+      break;
+    case "heal/analyze":
+      await forwardHealAnalyze(socket, data, requestId);
+      break;
+    case "heal/apply":
+      await forwardHealApply(socket, data, requestId);
+      break;
+    case "heal/container":
+      await forwardHealContainer(socket, data, requestId);
+      break;
+    case "heal/config":
+      await forwardHealConfig(socket, data, requestId);
+      break;
+    case "heal/stats":
+      await forwardHealStats(socket, requestId);
+      break;
+    case "heal/rules":
+      await forwardHealRules(socket, requestId);
+      break;
+    case "heal/batch":
+      await forwardHealBatch(socket, data, requestId);
+      break;
+    case "heal/cache/stats":
+      await forwardHealCacheStats(socket, requestId);
+      break;
+    case "heal/presets":
+      await forwardHealPresets(socket, requestId);
+      break;
+    case "heal/preset":
+      await forwardHealPresetApply(socket, data, requestId);
+      break;
+    case "heal/metrics":
+      await forwardHealMetrics(socket, requestId);
+      break;
+    case "heal/ai/analyze":
+      await forwardAIAnalyze(socket, data, requestId);
+      break;
+    case "heal/ai/runtime":
+      await forwardAIRuntime(socket, data, requestId);
+      break;
+    case "heal/ai/batch":
+      await forwardAIBatch(socket, data, requestId);
+      break;
+    case "heal/ai/hybrid":
+      await forwardAIHybrid(socket, data, requestId);
+      break;
+    case "heal/ai/stats":
+      await forwardAIStats(socket, requestId);
+      break;
+    case "heal/ai/feedback":
+      await forwardAIFeedback(socket, data, requestId);
+      break;
+    case "heal/ai/memory":
+      await forwardAIMemory(socket, requestId);
+      break;
+    case "heal/ai/memory/clear":
+      await forwardAIMemoryClear(socket, requestId);
+      break;
+    case "heal/ai/stream":
+      await forwardAIStream(socket, data, requestId);
+      break;
+    case "heal/ai/project":
+      await forwardAIProject(socket, data, requestId);
+      break;
+    case "heal/ai/config":
+      await forwardAIConfig(socket, data, requestId);
+      break;
+    case "heal/ai/config/update":
+      await forwardAIConfigUpdate(socket, data, requestId);
+      break;
+    case "heal/ai/health":
+      await forwardAIHealth(socket, requestId);
+      break;
+    case "heal/ai/cache/clear":
+      await forwardAICacheClear(socket, requestId);
+      break;
+    case "heal/ai/preview":
+      await forwardAIPreview(socket, data, requestId);
+      break;
+    case "heal/ai/policy/suppress":
+      await forwardAIPolicySuppress(socket, data, requestId);
+      break;
+    case "heal/ai/policy/unsuppress":
+      await forwardAIPolicyUnsuppress(socket, data, requestId);
+      break;
+    case "heal/ai/policy":
+      await forwardAIPolicyList(socket, data, requestId);
+      break;
+    case "heal/ai/policy/clear":
+      await forwardAIPolicyClear(socket, data, requestId);
       break;
     default:
       sendError(socket, `Unsupported action: ${action}`, { requestId });
@@ -1046,6 +1167,1144 @@ async function forwardWorkspaceIncrementalAnalysis(socket, data, requestId) {
     requestId,
     data: responseJson,
   });
+}
+
+// =============================================================================
+// Self-Healing Forwarding Functions
+// =============================================================================
+
+async function forwardHealAnalyze(socket, data, requestId) {
+  const code = data?.code;
+  const lang = data?.lang;
+
+  if (typeof code !== "string" || typeof lang !== "string") {
+    sendError(socket, "`code` and `lang` are required for healing analysis", { requestId });
+    return;
+  }
+
+  try {
+    const backendResponse = await fetch(backendHealAnalyzeUrl, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        code,
+        lang: lang.toLowerCase(),
+        file_path: data?.filePath || data?.file_path || "untitled",
+        auto_apply: data?.autoApply ?? false,
+      }),
+    });
+
+    const responseText = await backendResponse.text();
+
+    if (!backendResponse.ok) {
+      sendError(socket, "Healing analysis backend error", {
+        requestId,
+        detail: responseText,
+        status: backendResponse.status,
+      });
+      return;
+    }
+
+    let responseJson;
+    try {
+      responseJson = JSON.parse(responseText);
+    } catch (err) {
+      sendError(socket, "Healing response was not valid JSON", { requestId, detail: err.message });
+      return;
+    }
+
+    safeSend(socket, {
+      type: "response",
+      action: "heal/analyze",
+      requestId,
+      data: responseJson,
+    });
+  } catch (err) {
+    console.error("[Heal] analyze forward error:", err);
+    sendError(socket, "Healing analysis request failed", { requestId, detail: err.message });
+  }
+}
+
+async function forwardHealApply(socket, data, requestId) {
+  const code = data?.code;
+  const lang = data?.lang;
+
+  if (typeof code !== "string" || typeof lang !== "string") {
+    sendError(socket, "`code` and `lang` are required for healing apply", { requestId });
+    return;
+  }
+
+  try {
+    const backendResponse = await fetch(backendHealApplyUrl, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        code,
+        lang: lang.toLowerCase(),
+        file_path: data?.filePath || data?.file_path || "untitled",
+        fix_ids: data?.fixIds || data?.fix_ids || null,
+      }),
+    });
+
+    const responseText = await backendResponse.text();
+
+    if (!backendResponse.ok) {
+      sendError(socket, "Healing apply backend error", {
+        requestId,
+        detail: responseText,
+        status: backendResponse.status,
+      });
+      return;
+    }
+
+    let responseJson;
+    try {
+      responseJson = JSON.parse(responseText);
+    } catch (err) {
+      sendError(socket, "Healing apply response was not valid JSON", { requestId, detail: err.message });
+      return;
+    }
+
+    safeSend(socket, {
+      type: "response",
+      action: "heal/apply",
+      requestId,
+      data: responseJson,
+    });
+  } catch (err) {
+    console.error("[Heal] apply forward error:", err);
+    sendError(socket, "Healing apply request failed", { requestId, detail: err.message });
+  }
+}
+
+async function forwardHealContainer(socket, data, requestId) {
+  const slug = data?.slug;
+  const filePath = data?.filePath || data?.file_path;
+  const lang = data?.lang;
+
+  if (!slug || !filePath || !lang) {
+    sendError(socket, "`slug`, `filePath`, and `lang` are required for container healing", { requestId });
+    return;
+  }
+
+  try {
+    const backendResponse = await fetch(backendHealContainerUrl, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        slug,
+        file_path: filePath,
+        lang: lang.toLowerCase(),
+      }),
+    });
+
+    const responseText = await backendResponse.text();
+
+    if (!backendResponse.ok) {
+      sendError(socket, "Container healing backend error", {
+        requestId,
+        detail: responseText,
+        status: backendResponse.status,
+      });
+      return;
+    }
+
+    let responseJson;
+    try {
+      responseJson = JSON.parse(responseText);
+    } catch (err) {
+      sendError(socket, "Container healing response was not valid JSON", { requestId, detail: err.message });
+      return;
+    }
+
+    safeSend(socket, {
+      type: "response",
+      action: "heal/container",
+      requestId,
+      data: responseJson,
+    });
+  } catch (err) {
+    console.error("[Heal] container forward error:", err);
+    sendError(socket, "Container healing request failed", { requestId, detail: err.message });
+  }
+}
+
+async function forwardHealConfig(socket, data, requestId) {
+  try {
+    const hasUpdates = data && Object.keys(data).length > 0;
+    const method = hasUpdates ? "POST" : "GET";
+    const fetchOpts = { method, headers: { "content-type": "application/json" } };
+    if (hasUpdates) {
+      fetchOpts.body = JSON.stringify(data);
+    }
+
+    const backendResponse = await fetch(backendHealConfigUrl, fetchOpts);
+    const responseText = await backendResponse.text();
+
+    if (!backendResponse.ok) {
+      sendError(socket, "Healing config backend error", { requestId, detail: responseText });
+      return;
+    }
+
+    const responseJson = JSON.parse(responseText);
+    safeSend(socket, {
+      type: "response",
+      action: "heal/config",
+      requestId,
+      data: responseJson,
+    });
+  } catch (err) {
+    console.error("[Heal] config forward error:", err);
+    sendError(socket, "Healing config request failed", { requestId, detail: err.message });
+  }
+}
+
+async function forwardHealStats(socket, requestId) {
+  try {
+    const backendResponse = await fetch(backendHealStatsUrl, { method: "GET" });
+    const responseText = await backendResponse.text();
+
+    if (!backendResponse.ok) {
+      sendError(socket, "Healing stats backend error", { requestId, detail: responseText });
+      return;
+    }
+
+    const responseJson = JSON.parse(responseText);
+    safeSend(socket, {
+      type: "response",
+      action: "heal/stats",
+      requestId,
+      data: responseJson,
+    });
+  } catch (err) {
+    console.error("[Heal] stats forward error:", err);
+    sendError(socket, "Healing stats request failed", { requestId, detail: err.message });
+  }
+}
+
+async function forwardHealRules(socket, requestId) {
+  try {
+    const backendResponse = await fetch(backendHealRulesUrl, { method: "GET" });
+    const responseText = await backendResponse.text();
+
+    if (!backendResponse.ok) {
+      sendError(socket, "Healing rules backend error", { requestId, detail: responseText });
+      return;
+    }
+
+    const responseJson = JSON.parse(responseText);
+    safeSend(socket, {
+      type: "response",
+      action: "heal/rules",
+      requestId,
+      data: responseJson,
+    });
+  } catch (err) {
+    console.error("[Heal] rules forward error:", err);
+    sendError(socket, "Healing rules request failed", { requestId, detail: err.message });
+  }
+}
+
+async function forwardHealBatch(socket, data, requestId) {
+  try {
+    const backendResponse = await fetch(backendHealBatchUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(data),
+    });
+    const responseText = await backendResponse.text();
+
+    if (!backendResponse.ok) {
+      sendError(socket, "Healing batch backend error", { requestId, detail: responseText });
+      return;
+    }
+
+    const responseJson = JSON.parse(responseText);
+    safeSend(socket, {
+      type: "response",
+      action: "heal/batch",
+      requestId,
+      data: responseJson,
+    });
+  } catch (err) {
+    console.error("[Heal] batch forward error:", err);
+    sendError(socket, "Healing batch request failed", { requestId, detail: err.message });
+  }
+}
+
+async function forwardHealCacheStats(socket, requestId) {
+  try {
+    const backendResponse = await fetch(backendHealCacheStatsUrl, { method: "GET" });
+    const responseText = await backendResponse.text();
+
+    if (!backendResponse.ok) {
+      sendError(socket, "Healing cache stats backend error", { requestId, detail: responseText });
+      return;
+    }
+
+    const responseJson = JSON.parse(responseText);
+    safeSend(socket, {
+      type: "response",
+      action: "heal/cache/stats",
+      requestId,
+      data: responseJson,
+    });
+  } catch (err) {
+    console.error("[Heal] cache stats forward error:", err);
+    sendError(socket, "Healing cache stats request failed", { requestId, detail: err.message });
+  }
+}
+
+async function forwardHealPresets(socket, requestId) {
+  try {
+    const backendResponse = await fetch(backendHealPresetsUrl, { method: "GET" });
+    const responseText = await backendResponse.text();
+
+    if (!backendResponse.ok) {
+      sendError(socket, "Healing presets backend error", { requestId, detail: responseText });
+      return;
+    }
+
+    const responseJson = JSON.parse(responseText);
+    safeSend(socket, {
+      type: "response",
+      action: "heal/presets",
+      requestId,
+      data: responseJson,
+    });
+  } catch (err) {
+    console.error("[Heal] presets forward error:", err);
+    sendError(socket, "Healing presets request failed", { requestId, detail: err.message });
+  }
+}
+
+async function forwardHealPresetApply(socket, data, requestId) {
+  try {
+    const backendResponse = await fetch(backendHealPresetApplyUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ preset: data.preset }),
+    });
+    const responseText = await backendResponse.text();
+
+    if (!backendResponse.ok) {
+      sendError(socket, "Healing preset apply backend error", { requestId, detail: responseText });
+      return;
+    }
+
+    const responseJson = JSON.parse(responseText);
+    safeSend(socket, {
+      type: "response",
+      action: "heal/preset",
+      requestId,
+      data: responseJson,
+    });
+  } catch (err) {
+    console.error("[Heal] preset apply forward error:", err);
+    sendError(socket, "Healing preset apply request failed", { requestId, detail: err.message });
+  }
+}
+
+async function forwardHealMetrics(socket, requestId) {
+  try {
+    const backendResponse = await fetch(backendHealMetricsUrl, { method: "GET" });
+    const responseText = await backendResponse.text();
+
+    if (!backendResponse.ok) {
+      sendError(socket, "Healing metrics backend error", { requestId, detail: responseText });
+      return;
+    }
+
+    safeSend(socket, {
+      type: "response",
+      action: "heal/metrics",
+      requestId,
+      data: { raw: responseText },
+    });
+  } catch (err) {
+    console.error("[Heal] metrics forward error:", err);
+    sendError(socket, "Healing metrics request failed", { requestId, detail: err.message });
+  }
+}
+
+// =============================================================================
+// AI Agent Forwarding
+// =============================================================================
+
+async function forwardAIAnalyze(socket, data, requestId) {
+  const code = data?.code;
+  const lang = data?.lang;
+
+  if (typeof code !== "string" || typeof lang !== "string") {
+    sendError(socket, "`code` and `lang` are required for AI analysis", { requestId });
+    return;
+  }
+
+  try {
+    const backendResponse = await fetch(backendAIAnalyzeUrl, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        code,
+        lang: lang.toLowerCase(),
+        file_path: data?.filePath || data?.file_path || "untitled",
+        workspace_root: data?.workspaceRoot || data?.workspace_root || null,
+        auto_apply: data?.autoApply ?? false,
+        focus_start_line: data?.focusStartLine ?? null,
+        focus_end_line: data?.focusEndLine ?? null,
+        validate_fixes: data?.validateFixes ?? true,
+        min_confidence: data?.minConfidence ?? null,
+      }),
+    });
+
+    const responseText = await backendResponse.text();
+
+    if (!backendResponse.ok) {
+      sendError(socket, "AI analysis backend error", {
+        requestId,
+        detail: responseText,
+        status: backendResponse.status,
+      });
+      return;
+    }
+
+    let responseJson;
+    try {
+      responseJson = JSON.parse(responseText);
+    } catch (err) {
+      sendError(socket, "AI analysis response was not valid JSON", { requestId, detail: err.message });
+      return;
+    }
+
+    safeSend(socket, {
+      type: "response",
+      action: "heal/ai/analyze",
+      requestId,
+      data: responseJson,
+    });
+  } catch (err) {
+    console.error("[AI Agent] analyze forward error:", err);
+    sendError(socket, "AI analysis request failed", { requestId, detail: err.message });
+  }
+}
+
+async function forwardAIRuntime(socket, data, requestId) {
+  const code = data?.code;
+  const lang = data?.lang;
+  const diagnostics = data?.diagnostics;
+
+  if (typeof code !== "string" || typeof lang !== "string") {
+    sendError(socket, "`code` and `lang` are required for runtime error fixing", { requestId });
+    return;
+  }
+  if (!Array.isArray(diagnostics) || diagnostics.length === 0) {
+    sendError(socket, "`diagnostics` array is required for runtime error fixing", { requestId });
+    return;
+  }
+
+  try {
+    const backendResponse = await fetch(backendAIRuntimeUrl, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        code,
+        lang: lang.toLowerCase(),
+        file_path: data?.filePath || data?.file_path || "untitled",
+        diagnostics,
+        error_output: data?.errorOutput || data?.error_output || null,
+        auto_apply: data?.autoApply ?? true,
+        module: data?.module || null,
+      }),
+    });
+
+    const responseText = await backendResponse.text();
+
+    if (!backendResponse.ok) {
+      sendError(socket, "Runtime error healing backend error", {
+        requestId,
+        detail: responseText,
+        status: backendResponse.status,
+      });
+      return;
+    }
+
+    let responseJson;
+    try {
+      responseJson = JSON.parse(responseText);
+    } catch (err) {
+      sendError(socket, "Runtime error healing response was not valid JSON", { requestId, detail: err.message });
+      return;
+    }
+
+    safeSend(socket, {
+      type: "response",
+      action: "heal/ai/runtime",
+      requestId,
+      data: responseJson,
+    });
+  } catch (err) {
+    console.error("[Runtime Healing] forward error:", err);
+    sendError(socket, "Runtime error healing request failed", { requestId, detail: err.message });
+  }
+}
+
+async function forwardAIBatch(socket, data, requestId) {
+  const files = data?.files;
+
+  if (!files || typeof files !== "object") {
+    sendError(socket, "`files` object is required for AI batch analysis", { requestId });
+    return;
+  }
+
+  try {
+    const backendResponse = await fetch(backendAIBatchUrl, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        files,
+        lang: data?.lang || null,
+        auto_apply: data?.autoApply ?? false,
+      }),
+    });
+
+    const responseText = await backendResponse.text();
+
+    if (!backendResponse.ok) {
+      sendError(socket, "AI batch analysis backend error", {
+        requestId,
+        detail: responseText,
+        status: backendResponse.status,
+      });
+      return;
+    }
+
+    let responseJson;
+    try {
+      responseJson = JSON.parse(responseText);
+    } catch (err) {
+      sendError(socket, "AI batch response was not valid JSON", { requestId, detail: err.message });
+      return;
+    }
+
+    safeSend(socket, {
+      type: "response",
+      action: "heal/ai/batch",
+      requestId,
+      data: responseJson,
+    });
+  } catch (err) {
+    console.error("[AI Agent] batch forward error:", err);
+    sendError(socket, "AI batch analysis request failed", { requestId, detail: err.message });
+  }
+}
+
+async function forwardAIHybrid(socket, data, requestId) {
+  const code = data?.code;
+  const lang = data?.lang;
+
+  if (typeof code !== "string" || typeof lang !== "string") {
+    sendError(socket, "`code` and `lang` are required for hybrid analysis", { requestId });
+    return;
+  }
+
+  try {
+    const backendResponse = await fetch(backendAIHybridUrl, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        code,
+        lang: lang.toLowerCase(),
+        file_path: data?.filePath || data?.file_path || "untitled",
+        workspace_root: data?.workspaceRoot || data?.workspace_root || null,
+        auto_apply: data?.autoApply ?? false,
+      }),
+    });
+
+    const responseText = await backendResponse.text();
+
+    if (!backendResponse.ok) {
+      sendError(socket, "Hybrid analysis backend error", {
+        requestId,
+        detail: responseText,
+        status: backendResponse.status,
+      });
+      return;
+    }
+
+    let responseJson;
+    try {
+      responseJson = JSON.parse(responseText);
+    } catch (err) {
+      sendError(socket, "Hybrid analysis response was not valid JSON", { requestId, detail: err.message });
+      return;
+    }
+
+    safeSend(socket, {
+      type: "response",
+      action: "heal/ai/hybrid",
+      requestId,
+      data: responseJson,
+    });
+  } catch (err) {
+    console.error("[AI Agent] hybrid forward error:", err);
+    sendError(socket, "Hybrid analysis request failed", { requestId, detail: err.message });
+  }
+}
+
+async function forwardAIStats(socket, requestId) {
+  try {
+    const backendResponse = await fetch(backendAIStatsUrl, { method: "GET" });
+    const responseText = await backendResponse.text();
+
+    if (!backendResponse.ok) {
+      sendError(socket, "AI stats backend error", { requestId, detail: responseText });
+      return;
+    }
+
+    let responseJson;
+    try {
+      responseJson = JSON.parse(responseText);
+    } catch (err) {
+      sendError(socket, "AI stats response was not valid JSON", { requestId, detail: err.message });
+      return;
+    }
+
+    safeSend(socket, {
+      type: "response",
+      action: "heal/ai/stats",
+      requestId,
+      data: responseJson,
+    });
+  } catch (err) {
+    console.error("[AI Agent] stats forward error:", err);
+    sendError(socket, "AI stats request failed", { requestId, detail: err.message });
+  }
+}
+
+// ── AI Agent: feedback ──────────────────────────────────────────────
+async function forwardAIFeedback(socket, data, requestId) {
+  const ruleId = data?.ruleId || data?.rule_id;
+  const feedbackType = data?.feedbackType || data?.feedback_type;
+
+  if (typeof ruleId !== "string" || typeof feedbackType !== "string") {
+    sendError(socket, "`ruleId` and `feedbackType` are required for feedback", { requestId });
+    return;
+  }
+
+  try {
+    const backendResponse = await fetch(backendAIFeedbackUrl, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        rule_id: ruleId,
+        feedback_type: feedbackType,
+        file_path: data?.filePath || data?.file_path || null,
+        original_text: data?.originalText || data?.original_text || null,
+        replacement_text: data?.replacementText || data?.replacement_text || null,
+        description: data?.description || null,
+      }),
+    });
+
+    const responseText = await backendResponse.text();
+
+    if (!backendResponse.ok) {
+      sendError(socket, "AI feedback backend error", { requestId, detail: responseText });
+      return;
+    }
+
+    let responseJson;
+    try {
+      responseJson = JSON.parse(responseText);
+    } catch (err) {
+      sendError(socket, "AI feedback response was not valid JSON", { requestId, detail: err.message });
+      return;
+    }
+
+    safeSend(socket, {
+      type: "response",
+      action: "heal/ai/feedback",
+      requestId,
+      data: responseJson,
+    });
+  } catch (err) {
+    console.error("[AI Agent] feedback forward error:", err);
+    sendError(socket, "AI feedback request failed", { requestId, detail: err.message });
+  }
+}
+
+// ── AI Agent: memory summary ────────────────────────────────────────
+async function forwardAIMemory(socket, requestId) {
+  try {
+    const backendResponse = await fetch(backendAIMemoryUrl, { method: "GET" });
+    const responseText = await backendResponse.text();
+
+    if (!backendResponse.ok) {
+      sendError(socket, "AI memory backend error", { requestId, detail: responseText });
+      return;
+    }
+
+    let responseJson;
+    try {
+      responseJson = JSON.parse(responseText);
+    } catch (err) {
+      sendError(socket, "AI memory response was not valid JSON", { requestId, detail: err.message });
+      return;
+    }
+
+    safeSend(socket, {
+      type: "response",
+      action: "heal/ai/memory",
+      requestId,
+      data: responseJson,
+    });
+  } catch (err) {
+    console.error("[AI Agent] memory forward error:", err);
+    sendError(socket, "AI memory request failed", { requestId, detail: err.message });
+  }
+}
+
+// ── AI Agent: clear memory ──────────────────────────────────────────
+async function forwardAIMemoryClear(socket, requestId) {
+  try {
+    const backendResponse = await fetch(backendAIMemoryUrl, { method: "DELETE" });
+    const responseText = await backendResponse.text();
+
+    if (!backendResponse.ok) {
+      sendError(socket, "AI memory clear backend error", { requestId, detail: responseText });
+      return;
+    }
+
+    let responseJson;
+    try {
+      responseJson = JSON.parse(responseText);
+    } catch (err) {
+      sendError(socket, "AI memory clear response was not valid JSON", { requestId, detail: err.message });
+      return;
+    }
+
+    safeSend(socket, {
+      type: "response",
+      action: "heal/ai/memory/clear",
+      requestId,
+      data: responseJson,
+    });
+  } catch (err) {
+    console.error("[AI Agent] memory clear forward error:", err);
+    sendError(socket, "AI memory clear request failed", { requestId, detail: err.message });
+  }
+}
+
+/**
+ * Forward an SSE streaming AI analysis request.
+ *
+ * The backend endpoint /heal/ai/stream returns `text/event-stream`.
+ * We consume the SSE events and relay each one as a WebSocket message so
+ * the browser client receives progressive updates without HTTP streaming.
+ */
+async function forwardAIStream(socket, data, requestId) {
+  const code = data?.code;
+  const lang = data?.lang;
+
+  if (typeof code !== "string" || !code.trim()) {
+    sendError(socket, "`code` must be a non-empty string", { requestId });
+    return;
+  }
+
+  try {
+    const body = {
+      code,
+      lang: lang || "plaintext",
+      file_path: data?.filePath || data?.file_path || "",
+      workspace_root: data?.workspaceRoot || data?.workspace_root || "",
+      auto_apply: data?.autoApply ?? false,
+      validate_fixes: data?.validateFixes ?? true,
+    };
+    if (data?.minConfidence != null) body.min_confidence = data.minConfidence;
+
+    const backendResponse = await fetch(backendAIStreamUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+
+    if (!backendResponse.ok) {
+      const errText = await backendResponse.text();
+      sendError(socket, "AI stream backend error", { requestId, detail: errText });
+      return;
+    }
+
+    // Read the SSE body as a stream of text chunks
+    const reader = backendResponse.body;
+    const decoder = new TextDecoder("utf-8");
+    let buffer = "";
+
+    for await (const chunk of reader) {
+      buffer += typeof chunk === "string" ? chunk : decoder.decode(chunk, { stream: true });
+
+      // Split on double-newline (SSE event boundary)
+      const parts = buffer.split("\n\n");
+      buffer = parts.pop(); // keep incomplete tail
+
+      for (const part of parts) {
+        const dataLine = part
+          .split("\n")
+          .find((l) => l.startsWith("data: "));
+        if (!dataLine) continue;
+
+        const jsonStr = dataLine.slice(6); // strip "data: "
+        let parsed;
+        try {
+          parsed = JSON.parse(jsonStr);
+        } catch {
+          // Non-JSON SSE event — skip
+          continue;
+        }
+
+        safeSend(socket, {
+          type: "stream",
+          action: "heal/ai/stream",
+          requestId,
+          event: parsed.event || parsed.type || "data",
+          data: parsed,
+        });
+      }
+    }
+
+    // Flush any remaining buffer
+    if (buffer.trim()) {
+      const dataLine = buffer
+        .split("\n")
+        .find((l) => l.startsWith("data: "));
+      if (dataLine) {
+        try {
+          const parsed = JSON.parse(dataLine.slice(6));
+          safeSend(socket, {
+            type: "stream",
+            action: "heal/ai/stream",
+            requestId,
+            event: parsed.event || "data",
+            data: parsed,
+          });
+        } catch {
+          // ignore
+        }
+      }
+    }
+
+    // Send stream-end marker
+    safeSend(socket, {
+      type: "stream_end",
+      action: "heal/ai/stream",
+      requestId,
+    });
+  } catch (err) {
+    console.error("[AI Agent] stream forward error:", err);
+    sendError(socket, "AI stream request failed", { requestId, detail: err.message });
+  }
+}
+
+async function forwardAIProject(socket, data, requestId) {
+  const code = data?.code;
+  const lang = data?.lang;
+  const filePath = data?.filePath || data?.file_path;
+
+  if (typeof code !== "string" || !code.trim()) {
+    sendError(socket, "`code` must be a non-empty string", { requestId });
+    return;
+  }
+
+  try {
+    const body = {
+      code,
+      lang: lang || "plaintext",
+      file_path: filePath || "",
+      workspace_root: data?.workspaceRoot || data?.workspace_root || "",
+      validate_fixes: data?.validateFixes ?? true,
+    };
+    if (data?.relatedFiles) body.related_files = data.relatedFiles;
+    if (data?.minConfidence != null) body.min_confidence = data.minConfidence;
+
+    const backendResponse = await fetch(backendAIProjectUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const responseText = await backendResponse.text();
+
+    if (!backendResponse.ok) {
+      sendError(socket, "AI project analysis backend error", { requestId, detail: responseText });
+      return;
+    }
+
+    let responseJson;
+    try {
+      responseJson = JSON.parse(responseText);
+    } catch (err) {
+      sendError(socket, "AI project response was not valid JSON", { requestId, detail: err.message });
+      return;
+    }
+
+    safeSend(socket, {
+      type: "response",
+      action: "heal/ai/project",
+      requestId,
+      data: responseJson,
+    });
+  } catch (err) {
+    console.error("[AI Agent] project forward error:", err);
+    sendError(socket, "AI project analysis request failed", { requestId, detail: err.message });
+  }
+}
+
+async function forwardAIConfig(socket, data, requestId) {
+  try {
+    const backendResponse = await fetch(backendAIConfigUrl, { method: "GET" });
+    const responseText = await backendResponse.text();
+    if (!backendResponse.ok) {
+      sendError(socket, "AI config backend error", { requestId, detail: responseText });
+      return;
+    }
+    safeSend(socket, {
+      type: "response",
+      action: "heal/ai/config",
+      requestId,
+      data: JSON.parse(responseText),
+    });
+  } catch (err) {
+    console.error("[AI Agent] config forward error:", err);
+    sendError(socket, "AI config request failed", { requestId, detail: err.message });
+  }
+}
+
+async function forwardAIConfigUpdate(socket, data, requestId) {
+  try {
+    const body = {};
+    if (data?.minConfidence != null) body.min_confidence = data.minConfidence;
+    if (data?.validateFixes != null) body.validate_fixes = data.validateFixes;
+    if (data?.autoAcceptThreshold != null) body.auto_accept_threshold = data.autoAcceptThreshold;
+    if (data?.confidenceDiscount != null) body.confidence_discount = data.confidenceDiscount;
+    if (data?.maxFixesPerFile != null) body.max_fixes_per_file = data.maxFixesPerFile;
+    if (data?.llmTimeout != null) body.llm_timeout = data.llmTimeout;
+
+    const backendResponse = await fetch(backendAIConfigUrl, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const responseText = await backendResponse.text();
+    if (!backendResponse.ok) {
+      sendError(socket, "AI config update backend error", { requestId, detail: responseText });
+      return;
+    }
+    safeSend(socket, {
+      type: "response",
+      action: "heal/ai/config/update",
+      requestId,
+      data: JSON.parse(responseText),
+    });
+  } catch (err) {
+    console.error("[AI Agent] config update forward error:", err);
+    sendError(socket, "AI config update failed", { requestId, detail: err.message });
+  }
+}
+
+async function forwardAIHealth(socket, requestId) {
+  try {
+    const backendResponse = await fetch(backendAIHealthUrl, { method: "GET" });
+    const responseText = await backendResponse.text();
+    if (!backendResponse.ok) {
+      sendError(socket, "AI health backend error", { requestId, detail: responseText });
+      return;
+    }
+    safeSend(socket, {
+      type: "response",
+      action: "heal/ai/health",
+      requestId,
+      data: JSON.parse(responseText),
+    });
+  } catch (err) {
+    console.error("[AI Agent] health forward error:", err);
+    sendError(socket, "AI health request failed", { requestId, detail: err.message });
+  }
+}
+
+async function forwardAICacheClear(socket, requestId) {
+  try {
+    const backendResponse = await fetch(backendAICacheClearUrl, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{}",
+    });
+    const responseText = await backendResponse.text();
+    if (!backendResponse.ok) {
+      sendError(socket, "AI cache clear backend error", { requestId, detail: responseText });
+      return;
+    }
+    safeSend(socket, {
+      type: "response",
+      action: "heal/ai/cache/clear",
+      requestId,
+      data: JSON.parse(responseText),
+    });
+  } catch (err) {
+    console.error("[AI Agent] cache clear forward error:", err);
+    sendError(socket, "AI cache clear request failed", { requestId, detail: err.message });
+  }
+}
+
+async function forwardAIPreview(socket, data, requestId) {
+  const code = data?.code;
+  const lang = data?.lang;
+  if (typeof code !== "string" || typeof lang !== "string") {
+    sendError(socket, "`code` and `lang` are required for AI preview", { requestId });
+    return;
+  }
+  try {
+    const backendResponse = await fetch(backendAIPreviewUrl, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        code,
+        lang: lang.toLowerCase(),
+        file_path: data?.filePath || data?.file_path || "untitled",
+      }),
+    });
+    const responseText = await backendResponse.text();
+    if (!backendResponse.ok) {
+      sendError(socket, "AI preview backend error", { requestId, detail: responseText });
+      return;
+    }
+    safeSend(socket, {
+      type: "response",
+      action: "heal/ai/preview",
+      requestId,
+      data: JSON.parse(responseText),
+    });
+  } catch (err) {
+    console.error("[AI Agent] preview forward error:", err);
+    sendError(socket, "AI preview request failed", { requestId, detail: err.message });
+  }
+}
+
+// ── AI Policy: suppress ──────────────────────────────────────────────
+async function forwardAIPolicySuppress(socket, data, requestId) {
+  const ruleId = data?.ruleId || data?.rule_id;
+  if (typeof ruleId !== "string") {
+    sendError(socket, "`ruleId` is required for policy suppress", { requestId });
+    return;
+  }
+  try {
+    const resp = await fetch(backendAIPolicySuppressUrl, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        ruleId,
+        fingerprint: data?.fingerprint || null,
+        mode: data?.mode || "fingerprint",
+        reason: data?.reason || null,
+        ttl: data?.ttl ?? null,
+        env: data?.env || "development",
+        workspaceId: data?.workspaceId || "default",
+      }),
+    });
+    const text = await resp.text();
+    if (!resp.ok) {
+      sendError(socket, "AI policy suppress backend error", { requestId, detail: text });
+      return;
+    }
+    safeSend(socket, {
+      type: "response",
+      action: "heal/ai/policy/suppress",
+      requestId,
+      data: JSON.parse(text),
+    });
+  } catch (err) {
+    console.error("[AI Policy] suppress forward error:", err);
+    sendError(socket, "AI policy suppress failed", { requestId, detail: err.message });
+  }
+}
+
+// ── AI Policy: unsuppress ────────────────────────────────────────────
+async function forwardAIPolicyUnsuppress(socket, data, requestId) {
+  const ruleId = data?.ruleId || data?.rule_id;
+  if (typeof ruleId !== "string") {
+    sendError(socket, "`ruleId` is required for policy unsuppress", { requestId });
+    return;
+  }
+  try {
+    const resp = await fetch(backendAIPolicyUnsuppressUrl, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        ruleId,
+        fingerprint: data?.fingerprint || null,
+        env: data?.env || "development",
+        workspaceId: data?.workspaceId || "default",
+      }),
+    });
+    const text = await resp.text();
+    if (!resp.ok) {
+      sendError(socket, "AI policy unsuppress backend error", { requestId, detail: text });
+      return;
+    }
+    safeSend(socket, {
+      type: "response",
+      action: "heal/ai/policy/unsuppress",
+      requestId,
+      data: JSON.parse(text),
+    });
+  } catch (err) {
+    console.error("[AI Policy] unsuppress forward error:", err);
+    sendError(socket, "AI policy unsuppress failed", { requestId, detail: err.message });
+  }
+}
+
+// ── AI Policy: list ──────────────────────────────────────────────────
+async function forwardAIPolicyList(socket, data, requestId) {
+  try {
+    const env = data?.env || "development";
+    const workspaceId = data?.workspaceId || "default";
+    const url = `${backendAIPolicyListUrl}?env=${encodeURIComponent(env)}&workspaceId=${encodeURIComponent(workspaceId)}`;
+    const resp = await fetch(url, { method: "GET" });
+    const text = await resp.text();
+    if (!resp.ok) {
+      sendError(socket, "AI policy list backend error", { requestId, detail: text });
+      return;
+    }
+    safeSend(socket, {
+      type: "response",
+      action: "heal/ai/policy",
+      requestId,
+      data: JSON.parse(text),
+    });
+  } catch (err) {
+    console.error("[AI Policy] list forward error:", err);
+    sendError(socket, "AI policy list failed", { requestId, detail: err.message });
+  }
+}
+
+// ── AI Policy: clear ─────────────────────────────────────────────────
+async function forwardAIPolicyClear(socket, data, requestId) {
+  try {
+    const env = data?.env || "development";
+    const workspaceId = data?.workspaceId || "default";
+    const url = `${backendAIPolicyListUrl}?env=${encodeURIComponent(env)}&workspaceId=${encodeURIComponent(workspaceId)}`;
+    const resp = await fetch(url, { method: "DELETE" });
+    const text = await resp.text();
+    if (!resp.ok) {
+      sendError(socket, "AI policy clear backend error", { requestId, detail: text });
+      return;
+    }
+    safeSend(socket, {
+      type: "response",
+      action: "heal/ai/policy/clear",
+      requestId,
+      data: JSON.parse(text),
+    });
+  } catch (err) {
+    console.error("[AI Policy] clear forward error:", err);
+    sendError(socket, "AI policy clear failed", { requestId, detail: err.message });
+  }
 }
 
 function sendError(socket, message, extra = {}) {

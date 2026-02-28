@@ -294,6 +294,472 @@ export class AnalyzerGatewayClient {
     return this._sendRequest('analyze/proactive/quick', payload);
   }
 
+  // ==========================================================================
+  // Self-Healing API
+  // ==========================================================================
+
+  /**
+   * Analyze code for auto-healable micro-issues.
+   * 
+   * Returns detected fixes (missing colons, unused imports, etc.)
+   * without applying them, unless autoApply is true.
+   * 
+   * @param {Object} payload - Healing request
+   * @param {string} payload.code - Code to analyze
+   * @param {string} payload.lang - Language identifier
+   * @param {string} [payload.filePath] - File path
+   * @param {boolean} [payload.autoApply=false] - Auto-apply safe fixes
+   * @returns {Promise<Object>} Healing result with fixes
+   */
+  healAnalyze(payload) {
+    return this._sendRequest('heal/analyze', {
+      code: payload.code,
+      lang: payload.lang,
+      filePath: payload.filePath || 'untitled',
+      autoApply: payload.autoApply || false,
+    });
+  }
+
+  /**
+   * Apply healing fixes to code.
+   * 
+   * Can apply all safe fixes or specific fix IDs.
+   * 
+   * @param {Object} payload - Apply request
+   * @param {string} payload.code - Current code
+   * @param {string} payload.lang - Language identifier
+   * @param {string} [payload.filePath] - File path
+   * @param {string[]} [payload.fixIds] - Specific fix IDs to apply (null = all safe)
+   * @returns {Promise<Object>} Result with healed code
+   */
+  healApply(payload) {
+    return this._sendRequest('heal/apply', {
+      code: payload.code,
+      lang: payload.lang,
+      filePath: payload.filePath || 'untitled',
+      fixIds: payload.fixIds || null,
+    });
+  }
+
+  /**
+   * Container-first healing: analyze file from container filesystem.
+   * 
+   * @param {Object} payload - Container healing request
+   * @param {string} payload.slug - Workspace slug
+   * @param {string} payload.filePath - File path in workspace
+   * @param {string} payload.lang - Language identifier
+   * @returns {Promise<Object>} Healing result
+   */
+  healContainer(payload) {
+    return this._sendRequest('heal/container', {
+      slug: payload.slug,
+      filePath: payload.filePath,
+      lang: payload.lang,
+    });
+  }
+
+  /**
+   * Get or update healing configuration.
+   * 
+   * @param {Object} [config] - Config updates (omit for GET)
+   * @returns {Promise<Object>} Current configuration
+   */
+  healConfig(config = null) {
+    return this._sendRequest('heal/config', config || {});
+  }
+
+  /**
+   * Get healing statistics.
+   * @returns {Promise<Object>} Healing stats
+   */
+  healStats() {
+    return this._sendRequest('heal/stats', {});
+  }
+
+  /**
+   * List all registered healing rules.
+   * @returns {Promise<Object>} List of rules
+   */
+  healRules() {
+    return this._sendRequest('heal/rules', {});
+  }
+
+  /**
+   * Batch-analyse multiple files for healing issues.
+   * @param {Object} payload - Batch request
+   * @param {Array} payload.files - Files to analyse [{filePath, language, code, priority?}]
+   * @returns {Promise<Object>} Aggregated batch result
+   */
+  healBatch(payload) {
+    return this._sendRequest('heal/batch', payload);
+  }
+
+  /**
+   * Get healing cache statistics.
+   * @returns {Promise<Object>} Cache hit rate and size
+   */
+  healCacheStats() {
+    return this._sendRequest('heal/cache/stats', {});
+  }
+
+  /**
+   * List available healing configuration presets.
+   * @returns {Promise<Object>} Preset names and their config values
+   */
+  healPresets() {
+    return this._sendRequest('heal/presets', {});
+  }
+
+  /**
+   * Apply a named healing configuration preset.
+   * @param {string} presetName - e.g. "conservative", "balanced", "aggressive"
+   * @returns {Promise<Object>} Applied config
+   */
+  healApplyPreset(presetName) {
+    return this._sendRequest('heal/preset', { preset: presetName });
+  }
+
+  /**
+   * Get Prometheus-compatible healing metrics.
+   * @returns {Promise<Object>} Raw metrics text
+   */
+  healMetrics() {
+    return this._sendRequest('heal/metrics', {});
+  }
+
+  // ─── AI Agent Methods ──────────────────────────────────────────────
+
+  /**
+   * Analyze code using the AI agent (LLM-powered detection).
+   *
+   * Sends code to the LLM which identifies real bugs:
+   * logic errors, null safety, missing awaits, off-by-one, etc.
+   *
+   * @param {Object} payload - AI analysis request
+   * @param {string} payload.code - Code to analyze
+   * @param {string} payload.lang - Language identifier
+   * @param {string} [payload.filePath] - File path
+   * @param {string} [payload.workspaceRoot] - Workspace root for context
+   * @param {boolean} [payload.autoApply=false] - Auto-apply safe fixes
+   * @param {number} [payload.focusStartLine] - Focus range start
+   * @param {number} [payload.focusEndLine] - Focus range end
+   * @param {boolean} [payload.validateFixes=true] - Run validation pass
+   * @param {number} [payload.minConfidence] - Minimum confidence threshold
+   * @returns {Promise<Object>} AI analysis result with fixes
+   */
+  aiAnalyze(payload) {
+    return this._sendRequest('heal/ai/analyze', {
+      code: payload.code,
+      lang: payload.lang,
+      filePath: payload.filePath || 'untitled',
+      workspaceRoot: payload.workspaceRoot || null,
+      autoApply: payload.autoApply || false,
+      focusStartLine: payload.focusStartLine ?? null,
+      focusEndLine: payload.focusEndLine ?? null,
+      validateFixes: payload.validateFixes ?? true,
+      minConfidence: payload.minConfidence ?? null,
+    });
+  }
+
+  /**
+   * Analyze multiple files using the AI agent in one LLM call.
+   *
+   * @param {Object} payload - Batch request
+   * @param {Object} payload.files - Object of { path: sourceCode }
+   * @param {string} [payload.lang] - Language identifier
+   * @param {boolean} [payload.autoApply=false] - Auto-apply safe fixes
+   * @returns {Promise<Object>} Batch analysis results by file
+   */
+  aiBatch(payload) {
+    return this._sendRequest('heal/ai/batch', {
+      files: payload.files,
+      lang: payload.lang || null,
+      autoApply: payload.autoApply || false,
+    });
+  }
+
+  /**
+   * Run hybrid analysis: regex rules + AI detection, merged results.
+   *
+   * @param {Object} payload - Hybrid request
+   * @param {string} payload.code - Code to analyze
+   * @param {string} payload.lang - Language identifier
+   * @param {string} [payload.filePath] - File path
+   * @param {string} [payload.workspaceRoot] - Workspace root for context
+   * @param {boolean} [payload.autoApply=false] - Auto-apply safe fixes
+   * @returns {Promise<Object>} Merged results
+   */
+  aiHybrid(payload) {
+    return this._sendRequest('heal/ai/hybrid', {
+      code: payload.code,
+      lang: payload.lang,
+      filePath: payload.filePath || 'untitled',
+      workspaceRoot: payload.workspaceRoot || null,
+      autoApply: payload.autoApply || false,
+    });
+  }
+
+  /**
+   * Fix compiler/runtime errors using the AI agent.
+   * This is the HMR runtime healing endpoint — send compiler diagnostics
+   * and source code, get back fixed code ready for HMR re-trigger.
+   *
+   * @param {Object} payload - Runtime error request
+   * @param {string} payload.code - Current source code of the broken file
+   * @param {string} payload.lang - Language identifier
+   * @param {string} [payload.filePath] - File path
+   * @param {Array<Object>} payload.diagnostics - Compiler/runtime diagnostics
+   * @param {string} [payload.errorOutput] - Raw compiler output text
+   * @param {boolean} [payload.autoApply=true] - Auto-apply fixes (default true for runtime healing)
+   * @param {string} [payload.module] - HMR module identifier
+   * @returns {Promise<Object>} Runtime healing result with healed code
+   */
+  aiRuntimeHeal(payload) {
+    return this._sendRequest('heal/ai/runtime', {
+      code: payload.code,
+      lang: payload.lang,
+      filePath: payload.filePath || 'untitled',
+      diagnostics: payload.diagnostics,
+      errorOutput: payload.errorOutput || null,
+      autoApply: payload.autoApply ?? true,
+      module: payload.module || null,
+    });
+  }
+
+  /**
+   * Get AI agent statistics: LLM calls, latency, acceptance rate.
+   * @returns {Promise<Object>} Agent statistics
+   */
+  aiStats() {
+    return this._sendRequest('heal/ai/stats', {});
+  }
+
+  /**
+   * Submit feedback for an AI-generated fix.
+   * This teaches the agent to improve over time.
+   * @param {Object} payload - Feedback data
+   * @param {string} payload.ruleId - The AI rule id (e.g. "AI_LOGIC_ERROR")
+   * @param {string} payload.feedbackType - One of: accepted, rejected, modified, auto_applied
+   * @param {string} [payload.filePath] - File the fix was in
+   * @param {string} [payload.originalText] - Original code
+   * @param {string} [payload.replacementText] - Replacement code
+   * @param {string} [payload.description] - Fix description
+   * @returns {Promise<Object>} Feedback acknowledgement
+   */
+  aiFeedback(payload) {
+    if (!payload?.ruleId || !payload?.feedbackType) {
+      return Promise.reject(new Error('ruleId and feedbackType are required'));
+    }
+    return this._sendRequest('heal/ai/feedback', payload);
+  }
+
+  /**
+   * Get the AI agent memory summary — acceptance rates, suppressed patterns.
+   * @returns {Promise<Object>} Memory summary
+   */
+  aiMemory() {
+    return this._sendRequest('heal/ai/memory', {});
+  }
+
+  /**
+   * Clear all AI agent learned patterns.
+   * Resets acceptance rates, un-suppresses everything.
+   * @returns {Promise<Object>} Clear confirmation
+   */
+  aiMemoryClear() {
+    return this._sendRequest('heal/ai/memory/clear', {});
+  }
+
+  /**
+   * Run project-level cross-file AI analysis.
+   *
+   * Analyzes the target file AND any files that import it (dependents).
+   *
+   * @param {Object} payload
+   * @param {string} payload.code          – file content
+   * @param {string} payload.lang          – language id
+   * @param {string} payload.filePath      – workspace-relative path
+   * @param {string} [payload.workspaceRoot]
+   * @param {Object} [payload.relatedFiles] – {path: content} for known dependents
+   * @returns {Promise<Object>} { fixes, analyzed_files, dependents_found, graph_summary }
+   */
+  aiProject(payload) {
+    return this._sendRequest('heal/ai/project', {
+      code: payload.code,
+      lang: payload.lang || 'plaintext',
+      filePath: payload.filePath,
+      workspaceRoot: payload.workspaceRoot,
+      relatedFiles: payload.relatedFiles,
+      validateFixes: payload.validateFixes ?? true,
+      minConfidence: payload.minConfidence,
+    });
+  }
+
+  /**
+   * Get current AI agent configuration.
+   * @returns {Promise<Object>} Config object with min_confidence, validate_fixes, etc.
+   */
+  aiConfig() {
+    return this._sendRequest('heal/ai/config', {});
+  }
+
+  /**
+   * Update AI agent configuration dynamically.
+   * @param {Object} updates - Partial config updates (camelCase keys)
+   * @returns {Promise<Object>} Updated config
+   */
+  aiConfigUpdate(updates) {
+    return this._sendRequest('heal/ai/config/update', updates);
+  }
+
+  /**
+   * Run AI pipeline health check.
+   * @returns {Promise<Object>} { healthy: boolean, checks: {...} }
+   */
+  aiHealth() {
+    return this._sendRequest('heal/ai/health', {});
+  }
+
+  /**
+   * Clear the AI prompt cache (forces fresh LLM calls on next analysis).
+   * @returns {Promise<Object>} { cleared: boolean, entries_removed: number }
+   */
+  aiCacheClear() {
+    return this._sendRequest('heal/ai/cache/clear', {});
+  }
+
+  /**
+   * Preview AI fixes without applying them — returns diff preview.
+   * @param {Object} payload
+   * @param {string} payload.code
+   * @param {string} payload.lang
+   * @param {string} [payload.filePath]
+   * @returns {Promise<Object>} { fixes, previewCode, previewFixCount, wasApplied: false }
+   */
+  aiPreview(payload) {
+    return this._sendRequest('heal/ai/preview', {
+      code: payload.code,
+      lang: payload.lang?.toLowerCase(),
+      filePath: payload.filePath || 'untitled',
+    });
+  }
+
+  // ── AI Policy (suppression) ─────────────────────────────────────────
+
+  /**
+   * Suppress a rule or fingerprinted pattern (policy, not feedback).
+   * @param {Object} payload
+   * @param {string}  payload.ruleId
+   * @param {string}  [payload.fingerprint]
+   * @param {'fingerprint'|'rule'} [payload.mode='fingerprint']
+   * @param {string}  [payload.reason]
+   * @param {number}  [payload.ttl] – seconds
+   * @returns {Promise<Object>} { status, rule_id, mode, suppress_count, escalated }
+   */
+  aiPolicySuppress(payload) {
+    if (!payload?.ruleId) {
+      return Promise.reject(new Error('ruleId is required for policy suppress'));
+    }
+    return this._sendRequest('heal/ai/policy/suppress', payload);
+  }
+
+  /**
+   * Remove a suppression.
+   * @param {Object} payload
+   * @param {string}  payload.ruleId
+   * @param {string}  [payload.fingerprint]
+   * @returns {Promise<Object>} { status, rule_id }
+   */
+  aiPolicyUnsuppress(payload) {
+    if (!payload?.ruleId) {
+      return Promise.reject(new Error('ruleId is required for policy unsuppress'));
+    }
+    return this._sendRequest('heal/ai/policy/unsuppress', payload);
+  }
+
+  /**
+   * List all suppressed rules/fingerprints.
+   * @returns {Promise<Object>} { user_id, total_rules, escalated_count, entries }
+   */
+  aiPolicyList(scope = {}) {
+    return this._sendRequest('heal/ai/policy', scope);
+  }
+
+  /**
+   * Clear all suppression policies.
+   * @returns {Promise<Object>} { status, entries_removed }
+   */
+  aiPolicyClear(scope = {}) {
+    return this._sendRequest('heal/ai/policy/clear', scope);
+  }
+
+  /**
+   * Run streaming AI analysis — receives progressive events as fixes are found.
+   *
+   * @param {Object} payload
+   * @param {string} payload.code       – file content to analyze
+   * @param {string} payload.lang       – language id
+   * @param {string} [payload.filePath] – workspace-relative file path
+   * @param {Object} callbacks
+   * @param {Function} [callbacks.onProgress] – (data) => void, progress updates
+   * @param {Function} [callbacks.onPartialFix] – (fix) => void, each fix as it arrives
+   * @param {Function} [callbacks.onComplete]  – (data) => void, final result
+   * @param {Function} [callbacks.onError]     – (err) => void, error events
+   * @returns {Promise<void>} resolves when stream ends
+   */
+  aiStream(payload, callbacks = {}) {
+    return new Promise((resolve, reject) => {
+      const requestId = this._sendRequest('heal/ai/stream', {
+        code: payload.code,
+        lang: payload.lang || 'plaintext',
+        filePath: payload.filePath,
+        workspaceRoot: payload.workspaceRoot,
+        validateFixes: payload.validateFixes ?? true,
+        minConfidence: payload.minConfidence,
+      });
+
+      // Listen for stream messages matching this requestId
+      const handler = (event) => {
+        const msg = typeof event.data === 'string' ? JSON.parse(event.data) : event.data;
+        if (!msg || msg.requestId !== requestId) return;
+
+        if (msg.type === 'stream') {
+          const ev = msg.event || msg.data?.event;
+          if (ev === 'progress' && callbacks.onProgress) {
+            callbacks.onProgress(msg.data);
+          } else if (ev === 'partial_fix' && callbacks.onPartialFix) {
+            callbacks.onPartialFix(msg.data);
+          } else if (ev === 'complete' && callbacks.onComplete) {
+            callbacks.onComplete(msg.data);
+          } else if (ev === 'error' && callbacks.onError) {
+            callbacks.onError(msg.data);
+          }
+        }
+
+        if (msg.type === 'stream_end') {
+          cleanup();
+          resolve();
+        }
+      };
+
+      const cleanup = () => {
+        if (this._ws) {
+          this._ws.removeEventListener('message', handler);
+        }
+      };
+
+      if (this._ws) {
+        this._ws.addEventListener('message', handler);
+      }
+
+      // Safety timeout — 60 s
+      setTimeout(() => {
+        cleanup();
+        resolve();
+      }, 60_000);
+    });
+  }
+
   /**
    * Run workspace-level multi-file analysis
    * @param {Object} payload - Workspace analysis request
