@@ -602,6 +602,22 @@ export class AnalyzerGatewayClient {
   }
 
   /**
+   * Preview AI fixes without applying them — returns diff preview.
+   * @param {Object} payload
+   * @param {string} payload.code
+   * @param {string} payload.lang
+   * @param {string} [payload.filePath]
+   * @returns {Promise<Object>} { fixes, previewCode, previewFixCount, wasApplied: false }
+   */
+  aiPreview(payload) {
+    return this._sendRequest('heal/ai/preview', {
+      code: payload.code,
+      lang: payload.lang?.toLowerCase(),
+      filePath: payload.filePath || 'untitled',
+    });
+  }
+
+  /**
    * Run streaming AI analysis — receives progressive events as fixes are found.
    *
    * @param {Object} payload
