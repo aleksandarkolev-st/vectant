@@ -43,6 +43,7 @@ from .ai_memory import AIAgentMemory, get_agent_memory
 from .ai_rate_limiter import get_rate_limiter, RateLimitExceeded
 from .ai_retry import with_retry
 from .ai_telemetry import get_telemetry
+from .ai_prompt_cache import get_prompt_cache
 from .types import HealingFix, HealingSeverity
 
 logger = logging.getLogger("healing.ai_agent")
@@ -155,6 +156,14 @@ class AIHealingAgent:
         tel = get_telemetry()
         tel.count("detect_calls")
 
+        # 0. Check prompt cache (skip LLM for identical code)
+        cache = get_prompt_cache()
+        cached = cache.get(source_code, language or "", focus_range)
+        if cached is not None:
+            tel.count("cache_hits")
+            logger.debug("prompt cache hit for %s", file_path)
+            return cached
+
         # 1. Collect context
         ctx = collect_context(
             file_path=file_path,
@@ -219,6 +228,9 @@ class AIHealingAgent:
 
         # 8. Limit count
         fixes = fixes[: self.config.max_fixes_per_file]
+
+        # 8b. Cache the result
+        cache.put(source_code, language or "", fixes, focus_range)
 
         # 9. Update stats
         self.stats.total_fixes_proposed += len(fixes)
