@@ -44,6 +44,7 @@ from .ai_rate_limiter import get_rate_limiter, RateLimitExceeded
 from .ai_retry import with_retry
 from .ai_telemetry import get_telemetry
 from .ai_prompt_cache import get_prompt_cache
+from .ai_policy import get_suppression_policy
 from .types import HealingFix, HealingSeverity
 
 logger = logging.getLogger("healing.ai_agent")
@@ -225,6 +226,9 @@ class AIHealingAgent:
         # 7. Optionally validate each fix
         if self.config.validate_fixes:
             fixes = await self._validate_fixes(fixes, ctx)
+
+        # 7b. Policy gate: skip suppressed/escalated rules
+        fixes = await self._apply_policy_gate(fixes)
 
         # 8. Limit count
         fixes = fixes[: self.config.max_fixes_per_file]
@@ -488,6 +492,38 @@ class AIHealingAgent:
             self.stats.avg_confidence = self.stats._confidence_sum / total
 
         return calibrated
+
+    async def _apply_policy_gate(self, fixes: List[HealingFix]) -> List[HealingFix]:
+        """
+        Policy gate: remove fixes for suppressed/escalated rules.
+
+        Unlike the memory-based suppression in _calibrate_confidence (which
+        is a model-quality signal based on rejection count), this gate
+        enforces explicit user *policy* preferences.
+
+        Escalated rules (5+ suppressions) have is_safe forced to False
+        so they cannot be auto-applied — they become manual-only.
+        """
+        policy = get_suppression_policy()
+        result = []
+
+        for fix in fixes:
+            rid = fix.rule_id
+
+            # Fully suppressed → drop entirely
+            if await policy.is_suppressed(rid):
+                logger.debug("Policy gate: suppressed %s — %s", rid, fix.description)
+                self.stats.total_fixes_rejected += 1
+                continue
+
+            # Escalated → keep but demote to manual-only
+            if await policy.is_escalated(rid):
+                fix.is_safe = False
+                logger.debug("Policy gate: escalated %s → manual-only", rid)
+
+            result.append(fix)
+
+        return result
 
     # ── Helpers ────────────────────────────────────────────────────────
 
