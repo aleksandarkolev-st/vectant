@@ -472,3 +472,132 @@ This gives:
 | Context-aware (imports, related files) | Token budget limits context window |
 | Validation pass reduces false positives | Costs 2× LLM calls when enabled |
 | Works alongside regex in hybrid mode | No offline fallback (regex-only if LLM unavailable) |
+
+---
+
+## 11. Infrastructure modules (commits 148–185)
+
+### 11.1 Dependency graph (`ai_deps.py`)
+
+Parses `import`/`require`/`use` statements for JS/TS, Python, and Rust.
+Builds an in-memory directed graph of file→file dependencies.
+
+- `DependencyGraph.add_file(path, code)` — parse imports, track edges
+- `DependencyGraph.dependents_of(path)` — who imports this file?
+- `DependencyGraph.transitive_dependents(path, max_depth=3)` — transitive closure
+- Singleton per workspace root via `get_dependency_graph(root)`
+
+Used by `/heal/ai/project` endpoint to analyze a changed file and all its importers.
+
+### 11.2 Fix utilities (`ai_fix_utils.py`)
+
+Stateless helper functions for manipulating lists of `HealingFix` objects:
+
+- `deduplicate_fixes(fixes)` — keep higher-confidence when same line + category
+- `merge_fix_lists(*lists)` — combine + deduplicate across sources
+- `group_by_file()`, `group_by_severity()` — dict grouping
+- `sort_by_severity()`, `sort_by_line()` — ordering
+- `safe_fixes()`, `unsafe_fixes()` — partition by `is_safe`
+- `fixes_summary(fixes)` — human-readable one-liner
+
+Wired into `engine.analyze_hybrid()` for automatic dedup after merging regex + AI.
+
+### 11.3 Telemetry (`ai_telemetry.py`)
+
+Lightweight observability for the AI pipeline:
+
+- `TimingBucket` — min/max/avg/count for named operations
+- `ErrorCounter` — error counts by type
+- `AITelemetry.timer(name)` — context manager for timing blocks
+- `AITelemetry.snapshot()` — JSON-serializable summary
+- Exposed in `/heal/ai/stats` response under `telemetry` key
+
+### 11.4 Prompt cache (`ai_prompt_cache.py`)
+
+LRU cache (max 64 entries, TTL 120s) keyed on `SHA-256(code + lang + focus_range)`.
+Skips the LLM call entirely when the same code is analyzed twice in quick succession.
+
+- Cache hits tracked in telemetry as `cache_hits` counter
+- Stats exposed in `/heal/ai/stats` under `prompt_cache` key
+- Clearable via `POST /heal/ai/cache/clear`
+
+### 11.5 Fix history (`aiFixHistory.js`, client-side)
+
+Session-scoped audit log of all fix actions:
+
+- `record({ fix, action, filePath })` — append entry (applied/dismissed/modified)
+- `entries()`, `forFile()`, `forAction()` — query
+- `stats()` — applied/dismissed/modified counts
+- Max 200 entries, sessionStorage persistence
+- Rendered by `AIActivityTimeline` component
+
+### 11.6 Streaming (`ai_streaming.py`)
+
+SSE-based progressive delivery of analysis results:
+
+- Phase 1: context collection (10–20%)
+- Phase 2: LLM detection (30–70%)
+- Phase 3: emit individual `partial_fix` events
+- Phase 4: `complete` event with full results
+- Error events at any phase without crashing the stream
+
+### 11.7 Preview endpoint (`POST /heal/ai/preview`)
+
+Dry-run mode: analyzes code and simulates applying all safe fixes
+without modifying anything. Returns `previewCode` (the result) alongside
+the fix list. Used by `AIDiffPreview` component.
+
+### 11.8 Rate limiter & retry (`ai_rate_limiter.py`, `ai_retry.py`)
+
+- **Token bucket**: 10 requests / 60 seconds, 15s wait timeout
+- **Exponential backoff**: 2 retries, 1s base, 8s max, ±50% jitter
+- Both wired into `_call_llm()` in the agent
+
+---
+
+## 12. Monaco editor integration (commits 135–170)
+
+| Module | Purpose |
+|--------|---------|
+| `AIInlineWidget.js` | Clickable lightbulb hints at each fix line |
+| `aiDiagnostics.js` | Squiggly underlines via Monaco markers API |
+| `aiCodeActions.js` | Ctrl+. quick-fix lightbulb provider |
+| `aiHoverProvider.js` | Rich hover tooltip with severity, confidence, diff |
+| `AIConfidenceGate.jsx` | Visual gating: green AUTO badge ≥0.92, hidden <0.35 |
+| `AIDiffPreview.jsx` | Monaco diff editor (side-by-side or inline) |
+| `AIActivityTimeline.jsx` | Compact timeline of apply/dismiss actions |
+
+All managed by `useAIHealing` hook lifecycle — register on analysis, dispose on cleanup/reset.
+
+---
+
+## 13. API endpoint inventory
+
+### Regex-based
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/heal/analyze` | Analyze code with regex rules |
+| POST | `/heal/apply` | Apply specific or all safe regex fixes |
+| POST | `/heal/batch` | Batch multi-file regex analysis |
+| GET | `/heal/cache/stats` | Regex cache statistics |
+| GET | `/heal/presets` | List config presets |
+| POST | `/heal/preset` | Apply a config preset |
+| GET | `/heal/metrics` | Prometheus-compatible metrics |
+
+### AI-powered
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/heal/ai/analyze` | Single-file AI analysis |
+| POST | `/heal/ai/batch` | Multi-file AI analysis (single LLM call) |
+| POST | `/heal/ai/hybrid` | Regex + AI merged results |
+| POST | `/heal/ai/stream` | SSE streaming analysis |
+| POST | `/heal/ai/preview` | Dry-run with simulated diff |
+| POST | `/heal/ai/project` | Cross-file analysis via dependency graph |
+| GET | `/heal/ai/stats` | Agent stats + telemetry + cache |
+| GET | `/heal/ai/health` | Pipeline health check |
+| POST | `/heal/ai/feedback` | User feedback on a fix |
+| GET | `/heal/ai/memory` | View learned patterns |
+| POST | `/heal/ai/memory/clear` | Reset learned patterns |
+| GET | `/heal/ai/config` | Current agent config |
+| PUT | `/heal/ai/config` | Update agent config at runtime |
+| POST | `/heal/ai/cache/clear` | Flush prompt cache |
