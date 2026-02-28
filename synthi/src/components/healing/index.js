@@ -33,3 +33,7 @@ export {
   registerAICodeActions,
   disposeAICodeActions,
 } from './aiCodeActions';
+export {
+  registerAIHoverProvider,
+  disposeAIHoverProvider,
+} from './aiHoverProvider';
