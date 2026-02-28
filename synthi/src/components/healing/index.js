@@ -17,3 +17,7 @@ export { AIFixCard } from './AIFixCard';
 export { AIHealingPanel } from './AIHealingPanel';
 export { AIStatsPanel } from './AIStatsPanel';
 export { AIErrorBoundary } from './AIErrorBoundary';
+export {
+  createAIInlineWidgets,
+  disposeAIInlineWidgets,
+} from './AIInlineWidget';
