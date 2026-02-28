@@ -2384,6 +2384,50 @@ async def heal_ai_cache_clear():
     return {"cleared": True, "entries_removed": prev_size}
 
 
+@app.post("/heal/ai/preview")
+async def heal_ai_preview(req: AIAnalyzeRequest):
+    """
+    Preview AI fixes WITHOUT applying them.
+
+    Returns the analysis results along with a simulated diff showing
+    what the code would look like after applying all safe fixes.
+    Useful for review workflows and diff-preview UIs.
+    """
+    engine = get_healing_engine()
+
+    try:
+        result = await engine.analyze_with_ai(
+            code=req.code,
+            language=req.lang.lower(),
+            file_path=req.file_path or "untitled",
+            workspace_root=None,
+        )
+
+        response = result.to_dict()
+        response["source"] = "ai_preview"
+
+        # Simulate applying all safe fixes to generate a preview
+        safe_fixes = result.safe_fixes
+        if safe_fixes:
+            preview_code = req.code
+            for fix in sorted(safe_fixes, key=lambda f: (f.line, f.column), reverse=True):
+                try:
+                    preview_code = engine.apply_fix(preview_code, fix)
+                except Exception:
+                    pass
+            response["previewCode"] = preview_code
+            response["previewFixCount"] = len(safe_fixes)
+        else:
+            response["previewCode"] = req.code
+            response["previewFixCount"] = 0
+
+        response["wasApplied"] = False
+        return response
+    except Exception as e:
+        logger.error(f"[AI Preview] Error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.post("/heal/ai/project")
 async def heal_ai_project(req: AIProjectAnalyzeRequest):
     """
