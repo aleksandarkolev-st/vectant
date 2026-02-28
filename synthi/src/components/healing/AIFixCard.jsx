@@ -14,7 +14,9 @@ import {
   ShieldAlert,
   AlertTriangle,
   Info,
+  Columns,
 } from 'lucide-react';
+import { AIDiffPreview } from './AIDiffPreview';
 
 
 // ── Severity config ───────────────────────────────────────────────────
@@ -77,6 +79,7 @@ function ConfidenceBadge({ confidence }) {
  */
 export function AIFixCard({ fix, onApply, onDismiss, index }) {
   const [expanded, setExpanded] = useState(false);
+  const [richDiff, setRichDiff] = useState(false);
 
   const severity = fix.severity || 'moderate';
   const meta = getSeverityMeta(severity);
@@ -133,16 +136,28 @@ export function AIFixCard({ fix, onApply, onDismiss, index }) {
 
       {/* ── Diff toggle ─────────────────────────────────────────── */}
       {(originalText || replacementText) && (
-        <button
-          onClick={toggleExpand}
-          className="flex items-center gap-1 text-[11px] text-white/40 hover:text-white/70 mt-2 transition-colors"
-        >
-          {expanded ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
-          {expanded ? 'Hide diff' : 'Show diff'}
-        </button>
+        <div className="flex items-center gap-2 mt-2">
+          <button
+            onClick={toggleExpand}
+            className="flex items-center gap-1 text-[11px] text-white/40 hover:text-white/70 transition-colors"
+          >
+            {expanded ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+            {expanded ? 'Hide diff' : 'Show diff'}
+          </button>
+          {expanded && (
+            <button
+              onClick={() => setRichDiff((r) => !r)}
+              className="flex items-center gap-1 text-[11px] text-white/30 hover:text-white/60 transition-colors"
+              title={richDiff ? 'Switch to text diff' : 'Switch to Monaco diff'}
+            >
+              <Columns size={10} />
+              {richDiff ? 'text' : 'rich'}
+            </button>
+          )}
+        </div>
       )}
 
-      {expanded && (
+      {expanded && !richDiff && (
         <div className="mt-2 space-y-1 text-xs font-mono">
           {originalText && (
             <div className="bg-red-500/10 text-red-300/80 p-1.5 rounded overflow-x-auto">
@@ -156,6 +171,21 @@ export function AIFixCard({ fix, onApply, onDismiss, index }) {
               {replacementText}
             </div>
           )}
+        </div>
+      )}
+
+      {expanded && richDiff && (
+        <div className="mt-2">
+          <AIDiffPreview
+            originalCode={originalText}
+            modifiedCode={replacementText}
+            language={fix.language || 'plaintext'}
+            height={120}
+            inline
+            title={`Fix L${line}`}
+            onApply={handleApply}
+            onDismiss={handleDismiss}
+          />
         </div>
       )}
 
