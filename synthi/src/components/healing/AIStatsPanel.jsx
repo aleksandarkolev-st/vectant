@@ -13,7 +13,9 @@ import {
   ShieldCheck,
   Clock,
   AlertTriangle,
+  History,
 } from 'lucide-react';
+import { AIActivityTimeline } from './AIActivityTimeline';
 
 
 function StatCard({ icon: Icon, label, value, sub, color = 'text-white/70' }) {
@@ -224,6 +226,20 @@ export function AIStatsPanel({ aiHealing, gateway }) {
             </div>
           )}
         </div>
+
+        {/* ── Activity Timeline ────────────────────────────────────── */}
+        {aiHealing?.getFixHistory && (
+          <div>
+            <div className="flex items-center gap-1.5 mb-2">
+              <History size={12} className="text-white/40" />
+              <h3 className="text-xs text-white/50 uppercase tracking-wider">Recent Activity</h3>
+            </div>
+            <AIActivityTimeline
+              entries={aiHealing.getFixHistory?.() ?? []}
+              maxItems={10}
+            />
+          </div>
+        )}
       </div>
     </div>
   );
