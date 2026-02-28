@@ -1,9 +1,11 @@
 """
 Self-Healing Engine
 
-Automatic detection and correction of small, safe code issues.
-Only corrects micro-issues (missing colons, unused imports, missing imports, etc.)
-and never touches larger structural code that is the user's responsibility.
+Automatic detection and correction of code issues via two modes:
+
+1. **Regex mode** (fast): Heuristic rules for obvious syntax issues
+2. **AI mode** (agentic): LLM-powered detection for real bugs —
+   logic errors, null safety, missing awaits, off-by-one, etc.
 """
 
 from .types import (
@@ -19,6 +21,8 @@ from .types import (
 from .classifier import HealingClassifier
 from .engine import SelfHealingEngine
 from .rule_registry import HealingRuleRegistry
+from .ai_agent import AIHealingAgent, AIAgentConfig
+from .ai_memory import AIAgentMemory, get_agent_memory
 
 __all__ = [
     "HealingCategory",
@@ -32,4 +36,8 @@ __all__ = [
     "HealingClassifier",
     "SelfHealingEngine",
     "HealingRuleRegistry",
+    "AIHealingAgent",
+    "AIAgentConfig",
+    "AIAgentMemory",
+    "get_agent_memory",
 ]
