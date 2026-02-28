@@ -427,6 +427,86 @@ export class AnalyzerGatewayClient {
     return this._sendRequest('heal/metrics', {});
   }
 
+  // ─── AI Agent Methods ──────────────────────────────────────────────
+
+  /**
+   * Analyze code using the AI agent (LLM-powered detection).
+   *
+   * Sends code to the LLM which identifies real bugs:
+   * logic errors, null safety, missing awaits, off-by-one, etc.
+   *
+   * @param {Object} payload - AI analysis request
+   * @param {string} payload.code - Code to analyze
+   * @param {string} payload.lang - Language identifier
+   * @param {string} [payload.filePath] - File path
+   * @param {string} [payload.workspaceRoot] - Workspace root for context
+   * @param {boolean} [payload.autoApply=false] - Auto-apply safe fixes
+   * @param {number} [payload.focusStartLine] - Focus range start
+   * @param {number} [payload.focusEndLine] - Focus range end
+   * @param {boolean} [payload.validateFixes=true] - Run validation pass
+   * @param {number} [payload.minConfidence] - Minimum confidence threshold
+   * @returns {Promise<Object>} AI analysis result with fixes
+   */
+  aiAnalyze(payload) {
+    return this._sendRequest('heal/ai/analyze', {
+      code: payload.code,
+      lang: payload.lang,
+      filePath: payload.filePath || 'untitled',
+      workspaceRoot: payload.workspaceRoot || null,
+      autoApply: payload.autoApply || false,
+      focusStartLine: payload.focusStartLine ?? null,
+      focusEndLine: payload.focusEndLine ?? null,
+      validateFixes: payload.validateFixes ?? true,
+      minConfidence: payload.minConfidence ?? null,
+    });
+  }
+
+  /**
+   * Analyze multiple files using the AI agent in one LLM call.
+   *
+   * @param {Object} payload - Batch request
+   * @param {Object} payload.files - Object of { path: sourceCode }
+   * @param {string} [payload.lang] - Language identifier
+   * @param {boolean} [payload.autoApply=false] - Auto-apply safe fixes
+   * @returns {Promise<Object>} Batch analysis results by file
+   */
+  aiBatch(payload) {
+    return this._sendRequest('heal/ai/batch', {
+      files: payload.files,
+      lang: payload.lang || null,
+      autoApply: payload.autoApply || false,
+    });
+  }
+
+  /**
+   * Run hybrid analysis: regex rules + AI detection, merged results.
+   *
+   * @param {Object} payload - Hybrid request
+   * @param {string} payload.code - Code to analyze
+   * @param {string} payload.lang - Language identifier
+   * @param {string} [payload.filePath] - File path
+   * @param {string} [payload.workspaceRoot] - Workspace root for context
+   * @param {boolean} [payload.autoApply=false] - Auto-apply safe fixes
+   * @returns {Promise<Object>} Merged results
+   */
+  aiHybrid(payload) {
+    return this._sendRequest('heal/ai/hybrid', {
+      code: payload.code,
+      lang: payload.lang,
+      filePath: payload.filePath || 'untitled',
+      workspaceRoot: payload.workspaceRoot || null,
+      autoApply: payload.autoApply || false,
+    });
+  }
+
+  /**
+   * Get AI agent statistics: LLM calls, latency, acceptance rate.
+   * @returns {Promise<Object>} Agent statistics
+   */
+  aiStats() {
+    return this._sendRequest('heal/ai/stats', {});
+  }
+
   /**
    * Run workspace-level multi-file analysis
    * @param {Object} payload - Workspace analysis request
