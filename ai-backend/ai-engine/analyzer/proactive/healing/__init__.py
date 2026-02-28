@@ -24,6 +24,7 @@ from .rule_registry import HealingRuleRegistry
 from .ai_agent import AIHealingAgent, AIAgentConfig
 from .ai_memory import AIAgentMemory, get_agent_memory
 from .ai_deps import DependencyGraph, get_dependency_graph
+from .ai_prompt_cache import AIPromptCache, get_prompt_cache
 
 __all__ = [
     "HealingCategory",
@@ -43,4 +44,6 @@ __all__ = [
     "get_agent_memory",
     "DependencyGraph",
     "get_dependency_graph",
+    "AIPromptCache",
+    "get_prompt_cache",
 ]
