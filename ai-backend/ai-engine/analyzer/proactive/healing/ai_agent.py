@@ -42,6 +42,7 @@ from .ai_context import (
 from .ai_memory import AIAgentMemory, get_agent_memory
 from .ai_rate_limiter import get_rate_limiter, RateLimitExceeded
 from .ai_retry import with_retry
+from .ai_telemetry import get_telemetry
 from .types import HealingFix, HealingSeverity
 
 logger = logging.getLogger("healing.ai_agent")
@@ -151,6 +152,8 @@ class AIHealingAgent:
         calibrated.
         """
         start_time = time.time()
+        tel = get_telemetry()
+        tel.count("detect_calls")
 
         # 1. Collect context
         ctx = collect_context(
@@ -221,6 +224,8 @@ class AIHealingAgent:
         self.stats.total_fixes_proposed += len(fixes)
         elapsed = (time.time() - start_time) * 1000
         self.stats.total_latency_ms += elapsed
+        tel.record_timing("detect", elapsed)
+        tel.count("fixes_proposed", len(fixes))
 
         logger.info(
             f"AI agent detected {len(fixes)} fixes in {file_path} "
@@ -384,6 +389,8 @@ class AIHealingAgent:
         """
         provider = self._get_provider()
         self.stats.total_llm_calls += 1
+        tel = get_telemetry()
+        tel.count("llm_calls")
 
         # Acquire a rate-limit token (waits up to 15s, then raises)
         limiter = get_rate_limiter()
@@ -419,10 +426,12 @@ class AIHealingAgent:
                 f"LLM call timed out after {self.config.llm_timeout}s (after retries)"
             )
             self.stats.total_llm_errors += 1
+            tel.error("llm_timeout")
             return None
         except Exception as e:
             logger.error(f"LLM call failed after retries: {e}")
             self.stats.total_llm_errors += 1
+            tel.error(f"llm_{type(e).__name__}")
             return None
 
     # ── Confidence calibration ────────────────────────────────────────
