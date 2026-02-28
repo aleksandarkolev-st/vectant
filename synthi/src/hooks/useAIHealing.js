@@ -28,6 +28,7 @@ import {
   disposeAICodeActions,
   registerAIHoverProvider,
   disposeAIHoverProvider,
+  notifyAIFixes,
 } from '@/components/healing';
 
 import {
@@ -204,6 +205,11 @@ export function useAIHealing({
           message: `AI found ${detectedFixes.length} issue${detectedFixes.length === 1 ? '' : 's'}`,
           type: 'info',
         }));
+
+        // Notify for high/critical severity
+        notifyAIFixes(detectedFixes, {
+          flash: editor?.getDomNode?.() ?? null,
+        });
       } else {
         // Clear any stale markers
         if (model) clearAIDiagnostics(model);
