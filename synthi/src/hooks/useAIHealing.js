@@ -229,6 +229,95 @@ export function useAIHealing({
     }
   }, [enabled, gateway, editorRef, filePath, language, workspaceRoot, mode, dispatch]);
 
+  // ── Streaming analysis (progressive fix delivery) ───────────────────
+  const streamAnalyze = useCallback(async (options = {}) => {
+    if (!enabled || !gateway?.aiStream) return null;
+
+    const editor = editorRef?.current;
+    if (!editor) return null;
+
+    const model = editor.getModel();
+    if (!model) return null;
+
+    const content = model.getValue();
+    if (!content?.trim()) return null;
+
+    setIsAnalyzing(true);
+    setError(null);
+    setFixes([]);
+
+    // Accumulate fixes as they arrive
+    const accumulated = [];
+
+    try {
+      await gateway.aiStream(
+        {
+          code: content,
+          lang: language || 'plaintext',
+          filePath,
+          workspaceRoot,
+          validateFixes: options.validateFixes ?? true,
+          minConfidence: options.minConfidence,
+        },
+        {
+          onProgress: (data) => {
+            // Optional: could show a progress bar
+          },
+          onPartialFix: (data) => {
+            if (!mountedRef.current) return;
+            const fix = data?.fix || data;
+            if (!fix) return;
+            accumulated.push(fix);
+            setFixes([...accumulated]);
+          },
+          onComplete: (data) => {
+            if (!mountedRef.current) return;
+            const finalFixes = data?.fixes || accumulated;
+            setFixes(finalFixes);
+            setLastAnalyzedAt(Date.now());
+
+            dispatch(enqueueToast({
+              message: finalFixes.length
+                ? `AI found ${finalFixes.length} issue${finalFixes.length === 1 ? '' : 's'} (streamed)`
+                : 'AI analysis: no issues found ✓',
+              type: finalFixes.length ? 'info' : 'success',
+            }));
+          },
+          onError: (data) => {
+            if (!mountedRef.current) return;
+            setError(data?.message || 'Stream error');
+          },
+        },
+      );
+    } catch (err) {
+      if (mountedRef.current) {
+        setError(err?.message || 'Stream analysis failed');
+      }
+    } finally {
+      if (mountedRef.current) {
+        setIsAnalyzing(false);
+
+        // Render whatever we accumulated
+        if (accumulated.length > 0) {
+          const editor = editorRef?.current;
+          if (editor) {
+            disposeAIInlineWidgets(editor);
+            disposeAICodeActions();
+            createAIInlineWidgets(editor, accumulated, {
+              onApply: (fix) => applyFix(fix),
+              onDismiss: (fix) => dismissFixInternal(fix),
+            });
+            codeActionsRef.current = registerAICodeActions(editor, accumulated, {
+              onApply: (fix) => applyFix(fix),
+            });
+            const m = editor.getModel();
+            if (m) setAIDiagnostics(m, accumulated);
+          }
+        }
+      }
+    }
+  }, [enabled, gateway, editorRef, filePath, language, workspaceRoot, dispatch]);
+
   // ── Apply a single fix ──────────────────────────────────────────────
   const applyFix = useCallback((fix) => {
     const editor = editorRef?.current;
@@ -422,6 +511,7 @@ export function useAIHealing({
 
     // Actions
     analyze,
+    streamAnalyze,
     applyFix,
     applyAllSafe,
     dismissFix,
