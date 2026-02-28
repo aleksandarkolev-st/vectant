@@ -24,6 +24,8 @@ import {
   disposeAIInlineWidgets,
   setAIDiagnostics,
   clearAIDiagnostics,
+  registerAICodeActions,
+  disposeAICodeActions,
 } from '@/components/healing';
 
 import {
@@ -75,6 +77,7 @@ export function useAIHealing({
   const mountedRef = useRef(true);
   const lastDecoRef = useRef(null);
   const inlineWidgetRef = useRef(null);
+  const codeActionsRef = useRef(null);
 
   // ── Cleanup ─────────────────────────────────────────────────────────
   useEffect(() => {
@@ -83,6 +86,7 @@ export function useAIHealing({
       mountedRef.current = false;
       if (lastDecoRef.current) lastDecoRef.current.dispose();
       disposeAIInlineWidgets(editorRef?.current);
+      disposeAICodeActions();
       const model = editorRef?.current?.getModel?.();
       if (model) clearAIDiagnostics(model);
     };
@@ -97,6 +101,7 @@ export function useAIHealing({
       lastDecoRef.current = null;
     }
     disposeAIInlineWidgets(editorRef?.current);
+    disposeAICodeActions();
     const model = editorRef?.current?.getModel?.();
     if (model) clearAIDiagnostics(model);
   }, [filePath]);
@@ -170,6 +175,14 @@ export function useAIHealing({
           setAIDiagnostics(model, detectedFixes);
         }
 
+        // ── Code actions (lightbulb / Ctrl+. quick-fix) ───────────
+        disposeAICodeActions();
+        codeActionsRef.current = registerAICodeActions(
+          editor,
+          detectedFixes,
+          { onApply: (fix) => applyFix(fix) },
+        );
+
         dispatch(enqueueToast({
           message: `AI found ${detectedFixes.length} issue${detectedFixes.length === 1 ? '' : 's'}`,
           type: 'info',
@@ -178,6 +191,7 @@ export function useAIHealing({
         // Clear any stale markers
         if (model) clearAIDiagnostics(model);
         disposeAIInlineWidgets(editor);
+        disposeAICodeActions();
 
         dispatch(enqueueToast({
           message: 'AI analysis: no issues found ✓',
@@ -321,6 +335,7 @@ export function useAIHealing({
     const editor = editorRef?.current;
     if (editor) {
       disposeAIInlineWidgets(editor);
+      disposeAICodeActions();
       const model = editor.getModel();
       if (model) clearAIDiagnostics(model);
     }
