@@ -2176,6 +2176,73 @@ async def heal_ai_stats():
     return stats
 
 
+@app.get("/heal/ai/health")
+async def heal_ai_health():
+    """
+    Health check for the AI healing pipeline.
+
+    Validates that:
+    - The LLM provider is configured (GEMINI_API_KEY is set)
+    - The rate limiter is functional
+    - The memory store is accessible
+    - The dependency graph is initialized
+    """
+    import os
+    checks = {}
+
+    # 1. LLM provider
+    api_key = os.environ.get("GEMINI_API_KEY", "")
+    checks["llm_provider"] = {
+        "configured": bool(api_key),
+        "provider": "gemini",
+        "key_prefix": api_key[:8] + "…" if len(api_key) > 8 else "(not set)",
+    }
+
+    # 2. Rate limiter
+    from analyzer.proactive.healing.ai_rate_limiter import get_rate_limiter
+    try:
+        limiter = get_rate_limiter()
+        checks["rate_limiter"] = {
+            "ok": True,
+            **limiter.stats,
+        }
+    except Exception as e:
+        checks["rate_limiter"] = {"ok": False, "error": str(e)}
+
+    # 3. Memory store
+    from analyzer.proactive.healing.ai_memory import get_agent_memory
+    try:
+        memory = get_agent_memory()
+        checks["memory"] = {
+            "ok": True,
+            "patterns": len(memory._pattern_stats) if hasattr(memory, "_pattern_stats") else 0,
+            "history_size": len(memory._history) if hasattr(memory, "_history") else 0,
+        }
+    except Exception as e:
+        checks["memory"] = {"ok": False, "error": str(e)}
+
+    # 4. Dependency graph
+    from analyzer.proactive.healing.ai_deps import get_dependency_graph
+    try:
+        graph = get_dependency_graph()
+        checks["dep_graph"] = {
+            "ok": True,
+            **graph.summary(),
+        }
+    except Exception as e:
+        checks["dep_graph"] = {"ok": False, "error": str(e)}
+
+    all_ok = all(
+        c.get("ok", c.get("configured", False))
+        for c in checks.values()
+    )
+
+    return {
+        "healthy": all_ok,
+        "checks": checks,
+    }
+
+
 @app.post("/heal/ai/stream")
 async def heal_ai_stream(req: AIAnalyzeRequest):
     """
