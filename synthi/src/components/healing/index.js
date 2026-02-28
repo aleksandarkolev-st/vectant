@@ -41,3 +41,4 @@ export {
   notifyAIFixes,
   requestNotificationPermission,
 } from './aiNotifications';
+export { AISuppressedRulesPanel } from './AISuppressedRulesPanel';
