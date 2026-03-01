@@ -18,6 +18,8 @@ import {
 const MAX_TOTAL_SIZE = 10 * 1024 * 1024;
 /** Max single file size in bytes (5 MB) */
 const MAX_FILE_SIZE = 5 * 1024 * 1024;
+/** Max prompt length in characters */
+const MAX_PROMPT_LENGTH = 2000;
 /** Allowed MIME prefixes */
 const ALLOWED_TYPES = [
   "text/",
@@ -251,9 +253,14 @@ export default function AIJumpstartSection({
               id="ai-jumpstart-prompt"
               placeholder="e.g. A full-stack Next.js task manager with Prisma, auth, and a clean dashboard UI…"
               value={prompt}
-              onChange={(e) => onPromptChange(e.target.value)}
+              onChange={(e) => {
+                if (e.target.value.length <= MAX_PROMPT_LENGTH) {
+                  onPromptChange(e.target.value);
+                }
+              }}
               disabled={disabled}
               rows={4}
+              maxLength={MAX_PROMPT_LENGTH}
               className="th-input w-full px-3 py-2.5 rounded-lg text-sm outline-none transition-colors synthi-focus-ring resize-y"
               style={{
                 background: "var(--bg-editor)",
@@ -263,6 +270,18 @@ export default function AIJumpstartSection({
                 maxHeight: 200,
               }}
             />
+            <div className="flex justify-end">
+              <span
+                className="text-xs"
+                style={{
+                  color: prompt.length > MAX_PROMPT_LENGTH * 0.9
+                    ? "var(--accent-warning, var(--accent-danger))"
+                    : "var(--text-dim)",
+                }}
+              >
+                {prompt.length}/{MAX_PROMPT_LENGTH}
+              </span>
+            </div>
           </div>
 
           {/* File attachments */}
