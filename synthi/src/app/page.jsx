@@ -17,6 +17,8 @@ import {
   Clock,
   Sparkles,
 } from "lucide-react";
+import AIJumpstartSection from "@/components/dashboard/AIJumpstartSection";
+import { storeJumpstartPayload } from "@/lib/ai-jumpstart-session";
 
 const COLLAB_SERVER_URL =
   process.env.NEXT_PUBLIC_COLLAB_SERVER_URL || "http://localhost:1234";
@@ -55,6 +57,11 @@ export default function Dashboard() {
   const [newRepoDesc, setNewRepoDesc] = useState("");
   const [newRepoPrivate, setNewRepoPrivate] = useState(true);
   const [creating, setCreating] = useState(false);
+
+  // AI Jumpstart state
+  const [aiJumpstart, setAiJumpstart] = useState(false);
+  const [aiPrompt, setAiPrompt] = useState("");
+  const [aiAttachments, setAiAttachments] = useState([]);
 
   // Active tab
   const [activeTab, setActiveTab] = useState("import");
@@ -142,6 +149,17 @@ export default function Dashboard() {
   const handleCreateRepo = async (e) => {
     e.preventDefault();
     if (!newRepoName.trim()) return;
+
+    // Validate AI Jumpstart prompt when enabled
+    if (aiJumpstart && !aiPrompt.trim()) {
+      setFeedback({
+        type: "error",
+        message:
+          "Please describe your project idea or disable AI Jumpstart.",
+      });
+      return;
+    }
+
     setCreating(true);
     setFeedback(null);
     try {
@@ -186,8 +204,19 @@ export default function Dashboard() {
       });
 
       if (cloneRes.ok) {
+        // 3. If AI Jumpstart is enabled, persist prompt data for workspace
+        if (aiJumpstart && aiPrompt.trim()) {
+          storeJumpstartPayload({
+            prompt: aiPrompt.trim(),
+            attachments: aiAttachments,
+          });
+        }
+
         setNewRepoName("");
         setNewRepoDesc("");
+        setAiJumpstart(false);
+        setAiPrompt("");
+        setAiAttachments([]);
         router.push(`/workspace/${slug}`);
       } else {
         const err = await cloneRes.json();
@@ -561,15 +590,30 @@ export default function Dashboard() {
                     />
                   </div>
 
+                  {/* AI Jumpstart */}
+                  <AIJumpstartSection
+                    enabled={aiJumpstart}
+                    onEnabledChange={setAiJumpstart}
+                    prompt={aiPrompt}
+                    onPromptChange={setAiPrompt}
+                    attachments={aiAttachments}
+                    onAttachmentsChange={setAiAttachments}
+                    disabled={isActionLoading}
+                  />
+
                   {/* Submit */}
                   <div className="flex justify-end pt-1">
                     <button
                       type="submit"
-                      disabled={creating || !newRepoName.trim()}
+                      disabled={creating || !newRepoName.trim() || (aiJumpstart && !aiPrompt.trim())}
                       className="synthi-btn h-10 px-5 rounded-lg text-sm font-medium flex items-center gap-2 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
                     >
                       {creating ? (
                         <Loader2 className="h-4 w-4 animate-spin" />
+                      ) : aiJumpstart ? (
+                        <>
+                          <Sparkles className="h-3.5 w-3.5" /> Create &amp; Jumpstart
+                        </>
                       ) : (
                         <>
                           <Plus className="h-3.5 w-3.5" /> Create &amp; Open

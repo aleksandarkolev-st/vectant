@@ -90,6 +90,8 @@ const AIChatWindow = ({
     onSuggest = null,
     onBusy = null,
     clearSignal = 0,
+    initialPrompt = null,
+    initialAttachments = null,
 }) => {
     const scrollRef = useRef(null);
     const fileInputRef = useRef(null);
@@ -289,6 +291,82 @@ const AIChatWindow = ({
         setPendingCommands([]);
         scrollLockRef.current = false;
     }, [activeSessionId]);
+
+    // ── AI Jumpstart: auto-send initial prompt once on first mount ──
+    const hasConsumedInitialPrompt = useRef(false);
+    useEffect(() => {
+        if (!initialPrompt) return;
+
+        // Use a short delay to let the component hydrate and session initialize
+        const timer = setTimeout(() => {
+            if (hasConsumedInitialPrompt.current) return;
+            hasConsumedInitialPrompt.current = true;
+            
+            const aborter = new AbortController();
+            thinkingStartRef.current = Date.now();
+            setController(aborter);
+            setStreamingMessage('');
+            setIsThinking(true);
+            setProgressLog([{ id: Date.now(), text: 'Working…' }]);
+            setProgressStatus('Working…');
+            setProgressExpanded(true);
+            setSuggestionExpanded(false);
+            setPendingCommands([]);
+
+            // Pass pre-processed attachments directly (already in { id, name, content, kind } format)
+            const jumpstartAttachmentsList = initialAttachments || [];
+
+            handleSendMessage(initialPrompt, jumpstartAttachmentsList, {
+                includeActiveFile: false,
+                controller: aborter,
+                onStreamStart: () => setIsThinking(true),
+                onFirstToken: () => {
+                    const elapsed = Date.now() - thinkingStartRef.current;
+                    const delay = Math.max(0, 150 - elapsed);
+                    setTimeout(() => setIsThinking(false), delay);
+                },
+                onChunk: (text) => setStreamingMessage(text),
+                onDone: () => {
+                    setController(null);
+                    setStreamingMessage('');
+                    setIsThinking(false);
+                    setProgressStatus('Finished working');
+                    setProgressExpanded(false);
+                    setProgressLog((prev) => [...prev, { id: Date.now() + Math.random(), text: 'Finished working' }]);
+                },
+                onCanceled: () => {
+                    setController(null);
+                    setIsThinking(false);
+                    setStreamingMessage('');
+                },
+                onError: () => {
+                    setController(null);
+                    setIsThinking(false);
+                    setStreamingMessage('');
+                    setProgressStatus('Failed');
+                    setProgressExpanded(true);
+                    setProgressLog((prev) => [...prev, { id: Date.now() + Math.random(), text: 'Request failed' }]);
+                },
+                onLog: (line) => {
+                    setProgressLog((prev) => {
+                        const last = prev[prev.length - 1];
+                        if (last && last.text === line) return prev;
+                        return [...prev, { id: Date.now() + Math.random(), text: line }];
+                    });
+                },
+                onCommandPending: (cp) => {
+                    setPendingCommands((prev) => [
+                        ...prev,
+                        { id: cp.id, command: cp.command, status: 'pending', timestamp: new Date(), filesCount: cp.filesCount || 0 },
+                    ]);
+                },
+            });
+        }, 500); // 500ms to let workspace + collab fully initialize
+
+        return () => clearTimeout(timer);
+        // Only run once on mount — deps intentionally minimal
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [initialPrompt]);
 
     useEffect(() => {
         if (isThinking) {
