@@ -2133,7 +2133,7 @@ export default function EditorPage({ params }) {
                             onDismissError={dismissExtensionError}
                             onExecuteCommand={executeExtensionCommand}
                         />
-                    ) : sidebarView.startsWith('ext:') ? (() => {
+                    ) : sidebarView && sidebarView.startsWith('ext:') ? (() => {
                         const containerId = sidebarView.replace('ext:', '');
                         const container = contributedContainers.find(c => c.id === containerId);
 
