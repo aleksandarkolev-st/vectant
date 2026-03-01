@@ -196,7 +196,7 @@ export default function AIJumpstartSection({
 
   /* ── render ── */
   return (
-    <div className="space-y-3">
+    <div className="space-y-3" role="group" aria-label="AI Jumpstart options">
       {/* ── Checkbox toggle ── */}
       <div className="flex items-center gap-2.5">
         <Checkbox
@@ -204,6 +204,7 @@ export default function AIJumpstartSection({
           checked={enabled}
           onCheckedChange={onEnabledChange}
           disabled={disabled}
+          aria-controls="ai-jumpstart-panel"
           className="cursor-pointer"
           style={{
             borderColor: enabled
@@ -221,6 +222,7 @@ export default function AIJumpstartSection({
         >
           <Sparkles
             className="h-3.5 w-3.5"
+            aria-hidden="true"
             style={{
               color: enabled
                 ? "var(--accent-primary)"
@@ -233,7 +235,11 @@ export default function AIJumpstartSection({
 
       {/* ── Expandable section with smooth animation ── */}
       <div
+        id="ai-jumpstart-panel"
         ref={expandRef}
+        role="region"
+        aria-label="AI project description"
+        aria-hidden={!enabled}
         className="overflow-hidden transition-all duration-300 ease-in-out"
         style={{
           maxHeight: enabled ? 600 : 0,
@@ -349,6 +355,8 @@ export default function AIJumpstartSection({
             {/* Error */}
             {attachError && (
               <div
+                role="alert"
+                aria-live="polite"
                 className="flex items-center gap-1.5 text-xs px-2 py-1.5 rounded"
                 style={{
                   color: "var(--accent-danger)",
@@ -356,7 +364,7 @@ export default function AIJumpstartSection({
                     "color-mix(in srgb, var(--accent-danger) 8%, transparent)",
                 }}
               >
-                <AlertCircle className="h-3 w-3 shrink-0" />
+                <AlertCircle className="h-3 w-3 shrink-0" aria-hidden="true" />
                 {attachError}
               </div>
             )}
