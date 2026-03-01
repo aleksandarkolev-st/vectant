@@ -105,7 +105,8 @@ export function ConflictBanner({
     filePath, 
     slug, 
     onContentChange,
-    editorInstance 
+    editorInstance,
+    monacoInstance 
 }) {
     const [currentConflictIndex, setCurrentConflictIndex] = useState(0);
     const [isResolving, setIsResolving] = useState(false);
@@ -138,7 +139,9 @@ export function ConflictBanner({
             return;
         }
         
-        const monaco = window.monaco;
+        // Use the passed monacoInstance (from @codingame/monaco-vscode-editor-api)
+        // instead of window.monaco which is never assigned in this codebase.
+        const monaco = monacoInstance || window.monaco;
         if (!monaco) return;
         
         // ── CodeLens: inject clickable "Accept Current | Accept Incoming | Accept Both" ──
@@ -314,7 +317,7 @@ export function ConflictBanner({
             commandDisposablesRef.current.forEach(d => { try { d.dispose(); } catch (_) {} });
             commandDisposablesRef.current = [];
         };
-    }, [editorInstance, conflicts, hasConflicts]);
+    }, [editorInstance, monacoInstance, conflicts, hasConflicts]);
     
     // Navigate to first conflict on mount
     useEffect(() => {

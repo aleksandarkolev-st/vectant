@@ -14,8 +14,9 @@ import {
 } from 'lucide-react';
 import {
   buildCommitGraph, commitWebUrl, parseConventionalCommit,
-  ccColor, groupCommitsByDate, relativeTime
+  ccColor, groupCommitsByDate, relativeTime, GRAPH_COLORS, hashBranchColor
 } from './gitUtils';
+import CommitGraphColumn from './CommitGraphColumn';
 import InteractiveRebasePanel from './InteractiveRebasePanel';
 
 /* ────────────────────────────────────────────────────────────
@@ -28,11 +29,6 @@ import InteractiveRebasePanel from './InteractiveRebasePanel';
  *  • Right-click context menus (cherry-pick, revert, copy hash)
  *  • Infinite scroll with paginated loading
  * ──────────────────────────────────────────────────────────── */
-
-const GRAPH_COLORS = [
-  '#3b82f6', '#f59e0b', '#10b981', '#ef4444',
-  '#8b5cf6', '#ec4899', '#06b6d4', '#f97316',
-];
 
 /* ─── Graph Column SVG ──────────────────────────────── */
 
@@ -591,7 +587,15 @@ export default function CommitHistoryPanel({ slug }) {
                       onContextMenu={e => handleContextMenu(e, commit)}
                       title={`${commit.hash}\n${isoDate}\n\nRight-click for actions`}
                     >
-                      <GraphColumn graphNode={gn} totalLanes={maxLanes} rowHeight={36} />
+                      <CommitGraphColumn
+                        graphNode={gn}
+                        totalLanes={maxLanes}
+                        rowHeight={36}
+                        commitData={commit}
+                        refsMap={refsMap}
+                        allGraphNodes={graphNodes}
+                        nodeIndex={gIdx}
+                      />
                       <div className="flex-1 min-w-0 py-1.5 pr-2">
                         <div className="flex items-center gap-1.5">
                           <code className="font-mono text-[10px] text-[#52525b] flex-shrink-0">{commit.hash?.substring(0, 7)}</code>
@@ -606,18 +610,28 @@ export default function CommitHistoryPanel({ slug }) {
                             </span>
                           )}
                           {/* Branch / tag ref badges */}
-                          {(refsMap[commit.hash?.substring(0, 7)] || []).map((ref, ri) => (
-                            <span key={ri} className={`text-[9px] px-1 py-0 rounded font-medium flex-shrink-0 inline-flex items-center gap-0.5 border ${
-                              ref.type === 'tag'
-                                ? 'border-amber-500/30 text-amber-400 bg-amber-500/10'
-                                : ref.type === 'remote'
-                                  ? 'border-purple-500/30 text-purple-400 bg-purple-500/10'
-                                  : 'border-emerald-500/30 text-emerald-400 bg-emerald-500/10'
-                            }`}>
-                              {ref.type === 'tag' ? '🏷' : <GitBranch className="w-2 h-2" />}
-                              {ref.name}
-                            </span>
-                          ))}
+                          {(refsMap[commit.hash?.substring(0, 7)] || []).map((ref, ri) => {
+                            // Unify tag colors with lane colors: use the graph node's
+                            // lane color so the branch tag matches the physical lane line
+                            const laneColor = ref.type === 'tag'
+                              ? '#f59e0b'  // amber for tags
+                              : ref.type === 'remote'
+                                ? (gn?.color || hashBranchColor(ref.name))
+                                : (gn?.color || hashBranchColor(ref.name));
+                            return (
+                              <span key={ri}
+                                className="text-[9px] px-1 py-0 rounded font-medium flex-shrink-0 inline-flex items-center gap-0.5 border"
+                                style={{
+                                  borderColor: `${laneColor}50`,
+                                  color: laneColor,
+                                  backgroundColor: `${laneColor}18`,
+                                }}
+                              >
+                                {ref.type === 'tag' ? '🏷' : <GitBranch className="w-2 h-2" />}
+                                {ref.name}
+                              </span>
+                            );
+                          })}
                           {cc && (
                             <span className={`text-[9px] px-1 py-0.5 rounded font-medium flex-shrink-0 bg-opacity-20`}
                               style={{ color: ccColor(cc.type), backgroundColor: ccColor(cc.type) + '20' }}>
@@ -696,4 +710,4 @@ export default function CommitHistoryPanel({ slug }) {
   );
 }
 
-export { GraphColumn, CommitDetailPane, FilterBar };
+export { CommitDetailPane, FilterBar };

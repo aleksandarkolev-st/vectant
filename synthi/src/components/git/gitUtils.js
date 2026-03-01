@@ -229,7 +229,7 @@ export function groupCommitsByDate(commits) {
  * This is a simplified rail-assignment algorithm suitable for the
  * flat log most workspaces produce.
  */
-const GRAPH_COLORS = [
+export const GRAPH_COLORS = [
   '#3b82f6', // blue
   '#10b981', // emerald
   '#f59e0b', // amber
@@ -246,7 +246,7 @@ const GRAPH_COLORS = [
  * same branch always renders in the same color across sessions (SourceTree
  * parity).
  */
-function hashBranchColor(name) {
+export function hashBranchColor(name) {
   if (!name) return GRAPH_COLORS[0];
   let hash = 0;
   for (let i = 0; i < name.length; i++) {
