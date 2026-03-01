@@ -149,6 +149,17 @@ export default function Dashboard() {
   const handleCreateRepo = async (e) => {
     e.preventDefault();
     if (!newRepoName.trim()) return;
+
+    // Validate AI Jumpstart prompt when enabled
+    if (aiJumpstart && !aiPrompt.trim()) {
+      setFeedback({
+        type: "error",
+        message:
+          "Please describe your project idea or disable AI Jumpstart.",
+      });
+      return;
+    }
+
     setCreating(true);
     setFeedback(null);
     try {
@@ -594,11 +605,15 @@ export default function Dashboard() {
                   <div className="flex justify-end pt-1">
                     <button
                       type="submit"
-                      disabled={creating || !newRepoName.trim()}
+                      disabled={creating || !newRepoName.trim() || (aiJumpstart && !aiPrompt.trim())}
                       className="synthi-btn h-10 px-5 rounded-lg text-sm font-medium flex items-center gap-2 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
                     >
                       {creating ? (
                         <Loader2 className="h-4 w-4 animate-spin" />
+                      ) : aiJumpstart ? (
+                        <>
+                          <Sparkles className="h-3.5 w-3.5" /> Create &amp; Jumpstart
+                        </>
                       ) : (
                         <>
                           <Plus className="h-3.5 w-3.5" /> Create &amp; Open
