@@ -18,6 +18,7 @@ import {
   Sparkles,
 } from "lucide-react";
 import AIJumpstartSection from "@/components/dashboard/AIJumpstartSection";
+import { storeJumpstartPayload } from "@/lib/ai-jumpstart-session";
 
 const COLLAB_SERVER_URL =
   process.env.NEXT_PUBLIC_COLLAB_SERVER_URL || "http://localhost:1234";
@@ -192,8 +193,19 @@ export default function Dashboard() {
       });
 
       if (cloneRes.ok) {
+        // 3. If AI Jumpstart is enabled, persist prompt data for workspace
+        if (aiJumpstart && aiPrompt.trim()) {
+          storeJumpstartPayload({
+            prompt: aiPrompt.trim(),
+            attachments: aiAttachments,
+          });
+        }
+
         setNewRepoName("");
         setNewRepoDesc("");
+        setAiJumpstart(false);
+        setAiPrompt("");
+        setAiAttachments([]);
         router.push(`/workspace/${slug}`);
       } else {
         const err = await cloneRes.json();
