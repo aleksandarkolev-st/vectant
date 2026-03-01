@@ -10,6 +10,37 @@
 
 const STORAGE_KEY = "synthi-ai-jumpstart";
 
+/** Maximum prompt length (matches AIJumpstartSection constant) */
+const MAX_PROMPT_LENGTH = 2000;
+
+/**
+ * Sanitize the prompt text — trim, enforce length, strip control characters.
+ * @param {string} raw
+ * @returns {string}
+ */
+function sanitizePrompt(raw) {
+  if (typeof raw !== "string") return "";
+  // Strip non-printable control chars except newlines/tabs
+  const cleaned = raw.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, "");
+  return cleaned.trim().slice(0, MAX_PROMPT_LENGTH);
+}
+
+/**
+ * Sanitize a single attachment – ensure required fields, strip unexpected properties.
+ * @param {JumpstartAttachment} att
+ * @returns {JumpstartAttachment}
+ */
+function sanitizeAttachment(att) {
+  return {
+    id: String(att.id || ""),
+    name: String(att.name || "unknown").slice(0, 255),
+    size: typeof att.size === "number" ? att.size : 0,
+    type: String(att.type || "application/octet-stream").slice(0, 127),
+    content: att.content ?? null,
+    kind: ["text", "image", "binary"].includes(att.kind) ? att.kind : "binary",
+  };
+}
+
 /**
  * @typedef {Object} JumpstartAttachment
  * @property {string} id      - Unique ID
@@ -28,12 +59,19 @@ const STORAGE_KEY = "synthi-ai-jumpstart";
 
 /**
  * Persist jumpstart data to sessionStorage before navigating to workspace.
+ * Sanitizes prompt text and validates attachments before storing.
  *
  * @param {JumpstartPayload} payload
  */
 export function storeJumpstartPayload(payload) {
   try {
-    sessionStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
+    const sanitized = {
+      prompt: sanitizePrompt(payload.prompt),
+      attachments: Array.isArray(payload.attachments)
+        ? payload.attachments.map(sanitizeAttachment)
+        : [],
+    };
+    sessionStorage.setItem(STORAGE_KEY, JSON.stringify(sanitized));
   } catch (err) {
     console.error("[ai-jumpstart] Failed to store payload:", err);
   }

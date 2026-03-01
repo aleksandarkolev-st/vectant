@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback, useRef, useMemo } from "react";
+import { useState, useCallback, useRef, useMemo, useEffect } from "react";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 import {
@@ -103,6 +103,7 @@ export default function AIJumpstartSection({
   disabled = false,
 }) {
   const fileInputRef = useRef(null);
+  const expandRef = useRef(null);
   const [attachError, setAttachError] = useState(null);
 
   /* ── derived ── */
@@ -230,8 +231,15 @@ export default function AIJumpstartSection({
         </Label>
       </div>
 
-      {/* ── Expandable section ── */}
-      {enabled && (
+      {/* ── Expandable section with smooth animation ── */}
+      <div
+        ref={expandRef}
+        className="overflow-hidden transition-all duration-300 ease-in-out"
+        style={{
+          maxHeight: enabled ? 600 : 0,
+          opacity: enabled ? 1 : 0,
+        }}
+      >
         <div
           className="space-y-3 rounded-lg p-4"
           style={{
@@ -390,7 +398,7 @@ export default function AIJumpstartSection({
             )}
           </div>
         </div>
-      )}
+      </div>
     </div>
   );
 }
