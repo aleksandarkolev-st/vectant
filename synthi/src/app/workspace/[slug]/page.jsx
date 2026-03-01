@@ -8,6 +8,7 @@ import { fetchFilesThunk, selectActiveFile, setSlug, selectFileThunk, selectCurr
 import { fetchGitStatus, forceRefreshGitStatus } from '@/redux/gitSlice';
 import collabClient from '@/services/collabClient';
 import collabSessionService from '@/services/collabSessionService';
+import { consumeJumpstartPayload } from '@/lib/ai-jumpstart-session';
 import { USER_ID_KEY, USER_NAME_KEY, USER_AVATAR_KEY } from '@/services/userIdentity';
 import {
     selectShowTerminal,
@@ -114,6 +115,10 @@ export default function EditorPage({ params }) {
     const { slug } = use(params);
 
     const [chatVisible, setChatVisible] = useState(false);
+
+    // AI Jumpstart — initial prompt/attachments from dashboard
+    const [jumpstartPrompt, setJumpstartPrompt] = useState(null);
+    const [jumpstartAttachments, setJumpstartAttachments] = useState(null);
     const [sidebarView, setSidebarView] = useState('explorer');
     const openPRCount = useAppSelector(s => s.pr?.prList?.filter(p => p.state === 'open' && !p.merged).length || 0);
     const [showProblemsPanel, setShowProblemsPanel] = useState(false);
@@ -433,6 +438,15 @@ export default function EditorPage({ params }) {
             }
         } catch (_) { }
         // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
+
+    // ── AI Jumpstart: consume pending prompt from dashboard ──────────
+    useEffect(() => {
+        const payload = consumeJumpstartPayload();
+        if (!payload) return;
+        setChatVisible(true);
+        setJumpstartPrompt(payload.prompt || null);
+        setJumpstartAttachments(payload.attachments?.length ? payload.attachments : null);
     }, []);
 
     useEffect(() => {
@@ -2140,6 +2154,8 @@ export default function EditorPage({ params }) {
                 onSuggest={(s) => setLatestCompletion(s)}
                 onBusy={(b) => setAiBusy(Boolean(b))}
                 clearSignal={completionClearSignal}
+                initialPrompt={jumpstartPrompt}
+                initialAttachments={jumpstartAttachments}
             />
         </ResizablePanel>
     );
@@ -2252,6 +2268,8 @@ export default function EditorPage({ params }) {
                                         onSuggest: (s) => setLatestCompletion(s),
                                         onBusy: (b) => setAiBusy(Boolean(b)),
                                         clearSignal: completionClearSignal,
+                                        initialPrompt: jumpstartPrompt,
+                                        initialAttachments: jumpstartAttachments,
                                         onCloseProblems: () => setShowProblemsPanel(false),
                                         onToggleOrientation: toggleTreeOrientation,
                                         onOpenScm: () => setSidebarView('scm'),
