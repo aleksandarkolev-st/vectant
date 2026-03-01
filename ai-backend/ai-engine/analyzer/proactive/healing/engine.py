@@ -1,4 +1,3 @@
-"""
 """Targeted Auto-Fix Engine
 
 Coordinates detection, classification, and application of targeted
@@ -59,7 +58,7 @@ class SelfHealingEngine:
     Confidence values are hand-tuned heuristics, not calibrated probabilities.
     
     For AI-powered detection, use analyze_with_ai() instead of analyze().
-    "
+    """
     
     def __init__(
         self,

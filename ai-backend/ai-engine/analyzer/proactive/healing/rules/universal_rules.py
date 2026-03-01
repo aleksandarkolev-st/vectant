@@ -13,13 +13,13 @@ from __future__ import annotations
 import re
 from typing import List
 
-from ..healing.types import (
+from ..types import (
     HealingCategory,
     HealingSeverity,
     HealingAction,
     HealingFix,
 )
-from ..healing.rule_registry import healing_rule
+from ..rule_registry import healing_rule
 
 
 @healing_rule(

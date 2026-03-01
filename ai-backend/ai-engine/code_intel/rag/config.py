@@ -131,7 +131,7 @@ class MicroConfig:
     """Configuration for micro-navigation (Step 3)."""
 
     # Routing model (fast LLM for ToC navigation)
-    routing_model: str = "gemini-3-flash-lite"
+    routing_model: str = "gemini-3-flash"
     routing_api_key: Optional[str] = field(
         default_factory=lambda: os.getenv("GEMINI_API_KEY")
     )

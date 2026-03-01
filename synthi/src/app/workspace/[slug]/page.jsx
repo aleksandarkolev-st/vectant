@@ -131,11 +131,12 @@ export default function EditorPage({ params }) {
     const { analyzeCode, analyzeProactive, analyzeContainer, analyzeUnified, lastResult, isAnalyzing: isAnalyzingGateway, connectionMeta } = gateway;
     const { client, compile, mediaStream, cancelMobileJob, isCompiling, status: compilerStatus } = useCompiler();
     useHMR();
+    const activeFile = useAppSelector(selectActiveFile);
 
     // ─── Self-Healing system ───────────────────────────────
     const activeFilePath = activeFile?.path || '';
     const activeLanguage = activeFile?.name ? getFileLanguage(activeFile.name) : 'plaintext';
-    const { selfEditFlagRef } = useSelfHealing({
+    const { selfEditFlagRef, healFromDiagnostics } = useSelfHealing({
         editorRef,
         gateway,
         filePath: activeFilePath,
@@ -603,7 +604,6 @@ export default function EditorPage({ params }) {
     }, [slug, dispatch, authUserId, activeSessionId]);
 
     // 2. Consume global state directly via selectors
-    const activeFile = useAppSelector(selectActiveFile);
     const showTerminal = useAppSelector(selectShowTerminal);
     const showEmulatorPreview = useAppSelector(selectShowEmulatorPreview);
     const treeOnRight = useAppSelector(selectTreeOnRight);
@@ -1196,6 +1196,21 @@ export default function EditorPage({ params }) {
                                 return [...otherFileDiags, ...sameFileAi, ...normalizedDiags];
                             });
 
+                            // ─── Auto-heal: feed validated quick-fixes into self-healing ───
+                            // Only diagnostics that already carry a .fixes[] array with
+                            // replacementText are eligible.  The healing hook applies the
+                            // same category/confidence/safety filters before touching the
+                            // editor, so this is safe even if the proactive pipeline returns
+                            // diagnostics the user hasn't opted into auto-fixing.
+                            const fixableDiags = normalizedDiags.filter(
+                                (d) => d.fixes?.length > 0 && d.fixes.some((f) => f.replacementText != null)
+                            );
+                            if (fixableDiags.length > 0) {
+                                // Defer slightly so React can flush the new diagnostics to
+                                // the ProblemsPanel first (visual feedback + undo tracking).
+                                setTimeout(() => healFromDiagnostics(fixableDiags), 60);
+                            }
+
                             // Update hash map with the content we actually analyzed
                             lastFastHashMapRef.current.set(currentFilePath, freshContentHash);
 
@@ -1394,6 +1409,14 @@ export default function EditorPage({ params }) {
                                 return [...otherFileDiags, ...sameFileNonAi, ...normalizedDiags];
                             });
 
+                            // ─── Auto-heal AI quick-fixes ──────────────────────────
+                            const fixableAiDiags = normalizedDiags.filter(
+                                (d) => d.fixes?.length > 0 && d.fixes.some((f) => f.replacementText != null)
+                            );
+                            if (fixableAiDiags.length > 0) {
+                                setTimeout(() => healFromDiagnostics(fixableAiDiags), 60);
+                            }
+
                             lastAiHashMapRef.current.set(currentFilePath, freshContentHash);
                             if (pendingAiSignatureRef.current === scheduledAiSignature) {
                                 pendingAiSignatureRef.current = '';
@@ -1436,6 +1459,7 @@ export default function EditorPage({ params }) {
         computeContentHash,
         editorVersion,
         editor,
+        healFromDiagnostics,
     ]);
 
 

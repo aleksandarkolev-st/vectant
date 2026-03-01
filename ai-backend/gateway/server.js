@@ -51,6 +51,28 @@ const backendAIPolicySuppressUrl = new URL("/heal/ai/policy/suppress", backendUr
 const backendAIPolicyUnsuppressUrl = new URL("/heal/ai/policy/unsuppress", backendUrl).toString();
 const backendAIPolicyListUrl = new URL("/heal/ai/policy", backendUrl).toString();
 
+// Agentic self-healing endpoints
+const backendAgenticDiagnoseUrl = new URL("/heal/agentic/diagnose", backendUrl).toString();
+const backendAgenticEpisodeCreateUrl = new URL("/heal/agentic/episode/create", backendUrl).toString();
+const backendAgenticEpisodesUrl = new URL("/heal/agentic/episodes", backendUrl).toString();
+const backendAgenticPolicyEvalUrl = new URL("/heal/agentic/policy/evaluate", backendUrl).toString();
+const backendAgenticPolicyStatusUrl = new URL("/heal/agentic/policy/status", backendUrl).toString();
+const backendAgenticVerifyUrl = new URL("/heal/agentic/verify", backendUrl).toString();
+const backendAgenticGuardrailsUrl = new URL("/heal/agentic/guardrails", backendUrl).toString();
+const backendAgenticTelemetryCalUrl = new URL("/heal/agentic/telemetry/calibration", backendUrl).toString();
+const backendAgenticTelemetryDegUrl = new URL("/heal/agentic/telemetry/degrading", backendUrl).toString();
+const backendAgenticRuntimeIngestUrl = new URL("/heal/agentic/runtime/ingest", backendUrl).toString();
+const backendAgenticRuntimeStatsUrl = new URL("/heal/agentic/runtime/stats", backendUrl).toString();
+const backendAgenticObsErrorUrl = new URL("/heal/agentic/observability/error", backendUrl).toString();
+const backendAgenticObsBuildUrl = new URL("/heal/agentic/observability/build", backendUrl).toString();
+const backendAgenticObsHmrUrl = new URL("/heal/agentic/observability/hmr-failure", backendUrl).toString();
+const backendAgenticObsStatsUrl = new URL("/heal/agentic/observability/stats", backendUrl).toString();
+const backendAgenticObsTriggersUrl = new URL("/heal/agentic/observability/triggers", backendUrl).toString();
+const backendAgenticCanaryCreateUrl = new URL("/heal/agentic/canary/create", backendUrl).toString();
+const backendAgenticCanaryListUrl = new URL("/heal/agentic/canary", backendUrl).toString();
+const backendAgenticCanaryStatsUrl = new URL("/heal/agentic/canary/stats", backendUrl).toString();
+const backendAgenticStatusUrl = new URL("/heal/agentic/status", backendUrl).toString();
+
 const server = http.createServer(handleHttpRequest);
 const wss = new WebSocketServer({
   server,
@@ -254,6 +276,72 @@ async function handleClientMessage(socket, raw) {
     case "heal/ai/policy/clear":
       await forwardAIPolicyClear(socket, data, requestId);
       break;
+
+    // ── Agentic self-healing ─────────────────────────────────────
+    case "heal/agentic/diagnose":
+      await forwardAgenticDiagnose(socket, data, requestId);
+      break;
+    case "heal/agentic/episode/create":
+      await forwardAgenticEpisodeCreate(socket, data, requestId);
+      break;
+    case "heal/agentic/episode":
+      await forwardAgenticEpisodeGet(socket, data, requestId);
+      break;
+    case "heal/agentic/episodes":
+      await forwardAgenticEpisodesList(socket, requestId);
+      break;
+    case "heal/agentic/policy/evaluate":
+      await forwardAgenticPolicyEval(socket, data, requestId);
+      break;
+    case "heal/agentic/policy/status":
+      await forwardAgenticPolicyStatus(socket, requestId);
+      break;
+    case "heal/agentic/verify":
+      await forwardAgenticVerify(socket, data, requestId);
+      break;
+    case "heal/agentic/guardrails":
+      await forwardAgenticGuardrails(socket, data, requestId);
+      break;
+    case "heal/agentic/telemetry/calibration":
+      await forwardAgenticTelemetryCalibration(socket, requestId);
+      break;
+    case "heal/agentic/telemetry/degrading":
+      await forwardAgenticTelemetryDegrading(socket, requestId);
+      break;
+    case "heal/agentic/runtime/ingest":
+      await forwardAgenticRuntimeIngest(socket, data, requestId);
+      break;
+    case "heal/agentic/runtime/stats":
+      await forwardAgenticRuntimeStats(socket, requestId);
+      break;
+    case "heal/agentic/observability/error":
+      await forwardAgenticObsError(socket, requestId);
+      break;
+    case "heal/agentic/observability/build":
+      await forwardAgenticObsBuild(socket, data, requestId);
+      break;
+    case "heal/agentic/observability/hmr-failure":
+      await forwardAgenticObsHmr(socket, data, requestId);
+      break;
+    case "heal/agentic/observability/stats":
+      await forwardAgenticObsStats(socket, requestId);
+      break;
+    case "heal/agentic/observability/triggers":
+      await forwardAgenticObsTriggers(socket, requestId);
+      break;
+    case "heal/agentic/canary/create":
+      await forwardAgenticCanaryCreate(socket, data, requestId);
+      break;
+    case "heal/agentic/canary":
+      await forwardAgenticCanaryList(socket, requestId);
+      break;
+    case "heal/agentic/canary/stats":
+      await forwardAgenticCanaryStats(socket, requestId);
+      break;
+    case "heal/agentic/status":
+      await forwardAgenticStatus(socket, requestId);
+      break;
+
     default:
       sendError(socket, `Unsupported action: ${action}`, { requestId });
   }
@@ -2305,6 +2393,179 @@ async function forwardAIPolicyClear(socket, data, requestId) {
     console.error("[AI Policy] clear forward error:", err);
     sendError(socket, "AI policy clear failed", { requestId, detail: err.message });
   }
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+//  Agentic Self-Healing forwarding functions
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+/** Generic POST forwarder for agentic endpoints. */
+async function agenticPost(socket, action, url, data, requestId) {
+  try {
+    const resp = await fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(data || {}),
+    });
+    const text = await resp.text();
+    if (!resp.ok) {
+      sendError(socket, `Agentic ${action} backend error`, { requestId, detail: text, status: resp.status });
+      return;
+    }
+    safeSend(socket, { type: "response", action, requestId, data: JSON.parse(text) });
+  } catch (err) {
+    console.error(`[Agentic] ${action} forward error:`, err);
+    sendError(socket, `Agentic ${action} request failed`, { requestId, detail: err.message });
+  }
+}
+
+/** Generic GET forwarder for agentic endpoints. */
+async function agenticGet(socket, action, url, requestId) {
+  try {
+    const resp = await fetch(url, { method: "GET" });
+    const text = await resp.text();
+    if (!resp.ok) {
+      sendError(socket, `Agentic ${action} backend error`, { requestId, detail: text, status: resp.status });
+      return;
+    }
+    safeSend(socket, { type: "response", action, requestId, data: JSON.parse(text) });
+  } catch (err) {
+    console.error(`[Agentic] ${action} forward error:`, err);
+    sendError(socket, `Agentic ${action} request failed`, { requestId, detail: err.message });
+  }
+}
+
+// Diagnosis
+async function forwardAgenticDiagnose(socket, data, requestId) {
+  await agenticPost(socket, "heal/agentic/diagnose", backendAgenticDiagnoseUrl, {
+    errorText: data?.errorText || data?.error_text || "",
+    filePath: data?.filePath || data?.file_path || "",
+    language: data?.language || data?.lang || "",
+    source: data?.source || "compiler",
+  }, requestId);
+}
+
+// Episodes
+async function forwardAgenticEpisodeCreate(socket, data, requestId) {
+  await agenticPost(socket, "heal/agentic/episode/create", backendAgenticEpisodeCreateUrl, {
+    filePath: data?.filePath || data?.file_path || "",
+    errorMessage: data?.errorMessage || data?.error_message || "",
+    language: data?.language || data?.lang || "",
+  }, requestId);
+}
+
+async function forwardAgenticEpisodeGet(socket, data, requestId) {
+  const episodeId = data?.episodeId || data?.episode_id || "";
+  const url = `${backendAgenticEpisodesUrl.replace("/episodes", "/episode")}/${encodeURIComponent(episodeId)}`;
+  await agenticGet(socket, "heal/agentic/episode", url, requestId);
+}
+
+async function forwardAgenticEpisodesList(socket, requestId) {
+  await agenticGet(socket, "heal/agentic/episodes", backendAgenticEpisodesUrl, requestId);
+}
+
+// Policy
+async function forwardAgenticPolicyEval(socket, data, requestId) {
+  await agenticPost(socket, "heal/agentic/policy/evaluate", backendAgenticPolicyEvalUrl, {
+    filePath: data?.filePath || data?.file_path || "",
+    language: data?.language || data?.lang || "",
+    numFiles: data?.numFiles ?? data?.num_files ?? 1,
+    estimatedLinesChanged: data?.estimatedLinesChanged ?? data?.estimated_lines ?? 0,
+    stepTypes: data?.stepTypes || data?.step_types || null,
+  }, requestId);
+}
+
+async function forwardAgenticPolicyStatus(socket, requestId) {
+  await agenticGet(socket, "heal/agentic/policy/status", backendAgenticPolicyStatusUrl, requestId);
+}
+
+// Verification
+async function forwardAgenticVerify(socket, data, requestId) {
+  await agenticPost(socket, "heal/agentic/verify", backendAgenticVerifyUrl, {
+    filePath: data?.filePath || data?.file_path || "",
+    original: data?.original || "",
+    patched: data?.patched || "",
+    language: data?.language || data?.lang || "",
+  }, requestId);
+}
+
+async function forwardAgenticGuardrails(socket, data, requestId) {
+  await agenticPost(socket, "heal/agentic/guardrails", backendAgenticGuardrailsUrl, {
+    filePath: data?.filePath || data?.file_path || "",
+    original: data?.original || "",
+    patched: data?.patched || "",
+  }, requestId);
+}
+
+// Telemetry
+async function forwardAgenticTelemetryCalibration(socket, requestId) {
+  await agenticGet(socket, "heal/agentic/telemetry/calibration", backendAgenticTelemetryCalUrl, requestId);
+}
+
+async function forwardAgenticTelemetryDegrading(socket, requestId) {
+  await agenticGet(socket, "heal/agentic/telemetry/degrading", backendAgenticTelemetryDegUrl, requestId);
+}
+
+// Runtime healing
+async function forwardAgenticRuntimeIngest(socket, data, requestId) {
+  await agenticPost(socket, "heal/agentic/runtime/ingest", backendAgenticRuntimeIngestUrl, {
+    message: data?.message || "",
+    source: data?.source || "terminal",
+    rawOutput: data?.rawOutput || data?.raw_output || "",
+    severity: data?.severity || "error",
+    workspaceId: data?.workspaceId || data?.workspace_id || "",
+  }, requestId);
+}
+
+async function forwardAgenticRuntimeStats(socket, requestId) {
+  await agenticGet(socket, "heal/agentic/runtime/stats", backendAgenticRuntimeStatsUrl, requestId);
+}
+
+// Observability
+async function forwardAgenticObsError(socket, requestId) {
+  await agenticPost(socket, "heal/agentic/observability/error", backendAgenticObsErrorUrl, {}, requestId);
+}
+
+async function forwardAgenticObsBuild(socket, data, requestId) {
+  await agenticPost(socket, "heal/agentic/observability/build", backendAgenticObsBuildUrl, {
+    durationSec: data?.durationSec ?? data?.duration_sec ?? 0,
+  }, requestId);
+}
+
+async function forwardAgenticObsHmr(socket, data, requestId) {
+  await agenticPost(socket, "heal/agentic/observability/hmr-failure", backendAgenticObsHmrUrl, {
+    filePath: data?.filePath || data?.file_path || "",
+  }, requestId);
+}
+
+async function forwardAgenticObsStats(socket, requestId) {
+  await agenticGet(socket, "heal/agentic/observability/stats", backendAgenticObsStatsUrl, requestId);
+}
+
+async function forwardAgenticObsTriggers(socket, requestId) {
+  await agenticGet(socket, "heal/agentic/observability/triggers", backendAgenticObsTriggersUrl, requestId);
+}
+
+// Canary
+async function forwardAgenticCanaryCreate(socket, data, requestId) {
+  await agenticPost(socket, "heal/agentic/canary/create", backendAgenticCanaryCreateUrl, {
+    canaryFiles: data?.canaryFiles || data?.canary_files || [],
+    remainingFiles: data?.remainingFiles || data?.remaining_files || [],
+    episodeId: data?.episodeId || data?.episode_id || "",
+  }, requestId);
+}
+
+async function forwardAgenticCanaryList(socket, requestId) {
+  await agenticGet(socket, "heal/agentic/canary", backendAgenticCanaryListUrl, requestId);
+}
+
+async function forwardAgenticCanaryStats(socket, requestId) {
+  await agenticGet(socket, "heal/agentic/canary/stats", backendAgenticCanaryStatsUrl, requestId);
+}
+
+// Overview
+async function forwardAgenticStatus(socket, requestId) {
+  await agenticGet(socket, "heal/agentic/status", backendAgenticStatusUrl, requestId);
 }
 
 function sendError(socket, message, extra = {}) {

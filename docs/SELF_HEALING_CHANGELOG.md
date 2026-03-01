@@ -272,3 +272,121 @@ Total test count: **~220** (66 v1 + 36 v2 + ~118 v2.1).
 | No diff preview | AIDiffPreview + AIFixCard rich diff |
 | Gateway streaming missing | Now forwarded via SSE bridge |
 | Config not runtime-adjustable | GET/PUT /heal/ai/config |
+
+---
+
+## v3.0.0 — Agentic Self-Healing
+
+### Overview
+
+Transforms the existing AI-assisted code repair pipeline into a **true
+agentic self-healing system** — a closed-loop that can **Detect →
+Diagnose → Plan → Safely Act → Verify outcome → Learn policy** without
+human intervention for Tier 0/1 fixes.
+
+### Architecture Evolution
+
+| v2.1 (Before) | v3.0 (After) |
+|--------------|--------------|
+| Regex + AI detect → fix → apply | Detect → Diagnose → Plan → Act → Verify → Learn |
+| Single-file only | Multi-file coordination w/ topological ordering |
+| No rollback | Transactional rollback with SHA-256 snapshots |
+| No secret scanning | 18-pattern redaction engine (hard blocker before LLM) |
+| Heuristic confidence | Bayesian calibrated confidence from outcome tracking |
+| No diagnosis | Root-cause analysis with cause graph (18 cause types) |
+| No planning | Multi-strategy planner with budget constraints |
+| No sandbox | Ephemeral isolated sandbox with file/exec limits |
+| No runtime healing | Stack trace parser (Python/Node/Go) + dedup + cooldown |
+| No observability triggers | 6 anomaly detectors (error rate, build time, HMR, flakiness, crash loop, log) |
+| No risk policy | 4-tier risk classification + approval modes + rate limiting |
+| No canary deploys | Staged canary rollout with soak monitoring |
+| No episode tracking | Full state machine with audit trail |
+
+### New Modules (13 files, ~8,600 LOC)
+
+#### Phase 1 — Safety & State
+
+| Module | File | LOC | Purpose |
+|--------|------|-----|---------|
+| Repair Episode | `repair_episode.py` | 697 | State machine backbone: DETECTED → DIAGNOSING → PLANNING → EXECUTING → VERIFYING → SUCCEEDED/ROLLED_BACK/ESCALATED |
+| Redaction | `redaction.py` | 581 | Secret/PII scanning (18 patterns: AWS/GCP/Azure keys, JWTs, DB strings, tokens). Hard blocker before any LLM call. SHA-256 audit trail. |
+| Verification | `verification.py` | 902 | Post-fix pipeline: syntax → compile → lint → typecheck → test → smoke. Language commands for Python/JS/TS/Go/Rust/Java. Semantic guardrails (dangerous APIs, forbidden files, patch minimality). |
+| Rollback | `rollback.py` | 591 | Transactional rollback: snapshot files before patching, atomic commit/rollback. SHA-256 integrity checks. Active-by-file tracking. |
+| Precision Telemetry | `precision_telemetry.py` | 542 | Fix outcome tracking: accepted/reverted/ignored per rule. Bayesian posterior for calibrated confidence. Degrading-rule detection. JSON persistence. |
+
+#### Phase 2 — Intelligence
+
+| Module | File | LOC | Purpose |
+|--------|------|-----|---------|
+| Diagnosis | `diagnosis.py` | 705 | Root-cause analysis with cause graph. 18 cause types (syntax, import, type, null, permission, etc). Fast regex path (~10ms) + optional LLM-assisted deep diagnosis. |
+| Planner | `planner.py` | 1083 | Multi-step repair planner. 7 strategy types per cause. Step budget (max 15 steps, 5 LLM calls, 3 patches, 120s). Strategy failover A→B→C. Tool executor registry. |
+| Sandbox | `sandbox.py` | 733 | Ephemeral isolated workspace. File/execution/network limits. Write allowlist/denylist. Snapshot → patch → run → collect → promote/cleanup. Max 3 concurrent, auto-cleanup stale. |
+| Multi-File | `multi_file.py` | 561 | Cross-file repair coordination. Topological ordering (Kahn's algorithm). 4 strategies: sequential, batch, topological, independent. All-or-nothing rollback. Change impact analysis (direct/transitive dependents). |
+
+#### Phase 3 — Operational Safety
+
+| Module | File | LOC | Purpose |
+|--------|------|-----|---------|
+| Runtime Healing | `runtime_healing.py` | 596 | Runtime exception healing. Stack trace parsers (V8/Node, Python traceback, Firefox, Go). Error deduplication + cooldown. 6 default suppressions (HMR, React dev, source map, favicon, WebSocket, experimental). |
+| Observability | `observability.py` | 605 | Signal-based healing triggers. Sliding window stats. 6 detectors: error rate, build time regression, HMR cascade, test flakiness, crash loop, log anomaly (FATAL/OOM/segfault/deadlock). |
+| Policy | `policy.py` | 540 | Risk tiers 0–3 + approval modes (auto/notify/confirm/block). 10 default risk rules. Rate limiting (20 repairs/hr). Feature flags. Max file/line constraints per tier. |
+| Canary | `canary.py` | 539 | Staged rollout: CREATED → CANARY → SOAKING → PROMOTING → PROMOTED. Soak monitoring (15s default, 3s check interval). Health checks. Automatic rollback on new errors. |
+
+### API Endpoints (25+ new routes)
+
+All under `/heal/agentic/*`:
+
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/heal/agentic/diagnose` | POST | Root-cause diagnosis |
+| `/heal/agentic/episode/create` | POST | Create repair episode |
+| `/heal/agentic/episode/{id}` | GET | Get episode by ID |
+| `/heal/agentic/episodes` | GET | List recent episodes |
+| `/heal/agentic/policy/evaluate` | POST | Evaluate repair against policy |
+| `/heal/agentic/policy/status` | GET | Policy engine status |
+| `/heal/agentic/verify` | POST | Run verification pipeline |
+| `/heal/agentic/guardrails` | POST | Check semantic guardrails |
+| `/heal/agentic/telemetry/calibration` | GET | Calibration table |
+| `/heal/agentic/telemetry/degrading` | GET | Degrading rules |
+| `/heal/agentic/runtime/ingest` | POST | Ingest runtime error |
+| `/heal/agentic/runtime/stats` | GET | Runtime healing stats |
+| `/heal/agentic/observability/error` | POST | Record error signal |
+| `/heal/agentic/observability/build` | POST | Record build duration |
+| `/heal/agentic/observability/hmr-failure` | POST | Record HMR failure |
+| `/heal/agentic/observability/stats` | GET | Observability stats |
+| `/heal/agentic/observability/triggers` | GET | Recent triggers |
+| `/heal/agentic/canary/create` | POST | Create canary rollout |
+| `/heal/agentic/canary` | GET | List canary rollouts |
+| `/heal/agentic/canary/stats` | GET | Canary stats |
+| `/heal/agentic/status` | GET | Combined subsystem overview |
+
+### WebSocket Gateway Actions (21 new)
+
+All wired through `ai-backend/gateway/server.js` with `agenticPost`/`agenticGet`
+generic helpers and camelCase/snake_case normalization.
+
+### Testing
+
+| Test file | Tests | Focus |
+|-----------|-------|-------|
+| `test_agentic_healing.py` | 60+ | All 13 modules + export verification |
+
+Total test count: **~280+** (66 v1 + 36 v2 + ~118 v2.1 + 60+ v3.0).
+
+### What's better vs v2.1
+
+| v2.1 gap | v3.0 fix |
+|----------|----------|
+| No episode lifecycle | Full state machine with 9 states + audit trail |
+| No secret scanning before LLM | 18-pattern redaction engine (hard blocker) |
+| No post-fix verification | 6-stage pipeline: syntax → compile → lint → typecheck → test → smoke |
+| No rollback capability | Transactional rollback with integrity checks |
+| Uncalibrated confidence | Bayesian posterior from outcome tracking |
+| No root-cause diagnosis | Cause graph with 18 cause types + LLM-assisted deep mode |
+| No repair planning | Multi-strategy planner with budget constraints |
+| No sandboxing | Ephemeral isolated workspace with limits |
+| Single-file only | Multi-file coordination with topological ordering |
+| No runtime exception healing | Stack trace parsers + dedup + suppression |
+| No anomaly-based triggers | 6 signal detectors for proactive healing |
+| No risk policy enforcement | 4-tier risk + approval modes + rate limits |
+| No staged rollout | Canary → soak → promote pipeline |

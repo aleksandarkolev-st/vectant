@@ -1,4 +1,3 @@
-"""
 """Type definitions for the Targeted Auto-Fix system.
 
 These types define the classification of issues that can be auto-fixed
