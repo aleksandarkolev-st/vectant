@@ -90,6 +90,8 @@ const AIChatWindow = ({
     onSuggest = null,
     onBusy = null,
     clearSignal = 0,
+    initialPrompt = null,
+    initialAttachments = null,
 }) => {
     const scrollRef = useRef(null);
     const fileInputRef = useRef(null);
@@ -289,6 +291,28 @@ const AIChatWindow = ({
         setPendingCommands([]);
         scrollLockRef.current = false;
     }, [activeSessionId]);
+
+    // ── AI Jumpstart: auto-send initial prompt once on first mount ──
+    const hasConsumedInitialPrompt = useRef(false);
+    useEffect(() => {
+        if (!initialPrompt || hasConsumedInitialPrompt.current) return;
+        hasConsumedInitialPrompt.current = true;
+
+        // Inject attachments if provided
+        if (initialAttachments?.length) {
+            handleFilesSelected(initialAttachments.map((att) => att));
+        }
+
+        // Set the input value and trigger submit after a tick
+        // to let the component fully hydrate
+        setInputValue(initialPrompt);
+        const timer = setTimeout(() => {
+            handleSubmit();
+        }, 100);
+        return () => clearTimeout(timer);
+        // Only run once on mount — deps intentionally minimal
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [initialPrompt]);
 
     useEffect(() => {
         if (isThinking) {
