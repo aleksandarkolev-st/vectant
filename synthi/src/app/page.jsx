@@ -17,6 +17,7 @@ import {
   Clock,
   Sparkles,
 } from "lucide-react";
+import AIJumpstartSection from "@/components/dashboard/AIJumpstartSection";
 
 const COLLAB_SERVER_URL =
   process.env.NEXT_PUBLIC_COLLAB_SERVER_URL || "http://localhost:1234";
@@ -55,6 +56,11 @@ export default function Dashboard() {
   const [newRepoDesc, setNewRepoDesc] = useState("");
   const [newRepoPrivate, setNewRepoPrivate] = useState(true);
   const [creating, setCreating] = useState(false);
+
+  // AI Jumpstart state
+  const [aiJumpstart, setAiJumpstart] = useState(false);
+  const [aiPrompt, setAiPrompt] = useState("");
+  const [aiAttachments, setAiAttachments] = useState([]);
 
   // Active tab
   const [activeTab, setActiveTab] = useState("import");
@@ -560,6 +566,17 @@ export default function Dashboard() {
                       }}
                     />
                   </div>
+
+                  {/* AI Jumpstart */}
+                  <AIJumpstartSection
+                    enabled={aiJumpstart}
+                    onEnabledChange={setAiJumpstart}
+                    prompt={aiPrompt}
+                    onPromptChange={setAiPrompt}
+                    attachments={aiAttachments}
+                    onAttachmentsChange={setAiAttachments}
+                    disabled={isActionLoading}
+                  />
 
                   {/* Submit */}
                   <div className="flex justify-end pt-1">
