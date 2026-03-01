@@ -295,11 +295,13 @@ const AIChatWindow = ({
     // ── AI Jumpstart: auto-send initial prompt once on first mount ──
     const hasConsumedInitialPrompt = useRef(false);
     useEffect(() => {
-        if (!initialPrompt || hasConsumedInitialPrompt.current) return;
-        hasConsumedInitialPrompt.current = true;
+        if (!initialPrompt) return;
 
         // Use a short delay to let the component hydrate and session initialize
         const timer = setTimeout(() => {
+            if (hasConsumedInitialPrompt.current) return;
+            hasConsumedInitialPrompt.current = true;
+            
             const aborter = new AbortController();
             thinkingStartRef.current = Date.now();
             setController(aborter);
