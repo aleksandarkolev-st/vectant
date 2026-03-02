@@ -2,6 +2,32 @@
 
 require("dotenv").config();
 
+// ── PERF: Cluster mode ─────────────────────────────────────────────────────
+// Spawn one worker per CPU core so that WS→HTTP proxy work is distributed.
+// Each worker gets its own WebSocket server; the OS load-balances incoming
+// TCP connections across workers via SO_REUSEPORT / round-robin.
+const cluster = require("cluster");
+const os = require("os");
+
+const CLUSTER_ENABLED =
+  String(process.env.GATEWAY_CLUSTER || "true").toLowerCase() !== "false";
+const WORKER_COUNT =
+  parseInt(process.env.GATEWAY_WORKERS, 10) || os.cpus().length;
+
+if (CLUSTER_ENABLED && cluster.isPrimary) {
+  console.info(
+    `[Gateway] Primary ${process.pid} spawning ${WORKER_COUNT} workers`
+  );
+  for (let i = 0; i < WORKER_COUNT; i++) cluster.fork();
+  cluster.on("exit", (worker, code) => {
+    console.warn(
+      `[Gateway] Worker ${worker.process.pid} exited (code ${code}), restarting…`
+    );
+    cluster.fork();
+  });
+} else {
+  // ── Worker (or single-process if clustering disabled) ──────────────────
+
 const http = require("http");
 const crypto = require("crypto");
 const { WebSocketServer, WebSocket } = require("ws");
@@ -83,6 +109,15 @@ wss.on("connection", (socket, request) => {
   const clientId = crypto.randomUUID();
   console.info("WS connected", { clientId, ip: request.socket.remoteAddress });
 
+  // ── PERF: Per-connection rate limiting ──────────────────────────────────
+  // Prevents a misbehaving client from flooding the AI engine.
+  const RATE_WINDOW_MS = 1000;
+  const MAX_MESSAGES_PER_WINDOW = 20;      // matches AI engine STATIC lane concurrency
+  const MAX_IN_FLIGHT = 5;                 // matches AI_ANALYZE lane
+  let msgTimestamps = [];
+  let inFlightCount = 0;
+  socket._inFlightAnalysis = new Map();     // key → AbortController for supersede
+
   safeSend(socket, {
     type: "system",
     event: "connected",
@@ -90,12 +125,28 @@ wss.on("connection", (socket, request) => {
   });
 
   socket.on("message", (raw) => {
-    handleClientMessage(socket, raw).catch((err) => {
-      console.error("Handler error", err);
-      sendError(socket, "Internal gateway error", {
-        detail: err.message,
-      });
-    });
+    // Rate check: sliding window
+    const now = Date.now();
+    msgTimestamps = msgTimestamps.filter((t) => now - t < RATE_WINDOW_MS);
+    if (msgTimestamps.length >= MAX_MESSAGES_PER_WINDOW) {
+      sendError(socket, "Rate limit exceeded — max " + MAX_MESSAGES_PER_WINDOW + " msg/s", {});
+      return;
+    }
+    msgTimestamps.push(now);
+
+    // In-flight concurrency cap
+    if (inFlightCount >= MAX_IN_FLIGHT) {
+      sendError(socket, "Too many in-flight requests — max " + MAX_IN_FLIGHT, {});
+      return;
+    }
+
+    inFlightCount++;
+    handleClientMessage(socket, raw)
+      .catch((err) => {
+        console.error("Handler error", err);
+        sendError(socket, "Internal gateway error", { detail: err.message });
+      })
+      .finally(() => { inFlightCount--; });
   });
 
   socket.on("close", (code, reason) => {
@@ -859,14 +910,33 @@ async function forwardUnifiedAnalysis(socket, data, requestId) {
 
   console.log(`[Gateway] UNIFIED: ${forwardBody.file_path} | v=${forwardBody.version || 'N/A'} | hash=${contentHash} | content=${forwardBody.content?.length || 0} chars`);
 
+  // ── PERF: Abort-on-supersede ────────────────────────────────────────────
+  // If the same client sends a new analyze/unified for the same slug+filePath
+  // before the previous one finishes, abort the stale in-flight HTTP request
+  // so the AI engine stops wasting compute on outdated content.
+  const supersedeKey = `unified:${slug}:${filePath}`;
+  const prevController = socket._inFlightAnalysis?.get(supersedeKey);
+  if (prevController) {
+    prevController.abort();
+    console.log(`[Gateway] Superseded in-flight analysis for ${supersedeKey}`);
+  }
+  const controller = new AbortController();
+  if (socket._inFlightAnalysis) socket._inFlightAnalysis.set(supersedeKey, controller);
+
   let backendResponse;
   try {
     backendResponse = await fetch(backendUnifiedAnalyzeUrl, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(forwardBody),
+      signal: controller.signal,
     });
   } catch (err) {
+    if (socket._inFlightAnalysis) socket._inFlightAnalysis.delete(supersedeKey);
+    if (err.name === 'AbortError') {
+      // Silently drop — a newer request superseded this one
+      return;
+    }
     // console.error("[Gateway] Unified analysis backend request failed", err);
     sendError(socket, "Failed to reach unified analysis backend", {
       requestId,
@@ -876,6 +946,7 @@ async function forwardUnifiedAnalysis(socket, data, requestId) {
   }
 
   const responseText = await backendResponse.text();
+  if (socket._inFlightAnalysis) socket._inFlightAnalysis.delete(supersedeKey);
   console.log(`[Gateway] Unified analysis response status: ${backendResponse.status}`);
 
   if (!backendResponse.ok) {
@@ -2589,3 +2660,5 @@ function safeSend(socket, payload) {
     // console.error("Failed to send payload", err);
   }
 }
+
+} // end cluster worker/single-process block
