@@ -34,6 +34,7 @@ const SIDEBAR_TYPES = new Set([
   IDE_PANEL.CHAT,
   IDE_PANEL.SETTINGS,
   IDE_PANEL.PULL_REQUESTS,
+  IDE_PANEL.AI_HEALING,
 ]);
 
 const BOTTOM_TYPES = new Set([
@@ -168,6 +169,7 @@ export function useActivityBarDocking() {
       preview:    () => togglePanel(IDE_PANEL.PREVIEW, 'Preview'),
       settings:      () => togglePanel(IDE_PANEL.SETTINGS, 'Settings'),
       pullrequests:  () => togglePanel(IDE_PANEL.PULL_REQUESTS, 'Pull Requests'),
+      'ai-healing':  () => togglePanel(IDE_PANEL.AI_HEALING, 'AI Healing'),
     }),
     [togglePanel],
   );

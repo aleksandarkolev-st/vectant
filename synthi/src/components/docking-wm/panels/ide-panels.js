@@ -26,6 +26,7 @@ import {
   ThemeEditorPanelWrapper,
   PullRequestsPanelWrapper,
   CommitHistoryPanelWrapper,
+  AIHealingPanelWrapper,
 } from './panel-wrappers';
 
 // ────────────────────────────────────────────────────────
@@ -47,6 +48,7 @@ export const IDE_PANEL = Object.freeze({
   THEME_EDITOR: 'theme-editor',
   PULL_REQUESTS: 'pullrequests',
   COMMIT_HISTORY: 'commithistory',
+  AI_HEALING: 'ai-healing',
 });
 
 // ────────────────────────────────────────────────────────
@@ -209,6 +211,16 @@ export const IDE_PANEL_DEFINITIONS = [
     component: CommitHistoryPanelWrapper,
     allowMultiple: false,
     defaultLocation: 'bottom',
+    closable: true,
+  },
+  {
+    panelType: IDE_PANEL.AI_HEALING,
+    displayName: 'AI Healing',
+    icon: 'sparkles',
+    category: 'sidebar',
+    component: AIHealingPanelWrapper,
+    allowMultiple: false,
+    defaultLocation: 'left',
     closable: true,
   },
 ];
