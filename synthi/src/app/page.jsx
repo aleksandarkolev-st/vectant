@@ -19,6 +19,8 @@ import {
 } from "lucide-react";
 import AIJumpstartSection from "@/components/dashboard/AIJumpstartSection";
 import { storeJumpstartPayload } from "@/lib/ai-jumpstart-session";
+import { storeToken } from "@/services/prClient";
+import { toast } from "sonner";
 
 const COLLAB_SERVER_URL =
   process.env.NEXT_PUBLIC_COLLAB_SERVER_URL || "http://localhost:1234";
@@ -123,6 +125,10 @@ export default function Dashboard() {
       });
 
       if (res.ok) {
+        // Store the OAuth token for subsequent git operations
+        if (session?.accessToken) {
+          try { storeToken(slug, session.accessToken); } catch (_) {}
+        }
         await fetchWorkspaces(session.user.email);
         setRepoUrl("");
         router.push(`/workspace/${slug}`);
@@ -176,10 +182,12 @@ export default function Dashboard() {
 
       if (!createRes.ok) {
         const err = await createRes.json();
+        const errorMessage = err.error || "Failed to create repository.";
         setFeedback({
           type: "error",
-          message: err.error || "Failed to create repository.",
+          message: errorMessage,
         });
+        toast.error(errorMessage);
         return;
       }
 
@@ -204,6 +212,12 @@ export default function Dashboard() {
       });
 
       if (cloneRes.ok) {
+        // Store the OAuth token so subsequent git operations (push, pull,
+        // fetch) can authenticate without prompting the user for a PAT.
+        if (session?.accessToken) {
+          try { storeToken(slug, session.accessToken); } catch (_) {}
+        }
+
         // 3. If AI Jumpstart is enabled, persist prompt data for workspace
         if (aiJumpstart && aiPrompt.trim()) {
           storeJumpstartPayload({
