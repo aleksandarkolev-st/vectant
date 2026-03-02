@@ -72,15 +72,17 @@ async function rmDir(dir) {
  * @param {string} dir — Absolute path to the slug-level directory
  * @returns {boolean}
  */
+// NOTE: This function must remain synchronous because it is called from the
+// LRU-cache `dispose` callback which does not support async.  The fs calls
+// here are only hit during eviction (rare) and operate on local directories
+// (fast), so the event-loop impact is negligible.
 function _hasPerUserRepos(dir) {
   try {
     if (!fs.existsSync(dir)) return false;
     const entries = fs.readdirSync(dir, { withFileTypes: true });
     return entries.some(e => {
       if (!e.isDirectory()) return false;
-      // Skip internal dirs
       if (e.name === '_upstream.git' || e.name === 'sessions' || e.name.startsWith('.')) return false;
-      // A valid per-user repo has a .git inside
       return fs.existsSync(path.join(dir, e.name, '.git'));
     });
   } catch (_) {
@@ -93,9 +95,7 @@ function _hasPerUserRepos(dir) {
  */
 async function materialize(slug, repoPath, userId) {
   // Fast path: already on disk with a .git dir
-  if (fs.existsSync(path.join(repoPath, '.git'))) {
-    return;
-  }
+  try { await fsp.access(path.join(repoPath, '.git')); return; } catch { /* needs materialization */ }
 
   // Ensure parent dir exists
   await fsp.mkdir(repoPath, { recursive: true });
