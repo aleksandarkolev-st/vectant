@@ -14,6 +14,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useSelector, useDispatch } from 'react-redux';
+import * as monacoEditor from 'monaco-editor';
 
 import {
   showHealingDecorations,
@@ -69,6 +70,7 @@ export function useAIHealing({
   workspaceRoot,
   analyzeOnSave = false,
   mode = 'ai',
+  selfEditFlagRef,
 } = {}) {
   const dispatch = useDispatch();
   const enabled = useSelector(selectHealingEnabled);
@@ -379,20 +381,25 @@ export function useAIHealing({
     const model = editor.getModel();
     if (!model) return false;
 
-    const monaco = window.monaco || globalThis?.monaco;
-    if (!monaco) return false;
-
     try {
       const startLine = (fix.line ?? fix.start_line ?? 0) + 1;
       const startCol = (fix.column ?? fix.start_col ?? 0) + 1;
       const endLine = (fix.end_line ?? fix.endLine ?? fix.line ?? 0) + 1;
-      const endCol = (fix.end_column ?? fix.end_col ?? fix.column ?? 0) + 1;
+      const endCol = (fix.end_column ?? fix.end_col ?? fix.endCol ?? fix.endColumn ?? fix.column ?? fix.start_col ?? 0) + 1;
       const replacement = fix.replacement_text ?? fix.replacementText ?? '';
 
       if (startLine > model.getLineCount() + 1) return false;
 
-      const range = new monaco.Range(startLine, startCol, endLine, endCol);
+      const range = new monacoEditor.Range(startLine, startCol, endLine, endCol);
       const originalText = model.getValueInRange(range);
+
+      // Save cursor + scroll so the edit doesn't jump the user
+      const savedPos = editor.getPosition();
+      const savedScrollTop = editor.getScrollTop();
+      const savedScrollLeft = editor.getScrollLeft();
+
+      // Flag self-edit to prevent re-analysis cascade
+      if (selfEditFlagRef) selfEditFlagRef.current = true;
 
       editor.executeEdits('ai-healing', [{
         range,
@@ -400,6 +407,13 @@ export function useAIHealing({
         forceMoveMarkers: true,
       }]);
       editor.pushUndoStop();
+
+      // Restore cursor + scroll
+      if (savedPos) editor.setPosition(savedPos);
+      editor.setScrollTop(savedScrollTop);
+      editor.setScrollLeft(savedScrollLeft);
+
+      if (selfEditFlagRef) setTimeout(() => { selfEditFlagRef.current = false; }, 500);
 
       dispatch(pushUndo({
         fixId: fix.fix_id || fix.id || uid(),
@@ -435,22 +449,92 @@ export function useAIHealing({
 
   // ── Apply all safe fixes ────────────────────────────────────────────
   const applyAllSafe = useCallback(() => {
+    const editor = editorRef?.current;
+    if (!editor) return 0;
+    const model = editor.getModel();
+    if (!model) return 0;
+
     const safeFixes = fixes.filter(
       (f) => (f.is_safe || f.isSafe) && !aiSuppressedRules.isEscalated(f)
     );
-    let applied = 0;
+    if (!safeFixes.length) return 0;
 
-    // Apply in reverse order to preserve line numbers
+    // Sort bottom-up (highest line first) — Monaco applies edits in order
     const sorted = [...safeFixes].sort((a, b) => {
       const lineA = a.line ?? a.start_line ?? 0;
       const lineB = b.line ?? b.start_line ?? 0;
-      return lineB - lineA;
+      if (lineB !== lineA) return lineB - lineA;
+      const colA = a.column ?? a.start_col ?? 0;
+      const colB = b.column ?? b.start_col ?? 0;
+      return colB - colA;
     });
 
+    // Build a SINGLE batched edit to avoid coordinate drift
+    const edits = [];
+    const accepted = [];
+
     for (const fix of sorted) {
-      if (applyFix(fix)) applied++;
+      const startLine = (fix.line ?? fix.start_line ?? 0) + 1;
+      const startCol  = (fix.column ?? fix.start_col ?? 0) + 1;
+      const eL        = (fix.end_line ?? fix.endLine ?? fix.line ?? 0) + 1;
+      const eC        = (fix.end_column ?? fix.end_col ?? fix.endCol ?? fix.endColumn ?? fix.column ?? fix.start_col ?? 0) + 1;
+      const text      = fix.replacement_text ?? fix.replacementText ?? '';
+
+      if (startLine > model.getLineCount() + 1) continue;
+
+      const range = new monacoEditor.Range(startLine, startCol, eL, eC);
+      const originalText = model.getValueInRange(range);
+
+      // Guard: skip destructive replacements
+      if (originalText.length > 0 && text.length === 0 && originalText.length > 50) continue;
+      if (originalText.length > 100 && text.length < originalText.length / 4) continue;
+
+      edits.push({ range, text, forceMoveMarkers: true });
+      accepted.push({ fix, originalText, range: { startLine, startCol, endLine: eL, endCol: eC } });
     }
 
+    if (!edits.length) return 0;
+
+    // Save cursor + scroll so the batch edit doesn't jump the user
+    const savedPos = editor.getPosition();
+    const savedScrollTop = editor.getScrollTop();
+    const savedScrollLeft = editor.getScrollLeft();
+
+    // Flag self-edit to prevent re-analysis cascade
+    if (selfEditFlagRef) selfEditFlagRef.current = true;
+
+    editor.executeEdits('ai-healing-batch', edits);
+    editor.pushUndoStop();
+
+    // Restore cursor + scroll
+    if (savedPos) editor.setPosition(savedPos);
+    editor.setScrollTop(savedScrollTop);
+    editor.setScrollLeft(savedScrollLeft);
+
+    if (selfEditFlagRef) setTimeout(() => { selfEditFlagRef.current = false; }, 500);
+
+    // Track applied fixes
+    for (const { fix, originalText, range } of accepted) {
+      dispatch(pushUndo({
+        fixId: fix.fix_id || fix.id || uid(),
+        filePath,
+        originalText,
+        range,
+      }));
+      dispatch(addHealingEvent({
+        type: 'ai_fix_applied',
+        filePath,
+        details: { description: fix.description, confidence: fix.confidence },
+      }));
+      _reportFeedback(fix, 'accepted');
+      aiFixHistory.record({ fix, action: 'applied', filePath });
+    }
+
+    // Remove applied fixes from the list
+    const appliedSet = new Set(accepted.map(({ fix }) => fix));
+    setFixes((prev) => prev.filter((f) => !appliedSet.has(f)));
+
+    const applied = accepted.length;
     if (applied > 0) {
       dispatch(enqueueToast({
         message: `Applied ${applied} safe AI fix${applied === 1 ? '' : 'es'}`,
@@ -459,7 +543,7 @@ export function useAIHealing({
     }
 
     return applied;
-  }, [fixes, applyFix, dispatch]);
+  }, [fixes, editorRef, filePath, dispatch]);
 
   // ── Dismiss a fix (internal, no widget cleanup — used by widget callbacks) ──
   const dismissFixInternal = useCallback((fix) => {
