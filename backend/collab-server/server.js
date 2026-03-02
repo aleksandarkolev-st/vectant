@@ -65,6 +65,7 @@ const repoCache = require('./repoCache');
 const sessionManager = require('./SessionManager');
 const { extractSessionContext, requireGitActionPermission, wsRequirePermission, wsDenyAction, wsAttachContext } = require('./permissionMiddleware');
 const { acquireStagingLock, releaseStagingLock, pauseWatcher, resumeWatcher } = require('./fsWatcherService');
+const { LRUCache } = require('lru-cache');
 
 // ── User block list (in-memory) ──────────────────────────────────────────────
 // blockedBy: userId → Set<blockedUserId>
@@ -98,8 +99,10 @@ try {
 
 const PORT = config.PORT;
 
-// Track file hashes to detect when actual files change outside of the editor
-const fileHashCache = new Map(); // docName -> { hash, timestamp }
+// PERF: Bounded LRU cache replaces unbounded Map to prevent memory leak and
+// GC pauses on long-running servers with many files.  1000 entries covers the
+// active working set; 5-minute TTL evicts stale entries automatically.
+const fileHashCache = new LRUCache({ max: 1000, ttl: 5 * 60 * 1000 }); // docName -> { hash, timestamp }
 
 // Revert cooldown: after invalidateDocsForSlug, reject stale sync (save)
 // requests for a short window.  Key = "slug:filePath", value = timestamp.
@@ -3347,15 +3350,27 @@ const server = http.createServer(async (req, res) => {
   res.end('Synthi collaboration server is running');
 });
 
-const wss = new WebSocket.Server({ noServer: true });
+// PERF: Enable permessage-deflate compression.  Yjs binary sync messages
+// and JSON notification payloads are highly compressible (~30% smaller).
+const wsPerMessageDeflate = {
+  zlibDeflateOptions: { chunkSize: 1024, memLevel: 7, level: 3 }, // level 3 = fast
+  zlibInflateOptions: { chunkSize: 10 * 1024 },
+  clientNoContextTakeover: true,   // don't keep deflate state between messages
+  serverNoContextTakeover: true,
+  serverMaxWindowBits: 10,
+  concurrencyLimit: 10,
+  threshold: 128,                  // only compress messages > 128 bytes
+};
+
+const wss = new WebSocket.Server({ noServer: true, perMessageDeflate: wsPerMessageDeflate });
 
 // Lightweight notification WebSocket server for non-Yjs broadcasts
 // (e.g., file-tree-changed). Clients connect to /notifications?slug=<slug>.
-const notifyWss = new WebSocket.Server({ noServer: true });
+const notifyWss = new WebSocket.Server({ noServer: true, perMessageDeflate: wsPerMessageDeflate });
 
 // Session notification WebSocket server for collaboration events.
 // Clients connect to /session-events?sessionId=<id>&userId=<id>.
-const sessionWss = new WebSocket.Server({ noServer: true });
+const sessionWss = new WebSocket.Server({ noServer: true, perMessageDeflate: wsPerMessageDeflate });
 
 // Terminal PTY WebSocket server — spawns shell sessions via node-pty.
 // Clients connect to /terminal?sessionId=<id>&workspace=<slug>&cols=N&rows=N.
