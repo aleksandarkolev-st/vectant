@@ -487,6 +487,13 @@ export function useSelfHealing({
           console.warn('[SelfHealing] Skipping suspicious fix:', fix.description, `(${originalText.length} chars → ${text.length} chars)`);
           continue;
         }
+        // Guard: reject edits that span more than half the file
+        const totalLines = model.getLineCount();
+        const editSpan = eL - startLine + 1;
+        if (totalLines > 3 && editSpan > totalLines * 0.5) {
+          console.warn('[SelfHealing] Skipping fix that spans', editSpan, 'of', totalLines, 'lines:', fix.description);
+          continue;
+        }
 
         edits.push({ range, text, forceMoveMarkers: true });
         accepted.push({ fix, originalText, range: { startLine, startCol, endLine: eL, endCol: eC } });
@@ -516,6 +523,17 @@ export function useSelfHealing({
       editor.setScrollLeft(savedScrollLeft);
 
       setTimeout(() => { selfEditFlagRef.current = false; }, 500);
+
+      // Post-edit safety: undo if model is nearly empty after applying fixes
+      const afterContent = model.getValue();
+      if (afterContent.length < 5 && edits.length > 0) {
+        console.error('[SelfHealing] ABORT: model nearly empty after regex heal, triggering undo');
+        editor.trigger('self-healing', 'undo', null);
+        dispatch(setHealingStatus('idle'));
+        dispatch(setFileHealingState({ filePath, isHealing: false }));
+        inflightRef.current = false;
+        return;
+      }
 
       let appliedCount = accepted.length;
 
@@ -777,6 +795,13 @@ export function useSelfHealing({
         }
         if (originalText.length > 100 && text.length < originalText.length / 4) {
           console.warn('[SelfHealing] Skipping suspicious fix:', fix.description, `(${originalText.length} chars → ${text.length} chars)`);
+          continue;
+        }
+        // Guard: reject edits that span more than half the file
+        const totalFileLines = model.getLineCount();
+        const editSpan = endLine - startLine + 1;
+        if (totalFileLines > 3 && editSpan > totalFileLines * 0.5) {
+          console.warn('[SelfHealing] Skipping fix that spans', editSpan, 'of', totalFileLines, 'lines:', fix.description);
           continue;
         }
 

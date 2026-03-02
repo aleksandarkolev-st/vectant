@@ -55,7 +55,25 @@ export const useEditorProviders = ({
         
         // Handle both camelCase and snake_case (backend compatibility)
         const text = fix.replacementText ?? fix.replacement_text ?? '';
-        
+
+        // Guard: skip destructive replacements that would delete large content
+        const originalText = model.getValueInRange(range);
+        if (originalText.length > 0 && text.length === 0 && originalText.length > 50) {
+            console.warn('[providers] Skipping destructive fix (would delete', originalText.length, 'chars)');
+            return;
+        }
+        if (originalText.length > 100 && text.length < originalText.length / 4) {
+            console.warn('[providers] Skipping suspicious fix:', `(${originalText.length} chars → ${text.length} chars)`);
+            return;
+        }
+        // Guard: reject edits that span more than half the file
+        const totalLines = model.getLineCount();
+        const editSpan = range.endLineNumber - range.startLineNumber + 1;
+        if (totalLines > 3 && editSpan > totalLines * 0.5) {
+            console.warn('[providers] Skipping fix that spans', editSpan, 'of', totalLines, 'lines');
+            return;
+        }
+
         // Save cursor + scroll so the edit doesn't jump the user
         const savedPos = editorInstance.getPosition();
         const savedScrollTop = editorInstance.getScrollTop();
@@ -72,6 +90,14 @@ export const useEditorProviders = ({
         if (savedPos) editorInstance.setPosition(savedPos);
         editorInstance.setScrollTop(savedScrollTop);
         editorInstance.setScrollLeft(savedScrollLeft);
+
+        // Post-edit safety: undo if model is nearly empty after the fix
+        const afterContent = model.getValue();
+        if (afterContent.length < 5 && originalText.length > 20) {
+            console.error('[providers] ABORT: model nearly empty after fix, triggering undo');
+            editorInstance.trigger('synthi-quick-fix', 'undo', null);
+            return;
+        }
 
         // Clear pending fix state
         pendingFixRef.current = null;

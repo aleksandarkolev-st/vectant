@@ -409,6 +409,23 @@ export function useAIHealing({
       const range = new monacoEditor.Range(startLine, startCol, endLine, endCol);
       const originalText = model.getValueInRange(range);
 
+      // Guard: skip destructive replacements that would delete large content
+      if (originalText.length > 0 && replacement.length === 0 && originalText.length > 50) {
+        console.warn('[AIHealing] Skipping destructive fix (would delete', originalText.length, 'chars):', fix.description);
+        return false;
+      }
+      if (originalText.length > 100 && replacement.length < originalText.length / 4) {
+        console.warn('[AIHealing] Skipping suspicious fix:', fix.description, `(${originalText.length} chars → ${replacement.length} chars)`);
+        return false;
+      }
+      // Guard: reject edits that span a large fraction of the file
+      const totalLines = model.getLineCount();
+      const editSpan = endLine - startLine + 1;
+      if (totalLines > 3 && editSpan > totalLines * 0.5) {
+        console.warn('[AIHealing] Skipping fix that spans', editSpan, 'of', totalLines, 'lines:', fix.description);
+        return false;
+      }
+
       // Save cursor + scroll so the edit doesn't jump the user
       const savedPos = editor.getPosition();
       const savedScrollTop = editor.getScrollTop();
@@ -430,6 +447,14 @@ export function useAIHealing({
       editor.setScrollLeft(savedScrollLeft);
 
       if (selfEditFlagRef) setTimeout(() => { selfEditFlagRef.current = false; }, 500);
+
+      // Post-edit safety: undo if model is nearly empty after the edit
+      const afterContent = model.getValue();
+      if (afterContent.length < 5 && originalText.length > 20) {
+        console.error('[AIHealing] ABORT: model nearly empty after fix, triggering undo');
+        editor.trigger('ai-healing', 'undo', null);
+        return false;
+      }
 
       dispatch(pushUndo({
         fixId: fix.fix_id || fix.id || uid(),
@@ -513,6 +538,10 @@ export function useAIHealing({
       // Guard: skip destructive replacements
       if (originalText.length > 0 && text.length === 0 && originalText.length > 50) continue;
       if (originalText.length > 100 && text.length < originalText.length / 4) continue;
+      // Guard: reject edits that span more than half the file
+      const totalLines = model.getLineCount();
+      const editSpan = eL - startLine + 1;
+      if (totalLines > 3 && editSpan > totalLines * 0.5) continue;
 
       edits.push({ range, text, forceMoveMarkers: true });
       accepted.push({ fix, originalText, range: { startLine, startCol, endLine: eL, endCol: eC } });
@@ -537,6 +566,14 @@ export function useAIHealing({
     editor.setScrollLeft(savedScrollLeft);
 
     if (selfEditFlagRef) setTimeout(() => { selfEditFlagRef.current = false; }, 500);
+
+    // Post-edit safety: undo if model is nearly empty after the batch edit
+    const afterContent = model.getValue();
+    if (afterContent.length < 5 && edits.length > 0) {
+      console.error('[AIHealing] ABORT: model nearly empty after batch fix, triggering undo');
+      editor.trigger('ai-healing-batch', 'undo', null);
+      return 0;
+    }
 
     // Track applied fixes
     for (const { fix, originalText, range } of accepted) {
