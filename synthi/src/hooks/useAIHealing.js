@@ -121,6 +121,22 @@ export function useAIHealing({
     if (model) clearAIDiagnostics(model);
   }, [filePath]);
 
+  // ── Keep 'ai-healing' markers in sync with fixes state ──────────────
+  // When applyFix / applyAllSafe / dismissFix removes fixes from state,
+  // this effect updates the Monaco markers so resolved issues don't linger.
+  useEffect(() => {
+    const editor = editorRef?.current;
+    if (!editor) return;
+    const model = editor.getModel?.();
+    if (!model) return;
+
+    if (fixes.length === 0) {
+      clearAIDiagnostics(model);
+    } else {
+      setAIDiagnostics(model, fixes);
+    }
+  }, [fixes, editorRef]);
+
   // ── Request AI analysis ─────────────────────────────────────────────
   const analyze = useCallback(async (options = {}) => {
     if (!enabled) return null;
@@ -422,8 +438,17 @@ export function useAIHealing({
         range: { startLine, startCol, endLine, endCol },
       }));
 
-      // Remove the applied fix from the list
-      setFixes((prev) => prev.filter((f) => f !== fix));
+      // Remove the applied fix from the list and update markers immediately
+      setFixes((prev) => {
+        const remaining = prev.filter((f) => f !== fix);
+        // Sync ai-healing markers with remaining fixes right away
+        const m = editor.getModel?.();
+        if (m) {
+          if (remaining.length === 0) clearAIDiagnostics(m);
+          else setAIDiagnostics(m, remaining);
+        }
+        return remaining;
+      });
 
       dispatch(addHealingEvent({
         type: 'ai_fix_applied',
@@ -530,9 +555,17 @@ export function useAIHealing({
       aiFixHistory.record({ fix, action: 'applied', filePath });
     }
 
-    // Remove applied fixes from the list
+    // Remove applied fixes from the list and update markers immediately
     const appliedSet = new Set(accepted.map(({ fix }) => fix));
-    setFixes((prev) => prev.filter((f) => !appliedSet.has(f)));
+    setFixes((prev) => {
+      const remaining = prev.filter((f) => !appliedSet.has(f));
+      const m = editor.getModel?.();
+      if (m) {
+        if (remaining.length === 0) clearAIDiagnostics(m);
+        else setAIDiagnostics(m, remaining);
+      }
+      return remaining;
+    });
 
     const applied = accepted.length;
     if (applied > 0) {
