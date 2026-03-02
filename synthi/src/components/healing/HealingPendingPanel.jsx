@@ -69,7 +69,7 @@ export function HealingPendingPanel({ editorRef }) {
         const startLine = (fix.start_line ?? fix.startLine ?? 0) + 1;
         const startCol = (fix.start_col ?? fix.startCol ?? 0) + 1;
         const endLine = (fix.end_line ?? fix.endLine ?? fix.start_line ?? fix.startLine ?? 0) + 1;
-        const endCol = (fix.end_col ?? fix.endCol ?? fix.start_col ?? fix.startCol ?? 0) + 1;
+        const endCol = (fix.end_col ?? fix.endCol ?? fix.end_column ?? fix.endColumn ?? fix.start_col ?? fix.startCol ?? 0) + 1;
         const replacementText = fix.replacement_text ?? fix.replacementText ?? '';
 
         const range = new monaco.Range(startLine, startCol, endLine, endCol);

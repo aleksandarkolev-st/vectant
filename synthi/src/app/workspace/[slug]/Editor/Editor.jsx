@@ -152,6 +152,10 @@ import { useFilePresence } from '@/hooks/useFilePresence';
 if (typeof window !== 'undefined') {
     // Use bundled monaco-editor instead of CDN to ensure compatibility with monaco-languageclient
     loader.config({ monaco });
+
+    // Expose monaco globally so hooks/services that need Range, MarkerSeverity,
+    // etc. can access it without a direct import (many files rely on this).
+    window.monaco = monaco;
 }
 
 // Worker factory for MonacoVscodeApiWrapper — must be passed via monacoWorkerFactory
@@ -211,6 +215,7 @@ const EditorPanel = ({
     chatVisible = false,
     collabHostId = null,
     dockingMode = false,
+    selfEditFlagRef = null,
 }) => {
     const dispatch = useAppDispatch();
     const store = useAppStore();
@@ -2617,6 +2622,11 @@ const EditorPanel = ({
         // Skip AI auto-complete and active completion cancel for remote changes
         // — these should only fire on local user edits
         if (remoteApplying) return;
+
+        // Skip AI auto-complete cancel and re-trigger when the self-healing
+        // system just applied a fix.  Cancelling completions during healing
+        // edits causes unnecessary visual disruption.
+        if (selfEditFlagRef?.current) return;
 
         cancelActiveCompletion({ resetSuggestion: true, reason: 'edit' });
 
