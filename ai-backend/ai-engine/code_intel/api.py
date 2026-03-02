@@ -29,11 +29,12 @@ def resolve_workspace_path(workspace_path: str) -> str:
     Resolve a workspace identifier to an actual filesystem path.
     
     The frontend typically passes a workspace slug (e.g., "cmgnslm7q0001u9bwhb4mdvfi"),
-    but the code intel system needs the actual filesystem path where the repo is stored.
+    or a slug/userId pair (e.g., "az3a08t9/113239851") for per-user repos.
+    The code intel system needs the actual filesystem path where the repo is stored.
     
     Resolution order:
     1. If workspace_path is already an absolute path that exists, use it
-    2. If it's a slug, resolve to {project_root}/backend/collab-server/repos/{slug}
+    2. If it's a slug or slug/userId, resolve to {project_root}/backend/collab-server/repos/{path}
     3. If that doesn't exist, try relative to current working directory
     """
     # If it's already an absolute path that exists, use it directly (unless slug-only is enforced)
@@ -46,13 +47,21 @@ def resolve_workspace_path(workspace_path: str) -> str:
         return workspace_path
     
     # Check if it looks like a slug (alphanumeric, no path separators)
+    # or a slug/userId pair (exactly one forward slash separating two segments)
     is_slug = (
         not os.path.sep in workspace_path and
         not "/" in workspace_path and
         not "\\" in workspace_path
     )
     
-    if is_slug:
+    # Also handle slug/userId format (e.g., "az3a08t9/113239851")
+    parts = workspace_path.replace("\\", "/").split("/")
+    is_slug_with_user = (
+        len(parts) == 2 and
+        all(p and not os.path.sep in p for p in parts)
+    )
+    
+    if is_slug or is_slug_with_user:
         # Try to find the project root by looking for known markers
         # Start from the current file's location and work upward
         current_file = Path(__file__).resolve()
@@ -60,7 +69,7 @@ def resolve_workspace_path(workspace_path: str) -> str:
         
         # Walk up to find the project root (where backend/ folder exists)
         for _ in range(10):  # Safety limit
-            potential_repos = project_root / "backend" / "collab-server" / "repos" / workspace_path
+            potential_repos = project_root / "backend" / "collab-server" / "repos" / workspace_path.replace("/", os.sep)
             if potential_repos.exists():
                 resolved = str(potential_repos)
                 logger.info(f"Resolved workspace slug '{workspace_path}' to: {resolved}")
@@ -74,7 +83,7 @@ def resolve_workspace_path(workspace_path: str) -> str:
         # Also try from environment variable or known locations
         repos_base = os.environ.get("SYNTHI_REPOS_PATH")
         if repos_base:
-            potential = os.path.join(repos_base, workspace_path)
+            potential = os.path.join(repos_base, workspace_path.replace("/", os.sep))
             if os.path.exists(potential):
                 logger.info(f"Resolved workspace from SYNTHI_REPOS_PATH: {potential}")
                 return potential

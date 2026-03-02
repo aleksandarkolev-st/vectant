@@ -17,6 +17,7 @@ This is the line between "fix suggester" and "self-healing".
 
 from __future__ import annotations
 
+import re
 import asyncio
 import hashlib
 import logging

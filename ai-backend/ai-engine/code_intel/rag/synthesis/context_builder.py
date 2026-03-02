@@ -241,11 +241,12 @@ class ContextBuilder:
 
         return ContextSection(
             citation_id=f"[{citation_idx}]",
-            document_title=section.document_id,   # Will be enriched by caller
+            document_title=result.document_title or section.document_id,
             section_title=section.title,
             breadcrumb=section.breadcrumb,
             content=content,
             token_estimate=len(content) // 4 + 1,
+            file_path=result.file_path,
             document_id=section.document_id,
             section_id=section.id,
             start_line=section.start_line,

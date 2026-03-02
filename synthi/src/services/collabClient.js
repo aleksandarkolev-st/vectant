@@ -1180,31 +1180,28 @@ class CollabClient {
         }
         entry._seeded = true;
       } else if (hasProvidedContent && !entry._seeded) {
-        // Do NOT set model content optimistically here.  The MonacoBinding
-        // (established below) will apply the ytext delta as an INSERT at
-        // position 0.  If the model already has content, the insert lands
-        // ON TOP of it — doubling the text.  Leave the model empty so the
-        // binding applies the delta cleanly.
-        if (model.getValue().length > 0) {
-          model.setValue('');
-        }
+        // The MonacoTextBinding._yObserver has a post-apply safeguard that
+        // detects model/ytext mismatches after incremental edits and falls
+        // back to a full replace.  This means we can safely leave the model
+        // content as-is (old file content acts as a placeholder) instead of
+        // blanking it.  The safeguard will correct any duplication caused by
+        // the initial Yjs delta being applied on top of existing content.
         doSeed();
       }
     } else {
       // Wait for sync before seeding to avoid racing with server content.
-      // CRITICAL: Keep the model EMPTY until the Yjs sync delta arrives.
-      // If the model has content when the sync delta is applied, the delta
-      // (a full insert) would land ON TOP of the existing text — doubling
-      // or tripling it.  The user sees a blank editor for a brief moment
-      // (<200ms typical) which is preferable to content duplication.
       //
-      // NOTE: A previous version filled the model "optimistically" after
-      // clearing it, but that re-created the exact condition the clear was
-      // trying to prevent.  Now we leave it empty and let the Yjs sync
-      // (or doSeed fallback) populate it authoritatively.
-      if (model.getValue().length > 0) {
-        model.setValue('');
-      }
+      // PREVIOUS BEHAVIOR: The model was cleared to '' here to prevent
+      // Yjs delta duplication.  However, the MonacoTextBinding._yObserver
+      // now has a post-apply mismatch safeguard that detects when
+      // incremental edits produce wrong content (e.g., delta inserted ON
+      // TOP of existing text) and falls back to a full model replace.
+      //
+      // With the safeguard in place, keeping the existing model content
+      // as a visual placeholder is safe — the user sees the previous
+      // file content instead of a blank editor during the ~200ms sync
+      // window.  This eliminates the visible blank flash on git pull,
+      // checkout, or any operation that destroys and recreates Yjs docs.
       const syncHandler = () => {
         entry.provider.off('sync', syncHandler);
         doSeed();

@@ -173,6 +173,8 @@ export const ChatPanelWrapper = memo(function ChatPanelWrapper({ data }) {
         onSuggest={ctx?.onSuggest}
         onBusy={ctx?.onBusy}
         clearSignal={ctx?.clearSignal}
+        initialPrompt={ctx?.initialPrompt}
+        initialAttachments={ctx?.initialAttachments}
       />
     </div>
   );

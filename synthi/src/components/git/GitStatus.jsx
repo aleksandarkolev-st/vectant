@@ -24,8 +24,10 @@ import { getFileLanguage } from '@/utils/fileUtils';
 import {
   maskRemoteUrl, urlContainsToken, detectProvider, humanRemoteUrl,
   commitWebUrl, parseConventionalCommit, ccColor, groupCommitsByDate,
-  buildCommitGraph, relativeTime, extractTokenFromUrl, stripTokenFromUrl
+  buildCommitGraph, relativeTime, extractTokenFromUrl, stripTokenFromUrl,
+  GRAPH_COLORS, hashBranchColor
 } from './gitUtils';
+import CommitGraphColumn from './CommitGraphColumn';
 import {
   openTab, activateTabAction, setFocusedTabGroup,
   selectNodes, selectTabs,
@@ -124,46 +126,7 @@ function CommitMessage({ message }) {
   );
 }
 
-/** Commit graph column — backbone lines + Bezier merge curves + nodes */
-function CommitGraphColumn({ graphNode, rowHeight = 32, totalLanes }) {
-  if (!graphNode) return null;
-  const cols = Math.max(totalLanes || 1, (graphNode.laneCount || 1));
-  const colW = 14;
-  const width = cols * colW + 6;
-  const cx = graphNode.col * colW + colW / 2 + 3;
-  const cy = rowHeight / 2;
-  const r = graphNode.isMerge ? 5 : 3.5;
-
-  return (
-    <svg width={width} height={rowHeight} className="flex-shrink-0" style={{ minWidth: width }}>
-      {/* Backbone / active lane lines */}
-      {graphNode.activeLanes.map((lane, idx) => {
-        if (lane === null) return null;
-        const x = idx * colW + colW / 2 + 3;
-        const color = `var(--graph-${idx % 8})`;
-        return (
-          <line key={idx} x1={x} y1={0} x2={x} y2={rowHeight}
-            stroke={color} strokeWidth={1.5} opacity={0.35} />
-        );
-      })}
-      {/* Merge curves — smooth Bezier from parent lane to this node */}
-      {graphNode.mergeFromCols.map((mc, i) => {
-        const mx = mc * colW + colW / 2 + 3;
-        // Smooth cubic Bezier: start at top of merge lane, curve into node
-        const d = `M ${mx} 0 C ${mx} ${cy * 0.6}, ${cx} ${cy * 0.4}, ${cx} ${cy}`;
-        return (
-          <path key={`m-${i}`} d={d} fill="none"
-            stroke={graphNode.color} strokeWidth={1.5} opacity={0.5} />
-        );
-      })}
-      {/* Node circle */}
-      <circle cx={cx} cy={cy} r={r}
-        fill={graphNode.isMerge ? '#18181b' : graphNode.color}
-        stroke={graphNode.color}
-        strokeWidth={graphNode.isMerge ? 2 : 0} />
-    </svg>
-  );
-}
+/* CommitGraphColumn is now imported from './CommitGraphColumn' — shared between views */
 
 /* ───── Security alert banner ─────────────────────── */
 
@@ -322,6 +285,9 @@ export function GitStatus({ slug }) {
   // ── data refresh ───────────────────────────────
   const refreshGitData = useCallback(async () => {
     if (!slug) return;
+    // Fetch from remote FIRST to update remote-tracking branches
+    // so ahead/behind status is accurate
+    try { await dispatch(fetchRemote(slug)); } catch (_) { /* offline OK */ }
     dispatch(fetchGitStatus(slug));
     dispatch(fetchRemotes(slug));
     dispatch(fetchCommitHistory({ slug }));
@@ -683,7 +649,8 @@ export function GitStatus({ slug }) {
 
   const displayCommits = showAllCommits ? filteredCommits : filteredCommits.slice(0, 20);
   const dateGroups = useMemo(() => groupCommitsByDate(displayCommits), [displayCommits]);
-  const graphNodes = useMemo(() => buildCommitGraph(displayCommits), [displayCommits]);
+  const refsMap = useMemo(() => commitHistory?.refs ?? {}, [commitHistory]);
+  const graphNodes = useMemo(() => buildCommitGraph(displayCommits, refsMap), [displayCommits, refsMap]);
   const maxLanes = useMemo(() => Math.max(1, ...graphNodes.map(g => g.laneCount)), [graphNodes]);
 
   // Primary remote URL (for commit links)
@@ -1282,7 +1249,15 @@ export function GitStatus({ slug }) {
                       return (
                         <li key={c.hash} className="flex items-center hover:bg-[#27272a] rounded-md group transition-colors"
                           title={`${c.hash}\n${isoDate}`}>
-                          <CommitGraphColumn graphNode={gn} totalLanes={maxLanes} />
+                          <CommitGraphColumn
+                            graphNode={gn}
+                            totalLanes={maxLanes}
+                            rowHeight={32}
+                            commitData={c}
+                            refsMap={refsMap}
+                            allGraphNodes={graphNodes}
+                            nodeIndex={gIdx}
+                          />
                           <div className="flex-1 min-w-0 py-1 pr-1">
                             <div className="flex items-center gap-1">
                               <code className="font-mono text-[10px] text-[#71717a] flex-shrink-0">{c.hash?.substring(0, 7)}</code>

@@ -2448,15 +2448,33 @@ const EditorPanel = ({
     const activeFileIdentity = activeFile ? `${activeFile.path ?? ''}-${activeFile.name ?? ''}` : 'no-file';
     const activeFileIcon = activeFile ? getFileIcon(activeFile.name || activeFile.path || '') : null;
 
-    // Clean up editor instance when activeFile changes to prevent stale references
+    // Pre-create/switch Monaco models when activeFile changes.
+    // This eliminates the 1-second blank flash by reusing cached models
+    // instead of destroying and recreating the editor.
     useEffect(() => {
-        // When file identity changes, clear the editor instance to force re-bind
-        return () => {
-            // On cleanup (file switch), null out editor to prevent stale usage
-            setEditorInstance(null);
-            setCollabConnected(false);
-        };
-    }, [activeFileIdentity]);
+        if (!editorInstance || !monacoInstance || !activeFile) return;
+        const filePath = activeFile.path.startsWith('/') ? activeFile.path.slice(1) : activeFile.path;
+        const uri = monacoInstance.Uri.parse(`file:///synthi/${filePath}`);
+        let model = monacoInstance.editor.getModel(uri);
+        if (!model) {
+            // Pre-create the model with cached content so there's no blank
+            const cachedContent = fileCacheEntries.find(([p]) => p === activeFile.path)?.[1];
+            const initialContent = typeof cachedContent === 'string' ? cachedContent : (code ?? '');
+            const lang = getMonacoLanguage(activeFile.name);
+            model = monacoInstance.editor.createModel(initialContent, lang || 'plaintext', uri);
+        }
+        // Switch to the model atomically — no blank flash
+        const currentModel = editorInstance.getModel();
+        if (currentModel !== model) {
+            editorInstance.setModel(model);
+        }
+        // Correct model language if needed
+        if (activeLanguage && activeLanguage !== 'plaintext' && model.getLanguageId() !== activeLanguage) {
+            monacoInstance.editor.setModelLanguage(model, activeLanguage);
+        }
+        // Disconnect collab binding for previous file — the collab effect below will re-bind
+        setCollabConnected(false);
+    }, [activeFileIdentity]); // eslint-disable-line react-hooks/exhaustive-deps
 
     const {
         aiCompletionState,
@@ -3755,6 +3773,7 @@ const EditorPanel = ({
                                 content={code}
                                 filePath={activeFile.path}
                                 slug={slug}
+                                monacoInstance={monacoInstance}
                                 onContentChange={async (newContent) => {
                                     // Apply resolved content to the Monaco model directly.
                                     // The model is bound to Yjs via MonacoBinding, so
@@ -3857,11 +3876,11 @@ const EditorPanel = ({
                                         {/* Regular Editor — hidden when diff is active */}
                                         <div className="h-full w-full" style={{ display: diffMode ? 'none' : undefined }}>
                                             <Editor
-                                                key={activeFileIdentity}
                                                 height="100%"
                                                 path={activeFile ? `file:///synthi/${activeFile.path.startsWith('/') ? activeFile.path.slice(1) : activeFile.path}` : undefined}
-                                                // Use defaultValue for initial content to prevent cursor jumping issues during typing.
-                                                // The key={activeFileIdentity} ensures component remounts on file switch.
+                                                // Model caching: the editor instance stays alive across file switches.
+                                                // Models are pre-created and switched via editor.setModel() in the
+                                                // useEffect above, so there is no blank flash between tab switches.
                                                 defaultValue={code ?? ''}
                                                 language={activeLanguage}
                                                 theme="synthi-theme"

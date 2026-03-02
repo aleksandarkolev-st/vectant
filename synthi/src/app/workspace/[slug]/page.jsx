@@ -8,6 +8,7 @@ import { fetchFilesThunk, selectActiveFile, setSlug, selectFileThunk, selectCurr
 import { fetchGitStatus, forceRefreshGitStatus } from '@/redux/gitSlice';
 import collabClient from '@/services/collabClient';
 import collabSessionService from '@/services/collabSessionService';
+import { consumeJumpstartPayload } from '@/lib/ai-jumpstart-session';
 import { USER_ID_KEY, USER_NAME_KEY, USER_AVATAR_KEY } from '@/services/userIdentity';
 import {
     selectShowTerminal,
@@ -119,11 +120,16 @@ export default function EditorPage({ params }) {
     const { slug } = use(params);
 
     const [chatVisible, setChatVisible] = useState(false);
+
+    // AI Jumpstart — initial prompt/attachments from dashboard
+    const [jumpstartPrompt, setJumpstartPrompt] = useState(null);
+    const [jumpstartAttachments, setJumpstartAttachments] = useState(null);
     const [sidebarView, setSidebarView] = useState('explorer');
     const openPRCount = useAppSelector(s => s.pr?.prList?.filter(p => p.state === 'open' && !p.merged).length || 0);
     const [showProblemsPanel, setShowProblemsPanel] = useState(false);
     const [isProblemsPanelDocked, setIsProblemsPanelDocked] = useState(true); // Track if panel is docked or floating
     const problemsPanelRef = useRef(null); // Imperative handle for the dock slot ResizablePanel
+    const sidebarPanelRef = useRef(null); // Imperative handle for the file tree panel
     const [guiConfig, setGuiConfig] = useState(null);
     const [isGuiRunning, setIsGuiRunning] = useState(false);
     const [isHmrRecompiling, setIsHmrRecompiling] = useState(false);
@@ -515,6 +521,17 @@ export default function EditorPage({ params }) {
             }
         } catch (_) { }
         // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
+
+    // ── AI Jumpstart: consume pending prompt from dashboard ──────────
+    useEffect(() => {
+        const payload = consumeJumpstartPayload();
+        if (!payload) return;
+        setChatVisible(true);
+        setSidebarView(null);
+        setTimeout(() => sidebarPanelRef.current?.collapse(), 50); // Collapse sidebar initially
+        setJumpstartPrompt(payload.prompt || null);
+        setJumpstartAttachments(payload.attachments?.length ? payload.attachments : null);
     }, []);
 
     useEffect(() => {
@@ -2155,12 +2172,35 @@ export default function EditorPage({ params }) {
     );
 
     const FileTreePanel = (
-        <ResizablePanel defaultSize={20} minSize={12} maxSize={35} className={`${treeOnRight ? 'border-l' : 'border-r'}`} style={{ borderColor: 'var(--border-medium)', background: 'var(--bg-sidebar)' }}>
+        <ResizablePanel 
+            ref={sidebarPanelRef}
+            defaultSize={20} minSize={12} maxSize={35} 
+            collapsible={true}
+            collapsedSize={4}
+            className={`${treeOnRight ? 'border-l' : 'border-r'} transition-all duration-300 ease-in-out`}
+            style={{ borderColor: 'var(--border-medium)', background: 'var(--bg-sidebar)' }}
+            onCollapse={() => {
+                if (sidebarView !== null) setSidebarView(null);
+            }}
+            onExpand={() => {
+                if (sidebarView === null) setSidebarView('explorer');
+            }}
+        >
             <div className="flex h-full min-w-0 overflow-hidden">
                 <ActivityBar
                     active={sidebarView}
                     onSelect={(id) => {
-                        setSidebarView(id === sidebarView ? 'explorer' : id);
+                        if (id === 'ai') {
+                            setChatVisible(v => !v);
+                            return;
+                        }
+                        const nextView = id === sidebarView ? null : id;
+                        setSidebarView(nextView);
+                        if (!nextView) {
+                            sidebarPanelRef.current?.collapse();
+                        } else {
+                            sidebarPanelRef.current?.expand();
+                        }
                     }}
                     extensionContainers={contributedContainers}
                     badges={{ pullrequests: openPRCount, 'ai-healing': aiHealing.fixCount || 0 }}
@@ -2187,7 +2227,7 @@ export default function EditorPage({ params }) {
                             onDismissError={dismissExtensionError}
                             onExecuteCommand={executeExtensionCommand}
                         />
-                    ) : sidebarView.startsWith('ext:') ? (() => {
+                    ) : sidebarView && sidebarView.startsWith('ext:') ? (() => {
                         const containerId = sidebarView.replace('ext:', '');
                         const container = contributedContainers.find(c => c.id === containerId);
 
@@ -2210,6 +2250,7 @@ export default function EditorPage({ params }) {
                     ) : sidebarView === 'ai-healing' ? (
                         <AIHealingPanel aiHealing={aiHealing} />
                     ) : (
+                    ) : sidebarView ? (
                         <div className="flex flex-col h-full min-h-0">
                             <div className="flex-1 min-h-0 overflow-y-auto">
                                 <FileTreeView onToggleOrientation={toggleTreeOrientation} />
@@ -2218,7 +2259,7 @@ export default function EditorPage({ params }) {
                                 <GitSummaryPanel onOpenScm={() => setSidebarView('scm')} />
                             </div>
                         </div>
-                    )}
+                    ) : null}
                 </div>
             </div>
         </ResizablePanel>
@@ -2236,6 +2277,8 @@ export default function EditorPage({ params }) {
                 onSuggest={(s) => setLatestCompletion(s)}
                 onBusy={(b) => setAiBusy(Boolean(b))}
                 clearSignal={completionClearSignal}
+                initialPrompt={jumpstartPrompt}
+                initialAttachments={jumpstartAttachments}
             />
         </ResizablePanel>
     );
@@ -2348,6 +2391,8 @@ export default function EditorPage({ params }) {
                                         onSuggest: (s) => setLatestCompletion(s),
                                         onBusy: (b) => setAiBusy(Boolean(b)),
                                         clearSignal: completionClearSignal,
+                                        initialPrompt: jumpstartPrompt,
+                                        initialAttachments: jumpstartAttachments,
                                         onCloseProblems: () => setShowProblemsPanel(false),
                                         onToggleOrientation: toggleTreeOrientation,
                                         onOpenScm: () => setSidebarView('scm'),
