@@ -12,6 +12,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useSelector, useDispatch } from 'react-redux';
+import * as monacoEditor from 'monaco-editor';
 
 import {
   showHealingDecorations,
@@ -87,6 +88,21 @@ const DIAG_CATEGORY_TO_HEAL = {
   unused_code: 'unused_import',
   style: 'trailing_whitespace',
   best_practice: 'trailing_whitespace',
+  // AI LLM categories that don't have direct healing equivalents —
+  // map to the closest safe healing category so they pass the
+  // autoHealCategories filter.
+  design_issue: 'missing_return',
+  missing_return: 'missing_return',
+  missing_check: 'missing_bracket',
+  wrong_operator: 'missing_semicolon',
+  off_by_one: 'missing_semicolon',
+  security: 'missing_semicolon',
+  performance: 'missing_semicolon',
+  resource_leak: 'missing_semicolon',
+  concurrency: 'missing_semicolon',
+  error_handling: 'missing_semicolon',
+  api_misuse: 'missing_semicolon',
+  variable_misuse: 'missing_semicolon',
 };
 
 // Infer a more specific healing category from the diagnostic message text.
@@ -105,6 +121,8 @@ function inferCategoryFromMessage(msg) {
                                                   return 'trailing_whitespace';
   if (m.includes('comma'))                        return 'trailing_comma';
   if (m.includes('quote') || m.includes('string'))   return 'unclosed_string';
+  if (m.includes('return'))                        return 'missing_return';
+  if (m.includes('missing') || m.includes('expected'))  return 'missing_semicolon';
   return null;
 }
 
@@ -135,22 +153,37 @@ function diagnosticToHealingFixes(diag) {
       // diagnostic range often spans the entire erroneous region (many lines)
       // while the fix replacement is a tiny string — replacing that range
       // would delete most of the file.
-      if (!fix.location) return false;
+      if (!fix.location) {
+        console.log(`[SelfHealing] Skipping fix without location: "${fix.description}"`);
+        return false;
+      }
       // SAFETY: Reject fixes that affect more than 3 lines (micro-fix only)
       const fLoc = fix.location;
       const affectedLines = Math.abs((fLoc.endLine ?? fLoc.line ?? 0) - (fLoc.line ?? 0)) + 1;
-      if (affectedLines > 3) return false;
+      if (affectedLines > 3) {
+        console.log(`[SelfHealing] Skipping fix spanning ${affectedLines} lines: "${fix.description}"`);
+        return false;
+      }
       return true;
     })
     .map((fix) => {
       const fixLoc = fix.location; // guaranteed non-null by filter above
+      // Strip trailing newlines from replacement text to prevent
+      // the auto-apply from inserting extra blank lines.
+      let rawText = fix.replacementText ?? fix.replacement_text ?? '';
+      // Only strip trailing newlines for single-line replacements;
+      // multi-line fixes may intentionally span multiple lines.
+      const isSingleLine = (fixLoc.endLine ?? fixLoc.line ?? 0) === (fixLoc.line ?? 0);
+      if (isSingleLine && rawText.endsWith('\n')) {
+        rawText = rawText.replace(/\n+$/, '');
+      }
       return {
         // Fields expected by applyFixToEditor (0-indexed)
         startLine: fixLoc.line ?? 0,
         startCol: fixLoc.column ?? 0,
         endLine: fixLoc.endLine ?? fixLoc.line ?? 0,
         endCol: fixLoc.endColumn ?? fixLoc.column ?? 0,
-        replacementText: fix.replacementText ?? fix.replacement_text ?? '',
+        replacementText: rawText,
         // Metadata for the filter/toast pipeline
         category: healCategory,
         // isPreferred fixes from the AI are high-confidence validated fixes;
@@ -184,6 +217,7 @@ export function useSelfHealing({
   filePath,
   language,
   active = true,
+  onFixesApplied,
 } = {}) {
   const dispatch = useDispatch();
 
@@ -204,6 +238,12 @@ export function useSelfHealing({
 
   // ── Track whether we just applied a fix (to avoid re-triggering) ────
   const selfEditFlagRef = useRef(false);
+
+  // ── Track when the user last typed (timestamp) ─────────────────────
+  // Prevents the healing system from applying fixes while the user is
+  // actively editing — avoids cursor jumps and interference with typing.
+  const lastUserEditRef = useRef(0);
+  const USER_TYPING_COOLDOWN_MS = 2000; // don't auto-fix within 2s of typing
 
   // ── State: last analysis result (for UI, debugging) ─────────────────
   const [lastFixes, setLastFixes] = useState([]);
@@ -237,8 +277,8 @@ export function useSelfHealing({
       try {
         const result = await gateway.healAnalyze({
           code: content,
+          lang: language || 'plaintext',
           filePath,
-          language: language || 'plaintext',
         });
         return result;
       } catch (err) {
@@ -263,21 +303,23 @@ export function useSelfHealing({
         const startLine = (fix.start_line ?? fix.startLine ?? 0) + 1;
         const startCol = (fix.start_col ?? fix.startCol ?? 0) + 1;
         const endLine = (fix.end_line ?? fix.endLine ?? fix.start_line ?? fix.startLine ?? 0) + 1;
-        const endCol = (fix.end_col ?? fix.endCol ?? fix.start_col ?? fix.startCol ?? 0) + 1;
+        const endCol = (fix.end_col ?? fix.endCol ?? fix.end_column ?? fix.endColumn ?? fix.start_col ?? fix.startCol ?? 0) + 1;
         const replacementText = fix.replacement_text ?? fix.replacementText ?? '';
 
         // Safety: check the model still has enough lines
         if (startLine > model.getLineCount() + 1) return false;
 
         // Capture original text for undo tracking
-        const monaco = window.monaco || (typeof globalThis !== 'undefined' && globalThis.monaco);
-        if (!monaco) return false;
-
-        const range = new monaco.Range(startLine, startCol, endLine, endCol);
+        const range = new monacoEditor.Range(startLine, startCol, endLine, endCol);
         const originalText = model.getValueInRange(range);
 
         // Flag that we're about to make a self-edit
         selfEditFlagRef.current = true;
+
+        // Save cursor + scroll so the edit doesn't jump the user
+        const savedPos = editor.getPosition();
+        const savedScrollTop = editor.getScrollTop();
+        const savedScrollLeft = editor.getScrollLeft();
 
         // Apply the edit (undo-friendly via executeEdits + pushUndoStop)
         editor.executeEdits('self-healing', [
@@ -289,10 +331,15 @@ export function useSelfHealing({
         ]);
         editor.pushUndoStop();
 
-        // Clear the self-edit flag after a tick (the onChange fires sync)
+        // Restore cursor + scroll
+        if (savedPos) editor.setPosition(savedPos);
+        editor.setScrollTop(savedScrollTop);
+        editor.setScrollLeft(savedScrollLeft);
+
+        // Clear the self-edit flag after Redux propagation settles
         setTimeout(() => {
           selfEditFlagRef.current = false;
-        }, 50);
+        }, 500);
 
         // Store undo info in Redux
         dispatch(
@@ -318,6 +365,10 @@ export function useSelfHealing({
   const runHealPass = useCallback(async () => {
     if (inflightRef.current) return;
     if (!mountedRef.current) return;
+
+    // Don't apply fixes while the user is actively typing
+    const msSinceLastEdit = Date.now() - lastUserEditRef.current;
+    if (msSinceLastEdit < USER_TYPING_COOLDOWN_MS) return;
 
     const editor = editorRef?.current;
     if (!editor) return;
@@ -380,10 +431,15 @@ export function useSelfHealing({
         return;
       }
 
-      // ── Auto-apply (bottom-up to preserve line numbers) ────────────
+      // ── Auto-apply as a SINGLE batched executeEdits() ─────────────
+      // CRITICAL: We MUST apply ALL fixes in one executeEdits() call.
+      // Applying them one-by-one via applyFixToEditor() shifts line/col
+      // positions after each edit, causing subsequent fixes to operate on
+      // stale coordinates and potentially wipe content.
       dispatch(setHealingStatus('applying'));
 
-      // Sort bottom-up: highest line first
+      // Sort bottom-up: highest line first (preserves line numbers within
+      // the single executeEdits call — Monaco processes edits bottom-up).
       const sorted = [...eligible].sort((a, b) => {
         const aLine = a.start_line ?? a.startLine ?? 0;
         const bLine = b.start_line ?? b.startLine ?? 0;
@@ -404,34 +460,109 @@ export function useSelfHealing({
         return;
       }
 
-      let appliedCount = 0;
+      // monaco-editor module imported at top of file
+
+      // Build Monaco edit operations & validate each fix
+      const edits = [];
+      const accepted = [];
 
       for (const fix of sorted) {
-        const applied = applyFixToEditor(fix);
-        if (applied) {
-          appliedCount++;
-          const fixRecord = {
-            id: fix.id || uid(),
-            filePath,
-            category: fix.category,
-            language: language || 'unknown',
-            description: fix.description || fix.message || fix.category,
-            confidence: fix.confidence,
-            replacementText: fix.replacement_text ?? fix.replacementText,
-          };
+        const startLine = (fix.start_line ?? fix.startLine ?? 0) + 1;
+        const startCol  = (fix.start_col ?? fix.startCol ?? 0) + 1;
+        const eL        = (fix.end_line ?? fix.endLine ?? fix.start_line ?? fix.startLine ?? 0) + 1;
+        const eC        = (fix.end_col ?? fix.endCol ?? fix.end_column ?? fix.endColumn ?? fix.start_col ?? fix.startCol ?? 0) + 1;
+        const text      = fix.replacement_text ?? fix.replacementText ?? '';
 
-          dispatch(recordAppliedFix(fixRecord));
-          dispatch(
-            addHealingEvent({
-              type: 'fix_applied',
-              fixId: fixRecord.id,
-              category: fix.category,
-              filePath,
-            })
-          );
-        } else {
-          dispatch(recordSkippedFix({ id: fix.id, category: fix.category }));
+        if (startLine > model.getLineCount() + 1) continue;
+
+        const range = new monacoEditor.Range(startLine, startCol, eL, eC);
+        const originalText = model.getValueInRange(range);
+
+        // Guard: don't delete significantly more text than we're inserting
+        if (originalText.length > 0 && text.length === 0 && originalText.length > 50) {
+          console.warn('[SelfHealing] Skipping destructive fix:', fix.description, `(would delete ${originalText.length} chars)`);
+          continue;
         }
+        if (originalText.length > 100 && text.length < originalText.length / 4) {
+          console.warn('[SelfHealing] Skipping suspicious fix:', fix.description, `(${originalText.length} chars → ${text.length} chars)`);
+          continue;
+        }
+        // Guard: reject edits that span more than half the file
+        const totalLines = model.getLineCount();
+        const editSpan = eL - startLine + 1;
+        if (totalLines > 3 && editSpan > totalLines * 0.5) {
+          console.warn('[SelfHealing] Skipping fix that spans', editSpan, 'of', totalLines, 'lines:', fix.description);
+          continue;
+        }
+
+        edits.push({ range, text, forceMoveMarkers: true });
+        accepted.push({ fix, originalText, range: { startLine, startCol, endLine: eL, endCol: eC } });
+      }
+
+      if (!edits.length) {
+        dispatch(setHealingStatus('idle'));
+        dispatch(setFileHealingState({ filePath, isHealing: false }));
+        inflightRef.current = false;
+        return;
+      }
+
+      // Flag self-edit BEFORE the batched edit
+      selfEditFlagRef.current = true;
+
+      // Save cursor position and scroll state so we can restore after edits
+      const savedPosition = editor.getPosition();
+      const savedScrollTop = editor.getScrollTop();
+      const savedScrollLeft = editor.getScrollLeft();
+
+      editor.executeEdits('self-healing', edits);
+      editor.pushUndoStop();
+
+      // Restore cursor and scroll so the user doesn't see a jump
+      if (savedPosition) editor.setPosition(savedPosition);
+      editor.setScrollTop(savedScrollTop);
+      editor.setScrollLeft(savedScrollLeft);
+
+      setTimeout(() => { selfEditFlagRef.current = false; }, 500);
+
+      // Post-edit safety: undo if model is nearly empty after applying fixes
+      const afterContent = model.getValue();
+      if (afterContent.length < 5 && edits.length > 0) {
+        console.error('[SelfHealing] ABORT: model nearly empty after regex heal, triggering undo');
+        editor.trigger('self-healing', 'undo', null);
+        dispatch(setHealingStatus('idle'));
+        dispatch(setFileHealingState({ filePath, isHealing: false }));
+        inflightRef.current = false;
+        return;
+      }
+
+      let appliedCount = accepted.length;
+
+      for (const { fix, originalText, range } of accepted) {
+        const fixRecord = {
+          id: fix.id || uid(),
+          filePath,
+          category: fix.category,
+          language: language || 'unknown',
+          description: fix.description || fix.message || fix.category,
+          confidence: fix.confidence,
+          replacementText: fix.replacement_text ?? fix.replacementText,
+        };
+
+        dispatch(recordAppliedFix(fixRecord));
+        dispatch(pushUndo({
+          fixId: fixRecord.id,
+          filePath,
+          originalText,
+          range,
+        }));
+        dispatch(
+          addHealingEvent({
+            type: 'fix_applied',
+            fixId: fixRecord.id,
+            category: fix.category,
+            filePath,
+          })
+        );
       }
 
       // Show notification if any fixes were applied
@@ -468,6 +599,13 @@ export function useSelfHealing({
         if (editor) {
           lastDecoDisposable.current = showHealingDecorations(editor, healedRanges);
         }
+
+        // After the regex heal pass edits the file, existing diagnostics
+        // are stale — their content hash no longer matches.  Notify the
+        // parent so the Problems panel can drop them.
+        if (typeof onFixesApplied === 'function') {
+          onFixesApplied(null);   // null = invalidate ALL diagnostics for this file
+        }
       }
 
       // Enter cooldown
@@ -496,6 +634,7 @@ export function useSelfHealing({
     dispatch,
     requestHealing,
     applyFixToEditor,
+    onFixesApplied,
   ]);
 
   // ── Debounced trigger ───────────────────────────────────────────────
@@ -507,7 +646,7 @@ export function useSelfHealing({
 
     if (debounceTimer.current) clearTimeout(debounceTimer.current);
 
-    const debounceMs = config.debounceMs || 800;
+    const debounceMs = Math.max(config.debounceMs || 800, 2000);
     debounceTimer.current = setTimeout(() => {
       runHealPass();
     }, debounceMs);
@@ -524,6 +663,8 @@ export function useSelfHealing({
     const disposable = model.onDidChangeContent(() => {
       // Skip if this change was made by the healing system itself
       if (selfEditFlagRef.current) return;
+      // Track user typing timestamp so we don't apply fixes mid-typing
+      lastUserEditRef.current = Date.now();
       scheduleHealing();
     });
 
@@ -538,18 +679,43 @@ export function useSelfHealing({
   // and push them through the same safe-apply pipeline.
   const healFromDiagnostics = useCallback(
     (diagnostics) => {
-      if (!enabled || !active) return;
-      if (inflightRef.current) return;
-      if (selfEditFlagRef.current) return;
+      if (!enabled || !active) {
+        console.log(`[SelfHealing] healFromDiagnostics skipped: enabled=${enabled} active=${active}`);
+        return;
+      }
+      if (inflightRef.current) {
+        console.log('[SelfHealing] healFromDiagnostics skipped: inflight');
+        return;
+      }
+      if (selfEditFlagRef.current) {
+        console.log('[SelfHealing] healFromDiagnostics skipped: selfEditFlag');
+        return;
+      }
+      // Don't apply fixes while user is actively typing
+      const msSinceEdit = Date.now() - lastUserEditRef.current;
+      if (msSinceEdit < USER_TYPING_COOLDOWN_MS) {
+        console.log(`[SelfHealing] healFromDiagnostics skipped: user typed ${msSinceEdit}ms ago`);
+        return;
+      }
 
       const editor = editorRef?.current;
-      if (!editor) return;
+      if (!editor) {
+        console.log('[SelfHealing] healFromDiagnostics skipped: no editor');
+        return;
+      }
       const model = editor.getModel();
-      if (!model) return;
+      if (!model) {
+        console.log('[SelfHealing] healFromDiagnostics skipped: no model');
+        return;
+      }
+
+      console.log(`[SelfHealing] healFromDiagnostics called with ${diagnostics?.length || 0} diagnostics`);
 
       // Flatten all proactive diagnostics → healing-shaped fix objects
       const allFixes = (diagnostics || [])
         .flatMap(diagnosticToHealingFixes);
+
+      console.log(`[SelfHealing] diagnosticToHealingFixes produced ${allFixes.length} fixes from ${diagnostics?.length || 0} diagnostics`);
 
       if (!allFixes.length) return;
 
@@ -563,18 +729,25 @@ export function useSelfHealing({
           const safe = f.is_safe ?? f.isSafe ?? false;
           const conf = f.confidence ?? 0;
           const cat = f.category || '';
-          const passes = safe && conf >= minConf && autoCategories.has(cat);
+          // For proactive/AI fixes: if the fix is marked isPreferred (validated by
+          // the analysis pipeline), treat it as eligible regardless of category,
+          // as long as it's safe and meets the confidence threshold.
+          const catPasses = autoCategories.has(cat) || f.source === 'proactive';
+          const passes = safe && conf >= minConf && catPasses;
           if (!passes) {
-            console.log(`[SelfHealing] Filtered out fix: cat="${cat}" conf=${conf} safe=${safe} inAutoHeal=${autoCategories.has(cat)} desc="${f.description}"`);
+            console.log(`[SelfHealing] Filtered out fix: cat="${cat}" conf=${conf} safe=${safe} catPasses=${catPasses} desc="${f.description}"`);
           }
           return passes;
         })
         .slice(0, maxFixes);
 
+      console.log(`[SelfHealing] ${eligible.length} fixes eligible for auto-apply`);
+
       if (!eligible.length) return;
 
       // If requireConfirmation, stage as pending only
       if (config.requireConfirmation) {
+        console.log('[SelfHealing] requireConfirmation=true, staging as pending');
         dispatch(setPendingFixes(eligible.map((f) => ({ ...f, id: f.id || uid(), filePath }))));
         return;
       }
@@ -590,13 +763,7 @@ export function useSelfHealing({
 
       const snapHash = computeContentHash(model.getValue());
 
-      const monacoRef = window.monaco || (typeof globalThis !== 'undefined' && globalThis.monaco);
-      if (!monacoRef) {
-        inflightRef.current = false;
-        dispatch(setHealingStatus('idle'));
-        dispatch(setFileHealingState({ filePath, isHealing: false }));
-        return;
-      }
+      // monaco-editor module imported at top of file
 
       // Build Monaco edit operations & verify each fix against current content
       const edits = [];
@@ -609,10 +776,15 @@ export function useSelfHealing({
         const endCol    = (fix.endColumn ?? fix.endCol ?? fix.startCol ?? 0) + 1;
         const text      = fix.replacementText ?? '';
 
-        // Guard: range must be within the model
-        if (startLine > model.getLineCount() + 1) continue;
+        console.log(`[SelfHealing] Building edit: L${startLine}:${startCol}-L${endLine}:${endCol} text="${text.substring(0, 80)}" desc="${fix.description}"`);
 
-        const range = new monacoRef.Range(startLine, startCol, endLine, endCol);
+        // Guard: range must be within the model
+        if (startLine > model.getLineCount() + 1) {
+          console.log(`[SelfHealing] Skipping fix: startLine ${startLine} > model lines ${model.getLineCount()}`);
+          continue;
+        }
+
+        const range = new monacoEditor.Range(startLine, startCol, endLine, endCol);
         const originalText = model.getValueInRange(range);
 
         // Guard: don't delete significantly more text than we're inserting
@@ -625,12 +797,20 @@ export function useSelfHealing({
           console.warn('[SelfHealing] Skipping suspicious fix:', fix.description, `(${originalText.length} chars → ${text.length} chars)`);
           continue;
         }
+        // Guard: reject edits that span more than half the file
+        const totalFileLines = model.getLineCount();
+        const editSpan = endLine - startLine + 1;
+        if (totalFileLines > 3 && editSpan > totalFileLines * 0.5) {
+          console.warn('[SelfHealing] Skipping fix that spans', editSpan, 'of', totalFileLines, 'lines:', fix.description);
+          continue;
+        }
 
         edits.push({ range, text, forceMoveMarkers: true });
         accepted.push({ fix, originalText, range: { startLine, startCol, endLine, endCol } });
       }
 
       if (!edits.length) {
+        console.log('[SelfHealing] No edits survived validation, aborting');
         inflightRef.current = false;
         dispatch(setHealingStatus('idle'));
         dispatch(setFileHealingState({ filePath, isHealing: false }));
@@ -640,11 +820,24 @@ export function useSelfHealing({
       // Flag self-edit BEFORE the batched edit
       selfEditFlagRef.current = true;
 
+      // Save cursor position and scroll state so we can restore after edits
+      const savedPosition = editor.getPosition();
+      const savedScrollTop = editor.getScrollTop();
+      const savedScrollLeft = editor.getScrollLeft();
+
+      console.log(`[SelfHealing] Applying ${edits.length} edits via executeEdits`);
       editor.executeEdits('self-healing-proactive', edits);
       editor.pushUndoStop();
 
-      // Clear self-edit flag after Monaco's sync onChange has fired
-      setTimeout(() => { selfEditFlagRef.current = false; }, 100);
+      // Restore cursor and scroll so the user doesn't see a jump
+      if (savedPosition) editor.setPosition(savedPosition);
+      editor.setScrollTop(savedScrollTop);
+      editor.setScrollLeft(savedScrollLeft);
+
+      // Clear self-edit flag after Redux has had time to propagate the
+      // content change.  100ms was too short — the page.jsx analysis
+      // effect could re-trigger before the flag cleared.
+      setTimeout(() => { selfEditFlagRef.current = false; }, 500);
 
       let appliedCount = accepted.length;
 
@@ -695,6 +888,12 @@ export function useSelfHealing({
         if (editorRef?.current) {
           lastDecoDisposable.current = showHealingDecorations(editorRef.current, healedRanges);
         }
+
+        // Remove healed diagnostics from the Problems panel
+        if (typeof onFixesApplied === 'function') {
+          const healedIds = new Set(accepted.map(({ fix: f }) => f.id).filter(Boolean));
+          if (healedIds.size > 0) onFixesApplied(healedIds);
+        }
       }
 
       fixCountRef.current += appliedCount;
@@ -725,7 +924,7 @@ export function useSelfHealing({
 
       console.log(`[SelfHealing] Auto-applied ${appliedCount}/${eligible.length} proactive quick-fixes`);
     },
-    [enabled, active, editorRef, filePath, language, config, dispatch]
+    [enabled, active, editorRef, filePath, language, config, dispatch, onFixesApplied]
   );
 
   // ── Manual trigger ──────────────────────────────────────────────────

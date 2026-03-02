@@ -16,6 +16,7 @@ export default function ActivityBar({ active = "explorer", onSelect, badges = {}
     { id: "search", label: "Search", Icon: Search },
     { id: "scm", label: "Source Control", Icon: GitBranch },
     { id: "pullrequests", label: "Pull Requests", Icon: GitPullRequest },
+    { id: "ai-healing", label: "AI Healing", Icon: Sparkles },
     { id: "extensions", label: "Extensions", Icon: Puzzle },
   ];
 
