@@ -3,9 +3,20 @@
  * Handles bidirectional sync between collab-server repos and Google Cloud Storage
  */
 const { Storage } = require('@google-cloud/storage');
+const crypto = require('crypto');
 const fs = require('fs');
+const fsp = fs.promises;
 const path = require('path');
 const config = require('./config');
+
+/**
+ * Compute a fast content hash (SHA-256, first 16 hex chars) for delta sync.
+ * @param {Buffer} buf
+ * @returns {string}
+ */
+function contentHash(buf) {
+    return crypto.createHash('sha256').update(buf).digest('hex').slice(0, 16);
+}
 
 // GCS configuration — driven entirely by the centralized config module
 const GCS_CONFIG = {
@@ -54,7 +65,8 @@ async function uploadFile(localPath, gcsPath, options = {}) {
     const { bucket } = getStorage();
     const file = bucket.file(gcsPath);
     
-    const content = fs.readFileSync(localPath);
+    // PERF: async read — avoids blocking the event loop during upload batches
+    const content = await fsp.readFile(localPath);
     await file.save(content, {
         resumable: false,
         contentType: options.contentType || 'application/octet-stream',
@@ -78,14 +90,12 @@ async function downloadFile(gcsPath, localPath) {
         throw new Error(`File not found in GCS: ${gcsPath}`);
     }
     
-    // Ensure directory exists
+    // PERF: async mkdir + write — avoids blocking during download batches
     const dir = path.dirname(localPath);
-    if (!fs.existsSync(dir)) {
-        fs.mkdirSync(dir, { recursive: true });
-    }
+    await fsp.mkdir(dir, { recursive: true });
     
     const [contents] = await file.download();
-    fs.writeFileSync(localPath, contents);
+    await fsp.writeFile(localPath, contents);
     
     return { success: true, path: localPath };
 }
@@ -119,15 +129,29 @@ async function uploadRepoToGcs(repoPath, slug, options = {}) {
     const gcsPrefix = userId
         ? `${GCS_PREFIX}/${slug}/${userId}/`
         : `${GCS_PREFIX}/${slug}/`;
+    const manifestGcsPath = gcsPrefix + '.synthi-manifest.json';
     
-    // Collect all files to upload
-    const filesToUpload = [];
+    // ── 1. Load the previous upload manifest from GCS (if any) ──────────
+    let oldManifest = {};   // { relativePath: hash }
+    try {
+        const { bucket } = getStorage();
+        const mf = bucket.file(manifestGcsPath);
+        const [exists] = await mf.exists();
+        if (exists) {
+            const [buf] = await mf.download();
+            oldManifest = JSON.parse(buf.toString('utf8'));
+        }
+    } catch (e) {
+        console.warn('[GCS] Failed to load upload manifest, doing full upload:', e.message);
+    }
+
+    // ── 2. Collect local files and compute content hashes ───────────────
+    const localFiles = [];   // { localPath, relativePath, isFolder, hash? }
     
-    function collectFiles(dir, baseDir) {
-        const items = fs.readdirSync(dir, { withFileTypes: true });
+    async function collectFiles(dir, baseDir) {
+        const items = await fsp.readdir(dir, { withFileTypes: true });
         
         for (const item of items) {
-            // Skip excluded patterns
             if (excludePatterns.some(pattern => item.name === pattern || item.name.startsWith(pattern))) {
                 continue;
             }
@@ -136,39 +160,65 @@ async function uploadRepoToGcs(repoPath, slug, options = {}) {
             const relativePath = path.relative(baseDir, fullPath).replace(/\\/g, '/');
             
             if (item.isDirectory()) {
-                // Add folder marker
-                filesToUpload.push({
-                    localPath: null,
-                    gcsPath: gcsPrefix + relativePath + '/',
-                    isFolder: true,
-                });
-                collectFiles(fullPath, baseDir);
+                localFiles.push({ localPath: null, relativePath, isFolder: true });
+                await collectFiles(fullPath, baseDir);
             } else {
-                filesToUpload.push({
+                const buf = await fsp.readFile(fullPath);
+                localFiles.push({
                     localPath: fullPath,
-                    gcsPath: gcsPrefix + relativePath,
+                    relativePath,
                     isFolder: false,
+                    hash: contentHash(buf),
                 });
             }
         }
     }
     
-    collectFiles(repoPath, repoPath);
-    
-    console.log(`[GCS] Uploading ${filesToUpload.length} items to GCS for slug: ${slug}`);
-    
-    const results = { success: 0, failed: 0, errors: [] };
+    await collectFiles(repoPath, repoPath);
+
+    // ── 3. Diff against the old manifest ────────────────────────────────
+    const newManifest = {};
+    const filesToUpload = [];
+
+    for (const item of localFiles) {
+        if (item.isFolder) {
+            // Always ensure folder markers exist (cheap no-op most of the time)
+            filesToUpload.push({
+                localPath: null,
+                gcsPath: gcsPrefix + item.relativePath + '/',
+                isFolder: true,
+            });
+        } else {
+            newManifest[item.relativePath] = item.hash;
+            // Only upload if hash differs or file is new
+            if (oldManifest[item.relativePath] !== item.hash) {
+                filesToUpload.push({
+                    localPath: item.localPath,
+                    gcsPath: gcsPrefix + item.relativePath,
+                    isFolder: false,
+                });
+            }
+        }
+    }
+
+    // Detect deleted files (in old manifest but not in local)
+    const filesToDelete = Object.keys(oldManifest).filter(rp => !(rp in newManifest));
+
+    const skipped = localFiles.filter(f => !f.isFolder).length - filesToUpload.filter(f => !f.isFolder).length;
+    console.log(`[GCS] Delta sync: ${filesToUpload.filter(f => !f.isFolder).length} changed, ${skipped} unchanged, ${filesToDelete.length} deleted (slug: ${slug})`);
+
+    const results = { success: 0, failed: 0, errors: [], skipped, deleted: 0 };
     const { bucket } = getStorage();
     
-    // Upload in batches to avoid overwhelming the API
-    const BATCH_SIZE = 10;
+    // ── 4. Upload changed/new files in batches ──────────────────────────
+    // PERF: batch size 30 to maximize throughput (same as download path)
+    const BATCH_SIZE = 30;
     for (let i = 0; i < filesToUpload.length; i += BATCH_SIZE) {
         const batch = filesToUpload.slice(i, i + BATCH_SIZE);
         
         await Promise.all(batch.map(async (item) => {
             try {
                 if (item.isFolder) {
-                    // Create folder marker
                     const file = bucket.file(item.gcsPath);
                     await file.save('', {
                         contentType: 'application/x-directory',
@@ -198,8 +248,36 @@ async function uploadRepoToGcs(repoPath, slug, options = {}) {
             });
         }
     }
-    
-    console.log(`[GCS] Upload complete: ${results.success} succeeded, ${results.failed} failed`);
+
+    // ── 5. Delete removed files from GCS ────────────────────────────────
+    if (filesToDelete.length > 0) {
+        for (let i = 0; i < filesToDelete.length; i += BATCH_SIZE) {
+            const batch = filesToDelete.slice(i, i + BATCH_SIZE);
+            await Promise.all(batch.map(async (rp) => {
+                try {
+                    const file = bucket.file(gcsPrefix + rp);
+                    await file.delete({ ignoreNotFound: true });
+                    results.deleted++;
+                } catch (e) {
+                    console.warn(`[GCS] Failed to delete stale ${rp}:`, e.message);
+                }
+            }));
+        }
+    }
+
+    // ── 6. Persist the new manifest to GCS ──────────────────────────────
+    try {
+        const mf = bucket.file(manifestGcsPath);
+        await mf.save(JSON.stringify(newManifest), {
+            resumable: false,
+            contentType: 'application/json',
+            metadata: { cacheControl: 'no-cache' },
+        });
+    } catch (e) {
+        console.warn('[GCS] Failed to persist upload manifest:', e.message);
+    }
+
+    console.log(`[GCS] Upload complete: ${results.success} succeeded, ${results.failed} failed, ${skipped} skipped, ${results.deleted} deleted`);
     return results;
 }
 
@@ -243,16 +321,14 @@ async function downloadGcsToRepo(slug, repoPath, options = {}) {
         return { success: 0, failed: 0, total: 0 };
     }
     
-    // Ensure repo directory exists
-    if (!fs.existsSync(repoPath)) {
-        fs.mkdirSync(repoPath, { recursive: true });
-    }
+    // PERF: async mkdir replaces existsSync + mkdirSync
+    await fsp.mkdir(repoPath, { recursive: true });
     
     const results = { success: 0, failed: 0, errors: [] };
     const { bucket } = getStorage();
     
-    // Download in batches
-    const BATCH_SIZE = 10;
+    // PERF: increased batch size from 10 → 30 for faster downloads
+    const BATCH_SIZE = 30;
     for (let i = 0; i < filesToDownload.length; i += BATCH_SIZE) {
         const batch = filesToDownload.slice(i, i + BATCH_SIZE);
         
@@ -261,15 +337,13 @@ async function downloadGcsToRepo(slug, repoPath, options = {}) {
                 const relativePath = item.name.substring(gcsPrefix.length);
                 const localPath = path.join(repoPath, relativePath);
                 
-                // Ensure directory exists
+                // PERF: async mkdir + write
                 const dir = path.dirname(localPath);
-                if (!fs.existsSync(dir)) {
-                    fs.mkdirSync(dir, { recursive: true });
-                }
+                await fsp.mkdir(dir, { recursive: true });
                 
                 const file = bucket.file(item.name);
                 const [contents] = await file.download();
-                fs.writeFileSync(localPath, contents);
+                await fsp.writeFile(localPath, contents);
                 
                 results.success++;
             } catch (e) {
@@ -370,7 +444,7 @@ async function archiveGitToGcs(slug, repoPath, userId) {
     if (!isGcsConfigured()) return { success: false, reason: 'GCS not configured' };
 
     const gitDir = path.join(repoPath, '.git');
-    if (!fs.existsSync(gitDir)) {
+    try { await fsp.access(gitDir); } catch {
         return { success: false, reason: '.git directory does not exist' };
     }
 
@@ -436,9 +510,7 @@ async function restoreGitFromGcs(slug, repoPath, userId) {
         }
 
         // Ensure target dir exists
-        if (!fs.existsSync(repoPath)) {
-            fs.mkdirSync(repoPath, { recursive: true });
-        }
+        await fsp.mkdir(repoPath, { recursive: true });
 
         // Stream download + extract
         await new Promise((resolve, reject) => {

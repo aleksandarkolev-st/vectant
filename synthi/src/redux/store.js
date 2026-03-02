@@ -212,6 +212,9 @@ if (typeof window !== 'undefined') {
   let lastThemeId = '';
   let lastUserThemes = '{}';
   let lastUserOverrides = '{}';
+  // PERF: Reference tracking — avoids JSON.stringify on every state change
+  let lastUserThemesRef = null;
+  let lastUserOverridesRef = null;
 
   // Track healing preferences for persistence
   let lastHealingSnapshot = '';
@@ -237,19 +240,25 @@ if (typeof window !== 'undefined') {
       } catch (_) {}
 
       // Persist active theme ID + user themes + overrides
+      // PERF: Use reference equality instead of JSON.stringify on every state
+      // change.  Redux Toolkit produces new references only when a slice mutates,
+      // so `===` is sufficient and avoids O(n) serialization per keystroke.
       try {
         const themeId = state?.theme?.activeThemeId || '';
         const userThemes = state?.theme?.userThemes || {};
         const userOverrides = state?.theme?.userOverrides || {};
-        const userThemesSnapshot = JSON.stringify(userThemes);
-        const userOverridesSnapshot = JSON.stringify(userOverrides);
-        // Write when anything has changed
+        // Reference check first — cheap O(1).  Only stringify when refs differ.
         if (
-          (themeId && themeId !== lastThemeId) ||
-          userThemesSnapshot !== (lastUserThemes || '{}') ||
-          userOverridesSnapshot !== (lastUserOverrides || '{}')
+          themeId !== lastThemeId ||
+          userThemes !== lastUserThemesRef ||
+          userOverrides !== lastUserOverridesRef
         ) {
           lastThemeId = themeId;
+          lastUserThemesRef = userThemes;
+          lastUserOverridesRef = userOverrides;
+          // Serialize only on actual change (rare: theme edits)
+          const userThemesSnapshot = JSON.stringify(userThemes);
+          const userOverridesSnapshot = JSON.stringify(userOverrides);
           lastUserThemes = userThemesSnapshot;
           lastUserOverrides = userOverridesSnapshot;
           localStorage.setItem(THEME_STORAGE_KEY, JSON.stringify({

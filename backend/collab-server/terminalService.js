@@ -645,7 +645,20 @@ function createHeadlessSession(sessionId, slug, userId, cols = 120, rows = 30) {
 }
 
 function createTerminalWSS() {
-  const wss = new WebSocket.Server({ noServer: true });
+  // PERF: Enable permessage-deflate — terminal output (ANSI sequences, build
+  // logs) compresses extremely well.  Level 1 keeps CPU usage minimal.
+  const wss = new WebSocket.Server({
+    noServer: true,
+    perMessageDeflate: {
+      zlibDeflateOptions: { chunkSize: 1024, memLevel: 7, level: 1 },
+      zlibInflateOptions: { chunkSize: 10 * 1024 },
+      clientNoContextTakeover: true,
+      serverNoContextTakeover: true,
+      serverMaxWindowBits: 10,
+      concurrencyLimit: 10,
+      threshold: 128,
+    },
+  });
 
   wss.on('connection', (ws, req) => {
     // ── Parse query parameters ──────────────────────────────────────────

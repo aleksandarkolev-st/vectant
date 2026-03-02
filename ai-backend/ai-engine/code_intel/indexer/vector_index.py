@@ -37,8 +37,11 @@ class VectorSearchResult:
     chunk: Optional[SemanticChunk] = None
 
 
-# Threshold for switching from brute-force to ANN (HNSW)
-HNSW_THRESHOLD = 50_000  # chunks
+# Threshold for switching from brute-force to ANN (HNSW).
+# PERF: Lowered from 50k → 1k.  For 3072-dim Gemini embeddings a 10k-chunk
+# workspace means ~120 MB dense matrix multiply per query.  HNSW gives
+# sub-linear O(log N) lookup with negligible index-build overhead at 1k+.
+HNSW_THRESHOLD = 1_000  # chunks
 
 # Try to import hnswlib for large indexes
 try:

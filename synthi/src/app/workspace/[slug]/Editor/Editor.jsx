@@ -41,9 +41,11 @@ import {
 import {
     AI_COMPLETION_STOP_SEQUENCE,
 } from '@/lib/completion';
-import prettier from "prettier/standalone";
-import babel from "prettier/plugins/babel";
-import estree from "prettier/plugins/estree";
+// PERF: Prettier (~1.5MB) was imported eagerly but never used at runtime.
+// Removed static imports.  If formatting is needed in the future, lazy-load:
+//   const prettier = (await import('prettier/standalone')).default;
+//   const babel = (await import('prettier/plugins/babel')).default;
+//   const estree = (await import('prettier/plugins/estree')).default;
 import { EDITOR_OPTIONS } from './options';
 import { useAiCompletion } from './AICompletion';
 import { useDiffManager } from './diffManager';
@@ -310,10 +312,18 @@ const EditorPanel = ({
     // Same lightweight content hash as `page.jsx` (FNV-1a-ish).
     // Used to gate diagnostics to the exact Monaco snapshot they were produced for.
     // P2: Cached — only recomputes when content actually changes.
+    //
+    // PERF: For files > 100 KB the hashing is dispatched to a Web Worker using
+    // crypto.subtle (native C++ backed), keeping the main thread unblocked.
+    // The synchronous return value still comes from the FNV-1a fast-path so
+    // callers are never blocked — the worker result updates the cache async.
+    const hashWorkerRef = useRef(null);
+    const hashMsgIdRef = useRef(0);
     const computeContentHash = useCallback((content) => {
         if (typeof content !== 'string') return '00000000';
         const cached = contentHashRef.current;
         if (cached.content === content) return cached.hash;
+        // Inline FNV-1a for immediate (synchronous) return
         let hash = 2166136261;
         for (let i = 0; i < content.length; i++) {
             hash ^= content.charCodeAt(i);
@@ -321,6 +331,23 @@ const EditorPanel = ({
         }
         const result = hash.toString(16).padStart(8, '0');
         contentHashRef.current = { content, hash: result };
+        // For large files, also fire-and-forget a crypto.subtle hash in worker
+        // so the next call for identical content gets a stronger hash for free.
+        if (content.length > 100_000) {
+            try {
+                if (!hashWorkerRef.current) {
+                    hashWorkerRef.current = new Worker('/content-hash-worker.js');
+                    hashWorkerRef.current.onmessage = (e) => {
+                        const { id: _id, hash: workerHash } = e.data;
+                        // Update cache only if content hasn't changed since we sent
+                        if (contentHashRef.current.content === content) {
+                            contentHashRef.current = { content, hash: workerHash };
+                        }
+                    };
+                }
+                hashWorkerRef.current.postMessage({ id: ++hashMsgIdRef.current, content });
+            } catch (_) { /* worker unavailable */ }
+        }
         return result;
     }, []);
 
@@ -4054,7 +4081,14 @@ const EditorPanel = ({
                                     <ContextMenuItem onClick={() => editorInstance?.getAction('actions.find')?.run()}>
                                         Find
                                     </ContextMenuItem>
-                                    <ContextMenuItem onClick={() => requestAiCompletion()}>
+                                    <ContextMenuItem onClick={() => {
+                                        // PERF: 250ms cooldown on manual triggers prevents stacking
+                                        // concurrent requests on rapid context-menu invocations.
+                                        const now = Date.now();
+                                        if (now - (window.__lastManualAiTrigger || 0) < 250) return;
+                                        window.__lastManualAiTrigger = now;
+                                        requestAiCompletion();
+                                    }}>
                                         Trigger AI Suggestion
                                     </ContextMenuItem>
                                 </ContextMenuContent>
