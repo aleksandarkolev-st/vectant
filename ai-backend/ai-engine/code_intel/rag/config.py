@@ -131,7 +131,7 @@ class MicroConfig:
     """Configuration for micro-navigation (Step 3)."""
 
     # Routing model (fast LLM for ToC navigation)
-    routing_model: str = "gemini-3-flash"
+    routing_model: str = "gemini-3-flash-preview"
     routing_api_key: Optional[str] = field(
         default_factory=lambda: os.getenv("GEMINI_API_KEY")
     )
@@ -159,7 +159,7 @@ class SynthesisConfig:
     """Configuration for heavy synthesis (Step 4)."""
 
     # Synthesis model (heavy reasoning LLM)
-    synthesis_model: str = "gemini-3-flash"
+    synthesis_model: str = "gemini-3-flash-preview"
     synthesis_api_key: Optional[str] = field(
         default_factory=lambda: os.getenv("GEMINI_API_KEY")
     )
