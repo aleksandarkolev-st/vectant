@@ -1,4 +1,3 @@
-"""
 """Healing Classifier — Safety Gate
 
 Determines whether a detected fix is safe to auto-apply or requires

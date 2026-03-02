@@ -35,6 +35,8 @@ class ExtractionResult:
     document_id: str
     sections: List[Section]
     references: List[SectionReference]
+    file_path: str = ""
+    document_title: str = ""
     total_tokens: int = 0
     truncated: bool = False
 
@@ -149,6 +151,8 @@ class SectionExtractor:
             document_id=document_id,
             sections=sections,
             references=references,
+            file_path=doc_meta.file_path if doc_meta else "",
+            document_title=doc_title,
             total_tokens=total_tokens,
             truncated=truncated,
         )

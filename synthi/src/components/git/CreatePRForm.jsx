@@ -6,7 +6,7 @@ import {
 } from '@/redux/prSlice';
 import {
   GitPullRequest, ChevronLeft, AlertCircle, CheckCircle2,
-  Tag, ChevronDown, RefreshCw
+  Tag, ChevronDown, RefreshCw, ArrowRight
 } from 'lucide-react';
 import { MarkdownEditor } from './MarkdownRenderer';
 
@@ -112,7 +112,7 @@ export function CreatePRForm({ slug, onBack, onCreated }) {
 
       <form onSubmit={handleSubmit} className="flex-1 overflow-y-auto p-3 space-y-3">
         {/* Branch selectors */}
-        <div className="grid grid-cols-2 gap-2">
+        <div className="grid grid-cols-[1fr_auto_1fr] gap-2 items-end">
           <div>
             <label className="block text-[10px] font-semibold mb-1" style={{ color: 'var(--text-muted)' }}>
               FROM (head)
@@ -124,6 +124,9 @@ export function CreatePRForm({ slug, onBack, onCreated }) {
               placeholder="head branch"
               loading={repoBranches.length === 0}
             />
+          </div>
+          <div className="flex items-center justify-center pb-1">
+            <ArrowRight className="w-4 h-4" style={{ color: 'var(--text-muted)' }} />
           </div>
           <div>
             <label className="block text-[10px] font-semibold mb-1" style={{ color: 'var(--text-muted)' }}>

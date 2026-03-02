@@ -55,7 +55,30 @@ export const useEditorProviders = ({
         
         // Handle both camelCase and snake_case (backend compatibility)
         const text = fix.replacementText ?? fix.replacement_text ?? '';
-        
+
+        // Guard: skip destructive replacements that would delete large content
+        const originalText = model.getValueInRange(range);
+        if (originalText.length > 0 && text.length === 0 && originalText.length > 50) {
+            console.warn('[providers] Skipping destructive fix (would delete', originalText.length, 'chars)');
+            return;
+        }
+        if (originalText.length > 100 && text.length < originalText.length / 4) {
+            console.warn('[providers] Skipping suspicious fix:', `(${originalText.length} chars → ${text.length} chars)`);
+            return;
+        }
+        // Guard: reject edits that span more than half the file
+        const totalLines = model.getLineCount();
+        const editSpan = range.endLineNumber - range.startLineNumber + 1;
+        if (totalLines > 3 && editSpan > totalLines * 0.5) {
+            console.warn('[providers] Skipping fix that spans', editSpan, 'of', totalLines, 'lines');
+            return;
+        }
+
+        // Save cursor + scroll so the edit doesn't jump the user
+        const savedPos = editorInstance.getPosition();
+        const savedScrollTop = editorInstance.getScrollTop();
+        const savedScrollLeft = editorInstance.getScrollLeft();
+
         // Apply the fix as an edit
         editorInstance.executeEdits('synthi-quick-fix', [{
             range: range,
@@ -63,6 +86,19 @@ export const useEditorProviders = ({
             forceMoveMarkers: true,
         }]);
         
+        // Restore cursor + scroll
+        if (savedPos) editorInstance.setPosition(savedPos);
+        editorInstance.setScrollTop(savedScrollTop);
+        editorInstance.setScrollLeft(savedScrollLeft);
+
+        // Post-edit safety: undo if model is nearly empty after the fix
+        const afterContent = model.getValue();
+        if (afterContent.length < 5 && originalText.length > 20) {
+            console.error('[providers] ABORT: model nearly empty after fix, triggering undo');
+            editorInstance.trigger('synthi-quick-fix', 'undo', null);
+            return;
+        }
+
         // Clear pending fix state
         pendingFixRef.current = null;
         isPreviewingRef.current = false;
@@ -234,30 +270,57 @@ export const useEditorProviders = ({
                     // Find diagnostic with fixes for this marker
                     if (!firstFixDiagnostic) {
                         const matchingDiag = currentDiagnostics.find(d => {
+                            if (!d.fixes?.length) return false;
+                            
                             const loc = d.location || {};
                             // Check if line matches (loc.line is 0-indexed, m.startLineNumber is 1-indexed)
                             const lineMatches = loc.line === m.startLineNumber - 1;
+                            if (!lineMatches) return false;
                             
-                            // Check if message matches (flexible matching)
+                            // Strategy 1: Match by diagnostic code (most reliable)
+                            // marker.code = "AIDES", diagnostic.code = "AIDES"
+                            if (m.code && d.code && m.code === d.code) return true;
+                            
+                            // Strategy 2: Match by source + code combo
+                            if (m.source && d.source && m.source === d.source && m.code === d.code) return true;
+                            
+                            // Strategy 3: Flexible message matching (fallback)
                             // Monaco marker message has format: "[AI] actual message" or "actual message"
                             // Diagnostic message is just: "actual message"
-                            const diagMsg = (d.message || '').toLowerCase();
-                            const markerMsg = (m.message || '').toLowerCase();
+                            const diagMsg = (d.message || '').toLowerCase().trim();
+                            const markerMsg = (m.message || '').toLowerCase().trim();
                             // Strip tier prefix like [AI], [STATIC], etc from marker message
                             const cleanMarkerMsg = markerMsg.replace(/^\[[^\]]+\]\s*/i, '');
-                            const msgMatches = cleanMarkerMsg.includes(diagMsg) || 
-                                               diagMsg.includes(cleanMarkerMsg) || 
-                                               cleanMarkerMsg === diagMsg;
-                            // Must have fixes
-                            return d.fixes?.length > 0 && lineMatches && msgMatches;
+                            // Also strip confidence suffix like "(85% confidence)"
+                            const cleanDiagMsg = diagMsg.replace(/\s*\(\d+%\s*confidence\)\s*$/i, '').trim();
+                            const cleanMarkerMsgNoConf = cleanMarkerMsg.replace(/\s*\(\d+%\s*confidence\)\s*$/i, '').trim();
+                            // Also strip any trailing explanation (after double newline)
+                            const baseMarkerMsg = cleanMarkerMsgNoConf.split('\n\n')[0].trim();
+                            const baseDiagMsg = cleanDiagMsg.split('\n\n')[0].trim();
+                            
+                            return baseMarkerMsg === baseDiagMsg ||
+                                   baseMarkerMsg.includes(baseDiagMsg) || 
+                                   baseDiagMsg.includes(baseMarkerMsg);
                         });
                         
                         if (matchingDiag?.fixes?.length > 0) {
                             firstFixDiagnostic = matchingDiag;
-                            firstFixRange = new monacoInstance.Range(
-                                m.startLineNumber, m.startColumn,
-                                m.endLineNumber, m.endColumn
-                            );
+                            // Use the fix's own location if available (it has the correct
+                            // replacement span), otherwise fall back to the marker range.
+                            const fixLoc = matchingDiag.fixes[0]?.location;
+                            if (fixLoc) {
+                                firstFixRange = new monacoInstance.Range(
+                                    (fixLoc.line ?? 0) + 1,
+                                    (fixLoc.column ?? 0) + 1,
+                                    (fixLoc.endLine ?? fixLoc.line ?? 0) + 1,
+                                    (fixLoc.endColumn ?? fixLoc.column ?? 0) + 1
+                                );
+                            } else {
+                                firstFixRange = new monacoInstance.Range(
+                                    m.startLineNumber, m.startColumn,
+                                    m.endLineNumber, m.endColumn
+                                );
+                            }
                         }
                     }
                 }
@@ -298,10 +361,11 @@ export const useEditorProviders = ({
                 const model = editorInstance.getModel();
                 if (!model) return;
                 
-                // Apply the fix
+                // Apply the fix (handle both camelCase and snake_case from backend)
+                const fixText = fix.replacementText ?? fix.replacement_text ?? '';
                 editorInstance.executeEdits('synthi-quick-fix', [{
                     range: range,
-                    text: fix.replacementText || '',
+                    text: fixText,
                     forceMoveMarkers: true,
                 }]);
                 
@@ -354,17 +418,19 @@ export const useEditorProviders = ({
         });
         
         // Hide preview when mouse leaves the editor
+        // NOTE: Do NOT clear pendingFixRef here — keep the fix available
+        // for Tab as long as the cursor stays on the diagnostic line.
+        // The cursorListener above handles clearing when the cursor moves away.
         const editorDomNode = editorInstance.getDomNode();
         const handleMouseLeave = () => {
-            // Small delay to allow moving to hover widget
+            // Larger delay — let the user move to the hover widget
             setTimeout(() => {
-                // Check if hover widget is still visible
                 const hoverWidget = document.querySelector('.monaco-hover');
                 if (!hoverWidget || !hoverWidget.matches(':hover')) {
                     hideFixPreview();
-                    isPreviewingRef.current = false;
+                    // Keep pendingFixRef alive — Tab still works while cursor is on the line
                 }
-            }, 100);
+            }, 300);
         };
         editorDomNode?.addEventListener('mouseleave', handleMouseLeave);
         
@@ -396,17 +462,33 @@ export const useEditorProviders = ({
             }
         });
         
-        // Helper to find diagnostics for a given range
-        const getDiagnosticsForRange = (startLine, startCol, endLine, endCol) => {
+        // Helper to find diagnostics for a given marker
+        // Uses code-based matching first (most reliable), then range overlap as fallback
+        const getDiagnosticsForMarker = (marker) => {
             const currentDiagnostics = diagnosticsRef.current || [];
+            const startLine = marker.startLineNumber - 1;
+            const startCol = marker.startColumn - 1;
+            const endLine = marker.endLineNumber - 1;
+            const endCol = marker.endColumn - 1;
+            
+            // Strategy 1: Match by code + line (most reliable for AIDES, AILOG, etc.)
+            const codeMatches = currentDiagnostics.filter(d => {
+                if (!d.fixes?.length) return false;
+                const loc = d.location || {};
+                const lineMatches = loc.line === startLine;
+                return lineMatches && marker.code && d.code && marker.code === d.code;
+            });
+            if (codeMatches.length > 0) return codeMatches;
+            
+            // Strategy 2: Range overlap (fallback)
             return currentDiagnostics.filter(d => {
+                if (!d.fixes?.length) return false;
                 const loc = d.location || {};
                 const dLine = loc.line ?? 0;
                 const dCol = loc.column ?? 0;
                 const dEndLine = loc.endLine ?? dLine;
                 const dEndCol = loc.endColumn ?? dCol;
                 
-                // Check if ranges overlap
                 return !(dEndLine < startLine || dLine > endLine || 
                         (dLine === endLine && dEndCol < startCol) ||
                         (dEndLine === startLine && dCol > endCol));
@@ -421,12 +503,7 @@ export const useEditorProviders = ({
                 
                 for (const marker of markers) {
                     // Find matching diagnostic with fixes
-                    const matchingDiagnostics = getDiagnosticsForRange(
-                        marker.startLineNumber - 1,
-                        marker.startColumn - 1,
-                        marker.endLineNumber - 1,
-                        marker.endColumn - 1
-                    );
+                    const matchingDiagnostics = getDiagnosticsForMarker(marker);
                     
                     for (const diagnostic of matchingDiagnostics) {
                         if (!diagnostic.fixes?.length) continue;

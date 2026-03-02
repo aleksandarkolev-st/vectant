@@ -2,6 +2,15 @@ import collabSessionService from '@/services/collabSessionService';
 
 const COLLAB_SERVER_URL = process.env.NEXT_PUBLIC_COLLAB_SERVER_URL || 'http://localhost:1234';
 
+/**
+ * Normalize a file path to forward slashes and strip leading slash.
+ * Prevents Windows-style backslash paths from reaching the server.
+ */
+function normalizePath(p) {
+    if (!p || typeof p !== 'string') return p;
+    return p.replace(/\\/g, '/').replace(/^\/+/, '');
+}
+
 let cachedUserId = null;
 
 // Resolvers that will be called when userId becomes available.
@@ -63,6 +72,11 @@ export const gitClient = {
         if (collabSessionService?.isActive && collabSessionService.sessionId) {
             headers['x-session-id'] = collabSessionService.sessionId;
         }
+
+        // Normalize file paths — convert Windows backslashes to forward slashes
+        // and strip leading slashes to prevent path resolution mismatches.
+        if (data.filePath) data = { ...data, filePath: normalizePath(data.filePath) };
+        if (data.path) data = { ...data, path: normalizePath(data.path) };
 
         const response = await fetch(`${COLLAB_SERVER_URL}/git/${slug}/${action}`, {
             method: 'POST',

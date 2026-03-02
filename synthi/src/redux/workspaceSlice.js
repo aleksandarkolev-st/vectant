@@ -881,9 +881,16 @@ const workspaceSlice = createSlice({
                     state.fileContentCache.set(file.path, content);
                 }
 
-                // Ensure the file appears in the open tabs list
+                // Ensure the file appears in the open tabs list.
+                // Only mark as unsaved if the tab was ALREADY marked unsaved
+                // before the switch.  Do NOT use getCrdtBaselineIfNewer here
+                // because the CRDT auto-flush writes edits to disk
+                // asynchronously — the server content already reflects the
+                // CRDT state, so any difference is a transient race, not a
+                // genuine unsaved edit.  This prevents the spurious unsaved
+                // indicator that appeared when merely switching tabs.
                 try {
-                    const hasUnsaved = wasUnsaved || getCrdtBaselineIfNewer(state.slug, file.path, content) !== null;
+                    const hasUnsaved = wasUnsaved;
                     const entry = { ...file, isUnsaved: hasUnsaved };
                     if (!existingTab) state.openFiles.push(entry);
                     else if (existingTab.isUnsaved !== hasUnsaved) {

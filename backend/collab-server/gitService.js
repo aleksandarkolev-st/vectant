@@ -1238,7 +1238,7 @@ class GitService {
                 fs.writeFileSync(tmpPatch, patch, 'utf8');
 
                 try {
-                    await git.raw(['apply', '--cached', '--unidiff-zero', tmpPatch]);
+                    await git.raw(['apply', '--cached', '--unidiff-zero', '--recount', '--ignore-whitespace', tmpPatch]);
                 } finally {
                     // Always clean up the temp patch file
                     try { fs.unlinkSync(tmpPatch); } catch (_) {}
@@ -1262,7 +1262,7 @@ class GitService {
                 fs.writeFileSync(tmpPatch, patch, 'utf8');
 
                 try {
-                    await git.raw(['apply', '--reverse', '--unidiff-zero', tmpPatch]);
+                    await git.raw(['apply', '--reverse', '--unidiff-zero', '--recount', '--ignore-whitespace', tmpPatch]);
                 } finally {
                     try { fs.unlinkSync(tmpPatch); } catch (_) {}
                 }
@@ -1287,7 +1287,7 @@ class GitService {
                 fs.writeFileSync(tmpPatch, patch, 'utf8');
 
                 try {
-                    await git.raw(['apply', '--cached', '--reverse', '--unidiff-zero', tmpPatch]);
+                    await git.raw(['apply', '--cached', '--reverse', '--unidiff-zero', '--recount', '--ignore-whitespace', tmpPatch]);
                 } finally {
                     try { fs.unlinkSync(tmpPatch); } catch (_) {}
                 }
@@ -2688,7 +2688,9 @@ class GitService {
 
     async readFile(slug, filePath, userId) {
         const repoPath = this.getEffectiveRepoPath(slug, userId);
-        const fullPath = path.join(repoPath, filePath);
+        // Normalize backslashes → forward slashes and strip leading slash
+        const safePath = (filePath || '').replace(/\\/g, '/').replace(/^\/+/, '');
+        const fullPath = path.join(repoPath, safePath);
         try {
             return await fs.promises.readFile(fullPath, 'utf-8');
         } catch (_) {

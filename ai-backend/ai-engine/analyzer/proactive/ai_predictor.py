@@ -647,6 +647,18 @@ Do NOT report missing includes for these symbols:
         snippet = snippet.replace("\\n", "\n").replace("\\t", "\t")
         fix_snippet = fix_snippet.replace("\\n", "\n").replace("\\t", "\t")
         
+        # CRITICAL: Strip trailing newlines from fix_snippet to prevent the
+        # frontend from inserting extra blank lines when applying the fix.
+        # The replacement range is determined from the snippet match which
+        # does NOT include a trailing newline, so the fix text shouldn't either.
+        if fix_snippet:
+            # Strip trailing newlines/whitespace that the LLM may have added
+            fix_snippet = fix_snippet.rstrip('\n')
+            # Preserve one trailing newline only if the original snippet also
+            # ends with one (e.g. multi-line replacements that include a full block)
+            if snippet.endswith('\n') and not fix_snippet.endswith('\n'):
+                fix_snippet += '\n'
+        
         print(f"[AIErrorPredictor] Parsing diagnostic: {message}")
         print(f"  Snippet to find: {repr(snippet)}")
         

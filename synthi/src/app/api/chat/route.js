@@ -1,4 +1,6 @@
 import { NextResponse } from 'next/server';
+import { getServerSession } from 'next-auth';
+import { authOptions } from '@/app/auth';
 import { TOOL_DECLARATIONS, executeTool, isComplexTask } from './toolDefinitions.js';
 
 const encoder = new TextEncoder();
@@ -372,17 +374,20 @@ WEB SEARCH GUIDELINES:
  * @param {Array} params.conversationHistory - Previous messages
  * @returns {Promise<Object>} - Context response with sufficiency indicator
  */
-async function fetchCodeIntelContext({ workspacePath, query, maxTokens = 30000, conversationHistory = [] }) {
+async function fetchCodeIntelContext({ workspacePath, query, maxTokens = 30000, conversationHistory = [], userId }) {
     if (!workspacePath) {
         return { context: '', sufficiency: 'UNKNOWN', sources: [], refusal: null };
     }
     
     try {
+        // When userId is available, pass slug/userId so code-intel resolves
+        // to the correct per-user repo directory (repos/{slug}/{userId}/).
+        const effectivePath = userId ? `${workspacePath}/${userId}` : workspacePath;
         const response = await fetch(`${CODE_INTEL_BASE}/code-intel/context`, {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify({
-                workspace_path: workspacePath,
+                workspace_path: effectivePath,
                 query: query,
                 max_tokens: maxTokens,
                 conversation_history: conversationHistory,
@@ -625,12 +630,14 @@ const encodeFilePath = (filePath = '') =>
         .map((segment) => encodeURIComponent(segment))
         .join('/');
 
-const fetchCollabFileContent = async (slug, filePath, signal) => {
+const fetchCollabFileContent = async (slug, filePath, signal, userId) => {
     if (!slug || !filePath) return null;
     try {
         const safePath = encodeFilePath(filePath);
         const url = `${COLLAB_BASE}/file-content/${encodeURIComponent(slug)}/${safePath}`;
-        const res = await fetch(url, { method: 'GET', signal });
+        const headers = {};
+        if (userId) headers['x-user-id'] = userId;
+        const res = await fetch(url, { method: 'GET', signal, headers });
         if (!res.ok) return null;
         return await res.text();
     } catch (e) {
@@ -645,11 +652,13 @@ const shouldIgnorePath = (path = '') => {
     return IGNORE_FILENAMES.has(basename);
 };
 
-const fetchRepoFileList = async (slug, signal) => {
+const fetchRepoFileList = async (slug, signal, userId) => {
     if (!slug) return [];
     try {
         const url = `${COLLAB_BASE}/git/${encodeURIComponent(slug)}/files-meta`;
-        const res = await fetch(url, { method: 'GET', signal });
+        const headers = {};
+        if (userId) headers['x-user-id'] = userId;
+        const res = await fetch(url, { method: 'GET', signal, headers });
         if (!res.ok) return [];
         const data = await res.json();
         return Array.isArray(data?.files) ? data.files : [];
@@ -658,8 +667,8 @@ const fetchRepoFileList = async (slug, signal) => {
     }
 };
 
-const hydrateFullRepoFiles = async ({ workspacePath, existingFiles, signal }) => {
-    const fileMeta = await fetchRepoFileList(workspacePath, signal);
+const hydrateFullRepoFiles = async ({ workspacePath, existingFiles, signal, userId }) => {
+    const fileMeta = await fetchRepoFileList(workspacePath, signal, userId);
     if (!fileMeta.length) return [];
 
     const seen = new Set((existingFiles || []).map((f) => f?.path || f?.name).filter(Boolean));
@@ -673,7 +682,7 @@ const hydrateFullRepoFiles = async ({ workspacePath, existingFiles, signal }) =>
         if (hydrated.length >= MAX_REPO_FILES) break;
         if (totalChars >= MAX_REPO_CHARS) break;
 
-        const content = await fetchCollabFileContent(workspacePath, relPath, signal);
+        const content = await fetchCollabFileContent(workspacePath, relPath, signal, userId);
         if (typeof content !== 'string' || !content) continue;
 
         const trimmed = content.length > MAX_FILE_CHARS ? content.slice(0, MAX_FILE_CHARS) : content;
@@ -684,12 +693,12 @@ const hydrateFullRepoFiles = async ({ workspacePath, existingFiles, signal }) =>
     return hydrated;
 };
 
-const hydrateFromCollab = async ({ workspacePath, focusPath, code, files, signal, fullRepoContext = false }) => {
+const hydrateFromCollab = async ({ workspacePath, focusPath, code, files, signal, fullRepoContext = false, userId }) => {
     if (!workspacePath) return { code, files };
 
     let hydratedCode = code;
     if (focusPath) {
-        const serverCode = await fetchCollabFileContent(workspacePath, focusPath, signal);
+        const serverCode = await fetchCollabFileContent(workspacePath, focusPath, signal, userId);
         if (typeof serverCode === 'string') {
             hydratedCode = serverCode;
         }
@@ -704,7 +713,7 @@ const hydrateFromCollab = async ({ workspacePath, focusPath, code, files, signal
             continue;
         }
         seen.add(path);
-        const serverContent = await fetchCollabFileContent(workspacePath, path, signal);
+        const serverContent = await fetchCollabFileContent(workspacePath, path, signal, userId);
         if (typeof serverContent === 'string') {
             hydratedFiles.push({ ...file, content: serverContent });
         } else {
@@ -718,6 +727,7 @@ const hydrateFromCollab = async ({ workspacePath, focusPath, code, files, signal
             workspacePath,
             existingFiles: hydratedFiles,
             signal,
+            userId,
         });
         if (extraFiles.length) {
             finalFiles = [...hydratedFiles, ...extraFiles];
@@ -1407,6 +1417,18 @@ export async function POST(request) {
         useTools = 'auto', // 'auto' | true | false
     } = body || {};
 
+    // ── Resolve userId from server session ──────────────────────────
+    // The collab server needs x-user-id to resolve per-user repos at
+    // repos/{slug}/{userId}/.  Without this, all file reads fail with
+    // ENOENT — the root cause of "No response received" on AI features.
+    let userId = null;
+    try {
+        const session = await getServerSession(authOptions);
+        userId = session?.user?.id || session?.user?.email || null;
+    } catch (e) {
+        console.warn('[Chat] Could not resolve userId from session:', e.message);
+    }
+
     // TTFT optimization: Fetch code intel and hydrate from collab IN PARALLEL
     // This reduces latency by running both operations concurrently
     const codeIntelPromise = (useCodeIntel && workspacePath && prompt)
@@ -1415,6 +1437,7 @@ export async function POST(request) {
             query: prompt,
             maxTokens: maxContextTokens,
             conversationHistory,
+            userId,
         }).catch(e => {
             console.warn('[CodeIntel] Fetch failed, continuing without context:', e.message);
             return { context: '', sufficiency: 'UNKNOWN', sources: [], refusal: null };
@@ -1428,6 +1451,7 @@ export async function POST(request) {
         files,
         signal: request.signal,
         fullRepoContext: Boolean(fullRepoContext),
+        userId,
     });
 
     // Wait for both in parallel
@@ -1462,7 +1486,7 @@ export async function POST(request) {
             const ragHydrated = [];
             for (const ragPath of ragNewPaths.slice(0, 8)) {
                 try {
-                    const content = await fetchCollabFileContent(workspacePath, ragPath, request.signal);
+                    const content = await fetchCollabFileContent(workspacePath, ragPath, request.signal, userId);
                     if (typeof content === 'string' && content) {
                         const trimmed = content.length > MAX_FILE_CHARS ? content.slice(0, MAX_FILE_CHARS) : content;
                         ragHydrated.push({

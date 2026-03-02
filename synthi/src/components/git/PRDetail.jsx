@@ -13,7 +13,7 @@ import {
   XCircle, RefreshCw, MessageSquare, FileText, GitCommit, CheckSquare,
   AlertCircle, ExternalLink, ChevronDown, Edit3, Tag, User,
   ThumbsUp, ThumbsDown, Send, Trash2, MoreHorizontal, Lock, Unlock,
-  Copy, ArrowRightLeft, GitBranch, Clock, Plus, Minus,
+  Copy, ArrowRightLeft, ArrowRight, GitBranch, Clock, Plus, Minus,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { MarkdownRenderer, MarkdownEditor, MarkdownToolbar, handleMarkdownKeyDown } from './MarkdownRenderer';
@@ -261,7 +261,7 @@ function ReviewPanel({ slug, owner, repo, prNumber }) {
 }
 
 // ── MergePanel ────────────────────────────────────────────────────────────────
-function MergePanel({ slug, owner, repo, pr, files, onFileClick }) {
+function MergePanel({ slug, owner, repo, pr, files, onFileClick, refreshKey }) {
   const dispatch = useDispatch();
   const { mergePRLoading } = useSelector(s => s.pr);
   const [method, setMethod] = useState('merge');
@@ -303,7 +303,7 @@ function MergePanel({ slug, owner, repo, pr, files, onFileClick }) {
     });
 
     return () => { cancelled = true; };
-  }, [pr?.number, pr?.base?.ref, pr?.head?.ref, slug, dispatch]);
+  }, [pr?.number, pr?.base?.ref, pr?.head?.ref, slug, dispatch, refreshKey]);
 
   const handleMerge = async () => {
     const result = await dispatch(mergePR({
@@ -315,8 +315,10 @@ function MergePanel({ slug, owner, repo, pr, files, onFileClick }) {
     if (mergePR.fulfilled.match(result)) {
       toast.success('Pull request merged!');
       dispatch(fetchPRList({ owner, repo, state: 'open', slug }));
-      // Refresh detail to show updated state
-      dispatch(fetchPRDetail({ owner, repo, prNumber: pr.number, slug }));
+      // Delay detail refetch — GitHub API may not propagate merge instantly
+      setTimeout(() => {
+        dispatch(fetchPRDetail({ owner, repo, prNumber: pr.number, slug }));
+      }, 2000);
     } else {
       toast.error(result.payload?.error || 'Merge failed. Check if all requirements are satisfied.');
     }
@@ -558,6 +560,7 @@ export function PRDetail({ slug, onBack }) {
   const [editingTitle, setEditingTitle] = useState(false);
   const [newTitle, setNewTitle] = useState('');
   const [closingPR, setClosingPR] = useState(false);
+  const [refreshKey, setRefreshKey] = useState(0);
 
   const { owner, repo } = githubInfo || {};
 
@@ -578,6 +581,8 @@ export function PRDetail({ slug, onBack }) {
 
   const handleRefresh = () => {
     if (pr?.number) dispatch(fetchPRDetail({ owner, repo, prNumber: pr.number, slug }));
+    // Also re-check merge conflicts so the MergePanel picks up any changes
+    setRefreshKey(k => k + 1);
   };
 
   const handleTitleSave = async () => {
@@ -741,7 +746,7 @@ export function PRDetail({ slug, onBack }) {
         )}
         {pr && tab === 'review' && (
           <div className="p-3 space-y-4">
-            <MergePanel slug={slug} owner={owner} repo={repo} pr={pr} files={prFiles} />
+            <MergePanel slug={slug} owner={owner} repo={repo} pr={pr} files={prFiles} refreshKey={refreshKey} />
             <ReviewPanel slug={slug} owner={owner} repo={repo} prNumber={pr.number} />
           </div>
         )}
@@ -840,9 +845,9 @@ function OverviewTab({ pr, slug, owner, repo, onEditTitle, editingTitle, newTitl
           </span>
           <span className="flex items-center gap-1">
             <GitBranch className="w-3 h-3" />
-            <code className="font-mono">{pr.head?.label}</code>
-            <ArrowRightLeft className="w-3 h-3" />
-            <code className="font-mono">{pr.base?.label}</code>
+            <code className="font-mono">{pr.head?.ref}</code>
+            <ArrowRight className="w-3 h-3 text-[var(--text-muted)]" />
+            <code className="font-mono">{pr.base?.ref}</code>
           </span>
           <span>{pr.commits} commit{pr.commits !== 1 ? 's' : ''}</span>
           <span className="text-emerald-400">+{pr.additions}</span>

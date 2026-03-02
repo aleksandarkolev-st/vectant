@@ -33,10 +33,11 @@ export const HealingSeverity = Object.freeze({
 });
 
 // ── Default categories that are safe to auto-heal ─────────────────────────
+// NOTE: TRAILING_WHITESPACE, MISSING_NEWLINE_EOF, and TRAILING_COMMA are
+// intentionally excluded — they produce cosmetic-only edits (add/remove
+// blank lines, trim trailing spaces) that are disruptive without fixing
+// real code issues.
 const DEFAULT_AUTO_HEAL_CATEGORIES = [
-  HealingCategory.TRAILING_WHITESPACE,
-  HealingCategory.MISSING_NEWLINE_EOF,
-  HealingCategory.TRAILING_COMMA,
   HealingCategory.DUPLICATE_IMPORT,
   HealingCategory.MISSING_COLON,
   HealingCategory.MISSING_SEMICOLON,
@@ -44,6 +45,8 @@ const DEFAULT_AUTO_HEAL_CATEGORIES = [
   HealingCategory.MISSING_IMPORT,
   HealingCategory.MISSING_BRACKET,
   HealingCategory.NONE_COMPARISON,
+  HealingCategory.MISSING_RETURN,
+  HealingCategory.MISSING_INCLUDE,
 ];
 
 // ── Initial state ─────────────────────────────────────────────────────────

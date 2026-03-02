@@ -234,12 +234,36 @@ export const rebaseContinue = createAsyncThunk(
  * Merge a branch into the current branch to create a conflict state.
  * Used by the PR conflict resolution flow ("Resolve in Synthi").
  * Performs: fetch → merge <targetBranch> → refresh status.
+ * When the merge results in conflicts, force-emits a file-reverted event
+ * so the editor refreshes to show conflict markers from disk.
  */
 export const mergeBranchForConflicts = createAsyncThunk(
     'git/mergeBranchForConflicts',
     async ({ slug, branch }, { dispatch }) => {
         const token = getGitToken(slug);
         const result = await gitClient.mergeBranch(slug, branch, token);
+
+        // When the merge produced conflicts, the backend wrote conflict markers
+        // to disk and already broadcast file-reverted + invalidated Yjs docs
+        // via the WebSocket notification channel.  However, the notification
+        // may arrive before or after this HTTP response — and even if it
+        // arrived first, the Editor's DOM event handler may not have had time
+        // to complete.  Dispatch an explicit file-reverted event here so the
+        // Editor re-reads the file from disk (showing conflict markers).
+        if (result && (result.hasConflicts || (result.conflictedFiles && result.conflictedFiles.length > 0))) {
+            const conflictedFiles = result.conflictedFiles || [];
+            console.log('[Git] Merge produced conflicts, forcing editor refresh for:', conflictedFiles);
+
+            // Small delay to let the server's invalidateDocsForSlug complete
+            // (the WS close code=4000 events need to propagate first).
+            await new Promise(r => setTimeout(r, 150));
+
+            // Emit file-reverted DOM event to force the Editor to re-read from disk
+            window.dispatchEvent(new CustomEvent('synthi:file-reverted', {
+                detail: { slug, filePaths: conflictedFiles },
+            }));
+        }
+
         dispatch(fetchGitStatus(slug));
         dispatch(fetchCommitHistory({ slug }));
         return result;
