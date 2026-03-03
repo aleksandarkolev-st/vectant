@@ -148,7 +148,10 @@ pub async fn run_java(
     // from creating visible windows on X11.
     if req.is_gui {
         cmd.arg("-Djava.awt.headless=false");
-        cmd.arg("-Dsun.java2d.xrender=false");  // avoid Xrender bugs over TCP
+        cmd.arg("-Dsun.java2d.xrender=false");     // avoid XRender bugs over TCP
+        cmd.arg("-Dsun.java2d.pmoffscreen=false");  // paint directly to X window (not offscreen pixmap)
+        cmd.arg("-Dsun.java2d.opengl=false");       // disable OpenGL pipeline
+        cmd.arg("-Dsun.awt.noerasebackground=true"); // reduce white-flash flicker
     }
 
     cmd.arg(main_class);
@@ -175,35 +178,50 @@ pub async fn run_java(
 
     let mut child = cmd.spawn().context("Failed to spawn java — is openjdk installed?")?;
 
-    // ── Deferred GStreamer start — find JFrame window by XID ──────
-    // We ALWAYS defer GStreamer start until after Java spawns.  This
-    // lets us find the actual JFrame window and capture it by XID,
-    // which reliably returns the Swing-painted content regardless of
-    // compositor availability.  Root capture on Xvfb is broken:
-    //   - XShmGetImage(root) reads the raw framebuffer which does NOT
-    //     include child windows' content
-    //   - XGetImage(root) also doesn't include child windows
-    //   - xcompmgr compositing doesn't reliably update the Xvfb framebuffer
-    // By capturing the JFrame window directly, XGetImage returns the
-    // window's own painted pixels — Swing paints all components onto
-    // one X window, so we get the full UI.
+    // ── Deferred GStreamer start — ROOT capture after window appears ─
+    // We defer GStreamer start until Java's GUI window is visible.
+    // Then we capture the ROOT window (not the child XID), same as
+    // the C++ runner.  This works because:
+    //   1. matchbox-wm maximises the Java window to fill the Xvfb screen
+    //   2. Xvfb's root capture reads the composited framebuffer which
+    //      includes all mapped/visible child windows
+    //   3. Root capture is generic — works for Swing, JavaFX, SDL,
+    //      OpenGL, LWJGL, or any X11 toolkit
+    //
+    // XID-based capture fails on Xvfb because Java2D paints to offscreen
+    // pixmaps and copies via XCopyArea; XGetImage on the child window
+    // reads the backing store before the copy lands.  Root capture avoids
+    // this because the server composites everything into the screen buffer.
     if req.is_gui && gst_pipeline.is_none() {
-        eprintln!("[JavaRunner] Waiting for Java GUI window to appear (XID capture)...");
+        eprintln!("[JavaRunner] Waiting for Java GUI window to appear...");
         let xid = find_gui_window(&wsl_display_str, req_width, req_height, 8000).await;
 
-        let capture_xid = if let Some(xid) = xid {
-            eprintln!("[JavaRunner] Will capture window XID={}", xid);
+        if let Some(xid) = xid {
+            eprintln!("[JavaRunner] Window 0x{:x} mapped and visible, waiting for initial paint...", xid);
 
-            // Wait a moment for Swing to finish its initial paint cycle.
-            // The window may be mapped (visible in xwininfo) before AWT
-            // has finished rendering all components into the X pixmap.
-            tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
-            eprintln!("[JavaRunner] Post-paint delay done, verifying window content...");
+            // Wait for Swing to finish its initial paint cycle.
+            // The window may be mapped before AWT finishes rendering.
+            tokio::time::sleep(tokio::time::Duration::from_millis(1500)).await;
 
-            // Diagnostic: capture the JFrame window with xwd and check
-            // pixel diversity to verify real content is present.
+            // Focus/raise the window to ensure it's on top and fully exposed
+            let _ = Command::new("xdotool")
+                .arg("windowactivate")
+                .arg("--sync")
+                .arg(format!("0x{:x}", xid))
+                .env("DISPLAY", &wsl_display_str)
+                .output()
+                .await;
+            let _ = Command::new("xdotool")
+                .arg("windowfocus")
+                .arg("--sync")
+                .arg(format!("0x{:x}", xid))
+                .env("DISPLAY", &wsl_display_str)
+                .output()
+                .await;
+
+            // Diagnostic: xwd root capture to check pixel diversity
             if let Ok(xwd_out) = Command::new("xwd")
-                .arg("-id").arg(format!("0x{:x}", xid))
+                .arg("-root")
                 .arg("-silent")
                 .env("DISPLAY", &wsl_display_str)
                 .output()
@@ -214,22 +232,22 @@ pub async fn run_java(
                     let sample: std::collections::HashSet<u8> =
                         bytes[100..].iter().step_by(97).copied().collect();
                     eprintln!(
-                        "[JavaRunner] xwd JFrame 0x{:x}: {} bytes, {} unique sample values (>4 = real content)",
-                        xid, bytes.len(), sample.len()
+                        "[JavaRunner] xwd root: {} bytes, {} unique values (>4 = real content)",
+                        bytes.len(), sample.len()
                     );
                 } else {
-                    eprintln!("[JavaRunner] xwd JFrame 0x{:x}: only {} bytes (too small)", xid, bytes.len());
+                    eprintln!("[JavaRunner] xwd root: only {} bytes (too small)", bytes.len());
                 }
             }
 
-            Some(xid)
+            eprintln!("[JavaRunner] Starting ROOT capture (window 0x{:x} fills {}x{} screen)", xid, req_width, req_height);
         } else {
-            eprintln!("[JavaRunner] WARNING: No window found for XID capture, falling back to root");
-            None
-        };
+            eprintln!("[JavaRunner] WARNING: No window found, root capture may show only background");
+        }
 
+        // Root capture — no XID, same approach as the C++ runner.
         let (pipeline, v_track, a_track) =
-            start_gstreamer(&wsl_display_str, session_id, capture_xid).await?;
+            start_gstreamer(&wsl_display_str, session_id, None).await?;
         gst_pipeline = Some(pipeline);
         video_track_opt = Some(v_track);
         audio_track_opt = Some(a_track);
@@ -791,22 +809,15 @@ async fn start_xvfb(
     let _wm = wm_cmd.spawn().context("Failed to spawn matchbox-window-manager")?;
 
     // NOTE: We intentionally do NOT start a compositor (xcompmgr, picom,
-    // compton).  Compositors use the X Composite extension to redirect
-    // child windows' content to offscreen pixmaps, then paint them back
-    // onto the root window.  This breaks XID-based capture because
-    // XGetImage on a redirected window returns blank pixels — the real
-    // content lives in the offscreen pixmap owned by the compositor.
-    //
-    // Since we always capture the JFrame window directly by XID (not
-    // root), we rely on Xvfb's built-in backing store.  Xvfb keeps
-    // every window's pixel content in memory, so XGetImage on a child
-    // window's XID returns the Swing-painted content directly.
+    // compton).  Compositors redirect child windows to offscreen pixmaps
+    // which can interfere with both XID and root capture.  Without a
+    // compositor, Xvfb composites all visible windows directly into the
+    // screen buffer, which ximagesrc root capture reads correctly.
     let compositor_ok = false;
 
-    // Set root window to red so we can diagnose capture issues:
-    // Red = ximagesrc captures root but not child windows (compositor issue)
-    // Gray = Java frame is rendered but Swing components aren't painting
-    // Swing UI = everything works!
+    // Set root window to a bright color for diagnostics:
+    // If only this color is visible in the video, root capture works
+    // but the app window isn't mapped yet or isn't being painted.
     let _ = Command::new("xsetroot")
         .arg("-solid").arg("#FF0000")
         .env("DISPLAY", &display_str)
@@ -818,14 +829,9 @@ async fn start_xvfb(
 
     eprintln!("[JavaRunner] Xvfb + WM started (no compositor), DISPLAY={}", display_str);
 
-    // `display_str` is the TCP address for X11 clients (Java, matchbox-wm).
-    // For GStreamer ximagesrc we use `:N` (local/abstract socket) which
-    // enables XShm — shared-memory screen capture that reads the framebuffer
-    // directly and inherently sees all child windows.  The existing C++
-    // runner uses this same approach and it works.
     let local_display = format!(":{}", display_num);
     eprintln!(
-        "[JavaRunner] Display strings: tcp={} local={} compositor={} (local for GStreamer XShm)",
+        "[JavaRunner] Display strings: tcp={} local={} compositor={}",
         display_str, local_display, compositor_ok
     );
     Ok((child, display_str, local_display, compositor_ok))
@@ -837,8 +843,9 @@ async fn start_xvfb(
 /// window tree.  Finds the matchbox-wm frame (screen-sized child of root),
 /// then inspects its children to find the JFrame reparented inside it.
 ///
-/// We capture the JFrame's X window because Swing paints ALL components
-/// onto one X window, so XGetImage on it returns the full UI.
+/// The returned XID is used for diagnostic logging only — the actual
+/// capture uses root mode (no XID) because Xvfb's root capture reads
+/// the composited screen buffer which includes all visible windows.
 ///
 /// Returns the XID of the Java window, or the matchbox frame as fallback,
 /// or `None` if no suitable window is found within the timeout.
@@ -1003,19 +1010,19 @@ async fn start_gstreamer(
     // Build the ximagesrc element string based on capture mode:
     //
     // ALWAYS use TCP display + remote=true (which forces XGetImage
-    // instead of XShmGetImage).  On Xvfb, XShmGetImage on child
-    // windows returns blank pixels even though the window IS painted
-    // — this appears to be an Xvfb limitation where the SHM path
-    // reads from the framebuffer instead of per-window backing stores.
-    // TCP XGetImage correctly reads the window's backing store.
+    // instead of XShmGetImage).  TCP is the guaranteed-working
+    // transport in our container environment.
     //
     // 1. With window_xid: capture a specific window directly.
-    //    Swing paints all components onto one X window, so XGetImage
-    //    on it returns the full UI.
+    //    NOTE: This currently returns blank on Xvfb because Java2D
+    //    paints to offscreen pixmaps.  Kept for future use / other
+    //    toolkits that paint directly to the window.
     //
-    // 2. Without window_xid: capture root window (last resort).
-    //    This won't show child windows on Xvfb but serves as a
-    //    diagnostic (red = root background visible).
+    // 2. Without window_xid (ROOT capture — preferred for Java):
+    //    Captures the entire Xvfb screen.  With matchbox-wm
+    //    maximizing the app window, root capture = app capture.
+    //    This is the same approach the C++ runner uses and works
+    //    for any X11 toolkit (Swing, JavaFX, SDL, OpenGL, etc.).
     //
     // show-pointer=false avoids cursor artifacts in the stream.
     let ximagesrc_str = if let Some(xid) = window_xid {
@@ -1029,7 +1036,7 @@ async fn start_gstreamer(
         )
     } else {
         eprintln!(
-            "[JavaRunner] ximagesrc: capturing root on display={} (last resort)",
+            "[JavaRunner] ximagesrc: ROOT capture on display={} (includes all visible windows)",
             tcp_display
         );
         format!(
