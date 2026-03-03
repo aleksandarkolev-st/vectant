@@ -42,7 +42,7 @@ pub async fn run_java(
     let mut reused_xvfb: Option<tokio::process::Child> = None;
     let mut reused_pipeline: Option<gst::Pipeline> = None;
     let mut reused_wsl_display = String::new();
-    let mut reused_gst_display = String::new();
+    let mut _reused_gst_display = String::new();
     let mut video_track_opt: Option<Arc<TrackLocalStaticRTP>> = None;
     let mut audio_track_opt: Option<Arc<TrackLocalStaticRTP>> = None;
 
@@ -74,7 +74,7 @@ pub async fn run_java(
                 eprintln!("[JavaRunner] Reusing Xvfb (display={} OK)", state.wsl_display_str);
                 reused_xvfb = state.xvfb_process;
                 reused_wsl_display = state.wsl_display_str;
-                reused_gst_display = state.gst_display_str;
+                _reused_gst_display = state.gst_display_str;
                 // Always restart GStreamer for GUI — the window XID changes
                 // between JVM runs so the old pipeline captures a stale window.
                 if state.is_gui {
@@ -110,20 +110,17 @@ pub async fn run_java(
     // ── Xvfb setup (GUI only) ─────────────────────────────────────
     // GStreamer is ALWAYS deferred until after Java spawns, so we can
     // find the actual JFrame window and capture it by XID.  This avoids
-    // the Xvfb root-capture problem entirely (neither XShm nor XGetImage
-    // on Xvfb root includes child windows without a working compositor).
+    // the Xvfb root-capture problem entirely.
     let mut wsl_display_str = reused_wsl_display;
-    let mut gst_display_str = reused_gst_display;
     let mut xvfb_process: Option<tokio::process::Child> = reused_xvfb;
     let mut gst_pipeline: Option<gst::Pipeline> = reused_pipeline;
 
     if req.is_gui {
         // Start Xvfb if not reused
         if xvfb_process.is_none() {
-            let (child, tcp_display, local_display, _comp) = start_xvfb(ctx, session_id, req_width, req_height).await?;
+            let (child, tcp_display, _local_display, _comp) = start_xvfb(ctx, session_id, req_width, req_height).await?;
             xvfb_process = Some(child);
-            wsl_display_str = tcp_display;           // Java, xdotool, matchbox-wm use TCP
-            gst_display_str = local_display;         // ximagesrc uses local display for XShm on child window
+            wsl_display_str = tcp_display;           // Everything uses TCP (Java, GStreamer, xdotool)
         }
         // GStreamer start is deferred until after Java spawns (see below)
     }
@@ -232,7 +229,7 @@ pub async fn run_java(
         };
 
         let (pipeline, v_track, a_track) =
-            start_gstreamer(&gst_display_str, &wsl_display_str, session_id, capture_xid).await?;
+            start_gstreamer(&wsl_display_str, session_id, capture_xid).await?;
         gst_pipeline = Some(pipeline);
         video_track_opt = Some(v_track);
         audio_track_opt = Some(a_track);
@@ -424,8 +421,8 @@ pub async fn run_java(
         audio_track: audio_track_opt.clone(),
         width: req_width,
         height: req_height,
+        gst_display_str: wsl_display_str.clone(),
         wsl_display_str,
-        gst_display_str,
         module_hashes: ModuleHashes::new(),
         loaded_core_path: None,
         loaded_gui_path: None,
@@ -989,7 +986,6 @@ async fn find_gui_window(
 }
 
 async fn start_gstreamer(
-    local_display: &str,
     tcp_display: &str,
     _session_id: &str,
     window_xid: Option<u64>,
@@ -1006,29 +1002,30 @@ async fn start_gstreamer(
 
     // Build the ximagesrc element string based on capture mode:
     //
-    // 1. With window_xid: capture a specific window directly.
-    //    We prefer the LOCAL display (`:99` via abstract UNIX socket)
-    //    because it enables XShmGetImage for zero-copy capture of the
-    //    child window's backing store.  Xvfb stores every window's
-    //    pixel content in memory, so XShm on a child XID returns the
-    //    Swing-painted content directly.
+    // ALWAYS use TCP display + remote=true (which forces XGetImage
+    // instead of XShmGetImage).  On Xvfb, XShmGetImage on child
+    // windows returns blank pixels even though the window IS painted
+    // — this appears to be an Xvfb limitation where the SHM path
+    // reads from the framebuffer instead of per-window backing stores.
+    // TCP XGetImage correctly reads the window's backing store.
     //
-    //    If local display fails we fall back to TCP with remote=true
-    //    (which forces XGetImage over the wire — slower but works).
+    // 1. With window_xid: capture a specific window directly.
+    //    Swing paints all components onto one X window, so XGetImage
+    //    on it returns the full UI.
     //
     // 2. Without window_xid: capture root window (last resort).
-    //    This is unlikely to show child windows on Xvfb.
+    //    This won't show child windows on Xvfb but serves as a
+    //    diagnostic (red = root background visible).
     //
     // show-pointer=false avoids cursor artifacts in the stream.
     let ximagesrc_str = if let Some(xid) = window_xid {
         eprintln!(
-            "[JavaRunner] ximagesrc: capturing JFrame window xid=0x{:x} local={} tcp={}",
-            xid, local_display, tcp_display
+            "[JavaRunner] ximagesrc: capturing JFrame window xid=0x{:x} on display={} (TCP+XGetImage)",
+            xid, tcp_display
         );
-        // Try local display first (XShm), tcp_display stored for fallback
         format!(
-            "ximagesrc display-name=\"{}\" xid=0x{:x} use-damage=0 show-pointer=false",
-            local_display, xid
+            "ximagesrc display-name=\"{}\" xid=0x{:x} use-damage=0 remote=true show-pointer=false",
+            tcp_display, xid
         )
     } else {
         eprintln!(
@@ -1060,10 +1057,10 @@ async fn start_gstreamer(
                             continue;
                         }
                     }
-                    let mode_str = if window_xid.is_some() { "XID+XShm" } else { "root" };
+                    let mode_str = if window_xid.is_some() { "XID+XGetImage" } else { "root" };
                     eprintln!(
                         "[JavaRunner] Encoder {} started ({} capture on {})",
-                        encoder, mode_str, local_display
+                        encoder, mode_str, tcp_display
                     );
                     pipeline_opt = Some(pipe);
                     selected_mime = mime.to_string();
@@ -1073,26 +1070,18 @@ async fn start_gstreamer(
         }
     }
 
-    // If primary capture failed, try TCP + remote=true as fallback
+    // If primary capture failed, retry without XID (root capture fallback)
     if pipeline_opt.is_none() {
-        let fallback_display = if window_xid.is_some() { tcp_display } else { local_display };
         eprintln!(
-            "[JavaRunner] Primary ximagesrc failed, fallback capture on display={} (remote=true)",
-            fallback_display
+            "[JavaRunner] Primary ximagesrc failed on {}, trying root capture fallback",
+            tcp_display
         );
 
         for (encoder, payloader, mime) in &encoders {
-            let fallback_src = if let Some(xid) = window_xid {
-                format!(
-                    "ximagesrc display-name=\"{}\" xid=0x{:x} use-damage=0 remote=true show-pointer=false",
-                    fallback_display, xid
-                )
-            } else {
-                format!(
-                    "ximagesrc display-name=\"{}\" use-damage=0 remote=true show-pointer=false",
-                    fallback_display
-                )
-            };
+            let fallback_src = format!(
+                "ximagesrc display-name=\"{}\" use-damage=0 remote=true show-pointer=false",
+                tcp_display
+            );
             let pipeline_str = format!(
                 "{} ! video/x-raw,framerate=30/1 ! videoscale ! videoconvert ! {} ! {} name=video_pay ! appsink name=video_sink sync=false \
                  audiotestsrc is-live=true wave=silence ! opusenc ! rtpopuspay name=audio_pay ! appsink name=audio_sink sync=false",
@@ -1110,7 +1099,7 @@ async fn start_gstreamer(
                                 continue;
                             }
                         }
-                        eprintln!("[JavaRunner] Encoder {} started (fallback on {})", encoder, fallback_display);
+                        eprintln!("[JavaRunner] Encoder {} started (root fallback on {})", encoder, tcp_display);
                         pipeline_opt = Some(pipe);
                         selected_mime = mime.to_string();
                         break;
