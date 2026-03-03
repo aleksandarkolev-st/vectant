@@ -108,25 +108,19 @@ pub async fn run_java(
     }
 
     // ── Xvfb setup (GUI only) ─────────────────────────────────────
-    // GStreamer is ALWAYS deferred until after Java spawns, so we can
-    // find the actual JFrame window and capture it by XID.  This avoids
-    // the Xvfb root-capture problem entirely.
+    // GStreamer is deferred until after Java spawns (see below).
+    // All X11 comms (Java AWT, GStreamer, xdotool) use the same
+    // DISPLAY=:99 via abstract UNIX sockets — matching the C++ runner.
     let mut wsl_display_str = reused_wsl_display;
     let mut xvfb_process: Option<tokio::process::Child> = reused_xvfb;
     let mut gst_pipeline: Option<gst::Pipeline> = reused_pipeline;
 
-    // local_display is ":99" — used for GStreamer root capture (XShm on the root
-    // window works perfectly on Xvfb; the issue was only with XShm on child XIDs).
-    // tcp_display is "127.0.0.1:99.0" — used for Java AWT and xdotool.
-    let mut local_display = String::new();
-
     if req.is_gui {
         // Start Xvfb if not reused
         if xvfb_process.is_none() {
-            let (child, tcp_display, local_disp, _comp) = start_xvfb(ctx, session_id, req_width, req_height).await?;
+            let (child, display) = start_xvfb(ctx, session_id, req_width, req_height).await?;
             xvfb_process = Some(child);
-            wsl_display_str = tcp_display;           // Java AWT, xdotool use TCP
-            local_display = local_disp;              // GStreamer ximagesrc uses local (XShm on root)
+            wsl_display_str = display;
         }
         // GStreamer start is deferred until after Java spawns (see below)
     }
@@ -306,34 +300,9 @@ pub async fn run_java(
         }
 
         // Root capture — no XID, same approach as the C++ runner.
-        //
-        // DISPLAY SELECTION: We must verify that the chosen display
-        // is actually reachable before handing it to ximagesrc.  In
-        // containers, UNIX file sockets often fail to create, and
-        // abstract sockets may or may not work.  If local ":99" fails,
-        // fall back to TCP which is guaranteed to work.
-        let gst_display = if !local_display.is_empty() {
-            // Test if local display is reachable
-            let local_ok = Command::new("xdpyinfo")
-                .env("DISPLAY", &local_display)
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status()
-                .await
-                .map(|s| s.success())
-                .unwrap_or(false);
-            if local_ok {
-                eprintln!("[JavaRunner] Local display {} verified OK — using for GStreamer (XShm)", local_display);
-                local_display.clone()
-            } else {
-                eprintln!("[JavaRunner] Local display {} NOT reachable — falling back to TCP {}", local_display, wsl_display_str);
-                wsl_display_str.clone()
-            }
-        } else {
-            wsl_display_str.clone()
-        };
+        // All connections use DISPLAY=:99 (abstract UNIX sockets + XShm).
         let (pipeline, v_track, a_track) =
-            start_gstreamer(&gst_display, session_id, None).await?;
+            start_gstreamer(&wsl_display_str, session_id, None).await?;
         gst_pipeline = Some(pipeline);
         video_track_opt = Some(v_track);
         audio_track_opt = Some(a_track);
@@ -549,7 +518,7 @@ pub async fn run_java(
         audio_track: audio_track_opt.clone(),
         width: req_width,
         height: req_height,
-        gst_display_str: if local_display.is_empty() { wsl_display_str.clone() } else { local_display.clone() },
+        gst_display_str: wsl_display_str.clone(),
         wsl_display_str,
         module_hashes: ModuleHashes::new(),
         loaded_core_path: None,
@@ -558,80 +527,30 @@ pub async fn run_java(
         widget_hashes: HashMap::new(),
     });
 
-    // ── Stdin input channel for GUI apps ──────────────────────────
+    // ── X11 input injection for GUI apps ─────────────────────────
+    // The main worker event router (main.rs) converts browser mouse/keyboard
+    // events into SDL-format commands ("input motion x y", "input button
+    // down btn x y", "input key down sdlk") and sends them to the channel.
+    // The input module translates these into xdotool invocations on the
+    // Xvfb display so AWT/Swing receives native X11 events.
     if req.is_gui {
-        let (input_tx, mut input_rx) = mpsc::unbounded_channel::<String>();
+        let display_for_input = guard
+            .as_ref()
+            .map(|s| s.wsl_display_str.clone())
+            .unwrap_or_else(|| ":99".to_string());
+
+        let input_tx = super::input::spawn_input_task(display_for_input);
 
         if let Some(state) = guard.as_mut() {
             state.sdl_tx = Some(input_tx.clone());
         }
 
-        // Register in sdl_input_store so the input handler routes events here
+        // Register in sdl_input_store so the terminal data-channel handler
+        // in main.rs can route gui-event messages to this sender.
         {
             let mut sdl_guard = ctx.sdl_input_store.lock().await;
             sdl_guard.insert(session_id.to_string(), input_tx);
         }
-
-        // For Java GUI: use xdotool for input injection instead of runner stdin.
-        // The xdotool path converts events to X11 input which AWT/Swing consumes.
-        let display_for_input = guard
-            .as_ref()
-            .map(|s| s.wsl_display_str.clone())
-            .unwrap_or_else(|| ":99".to_string());
-        tokio::spawn(async move {
-            while let Some(cmd) = input_rx.recv().await {
-                // Parse the input command and convert to xdotool invocations
-                // The frontend sends commands like "input mouse_move 100 200"
-                // or "input mouse_down 1" — we convert these to xdotool calls.
-                for line in cmd.lines() {
-                    let line = line.trim();
-                    if line.is_empty() {
-                        continue;
-                    }
-                    // Forward raw input lines to xdotool
-                    // Expected format from frontend: "input <type> <args>"
-                    if let Some(rest) = line.strip_prefix("input ") {
-                        let parts: Vec<&str> = rest.split_whitespace().collect();
-                        if parts.is_empty() {
-                            continue;
-                        }
-                        let mut xdo = tokio::process::Command::new("xdotool");
-                        xdo.env("DISPLAY", &display_for_input);
-                        match parts[0] {
-                            "mouse_move" if parts.len() >= 3 => {
-                                xdo.arg("mousemove")
-                                    .arg("--screen").arg("0")
-                                    .arg(parts[1]).arg(parts[2]);
-                            }
-                            "mouse_down" if parts.len() >= 2 => {
-                                xdo.arg("mousedown").arg(parts[1]);
-                            }
-                            "mouse_up" if parts.len() >= 2 => {
-                                xdo.arg("mouseup").arg(parts[1]);
-                            }
-                            "key_press" if parts.len() >= 2 => {
-                                xdo.arg("key").arg(parts[1]);
-                            }
-                            "key_down" if parts.len() >= 2 => {
-                                xdo.arg("keydown").arg(parts[1]);
-                            }
-                            "key_up" if parts.len() >= 2 => {
-                                xdo.arg("keyup").arg(parts[1]);
-                            }
-                            _ => {
-                                // Pass through as raw xdotool args
-                                for p in &parts {
-                                    xdo.arg(p);
-                                }
-                            }
-                        }
-                        xdo.stdout(Stdio::null()).stderr(Stdio::null());
-                        let _ = xdo.spawn();
-                    }
-                }
-            }
-            eprintln!("[JavaRunner] Input channel closed");
-        });
     }
 
     // ── Attach video/audio tracks to WebRTC transceivers ──────────
@@ -740,18 +659,15 @@ pub async fn run_java(
 // ════════════════════════════════════════════════════════════════
 
 /// Start Xvfb and matchbox-window-manager.
-/// Returns `(child, tcp_display, local_display, has_compositor)` where:
-///   - `tcp_display` is a TCP-based DISPLAY (e.g. `127.0.0.1:99.0`) for
-///     clients like Java that need TCP to connect.
-///   - `local_display` is a local DISPLAY (`:99`) for local X11 access.
-///   - `has_compositor` is always false — we intentionally skip compositors
-///     because they redirect child windows offscreen, breaking XID capture.
+/// Returns `(child, display)` where `display` is the DISPLAY string
+/// (e.g. `:99`) for all X11 connections (Java AWT, GStreamer, xdotool).
+/// Uses abstract UNIX sockets — same config as the C++ stages runner.
 async fn start_xvfb(
     ctx: &CompileContext,
     session_id: &str,
     width: u32,
     height: u32,
-) -> Result<(tokio::process::Child, String, String, bool)> {
+) -> Result<(tokio::process::Child, String)> {
     for tool in GUI_TOOLS {
         if Command::new(tool).arg("--version").output().await.is_err() {
             let msg = format!(
@@ -822,65 +738,46 @@ async fn start_xvfb(
         }
     }
 
-    // Start Xvfb with TCP enabled as a safety net.
-    // We deliberately DO NOT pass `-nolisten local` — abstract UNIX sockets
-    // (a Linux kernel feature, no filesystem permissions needed) are the
-    // preferred transport for local X11 connections because they:
-    //   1. Always work in containers (no /tmp/.X11-unix permission issues)
-    //   2. Support XShm (shared-memory screen capture for ximagesrc)
-    //   3. Are lower-latency than TCP
-    // `-listen tcp` is kept as an explicit fallback in case abstract sockets
-    // fail for any reason.  We omit `-listen unix` since the file-based
-    // socket in /tmp/.X11-unix often fails due to directory permissions.
     // Match the C++ stages runner Xvfb config exactly:
     //   Xvfb :99 -screen 0 WxHx24 -ac
-    // Previously we added -listen tcp, +extension RENDER, -extension Composite
-    // but these caused the framebuffer to NOT update after the initial paint.
-    // The C++ runner works without any of those flags.
-    // We add -listen tcp as the ONLY extra so Java AWT can connect via TCP
-    // (UNIX sockets often fail in containers).
+    //
+    // NO extra flags. Previously -listen tcp, +extension RENDER,
+    // -extension Composite caused: (a) framebuffer freeze after initial
+    // paint, (b) GStreamer ximagesrc forced to use XGetImage over TCP
+    // (freezes after one frame) instead of XShm (continuous updates).
+    //
+    // Without explicit -listen tcp, Xvfb uses abstract UNIX sockets by
+    // default.  These always work in containers (kernel feature, no
+    // filesystem) and support XShm for efficient screen capture.
     let mut xvfb_cmd = Command::new("Xvfb");
     xvfb_cmd
         .arg(format!(":{}", display_num))
         .arg("-screen").arg("0").arg(format!("{}x{}x24", width, height))
         .arg("-ac")
-        .arg("-listen").arg("tcp")
         .kill_on_drop(true);
 
     let child = xvfb_cmd.spawn().context("Failed to spawn Xvfb")?;
 
-    // Wait for Xvfb to be ready.  Check both the UNIX socket and TCP port.
-    let socket_path = format!("/tmp/.X11-unix/X{}", display_num);
-    let tcp_port: u16 = 6000 + display_num as u16;
+    // Wait for Xvfb to be ready.
+    // Use DISPLAY=:N which connects via abstract UNIX sockets (same as
+    // the C++ runner).  The file socket /tmp/.X11-unix/XN may or may not
+    // appear — that's fine, xdpyinfo will confirm the display works.
+    let display_str = format!(":{}", display_num);
     let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(5);
-
-    let mut display_str = String::new();
     loop {
-        // 1. Prefer UNIX file socket (lowest latency, XShm works)
-        if std::path::Path::new(&socket_path).exists() {
-            display_str = format!(":{}", display_num);
-            eprintln!("[JavaRunner] Xvfb ready via UNIX file socket: {}", socket_path);
-            break;
-        }
-        // 2. TCP probe — Xvfb is running on TCP.
-        //    We previously tried DISPLAY=:N (abstract sockets) here, but
-        //    in many container environments abstract sockets are not
-        //    available or not enabled by Xvfb.  Java AWT then silently
-        //    fails to connect and no window appears.
-        //    Use the explicit TCP address which is guaranteed to work.
-        if tokio::net::TcpStream::connect(("127.0.0.1", tcp_port)).await.is_ok() {
-            display_str = format!("127.0.0.1:{}.0", display_num);
-            eprintln!(
-                "[JavaRunner] Xvfb TCP port {} responding; using DISPLAY={}",
-                tcp_port, display_str
-            );
+        let probe = Command::new("xdpyinfo")
+            .env("DISPLAY", &display_str)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .await;
+        if probe.map(|s| s.success()).unwrap_or(false) {
+            eprintln!("[JavaRunner] Xvfb ready on DISPLAY={}", display_str);
             break;
         }
         if tokio::time::Instant::now() >= deadline {
-            // Last resort — try TCP address anyway since it's the most reliable
-            display_str = format!("127.0.0.1:{}.0", display_num);
             eprintln!(
-                "[JavaRunner] WARNING: Xvfb not confirmed after 5s, using DISPLAY={}",
+                "[JavaRunner] WARNING: Xvfb not confirmed after 5s, proceeding with DISPLAY={}",
                 display_str
             );
             break;
@@ -927,7 +824,6 @@ async fn start_xvfb(
     // Without a compositor, Xvfb manages compositing natively — child
     // windows' painted content is embedded in the root framebuffer.
     // This is the same approach the C++ stages runner uses.
-    let compositor_ok = false;
 
     // Set root window to a dark color (looks like "loading" in the video widget).
     // If only this color is visible, the app window isn't mapped/painted yet.
@@ -942,12 +838,7 @@ async fn start_xvfb(
 
     eprintln!("[JavaRunner] Xvfb + WM started (no compositor), DISPLAY={}", display_str);
 
-    let local_display = format!(":{}", display_num);
-    eprintln!(
-        "[JavaRunner] Display strings: tcp={} local={} compositor={}",
-        display_str, local_display, compositor_ok
-    );
-    Ok((child, display_str, local_display, compositor_ok))
+    Ok((child, display_str))
 }
 
 /// Poll for the main GUI window on the given display.
@@ -1122,16 +1013,15 @@ async fn start_gstreamer(
 
     // Build the ximagesrc element string based on capture mode:
     //
-    // For XID capture: use TCP + remote=true (XGetImage).
-    // For ROOT capture: prefer local display (XShm) for continuous
-    //     frame updates.  TCP+remote=true froze after the first frame.
-    //     XShm on root works perfectly on Xvfb — the issue was only
-    //     with XShm on child window XIDs.
+    // ROOT capture (no XID): uses DISPLAY=:99 (abstract UNIX sockets)
+    // with XShm for continuous frame reads.  This matches the C++ runner.
+    //
+    // XID capture (future/other toolkits): would need remote=true.
     //
     // show-pointer=false avoids cursor artifacts in the stream.
     let ximagesrc_str = if let Some(xid) = window_xid {
         eprintln!(
-            "[JavaRunner] ximagesrc: capturing JFrame window xid=0x{:x} on display={} (TCP+XGetImage)",
+            "[JavaRunner] ximagesrc: capturing window xid=0x{:x} on display={}",
             xid, tcp_display
         );
         format!(
@@ -1139,28 +1029,15 @@ async fn start_gstreamer(
             tcp_display, xid
         )
     } else {
-        // Root capture: prefer local display for XShm (continuous updates).
-        // Do NOT use remote=true here — XShm on the root window works fine
-        // on Xvfb and gives continuous frame re-reads.
-        // TCP+remote=true caused the capture to freeze after the first frame.
-        let is_tcp = tcp_display.contains("127.0.0.1") || tcp_display.contains(':') && tcp_display.chars().next().map_or(false, |c| c.is_ascii_digit());
+        // Root capture with XShm — continuous frame updates.
         eprintln!(
-            "[JavaRunner] ximagesrc: ROOT capture on display={} (local_xshm={}, includes all visible windows)",
-            tcp_display, !is_tcp
+            "[JavaRunner] ximagesrc: ROOT capture on display={} (XShm, all visible windows)",
+            tcp_display
         );
-        if is_tcp {
-            // TCP display — must use remote=true
-            format!(
-                "ximagesrc display-name=\"{}\" use-damage=0 remote=true show-pointer=false",
-                tcp_display
-            )
-        } else {
-            // Local display — use XShm (default, no remote=true)
-            format!(
-                "ximagesrc display-name=\"{}\" use-damage=0 show-pointer=false",
-                tcp_display
-            )
-        }
+        format!(
+            "ximagesrc display-name=\"{}\" use-damage=0 show-pointer=false",
+            tcp_display
+        )
     };
 
     // Try each encoder with the configured ximagesrc
