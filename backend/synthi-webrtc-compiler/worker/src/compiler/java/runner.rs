@@ -33,8 +33,22 @@ pub async fn run_java(
     main_class: &str,
     session_id: &str,
 ) -> Result<()> {
-    let req_width = req.width.unwrap_or(800);
-    let req_height = req.height.unwrap_or(600);
+    // Use dimensions from the source code if the frontend didn't specify any.
+    // This lets `frame.setSize(400, 200)` control the video widget size.
+    // Scan the main source first, then additional files.
+    let (mut source_w, mut source_h) = parse_gui_dimensions(&req.source);
+    if source_w.is_none() && source_h.is_none() {
+        for f in &req.files {
+            let (w, h) = parse_gui_dimensions(&f.content);
+            if w.is_some() || h.is_some() {
+                source_w = w;
+                source_h = h;
+                break;
+            }
+        }
+    }
+    let req_width = req.width.or(source_w).unwrap_or(800);
+    let req_height = req.height.or(source_h).unwrap_or(600);
 
     let mut guard = ctx.runner_store.lock().await;
 
@@ -1218,4 +1232,85 @@ async fn start_gstreamer(
     });
 
     Ok((pipeline, video_track, audio_track))
+}
+
+/// Extract GUI window dimensions from Java source code.
+///
+/// Scans for common Swing/AWT patterns:
+///   - `setSize(w, h)`
+///   - `new Dimension(w, h)` (used with setPreferredSize, setMinimumSize, etc.)
+///   - `setBounds(x, y, w, h)`
+///   - `JFrame(... w, h)` constructor with bounds
+///
+/// Returns `(Some(width), Some(height))` if found, `(None, None)` otherwise.
+/// Only integer literals are matched — expressions/variables are ignored
+/// (the fallback 800×600 applies).  The last match wins so overrides
+/// like `frame.setSize(...)` after construction take precedence.
+fn parse_gui_dimensions(source: &str) -> (Option<u32>, Option<u32>) {
+    let mut width: Option<u32> = None;
+    let mut height: Option<u32> = None;
+
+    for line in source.lines() {
+        let trimmed = line.trim();
+
+        // Skip comments
+        if trimmed.starts_with("//") || trimmed.starts_with('*') || trimmed.starts_with("/*") {
+            continue;
+        }
+
+        // setSize(w, h)
+        if let Some(args) = extract_call_args(trimmed, "setSize") {
+            if let Some((w, h)) = parse_two_ints(&args) {
+                width = Some(w);
+                height = Some(h);
+            }
+        }
+
+        // setBounds(x, y, w, h) — take the last two args
+        if let Some(args) = extract_call_args(trimmed, "setBounds") {
+            let nums: Vec<u32> = args
+                .split(',')
+                .filter_map(|s| s.trim().parse().ok())
+                .collect();
+            if nums.len() == 4 {
+                width = Some(nums[2]);
+                height = Some(nums[3]);
+            }
+        }
+
+        // new Dimension(w, h)
+        if let Some(args) = extract_call_args(trimmed, "Dimension") {
+            if let Some((w, h)) = parse_two_ints(&args) {
+                width = Some(w);
+                height = Some(h);
+            }
+        }
+    }
+
+    // Clamp to reasonable range (minimum 100×100, maximum 1920×1080)
+    let clamp = |v: Option<u32>| v.map(|n| n.clamp(100, 1920));
+    (clamp(width), clamp(height))
+}
+
+/// Extract the argument string from `name(...)` in a line.
+/// E.g. `extract_call_args("frame.setSize(400, 200);", "setSize")` → `Some("400, 200")`
+fn extract_call_args<'a>(line: &'a str, name: &str) -> Option<&'a str> {
+    let idx = line.find(name)?;
+    let after = &line[idx + name.len()..];
+    let open = after.find('(')?;
+    let inner = &after[open + 1..];
+    let close = inner.find(')')?;
+    Some(&inner[..close])
+}
+
+/// Parse "w, h" → (w, h) from a two-integer argument string.
+fn parse_two_ints(args: &str) -> Option<(u32, u32)> {
+    let parts: Vec<&str> = args.split(',').collect();
+    if parts.len() == 2 {
+        let w: u32 = parts[0].trim().parse().ok()?;
+        let h: u32 = parts[1].trim().parse().ok()?;
+        Some((w, h))
+    } else {
+        None
+    }
 }
