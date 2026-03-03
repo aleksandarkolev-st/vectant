@@ -115,12 +115,18 @@ pub async fn run_java(
     let mut xvfb_process: Option<tokio::process::Child> = reused_xvfb;
     let mut gst_pipeline: Option<gst::Pipeline> = reused_pipeline;
 
+    // local_display is ":99" — used for GStreamer root capture (XShm on the root
+    // window works perfectly on Xvfb; the issue was only with XShm on child XIDs).
+    // tcp_display is "127.0.0.1:99.0" — used for Java AWT and xdotool.
+    let mut local_display = String::new();
+
     if req.is_gui {
         // Start Xvfb if not reused
         if xvfb_process.is_none() {
-            let (child, tcp_display, _local_display, _comp) = start_xvfb(ctx, session_id, req_width, req_height).await?;
+            let (child, tcp_display, local_disp, _comp) = start_xvfb(ctx, session_id, req_width, req_height).await?;
             xvfb_process = Some(child);
-            wsl_display_str = tcp_display;           // Everything uses TCP (Java, GStreamer, xdotool)
+            wsl_display_str = tcp_display;           // Java AWT, xdotool use TCP
+            local_display = local_disp;              // GStreamer ximagesrc uses local (XShm on root)
         }
         // GStreamer start is deferred until after Java spawns (see below)
     }
@@ -160,6 +166,11 @@ pub async fn run_java(
         cmd.env("DISPLAY", &wsl_display_str);
         cmd.env("AWT_TOOLKIT", "XToolkit");     // force X11 toolkit
         cmd.env("GDK_BACKEND", "x11");           // GTK fallback
+        // WM reparenting compat — some WMs break AWT without this
+        cmd.env("_JAVA_AWT_WM_NONREPARENTING", "1");
+        // Reinforce Java2D flags via env (in case cmd args have ordering issues)
+        cmd.env("JAVA_TOOL_OPTIONS",
+            "-Dsun.java2d.pmoffscreen=false -Dsun.java2d.opengl=false -Dsun.java2d.xrender=false");
     }
 
     cmd.stdin(Stdio::piped())
@@ -178,32 +189,56 @@ pub async fn run_java(
 
     let mut child = cmd.spawn().context("Failed to spawn java — is openjdk installed?")?;
 
-    // ── Deferred GStreamer start — ROOT capture after window appears ─
-    // We defer GStreamer start until Java's GUI window is visible.
-    // Then we capture the ROOT window (not the child XID), same as
-    // the C++ runner.  This works because:
-    //   1. matchbox-wm maximises the Java window to fill the Xvfb screen
-    //   2. Xvfb's root capture reads the composited framebuffer which
-    //      includes all mapped/visible child windows
-    //   3. Root capture is generic — works for Swing, JavaFX, SDL,
-    //      OpenGL, LWJGL, or any X11 toolkit
+    // ── GStreamer start — ROOT capture ─────────────────────────────
+    // We defer GStreamer start until after the Java window is visible
+    // and fullscreened.  Then we capture the ROOT window (not the
+    // child XID), same approach as the C++ stages runner.
     //
-    // XID-based capture fails on Xvfb because Java2D paints to offscreen
-    // pixmaps and copies via XCopyArea; XGetImage on the child window
-    // reads the backing store before the copy lands.  Root capture avoids
-    // this because the server composites everything into the screen buffer.
+    // IMPORTANT: We verify the local display (":99") is actually
+    // reachable before using it.  In containers, UNIX sockets often
+    // fail, so we fall back to TCP for GStreamer if needed.
+    //
+    // Root capture is generic — works for Swing, JavaFX, SDL, OpenGL,
+    // LWJGL, or any X11 toolkit.
     if req.is_gui && gst_pipeline.is_none() {
         eprintln!("[JavaRunner] Waiting for Java GUI window to appear...");
         let xid = find_gui_window(&wsl_display_str, req_width, req_height, 8000).await;
 
         if let Some(xid) = xid {
-            eprintln!("[JavaRunner] Window 0x{:x} mapped and visible, waiting for initial paint...", xid);
+            eprintln!("[JavaRunner] Window 0x{:x} mapped and visible, forcing fullscreen...", xid);
 
-            // Wait for Swing to finish its initial paint cycle.
-            // The window may be mapped before AWT finishes rendering.
-            tokio::time::sleep(tokio::time::Duration::from_millis(1500)).await;
-
-            // Focus/raise the window to ensure it's on top and fully exposed
+            // Force-resize the window to fill the screen.
+            // matchbox-wm should do this automatically, but sometimes the
+            // initial window geometry from Java's setSize() wins the race.
+            // Resize ALL windows on the display to guarantee fullscreen.
+            let _ = Command::new("sh")
+                .arg("-c")
+                .arg(format!(
+                    "for wid in $(xdotool search --onlyvisible --name ''); do xdotool windowsize --sync $wid {} {} 2>/dev/null; xdotool windowmove --sync $wid 0 0 2>/dev/null; done",
+                    req_width, req_height
+                ))
+                .env("DISPLAY", &wsl_display_str)
+                .output()
+                .await;
+            // Also resize the specific JFrame we found
+            let _ = Command::new("xdotool")
+                .arg("windowsize")
+                .arg("--sync")
+                .arg(format!("0x{:x}", xid))
+                .arg(format!("{}", req_width))
+                .arg(format!("{}", req_height))
+                .env("DISPLAY", &wsl_display_str)
+                .output()
+                .await;
+            let _ = Command::new("xdotool")
+                .arg("windowmove")
+                .arg("--sync")
+                .arg(format!("0x{:x}", xid))
+                .arg("0")
+                .arg("0")
+                .env("DISPLAY", &wsl_display_str)
+                .output()
+                .await;
             let _ = Command::new("xdotool")
                 .arg("windowactivate")
                 .arg("--sync")
@@ -215,6 +250,31 @@ pub async fn run_java(
                 .arg("windowfocus")
                 .arg("--sync")
                 .arg(format!("0x{:x}", xid))
+                .env("DISPLAY", &wsl_display_str)
+                .output()
+                .await;
+
+            // Wait for Swing to finish layout/paint after the resize.
+            tokio::time::sleep(tokio::time::Duration::from_millis(1500)).await;
+
+            // Verify window geometry after resize
+            if let Ok(geo_out) = Command::new("xdotool")
+                .arg("getwindowgeometry")
+                .arg(format!("0x{:x}", xid))
+                .env("DISPLAY", &wsl_display_str)
+                .output()
+                .await
+            {
+                let geo_text = String::from_utf8_lossy(&geo_out.stdout);
+                eprintln!("[JavaRunner] Window geometry after resize: {}", geo_text.trim());
+            }
+
+            // Force a Swing repaint by sending Expose event
+            let _ = Command::new("xdotool")
+                .arg("key")
+                .arg("--window")
+                .arg(format!("0x{:x}", xid))
+                .arg("F5")
                 .env("DISPLAY", &wsl_display_str)
                 .output()
                 .await;
@@ -246,11 +306,61 @@ pub async fn run_java(
         }
 
         // Root capture — no XID, same approach as the C++ runner.
+        //
+        // DISPLAY SELECTION: We must verify that the chosen display
+        // is actually reachable before handing it to ximagesrc.  In
+        // containers, UNIX file sockets often fail to create, and
+        // abstract sockets may or may not work.  If local ":99" fails,
+        // fall back to TCP which is guaranteed to work.
+        let gst_display = if !local_display.is_empty() {
+            // Test if local display is reachable
+            let local_ok = Command::new("xdpyinfo")
+                .env("DISPLAY", &local_display)
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .await
+                .map(|s| s.success())
+                .unwrap_or(false);
+            if local_ok {
+                eprintln!("[JavaRunner] Local display {} verified OK — using for GStreamer (XShm)", local_display);
+                local_display.clone()
+            } else {
+                eprintln!("[JavaRunner] Local display {} NOT reachable — falling back to TCP {}", local_display, wsl_display_str);
+                wsl_display_str.clone()
+            }
+        } else {
+            wsl_display_str.clone()
+        };
         let (pipeline, v_track, a_track) =
-            start_gstreamer(&wsl_display_str, session_id, None).await?;
+            start_gstreamer(&gst_display, session_id, None).await?;
         gst_pipeline = Some(pipeline);
         video_track_opt = Some(v_track);
         audio_track_opt = Some(a_track);
+
+        // Force periodic Swing repaints via xdotool.
+        // After GStreamer starts, Swing components may have already painted
+        // but the capture missed them.  Sending window unmap/remap cycles
+        // forces a full repaint that ximagesrc will capture.
+        if let Some(xid) = find_gui_window(&wsl_display_str, req_width, req_height, 2000).await {
+            let repaint_display = wsl_display_str.clone();
+            tokio::spawn(async move {
+                for i in 0..3 {
+                    tokio::time::sleep(tokio::time::Duration::from_millis(500 + i * 1000)).await;
+                    // Send xdotool key to trigger repaint
+                    let _ = Command::new("xdotool")
+                        .arg("windowminimize").arg("--sync").arg(format!("0x{:x}", xid))
+                        .env("DISPLAY", &repaint_display)
+                        .output().await;
+                    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                    let _ = Command::new("xdotool")
+                        .arg("windowactivate").arg("--sync").arg(format!("0x{:x}", xid))
+                        .env("DISPLAY", &repaint_display)
+                        .output().await;
+                    eprintln!("[JavaRunner] Forced repaint cycle {} for window 0x{:x}", i + 1, xid);
+                }
+            });
+        }
     }
 
     // Delayed X11 window diagnostic for GUI apps.
@@ -439,7 +549,7 @@ pub async fn run_java(
         audio_track: audio_track_opt.clone(),
         width: req_width,
         height: req_height,
-        gst_display_str: wsl_display_str.clone(),
+        gst_display_str: if local_display.is_empty() { wsl_display_str.clone() } else { local_display.clone() },
         wsl_display_str,
         module_hashes: ModuleHashes::new(),
         loaded_core_path: None,
@@ -722,14 +832,19 @@ async fn start_xvfb(
     // `-listen tcp` is kept as an explicit fallback in case abstract sockets
     // fail for any reason.  We omit `-listen unix` since the file-based
     // socket in /tmp/.X11-unix often fails due to directory permissions.
+    // Match the C++ stages runner Xvfb config exactly:
+    //   Xvfb :99 -screen 0 WxHx24 -ac
+    // Previously we added -listen tcp, +extension RENDER, -extension Composite
+    // but these caused the framebuffer to NOT update after the initial paint.
+    // The C++ runner works without any of those flags.
+    // We add -listen tcp as the ONLY extra so Java AWT can connect via TCP
+    // (UNIX sockets often fail in containers).
     let mut xvfb_cmd = Command::new("Xvfb");
     xvfb_cmd
         .arg(format!(":{}", display_num))
         .arg("-screen").arg("0").arg(format!("{}x{}x24", width, height))
         .arg("-ac")
         .arg("-listen").arg("tcp")
-        .arg("+extension").arg("RENDER")
-        .arg("-extension").arg("Composite")  // prevent ANY compositor/redirect
         .kill_on_drop(true);
 
     let child = xvfb_cmd.spawn().context("Failed to spawn Xvfb")?;
@@ -808,18 +923,16 @@ async fn start_xvfb(
     // WM must outlive this scope — intentionally not setting kill_on_drop
     let _wm = wm_cmd.spawn().context("Failed to spawn matchbox-window-manager")?;
 
-    // NOTE: We intentionally do NOT start a compositor (xcompmgr, picom,
-    // compton).  Compositors redirect child windows to offscreen pixmaps
-    // which can interfere with both XID and root capture.  Without a
-    // compositor, Xvfb composites all visible windows directly into the
-    // screen buffer, which ximagesrc root capture reads correctly.
+    // NOTE: We do NOT start a compositor (xcompmgr, picom, compton).
+    // Without a compositor, Xvfb manages compositing natively — child
+    // windows' painted content is embedded in the root framebuffer.
+    // This is the same approach the C++ stages runner uses.
     let compositor_ok = false;
 
-    // Set root window to a bright color for diagnostics:
-    // If only this color is visible in the video, root capture works
-    // but the app window isn't mapped yet or isn't being painted.
+    // Set root window to a dark color (looks like "loading" in the video widget).
+    // If only this color is visible, the app window isn't mapped/painted yet.
     let _ = Command::new("xsetroot")
-        .arg("-solid").arg("#FF0000")
+        .arg("-solid").arg("#1a1a2e")
         .env("DISPLAY", &display_str)
         .output()
         .await;
@@ -1009,20 +1122,11 @@ async fn start_gstreamer(
 
     // Build the ximagesrc element string based on capture mode:
     //
-    // ALWAYS use TCP display + remote=true (which forces XGetImage
-    // instead of XShmGetImage).  TCP is the guaranteed-working
-    // transport in our container environment.
-    //
-    // 1. With window_xid: capture a specific window directly.
-    //    NOTE: This currently returns blank on Xvfb because Java2D
-    //    paints to offscreen pixmaps.  Kept for future use / other
-    //    toolkits that paint directly to the window.
-    //
-    // 2. Without window_xid (ROOT capture — preferred for Java):
-    //    Captures the entire Xvfb screen.  With matchbox-wm
-    //    maximizing the app window, root capture = app capture.
-    //    This is the same approach the C++ runner uses and works
-    //    for any X11 toolkit (Swing, JavaFX, SDL, OpenGL, etc.).
+    // For XID capture: use TCP + remote=true (XGetImage).
+    // For ROOT capture: prefer local display (XShm) for continuous
+    //     frame updates.  TCP+remote=true froze after the first frame.
+    //     XShm on root works perfectly on Xvfb — the issue was only
+    //     with XShm on child window XIDs.
     //
     // show-pointer=false avoids cursor artifacts in the stream.
     let ximagesrc_str = if let Some(xid) = window_xid {
@@ -1035,14 +1139,28 @@ async fn start_gstreamer(
             tcp_display, xid
         )
     } else {
+        // Root capture: prefer local display for XShm (continuous updates).
+        // Do NOT use remote=true here — XShm on the root window works fine
+        // on Xvfb and gives continuous frame re-reads.
+        // TCP+remote=true caused the capture to freeze after the first frame.
+        let is_tcp = tcp_display.contains("127.0.0.1") || tcp_display.contains(':') && tcp_display.chars().next().map_or(false, |c| c.is_ascii_digit());
         eprintln!(
-            "[JavaRunner] ximagesrc: ROOT capture on display={} (includes all visible windows)",
-            tcp_display
+            "[JavaRunner] ximagesrc: ROOT capture on display={} (local_xshm={}, includes all visible windows)",
+            tcp_display, !is_tcp
         );
-        format!(
-            "ximagesrc display-name=\"{}\" use-damage=0 remote=true show-pointer=false",
-            tcp_display
-        )
+        if is_tcp {
+            // TCP display — must use remote=true
+            format!(
+                "ximagesrc display-name=\"{}\" use-damage=0 remote=true show-pointer=false",
+                tcp_display
+            )
+        } else {
+            // Local display — use XShm (default, no remote=true)
+            format!(
+                "ximagesrc display-name=\"{}\" use-damage=0 show-pointer=false",
+                tcp_display
+            )
+        }
     };
 
     // Try each encoder with the configured ximagesrc
