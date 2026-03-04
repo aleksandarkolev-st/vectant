@@ -22,7 +22,7 @@ import {
   selectTabs,
   selectNodes,
 } from '../state/layout-slice';
-import { IDE_PANEL } from '../panels/ide-panels';
+import { IDE_PANEL } from '../panels/panel-types';
 
 // ── Panel category classification ──
 const SIDEBAR_TYPES = new Set([
