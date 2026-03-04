@@ -23,7 +23,7 @@ import {
 import { useActivityBarDocking } from '../hooks/use-activity-bar-docking';
 import { selectNodes, selectTabs, selectFocusedTabGroupId, openTab, activateTabAction, setFocusedTabGroup } from '../state/layout-slice';
 import { selectContributedContainers } from '@/redux/extensionSlice';
-import { IDE_PANEL } from '../panels/ide-panels';
+import { IDE_PANEL } from '../panels/panel-types';
 
 /**
  * Determine which panel type is currently "active" — i.e. visible and

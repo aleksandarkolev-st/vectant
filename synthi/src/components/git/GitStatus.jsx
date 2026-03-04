@@ -32,7 +32,7 @@ import {
   openTab, activateTabAction, setFocusedTabGroup,
   selectNodes, selectTabs,
 } from '@/components/docking-wm/state/layout-slice';
-import { IDE_PANEL } from '@/components/docking-wm/panels/ide-panels';
+import { IDE_PANEL } from '@/components/docking-wm/panels/panel-types';
 import dynamic from 'next/dynamic';
 
 const HunkStagingView = dynamic(() => import('./HunkStagingView'), { ssr: false });
