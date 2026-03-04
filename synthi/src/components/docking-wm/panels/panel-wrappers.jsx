@@ -72,6 +72,11 @@ const ThemeEditorPanel = dynamic(
   { ssr: false, loading: Placeholder },
 );
 
+const OutputPanel = dynamic(
+  () => import('./OutputPanel'),
+  { ssr: false, loading: Placeholder },
+);
+  
 const PullRequestsPanel = dynamic(
   () => import('@/components/git/PullRequestsPanel').then(m => ({ default: m.PullRequestsPanel })),
   { ssr: false, loading: Placeholder },
@@ -268,12 +273,10 @@ export const OutputPanelWrapper = memo(function OutputPanelWrapper({ data }) {
   return (
     <div
       data-panel-type="output"
-      className="h-full w-full overflow-hidden font-mono text-xs p-2"
-      style={{ background: 'var(--bg-sidebar)', color: 'var(--text-muted)' }}
+      className="h-full w-full overflow-hidden"
+      style={{ background: 'var(--bg-sidebar)' }}
     >
-      <div className="flex h-full items-center justify-center">
-        Output panel — no output yet
-      </div>
+      <OutputPanel />
     </div>
   );
 });

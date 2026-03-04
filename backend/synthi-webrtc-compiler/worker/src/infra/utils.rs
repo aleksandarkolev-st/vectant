@@ -74,9 +74,18 @@ pub fn get_wsl_host_ip() -> Option<String> {
 }
 
 pub fn system_command(program: &str) -> Command {
-    let mut cmd = Command::new(program);
-    cmd.stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    cmd
+    if cfg!(target_os = "windows") {
+        let mut cmd = Command::new("wsl");
+        cmd.arg(program);
+        cmd.stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        cmd
+    } else {
+        let mut cmd = Command::new(program);
+        cmd.stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        cmd
+    }
 }
