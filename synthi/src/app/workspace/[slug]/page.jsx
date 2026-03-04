@@ -1855,6 +1855,13 @@ export default function EditorPage({ params }) {
 
         setBuildLogs([`Running build for ${filename}...`]);
 
+        // Auto-switch to the Output panel in the docking WM so users see program output
+        try {
+            if (typeof window !== 'undefined' && window.dispatchEvent) {
+                window.dispatchEvent(new CustomEvent('synthi:show-output-panel'));
+            }
+        } catch (_) { /* ignore */ }
+
         // Define a getter for content that checks current editor state, cache, or API
         const getContentForDependency = async (path) => {
             // If it's the active file, use the current editor content (which might be unsaved)
@@ -1890,11 +1897,25 @@ export default function EditorPage({ params }) {
         const hasFlutterPackage = await detectFlutterProject();
         const isFlutter = hasFlutterImports || hasFlutterPackage;
 
+        // Detect Java GUI (Swing / AWT / JavaFX) — auto-enable GUI mode.
+        // Check both the active file AND resolved dependency files, because
+        // the main class may delegate to a GUI class without importing Swing directly.
+        const isJavaFile = ext === 'java';
+        const javaGuiRe = /\bimport\s+(javax\.swing|java\.awt|javafx\.)/m;
+        const hasJavaGuiImports = isJavaFile && (
+            javaGuiRe.test(source) ||
+            additionalFiles.some(f => javaGuiRe.test(f.content || ''))
+        );
+
         let target = null;
         if (isReactNative) target = 'react-native-emulator';
         else if (isFlutter) target = 'flutter-android-emulator';
 
         const isMobile = isReactNative || isFlutter;
+
+        // If Java GUI imports are detected, override isGui to true so the
+        // backend spawns Xvfb + GStreamer and streams to the in-app preview.
+        const effectiveGuiMode = runInGuiMode || hasJavaGuiImports;
 
         // Auto-open the emulator panel when we run a mobile build.
         let mobileSid = null;
@@ -1932,7 +1953,7 @@ export default function EditorPage({ params }) {
                 filename,
                 source,
                 files: additionalFiles,
-                isGui: runInGuiMode,
+                isGui: effectiveGuiMode,
                 target,
                 projectRoot,
                 slug, // Pass workspace slug for mobile builds to download synced files
@@ -2087,7 +2108,14 @@ export default function EditorPage({ params }) {
 
             // If there's no active GUI session, we need isGui=true for the
             // worker to set up the video pipeline.
-            const shouldRunGui = runInGuiMode || isGuiRunning;
+            // Also auto-detect Java GUI (Swing/AWT/JavaFX) imports in main + deps.
+            const ext = (filename || '').split('.').pop().toLowerCase();
+            const javaGuiRe = /\bimport\s+(javax\.swing|java\.awt|javafx\.)/m;
+            const hasJavaGui = ext === 'java' && (
+                javaGuiRe.test(source) ||
+                additionalFiles.some(f => javaGuiRe.test(f.content || ''))
+            );
+            const shouldRunGui = runInGuiMode || isGuiRunning || hasJavaGui;
 
             const activeSessionId = client?.getActiveSessionId?.();
             if (activeSessionId) {

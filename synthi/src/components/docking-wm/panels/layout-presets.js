@@ -82,6 +82,10 @@ export function createClassicLayout() {
     layout,
     createTab({ panelType: IDE_PANEL.TERMINAL, title: "Terminal" }),
   );
+  const outputTab = addTab(
+    layout,
+    createTab({ panelType: IDE_PANEL.OUTPUT, title: "Output" }),
+  );
 
   // Sidebar tab group
   const sidebarGroup = addNode(
@@ -101,11 +105,11 @@ export function createClassicLayout() {
     }),
   );
 
-  // Bottom panel tab group (terminal only — Problems is a separate dockable panel)
+  // Bottom panel tab group (Terminal + Output)
   const bottomGroup = addNode(
     layout,
     createTabGroupNode({
-      tabs: [terminalTab.id],
+      tabs: [terminalTab.id, outputTab.id],
       activeTabId: terminalTab.id,
     }),
   );
@@ -212,6 +216,10 @@ export function createSideBySideLayout() {
     layout,
     createTab({ panelType: IDE_PANEL.TERMINAL, title: "Terminal" }),
   );
+  const outputTab2 = addTab(
+    layout,
+    createTab({ panelType: IDE_PANEL.OUTPUT, title: "Output" }),
+  );
 
   const sidebarGroup = addNode(
     layout,
@@ -240,7 +248,7 @@ export function createSideBySideLayout() {
   const bottomGroup = addNode(
     layout,
     createTabGroupNode({
-      tabs: [terminalTab.id],
+      tabs: [terminalTab.id, outputTab2.id],
       activeTabId: terminalTab.id,
     }),
   );
@@ -321,6 +329,10 @@ export function createAIAssistedLayout() {
     layout,
     createTab({ panelType: IDE_PANEL.TERMINAL, title: "Terminal" }),
   );
+  const outputTab3 = addTab(
+    layout,
+    createTab({ panelType: IDE_PANEL.OUTPUT, title: "Output" }),
+  );
 
   const sidebarGroup = addNode(
     layout,
@@ -349,7 +361,7 @@ export function createAIAssistedLayout() {
   const bottomGroup = addNode(
     layout,
     createTabGroupNode({
-      tabs: [terminalTab.id],
+      tabs: [terminalTab.id, outputTab3.id],
       activeTabId: terminalTab.id,
     }),
   );

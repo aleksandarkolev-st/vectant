@@ -21,6 +21,21 @@ const getImports = (content, language) => {
                 imports.push(`${match[1]}.rs`);
             }
         }
+    } else if (language === 'java') {
+        // Java: `import com.example.app.Calculator;` → `com/example/app/Calculator.java`
+        // We skip wildcard imports (e.g. `import java.util.*;`) and standard library packages.
+        const importRegex = /^\s*import\s+(?:static\s+)?([a-zA-Z_][\w.]*\.[A-Z]\w*)\s*;/;
+        const stdPrefixes = ['java.', 'javax.', 'sun.', 'com.sun.', 'org.w3c.', 'org.xml.', 'org.ietf.', 'jdk.'];
+        for (const line of lines) {
+            const match = line.match(importRegex);
+            if (match) {
+                const fqn = match[1]; // e.g. "com.example.app.Calculator"
+                // Skip standard library imports
+                if (stdPrefixes.some(p => fqn.startsWith(p))) continue;
+                // Convert dots to path separators and append .java
+                imports.push(fqn.replace(/\./g, '/') + '.java');
+            }
+        }
     } else if (language === 'typescript' || language === 'javascript') {
         const importRegex = /from\s+['"]([^'"]+)['"]/;
         const requireRegex = /require\(['"]([^'"]+)['"]\)/;
@@ -102,6 +117,27 @@ export const resolveDependencies = async (entryFile, rootFiles, getFileContent) 
             // Strategy 2: Root path (if imp doesn't start with ./ or ../)
             if (!imp.startsWith('./') && !imp.startsWith('../')) {
                 candidates.push(imp);
+            }
+
+            // Strategy 3: Java package-based resolution.
+            // Java imports produce paths like "com/example/app/Calculator.java".
+            // The actual file may live under a source root like "src/".
+            // We detect the source root from the current file's path and package,
+            // and also try common source root prefixes.
+            if (language === 'java' && !imp.startsWith('./') && !imp.startsWith('../')) {
+                // Detect source root from current file: if currentFile is
+                // "src/com/example/HelloWorld.java" and imp is "com/example/app/Calc.java",
+                // the source root prefix is "src/".
+                const currentDir = currentFile.path.replace(/\\/g, '/').split('/').slice(0, -1).join('/');
+                // Try to find a prefix of currentDir that, combined with imp, matches a file
+                const dirParts = currentDir.split('/');
+                for (let i = 0; i <= dirParts.length; i++) {
+                    const prefix = dirParts.slice(0, i).join('/');
+                    const candidate = prefix ? prefix + '/' + imp : imp;
+                    if (!candidates.includes(candidate)) {
+                        candidates.push(candidate);
+                    }
+                }
             }
 
             let foundNode = null;

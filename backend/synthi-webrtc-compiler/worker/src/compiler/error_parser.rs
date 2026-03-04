@@ -524,6 +524,11 @@ lazy_static! {
     static ref MSVC_ERROR_RE: Regex = Regex::new(
         r"(?m)^([^(]+)\((\d+),(\d+)\):\s*(error|warning)\s+([A-Z]\d+):\s*(.+)$"
     ).unwrap();
+
+    // javac format: File.java:line: error: message
+    static ref JAVAC_ERROR_RE: Regex = Regex::new(
+        r"(?m)^([^:\s][^:]*\.java):(\d+):\s*(error|warning):\s*(.+)$"
+    ).unwrap();
 }
 
 /// Parse compiler output using regex patterns (fallback)
@@ -690,6 +695,69 @@ fn parse_rustc_text(stderr: &str, report: &mut DiagnosticReport) {
         }
         i += 1;
     }
+}
+
+// ============================================================
+// JAVAC PARSER
+// ============================================================
+// Parses plain-text `javac` stderr output.
+// Format: File.java:line: error: message
+//         followed by source line and caret (^) indicator.
+
+/// Parse `javac` stderr output into structured diagnostics.
+pub fn parse_javac_errors(stderr: &str, module: &str) -> DiagnosticReport {
+    let mut report = DiagnosticReport::new(module);
+    let lines: Vec<&str> = stderr.lines().collect();
+    let mut i = 0;
+
+    while i < lines.len() {
+        if let Some(cap) = JAVAC_ERROR_RE.captures(lines[i]) {
+            let file = cap.get(1).map(|m| m.as_str()).unwrap_or("");
+            let line: u32 = cap
+                .get(2)
+                .and_then(|m| m.as_str().parse().ok())
+                .unwrap_or(0);
+            let severity = cap.get(3).map(|m| m.as_str()).unwrap_or("error");
+            let message = cap.get(4).map(|m| m.as_str()).unwrap_or("");
+
+            // Try to derive column from the caret (^) line that javac emits.
+            // Pattern: error line → source line → caret line
+            let mut column: u32 = 1;
+            if i + 2 < lines.len() {
+                let caret_line = lines[i + 2];
+                if let Some(pos) = caret_line.find('^') {
+                    column = (pos + 1) as u32;
+                }
+            }
+
+            let diag = Diagnostic {
+                severity: DiagnosticSeverity::from_str(severity),
+                code: None,
+                message: message.to_string(),
+                location: Some(SourceLocation::new(file.to_string(), line, column)),
+                related: Vec::new(),
+                suggestions: Vec::new(),
+                raw_text: Some(lines[i].to_string()),
+                code_snippet: None,
+                snippet_start_line: None,
+            };
+            report.add(diag);
+        }
+
+        // javac summary line: "N errors" / "N warnings"
+        // We skip these — counts are tracked by DiagnosticReport.
+        i += 1;
+    }
+
+    // If regex found nothing but stderr contains "error", emit a catch-all
+    if report.diagnostics.is_empty() && !stderr.trim().is_empty() {
+        let lower = stderr.to_lowercase();
+        if lower.contains("error") || lower.contains("exception") {
+            report.add(Diagnostic::error(stderr.lines().next().unwrap_or("javac failed")));
+        }
+    }
+
+    report
 }
 
 // ============================================================

@@ -22,6 +22,11 @@ pub async fn handle_compile_request(
     req: CompileRequest,
     session_id: String,
 ) -> Result<serde_json::Value> {
+    // ── Language dispatch: route non-C++ languages to dedicated pipelines ──
+    if req.language == "java" {
+        return crate::compiler::java::handler::handle_java_request(ctx, req, session_id).await;
+    }
+
     let compile_start = std::time::Instant::now();
     let timestamp = Utc::now().timestamp_millis();
     let _app_id = format!("app_{}", timestamp);
