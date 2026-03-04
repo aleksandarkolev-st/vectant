@@ -20,7 +20,7 @@ import {
   nodeId,
 } from "../utils";
 
-import { IDE_PANEL } from "./ide-panels";
+import { IDE_PANEL } from "./panel-types";
 
 // ────────────────────────────────────────────────────────
 //  Helper: build a layout from a simple DSL
