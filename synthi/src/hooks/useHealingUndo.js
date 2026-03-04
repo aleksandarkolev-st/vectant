@@ -41,10 +41,6 @@ export function useHealingUndo({ editorRef } = {}) {
     const model = editor.getModel();
     if (!model) return false;
 
-    const monaco =
-      window.monaco || (typeof globalThis !== 'undefined' && globalThis.monaco);
-    if (!monaco) return false;
-
     try {
       const { originalText, range, fixId } = topUndo;
       const { startLine, startCol, endLine, endCol } = range;
@@ -87,10 +83,6 @@ export function useHealingUndo({ editorRef } = {}) {
   const undoAllFixes = useCallback(() => {
     const editor = editorRef?.current;
     if (!editor || !canUndo) return 0;
-
-    const monaco =
-      window.monaco || (typeof globalThis !== 'undefined' && globalThis.monaco);
-    if (!monaco) return 0;
 
     let count = 0;
     const stackLen = undoStack.length;
