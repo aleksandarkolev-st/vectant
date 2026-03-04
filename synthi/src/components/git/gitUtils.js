@@ -106,6 +106,41 @@ export function commitWebUrl(remoteUrl, hash) {
   return `${base}/commit/${hash}`;
 }
 
+/**
+ * Extract an embedded access token from a remote URL.
+ * Returns the raw token string, or null if none found.
+ *
+ *   https://ghp_abc123@github.com/o/r  →  'ghp_abc123'
+ *   https://user:TOKEN@github.com/o/r  →  'TOKEN'
+ */
+export function extractTokenFromUrl(url) {
+  if (!url) return null;
+  try {
+    const parsed = new URL(url);
+    if (parsed.password) return decodeURIComponent(parsed.password);
+    if (parsed.username && parsed.username !== 'git' && parsed.username !== 'oauth2' && parsed.username !== 'x-access-token') {
+      return decodeURIComponent(parsed.username);
+    }
+  } catch { /* not a valid URL */ }
+  return null;
+}
+
+/**
+ * Strip embedded credentials from a URL, returning a clean HTTPS URL.
+ *   https://ghp_abc123@github.com/o/r  →  https://github.com/o/r
+ */
+export function stripTokenFromUrl(url) {
+  if (!url) return url;
+  try {
+    const parsed = new URL(url);
+    parsed.username = '';
+    parsed.password = '';
+    return parsed.toString();
+  } catch {
+    return url;
+  }
+}
+
 // ─── Conventional commits ───────────────────────────────────────
 
 const CC_REGEX = /^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\([^)]*\))?(!)?:\s*/i;
@@ -194,7 +229,7 @@ export function groupCommitsByDate(commits) {
  * This is a simplified rail-assignment algorithm suitable for the
  * flat log most workspaces produce.
  */
-const GRAPH_COLORS = [
+export const GRAPH_COLORS = [
   '#3b82f6', // blue
   '#10b981', // emerald
   '#f59e0b', // amber
@@ -205,18 +240,61 @@ const GRAPH_COLORS = [
   '#84cc16', // lime
 ];
 
-export function buildCommitGraph(commits) {
+/**
+ * Deterministic hash of a string → index into GRAPH_COLORS.
+ * Produces a stable, persistent color for a given branch name so that the
+ * same branch always renders in the same color across sessions (SourceTree
+ * parity).
+ */
+export function hashBranchColor(name) {
+  if (!name) return GRAPH_COLORS[0];
+  let hash = 0;
+  for (let i = 0; i < name.length; i++) {
+    hash = ((hash << 5) - hash + name.charCodeAt(i)) | 0;
+  }
+  return GRAPH_COLORS[Math.abs(hash) % GRAPH_COLORS.length];
+}
+
+/**
+ * Build a lane-based commit graph suitable for SourceTree-style rendering.
+ *
+ * @param {Array} commits - Array of commit objects with hash, parents, etc.
+ * @param {Object} [refsMap] - Optional map of short-hash → [{name, type}]
+ *   used to assign persistent branch-name-based colors to lanes.
+ * @returns {Array} graph nodes with col, color, activeLanes, etc.
+ */
+export function buildCommitGraph(commits, refsMap = {}) {
   if (!commits || commits.length === 0) return [];
 
   // Assign columns using a simple lane allocator
   const lanes = [];           // ordered list of active commit hashes occupying each lane
+  const laneColors = [];      // parallel array: persistent color for each lane
   const result = [];
+  const hashToRow = new Map(); // hash → row index for parent lookups
+
+  // Build a reverse lookup: full hash → branch name (first branch ref wins)
+  const hashToBranch = new Map();
+  if (refsMap) {
+    for (const [shortHash, refs] of Object.entries(refsMap)) {
+      for (const ref of refs) {
+        if (ref.type === 'branch' || ref.type === 'head') {
+          // Try to match full hashes in commits
+          const matchingCommit = commits.find(c => c.hash?.startsWith(shortHash));
+          if (matchingCommit) {
+            hashToBranch.set(matchingCommit.hash, ref.name);
+          }
+        }
+      }
+    }
+  }
 
   for (let i = 0; i < commits.length; i++) {
     const c = commits[i];
     const hash = c.hash;
     const parents = (c.parents || '').split(/\s+/).filter(Boolean);
     const isMerge = parents.length > 1;
+
+    hashToRow.set(hash, i);
 
     // Find or assign lane for this commit
     let col = lanes.indexOf(hash);
@@ -226,16 +304,29 @@ export function buildCommitGraph(commits) {
       if (col === -1) {
         col = lanes.length;
         lanes.push(hash);
+        // Determine color: use branch name if available, else author, else column index
+        const branchName = hashToBranch.get(hash) || c.author_name || '';
+        laneColors.push(branchName ? hashBranchColor(branchName) : GRAPH_COLORS[col % GRAPH_COLORS.length]);
       } else {
         lanes[col] = hash;
+        const branchName = hashToBranch.get(hash) || c.author_name || '';
+        laneColors[col] = branchName ? hashBranchColor(branchName) : GRAPH_COLORS[col % GRAPH_COLORS.length];
       }
     }
+
+    // Assign color from persistent lane color (not column index)
+    const color = laneColors[col] || GRAPH_COLORS[col % GRAPH_COLORS.length];
+
+    // Track lanes that are being freed / merged at this row
+    const closingLanes = [];
 
     // Replace the current lane with first parent (continuation)
     if (parents.length > 0) {
       lanes[col] = parents[0];
+      // Keep the same lane color — the line continues
     } else {
       lanes[col] = null; // root commit — free lane
+      laneColors[col] = null;
     }
 
     // Additional parents (merge): allocate lanes for them if not already present
@@ -247,23 +338,40 @@ export function buildCommitGraph(commits) {
         if (pcol === -1) {
           pcol = lanes.length;
           lanes.push(parents[p]);
+          laneColors.push(GRAPH_COLORS[pcol % GRAPH_COLORS.length]);
         } else {
           lanes[pcol] = parents[p];
+          laneColors[pcol] = GRAPH_COLORS[pcol % GRAPH_COLORS.length];
         }
       }
       mergeFromCols.push(pcol);
     }
 
+    // Detect closing lanes — lanes occupied by the same parent hash as current
+    // This happens when a branch merges back
+    for (let li = 0; li < lanes.length; li++) {
+      if (li !== col && lanes[li] === hash) {
+        closingLanes.push(li);
+        lanes[li] = null;
+        laneColors[li] = null;
+      }
+    }
+
     // Compact empty trailing lanes
-    while (lanes.length > 0 && lanes[lanes.length - 1] === null) lanes.pop();
+    while (lanes.length > 0 && lanes[lanes.length - 1] === null) {
+      lanes.pop();
+      laneColors.pop();
+    }
 
     result.push({
       hash,
       col,
-      color: GRAPH_COLORS[col % GRAPH_COLORS.length],
+      color,
       isMerge,
       mergeFromCols,
+      closingLanes,
       activeLanes: [...lanes],
+      activeLaneColors: [...laneColors],
       laneCount: lanes.length,
     });
   }

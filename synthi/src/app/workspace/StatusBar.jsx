@@ -9,6 +9,7 @@ import { useCollabStatus } from '@/hooks/useCollabStatus';
 import { useCollabSession } from '@/hooks/useCollabSession';
 import { useWorkspacePresence } from '@/hooks/useWorkspacePresence';
 import { AlertCircle, AlertTriangle, Cpu, Zap, Loader2, Wifi, WifiOff, Radio, Users } from 'lucide-react';
+import { HealingIndicator } from '@/components/healing/HealingIndicator';
 
 /**
  * StatusBar Component - Synthi styled bottom status bar
@@ -183,6 +184,10 @@ export default function StatusBar({
       
       {/* Right Section - Better grouped */}
       <div className="flex items-center gap-3 mr-1">
+        {/* Self-Healing indicator */}
+        <HealingIndicator />
+        <div className="w-px h-4" style={{ background: 'var(--border-subtle)' }}></div>
+
         {/* Extension-contributed status bar items */}
         {extensionStatusBarItems.filter(i => i.text).map((item) => (
           <div

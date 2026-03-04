@@ -66,7 +66,7 @@ const SYNTHI_THEME_FALLBACK = {
   brightWhite: '#ffffff',
 };
 
-export default function TerminalPane({ terminalId = 'default', paneSide = 'main', workspaceSlug = '', onFsChange, fixedSessionId = null }) {
+export default function TerminalPane({ terminalId = 'default', paneSide = 'main', workspaceSlug = '', onFsChange, fixedSessionId = null, shellType = null }) {
   const containerRef = useRef(null);
   const terminalRef = useRef(null);   // { term, fitAddon, dispose() }
   const wsRef = useRef(null);
@@ -229,6 +229,10 @@ export default function TerminalPane({ terminalId = 'default', paneSide = 'main'
         cols: String(cols),
         rows: String(rows),
       });
+      // Include shell type if specified (e.g. 'bash', 'cmd', 'powershell')
+      if (shellType) {
+        params.set('shell', shellType);
+      }
 
       const wsUrl = `${TERMINAL_SERVER_URL}/terminal?${params}`;
       let ws;
@@ -385,7 +389,7 @@ export default function TerminalPane({ terminalId = 'default', paneSide = 'main'
         try { terminalRef.current.dispose(); } catch (_) {}
       }
     };
-  }, [sessionKey, workspaceSlug, fixedSessionId]); // Re-connect if terminal tab or workspace changes
+  }, [sessionKey, workspaceSlug, fixedSessionId, shellType]); // Re-connect if terminal tab, workspace, or shell type changes
 
   // ─── Reconnect button handler ─────────────────────────────────────────
   const handleReconnect = useCallback(() => {

@@ -341,6 +341,287 @@ export function useAnalyzerGateway({
   const resetResult = useCallback(() => setLastResult(null), []);
   const resetError = useCallback(() => setLastError(null), []);
 
+  // ==========================================================================
+  // Self-Healing API
+  // ==========================================================================
+
+  /**
+   * Analyze code for auto-healable micro-issues.
+   * Returns fixes without applying them (unless autoApply=true).
+   * 
+   * @param {Object} options - Healing options
+   * @param {string} options.code - The code to analyze
+   * @param {string} options.lang - The programming language
+   * @param {string} [options.filePath] - The file path
+   * @param {boolean} [options.autoApply=false] - Auto-apply safe fixes
+   * @returns {Promise<Object>} Healing result with fixes
+   */
+  const healAnalyze = useCallback(async ({ code, lang, filePath, autoApply = false } = {}) => {
+    if (!clientRef.current) {
+      throw new SynthiException('Gateway client is not ready yet');
+    }
+    if (typeof code !== 'string') {
+      throw new SynthiException('`code` must be a string');
+    }
+    if (!lang) {
+      throw new SynthiException('`lang` is required for healing');
+    }
+
+    try {
+      const response = await clientRef.current.healAnalyze({
+        code,
+        lang: lang.toLowerCase(),
+        filePath: filePath || 'untitled',
+        autoApply,
+      });
+      return response?.data ?? response;
+    } catch (error) {
+      console.error('[healAnalyze] Error:', error);
+      throw error;
+    }
+  }, []);
+
+  /**
+   * Apply healing fixes to code.
+   * 
+   * @param {Object} options - Apply options
+   * @param {string} options.code - Current code
+   * @param {string} options.lang - Programming language
+   * @param {string} [options.filePath] - File path
+   * @param {string[]} [options.fixIds] - Specific fix IDs (null = all safe)
+   * @returns {Promise<Object>} Result with healed code
+   */
+  const healApply = useCallback(async ({ code, lang, filePath, fixIds } = {}) => {
+    if (!clientRef.current) {
+      throw new SynthiException('Gateway client is not ready yet');
+    }
+
+    try {
+      const response = await clientRef.current.healApply({
+        code,
+        lang: lang.toLowerCase(),
+        filePath: filePath || 'untitled',
+        fixIds: fixIds || null,
+      });
+      return response?.data ?? response;
+    } catch (error) {
+      console.error('[healApply] Error:', error);
+      throw error;
+    }
+  }, []);
+
+  /**
+   * Container-first healing.
+   * 
+   * @param {Object} options - Container healing options
+   * @param {string} options.slug - Workspace slug
+   * @param {string} options.filePath - File path
+   * @param {string} options.lang - Programming language
+   * @returns {Promise<Object>} Healing result
+   */
+  const healContainer = useCallback(async ({ slug, filePath, lang } = {}) => {
+    if (!clientRef.current) {
+      throw new SynthiException('Gateway client is not ready yet');
+    }
+
+    try {
+      const response = await clientRef.current.healContainer({
+        slug,
+        filePath,
+        lang: lang.toLowerCase(),
+      });
+      return response?.data ?? response;
+    } catch (error) {
+      console.error('[healContainer] Error:', error);
+      throw error;
+    }
+  }, []);
+
+  /**
+   * Get or update healing configuration.
+   */
+  const healConfig = useCallback(async (updates = null) => {
+    if (!clientRef.current) {
+      throw new SynthiException('Gateway client is not ready yet');
+    }
+    try {
+      const response = await clientRef.current.healConfig(updates);
+      return response?.data ?? response;
+    } catch (error) {
+      console.error('[healConfig] Error:', error);
+      throw error;
+    }
+  }, []);
+
+  /**
+   * Get healing statistics.
+   */
+  const healStats = useCallback(async () => {
+    if (!clientRef.current) {
+      throw new SynthiException('Gateway client is not ready yet');
+    }
+    try {
+      const response = await clientRef.current.healStats();
+      return response?.data ?? response;
+    } catch (error) {
+      console.error('[healStats] Error:', error);
+      throw error;
+    }
+  }, []);
+
+  // ─── AI Agent Hooks ────────────────────────────────────────────────
+
+  /**
+   * Analyze code using the AI agent (LLM-powered detection).
+   *
+   * @param {Object} options - AI analysis options
+   * @param {string} options.code - Code to analyze
+   * @param {string} options.lang - Language identifier
+   * @param {string} [options.filePath] - File path
+   * @param {string} [options.workspaceRoot] - Workspace root for context
+   * @param {boolean} [options.autoApply=false] - Auto-apply safe fixes
+   * @param {number} [options.focusStartLine] - Focus range start
+   * @param {number} [options.focusEndLine] - Focus range end
+   * @param {boolean} [options.validateFixes=true] - Run validation pass
+   * @returns {Promise<Object>} AI analysis result with fixes
+   */
+  const aiAnalyze = useCallback(async ({
+    code, lang, filePath, workspaceRoot,
+    autoApply = false, focusStartLine, focusEndLine,
+    validateFixes = true, minConfidence,
+  } = {}) => {
+    if (!clientRef.current) {
+      throw new SynthiException('Gateway client is not ready yet');
+    }
+    if (typeof code !== 'string') {
+      throw new SynthiException('`code` must be a string');
+    }
+    if (!lang) {
+      throw new SynthiException('`lang` is required for AI analysis');
+    }
+
+    try {
+      const response = await clientRef.current.aiAnalyze({
+        code,
+        lang: lang.toLowerCase(),
+        filePath: filePath || 'untitled',
+        workspaceRoot,
+        autoApply,
+        focusStartLine,
+        focusEndLine,
+        validateFixes,
+        minConfidence,
+      });
+      return response?.data ?? response;
+    } catch (error) {
+      console.error('[aiAnalyze] Error:', error);
+      throw error;
+    }
+  }, []);
+
+  /**
+   * Analyze multiple files using the AI agent.
+   */
+  const aiBatch = useCallback(async ({ files, lang, autoApply = false } = {}) => {
+    if (!clientRef.current) {
+      throw new SynthiException('Gateway client is not ready yet');
+    }
+    try {
+      const response = await clientRef.current.aiBatch({ files, lang, autoApply });
+      return response?.data ?? response;
+    } catch (error) {
+      console.error('[aiBatch] Error:', error);
+      throw error;
+    }
+  }, []);
+
+  /**
+   * Run hybrid analysis: regex + AI merged results.
+   */
+  const aiHybrid = useCallback(async ({
+    code, lang, filePath, workspaceRoot, autoApply = false,
+  } = {}) => {
+    if (!clientRef.current) {
+      throw new SynthiException('Gateway client is not ready yet');
+    }
+    if (typeof code !== 'string' || !lang) {
+      throw new SynthiException('`code` and `lang` are required');
+    }
+    try {
+      const response = await clientRef.current.aiHybrid({
+        code,
+        lang: lang.toLowerCase(),
+        filePath: filePath || 'untitled',
+        workspaceRoot,
+        autoApply,
+      });
+      return response?.data ?? response;
+    } catch (error) {
+      console.error('[aiHybrid] Error:', error);
+      throw error;
+    }
+  }, []);
+
+  /**
+   * Get AI agent statistics.
+   */
+  const aiStats = useCallback(async () => {
+    if (!clientRef.current) {
+      throw new SynthiException('Gateway client is not ready yet');
+    }
+    try {
+      const response = await clientRef.current.aiStats();
+      return response?.data ?? response;
+    } catch (error) {
+      console.error('[aiStats] Error:', error);
+      throw error;
+    }
+  }, []);
+
+  const aiFeedback = useCallback(async ({ ruleId, feedbackType, filePath, originalText, replacementText, description } = {}) => {
+    if (!clientRef.current) {
+      throw new SynthiException('Gateway client is not ready yet');
+    }
+    if (!ruleId || !feedbackType) {
+      throw new SynthiException('ruleId and feedbackType are required for feedback');
+    }
+    try {
+      const response = await clientRef.current.aiFeedback({
+        ruleId, feedbackType, filePath, originalText, replacementText, description,
+      });
+      return response?.data ?? response;
+    } catch (error) {
+      console.error('[aiFeedback] Error:', error);
+      throw error;
+    }
+  }, []);
+
+  const aiMemory = useCallback(async () => {
+    if (!clientRef.current) {
+      throw new SynthiException('Gateway client is not ready yet');
+    }
+    try {
+      const response = await clientRef.current.aiMemory();
+      return response?.data ?? response;
+    } catch (error) {
+      console.error('[aiMemory] Error:', error);
+      throw error;
+    }
+  }, []);
+
+  const aiMemoryClear = useCallback(async () => {
+    if (!clientRef.current) {
+      throw new SynthiException('Gateway client is not ready yet');
+    }
+    try {
+      const response = await clientRef.current.aiMemoryClear();
+      return response?.data ?? response;
+    } catch (error) {
+      console.error('[aiMemoryClear] Error:', error);
+      throw error;
+    }
+  }, []);
+
   const connectionMeta = useMemo(
     () => ({
       status: connectionStatus,
@@ -360,6 +641,20 @@ export function useAnalyzerGateway({
     analyzeProactive,
     analyzeContainer, // Container-First analysis
     analyzeUnified,   // Unified Intelligence Pipeline (RECOMMENDED)
+    // Self-Healing
+    healAnalyze,
+    healApply,
+    healContainer,
+    healConfig,
+    healStats,
+    // AI Agent
+    aiAnalyze,
+    aiBatch,
+    aiHybrid,
+    aiStats,
+    aiFeedback,
+    aiMemory,
+    aiMemoryClear,
     resetResult,
     resetError,
     clientReady: Boolean(clientRef.current),

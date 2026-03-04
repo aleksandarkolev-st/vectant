@@ -8,6 +8,7 @@ import { fetchFilesThunk, selectActiveFile, setSlug, selectFileThunk, selectCurr
 import { fetchGitStatus, forceRefreshGitStatus } from '@/redux/gitSlice';
 import collabClient from '@/services/collabClient';
 import collabSessionService from '@/services/collabSessionService';
+import { consumeJumpstartPayload } from '@/lib/ai-jumpstart-session';
 import { USER_ID_KEY, USER_NAME_KEY, USER_AVATAR_KEY } from '@/services/userIdentity';
 import {
     selectShowTerminal,
@@ -37,6 +38,15 @@ const EditorPanel = dynamic(() => import('./Editor/Editor.jsx'), {
 
 import { getFileLanguage } from '@/utils/fileUtils';
 import { useAnalyzerGateway } from '@/hooks/useAnalyzerGateway';
+import { useSelfHealing } from '@/hooks/useSelfHealing';
+import { useAIHealing } from '@/hooks/useAIHealing';
+import { useAIHealingKeyboard } from '@/hooks/useAIHealingKeyboard';
+import { useAIAutoAnalysis } from '@/hooks/useAIAutoAnalysis';
+import { useAISelectionAnalysis } from '@/hooks/useAISelectionAnalysis';
+import { useHealingUndo } from '@/hooks/useHealingUndo';
+import { HealingToast } from '@/components/healing/HealingToast';
+import { PreCompileHealToast } from '@/components/healing/PreCompileHealToast';
+import { AIHealingPanel } from '@/components/healing/AIHealingPanel';
 import { useWorkspaceAnalysis } from '@/hooks/useWorkspaceAnalysis';
 import { useCompiler } from '@/hooks/useCompiler';
 import { useCodeIntelIndex } from '@/hooks/useCodeIntelIndex';
@@ -45,12 +55,14 @@ import { api } from '@/services/api';
 import { gitClient } from '@/services/gitClient';
 import WorkspaceNotFoundModal from '@/components/WorkspaceNotFoundModal';
 import { fileCache } from '@/services/fileCache';
+import { preCompileHeal, detectLanguage } from '@/services/preCompileHealer';
 import { resolveDependencies } from '@/utils/dependencyResolver';
 import { DraggableVideoWidget } from '@/components/DraggableVideoWidget';
 import { useHMR } from '@/hooks/useHMR';
 import ErrorOverlay from '@/components/ErrorOverlay';
 import { GitStatus } from '@/components/git/GitStatus';
 import { GitSummaryPanel } from '@/components/git/GitSummaryPanel';
+import { PullRequestsPanel } from '@/components/git/PullRequestsPanel';
 import ActivityBar from '../ActivityBar.jsx';
 import SearchView from './SearchView.jsx';
 import FloatingEmulatorWindow from '@/components/emulator/FloatingEmulatorWindow';
@@ -108,20 +120,106 @@ export default function EditorPage({ params }) {
     const { slug } = use(params);
 
     const [chatVisible, setChatVisible] = useState(false);
+
+    // AI Jumpstart — initial prompt/attachments from dashboard
+    const [jumpstartPrompt, setJumpstartPrompt] = useState(null);
+    const [jumpstartAttachments, setJumpstartAttachments] = useState(null);
     const [sidebarView, setSidebarView] = useState('explorer');
+    const openPRCount = useAppSelector(s => s.pr?.prList?.filter(p => p.state === 'open' && !p.merged).length || 0);
     const [showProblemsPanel, setShowProblemsPanel] = useState(false);
     const [isProblemsPanelDocked, setIsProblemsPanelDocked] = useState(true); // Track if panel is docked or floating
     const problemsPanelRef = useRef(null); // Imperative handle for the dock slot ResizablePanel
+    const sidebarPanelRef = useRef(null); // Imperative handle for the file tree panel
     const [guiConfig, setGuiConfig] = useState(null);
     const [isGuiRunning, setIsGuiRunning] = useState(false);
     const [isHmrRecompiling, setIsHmrRecompiling] = useState(false);
     const [runInGuiMode, setRunInGuiMode] = useState(false);
     const [editor, setEditor] = useState(null);
+    const editorRef = useRef(null); // Ref wrapper for editor state (used by useSelfHealing)
     // Track editor content version to force re-analysis on every change (including remote/undo)
     const [editorVersion, setEditorVersion] = useState(0);
-    const { analyzeCode, analyzeProactive, analyzeContainer, analyzeUnified, lastResult, isAnalyzing: isAnalyzingGateway, connectionMeta } = useAnalyzerGateway();
+    const gateway = useAnalyzerGateway();
+    const { analyzeCode, analyzeProactive, analyzeContainer, analyzeUnified, lastResult, isAnalyzing: isAnalyzingGateway, connectionMeta } = gateway;
     const { client, compile, mediaStream, cancelMobileJob, isCompiling, status: compilerStatus } = useCompiler();
     useHMR();
+    const activeFile = useAppSelector(selectActiveFile);
+
+    // ─── Self-Healing system ───────────────────────────────
+    const activeFilePath = activeFile?.path || '';
+    const activeLanguage = activeFile?.name ? getFileLanguage(activeFile.name) : 'plaintext';
+    const { selfEditFlagRef, healFromDiagnostics } = useSelfHealing({
+        editorRef,
+        gateway,
+        filePath: activeFilePath,
+        language: activeLanguage,
+        active: !!editor && !!activeFile,
+        onFixesApplied: useCallback((healedIds) => {
+            // Remove healed diagnostics from the Problems panel so
+            // auto-fixed issues no longer linger after the fix is applied.
+            //
+            // healedIds === null  → file was edited by the regex heal pass;
+            //                       ALL diagnostics for the current file are stale.
+            // healedIds === Set   → specific diagnostics were fixed by the
+            //                       AI-driven healFromDiagnostics path.
+            setDiagnostics(prev => prev.filter(d => {
+                const diagId = d.__id || d.id;
+                if (healedIds === null) {
+                    // Drop every diagnostic that belongs to the active file
+                    const dPath = (d.filePath || d.file || '').replace(/^[./\\]+/, '').replace(/\\/g, '/').toLowerCase();
+                    const aPath = (activeFilePath || '').replace(/^[./\\]+/, '').replace(/\\/g, '/').toLowerCase();
+                    return dPath !== aPath;
+                }
+                return !diagId || !healedIds.has(diagId);
+            }));
+        }, [activeFilePath]),
+    });
+    const { undoLastFix } = useHealingUndo({ editorRef });
+
+    // ─── AI Healing system (LLM-powered deep analysis) ─────
+    // Complements useSelfHealing (regex): catches logic errors, type
+    // mismatches, null safety, off-by-one, missing awaits, etc.
+    const aiHealing = useAIHealing({
+        editorRef,
+        gateway,
+        filePath: activeFilePath,
+        language: activeLanguage,
+        workspaceRoot: slug,
+        analyzeOnSave: true,     // auto-trigger on Ctrl+S
+        mode: 'ai',
+        selfEditFlagRef,
+    });
+
+    // Keyboard shortcuts: Ctrl+Shift+I (analyze), Y (apply safe), N (dismiss), M (toggle mode)
+    useAIHealingKeyboard({ aiHealing });
+
+    // Auto-analyze after 4s of inactivity (background, non-intrusive)
+    useAIAutoAnalysis({
+        editorRef,
+        analyzeCallback: aiHealing.analyze,
+        enabled: !!editor && !!activeFile,
+        debounceMs: 4000,
+    });
+
+    // Right-click → "AI: Analyze Selection" context menu
+    const { registerContextMenu: registerAISelectionMenu } = useAISelectionAnalysis({
+        aiHealing,
+        editorRef,
+    });
+
+    // Register context menu when editor mounts
+    useEffect(() => {
+        if (!editor) return;
+        const disposable = registerAISelectionMenu(editor);
+        return () => disposable?.dispose();
+    }, [editor, registerAISelectionMenu]);
+
+    useEffect(() => {
+        const handleSwitchView = (e) => {
+            if (e.detail) setSidebarView(e.detail);
+        };
+        window.addEventListener('synthi:switch-sidebar', handleSwitchView);
+        return () => window.removeEventListener('synthi:switch-sidebar', handleSwitchView);
+    }, []);
 
     // ─── Extension system ──────────────────────────────────
     const {
@@ -232,12 +330,31 @@ export default function EditorPage({ params }) {
                 const nextLoc = updateMap.get(key);
                 if (!nextLoc) return d;
                 changed = true;
+                
+                // Compute how many lines/columns the diagnostic shifted by
+                const prevLoc = d.location || {};
+                const lineDelta = (nextLoc.line ?? 0) - (prevLoc.line ?? 0);
+                
+                // Also shift fix locations so they stay aligned with the moved diagnostic
+                const updatedFixes = (d.fixes || []).map(fix => {
+                    if (!fix.location) return fix;
+                    return {
+                        ...fix,
+                        location: {
+                            ...fix.location,
+                            line: (fix.location.line ?? 0) + lineDelta,
+                            endLine: (fix.location.endLine ?? fix.location.line ?? 0) + lineDelta,
+                        },
+                    };
+                });
+                
                 return {
                     ...d,
                     location: {
                         ...(d.location || {}),
                         ...nextLoc,
                     },
+                    fixes: updatedFixes,
                 };
             });
             return changed ? next : prev;
@@ -398,12 +515,23 @@ export default function EditorPage({ params }) {
             const raw = sessionStorage.getItem('synthi-pending-guest-session');
             if (!raw) return;
             sessionStorage.removeItem('synthi-pending-guest-session');
-            const { sessionId: sId, guestId, hostId, slug: sessionSlug } = JSON.parse(raw);
+            const { sessionId: sId, guestId, hostId, slug: sessionSlug, hostName, permissions } = JSON.parse(raw);
             if (sId && guestId) {
-                collabSessionService.joinAsGuest(sId, guestId, hostId || '', sessionSlug || slug);
+                collabSessionService.joinAsGuest(sId, guestId, hostId || '', sessionSlug || slug, { hostName: hostName || null, permissions: permissions || null });
             }
         } catch (_) { }
         // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
+
+    // ── AI Jumpstart: consume pending prompt from dashboard ──────────
+    useEffect(() => {
+        const payload = consumeJumpstartPayload();
+        if (!payload) return;
+        setChatVisible(true);
+        setSidebarView(null);
+        setTimeout(() => sidebarPanelRef.current?.collapse(), 50); // Collapse sidebar initially
+        setJumpstartPrompt(payload.prompt || null);
+        setJumpstartAttachments(payload.attachments?.length ? payload.attachments : null);
     }, []);
 
     useEffect(() => {
@@ -417,6 +545,9 @@ export default function EditorPage({ params }) {
                         if (message && message.toLowerCase().includes('workspace not found')) {
                             setWorkspaceMissing(true);
                             setWorkspaceMissingMessage(message);
+                        } else if (result.error && (result.error.name === 'AbortError' || result.error.message?.includes('Aborted due to condition'))) {
+                            // Condition failed (e.g. redundant fetch prevented) - ignore
+                            return;
                         } else {
                             // Non-404 errors: log and do not display the not-found modal
                             console.error('Failed to fetch workspace files:', message);
@@ -572,7 +703,6 @@ export default function EditorPage({ params }) {
     }, [slug, dispatch, authUserId, activeSessionId]);
 
     // 2. Consume global state directly via selectors
-    const activeFile = useAppSelector(selectActiveFile);
     const showTerminal = useAppSelector(selectShowTerminal);
     const showEmulatorPreview = useAppSelector(selectShowEmulatorPreview);
     const treeOnRight = useAppSelector(selectTreeOnRight);
@@ -797,6 +927,11 @@ export default function EditorPage({ params }) {
         if (!editor) return;
 
         const disposable = editor.onDidChangeModelContent(() => {
+            // CRITICAL: Do NOT re-trigger analysis when the self-healing system
+            // just applied a fix.  Without this gate, applying a fix changes
+            // content → bumps editorVersion → re-runs analysis → finds the
+            // same (now-stale) diagnostics → applies the fix again → infinite loop.
+            if (selfEditFlagRef.current) return;
             setEditorVersion(v => v + 1);
         });
 
@@ -816,6 +951,12 @@ export default function EditorPage({ params }) {
 
     useEffect(() => {
         if (!activeFile || !hasLoadedInitialFile || !slug) return;
+
+        // CRITICAL: Skip analysis when the self-healing system just applied a fix.
+        // Without this, the fix changes content → Redux updates currentContent →
+        // this effect re-runs → schedules new analysis → which finds the same issue
+        // or triggers another fix → infinite loop.
+        if (selfEditFlagRef.current) return;
 
         // Get content from Monaco if available, falling back to Redux
         // IMPORTANT: On initial load, Monaco might not have Y.js synced changes yet.
@@ -1165,6 +1306,21 @@ export default function EditorPage({ params }) {
                                 return [...otherFileDiags, ...sameFileAi, ...normalizedDiags];
                             });
 
+                            // ─── Auto-heal: feed validated quick-fixes into self-healing ───
+                            // Only diagnostics that already carry a .fixes[] array with
+                            // replacementText are eligible.  The healing hook applies the
+                            // same category/confidence/safety filters before touching the
+                            // editor, so this is safe even if the proactive pipeline returns
+                            // diagnostics the user hasn't opted into auto-fixing.
+                            const fixableDiags = normalizedDiags.filter(
+                                (d) => d.fixes?.length > 0 && d.fixes.some((f) => f.replacementText != null)
+                            );
+                            if (fixableDiags.length > 0) {
+                                // Defer slightly so React can flush the new diagnostics to
+                                // the ProblemsPanel first (visual feedback + undo tracking).
+                                setTimeout(() => healFromDiagnostics(fixableDiags), 60);
+                            }
+
                             // Update hash map with the content we actually analyzed
                             lastFastHashMapRef.current.set(currentFilePath, freshContentHash);
 
@@ -1363,6 +1519,14 @@ export default function EditorPage({ params }) {
                                 return [...otherFileDiags, ...sameFileNonAi, ...normalizedDiags];
                             });
 
+                            // ─── Auto-heal AI quick-fixes ──────────────────────────
+                            const fixableAiDiags = normalizedDiags.filter(
+                                (d) => d.fixes?.length > 0 && d.fixes.some((f) => f.replacementText != null)
+                            );
+                            if (fixableAiDiags.length > 0) {
+                                setTimeout(() => healFromDiagnostics(fixableAiDiags), 60);
+                            }
+
                             lastAiHashMapRef.current.set(currentFilePath, freshContentHash);
                             if (pendingAiSignatureRef.current === scheduledAiSignature) {
                                 pendingAiSignatureRef.current = '';
@@ -1405,6 +1569,7 @@ export default function EditorPage({ params }) {
         computeContentHash,
         editorVersion,
         editor,
+        healFromDiagnostics,
     ]);
 
 
@@ -1879,7 +2044,7 @@ export default function EditorPage({ params }) {
         }
 
         // Similar to handleRun but silent and doesn't force terminal open
-        const source = typeof latestCode === 'string' ? latestCode : (typeof currentContent === 'string' ? currentContent : '');
+        let source = typeof latestCode === 'string' ? latestCode : (typeof currentContent === 'string' ? currentContent : '');
         const filename = activeFile?.path || activeFile?.name || 'main';
 
         // Note: CodeIntel re-index is triggered by saveFileContentThunk
@@ -1895,6 +2060,26 @@ export default function EditorPage({ params }) {
         }
 
         console.log(`[HMR] Proceeding with compilation for ${filename}`);
+
+        // ── Pre-compile healing: fix syntax breakers BEFORE they reach the compiler ──
+        // Runs client-side, zero network latency, <5ms. Catches colons, semicolons,
+        // brackets — the small typos that break HMR cycles.
+        const lang = detectLanguage(filename);
+        const healResult = preCompileHeal(source, lang);
+        if (healResult.changed) {
+            source = healResult.code;
+            console.log(`[HMR:PreCompile] Healed ${healResult.fixes.length} syntax issue(s) in ${healResult.elapsedMs.toFixed(1)}ms`);
+            // Notify the UI so a toast/indicator can show what was fixed
+            if (typeof window !== 'undefined') {
+                window.dispatchEvent(new CustomEvent('synthi:pre-compile-heal', {
+                    detail: {
+                        fixes: healResult.fixes,
+                        filename,
+                        elapsedMs: healResult.elapsedMs,
+                    }
+                }));
+            }
+        }
 
         const getContentForDependency = async (path) => {
             if (path === activeFile.path) return typeof latestCode === 'string' ? latestCode : (typeof currentContent === 'string' ? currentContent : '');
@@ -1960,6 +2145,7 @@ export default function EditorPage({ params }) {
 
     const handleEditorMount = useCallback((editorInstance) => {
         setEditor(editorInstance);
+        editorRef.current = editorInstance; // Keep ref in sync for useSelfHealing
         // Wait until file is loaded, then capture snapshot
         if (activeFile && !hasInitialSnapshot) {
             const currentValue = editorInstance.getValue();
@@ -2009,22 +2195,49 @@ export default function EditorPage({ params }) {
             onClearCompletion={handleClearLatestCompletion}
             chatVisible={chatVisible}
             collabHostId={collabHostId}
+            selfEditFlagRef={selfEditFlagRef}
         />
     );
 
     const FileTreePanel = (
-        <ResizablePanel defaultSize={20} minSize={12} maxSize={35} className={`${treeOnRight ? 'border-l' : 'border-r'}`} style={{ borderColor: 'var(--border-medium)', background: 'var(--bg-sidebar)' }}>
+        <ResizablePanel 
+            ref={sidebarPanelRef}
+            defaultSize={20} minSize={12} maxSize={35} 
+            collapsible={true}
+            collapsedSize={4}
+            className={`${treeOnRight ? 'border-l' : 'border-r'} transition-all duration-300 ease-in-out`}
+            style={{ borderColor: 'var(--border-medium)', background: 'var(--bg-sidebar)' }}
+            onCollapse={() => {
+                if (sidebarView !== null) setSidebarView(null);
+            }}
+            onExpand={() => {
+                if (sidebarView === null) setSidebarView('explorer');
+            }}
+        >
             <div className="flex h-full min-w-0 overflow-hidden">
                 <ActivityBar
                     active={sidebarView}
                     onSelect={(id) => {
-                        setSidebarView(id === sidebarView ? 'explorer' : id);
+                        if (id === 'ai') {
+                            setChatVisible(v => !v);
+                            return;
+                        }
+                        const nextView = id === sidebarView ? null : id;
+                        setSidebarView(nextView);
+                        if (!nextView) {
+                            sidebarPanelRef.current?.collapse();
+                        } else {
+                            sidebarPanelRef.current?.expand();
+                        }
                     }}
                     extensionContainers={contributedContainers}
+                    badges={{ pullrequests: openPRCount, 'ai-healing': aiHealing.fixCount || 0 }}
                 />
                 <div className="flex-1 min-w-0 overflow-hidden flex flex-col">
                     {sidebarView === 'scm' ? (
                         <GitStatus slug={slug} />
+                    ) : sidebarView === 'pullrequests' ? (
+                        <PullRequestsPanel slug={slug} />
                     ) : sidebarView === 'search' ? (
                         <SearchView slug={slug} onToggleOrientation={toggleTreeOrientation} />
                     ) : sidebarView === 'extensions' ? (
@@ -2042,7 +2255,7 @@ export default function EditorPage({ params }) {
                             onDismissError={dismissExtensionError}
                             onExecuteCommand={executeExtensionCommand}
                         />
-                    ) : sidebarView.startsWith('ext:') ? (() => {
+                    ) : sidebarView && sidebarView.startsWith('ext:') ? (() => {
                         const containerId = sidebarView.replace('ext:', '');
                         const container = contributedContainers.find(c => c.id === containerId);
 
@@ -2062,7 +2275,10 @@ export default function EditorPage({ params }) {
                         );
                     })() : sidebarView === 'settings' ? (
                         <SettingsPanelContent />
+                    ) : sidebarView === 'ai-healing' ? (
+                        <AIHealingPanel aiHealing={aiHealing} />
                     ) : (
+                    ) : sidebarView ? (
                         <div className="flex flex-col h-full min-h-0">
                             <div className="flex-1 min-h-0 overflow-y-auto">
                                 <FileTreeView onToggleOrientation={toggleTreeOrientation} />
@@ -2071,7 +2287,7 @@ export default function EditorPage({ params }) {
                                 <GitSummaryPanel onOpenScm={() => setSidebarView('scm')} />
                             </div>
                         </div>
-                    )}
+                    ) : null}
                 </div>
             </div>
         </ResizablePanel>
@@ -2089,6 +2305,8 @@ export default function EditorPage({ params }) {
                 onSuggest={(s) => setLatestCompletion(s)}
                 onBusy={(b) => setAiBusy(Boolean(b))}
                 clearSignal={completionClearSignal}
+                initialPrompt={jumpstartPrompt}
+                initialAttachments={jumpstartAttachments}
             />
         </ResizablePanel>
     );
@@ -2201,9 +2419,12 @@ export default function EditorPage({ params }) {
                                         onSuggest: (s) => setLatestCompletion(s),
                                         onBusy: (b) => setAiBusy(Boolean(b)),
                                         clearSignal: completionClearSignal,
+                                        initialPrompt: jumpstartPrompt,
+                                        initialAttachments: jumpstartAttachments,
                                         onCloseProblems: () => setShowProblemsPanel(false),
                                         onToggleOrientation: toggleTreeOrientation,
                                         onOpenScm: () => setSidebarView('scm'),
+                                        aiHealing,
                                         editorProps: {
                                             innerRef: setEditor,
                                             slug,
@@ -2377,6 +2598,11 @@ export default function EditorPage({ params }) {
                         />
                     </DockablePanel>
                 )}
+
+                {/* Self-Healing Toast Bridge */}
+                <HealingToast onUndo={undoLastFix} />
+                {/* Pre-Compile Heal Toast */}
+                <PreCompileHealToast />
 
                 {/* Status Bar */}
                 <StatusBar

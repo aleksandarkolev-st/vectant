@@ -210,21 +210,42 @@ class CollabSessionService extends EventTarget {
    * @param {string} hostId
    * @param {string} slug  — the host's workspace slug
    */
-  joinAsGuest(sessionId, guestId, hostId, slug) {
+  joinAsGuest(sessionId, guestId, hostId, slug, { hostName = null, permissions = null } = {}) {
     if (this._role === 'guest' && this._sessionId === sessionId) return; // already set
     this._role = 'guest';
     this._sessionId = sessionId;
     this._userId = guestId;
     this._hostId = hostId;
     this._sessionSlug = slug;
-    this._permissions = { canEdit: true, canTerminal: false, canGit: false, canFileOps: false };
+    // Use stored permissions if available, otherwise fall back to defaults.
+    // The authoritative permissions will be fetched via refreshSession() below.
+    this._permissions = permissions
+      ? { ...permissions }
+      : { ...DEFAULT_GUEST_PERMISSIONS };
     this._session = {
       id: sessionId,
       hostId,
+      hostName,  // restored from sessionStorage — may be null, refreshed below
       slug,
     };
     this._connectWs();
     this._emit('session:joined', { guestId, hostId, slug });
+    // Refresh session in background to get authoritative hostName + permissions
+    // from the server (in case sessionStorage data was stale or missing).
+    setTimeout(() => {
+      if (this._role === 'guest' && this._sessionId === sessionId) {
+        this.refreshSession().then((data) => {
+          if (data && this._role === 'guest') {
+            // Update permissions from server if a guest entry is present
+            const guest = data.guests?.find(g => g.guestId === guestId);
+            if (guest?.permissions) {
+              this._permissions = { ...guest.permissions };
+              this._emit('permissions:changed', this._permissions);
+            }
+          }
+        }).catch(() => {});
+      }
+    }, 500);
   }
 
   // ── Host: Manage guests ──────────────────────────────────────────────────

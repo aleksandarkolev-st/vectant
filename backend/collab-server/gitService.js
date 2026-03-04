@@ -210,6 +210,38 @@ class GitService {
         return new GitError(e.message || 'Unknown git error', 'GIT_ERROR');
     }
 
+    /**
+     * Extract an auth token from the push URL of the first configured remote.
+     * Supports formats like:
+     *   https://<token>@github.com/owner/repo.git
+     *   https://x-access-token:<token>@github.com/owner/repo.git
+     *   https://oauth2:<token>@github.com/owner/repo.git
+     *
+     * @param {object} git - simple-git instance
+     * @returns {Promise<string|null>} The extracted token, or null
+     */
+    async _extractTokenFromRemoteUrl(git) {
+        try {
+            const remotes = await git.getRemotes(true);
+            if (!remotes || remotes.length === 0) return null;
+            const pushUrl = remotes[0]?.refs?.push || remotes[0]?.refs?.fetch;
+            if (!pushUrl || !pushUrl.startsWith('https://')) return null;
+
+            const parsed = new URL(pushUrl);
+            // Password field takes priority (https://user:<token>@host)
+            if (parsed.password) {
+                return decodeURIComponent(parsed.password);
+            }
+            // Username-only token (https://<token>@host) — skip known non-token usernames
+            if (parsed.username && parsed.username !== 'git' && parsed.username !== 'oauth2' && parsed.username !== 'x-access-token') {
+                return decodeURIComponent(parsed.username);
+            }
+            return null;
+        } catch (_) {
+            return null;
+        }
+    }
+
     getRepoPath(slug) {
         return path.join(this.baseDir, slug);
     }
@@ -673,9 +705,13 @@ class GitService {
                     }
                     if (!cloneSucceeded) throw lastError;
                     
-                    // Remove token from stored remote URL after clone
-                    const repoGit = simpleGit(repoPath);
-                    await repoGit.remote(['set-url', 'origin', cleanRepoUrl]);
+                    // Strip credentials from the remote URL in the cloned repo
+                    // so tokens are never persisted on disk.  Auth is handled
+                    // transiently via extraheader / _extractTokenFromRemoteUrl.
+                    try {
+                        const clonedGit = simpleGit(repoPath);
+                        await clonedGit.remote(['set-url', 'origin', cleanRepoUrl]);
+                    } catch (_) {}
                 }
             } else {
                 await git.clone(cleanRepoUrl, repoPath);
@@ -703,7 +739,8 @@ class GitService {
                     const bareGit = simpleGit();
                     await bareGit.clone(repoPath, barePath, ['--bare', '--no-hardlinks']);
                     console.log(`[GitService] Created bare repo at ${barePath}`);
-                    // Preserve the clean remote URL on the bare repo
+                    // Set the clean URL (no credentials) on the bare repo.
+                    // Auth is handled transiently at push/pull time.
                     try {
                         const bGit = simpleGit(barePath);
                         await bGit.remote(['set-url', 'origin', cleanRepoUrl]);
@@ -828,14 +865,228 @@ class GitService {
         }
     }
 
-    async checkout(slug, branchName, create = false, userId) {
+    // ── Tag management ─────────────────────────────────
+    async getTags(slug, userId) {
+        if (!this.isRepoExists(slug, userId)) return [];
+        if (!this.isRepoInitialized(slug, userId)) return [];
+        try {
+            const git = this.getGit(slug, userId);
+            const raw = await git.raw(['tag', '-l', '--sort=-creatordate', '--format=%(refname:short)%09%(objectname:short)%09%(creatordate:iso-strict)%09%(contents:subject)']);
+            return raw.trim().split('\n').filter(Boolean).map(line => {
+                const [name, hash, date, message] = line.split('\t');
+                return { name, hash, date, message: message || '' };
+            });
+        } catch (e) {
+            throw this.mapGitError(e, slug);
+        }
+    }
+
+    async createTag(slug, name, ref = 'HEAD', message, userId) {
         return this.withLock(slug, async () => {
             const git = this.getGit(slug, userId);
             try {
-                if (create) {
-                    await git.checkoutLocalBranch(branchName);
+                if (message) {
+                    await git.tag(['-a', name, ref, '-m', message]);
                 } else {
-                    await git.checkout(branchName);
+                    await git.tag([name, ref]);
+                }
+                return { name, ref };
+            } catch (e) {
+                throw this.mapGitError(e, slug);
+            }
+        }, userId);
+    }
+
+    async deleteTag(slug, name, userId) {
+        return this.withLock(slug, async () => {
+            const git = this.getGit(slug, userId);
+            try {
+                await git.tag(['-d', name]);
+                return { deleted: name };
+            } catch (e) {
+                throw this.mapGitError(e, slug);
+            }
+        }, userId);
+    }
+
+    async pushTag(slug, name, userId, token) {
+        return this.withLock(slug, async () => {
+            const git = this.getGit(slug, userId);
+            try {
+                const effectiveToken = token || await this._extractTokenFromRemoteUrl(git);
+                if (effectiveToken) {
+                    const remotes = await git.getRemotes(true);
+                    const remoteUrl = remotes?.[0]?.refs?.push || remotes?.[0]?.refs?.fetch || '';
+                    let authUrl = null;
+                    if (remoteUrl.startsWith('https://')) {
+                        try { const u = new URL(remoteUrl); u.username = 'x-access-token'; u.password = effectiveToken; authUrl = u.toString(); } catch (_) {}
+                    }
+                    if (authUrl) {
+                        await git.raw(['push', authUrl, `refs/tags/${name}`]);
+                    } else {
+                        await git.raw(['-c', `http.extraheader=Authorization: Bearer ${effectiveToken}`, 'push', 'origin', `refs/tags/${name}`]);
+                    }
+                } else {
+                    await git.push('origin', `refs/tags/${name}`);
+                }
+                return { pushed: name };
+            } catch (e) {
+                throw this.mapGitError(e, slug);
+            }
+        }, userId);
+    }
+
+    async checkout(slug, branchName, create = false, userId, mode = 'normal') {
+        return this.withLock(slug, async () => {
+            const git = this.getGit(slug, userId);
+            try {
+                // ── Ensure we have the latest remote refs ──
+                // If the branch doesn't exist locally (e.g. a PR head branch
+                // like "MAZNA"), we need to fetch first so git knows about
+                // the remote-tracking ref. Without this, git checkout fails
+                // with: error: pathspec '<branch>' did not match any file(s).
+                if (!create) {
+                    try {
+                        const branchSummary = await git.branch();
+                        const localExists = branchSummary.all.includes(branchName);
+                        if (!localExists) {
+                            // Fetch the specific branch from origin
+                            try {
+                                const token = await this._extractTokenFromRemoteUrl(git);
+                                if (token) {
+                                    const remotes = await git.getRemotes(true);
+                                    const remoteUrl = remotes?.[0]?.refs?.fetch || remotes?.[0]?.refs?.push || '';
+                                    if (remoteUrl.startsWith('https://')) {
+                                        try {
+                                            const u = new URL(remoteUrl);
+                                            u.username = 'x-access-token';
+                                            u.password = token;
+                                            await git.raw(['fetch', u.toString(), branchName]);
+                                        } catch (_) {
+                                            await git.raw(['-c', `http.extraheader=Authorization: Bearer ${token}`, 'fetch', 'origin', branchName]);
+                                        }
+                                    } else {
+                                        await git.raw(['-c', `http.extraheader=Authorization: Bearer ${token}`, 'fetch', 'origin', branchName]);
+                                    }
+                                } else {
+                                    await git.fetch('origin', branchName);
+                                }
+                            } catch (fetchErr) {
+                                console.warn(`[GitService] checkout: fetch origin ${branchName} failed: ${fetchErr.message}`);
+                                // Continue — branch may exist locally under a different listing
+                            }
+
+                            // After fetch, check if it's now available as a remote-tracking branch.
+                            // If so, create a local tracking branch automatically.
+                            try {
+                                const remoteBranch = `origin/${branchName}`;
+                                await git.raw(['rev-parse', '--verify', remoteBranch]);
+                                // Remote-tracking branch exists — create local branch tracking it
+                                await git.raw(['checkout', '-b', branchName, '--track', remoteBranch]);
+                                this._archiveGitAsync(slug, userId);
+                                return this.getStatus(slug, userId);
+                            } catch (_) {
+                                // Remote-tracking branch doesn't exist either — fall through
+                                // to the normal checkout which will produce the appropriate error
+                            }
+                        }
+                    } catch (_) {
+                        // git.branch() failed — continue with normal checkout
+                    }
+                }
+
+                // mode: 'stash' — stash before checkout, pop after
+                // mode: 'force' — discard local changes (git checkout -f)
+                if (mode === 'stash') {
+                    await git.stash(['push', '-m', `auto-stash before checkout to ${branchName}`]);
+                    try {
+                        if (create) await git.checkoutLocalBranch(branchName);
+                        else await git.checkout(branchName);
+                        // Try to pop the stash; if it conflicts leave it in the stash list
+                        try { await git.stash(['pop']); } catch (_popErr) {
+                            console.warn(`[Git] Stash pop after checkout to '${branchName}' conflicted — stash preserved`);
+                        }
+                    } catch (checkoutErr) {
+                        // Restore stash if checkout itself failed
+                        try { await git.stash(['pop']); } catch (_) {}
+                        throw checkoutErr;
+                    }
+                } else if (mode === 'force') {
+                    if (create) {
+                        // For create + force: create the branch then force-checkout
+                        await git.checkout(['-B', branchName]);
+                    } else {
+                        await git.checkout(['-f', branchName]);
+                    }
+                } else {
+                    if (create) {
+                        await git.checkoutLocalBranch(branchName);
+                    } else {
+                        await git.checkout(branchName);
+                    }
+                }
+                this._archiveGitAsync(slug, userId);
+                return this.getStatus(slug, userId);
+            } catch (e) {
+                const msg = (e.message || '').toLowerCase();
+                if (msg.includes('would be overwritten') || msg.includes('your local changes')) {
+                    const err = new Error('Your local changes would be overwritten by checkout. Commit, stash, or discard them first.');
+                    err.code = 'UNCOMMITTED_CHANGES';
+                    throw err;
+                }
+                throw this.mapGitError(e, slug);
+            }
+        }, userId);
+    }
+
+    async fetch(slug, userId, token) {
+        return this.withLock(slug, async () => {
+            try {
+                const git = this.getGit(slug, userId);
+                const effectiveToken = token || await this._extractTokenFromRemoteUrl(git);
+                if (effectiveToken) {
+                    const remotes = await git.getRemotes(true);
+                    const remoteUrl = remotes?.[0]?.refs?.fetch || remotes?.[0]?.refs?.push || '';
+                    let authUrl = null;
+                    if (remoteUrl.startsWith('https://')) {
+                        try { const u = new URL(remoteUrl); u.username = 'x-access-token'; u.password = effectiveToken; authUrl = u.toString(); } catch (_) {}
+                    }
+                    if (authUrl) {
+                        const remoteName = remotes?.[0]?.name || 'origin';
+                        // Temporarily set the remote URL, fetch, then restore
+                        await git.raw(['fetch', authUrl]);
+                    } else {
+                        await git.raw(['-c', `http.extraheader=Authorization: Bearer ${effectiveToken}`, 'fetch']);
+                    }
+                } else {
+                    await git.fetch();
+                }
+                return this.getStatus(slug, userId);
+            } catch (e) {
+                throw this.mapGitError(e, slug);
+            }
+        }, userId);
+    }
+
+    async commit(slug, message, userId, amend = false) {
+        return this.withLock(slug, async () => {
+            try {
+                const git = this.getGit(slug, userId);
+                // Check if there are staged changes before committing
+                // (skip for amend — amend can just rewrite the message).
+                if (!amend) {
+                    const status = await git.status();
+                    if (!status.staged || status.staged.length === 0) {
+                        throw new GitError(
+                            'Nothing to commit — stage files first.',
+                            'NOTHING_STAGED'
+                        );
+                    }
+                }
+                if (amend) {
+                    await git.commit(message, { '--amend': null });
+                } else {
+                    await git.commit(message);
                 }
                 this._archiveGitAsync(slug, userId);
                 return this.getStatus(slug, userId);
@@ -845,11 +1096,101 @@ class GitService {
         }, userId);
     }
 
-    async fetch(slug, userId) {
+    /**
+     * Interactive rebase — apply a list of operations to a range of commits.
+     *
+     * @param {string} slug          - repo identifier
+     * @param {string} baseCommit    - the commit onto which we rebase (exclusive,
+     *                                 typically HEAD~N or a commit hash)
+     * @param {Array}  operations    - ordered list of { action, hash, message? }
+     *                                 action: 'pick'|'reword'|'squash'|'fixup'|'drop'
+     * @param {string} userId
+     */
+    async interactiveRebase(slug, baseCommit, operations, userId) {
         return this.withLock(slug, async () => {
             try {
                 const git = this.getGit(slug, userId);
-                await git.fetch();
+                const repoPath = this.getEffectiveRepoPath(slug, userId);
+
+                // Build the rebase-todo script
+                const todoLines = operations.map(op => {
+                    const action = op.action || 'pick';
+                    const hash = op.hash;
+                    const msg = op.message || '';
+                    return `${action} ${hash} ${msg}`;
+                });
+
+                // Write todo to a file and use GIT_SEQUENCE_EDITOR to apply it
+                const todoFile = path.join(repoPath, '.git', '_rebase_todo.txt');
+                fs.writeFileSync(todoFile, todoLines.join('\n') + '\n', 'utf8');
+
+                // Build reword messages if any
+                const rewords = operations.filter(op => op.action === 'reword' && op.message);
+                const rewordMap = {};
+                rewords.forEach(r => { rewordMap[r.hash.substring(0, 7)] = r.message; });
+
+                // Determine the sequence-editor script based on OS
+                const isWin = process.platform === 'win32';
+                let seqEditor;
+                if (isWin) {
+                    // On Windows, use a simple copy command as sequence editor
+                    const todoFileEscaped = todoFile.replace(/\\/g, '\\\\');
+                    seqEditor = `cmd /c copy /y "${todoFileEscaped}" `;
+                } else {
+                    seqEditor = `cp "${todoFile}" `;
+                }
+
+                // Use env to set the sequence editor
+                const env = {
+                    ...process.env,
+                    GIT_SEQUENCE_EDITOR: `${seqEditor}`,
+                };
+
+                // For rewords, we need a GIT_EDITOR that writes the new message
+                // For simplicity, handle rewords as a second pass:
+                // First do the rebase with pick/squash/fixup/drop,
+                // then use git commit --amend for any rewords.
+
+                // Actually, simpler: write a shell script as GIT_SEQUENCE_EDITOR
+                // that simply copies our pre-computed todo over the rebase-todo file.
+                const seqScript = path.join(repoPath, '.git', '_seq_editor');
+                if (isWin) {
+                    // Windows batch: copy our todo over the argument ($1 = path git passes)
+                    const batContent = `@echo off\ncopy /y "${todoFile.replace(/\\/g, '\\\\')}" %1 >nul\n`;
+                    const batFile = seqScript + '.bat';
+                    fs.writeFileSync(batFile, batContent, 'utf8');
+                    env.GIT_SEQUENCE_EDITOR = batFile;
+                } else {
+                    const shContent = `#!/bin/sh\ncp "${todoFile}" "$1"\n`;
+                    fs.writeFileSync(seqScript, shContent, { mode: 0o755 });
+                    env.GIT_SEQUENCE_EDITOR = seqScript;
+                }
+
+                // Run the interactive rebase
+                await git.env(env).rebase(['-i', baseCommit]);
+
+                // Cleanup temp files
+                try { fs.unlinkSync(todoFile); } catch (_) {}
+                try { fs.unlinkSync(isWin ? seqScript + '.bat' : seqScript); } catch (_) {}
+
+                this._archiveGitAsync(slug, userId);
+                return this.getStatus(slug, userId);
+            } catch (e) {
+                // If rebase fails, try to abort so we don't leave repo in bad state
+                try {
+                    const git2 = this.getGit(slug, userId);
+                    await git2.rebase(['--abort']);
+                } catch (_) { /* already clean */ }
+                throw this.mapGitError(e, slug);
+            }
+        }, userId);
+    }
+
+    async rebaseAbort(slug, userId) {
+        return this.withLock(slug, async () => {
+            try {
+                const git = this.getGit(slug, userId);
+                await git.rebase(['--abort']);
                 return this.getStatus(slug, userId);
             } catch (e) {
                 throw this.mapGitError(e, slug);
@@ -857,22 +1198,11 @@ class GitService {
         }, userId);
     }
 
-    async commit(slug, message, userId) {
+    async rebaseContinue(slug, userId) {
         return this.withLock(slug, async () => {
             try {
                 const git = this.getGit(slug, userId);
-                // Check if there are staged changes before committing.
-                // Without this guard, `git commit` with nothing staged either
-                // throws a generic error or (with --allow-empty) creates an
-                // empty commit — both of which confuse the user.
-                const status = await git.status();
-                if (!status.staged || status.staged.length === 0) {
-                    throw new GitError(
-                        'Nothing to commit — stage files first.',
-                        'NOTHING_STAGED'
-                    );
-                }
-                await git.commit(message);
+                await git.rebase(['--continue']);
                 this._archiveGitAsync(slug, userId);
                 return this.getStatus(slug, userId);
             } catch (e) {
@@ -898,8 +1228,69 @@ class GitService {
         return this.withLock(slug, async () => {
             try {
                 const git = this.getGit(slug, userId);
-                // Use git apply --cached to stage a specific patch
-                await git.raw(['apply', '--cached', '--unidiff-zero'], patch);
+                const repoPath = this.getEffectiveRepoPath(slug, userId);
+
+                // Write the patch to a temp file — simple-git's raw() passes
+                // all args as CLI arguments and does NOT support stdin piping,
+                // so we can't pass the patch content inline.
+                const tmpDir = path.join(repoPath, '.git');
+                const tmpPatch = path.join(tmpDir, `_stage_${Date.now()}.patch`);
+                fs.writeFileSync(tmpPatch, patch, 'utf8');
+
+                try {
+                    await git.raw(['apply', '--cached', '--unidiff-zero', '--recount', '--ignore-whitespace', tmpPatch]);
+                } finally {
+                    // Always clean up the temp patch file
+                    try { fs.unlinkSync(tmpPatch); } catch (_) {}
+                }
+                return this.getStatus(slug, userId);
+            } catch (e) {
+                throw this.mapGitError(e, slug);
+            }
+        }, userId);
+    }
+
+    // Discard (revert) selected lines from the working tree by reverse-applying a patch
+    async discardLines(slug, filePath, patch, userId) {
+        return this.withLock(slug, async () => {
+            try {
+                const git = this.getGit(slug, userId);
+                const repoPath = this.getEffectiveRepoPath(slug, userId);
+
+                const tmpDir = path.join(repoPath, '.git');
+                const tmpPatch = path.join(tmpDir, `_discard_${Date.now()}.patch`);
+                fs.writeFileSync(tmpPatch, patch, 'utf8');
+
+                try {
+                    await git.raw(['apply', '--reverse', '--unidiff-zero', '--recount', '--ignore-whitespace', tmpPatch]);
+                } finally {
+                    try { fs.unlinkSync(tmpPatch); } catch (_) {}
+                }
+                return this.getStatus(slug, userId);
+            } catch (e) {
+                throw this.mapGitError(e, slug);
+            }
+        }, userId);
+    }
+
+    // Unstage specific lines/hunks from the index by reverse-applying a patch
+    // with --cached (index only, no working tree changes).
+    // This is the inverse of stageLines — toggling a hunk back to unstaged.
+    async unstageLines(slug, filePath, patch, userId) {
+        return this.withLock(slug, async () => {
+            try {
+                const git = this.getGit(slug, userId);
+                const repoPath = this.getEffectiveRepoPath(slug, userId);
+
+                const tmpDir = path.join(repoPath, '.git');
+                const tmpPatch = path.join(tmpDir, `_unstage_${Date.now()}.patch`);
+                fs.writeFileSync(tmpPatch, patch, 'utf8');
+
+                try {
+                    await git.raw(['apply', '--cached', '--reverse', '--unidiff-zero', '--recount', '--ignore-whitespace', tmpPatch]);
+                } finally {
+                    try { fs.unlinkSync(tmpPatch); } catch (_) {}
+                }
                 return this.getStatus(slug, userId);
             } catch (e) {
                 throw this.mapGitError(e, slug);
@@ -982,12 +1373,41 @@ class GitService {
         }, userId);
     }
 
-    async push(slug, userId) {
+    async push(slug, userId, token, force = false) {
         return this.withLock(slug, async () => {
             const git = this.getGit(slug, userId);
             // Make sure we don't trigger interactive credential prompts in the server process
             const prev = process.env.GIT_TERMINAL_PROMPT;
             process.env.GIT_TERMINAL_PROMPT = '0';
+
+            // If no explicit token provided, try to extract one from the remote URL
+            let effectiveToken = token;
+            if (!effectiveToken) {
+                effectiveToken = await this._extractTokenFromRemoteUrl(git);
+            }
+
+            /**
+             * Build an authenticated push URL by embedding the token directly
+             * into the HTTPS remote URL.  GitHub (and most Git forges) reject
+             * the `Authorization: Bearer` header for HTTPS pushes but accept
+             * URL-embedded credentials in the form:
+             *    https://x-access-token:<TOKEN>@github.com/owner/repo.git
+             *
+             * We resolve the remote URL, strip any existing credentials, then
+             * embed the token.  The authenticated URL is used as the push
+             * target via `git push <url> <branch>` (a transient URL — it is
+             * never persisted to the remote config).
+             */
+            const _buildAuthUrl = (remoteUrl, tkn) => {
+                if (!remoteUrl || !tkn || !remoteUrl.startsWith('https://')) return null;
+                try {
+                    const u = new URL(remoteUrl);
+                    u.username = 'x-access-token';
+                    u.password = tkn;
+                    return u.toString();
+                } catch (_) { return null; }
+            };
+
             try {
                 // If no remotes configured, attempt to auto-add from workspace metadata
                 const remotes = await git.getRemotes(true);
@@ -1006,9 +1426,83 @@ class GitService {
                     }
                 }
 
-                await git.push();
+                // Resolve the remote URL for logging / URL-based auth
+                const updatedRemotes = await git.getRemotes(true);
+                const remoteUrl = updatedRemotes?.[0]?.refs?.push || updatedRemotes?.[0]?.refs?.fetch || '';
+
+                if (effectiveToken) {
+                    const authUrl = _buildAuthUrl(remoteUrl, effectiveToken);
+                    const maskedUrl = authUrl ? authUrl.replace(effectiveToken, '***') : '(no auth url)';
+                    console.log(`[GitService][push] slug=${slug} force=${force} remote=${updatedRemotes?.[0]?.name} authUrl=${maskedUrl}`);
+
+                    if (authUrl) {
+                        // Push using the transient authenticated URL
+                        const branchSummary = await git.branchLocal();
+                        const currentBranch = branchSummary.current || 'HEAD';
+                        const pushArgs = ['push'];
+                        if (force) pushArgs.push('--force-with-lease');
+                        pushArgs.push(authUrl, currentBranch);
+                        console.log(`[GitService][push] Executing: git ${pushArgs.map(a => a === authUrl ? maskedUrl : a).join(' ')}`);
+                        await git.raw(pushArgs);
+
+                        // Set upstream tracking so git status reports ahead/behind correctly
+                        const remoteName = updatedRemotes?.[0]?.name || 'origin';
+                        try {
+                            await git.raw(['branch', `--set-upstream-to=${remoteName}/${currentBranch}`, currentBranch]);
+                        } catch (_) {}
+
+                        // Update local remote refs so the remote branch SHA matches HEAD
+                        try {
+                            await git.raw(['fetch', authUrl, `${currentBranch}:refs/remotes/${remoteName}/${currentBranch}`]);
+                        } catch (_) {
+                            // Fallback: just update the ref directly
+                            try {
+                                const headHash = (await git.raw(['rev-parse', 'HEAD'])).trim();
+                                await git.raw(['update-ref', `refs/remotes/${remoteName}/${currentBranch}`, headHash]);
+                            } catch (__) {}
+                        }
+                    } else {
+                        // Fallback to extraheader (non-GitHub forges)
+                        console.log(`[GitService][push] Falling back to extraheader auth for ${remoteUrl}`);
+                        const pushArgs = ['-c', `http.extraheader=Authorization: Bearer ${effectiveToken}`, 'push'];
+                        if (force) pushArgs.push('--force-with-lease');
+                        await git.raw(pushArgs);
+
+                        // Set upstream tracking
+                        const branchSummary = await git.branchLocal();
+                        const currentBranch = branchSummary.current;
+                        const remoteName = updatedRemotes?.[0]?.name || 'origin';
+                        if (currentBranch) {
+                            try {
+                                await git.raw(['branch', `--set-upstream-to=${remoteName}/${currentBranch}`, currentBranch]);
+                            } catch (_) {}
+                            try {
+                                const headHash = (await git.raw(['rev-parse', 'HEAD'])).trim();
+                                await git.raw(['update-ref', `refs/remotes/${remoteName}/${currentBranch}`, headHash]);
+                            } catch (_) {}
+                        }
+                    }
+                } else {
+                    console.log(`[GitService][push] No token — pushing without auth. remote=${remoteUrl}`);
+                    if (force) {
+                        await git.push({ '--force-with-lease': null });
+                    } else {
+                        await git.push();
+                    }
+
+                    // Set upstream tracking for no-token push as well
+                    const branchSummary = await git.branchLocal();
+                    const currentBranch = branchSummary.current;
+                    const remoteName = updatedRemotes?.[0]?.name || 'origin';
+                    if (currentBranch) {
+                        try {
+                            await git.raw(['branch', `--set-upstream-to=${remoteName}/${currentBranch}`, currentBranch]);
+                        } catch (_) {}
+                    }
+                }
             } catch (e) {
                 const msg = (e.message || '').toLowerCase();
+                console.error(`[GitService][push] Error: ${e.message}`);
 
                 // Handle 'no upstream branch' by attempting to set upstream automatically
                 if (msg.includes('no upstream branch') || msg.includes('set-upstream') || msg.includes('no configured push destination') || msg.includes('no configured remote')) {
@@ -1020,9 +1514,31 @@ class GitService {
                         if (!remoteToUse) {
                             throw new RemoteNotConfiguredError();
                         }
+                        const remoteUrl = remotes[0]?.refs?.push || remotes[0]?.refs?.fetch || '';
                         try {
-                            await git.push(remoteToUse, currentBranch, ['--set-upstream']);
+                            if (effectiveToken) {
+                                const authUrl = _buildAuthUrl(remoteUrl, effectiveToken);
+                                if (authUrl) {
+                                    const pushArgs = ['push', '--set-upstream'];
+                                    if (force) pushArgs.push('--force-with-lease');
+                                    pushArgs.push(authUrl, currentBranch);
+                                    console.log(`[GitService][push] set-upstream with authUrl for branch ${currentBranch}`);
+                                    await git.raw(pushArgs);
+
+                                    // After successful push to URL, also set the named remote tracking
+                                    try { await git.raw(['branch', `--set-upstream-to=${remoteToUse}/${currentBranch}`, currentBranch]); } catch (_) {}
+                                } else {
+                                    const pushArgs = ['-c', `http.extraheader=Authorization: Bearer ${effectiveToken}`, 'push', '--set-upstream', remoteToUse, currentBranch];
+                                    if (force) pushArgs.push('--force-with-lease');
+                                    await git.raw(pushArgs);
+                                }
+                            } else {
+                                const opts = ['--set-upstream'];
+                                if (force) opts.push('--force-with-lease');
+                                await git.push(remoteToUse, currentBranch, opts);
+                            }
                         } catch (pushErr) {
+                            console.error(`[GitService][push] set-upstream push failed: ${pushErr.message}`);
                             throw this.mapGitError(pushErr, slug);
                         }
                     } else {
@@ -1067,6 +1583,23 @@ class GitService {
         }, userId);
     }
 
+    /**
+     * Update the URL of an existing remote.
+     *
+     * Uses `git remote set-url <name> <url>` under the hood.
+     */
+    async setRemoteUrl(slug, name, url, userId) {
+        return this.withLock(slug, async () => {
+            try {
+                const git = this.getGit(slug, userId);
+                await git.remote(['set-url', name, url]);
+                return await this.getRemotes(slug, userId);
+            } catch (e) {
+                throw this.mapGitError(e, slug);
+            }
+        }, userId);
+    }
+
     async getRemotes(slug, userId) {
         try {
             const git = this.getGit(slug, userId);
@@ -1076,11 +1609,42 @@ class GitService {
         }
     }
 
-    async pull(slug, userId) {
+    async pull(slug, userId, token) {
         return this.withLock(slug, async () => {
             const git = this.getGit(slug, userId);
             try {
-                const pullResult = await git.pull();
+                // If no explicit token provided, try to extract one from the remote URL
+                let effectiveToken = token;
+                if (!effectiveToken) {
+                    effectiveToken = await this._extractTokenFromRemoteUrl(git);
+                }
+
+                let pullResult;
+                if (effectiveToken) {
+                    // Build authenticated URL for pull (same approach as push)
+                    const remotes = await git.getRemotes(true);
+                    const remoteUrl = remotes?.[0]?.refs?.fetch || remotes?.[0]?.refs?.push || '';
+                    let authUrl = null;
+                    if (remoteUrl.startsWith('https://')) {
+                        try {
+                            const u = new URL(remoteUrl);
+                            u.username = 'x-access-token';
+                            u.password = effectiveToken;
+                            authUrl = u.toString();
+                        } catch (_) {}
+                    }
+                    if (authUrl) {
+                        const branchSummary = await git.branchLocal();
+                        const currentBranch = branchSummary.current || 'HEAD';
+                        console.log(`[GitService][pull] Using URL-based auth for ${slug}`);
+                        await git.raw(['pull', authUrl, currentBranch]);
+                    } else {
+                        await git.raw(['-c', `http.extraheader=Authorization: Bearer ${effectiveToken}`, 'pull']);
+                    }
+                    pullResult = { summary: { changes: 0, insertions: 0, deletions: 0 } };
+                } else {
+                    pullResult = await git.pull();
+                }
                 const status = await this.getStatus(slug, userId);
                 
                 // Check for merge conflicts after pull (in case pull succeeded but left conflicts)
@@ -1213,6 +1777,87 @@ class GitService {
         }, userId);
     }
 
+    // Cherry-pick a commit onto the current branch
+    async cherryPick(slug, hash, userId) {
+        return this.withLock(slug, async () => {
+            try {
+                const git = this.getGit(slug, userId);
+                await git.raw(['cherry-pick', hash]);
+                return this.getStatus(slug, userId);
+            } catch (e) {
+                throw this.mapGitError(e, slug);
+            }
+        }, userId);
+    }
+
+    // Revert a commit (create an inverse commit)
+    async revertCommit(slug, hash, userId) {
+        return this.withLock(slug, async () => {
+            try {
+                const git = this.getGit(slug, userId);
+                await git.raw(['revert', hash]);
+                return this.getStatus(slug, userId);
+            } catch (e) {
+                throw this.mapGitError(e, slug);
+            }
+        }, userId);
+    }
+
+    // Get detailed information about a specific commit
+    async getCommitDetail(slug, hash, userId) {
+        try {
+            const git = this.getGit(slug, userId);
+            const showOutput = await git.show(['--format=%H%n%an%n%ae%n%aI%n%s%n%b', '--stat', hash]);
+            const diff = await git.show(['--format=', '--patch', hash]);
+
+            // Also get numeric stat for per-file insertions/deletions
+            let numstat = '';
+            try { numstat = await git.raw(['show', '--format=', '--numstat', hash]); } catch (_) {}
+
+            const lines = showOutput.split('\n');
+            const commitHash = lines[0] || '';
+            const author_name = lines[1] || '';
+            const author_email = lines[2] || '';
+            const date = lines[3] || '';
+            const subject = lines[4] || '';
+
+            // Body runs from line 5 until the stat summary (blank line before stat block)
+            let bodyEnd = 5;
+            for (let i = lines.length - 1; i >= 5; i--) {
+                if (lines[i].trim() === '') { bodyEnd = i; break; }
+            }
+            const body = lines.slice(5, bodyEnd).join('\n').trim();
+
+            // Build file list from numstat (reliable, machine-readable)
+            const files = [];
+            for (const nl of (numstat || '').split('\n').filter(Boolean)) {
+                const parts = nl.split('\t');
+                if (parts.length < 3) continue;
+                const [ins, del, ...rest] = parts;
+                // Handle renames: numstat shows "old => new" or "{old => new}/path"
+                let file = rest.join('\t');
+                if (!file) continue;
+                // For renames with arrow notation, extract the new name
+                const renameMatch = file.match(/\{(.+?) => (.+?)\}(.*)/);
+                if (renameMatch) {
+                    const prefix = file.substring(0, file.indexOf('{'));
+                    file = prefix + renameMatch[2] + renameMatch[3];
+                } else if (file.includes(' => ')) {
+                    file = file.split(' => ').pop();
+                }
+                files.push({
+                    file: file.trim(),
+                    insertions: ins === '-' ? 0 : parseInt(ins) || 0,
+                    deletions: del === '-' ? 0 : parseInt(del) || 0,
+                });
+            }
+
+            return { hash: commitHash, author_name, author_email, date, subject, body, files, diff };
+        } catch (e) {
+            throw this.mapGitError(e, slug);
+        }
+    }
+
     // Abort current merge (discard all merge changes)
     async abortMerge(slug, userId) {
         return this.withLock(slug, async () => {
@@ -1224,6 +1869,186 @@ class GitService {
                 throw this.mapGitError(e, slug);
             }
         }, userId);
+    }
+
+    /**
+     * Merge a branch into the current branch.
+     * This is used by the PR conflict resolution flow — it intentionally
+     * allows conflicts so the user can resolve them in the Source Control panel.
+     *
+     * @param {string} slug     Workspace slug
+     * @param {string} branch   Branch to merge (e.g. 'main', 'origin/main')
+     * @param {string} userId   User identifier
+     * @param {string} [token]  Optional auth token for the fetch step
+     * @returns {{ status, hasConflicts, conflictedFiles }}
+     */
+    async mergeBranch(slug, branch, userId, token) {
+        return this.withLock(slug, async () => {
+            const git = this.getGit(slug, userId);
+
+            // Normalise: strip leading "origin/" so we always work with the
+            // bare branch name and prefix it ourselves where needed.
+            const bareBranch = branch.replace(/^origin\//, '');
+            const remoteBranch = `origin/${bareBranch}`;
+
+            // 1. Fetch the specific branch from origin so the remote-tracking
+            //    ref is guaranteed to exist and be up-to-date.
+            try {
+                const effectiveToken = token || await this._extractTokenFromRemoteUrl(git);
+                if (effectiveToken) {
+                    const remotes = await git.getRemotes(true);
+                    const remoteUrl = remotes?.[0]?.refs?.fetch || remotes?.[0]?.refs?.push || '';
+                    if (remoteUrl.startsWith('https://')) {
+                        try {
+                            const u = new URL(remoteUrl);
+                            u.username = 'x-access-token';
+                            u.password = effectiveToken;
+                            await git.raw(['fetch', u.toString(), bareBranch]);
+                        } catch (_) {
+                            await git.raw(['-c', `http.extraheader=Authorization: Bearer ${effectiveToken}`, 'fetch', 'origin', bareBranch]);
+                        }
+                    } else {
+                        await git.raw(['-c', `http.extraheader=Authorization: Bearer ${effectiveToken}`, 'fetch', 'origin', bareBranch]);
+                    }
+                } else {
+                    await git.fetch('origin', bareBranch);
+                }
+            } catch (fetchErr) {
+                console.warn(`[GitService] mergeBranch: fetch origin ${bareBranch} failed: ${fetchErr.message}`);
+                // Continue — merge might still work with local refs
+            }
+
+            // 2. Attempt merge against the remote-tracking branch.
+            let mergeResult;
+            let hasConflicts = false;
+            try {
+                mergeResult = await git.merge([remoteBranch]);
+            } catch (e) {
+                const msg = (e?.message || '').toLowerCase();
+                // Git merge exits non-zero on conflicts — this is expected
+                if (msg.includes('conflict') || msg.includes('automatic merge failed') || msg.includes('merge_msg')) {
+                    hasConflicts = true;
+                } else {
+                    throw this.mapGitError(e, slug);
+                }
+            }
+
+            // 3. Read updated status
+            const status = await this.getStatus(slug, userId);
+            const conflictedFiles = (status?.conflictedFiles || []).map(f => typeof f === 'string' ? f : f.path || f);
+
+            return {
+                status,
+                hasConflicts: hasConflicts || (status?.hasConflicts ?? false) || conflictedFiles.length > 0,
+                conflictedFiles,
+            };
+        }, userId);
+    }
+
+    /**
+     * Check for merge conflicts between two branches using `git merge-tree`.
+     * This runs entirely in-memory (no working tree changes) and executes
+     * in milliseconds — orders of magnitude faster than a physical merge.
+     *
+     * @param {string} slug       Workspace slug
+     * @param {string} baseBranch The base branch (e.g. 'main', 'origin/main')
+     * @param {string} headBranch The head/PR branch (e.g. 'feature', 'origin/feature')
+     * @param {string} userId     User identifier
+     * @param {string} [token]    Optional auth token for the fetch step
+     * @returns {{ hasConflicts: boolean, conflictedFiles: string[] }}
+     */
+    async checkMergeConflicts(slug, baseBranch, headBranch, userId, token) {
+        const git = this.getGit(slug, userId);
+
+        // Normalise branch names — ensure we reference remote-tracking branches
+        const bareBase = baseBranch.replace(/^origin\//, '');
+        const bareHead = headBranch.replace(/^origin\//, '');
+        const remoteBase = `origin/${bareBase}`;
+        const remoteHead = `origin/${bareHead}`;
+
+        // 1. Fetch both branches so remote-tracking refs are up-to-date.
+        //    Use explicit refspecs so that origin/<branch> refs are updated
+        //    even when fetching by URL (which only updates FETCH_HEAD).
+        const refspecs = [
+            `+refs/heads/${bareBase}:refs/remotes/origin/${bareBase}`,
+            `+refs/heads/${bareHead}:refs/remotes/origin/${bareHead}`,
+        ];
+        let fetchOk = false;
+        try {
+            const effectiveToken = token || await this._extractTokenFromRemoteUrl(git);
+            if (effectiveToken) {
+                const remotes = await git.getRemotes(true);
+                const remoteUrl = remotes?.[0]?.refs?.fetch || remotes?.[0]?.refs?.push || '';
+                if (remoteUrl.startsWith('https://')) {
+                    try {
+                        const u = new URL(remoteUrl);
+                        u.username = 'x-access-token';
+                        u.password = effectiveToken;
+                        await git.raw(['fetch', u.toString(), ...refspecs]);
+                    } catch (_) {
+                        await git.raw(['-c', `http.extraheader=Authorization: Bearer ${effectiveToken}`, 'fetch', 'origin', ...refspecs]);
+                    }
+                } else {
+                    await git.raw(['-c', `http.extraheader=Authorization: Bearer ${effectiveToken}`, 'fetch', 'origin', ...refspecs]);
+                }
+            } else {
+                await git.raw(['fetch', 'origin', ...refspecs]);
+            }
+            fetchOk = true;
+        } catch (fetchErr) {
+            console.warn(`[GitService] checkMergeConflicts: fetch failed — conflict result may be stale: ${fetchErr.message}`);
+        }
+
+        // 2. Find the merge base between the two branches
+        let mergeBase;
+        try {
+            mergeBase = (await git.raw(['merge-base', remoteBase, remoteHead])).trim();
+        } catch (e) {
+            // No common ancestor — cannot determine mergeability
+            return { hasConflicts: false, conflictedFiles: [], error: 'No common ancestor found', fetchFailed: !fetchOk };
+        }
+
+        // 3. Run git merge-tree (legacy 3-argument form).
+        //    This is the most reliable cross-version approach: it operates
+        //    entirely in-memory (no working tree / index changes), always
+        //    exits 0, and embeds <<<<<<< conflict markers directly in its
+        //    output when the merge has conflicts.
+        //
+        //    We intentionally do NOT use the newer --write-tree form because
+        //    simple-git's .raw() drops stdout on non-zero exit, making it
+        //    impossible to read the CONFLICT lines reliably.
+        let mergeTreeOutput = '';
+        try {
+            mergeTreeOutput = await git.raw(['merge-tree', mergeBase, remoteBase, remoteHead]);
+        } catch (e) {
+            // Some git versions may throw on the legacy form too
+            mergeTreeOutput = e?.message || e?.toString() || '';
+        }
+
+        // 4. Parse — check for conflict markers AND the "changed in both"
+        //    section header that is FOLLOWED by conflict markers.
+        //    The string 'changed in both' alone is NOT proof of a conflict
+        //    (clean merges of the same file also produce it), so we only
+        //    treat it as a conflict signal when <<<<<<< markers are present.
+        const hasConflicts = mergeTreeOutput.includes('<<<<<<<');
+
+        // 5. Extract conflicted file names
+        const conflictedFiles = [];
+        if (hasConflicts) {
+            const filePattern = /\+\+\+ b\/(.+)/g;
+            let match;
+            const seen = new Set();
+            while ((match = filePattern.exec(mergeTreeOutput)) !== null) {
+                const file = match[1].trim();
+                if (!seen.has(file)) {
+                    seen.add(file);
+                    conflictedFiles.push(file);
+                }
+            }
+        }
+
+        console.log(`[GitService] checkMergeConflicts: ${bareBase}..${bareHead} → fetchOk=${fetchOk}, mergeBase=${mergeBase?.slice(0, 8)}, hasConflicts=${hasConflicts}, files=${conflictedFiles.length}, outputLen=${mergeTreeOutput.length}`);
+        return { hasConflicts, conflictedFiles, fetchFailed: !fetchOk };
     }
 
     // Get the content for each version of a conflicted file
@@ -1336,29 +2161,83 @@ class GitService {
             const { page = 1, limit = 50 } = options;
             const skip = (page - 1) * limit;
             
-            // Get log with pagination
-            const log = await git.log({ 
-                n: limit,
-                '--skip': skip
-            });
+            // Use a custom format that includes parent hashes (%P) for the
+            // commit graph.  simple-git's default log() omits parents, so
+            // the frontend receives no branching information and renders a
+            // single vertical line.
+            const SEP = '---COMMIT_SEP---';
+            const FIELD = '---FIELD---';
+            // Format: hash | parents | author_name | author_email | date | subject | body
+            const fmt = [`--format=${SEP}%H${FIELD}%P${FIELD}%aN${FIELD}%aE${FIELD}%aI${FIELD}%s${FIELD}%b`];
+            const logArgs = ['log', ...fmt, `-n`, `${limit}`];
+            if (skip > 0) logArgs.push(`--skip=${skip}`);
+            
+            const rawOutput = await git.raw(logArgs);
+            
+            // Parse the raw output into commit objects
+            const all = rawOutput
+                .split(SEP)
+                .filter(Boolean)
+                .map(block => {
+                    const parts = block.split(FIELD);
+                    return {
+                        hash: (parts[0] || '').trim(),
+                        parents: (parts[1] || '').trim(),       // space-separated parent hashes
+                        author_name: (parts[2] || '').trim(),
+                        author_email: (parts[3] || '').trim(),
+                        date: (parts[4] || '').trim(),
+                        message: (parts[5] || '').trim(),
+                        body: (parts[6] || '').trim(),
+                    };
+                })
+                .filter(c => c.hash);   // drop any empty entries
             
             // Get total count for pagination info
-            let total = log.total;
-            if (!total) {
-                try {
-                    const countResult = await git.raw(['rev-list', '--count', 'HEAD']);
-                    total = parseInt(countResult.trim()) || 0;
-                } catch {
-                    total = log.all.length;
-                }
+            let total;
+            try {
+                const countResult = await git.raw(['rev-list', '--count', 'HEAD']);
+                total = parseInt(countResult.trim()) || 0;
+            } catch {
+                total = all.length;
             }
             
+            // Collect branch & tag refs mapped to commit hashes
+            let refs = {};
+            try {
+                const branchRaw = await git.raw(['for-each-ref', '--format=%(objectname:short) %(refname:short)', 'refs/heads/', 'refs/remotes/', 'refs/tags/']);
+                for (const line of branchRaw.trim().split('\n').filter(Boolean)) {
+                    const spaceIdx = line.indexOf(' ');
+                    if (spaceIdx < 0) continue;
+                    const hash = line.substring(0, spaceIdx);
+                    const name = line.substring(spaceIdx + 1);
+                    if (!refs[hash]) refs[hash] = [];
+                    // Classify ref type
+                    let type = 'branch';
+                    if (name.startsWith('origin/') || name.startsWith('upstream/')) type = 'remote';
+                    if (name.startsWith('v') && /^v?\d/.test(name)) type = 'tag';
+                    refs[hash].push({ name, type });
+                }
+                // Also explicitly get tags
+                const tagRaw = await git.raw(['tag', '--format=%(objectname:short) %(refname:short)']);
+                for (const line of tagRaw.trim().split('\n').filter(Boolean)) {
+                    const spaceIdx = line.indexOf(' ');
+                    if (spaceIdx < 0) continue;
+                    const hash = line.substring(0, spaceIdx);
+                    const name = line.substring(spaceIdx + 1);
+                    if (!refs[hash]) refs[hash] = [];
+                    if (!refs[hash].some(r => r.name === name)) {
+                        refs[hash].push({ name, type: 'tag' });
+                    }
+                }
+            } catch { /* refs decoration is best-effort */ }
+            
             return { 
-                all: log.all, 
+                all, 
                 total,
+                refs,
                 page,
                 limit,
-                hasMore: skip + log.all.length < total
+                hasMore: skip + all.length < total
             };
         } catch (e) {
             throw this.mapGitError(e, slug);
@@ -1809,7 +2688,9 @@ class GitService {
 
     async readFile(slug, filePath, userId) {
         const repoPath = this.getEffectiveRepoPath(slug, userId);
-        const fullPath = path.join(repoPath, filePath);
+        // Normalize backslashes → forward slashes and strip leading slash
+        const safePath = (filePath || '').replace(/\\/g, '/').replace(/^\/+/, '');
+        const fullPath = path.join(repoPath, safePath);
         try {
             return await fs.promises.readFile(fullPath, 'utf-8');
         } catch (_) {

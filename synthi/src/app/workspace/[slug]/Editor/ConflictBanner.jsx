@@ -1,5 +1,5 @@
 'use client';
-import { useState, useMemo, useEffect, useRef } from 'react';
+import { useState, useMemo, useEffect, useRef, useCallback } from 'react';
 import { AlertTriangle, Check, X, ChevronUp, ChevronDown } from 'lucide-react';
 import { gitClient } from '@/services/gitClient';
 
@@ -105,29 +105,116 @@ export function ConflictBanner({
     filePath, 
     slug, 
     onContentChange,
-    editorInstance 
+    editorInstance,
+    monacoInstance 
 }) {
     const [currentConflictIndex, setCurrentConflictIndex] = useState(0);
     const [isResolving, setIsResolving] = useState(false);
     const decorationsRef = useRef([]);
+    const codeLensDisposableRef = useRef(null);
+    const commandDisposablesRef = useRef([]);
+    // Stable callback ref so CodeLens commands always see the latest handler
+    const resolveCallbackRef = useRef(null);
     
     const conflicts = useMemo(() => parseConflicts(content), [content]);
     const hasConflicts = conflicts.length > 0;
+
+    // Wire up the resolve callback ref — updated on every render
+    const handleResolveByIndex = useCallback((conflictIndex, resolution) => {
+        const newContent = resolveConflict(content, conflictIndex, resolution);
+        onContentChange(newContent);
+        const remaining = parseConflicts(newContent);
+        if (remaining.length === 0) {
+            setCurrentConflictIndex(0);
+        } else if (currentConflictIndex >= remaining.length) {
+            setCurrentConflictIndex(remaining.length - 1);
+        }
+    }, [content, onContentChange, currentConflictIndex]);
+
+    resolveCallbackRef.current = handleResolveByIndex;
     
-    // Add Monaco decorations for conflict highlighting
+    // Add Monaco decorations for conflict highlighting + CodeLens buttons
     useEffect(() => {
         if (!editorInstance || !hasConflicts) {
             return;
         }
         
-        const monaco = window.monaco;
+        // Use the passed monacoInstance (from @codingame/monaco-vscode-editor-api)
+        // instead of window.monaco which is never assigned in this codebase.
+        const monaco = monacoInstance || window.monaco;
         if (!monaco) return;
+        
+        // ── CodeLens: inject clickable "Accept Current | Accept Incoming | Accept Both" ──
+        // Clean up previous CodeLens registrations
+        if (codeLensDisposableRef.current) {
+            codeLensDisposableRef.current.dispose();
+            codeLensDisposableRef.current = null;
+        }
+        commandDisposablesRef.current.forEach(d => { try { d.dispose(); } catch (_) {} });
+        commandDisposablesRef.current = [];
+
+        // Register commands for each conflict × resolution
+        const cmdIds = [];
+        conflicts.forEach((_, idx) => {
+            ['ours', 'theirs', 'both'].forEach(res => {
+                const cmdId = `synthi.conflict.${res}.${idx}.${Date.now()}`;
+                const d = monaco.editor.registerCommand(cmdId, () => {
+                    resolveCallbackRef.current?.(idx, res);
+                });
+                commandDisposablesRef.current.push(d);
+                cmdIds.push({ idx, res, cmdId });
+            });
+        });
+
+        // Register CodeLens provider
+        const model = editorInstance.getModel?.();
+        if (model) {
+            codeLensDisposableRef.current = monaco.languages.registerCodeLensProvider(
+                model.getLanguageId() || '*',
+                {
+                    provideCodeLenses: () => {
+                        const lenses = [];
+                        conflicts.forEach((conflict, idx) => {
+                            const line = conflict.startLine + 1; // 1-indexed <<<<<<< line
+                            const cmds = cmdIds.filter(c => c.idx === idx);
+                            const oursCmd = cmds.find(c => c.res === 'ours');
+                            const theirsCmd = cmds.find(c => c.res === 'theirs');
+                            const bothCmd = cmds.find(c => c.res === 'both');
+
+                            lenses.push({
+                                range: new monaco.Range(line, 1, line, 1),
+                                command: {
+                                    id: oursCmd?.cmdId || '',
+                                    title: 'Accept Current Change',
+                                },
+                            });
+                            lenses.push({
+                                range: new monaco.Range(line, 1, line, 1),
+                                command: {
+                                    id: theirsCmd?.cmdId || '',
+                                    title: 'Accept Incoming Change',
+                                },
+                            });
+                            lenses.push({
+                                range: new monaco.Range(line, 1, line, 1),
+                                command: {
+                                    id: bothCmd?.cmdId || '',
+                                    title: 'Accept Both Changes',
+                                },
+                            });
+                        });
+                        return { lenses, dispose: () => {} };
+                    },
+                    resolveCodeLens: (_, lens) => lens,
+                }
+            );
+        }
         
         // Create decorations for each conflict
         const newDecorations = [];
         
         conflicts.forEach((conflict, index) => {
-            // Highlight the entire conflict block with a background
+            // Highlight the entire conflict block with a subtle background
             newDecorations.push({
                 range: new monaco.Range(conflict.startLine + 1, 1, conflict.endLine + 2, 1),
                 options: {
@@ -137,6 +224,17 @@ export function ConflictBanner({
                 }
             });
             
+            // <<<<<<< marker line (bold green/teal)
+            newDecorations.push({
+                range: new monaco.Range(conflict.startLine + 1, 1, conflict.startLine + 1, 1),
+                options: {
+                    isWholeLine: true,
+                    className: 'conflict-marker-start-line',
+                    glyphMarginHoverMessage: { value: `**Conflict ${index + 1}** — Current Change (HEAD)` },
+                    marginClassName: 'conflict-ours-margin',
+                }
+            });
+
             // Highlight "ours" section (green-ish)
             const oursEndLine = conflict.startLine + conflict.oursContent.split('\n').length + 1;
             newDecorations.push({
@@ -145,6 +243,16 @@ export function ConflictBanner({
                     isWholeLine: true,
                     className: 'conflict-ours-background',
                     marginClassName: 'conflict-ours-margin',
+                }
+            });
+
+            // ======= separator line
+            const separatorLine = oursEndLine;
+            newDecorations.push({
+                range: new monaco.Range(separatorLine, 1, separatorLine, 1),
+                options: {
+                    isWholeLine: true,
+                    className: 'conflict-marker-sep-line',
                 }
             });
             
@@ -158,14 +266,14 @@ export function ConflictBanner({
                     marginClassName: 'conflict-theirs-margin',
                 }
             });
-            
-            // Add marker at conflict start line
+
+            // >>>>>>> marker line (bold blue)
             newDecorations.push({
-                range: new monaco.Range(conflict.startLine + 1, 1, conflict.startLine + 1, 1),
+                range: new monaco.Range(conflict.endLine + 1, 1, conflict.endLine + 1, 1),
                 options: {
                     isWholeLine: true,
-                    className: 'conflict-marker-line',
-                    glyphMarginHoverMessage: { value: `**Conflict ${index + 1}** - Click buttons in banner to resolve` }
+                    className: 'conflict-marker-end-line',
+                    marginClassName: 'conflict-theirs-margin',
                 }
             });
         });
@@ -173,18 +281,21 @@ export function ConflictBanner({
         // Apply decorations
         decorationsRef.current = editorInstance.deltaDecorations(decorationsRef.current, newDecorations);
         
-        // Add CSS for decorations if not already added
+        // Add CSS for decorations if not already added (VS Code parity colors)
         if (!document.getElementById('conflict-decoration-styles')) {
             const style = document.createElement('style');
             style.id = 'conflict-decoration-styles';
             style.textContent = `
                 .conflict-block-background { background-color: rgba(245, 158, 66, 0.06) !important; }
-                .conflict-ours-background { background-color: rgba(58, 133, 116, 0.12) !important; }
-                .conflict-theirs-background { background-color: rgba(122, 184, 248, 0.12) !important; }
-                .conflict-ours-margin { background-color: rgba(74, 186, 154, 0.45) !important; width: 3px !important; margin-left: 2px; }
-                .conflict-theirs-margin { background-color: rgba(124, 184, 248, 0.45) !important; width: 3px !important; margin-left: 2px; }
+                .conflict-ours-background { background-color: rgba(40, 167, 69, 0.16) !important; }
+                .conflict-theirs-background { background-color: rgba(40, 116, 210, 0.16) !important; }
+                .conflict-ours-margin { background-color: rgba(40, 167, 69, 0.55) !important; width: 3px !important; margin-left: 2px; }
+                .conflict-theirs-margin { background-color: rgba(40, 116, 210, 0.55) !important; width: 3px !important; margin-left: 2px; }
                 .conflict-marker-line { background-color: rgba(245, 158, 66, 0.12) !important; }
-                .conflict-glyph-margin { background-color: rgba(245, 158, 66, 0.35) !important; }
+                .conflict-glyph-margin { background-color: rgba(245, 158, 66, 0.30) !important; }
+                .conflict-marker-start-line { background-color: rgba(40, 167, 69, 0.25) !important; }
+                .conflict-marker-sep-line { background-color: rgba(77, 81, 104, 0.20) !important; }
+                .conflict-marker-end-line { background-color: rgba(40, 116, 210, 0.25) !important; }
             `;
             document.head.appendChild(style);
         }
@@ -198,8 +309,15 @@ export function ConflictBanner({
                     // Editor may be disposed
                 }
             }
+            // Dispose CodeLens provider and commands
+            if (codeLensDisposableRef.current) {
+                try { codeLensDisposableRef.current.dispose(); } catch (_) {}
+                codeLensDisposableRef.current = null;
+            }
+            commandDisposablesRef.current.forEach(d => { try { d.dispose(); } catch (_) {} });
+            commandDisposablesRef.current = [];
         };
-    }, [editorInstance, conflicts, hasConflicts]);
+    }, [editorInstance, monacoInstance, conflicts, hasConflicts]);
     
     // Navigate to first conflict on mount
     useEffect(() => {

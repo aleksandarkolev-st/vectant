@@ -180,7 +180,9 @@ export class ApiClient {
     async fetchFileContent(slug, filePath, options = {}) {
         // Always fetch from collab-server (authoritative disk source).
         // No GCS fallback — prevents dual-source inconsistency.
-        const res = await fetch(`${COLLAB_SERVER_URL}/git/${slug}/file?path=${encodeURIComponent(filePath)}`, { headers: await this._headers(), signal: options.signal });
+        // Normalize path: convert backslashes to forward slashes and strip leading slash
+        const safePath = (filePath || '').replace(/\\/g, '/').replace(/^\/+/, '');
+        const res = await fetch(`${COLLAB_SERVER_URL}/git/${slug}/file?path=${encodeURIComponent(safePath)}`, { headers: await this._headers(), signal: options.signal });
         if (!res.ok) {
             throw new SynthiException(
                 `Failed to load file content (status ${res.status})`,

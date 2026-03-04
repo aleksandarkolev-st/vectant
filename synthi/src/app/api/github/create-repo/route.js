@@ -39,6 +39,7 @@ export async function POST(req) {
         Authorization: `Bearer ${session.accessToken}`,
         "Content-Type": "application/json",
         Accept: "application/vnd.github+json",
+        "User-Agent": "Synthi-IDE",
       },
       body: JSON.stringify({
         name: name.trim(),
@@ -50,11 +51,21 @@ export async function POST(req) {
 
     if (!ghRes.ok) {
       const errData = await ghRes.json().catch(() => ({}));
-      const message =
+      let message =
         errData.errors?.[0]?.message ||
         errData.message ||
         "Failed to create repository on GitHub.";
-      return NextResponse.json({ error: message }, { status: ghRes.status });
+
+      if (ghRes.status === 404 || ghRes.status === 403) {
+        message = "GitHub rejected the request (404/403). Your token might lack the 'repo' scope. Please sign out and sign in again to re-authorize Synthi.";
+      }
+
+      console.error("[API] GitHub create-repo failed:", ghRes.status, errData);
+
+      return NextResponse.json(
+        { error: message },
+        { status: ghRes.status === 404 ? 401 : ghRes.status }
+      );
     }
 
     const repo = await ghRes.json();

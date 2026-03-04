@@ -778,6 +778,11 @@ class CollabClient {
     // This wrapper destroys the doc on code 4000 BEFORE the provider's
     // onclose handler can schedule a reconnect, so the provider sees
     // shouldConnect === false and aborts.
+    //
+    // For non-4000 closes (network blip, ping timeout), the server-side
+    // message buffering + doc TTL keep-alive prevent doubling.  We reset
+    // the _seeded flag here so that the client knows to wait for server
+    // content on reconnect rather than seeding independently.
     const self = this;
     // Capture the entry reference (set after provider creation) so the
     // microtask only destroys THIS specific entry, not a newer fresh
@@ -796,6 +801,17 @@ class CollabClient {
               const current = self.docs.get(key);
               if (current && current === entryRef) {
                 self.destroyDocument(slug, path);
+              }
+            });
+          } else if (event.code !== 1000) {
+            // Non-clean close (network blip, ping timeout, etc.)
+            // Reset _seeded so attachEditor waits for server content
+            // on reconnect rather than racing it.
+            queueMicrotask(() => {
+              const current = self.docs.get(key);
+              if (current && current === entryRef) {
+                console.log('[Collab] WS close', event.code, '— resetting seed flag for', key);
+                current._seeded = false;
               }
             });
           }
@@ -1110,7 +1126,18 @@ class CollabClient {
             model.setValue(content);
           }
         } else {
-          // Timeout: file likely doesn't exist on server — client seeds
+          // Timeout: file likely doesn't exist on server — client seeds.
+          // GUEST GUARD: If this client is a guest in a collaboration session
+          // (identity.hostId is set), NEVER seed the Yjs doc from the client.
+          // The host's Yjs document is the single source of truth.  If the
+          // guest seeds concurrently with the server delivering the host's
+          // state, the Yjs CRDT will merge both inserts → content doubles.
+          // Guests must always wait for the host/server to push content.
+          if (this.identity.hostId) {
+            console.debug('[Collab] Guest: skipping client seed, waiting for host Yjs state');
+            entry._seeded = true; // prevent further seed attempts
+            return;
+          }
           entry.doc.transact(() => {
             if (entry.ytext.length > 0) {
               entry.ytext.delete(0, entry.ytext.length);
@@ -1153,31 +1180,28 @@ class CollabClient {
         }
         entry._seeded = true;
       } else if (hasProvidedContent && !entry._seeded) {
-        // Do NOT set model content optimistically here.  The MonacoBinding
-        // (established below) will apply the ytext delta as an INSERT at
-        // position 0.  If the model already has content, the insert lands
-        // ON TOP of it — doubling the text.  Leave the model empty so the
-        // binding applies the delta cleanly.
-        if (model.getValue().length > 0) {
-          model.setValue('');
-        }
+        // The MonacoTextBinding._yObserver has a post-apply safeguard that
+        // detects model/ytext mismatches after incremental edits and falls
+        // back to a full replace.  This means we can safely leave the model
+        // content as-is (old file content acts as a placeholder) instead of
+        // blanking it.  The safeguard will correct any duplication caused by
+        // the initial Yjs delta being applied on top of existing content.
         doSeed();
       }
     } else {
       // Wait for sync before seeding to avoid racing with server content.
-      // CRITICAL: Keep the model EMPTY until the Yjs sync delta arrives.
-      // If the model has content when the sync delta is applied, the delta
-      // (a full insert) would land ON TOP of the existing text — doubling
-      // or tripling it.  The user sees a blank editor for a brief moment
-      // (<200ms typical) which is preferable to content duplication.
       //
-      // NOTE: A previous version filled the model "optimistically" after
-      // clearing it, but that re-created the exact condition the clear was
-      // trying to prevent.  Now we leave it empty and let the Yjs sync
-      // (or doSeed fallback) populate it authoritatively.
-      if (model.getValue().length > 0) {
-        model.setValue('');
-      }
+      // PREVIOUS BEHAVIOR: The model was cleared to '' here to prevent
+      // Yjs delta duplication.  However, the MonacoTextBinding._yObserver
+      // now has a post-apply mismatch safeguard that detects when
+      // incremental edits produce wrong content (e.g., delta inserted ON
+      // TOP of existing text) and falls back to a full model replace.
+      //
+      // With the safeguard in place, keeping the existing model content
+      // as a visual placeholder is safe — the user sees the previous
+      // file content instead of a blank editor during the ~200ms sync
+      // window.  This eliminates the visible blank flash on git pull,
+      // checkout, or any operation that destroys and recreates Yjs docs.
       const syncHandler = () => {
         entry.provider.off('sync', syncHandler);
         doSeed();

@@ -76,6 +76,21 @@ const OutputPanel = dynamic(
   () => import('./OutputPanel'),
   { ssr: false, loading: Placeholder },
 );
+  
+const PullRequestsPanel = dynamic(
+  () => import('@/components/git/PullRequestsPanel').then(m => ({ default: m.PullRequestsPanel })),
+  { ssr: false, loading: Placeholder },
+);
+
+const CommitHistoryPanel = dynamic(
+  () => import('@/components/git/CommitHistoryPanel'),
+  { ssr: false, loading: Placeholder },
+);
+
+const AIHealingPanel = dynamic(
+  () => import('@/components/healing/AIHealingPanel').then(m => ({ default: m.AIHealingPanel })),
+  { ssr: false, loading: Placeholder },
+);
 
 // ────────────────────────────────────────────────────────
 //  Explorer Panel Wrapper
@@ -163,6 +178,8 @@ export const ChatPanelWrapper = memo(function ChatPanelWrapper({ data }) {
         onSuggest={ctx?.onSuggest}
         onBusy={ctx?.onBusy}
         clearSignal={ctx?.clearSignal}
+        initialPrompt={ctx?.initialPrompt}
+        initialAttachments={ctx?.initialAttachments}
       />
     </div>
   );
@@ -316,6 +333,64 @@ export const ThemeEditorPanelWrapper = memo(function ThemeEditorPanelWrapper({ d
 });
 
 // ────────────────────────────────────────────────────────
+//  Pull Requests Panel Wrapper
+// ────────────────────────────────────────────────────────
+
+export const PullRequestsPanelWrapper = memo(function PullRequestsPanelWrapper({ data }) {
+  const ctx = useWorkspacePanelContext();
+
+  return (
+    <div
+      data-panel-type="pullrequests"
+      className="h-full w-full overflow-hidden"
+      style={{ background: 'var(--bg-sidebar)' }}
+    >
+      <PullRequestsPanel
+        slug={ctx?.workspaceSlug}
+      />
+    </div>
+  );
+});
+
+// ────────────────────────────────────────────────────────
+//  Commit History Panel Wrapper
+// ────────────────────────────────────────────────────────
+
+export const CommitHistoryPanelWrapper = memo(function CommitHistoryPanelWrapper({ data }) {
+  const ctx = useWorkspacePanelContext();
+
+  return (
+    <div
+      data-panel-type="commithistory"
+      className="h-full w-full overflow-hidden"
+      style={{ background: 'var(--bg-sidebar)' }}
+    >
+      <CommitHistoryPanel
+        slug={ctx?.workspaceSlug}
+      />
+    </div>
+  );
+});
+
+// ────────────────────────────────────────────────────────
+//  AI Healing Panel Wrapper
+// ────────────────────────────────────────────────────────
+
+export const AIHealingPanelWrapper = memo(function AIHealingPanelWrapper({ data }) {
+  const ctx = useWorkspacePanelContext();
+
+  return (
+    <div
+      data-panel-type="ai-healing"
+      className="h-full w-full overflow-hidden"
+      style={{ background: 'var(--bg-sidebar)' }}
+    >
+      <AIHealingPanel aiHealing={ctx?.aiHealing} />
+    </div>
+  );
+});
+
+// ────────────────────────────────────────────────────────
 //  Wrapper registry (type → component)
 // ────────────────────────────────────────────────────────
 
@@ -332,4 +407,7 @@ export const PANEL_WRAPPERS = {
   preview:        PreviewPanelWrapper,
   settings:       SettingsPanelWrapper,
   'theme-editor': ThemeEditorPanelWrapper,
+  pullrequests:    PullRequestsPanelWrapper,
+  commithistory:   CommitHistoryPanelWrapper,
+  'ai-healing':    AIHealingPanelWrapper,
 };

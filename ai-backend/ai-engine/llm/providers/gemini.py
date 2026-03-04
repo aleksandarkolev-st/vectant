@@ -6,6 +6,22 @@ from .base import AiProvider
 import google.generativeai as genai
 from dotenv import load_dotenv
 
+# PERF: Use tiktoken for accurate token counting instead of rough len(split())
+# estimates.  Prevents budget overflows (costly retries) and underutilization.
+try:
+    import tiktoken
+    _TIKTOKEN_ENC = tiktoken.get_encoding("cl100k_base")  # fast, good approximation for Gemini
+except Exception:
+    _TIKTOKEN_ENC = None
+
+
+def _count_tokens(text: str) -> int:
+    """Count tokens using tiktoken when available, fallback to word split."""
+    if _TIKTOKEN_ENC is not None:
+        return len(_TIKTOKEN_ENC.encode(text, disallowed_special=()))
+    return len(text.split())
+
+
 from llm.prompts import build_prompt, build_fullfile_prompt, build_patch_prompt
 
 load_dotenv()  # Load once at import
@@ -130,14 +146,14 @@ class GeminiProvider(AiProvider):
                                     part_text = getattr(part, "text", None)
                                     if part_text:
                                         chunks.append(part_text)
-                                        total_tokens += len(part_text.split())  # Rough token estimate
+                                        total_tokens += _count_tokens(part_text)
                                 continue
                     
                     # Fallback: try the .text accessor
                     text = chunk.text
                     if text:
                         chunks.append(text)
-                        total_tokens += len(text.split())
+                        total_tokens += _count_tokens(text)
                 except (ValueError, AttributeError):
                     # .text accessor throws ValueError if no valid parts
                     # This is expected when finish_reason is STOP without content
@@ -149,7 +165,7 @@ class GeminiProvider(AiProvider):
             end_time = time.time()
             total_latency_ms = (end_time - start_time) * 1000
             ttft_ms = (first_token_time - start_time) * 1000 if first_token_time else total_latency_ms
-            prompt_tokens = len(full_prompt.split())  # Rough estimate
+            prompt_tokens = _count_tokens(full_prompt)
             
             collector = _get_metrics_collector()
             if collector:

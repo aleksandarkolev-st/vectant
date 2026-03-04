@@ -1,6 +1,6 @@
 "use client";
 
-import { Files, Search, GitBranch, Puzzle, Settings, Sparkles, Box } from "lucide-react";
+import { Files, Search, GitBranch, GitPullRequest, Puzzle, Settings, Sparkles, Box } from "lucide-react";
 
 /**
  * @param {Object} props
@@ -15,6 +15,8 @@ export default function ActivityBar({ active = "explorer", onSelect, badges = {}
     { id: "explorer", label: "Explorer", Icon: Files },
     { id: "search", label: "Search", Icon: Search },
     { id: "scm", label: "Source Control", Icon: GitBranch },
+    { id: "pullrequests", label: "Pull Requests", Icon: GitPullRequest },
+    { id: "ai-healing", label: "AI Healing", Icon: Sparkles },
     { id: "extensions", label: "Extensions", Icon: Puzzle },
   ];
 
@@ -106,7 +108,12 @@ export default function ActivityBar({ active = "explorer", onSelect, badges = {}
       {/* Synthi AI Badge */}
       <div className="mt-auto mb-3 flex flex-col items-center">
         {bottomItems.map(renderButton)}
-        <div className="w-7 h-7 rounded-lg border flex items-center justify-center cursor-pointer transition-all group mt-2" style={{ background: 'color-mix(in srgb, var(--accent-primary) 7%, transparent)', borderColor: 'color-mix(in srgb, var(--accent-primary) 19%, transparent)' }} title="Synthi AI">
+        <div 
+          onClick={() => onSelect('ai')}
+          className="w-7 h-7 rounded-lg border flex items-center justify-center cursor-pointer transition-all group mt-2" 
+          style={{ background: 'color-mix(in srgb, var(--accent-primary) 7%, transparent)', borderColor: 'color-mix(in srgb, var(--accent-primary) 19%, transparent)' }} 
+          title="Synthi AI"
+        >
           <Sparkles className="w-3.5 h-3.5 opacity-70 group-hover:opacity-100" style={{ color: 'var(--accent-primary)' }} strokeWidth={2} />
         </div>
       </div>

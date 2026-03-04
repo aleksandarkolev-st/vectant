@@ -24,25 +24,31 @@ import {
   PreviewPanelWrapper,
   SettingsPanelWrapper,
   ThemeEditorPanelWrapper,
-} from "./panel-wrappers";
+  PullRequestsPanelWrapper,
+  CommitHistoryPanelWrapper,
+  AIHealingPanelWrapper,
+} from './panel-wrappers';
 
 // ────────────────────────────────────────────────────────
 //  Panel type keys (match PANEL_TYPES in panel-registry)
 // ────────────────────────────────────────────────────────
 export const IDE_PANEL = Object.freeze({
-  EXPLORER: "explorer",
-  SEARCH: "search",
-  GIT: "git",
-  EXTENSIONS: "extensions",
-  EXTENSION_VIEW: "extension-view",
-  EDITOR: "editor",
-  TERMINAL: "terminal",
-  CHAT: "chat",
-  PROBLEMS: "problems",
-  OUTPUT: "output",
-  PREVIEW: "preview",
-  SETTINGS: "settings",
-  THEME_EDITOR: "theme-editor",
+  EXPLORER:   'explorer',
+  SEARCH:     'search',
+  GIT:        'git',
+  EXTENSIONS: 'extensions',
+  EXTENSION_VIEW: 'extension-view',
+  EDITOR:     'editor',
+  TERMINAL:   'terminal',
+  CHAT:       'chat',
+  PROBLEMS:   'problems',
+  OUTPUT:     'output',
+  PREVIEW:    'preview',
+  SETTINGS:   'settings',
+  THEME_EDITOR: 'theme-editor',
+  PULL_REQUESTS: 'pullrequests',
+  COMMIT_HISTORY: 'commithistory',
+  AI_HEALING: 'ai-healing',
 });
 
 // ────────────────────────────────────────────────────────
@@ -185,6 +191,36 @@ export const IDE_PANEL_DEFINITIONS = [
     component: ThemeEditorPanelWrapper,
     allowMultiple: false,
     defaultLocation: "right",
+    closable: true,
+  },
+  {
+    panelType: IDE_PANEL.PULL_REQUESTS,
+    displayName: 'Pull Requests',
+    icon: 'git-pull-request',
+    category: 'sidebar',
+    component: PullRequestsPanelWrapper,
+    allowMultiple: false,
+    defaultLocation: 'left',
+    closable: true,
+  },
+  {
+    panelType: IDE_PANEL.COMMIT_HISTORY,
+    displayName: 'Commit History',
+    icon: 'git-commit',
+    category: 'bottom',
+    component: CommitHistoryPanelWrapper,
+    allowMultiple: false,
+    defaultLocation: 'bottom',
+    closable: true,
+  },
+  {
+    panelType: IDE_PANEL.AI_HEALING,
+    displayName: 'AI Healing',
+    icon: 'sparkles',
+    category: 'sidebar',
+    component: AIHealingPanelWrapper,
+    allowMultiple: false,
+    defaultLocation: 'left',
     closable: true,
   },
 ];

@@ -25,7 +25,7 @@ for module in ['analyzer.proactive', 'analyzer.proactive.semantic_analyzer', 'an
     logging.getLogger(module).setLevel(logging.INFO)
 import time
 
-from fastapi import FastAPI, HTTPException, BackgroundTasks, Request
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Request, Body
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from analyzer import get_analyzer
@@ -1684,6 +1684,1337 @@ except ImportError as e:
     logger.warning(f"Code Intelligence module not available: {e}")
 
 
+# =============================================================================
+# Self-Healing System
+# =============================================================================
+from analyzer.proactive.healing import SelfHealingEngine, HealingConfig
+from analyzer.proactive.healing.engine import get_healing_engine
+
+class HealingAnalyzeRequest(BaseModel):
+    """Request for self-healing analysis."""
+    code: str
+    lang: str
+    file_path: Optional[str] = "untitled"
+    auto_apply: Optional[bool] = False  # Whether to auto-apply safe fixes
+
+
+class HealingApplyRequest(BaseModel):
+    """Request to apply specific healing fixes."""
+    code: str
+    lang: str
+    file_path: Optional[str] = "untitled"
+    fix_ids: Optional[List[str]] = None  # Specific fix IDs to apply (None = all safe)
+
+
+class HealingConfigUpdateRequest(BaseModel):
+    """Request to update healing configuration."""
+    enabled: Optional[bool] = None
+    min_confidence: Optional[float] = None
+    max_fixes_per_pass: Optional[int] = None
+    cooldown_ms: Optional[int] = None
+    debounce_ms: Optional[int] = None
+    auto_apply_safe: Optional[bool] = None
+    auto_heal_categories: Optional[List[str]] = None
+
+
+@app.post("/heal/analyze")
+async def heal_analyze(req: HealingAnalyzeRequest):
+    """
+    Analyze code for auto-healable micro-issues.
+    
+    Returns detected fixes without applying them.
+    If auto_apply is True, also returns the healed code.
+    """
+    engine = get_healing_engine()
+    
+    try:
+        result = await engine.analyze(
+            code=req.code,
+            language=req.lang.lower(),
+            file_path=req.file_path or "untitled",
+        )
+        
+        response = result.to_dict()
+        
+        # Optionally auto-apply safe fixes
+        if req.auto_apply and result.safe_fixes:
+            healed_code, applied = engine.apply_safe_fixes(req.code, result)
+            response["healedCode"] = healed_code
+            response["appliedFixes"] = [f.to_dict() for f in applied]
+            response["wasHealed"] = len(applied) > 0
+        else:
+            response["wasHealed"] = False
+        
+        return response
+    except Exception as e:
+        logger.error(f"[Healing] Analysis error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/heal/apply")
+async def heal_apply(req: HealingApplyRequest):
+    """
+    Apply healing fixes to code.
+    
+    Can apply all safe fixes or specific fix IDs.
+    """
+    engine = get_healing_engine()
+    
+    try:
+        # First analyze to get current fixes
+        result = await engine.analyze(
+            code=req.code,
+            language=req.lang.lower(),
+            file_path=req.file_path or "untitled",
+        )
+        
+        if req.fix_ids:
+            # Apply specific fixes
+            fix_map = {f.fix_id: f for f in result.fixes}
+            fixes_to_apply = [fix_map[fid] for fid in req.fix_ids if fid in fix_map]
+        else:
+            # Apply all safe fixes
+            fixes_to_apply = result.safe_fixes
+        
+        # Apply fixes bottom-up
+        code = req.code
+        applied = []
+        for fix in sorted(fixes_to_apply, key=lambda f: (f.line, f.column), reverse=True):
+            try:
+                code = engine.apply_fix(code, fix)
+                applied.append(fix)
+            except Exception as e:
+                logger.warning(f"[Healing] Fix application error: {e}")
+        
+        return {
+            "healedCode": code,
+            "appliedFixes": [f.to_dict() for f in applied],
+            "appliedCount": len(applied),
+            "contentHash": result.content_hash,
+        }
+    except Exception as e:
+        logger.error(f"[Healing] Apply error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/heal/container")
+async def heal_container(req: ContainerAnalysisRequest):
+    """
+    Container-first healing: fetch content from container filesystem
+    and analyze for auto-healable issues.
+    """
+    engine = get_healing_engine()
+    
+    try:
+        content = await fetch_file_from_container(req.slug, req.file_path)
+        if content is None:
+            raise HTTPException(status_code=404, detail=f"File not found: {req.file_path}")
+        
+        result = await engine.analyze(
+            code=content,
+            language=req.lang.lower(),
+            file_path=req.file_path,
+        )
+        
+        response = result.to_dict()
+        
+        # Auto-apply safe fixes for container mode
+        if result.safe_fixes:
+            healed_code, applied = engine.apply_safe_fixes(content, result)
+            response["healedCode"] = healed_code
+            response["appliedFixes"] = [f.to_dict() for f in applied]
+            response["wasHealed"] = len(applied) > 0
+        else:
+            response["wasHealed"] = False
+        
+        return response
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"[Healing] Container analysis error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/heal/config")
+async def get_heal_config():
+    """Get current healing configuration."""
+    engine = get_healing_engine()
+    return engine.config.to_dict()
+
+
+@app.post("/heal/config")
+async def update_heal_config(req: HealingConfigUpdateRequest):
+    """Update healing configuration."""
+    engine = get_healing_engine()
+    
+    updates = {}
+    if req.enabled is not None:
+        updates["enabled"] = req.enabled
+    if req.min_confidence is not None:
+        updates["min_confidence"] = req.min_confidence
+    if req.max_fixes_per_pass is not None:
+        updates["max_fixes_per_pass"] = req.max_fixes_per_pass
+    if req.cooldown_ms is not None:
+        updates["cooldown_ms"] = req.cooldown_ms
+    if req.debounce_ms is not None:
+        updates["debounce_ms"] = req.debounce_ms
+    if req.auto_apply_safe is not None:
+        updates["auto_apply_safe"] = req.auto_apply_safe
+    
+    engine.update_config(**updates)
+    return engine.config.to_dict()
+
+
+@app.get("/heal/stats")
+async def get_heal_stats():
+    """Get healing system statistics."""
+    engine = get_healing_engine()
+    return engine.stats.to_dict()
+
+
+@app.get("/heal/rules")
+async def list_heal_rules():
+    """List all registered healing rules."""
+    from analyzer.proactive.healing.rule_registry import get_registry
+    registry = get_registry()
+    return {
+        "rules": [
+            {
+                "ruleId": rule.rule_id,
+                "category": rule.category.value,
+                "languages": list(rule.languages),
+                "description": rule.description,
+                "enabled": rule.enabled,
+            }
+            for rule in registry.list_rules()
+        ],
+        "totalRules": registry.rule_count,
+        "enabledRules": registry.enabled_rule_count,
+    }
+
+
+@app.post("/heal/batch")
+async def batch_heal(payload: dict):
+    """Batch analyse multiple files at once."""
+    from analyzer.proactive.healing.batch_engine import BatchHealingEngine, BatchFileEntry
+    from analyzer.proactive.healing.engine import get_healing_engine
+
+    files = payload.get("files", [])
+    if not files:
+        return {"error": "No files provided"}
+
+    entries = [
+        BatchFileEntry(
+            file_path=f["filePath"],
+            language=f["language"],
+            code=f["code"],
+            priority=f.get("priority", 0),
+        )
+        for f in files
+    ]
+
+    batch_engine = BatchHealingEngine(engine=get_healing_engine())
+    result = await batch_engine.analyze_batch(entries)
+
+    return {
+        "totalFiles": result.total_files,
+        "analyzedFiles": result.analyzed_files,
+        "totalFixes": result.total_fixes,
+        "autoFixable": result.auto_fixable,
+        "skippedFiles": result.skipped_files,
+        "elapsedMs": round(result.elapsed_ms, 1),
+        "files": {
+            path: {
+                "fixes": len(hr.fixes),
+                "autoFixable": hr.auto_fixable_count,
+                "fixDetails": [
+                    {
+                        "ruleId": f.rule_id,
+                        "category": f.category.value,
+                        "severity": f.severity.value,
+                        "description": f.description,
+                        "line": f.line,
+                        "isSafe": f.is_safe,
+                    }
+                    for f in hr.fixes
+                ],
+            }
+            for path, hr in result.file_results.items()
+        },
+        "errors": result.errors,
+    }
+
+
+@app.get("/heal/cache/stats")
+async def heal_cache_stats():
+    """Get healing cache statistics."""
+    from analyzer.proactive.healing.engine import get_healing_engine
+    engine = get_healing_engine()
+    return engine._cache.stats
+
+
+@app.get("/heal/presets")
+async def list_heal_presets():
+    """List all available healing configuration presets."""
+    from analyzer.proactive.healing.config_schema import list_presets, get_preset
+    presets = list_presets()
+    return {
+        "presets": {
+            name: get_preset(name) for name in presets
+        },
+        "available": presets,
+    }
+
+
+@app.post("/heal/preset")
+async def apply_heal_preset(payload: dict):
+    """Apply a named healing configuration preset."""
+    from analyzer.proactive.healing.config_schema import get_preset as fetch_preset
+    from analyzer.proactive.healing.engine import get_healing_engine
+
+    name = payload.get("preset")
+    if not name:
+        raise HTTPException(status_code=400, detail="Missing 'preset' field")
+
+    preset = fetch_preset(name)
+    if not preset:
+        raise HTTPException(status_code=404, detail=f"Unknown preset: {name}")
+
+    engine = get_healing_engine()
+    engine.update_config(**preset)
+    return {
+        "applied": name,
+        "config": engine.config.to_dict(),
+    }
+
+
+@app.get("/heal/metrics")
+async def heal_metrics():
+    """Get Prometheus-compatible healing metrics."""
+    from analyzer.proactive.healing.metrics_export import HealingMetrics
+    from analyzer.proactive.healing.engine import get_healing_engine
+    from fastapi.responses import PlainTextResponse
+
+    engine = get_healing_engine()
+    metrics = HealingMetrics(
+        rules_executed_total=engine.stats.get("rulesExecuted", 0),
+        fixes_detected_total=engine.stats.get("totalDetected", 0),
+        fixes_applied_total=engine.stats.get("totalApplied", 0),
+        active_rules_count=engine.stats.get("activeRules", 0),
+    )
+    return PlainTextResponse(content=metrics.to_prometheus(), media_type="text/plain")
+
+
+# =============================================================================
+# AI Agent Endpoints (LLM-powered error detection)
+# =============================================================================
+
+class AIAnalyzeRequest(BaseModel):
+    """Request for AI-powered code analysis."""
+    code: str
+    lang: str
+    file_path: Optional[str] = "untitled"
+    workspace_root: Optional[str] = None
+    auto_apply: Optional[bool] = False
+    focus_start_line: Optional[int] = None
+    focus_end_line: Optional[int] = None
+    validate_fixes: Optional[bool] = True
+    min_confidence: Optional[float] = None
+
+
+class AIBatchRequest(BaseModel):
+    """Request for AI batch analysis across multiple files."""
+    files: Dict[str, str]  # path -> source code
+    lang: Optional[str] = None
+    auto_apply: Optional[bool] = False
+
+
+class AIHybridRequest(BaseModel):
+    """Request for hybrid (regex + AI) analysis."""
+    code: str
+    lang: str
+    file_path: Optional[str] = "untitled"
+    workspace_root: Optional[str] = None
+    auto_apply: Optional[bool] = False
+
+
+class RuntimeErrorDiagnostic(BaseModel):
+    """A single compiler/runtime diagnostic."""
+    severity: Optional[str] = "error"
+    message: str
+    code: Optional[str] = None
+    location: Optional[Dict[str, Any]] = None
+    codeSnippet: Optional[str] = None
+    snippetStartLine: Optional[int] = None
+    suggestions: Optional[List[Dict[str, str]]] = None
+    related: Optional[List[Dict[str, Any]]] = None
+
+
+class AIRuntimeErrorRequest(BaseModel):
+    """Request for runtime/compile error fixing via AI.
+    
+    This is the core of HMR runtime healing: the compiler reported
+    errors, and we need the AI to fix them.
+    """
+    code: str
+    lang: str
+    file_path: Optional[str] = "untitled"
+    diagnostics: List[RuntimeErrorDiagnostic]
+    error_output: Optional[str] = None
+    auto_apply: Optional[bool] = True  # default True for runtime healing
+    module: Optional[str] = None  # HMR module identifier
+
+
+@app.post("/heal/ai/analyze")
+async def heal_ai_analyze(req: AIAnalyzeRequest):
+    """
+    Analyze code using the AI agent (LLM-powered detection).
+    
+    Sends code to the LLM which identifies real bugs:
+    logic errors, null safety, missing awaits, off-by-one, etc.
+    
+    Slower than regex (~5-30s) but catches real issues.
+    """
+    engine = get_healing_engine()
+    
+    focus_range = None
+    if req.focus_start_line is not None and req.focus_end_line is not None:
+        focus_range = (req.focus_start_line, req.focus_end_line)
+    
+    try:
+        result = await engine.analyze_with_ai(
+            code=req.code,
+            language=req.lang.lower(),
+            file_path=req.file_path or "untitled",
+            workspace_root=req.workspace_root,
+            focus_range=focus_range,
+        )
+        
+        response = result.to_dict()
+        response["source"] = "ai_agent"
+        
+        if req.auto_apply and result.safe_fixes:
+            healed_code, applied = engine.apply_safe_fixes(req.code, result)
+            response["healedCode"] = healed_code
+            response["appliedFixes"] = [f.to_dict() for f in applied]
+            response["wasHealed"] = len(applied) > 0
+        else:
+            response["wasHealed"] = False
+        
+        return response
+    except Exception as e:
+        logger.error(f"[AI Healing] Analysis error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/heal/ai/runtime")
+async def heal_ai_runtime_error(req: AIRuntimeErrorRequest):
+    """
+    Fix compiler/runtime errors using the AI agent.
+    
+    This is the HMR runtime healing endpoint. When the compiler or
+    runtime reports errors (compile-error, type-error, etc.), the
+    frontend sends the diagnostics here. The AI reads the exact error
+    messages and source code, then produces targeted fixes.
+    
+    Unlike /heal/ai/analyze (which asks the LLM to *find* bugs),
+    this endpoint says "the compiler reported THESE errors — fix them."
+    
+    The response includes healed code ready to be written back to the
+    file so HMR can re-trigger.
+    """
+    engine = get_healing_engine()
+    agent = engine._get_ai_agent()
+    
+    # Convert Pydantic diagnostics to plain dicts for the prompt builder
+    diag_dicts = [d.model_dump() for d in req.diagnostics]
+    
+    try:
+        fixes = await agent.detect_runtime_errors(
+            file_path=req.file_path or "untitled",
+            source_code=req.code,
+            diagnostics=diag_dicts,
+            language=req.lang.lower(),
+            error_output=req.error_output,
+        )
+        
+        response = {
+            "source": "runtime_error_agent",
+            "filePath": req.file_path,
+            "module": req.module,
+            "fixes": [_fix_to_dict(f) for f in fixes],
+            "fixCount": len(fixes),
+            "diagnosticCount": len(req.diagnostics),
+            "wasHealed": False,
+            "healedCode": None,
+            "appliedFixes": [],
+        }
+        
+        # Auto-apply: apply all fixes that are safe
+        if req.auto_apply and fixes:
+            from analyzer.proactive.healing.types import HealingResult
+            temp_result = HealingResult(
+                file_path=req.file_path or "untitled",
+                language=req.lang.lower(),
+                content_hash="",
+                fixes=fixes,
+            )
+            # For runtime errors, lower the safety threshold —
+            # compiler-confirmed errors are real.
+            safe_fixes = [f for f in fixes if f.confidence >= 0.7]
+            if safe_fixes:
+                temp_result_safe = HealingResult(
+                    file_path=req.file_path or "untitled",
+                    language=req.lang.lower(),
+                    content_hash="",
+                    fixes=safe_fixes,
+                )
+                healed_code, applied = engine.apply_safe_fixes(
+                    req.code, temp_result_safe
+                )
+                response["healedCode"] = healed_code
+                response["appliedFixes"] = [_fix_to_dict(f) for f in applied]
+                response["wasHealed"] = len(applied) > 0
+        
+        logger.info(
+            f"[Runtime Healing] {req.file_path}: "
+            f"{len(req.diagnostics)} diagnostics → {len(fixes)} fixes, "
+            f"healed={response['wasHealed']}"
+        )
+        
+        return response
+    except Exception as e:
+        logger.error(f"[Runtime Healing] Error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/heal/ai/batch")
+async def heal_ai_batch(req: AIBatchRequest):
+    """
+    Analyze multiple files using the AI agent in a single LLM call.
+    """
+    engine = get_healing_engine()
+    agent = engine._get_ai_agent()
+    
+    try:
+        results = await agent.detect_batch(
+            files=req.files,
+            language=req.lang,
+        )
+        
+        response = {
+            "source": "ai_agent",
+            "results": {},
+        }
+        
+        for path, fixes in results.items():
+            file_result = {
+                "filePath": path,
+                "fixes": [_fix_to_dict(f) for f in fixes],
+                "fixCount": len(fixes),
+            }
+            
+            if req.auto_apply and fixes:
+                source = req.files.get(path, "")
+                from analyzer.proactive.healing.types import HealingResult
+                temp_result = HealingResult(
+                    file_path=path,
+                    language=req.lang or "unknown",
+                    content_hash="",
+                    fixes=fixes,
+                )
+                healed_code, applied = engine.apply_safe_fixes(source, temp_result)
+                file_result["healedCode"] = healed_code
+                file_result["appliedFixes"] = [_fix_to_dict(f) for f in applied]
+            
+            response["results"][path] = file_result
+        
+        return response
+    except Exception as e:
+        logger.error(f"[AI Batch] Analysis error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/heal/ai/hybrid")
+async def heal_ai_hybrid(req: AIHybridRequest):
+    """
+    Run both regex rules AND AI detection, merge results.
+    
+    Regex rules run first (fast), then AI agent finds deeper issues.
+    Results are merged with AI fixes taking priority at overlapping locations.
+    """
+    engine = get_healing_engine()
+    
+    try:
+        result = await engine.analyze_hybrid(
+            code=req.code,
+            language=req.lang.lower(),
+            file_path=req.file_path or "untitled",
+            workspace_root=req.workspace_root,
+        )
+        
+        response = result.to_dict()
+        response["source"] = "hybrid"
+        
+        if req.auto_apply and result.safe_fixes:
+            healed_code, applied = engine.apply_safe_fixes(req.code, result)
+            response["healedCode"] = healed_code
+            response["appliedFixes"] = [f.to_dict() for f in applied]
+            response["wasHealed"] = len(applied) > 0
+        else:
+            response["wasHealed"] = False
+        
+        return response
+    except Exception as e:
+        logger.error(f"[Hybrid Healing] Analysis error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/heal/ai/stats")
+async def heal_ai_stats():
+    """Get AI agent statistics: LLM calls, latency, acceptance rate, rate limiter."""
+    engine = get_healing_engine()
+    stats = engine.get_ai_stats()
+
+    # Augment with rate limiter stats
+    from analyzer.proactive.healing.ai_rate_limiter import get_rate_limiter
+    limiter = get_rate_limiter()
+    if isinstance(stats, dict):
+        stats["rate_limiter"] = limiter.stats
+
+    # Augment with telemetry snapshot
+    from analyzer.proactive.healing.ai_telemetry import get_telemetry
+    tel = get_telemetry()
+    if isinstance(stats, dict):
+        stats["telemetry"] = tel.snapshot()
+
+    # Augment with prompt cache stats
+    from analyzer.proactive.healing.ai_prompt_cache import get_prompt_cache
+    pcache = get_prompt_cache()
+    if isinstance(stats, dict):
+        stats["prompt_cache"] = pcache.stats()
+
+    return stats
+
+
+@app.get("/heal/ai/health")
+async def heal_ai_health():
+    """
+    Health check for the AI healing pipeline.
+
+    Validates that:
+    - The LLM provider is configured (GEMINI_API_KEY is set)
+    - The rate limiter is functional
+    - The memory store is accessible
+    - The dependency graph is initialized
+    """
+    import os
+    checks = {}
+
+    # 1. LLM provider
+    api_key = os.environ.get("GEMINI_API_KEY", "")
+    checks["llm_provider"] = {
+        "configured": bool(api_key),
+        "provider": "gemini",
+        "key_prefix": api_key[:8] + "…" if len(api_key) > 8 else "(not set)",
+    }
+
+    # 2. Rate limiter
+    from analyzer.proactive.healing.ai_rate_limiter import get_rate_limiter
+    try:
+        limiter = get_rate_limiter()
+        checks["rate_limiter"] = {
+            "ok": True,
+            **limiter.stats,
+        }
+    except Exception as e:
+        checks["rate_limiter"] = {"ok": False, "error": str(e)}
+
+    # 3. Memory store
+    from analyzer.proactive.healing.ai_memory import get_agent_memory
+    try:
+        memory = get_agent_memory()
+        checks["memory"] = {
+            "ok": True,
+            "patterns": len(memory._pattern_stats) if hasattr(memory, "_pattern_stats") else 0,
+            "history_size": len(memory._history) if hasattr(memory, "_history") else 0,
+        }
+    except Exception as e:
+        checks["memory"] = {"ok": False, "error": str(e)}
+
+    # 4. Dependency graph
+    from analyzer.proactive.healing.ai_deps import get_dependency_graph
+    try:
+        graph = get_dependency_graph()
+        checks["dep_graph"] = {
+            "ok": True,
+            **graph.summary(),
+        }
+    except Exception as e:
+        checks["dep_graph"] = {"ok": False, "error": str(e)}
+
+    all_ok = all(
+        c.get("ok", c.get("configured", False))
+        for c in checks.values()
+    )
+
+    return {
+        "healthy": all_ok,
+        "checks": checks,
+    }
+
+
+@app.post("/heal/ai/stream")
+async def heal_ai_stream(req: AIAnalyzeRequest):
+    """
+    Stream AI analysis results via Server-Sent Events (SSE).
+    
+    Returns a stream of events:
+    - progress: status updates with percentage
+    - partial_fix: individual fixes as they're found
+    - complete: final result with all fixes
+    - error: analysis failed
+    """
+    from starlette.responses import StreamingResponse
+    from analyzer.proactive.healing.ai_streaming import stream_ai_analysis
+
+    return StreamingResponse(
+        stream_ai_analysis(
+            code=req.code,
+            language=req.lang.lower(),
+            file_path=req.file_path or "untitled",
+            workspace_root=req.workspace_root,
+        ),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+class AIFeedbackRequest(BaseModel):
+    """User feedback on an AI-detected fix."""
+    rule_id: str
+    category: str
+    feedback: str  # "accepted", "rejected", "modified", "auto_applied"
+    confidence: float
+    language: str
+    file_path: Optional[str] = None
+    description: Optional[str] = None
+
+
+class AIProjectAnalyzeRequest(BaseModel):
+    """Request to analyze a changed file and its dependents."""
+    code: str
+    lang: str
+    file_path: str
+    workspace_root: str = ""
+    related_files: Optional[Dict[str, str]] = None  # {path: content}
+    validate_fixes: bool = True
+    min_confidence: Optional[float] = None
+
+
+class AIConfigUpdate(BaseModel):
+    """Dynamic config update for the AI agent."""
+    min_confidence: Optional[float] = None
+    validate_fixes: Optional[bool] = None
+    auto_accept_threshold: Optional[float] = None
+    confidence_discount: Optional[float] = None
+    max_fixes_per_file: Optional[int] = None
+    llm_timeout: Optional[float] = None
+
+
+@app.get("/heal/ai/config")
+async def heal_ai_config_get():
+    """Get current AI agent configuration."""
+    from analyzer.proactive.healing.ai_agent import AIAgentConfig
+    config = AIAgentConfig()
+    return {
+        "min_confidence": config.min_confidence,
+        "validate_fixes": config.validate_fixes,
+        "auto_accept_threshold": config.auto_accept_threshold,
+        "confidence_discount": config.confidence_discount,
+        "max_fixes_per_file": config.max_fixes_per_file,
+        "llm_timeout": config.llm_timeout,
+        "model": config.model,
+    }
+
+
+@app.put("/heal/ai/config")
+async def heal_ai_config_update(req: AIConfigUpdate):
+    """
+    Update AI agent configuration dynamically.
+
+    Only provided fields are updated; omitted fields keep defaults.
+    Note: these changes are per-process and not persisted across restarts.
+    """
+    from analyzer.proactive.healing.ai_agent import AIAgentConfig
+    # Since AIAgentConfig is a dataclass with defaults, we track
+    # the live config on the app state.
+    if not hasattr(app.state, "_ai_config"):
+        app.state._ai_config = AIAgentConfig()
+
+    cfg = app.state._ai_config
+    if req.min_confidence is not None:
+        cfg.min_confidence = req.min_confidence
+    if req.validate_fixes is not None:
+        cfg.validate_fixes = req.validate_fixes
+    if req.auto_accept_threshold is not None:
+        cfg.auto_accept_threshold = req.auto_accept_threshold
+    if req.confidence_discount is not None:
+        cfg.confidence_discount = req.confidence_discount
+    if req.max_fixes_per_file is not None:
+        cfg.max_fixes_per_file = req.max_fixes_per_file
+    if req.llm_timeout is not None:
+        cfg.llm_timeout = req.llm_timeout
+
+    return {
+        "updated": True,
+        "config": {
+            "min_confidence": cfg.min_confidence,
+            "validate_fixes": cfg.validate_fixes,
+            "auto_accept_threshold": cfg.auto_accept_threshold,
+            "confidence_discount": cfg.confidence_discount,
+            "max_fixes_per_file": cfg.max_fixes_per_file,
+            "llm_timeout": cfg.llm_timeout,
+        },
+    }
+
+
+@app.post("/heal/ai/cache/clear")
+async def heal_ai_cache_clear():
+    """Clear the AI prompt cache (forces fresh LLM calls on next analysis)."""
+    from analyzer.proactive.healing.ai_prompt_cache import get_prompt_cache
+    cache = get_prompt_cache()
+    prev_size = cache.size
+    cache.clear()
+    return {"cleared": True, "entries_removed": prev_size}
+
+
+@app.post("/heal/ai/preview")
+async def heal_ai_preview(req: AIAnalyzeRequest):
+    """
+    Preview AI fixes WITHOUT applying them.
+
+    Returns the analysis results along with a simulated diff showing
+    what the code would look like after applying all safe fixes.
+    Useful for review workflows and diff-preview UIs.
+    """
+    engine = get_healing_engine()
+
+    try:
+        result = await engine.analyze_with_ai(
+            code=req.code,
+            language=req.lang.lower(),
+            file_path=req.file_path or "untitled",
+            workspace_root=None,
+        )
+
+        response = result.to_dict()
+        response["source"] = "ai_preview"
+
+        # Simulate applying all safe fixes to generate a preview
+        safe_fixes = result.safe_fixes
+        if safe_fixes:
+            preview_code = req.code
+            for fix in sorted(safe_fixes, key=lambda f: (f.line, f.column), reverse=True):
+                try:
+                    preview_code = engine.apply_fix(preview_code, fix)
+                except Exception:
+                    pass
+            response["previewCode"] = preview_code
+            response["previewFixCount"] = len(safe_fixes)
+        else:
+            response["previewCode"] = req.code
+            response["previewFixCount"] = 0
+
+        response["wasApplied"] = False
+        return response
+    except Exception as e:
+        logger.error(f"[AI Preview] Error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/heal/ai/project")
+async def heal_ai_project(req: AIProjectAnalyzeRequest):
+    """
+    Analyze a file AND its direct dependents for cross-file issues.
+
+    Uses the dependency graph to identify which files import the target
+    file, reads their content, and feeds everything into a single
+    batched AI analysis so the LLM can detect issues that span files
+    (e.g. wrong argument types, renamed exports, missing fields).
+    """
+    from analyzer.proactive.healing.ai_deps import get_dependency_graph
+    from analyzer.proactive.healing.ai_agent import AIHealingAgent, AIAgentConfig
+
+    graph = get_dependency_graph(req.workspace_root)
+
+    # Register/update the target file in the graph
+    graph.add_file(req.file_path, req.code, req.lang.lower())
+
+    # Find files that import this one
+    dependents = graph.dependents_of(req.file_path)
+
+    # Build file map for batch analysis
+    files = {req.file_path: req.code}
+
+    # Add explicitly provided related files
+    if req.related_files:
+        for path, content in req.related_files.items():
+            if path not in files:
+                files[path] = content
+
+    # For dependents not in related_files, we can only flag them
+    missing_dependents = [d for d in dependents if d not in files]
+
+    config = AIAgentConfig(
+        validate_fixes=req.validate_fixes,
+    )
+    if req.min_confidence is not None:
+        config.min_confidence = req.min_confidence
+
+    agent = AIHealingAgent(config=config)
+    result = await agent.detect_batch(files, req.lang.lower())
+
+    return {
+        "fixes": result.get("fixes", []),
+        "stats": result.get("stats", {}),
+        "analyzed_files": list(files.keys()),
+        "dependents_found": list(dependents),
+        "missing_dependents": missing_dependents,
+        "graph_summary": graph.summary(),
+    }
+
+
+@app.post("/heal/ai/feedback")
+async def heal_ai_feedback(req: AIFeedbackRequest):
+    """
+    Record user feedback on an AI-detected fix.
+    
+    This data is used to adjust future confidence scores:
+    patterns the user always rejects get suppressed,
+    patterns they accept get boosted.
+    """
+    from analyzer.proactive.healing.ai_memory import (
+        get_agent_memory, FixFeedback, FeedbackType,
+    )
+
+    valid_types = {
+        FeedbackType.ACCEPTED,
+        FeedbackType.REJECTED,
+        FeedbackType.MODIFIED,
+        FeedbackType.AUTO_APPLIED,
+    }
+    if req.feedback not in valid_types:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid feedback type: {req.feedback}. "
+                   f"Must be one of: {', '.join(valid_types)}",
+        )
+
+    memory = get_agent_memory()
+    memory.record_feedback(FixFeedback(
+        rule_id=req.rule_id,
+        category=req.category,
+        feedback=req.feedback,
+        confidence=req.confidence,
+        language=req.language,
+        file_path=req.file_path,
+        description=req.description,
+    ))
+
+    return {"status": "recorded", "rule_id": req.rule_id, "feedback": req.feedback}
+
+
+@app.get("/heal/ai/memory")
+async def heal_ai_memory():
+    """Get AI agent memory summary (pattern stats, suppressed patterns)."""
+    from analyzer.proactive.healing.ai_memory import get_agent_memory
+
+    memory = get_agent_memory()
+    return memory.get_summary()
+
+
+@app.delete("/heal/ai/memory")
+async def heal_ai_memory_clear():
+    """Clear AI agent memory (reset all learned patterns)."""
+    from analyzer.proactive.healing.ai_memory import get_agent_memory
+
+    memory = get_agent_memory()
+    memory.clear()
+    return {"status": "cleared"}
+
+
+# ── AI Policy: Suppression Endpoints ──────────────────────────────────
+
+@app.post("/heal/ai/policy/suppress")
+async def heal_ai_policy_suppress(req: dict = Body(...)):
+    """
+    Record a suppression policy (user preference, NOT model-quality feedback).
+
+    Body: { ruleId, fingerprint?, mode?, reason?, ttl? }
+    """
+    from analyzer.proactive.healing.ai_policy import get_suppression_policy
+
+    rule_id = req.get("ruleId") or req.get("rule_id")
+    if not rule_id:
+        raise HTTPException(status_code=400, detail="ruleId is required")
+
+    env = req.get("env", "development")
+    workspace_id = req.get("workspaceId") or req.get("workspace_id", "default")
+
+    policy = get_suppression_policy(env=env, workspace_id=workspace_id)
+    entry = await policy.suppress(
+        rule_id=rule_id,
+        fingerprint=req.get("fingerprint"),
+        mode=req.get("mode", "fingerprint"),
+        reason=req.get("reason"),
+        ttl=req.get("ttl"),
+    )
+
+    return {
+        "status": "suppressed",
+        "rule_id": rule_id,
+        "mode": entry.mode,
+        "suppress_count": entry.suppress_count,
+        "escalated": entry.escalated,
+    }
+
+
+@app.post("/heal/ai/policy/unsuppress")
+async def heal_ai_policy_unsuppress(req: dict = Body(...)):
+    """Remove a suppression for a rule/fingerprint."""
+    from analyzer.proactive.healing.ai_policy import get_suppression_policy
+
+    rule_id = req.get("ruleId") or req.get("rule_id")
+    if not rule_id:
+        raise HTTPException(status_code=400, detail="ruleId is required")
+
+    env = req.get("env", "development")
+    workspace_id = req.get("workspaceId") or req.get("workspace_id", "default")
+
+    policy = get_suppression_policy(env=env, workspace_id=workspace_id)
+    removed = await policy.unsuppress(
+        rule_id=rule_id,
+        fingerprint=req.get("fingerprint"),
+    )
+
+    return {"status": "unsuppressed" if removed else "not_found", "rule_id": rule_id}
+
+
+@app.get("/heal/ai/policy")
+async def heal_ai_policy_list(req: Request):
+    """List all current suppression policies."""
+    from analyzer.proactive.healing.ai_policy import get_suppression_policy
+
+    env = req.query_params.get("env", "development")
+    workspace_id = req.query_params.get("workspaceId", "default")
+
+    policy = get_suppression_policy(env=env, workspace_id=workspace_id)
+    return await policy.summary()
+
+
+@app.delete("/heal/ai/policy")
+async def heal_ai_policy_clear(req: Request):
+    """Clear all suppression policies."""
+    from analyzer.proactive.healing.ai_policy import get_suppression_policy
+
+    env = req.query_params.get("env", "development")
+    workspace_id = req.query_params.get("workspaceId", "default")
+
+    policy = get_suppression_policy(env=env, workspace_id=workspace_id)
+    count = await policy.clear()
+    return {"status": "cleared", "entries_removed": count}
+
+
+def _fix_to_dict(fix) -> dict:
+    """Helper to convert a HealingFix to a dict."""
+    try:
+        return fix.to_dict()
+    except AttributeError:
+        return {
+            "line": fix.line,
+            "description": fix.description,
+            "confidence": fix.confidence,
+        }
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Agentic Self-Healing API endpoints
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+# ── Diagnosis ─────────────────────────────────────────────────────────
+
+@app.post("/heal/agentic/diagnose")
+async def agentic_diagnose(request: Request):
+    """Root-cause diagnosis from error text."""
+    from analyzer.proactive.healing.diagnosis import get_diagnosis_agent, ErrorSource
+    body = await request.json()
+    error_text = body.get("errorText", "")
+    file_path = body.get("filePath", "")
+    language = body.get("language", "")
+    source = body.get("source", "compiler")
+
+    try:
+        src = ErrorSource(source)
+    except ValueError:
+        src = ErrorSource.COMPILER
+
+    agent = get_diagnosis_agent()
+    graph = agent.diagnose(error_text, file_path, language, src)
+    return {"ok": True, "diagnosis": graph.to_dict()}
+
+
+# ── Repair Episodes ──────────────────────────────────────────────────
+
+@app.post("/heal/agentic/episode/create")
+async def create_episode(request: Request):
+    """Create a new repair episode."""
+    from analyzer.proactive.healing.repair_episode import get_episode_store, RepairEpisode
+    body = await request.json()
+    store = get_episode_store()
+    episode = RepairEpisode(
+        file_path=body.get("filePath", ""),
+        error_message=body.get("errorMessage", ""),
+        language=body.get("language", ""),
+    )
+    store.add(episode)
+    return {"ok": True, "episodeId": episode.episode_id, "state": episode.state.value}
+
+
+@app.get("/heal/agentic/episode/{episode_id}")
+async def get_episode(episode_id: str):
+    """Get a repair episode by ID."""
+    from analyzer.proactive.healing.repair_episode import get_episode_store
+    store = get_episode_store()
+    ep = store.get(episode_id)
+    if not ep:
+        return {"ok": False, "error": "Episode not found"}
+    return {"ok": True, "episode": ep.to_dict()}
+
+
+@app.get("/heal/agentic/episodes")
+async def list_episodes():
+    """List recent repair episodes."""
+    from analyzer.proactive.healing.repair_episode import get_episode_store
+    store = get_episode_store()
+    return {"ok": True, "episodes": [e.to_dict() for e in store.recent(20)]}
+
+
+# ── Policy ────────────────────────────────────────────────────────────
+
+@app.post("/heal/agentic/policy/evaluate")
+async def evaluate_policy(request: Request):
+    """Evaluate a repair action against policy."""
+    from analyzer.proactive.healing.policy import get_policy_engine
+    body = await request.json()
+    engine = get_policy_engine()
+    evaluation = engine.evaluate(
+        file_path=body.get("filePath", ""),
+        language=body.get("language", ""),
+        num_files=body.get("numFiles", 1),
+        estimated_lines_changed=body.get("estimatedLinesChanged", 0),
+        step_types=body.get("stepTypes"),
+    )
+    return {"ok": True, "evaluation": evaluation.to_dict()}
+
+
+@app.get("/heal/agentic/policy/status")
+async def policy_status():
+    """Get current policy engine status."""
+    from analyzer.proactive.healing.policy import get_policy_engine
+    return {"ok": True, "status": get_policy_engine().status()}
+
+
+# ── Verification ──────────────────────────────────────────────────────
+
+@app.post("/heal/agentic/verify")
+async def verify_fix(request: Request):
+    """Run verification pipeline on a fix."""
+    from analyzer.proactive.healing.verification import get_verification_pipeline
+    body = await request.json()
+    pipeline = get_verification_pipeline()
+    result = await pipeline.run(
+        file_path=body.get("filePath", ""),
+        original=body.get("original", ""),
+        patched=body.get("patched", ""),
+        language=body.get("language", ""),
+    )
+    return {"ok": True, "verification": result.to_dict()}
+
+
+@app.post("/heal/agentic/guardrails")
+async def check_guardrails(request: Request):
+    """Check semantic guardrails on a patch."""
+    from analyzer.proactive.healing.verification import get_semantic_guardrails
+    body = await request.json()
+    guardrails = get_semantic_guardrails()
+    result = guardrails.check(
+        patched_code=body.get("patched", ""),
+        file_path=body.get("filePath", ""),
+        original_code=body.get("original", ""),
+    )
+    return {"ok": True, "guardrails": result}
+
+
+# ── Telemetry ─────────────────────────────────────────────────────────
+
+@app.get("/heal/agentic/telemetry/calibration")
+async def telemetry_calibration():
+    """Get calibration table for all rules."""
+    from analyzer.proactive.healing.precision_telemetry import get_precision_telemetry
+    telem = get_precision_telemetry()
+    return {"ok": True, "calibration": telem.get_calibration_table()}
+
+
+@app.get("/heal/agentic/telemetry/degrading")
+async def telemetry_degrading():
+    """Get rules with degrading quality."""
+    from analyzer.proactive.healing.precision_telemetry import get_precision_telemetry
+    telem = get_precision_telemetry()
+    return {"ok": True, "degradingRules": telem.get_degrading_rules()}
+
+
+# ── Runtime healing ───────────────────────────────────────────────────
+
+@app.post("/heal/agentic/runtime/ingest")
+async def ingest_runtime_error(request: Request):
+    """Ingest a runtime error for healing."""
+    from analyzer.proactive.healing.runtime_healing import (
+        get_runtime_healing_engine, RuntimeErrorSource, RuntimeErrorSeverity
+    )
+    body = await request.json()
+    engine = get_runtime_healing_engine()
+
+    try:
+        source = RuntimeErrorSource(body.get("source", "terminal"))
+    except ValueError:
+        source = RuntimeErrorSource.TERMINAL
+
+    try:
+        severity = RuntimeErrorSeverity(body.get("severity", "error"))
+    except ValueError:
+        severity = RuntimeErrorSeverity.ERROR
+
+    result = engine.ingest(
+        message=body.get("message", ""),
+        source=source,
+        raw_output=body.get("rawOutput", ""),
+        severity=severity,
+        workspace_id=body.get("workspaceId", ""),
+    )
+    return {"ok": True, "result": result.to_dict()}
+
+
+@app.get("/heal/agentic/runtime/stats")
+async def runtime_stats():
+    """Get runtime healing stats."""
+    from analyzer.proactive.healing.runtime_healing import get_runtime_healing_engine
+    return {"ok": True, "stats": get_runtime_healing_engine().stats}
+
+
+# ── Observability ─────────────────────────────────────────────────────
+
+@app.post("/heal/agentic/observability/error")
+async def record_obs_error(request: Request):
+    """Record an error for observability."""
+    from analyzer.proactive.healing.observability import get_observability_hub
+    hub = get_observability_hub()
+    trigger = hub.record_error()
+    return {"ok": True, "trigger": trigger.to_dict() if trigger else None}
+
+
+@app.post("/heal/agentic/observability/build")
+async def record_obs_build(request: Request):
+    """Record a build duration."""
+    from analyzer.proactive.healing.observability import get_observability_hub
+    body = await request.json()
+    hub = get_observability_hub()
+    trigger = hub.record_build(body.get("durationSec", 0.0))
+    return {"ok": True, "trigger": trigger.to_dict() if trigger else None}
+
+
+@app.post("/heal/agentic/observability/hmr-failure")
+async def record_obs_hmr(request: Request):
+    """Record an HMR failure."""
+    from analyzer.proactive.healing.observability import get_observability_hub
+    body = await request.json()
+    hub = get_observability_hub()
+    trigger = hub.record_hmr_failure(body.get("filePath", ""))
+    return {"ok": True, "trigger": trigger.to_dict() if trigger else None}
+
+
+@app.get("/heal/agentic/observability/stats")
+async def observability_stats():
+    """Get observability hub stats."""
+    from analyzer.proactive.healing.observability import get_observability_hub
+    return {"ok": True, "stats": get_observability_hub().stats}
+
+
+@app.get("/heal/agentic/observability/triggers")
+async def observability_triggers():
+    """Get recent triggers."""
+    from analyzer.proactive.healing.observability import get_observability_hub
+    return {"ok": True, "triggers": get_observability_hub().recent_triggers}
+
+
+# ── Canary rollouts ──────────────────────────────────────────────────
+
+@app.post("/heal/agentic/canary/create")
+async def create_canary(request: Request):
+    """Create a canary rollout."""
+    from analyzer.proactive.healing.canary import get_canary_engine
+    body = await request.json()
+    engine = get_canary_engine()
+    record = engine.create_rollout(
+        canary_files=body.get("canaryFiles", []),
+        remaining_files=body.get("remainingFiles", []),
+        episode_id=body.get("episodeId", ""),
+    )
+    return {"ok": True, "rollout": record.to_dict()}
+
+
+@app.get("/heal/agentic/canary")
+async def list_canaries():
+    """List canary rollouts."""
+    from analyzer.proactive.healing.canary import get_canary_engine
+    return {"ok": True, "rollouts": get_canary_engine().list_rollouts()}
+
+
+@app.get("/heal/agentic/canary/stats")
+async def canary_stats():
+    """Get canary rollout stats."""
+    from analyzer.proactive.healing.canary import get_canary_engine
+    return {"ok": True, "stats": get_canary_engine().stats}
+
+
+# ── Agentic overview ────────────────────────────────────────────────
+
+@app.get("/heal/agentic/status")
+async def agentic_status():
+    """Combined status of all agentic self-healing subsystems."""
+    from analyzer.proactive.healing.repair_episode import get_episode_store
+    from analyzer.proactive.healing.policy import get_policy_engine
+    from analyzer.proactive.healing.precision_telemetry import get_precision_telemetry
+    from analyzer.proactive.healing.runtime_healing import get_runtime_healing_engine
+    from analyzer.proactive.healing.observability import get_observability_hub
+    from analyzer.proactive.healing.canary import get_canary_engine
+
+    return {
+        "ok": True,
+        "agentic": {
+            "episodes": {"recentCount": len(get_episode_store().recent(10))},
+            "policy": get_policy_engine().status(),
+            "telemetry": {"degradingRules": get_precision_telemetry().get_degrading_rules()},
+            "runtime": get_runtime_healing_engine().stats,
+            "observability": get_observability_hub().stats,
+            "canary": get_canary_engine().stats,
+        },
+    }
+
+
 @app.get("/")
 def root():
     return {
@@ -1695,6 +3026,8 @@ def root():
             "streaming",
             "provenance_tracking",
             "code_intelligence",
+            "self_healing",
+            "agentic_self_healing",
         ],
     }
 

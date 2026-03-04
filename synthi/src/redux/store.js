@@ -6,6 +6,8 @@ import gitReducer from './gitSlice';
 import extensionReducer from './extensionSlice';
 import themeReducer from './themeSlice';
 import layoutReducer from '@/components/docking-wm/state/layout-slice';
+import healingReducer, { initialHealingState } from './healingSlice';
+import prReducer from './prSlice';
 
 import { enableMapSet } from 'immer';
 
@@ -17,6 +19,7 @@ enableMapSet();
 const UI_STORAGE_KEY = 'synthi:ui';
 const EXPANDED_FOLDERS_KEY = 'synthi:expandedFolders';
 const THEME_STORAGE_KEY = 'synthi:theme';
+const HEALING_STORAGE_KEY = 'synthi:healing';
 
 // Workspace-specific storage key helpers
 const getOpenTabsKey = (slug) => `synthi:openTabs:${slug}`;
@@ -61,6 +64,18 @@ export function loadThemePrefs() {
     return JSON.parse(raw);
   } catch (e) {
     console.warn('Failed to load theme prefs from localStorage', e);
+    return undefined;
+  }
+}
+
+export function loadHealingPrefs() {
+  if (typeof window === 'undefined' || !window.localStorage) return undefined;
+  try {
+    const raw = localStorage.getItem(HEALING_STORAGE_KEY);
+    if (!raw) return undefined;
+    return JSON.parse(raw);
+  } catch (e) {
+    console.warn('Failed to load healing prefs from localStorage', e);
     return undefined;
   }
 }
@@ -144,6 +159,19 @@ function saveActiveTab(slug, activeFile) {
   }
 }
 
+function saveHealingPrefs(healingState) {
+  if (typeof window === 'undefined' || !window.localStorage) return;
+  try {
+    const toSave = {
+      enabled: !!healingState.enabled,
+      config: healingState.config || {},
+    };
+    localStorage.setItem(HEALING_STORAGE_KEY, JSON.stringify(toSave));
+  } catch (e) {
+    console.warn('Failed to save healing prefs to localStorage', e);
+  }
+}
+
 export const store = configureStore({
   reducer: {
     workspace: workspaceReducer,
@@ -152,6 +180,8 @@ export const store = configureStore({
     extensions: extensionReducer,
     theme: themeReducer,
     layout: layoutReducer,
+    healing: healingReducer,
+    pr: prReducer,
   },
   // We need to disable the serializable check for the Map used in fileContentCache
   middleware: (getDefaultMiddleware) =>
@@ -182,6 +212,12 @@ if (typeof window !== 'undefined') {
   let lastThemeId = '';
   let lastUserThemes = '{}';
   let lastUserOverrides = '{}';
+  // PERF: Reference tracking — avoids JSON.stringify on every state change
+  let lastUserThemesRef = null;
+  let lastUserOverridesRef = null;
+
+  // Track healing preferences for persistence
+  let lastHealingSnapshot = '';
 
   store.subscribe(() => {
     try {
@@ -204,19 +240,25 @@ if (typeof window !== 'undefined') {
       } catch (_) {}
 
       // Persist active theme ID + user themes + overrides
+      // PERF: Use reference equality instead of JSON.stringify on every state
+      // change.  Redux Toolkit produces new references only when a slice mutates,
+      // so `===` is sufficient and avoids O(n) serialization per keystroke.
       try {
         const themeId = state?.theme?.activeThemeId || '';
         const userThemes = state?.theme?.userThemes || {};
         const userOverrides = state?.theme?.userOverrides || {};
-        const userThemesSnapshot = JSON.stringify(userThemes);
-        const userOverridesSnapshot = JSON.stringify(userOverrides);
-        // Write when anything has changed
+        // Reference check first — cheap O(1).  Only stringify when refs differ.
         if (
-          (themeId && themeId !== lastThemeId) ||
-          userThemesSnapshot !== (lastUserThemes || '{}') ||
-          userOverridesSnapshot !== (lastUserOverrides || '{}')
+          themeId !== lastThemeId ||
+          userThemes !== lastUserThemesRef ||
+          userOverrides !== lastUserOverridesRef
         ) {
           lastThemeId = themeId;
+          lastUserThemesRef = userThemes;
+          lastUserOverridesRef = userOverrides;
+          // Serialize only on actual change (rare: theme edits)
+          const userThemesSnapshot = JSON.stringify(userThemes);
+          const userOverridesSnapshot = JSON.stringify(userOverrides);
           lastUserThemes = userThemesSnapshot;
           lastUserOverrides = userOverridesSnapshot;
           localStorage.setItem(THEME_STORAGE_KEY, JSON.stringify({
@@ -259,6 +301,18 @@ if (typeof window !== 'undefined') {
           }
         } catch (_) {}
       }
+
+      // Persist healing preferences when changed
+      try {
+        const healing = state?.healing;
+        if (healing) {
+          const healSnapshot = `${healing.enabled}|${healing.config?.minConfidence}|${(healing.config?.autoHealCategories || []).join(',')}`;
+          if (healSnapshot !== lastHealingSnapshot) {
+            lastHealingSnapshot = healSnapshot;
+            saveHealingPrefs(healing);
+          }
+        }
+      } catch (_) {}
     } catch (e) {
       // ignore subscription errors
     }

@@ -64,6 +64,121 @@ const IGNORED_PATTERNS = [
 // ─── Watcher Registry ───────────────────────────────────────────────────────
 
 /**
+ * Staging lock — files currently involved in a git stage/unstage operation.
+ * While locked, FS watcher events for these paths are suppressed to prevent
+ * the editor from flickering due to race conditions between git index updates,
+ * auto-flush writes, and frontend React state.
+ *
+ * Key: "slug:relative/path" → Value: expiry timestamp (Date.now() + TTL)
+ */
+const stagingLocks = new Map();
+
+/** Default staging lock TTL in ms — auto-expires in case release is missed */
+const STAGING_LOCK_TTL_MS = 5000;
+
+/**
+ * Git-operation pause — while paused, ALL FS events for that slug are
+ * suppressed (not just specific file paths). Used during pull/push/checkout
+ * to prevent the watcher from crashing or triggering mass Yjs invalidation.
+ *
+ * Key: slug → Value: expiry timestamp (Date.now() + TTL)
+ */
+const gitOperationPauses = new Map();
+
+/** Default git-operation pause TTL (auto-expires in case release is missed) */
+const GIT_PAUSE_TTL_MS = 30000;
+
+/**
+ * Pause the FS watcher for a slug during a git operation.
+ * @param {string} slug
+ */
+function pauseWatcher(slug) {
+  if (!slug) return;
+  gitOperationPauses.set(slug, Date.now() + GIT_PAUSE_TTL_MS);
+  // Also clear any pending debounced events so stale changes don't fire
+  const entry = activeWatchers.get(slug);
+  if (entry) {
+    if (entry.debounceTimer) {
+      clearTimeout(entry.debounceTimer);
+      entry.debounceTimer = null;
+    }
+    entry.pendingEvents.clear();
+  }
+}
+
+/**
+ * Resume the FS watcher for a slug after a git operation completes.
+ * Uses a short delay to absorb trailing FS events from git.
+ * @param {string} slug
+ * @param {number} [delayMs=1200] - delay before actually resuming
+ */
+function resumeWatcher(slug, delayMs = 1200) {
+  if (!slug) return;
+  setTimeout(() => {
+    gitOperationPauses.delete(slug);
+    // Clear any events that accumulated during the tail-end of the pause
+    const entry = activeWatchers.get(slug);
+    if (entry) {
+      entry.pendingEvents.clear();
+    }
+  }, delayMs);
+}
+
+/**
+ * Check if a slug's watcher is currently paused for a git operation.
+ * Also cleans up expired pauses.
+ */
+function isWatcherPaused(slug) {
+  const expiry = gitOperationPauses.get(slug);
+  if (!expiry) return false;
+  if (Date.now() > expiry) {
+    gitOperationPauses.delete(slug);
+    return false;
+  }
+  return true;
+}
+
+/**
+ * Acquire a staging lock for a specific file.
+ * @param {string} slug
+ * @param {string} filePath - relative path within the repo
+ */
+function acquireStagingLock(slug, filePath) {
+  if (!slug || !filePath) return;
+  const key = `${slug}:${filePath}`;
+  stagingLocks.set(key, Date.now() + STAGING_LOCK_TTL_MS);
+}
+
+/**
+ * Release a staging lock for a specific file (with optional delay).
+ * @param {string} slug
+ * @param {string} filePath
+ * @param {number} [delayMs=800] - delay before releasing to absorb trailing FS events
+ */
+function releaseStagingLock(slug, filePath, delayMs = 800) {
+  if (!slug || !filePath) return;
+  const key = `${slug}:${filePath}`;
+  setTimeout(() => {
+    stagingLocks.delete(key);
+  }, delayMs);
+}
+
+/**
+ * Check if a file is currently staging-locked.
+ * Also cleans up expired locks.
+ */
+function isStagingLocked(slug, relativePath) {
+  const key = `${slug}:${relativePath}`;
+  const expiry = stagingLocks.get(key);
+  if (!expiry) return false;
+  if (Date.now() > expiry) {
+    stagingLocks.delete(key);
+    return false;
+  }
+  return true;
+}
+
+/**
  * @type {Map<string, {
  *   watcher: fs.FSWatcher,
  *   refCount: number,
@@ -81,17 +196,26 @@ const activeWatchers = new Map();
  * Check if a relative file path should be ignored.
  * We allow the top-level ignored dir itself (e.g. "node_modules") so the
  * tree picks up its creation/deletion, but ignore everything inside it.
+ *
+ * EXCEPTION: .git is ALWAYS ignored at every level to prevent the watcher
+ * from crashing or triggering mass Yjs invalidation during git operations.
  */
 function shouldIgnore(relativePath) {
   if (!relativePath) return true;
 
   const parts = relativePath.split(/[\\/]/);
 
-  // If the path IS an ignored dir at the top level (e.g. "node_modules"),
-  // allow it so the tree shows the folder appearing/disappearing.
-  // Only ignore paths INSIDE ignored dirs (depth >= 2, e.g. "node_modules/foo").
   for (let i = 0; i < parts.length; i++) {
-    if (IGNORED_DIRS.has(parts[i]) && i < parts.length - 1) return true;
+    const part = parts[i];
+    // .git is ALWAYS fully ignored — even the top-level directory itself.
+    // Git operations (pull, push, merge) touch .git internals rapidly and
+    // cause the native fs.watch to emit hundreds of events that can crash
+    // the watcher or trigger spurious Yjs doc invalidation.
+    if (part === '.git') return true;
+
+    // Other ignored dirs: allow the top-level dir itself so the tree UI
+    // shows folders appearing/disappearing, but ignore everything inside.
+    if (IGNORED_DIRS.has(part) && part !== '.git' && i < parts.length - 1) return true;
   }
 
   const basename = path.basename(relativePath);
@@ -169,6 +293,9 @@ function watchWorkspace(slug, rootDir, onChange) {
   watcher.on('change', (eventType, filename) => {
     if (!filename) return;
 
+    // Skip ALL events while a git operation is in progress for this slug
+    if (isWatcherPaused(slug)) return;
+
     // Normalize path separators
     const relativePath = filename.replace(/\\/g, '/');
 
@@ -206,9 +333,14 @@ function flushEvents(slug) {
   const entry = activeWatchers.get(slug);
   if (!entry || entry.pendingEvents.size === 0) return;
 
-  // Build the event list
+  // Build the event list, skipping staging-locked files
   const events = [];
   for (const [relativePath, eventType] of entry.pendingEvents) {
+    // Skip files currently being staged to prevent editor flickering
+    if (isStagingLocked(slug, relativePath)) {
+      continue;
+    }
+
     if (events.length >= MAX_EVENTS_PER_BATCH) {
       // Too many individual events — just tell the client to do a full refresh
       events.length = 0;
@@ -223,6 +355,9 @@ function flushEvents(slug) {
 
   entry.pendingEvents.clear();
   entry.debounceTimer = null;
+
+  // Only broadcast if there are events left after filtering
+  if (events.length === 0) return;
 
   // Broadcast to all listeners
   const message = { type: 'fs-change', slug, events };
@@ -271,4 +406,10 @@ module.exports = {
   watchWorkspace,
   stopAll,
   activeWatchers,
+  acquireStagingLock,
+  releaseStagingLock,
+  isStagingLocked,
+  pauseWatcher,
+  resumeWatcher,
+  isWatcherPaused,
 };

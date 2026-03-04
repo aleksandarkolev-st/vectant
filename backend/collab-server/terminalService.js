@@ -78,6 +78,263 @@ function getDefaultShell() {
   return process.env.SHELL || '/bin/bash';
 }
 
+// ─── Shell Registry ─────────────────────────────────────────────────────────
+
+/**
+ * Known shell types mapped to their executable names per platform.
+ * Each entry has { win32, unix, args, label }.
+ */
+// ─── Git Bash Discovery (Windows) ───────────────────────────────────────────
+
+/** Cache for the discovered Git Bash executable path */
+let _gitBashPath = undefined; // undefined = not yet searched, null = not found
+
+/**
+ * Find the Git Bash executable on Windows.
+ * Uses the same discovery strategy as VS Code:
+ *   1. Windows Registry (HKLM\SOFTWARE\GitForWindows — most reliable)
+ *   2. Common install paths (Program Files, scoop, etc.)
+ *   3. `where git` to derive the install root
+ */
+function findGitBash() {
+  if (_gitBashPath !== undefined) return _gitBashPath;
+
+  const { execSync } = require('child_process');
+
+  // 1. Windows Registry — most reliable, this is how VS Code finds Git
+  try {
+    const regOutput = execSync(
+      'REG QUERY "HKLM\\SOFTWARE\\GitForWindows" /v InstallPath',
+      { encoding: 'utf-8', timeout: 3000, windowsHide: true }
+    );
+    const match = regOutput.match(/InstallPath\s+REG_SZ\s+(.+)/i);
+    if (match) {
+      const bashPath = path.join(match[1].trim(), 'bin', 'bash.exe');
+      if (fs.existsSync(bashPath)) {
+        _gitBashPath = bashPath;
+        console.log(`[Terminal] Git Bash found via Registry: ${bashPath}`);
+        return bashPath;
+      }
+    }
+  } catch (_) { /* Registry query failed */ }
+
+  // 2. Common install locations
+  const candidates = [
+    path.join(process.env.ProgramFiles || 'C:\\Program Files', 'Git', 'bin', 'bash.exe'),
+    path.join(process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)', 'Git', 'bin', 'bash.exe'),
+    path.join(os.homedir(), 'AppData', 'Local', 'Programs', 'Git', 'bin', 'bash.exe'),
+    path.join(os.homedir(), 'scoop', 'apps', 'git', 'current', 'bin', 'bash.exe'),
+    'C:\\Git\\bin\\bash.exe',
+  ];
+  for (const p of candidates) {
+    try {
+      if (fs.existsSync(p)) {
+        _gitBashPath = p;
+        console.log(`[Terminal] Git Bash found at: ${p}`);
+        return p;
+      }
+    } catch (_) { /* skip */ }
+  }
+
+  // 3. `where git` fallback — derive install root from git.exe location
+  try {
+    const gitPath = execSync('where git', { encoding: 'utf-8', timeout: 3000, windowsHide: true }).split('\n')[0].trim();
+    if (gitPath) {
+      const gitRoot = path.dirname(path.dirname(gitPath));
+      const bashPath = path.join(gitRoot, 'bin', 'bash.exe');
+      if (fs.existsSync(bashPath)) {
+        _gitBashPath = bashPath;
+        console.log(`[Terminal] Git Bash found via \`where git\`: ${bashPath}`);
+        return bashPath;
+      }
+    }
+  } catch (_) { /* where git failed */ }
+
+  _gitBashPath = null;
+  console.log('[Terminal] Git Bash not found on this system');
+  return null;
+}
+
+/** Cache for discovered bash executable path (WSL / PATH-based) */
+let _bashPath = undefined;
+
+/**
+ * Find a working bash.exe on Windows.
+ * Filters out the WindowsApps WSL stub (which fails if WSL is not installed).
+ * Falls back to Git Bash's bash.exe if no other bash is available.
+ */
+function findBashExe() {
+  if (_bashPath !== undefined) return _bashPath;
+
+  const { execSync } = require('child_process');
+
+  // `where bash.exe` may return multiple results, one per line
+  try {
+    const output = execSync('where bash.exe', { encoding: 'utf-8', timeout: 3000, windowsHide: true });
+    const paths = output.split('\n').map(l => l.trim()).filter(Boolean);
+    for (const p of paths) {
+      // Skip the WindowsApps stub — it only works when WSL is actually installed
+      if (p.toLowerCase().includes('windowsapps')) continue;
+      if (fs.existsSync(p)) {
+        _bashPath = p;
+        console.log(`[Terminal] bash.exe found in PATH: ${p}`);
+        return p;
+      }
+    }
+  } catch (_) { /* where bash.exe failed */ }
+
+  // Fall back to Git Bash's bash.exe
+  const gitBash = findGitBash();
+  if (gitBash) {
+    _bashPath = gitBash;
+    console.log(`[Terminal] bash.exe using Git Bash: ${gitBash}`);
+    return gitBash;
+  }
+
+  _bashPath = null;
+  console.log('[Terminal] No working bash.exe found');
+  return null;
+}
+
+const SHELL_REGISTRY = {
+  powershell: {
+    win32: 'powershell.exe',
+    unix: 'pwsh',
+    args: { win32: [], unix: [] },
+    label: 'PowerShell',
+  },
+  pwsh: {
+    win32: 'pwsh.exe',
+    unix: 'pwsh',
+    args: { win32: [], unix: [] },
+    label: 'PowerShell 7',
+  },
+  cmd: {
+    win32: 'cmd.exe',
+    unix: null,
+    args: { win32: [], unix: [] },
+    label: 'Command Prompt',
+  },
+  bash: {
+    win32: null,  // Resolved dynamically — see resolveShellType()
+    unix: '/bin/bash',
+    args: { win32: ['--login'], unix: ['--login'] },
+    label: 'Bash',
+    dynamic: true, // needs runtime resolution on Windows
+  },
+  gitbash: {
+    // Resolved dynamically — see resolveShellType()
+    win32: null,
+    unix: null,
+    args: { win32: ['--login', '-i'], unix: [] },
+    label: 'Git Bash',
+    dynamic: true, // marker for dynamic resolution
+  },
+  zsh: {
+    win32: null,
+    unix: '/bin/zsh',
+    args: { win32: [], unix: ['--login'] },
+    label: 'Zsh',
+  },
+  fish: {
+    win32: null,
+    unix: '/usr/bin/fish',
+    args: { win32: [], unix: ['--login'] },
+    label: 'Fish',
+  },
+  sh: {
+    win32: null,
+    unix: '/bin/sh',
+    args: { win32: [], unix: [] },
+    label: 'sh',
+  },
+};
+
+/**
+ * Resolve a shell type key (e.g. 'bash', 'powershell') to an executable path
+ * and arguments for the current platform. Returns null if the shell type is
+ * not available on this platform.
+ */
+function resolveShellType(shellType) {
+  if (!shellType) return null;
+  const entry = SHELL_REGISTRY[shellType.toLowerCase()];
+  if (!entry) return null;
+
+  const platform = os.platform() === 'win32' ? 'win32' : 'unix';
+
+  // Dynamic resolution on Windows
+  if (entry.dynamic && platform === 'win32') {
+    const key = shellType.toLowerCase();
+    let exe = null;
+    if (key === 'gitbash') {
+      exe = findGitBash();
+    } else if (key === 'bash') {
+      exe = findBashExe();
+    }
+    if (!exe) return null;
+    return { executable: exe, args: entry.args.win32 || [], label: entry.label };
+  }
+
+  const executable = entry[platform];
+  if (!executable) return null;
+
+  const args = entry.args?.[platform] || [];
+  return { executable, args, label: entry.label };
+}
+
+/**
+ * Detect which shells are available on the current system.
+ * Returns an array of { key, label, executable } for shells that exist on disk.
+ */
+function getAvailableShells() {
+  const platform = os.platform() === 'win32' ? 'win32' : 'unix';
+  const available = [];
+
+  for (const [key, entry] of Object.entries(SHELL_REGISTRY)) {
+    // Dynamic entries — resolve at runtime
+    if (entry.dynamic) {
+      if (platform === 'win32') {
+        let exe = null;
+        if (key === 'gitbash') exe = findGitBash();
+        else if (key === 'bash') exe = findBashExe();
+        if (exe) {
+          available.push({ key, label: entry.label, executable: exe });
+        }
+      } else if (entry.unix) {
+        // On Unix, dynamic entries still have a unix path
+        try {
+          if (fs.existsSync(entry.unix)) {
+            available.push({ key, label: entry.label, executable: entry.unix });
+          }
+        } catch (_) {}
+      }
+      continue;
+    }
+
+    const executable = entry[platform];
+    if (!executable) continue;
+
+    // Check if the executable actually exists
+    try {
+      if (path.isAbsolute(executable)) {
+        if (fs.existsSync(executable)) {
+          available.push({ key, label: entry.label, executable });
+        }
+      } else {
+        // Verify non-absolute executables are actually in PATH
+        const { execSync } = require('child_process');
+        const cmd = platform === 'win32' ? `where ${executable}` : `which ${executable}`;
+        const result = execSync(cmd, { encoding: 'utf-8', timeout: 2000, windowsHide: true }).trim();
+        if (result) {
+          available.push({ key, label: entry.label, executable });
+        }
+      }
+    } catch (_) { /* not in PATH — skip */ }
+  }
+
+  return available;
+}
+
 // ─── PTY Factory (swap-point for Docker in the future) ──────────────────────
 
 // ─── SDK / Tool Path Discovery ──────────────────────────────────────────────
@@ -234,9 +491,11 @@ function getSdkPaths() {
  * @param {object} [opts.env] - Extra environment variables
  * @returns {{ ptyProcess: IPty, shell: string }}
  */
-function createPtyProcess({ cwd, cols = 80, rows = 24, env = {} }) {
-  const shell = getDefaultShell();
-  const shellArgs = os.platform() === 'win32' ? [] : ['--login'];
+function createPtyProcess({ cwd, cols = 80, rows = 24, env = {}, shellType = null }) {
+  // Resolve requested shell type, or fall back to platform default
+  const resolved = shellType ? resolveShellType(shellType) : null;
+  const shell = resolved ? resolved.executable : getDefaultShell();
+  const shellArgs = resolved ? resolved.args : (os.platform() === 'win32' ? [] : ['--login']);
 
   // Build a clean environment: inherit process.env, add overrides, strip
   // anything that could leak server internals.
@@ -386,7 +645,20 @@ function createHeadlessSession(sessionId, slug, userId, cols = 120, rows = 30) {
 }
 
 function createTerminalWSS() {
-  const wss = new WebSocket.Server({ noServer: true });
+  // PERF: Enable permessage-deflate — terminal output (ANSI sequences, build
+  // logs) compresses extremely well.  Level 1 keeps CPU usage minimal.
+  const wss = new WebSocket.Server({
+    noServer: true,
+    perMessageDeflate: {
+      zlibDeflateOptions: { chunkSize: 1024, memLevel: 7, level: 1 },
+      zlibInflateOptions: { chunkSize: 10 * 1024 },
+      clientNoContextTakeover: true,
+      serverNoContextTakeover: true,
+      serverMaxWindowBits: 10,
+      concurrencyLimit: 10,
+      threshold: 128,
+    },
+  });
 
   wss.on('connection', (ws, req) => {
     // ── Parse query parameters ──────────────────────────────────────────
@@ -402,6 +674,7 @@ function createTerminalWSS() {
     const requestedUserId = parsedUrl.searchParams.get('userId') || '';
     const initialCols = parseInt(parsedUrl.searchParams.get('cols'), 10) || 80;
     const initialRows = parseInt(parsedUrl.searchParams.get('rows'), 10) || 24;
+    const requestedShellType = parsedUrl.searchParams.get('shell') || null;
 
     // ── Check for existing headless session (AI-created terminal) ───────
     const existingSession = requestedSessionId && activeSessions.get(requestedSessionId);
@@ -510,7 +783,7 @@ function createTerminalWSS() {
     const sessionId = requestedSessionId || crypto.randomUUID();
     const cwd = resolveWorkspaceCwd(workspaceSlug, requestedUserId);
 
-    console.log(`[Terminal] New session ${sessionId} | workspace=${workspaceSlug} | userId=${requestedUserId} | cwd=${cwd}`);
+    console.log(`[Terminal] New session ${sessionId} | workspace=${workspaceSlug} | userId=${requestedUserId} | cwd=${cwd} | shell=${requestedShellType || 'default'}`);
 
 
     // ── Spawn PTY ───────────────────────────────────────────────────────
@@ -520,6 +793,7 @@ function createTerminalWSS() {
         cwd,
         cols: initialCols,
         rows: initialRows,
+        shellType: requestedShellType,
       }));
     } catch (err) {
       console.error(`[Terminal] Failed to spawn PTY for session ${sessionId}:`, err.message);
@@ -668,5 +942,8 @@ module.exports = {
   activeSessions,
   broadcastToAll,
   getDefaultShell,
+  getAvailableShells,
+  resolveShellType,
   resolveWorkspaceCwd,
+  SHELL_REGISTRY,
 };

@@ -4,7 +4,7 @@ import { useCallback, useEffect, useLayoutEffect, useState, useRef, useMemo } fr
 import Editor, { DiffEditor, loader } from '@monaco-editor/react';
 import { getMonacoLanguage } from '@/utils/languageMapper';
 import dynamic from 'next/dynamic';
-import { useAppDispatch, useAppSelector } from '@/redux/hooks';
+import { useAppDispatch, useAppSelector, useAppStore } from '@/redux/hooks';
 import {
     selectActiveFile,
     selectCurrentContent,
@@ -41,9 +41,11 @@ import {
 import {
     AI_COMPLETION_STOP_SEQUENCE,
 } from '@/lib/completion';
-import prettier from "prettier/standalone";
-import babel from "prettier/plugins/babel";
-import estree from "prettier/plugins/estree";
+// PERF: Prettier (~1.5MB) was imported eagerly but never used at runtime.
+// Removed static imports.  If formatting is needed in the future, lazy-load:
+//   const prettier = (await import('prettier/standalone')).default;
+//   const babel = (await import('prettier/plugins/babel')).default;
+//   const estree = (await import('prettier/plugins/estree')).default;
 import { EDITOR_OPTIONS } from './options';
 import { useAiCompletion } from './AICompletion';
 import { useDiffManager } from './diffManager';
@@ -55,6 +57,7 @@ import { SYNTHI_THEME } from './theme';
 import { useTheme } from '@/components/ThemeProvider';
 import { ConflictBanner } from './ConflictBanner';
 import MergeConflictEditor from '@/components/git/MergeConflictEditor';
+import UnsavedChangesDialog from '@/components/ui/UnsavedChangesDialog';
 import { useSessionPermissions } from '@/hooks/useCollabSession';
 import { initSynthiFileSystem, updateFile as updateVirtualFile, disposeSynthiFileSystem } from './SynthiFileSystemProvider';
 import { registerMonarchTokenizers } from './languageTokenizers';
@@ -151,6 +154,10 @@ import { useFilePresence } from '@/hooks/useFilePresence';
 if (typeof window !== 'undefined') {
     // Use bundled monaco-editor instead of CDN to ensure compatibility with monaco-languageclient
     loader.config({ monaco });
+
+    // Expose monaco globally so hooks/services that need Range, MarkerSeverity,
+    // etc. can access it without a direct import (many files rely on this).
+    window.monaco = monaco;
 }
 
 // Worker factory for MonacoVscodeApiWrapper — must be passed via monacoWorkerFactory
@@ -210,8 +217,10 @@ const EditorPanel = ({
     chatVisible = false,
     collabHostId = null,
     dockingMode = false,
+    selfEditFlagRef = null,
 }) => {
     const dispatch = useAppDispatch();
+    const store = useAppStore();
 
     //Global state access djsaiodjasiodjasiodjasiodjaoidjasoidjsaiodjasiodjasjdnsaj
     const activeFile = useAppSelector(selectActiveFile);
@@ -250,6 +259,7 @@ const EditorPanel = ({
     // Track whether the DiffEditor has ever been activated — once true, we keep
     // it mounted (hidden) to avoid React unmount crash in passive effects.
     const [diffModeEverActive, setDiffModeEverActive] = useState(false);
+    const diffEditorRef = useRef(null);
     const latestCodeRef = useRef(code);
     const pendingContentFrameRef = useRef(null);
     const pendingPositionFrameRef = useRef(null);
@@ -260,6 +270,8 @@ const EditorPanel = ({
     // P2: Cached content hash — avoid O(n) FNV-1a on every keystroke
     const contentHashRef = useRef({ content: '', hash: '00000000' });
     const [tabContext, setTabContext] = useState({ visible: false, x: 0, y: 0, file: null, index: -1 });
+    // Unsaved-changes dialog state: { path, name } of the file pending close, or null
+    const [pendingClose, setPendingClose] = useState(null);
     const [lspStatus, setLspStatus] = useState('Idle');
     const [servicesReady, setServicesReady] = useState(false);
     const slug = useAppSelector(state => state.workspace.slug);
@@ -300,10 +312,18 @@ const EditorPanel = ({
     // Same lightweight content hash as `page.jsx` (FNV-1a-ish).
     // Used to gate diagnostics to the exact Monaco snapshot they were produced for.
     // P2: Cached — only recomputes when content actually changes.
+    //
+    // PERF: For files > 100 KB the hashing is dispatched to a Web Worker using
+    // crypto.subtle (native C++ backed), keeping the main thread unblocked.
+    // The synchronous return value still comes from the FNV-1a fast-path so
+    // callers are never blocked — the worker result updates the cache async.
+    const hashWorkerRef = useRef(null);
+    const hashMsgIdRef = useRef(0);
     const computeContentHash = useCallback((content) => {
         if (typeof content !== 'string') return '00000000';
         const cached = contentHashRef.current;
         if (cached.content === content) return cached.hash;
+        // Inline FNV-1a for immediate (synchronous) return
         let hash = 2166136261;
         for (let i = 0; i < content.length; i++) {
             hash ^= content.charCodeAt(i);
@@ -311,6 +331,23 @@ const EditorPanel = ({
         }
         const result = hash.toString(16).padStart(8, '0');
         contentHashRef.current = { content, hash: result };
+        // For large files, also fire-and-forget a crypto.subtle hash in worker
+        // so the next call for identical content gets a stronger hash for free.
+        if (content.length > 100_000) {
+            try {
+                if (!hashWorkerRef.current) {
+                    hashWorkerRef.current = new Worker('/content-hash-worker.js');
+                    hashWorkerRef.current.onmessage = (e) => {
+                        const { id: _id, hash: workerHash } = e.data;
+                        // Update cache only if content hasn't changed since we sent
+                        if (contentHashRef.current.content === content) {
+                            contentHashRef.current = { content, hash: workerHash };
+                        }
+                    };
+                }
+                hashWorkerRef.current.postMessage({ id: ++hashMsgIdRef.current, content });
+            } catch (_) { /* worker unavailable */ }
+        }
         return result;
     }, []);
 
@@ -2310,22 +2347,21 @@ const EditorPanel = ({
             //    handler before this DOM event was dispatched.
             await new Promise(r => queueMicrotask(r));
 
-            // 4b. Immediately restore the pre-revert snapshot so the editor
-            //     never shows a blank while selectFileThunk loads fresh content.
-            //     This keeps the old content visible as a placeholder rather
-            //     than an empty whitespace flash.
-            if (preRevertSnapshot !== null) {
-                try {
-                    const modelNow = editorInstance?.getModel?.();
-                    if (modelNow) {
-                        modelNow.pushEditOperations([], [{
-                            range: modelNow.getFullModelRange(),
-                            text: preRevertSnapshot,
-                        }], () => null);
-                        latestCodeRef.current = preRevertSnapshot;
-                    }
-                } catch (_) {}
-            }
+            // 4b. Clear the Monaco model completely BEFORE fetching fresh
+            //     content.  Using applyEdits (not pushEditOperations) so we
+            //     don't pollute the undo stack.  This prevents any stale
+            //     CRDT merge from appending to old content on reconnect. 
+            //     Show the pre-revert snapshot as placeholder to avoid blank.
+            try {
+                const modelNow = editorInstance?.getModel?.();
+                if (modelNow && preRevertSnapshot !== null) {
+                    modelNow.applyEdits([{
+                        range: modelNow.getFullModelRange(),
+                        text: preRevertSnapshot,
+                    }]);
+                    latestCodeRef.current = preRevertSnapshot;
+                }
+            } catch (_) {}
 
             // 5. Re-select the file — this fetches clean content from the
             //    server and updates Redux (savedContent, currentContent).
@@ -2335,16 +2371,24 @@ const EditorPanel = ({
 
             // 6. Force-set the Monaco model to the clean content so the editor
             //    doesn't flash stale text before the binding kicks in.
+            //    Use model.setValue() for a complete replacement — this ensures
+            //    no residual CRDT merge content survives the transition.
             try {
                 const model = editorInstance?.getModel?.();
                 if (model) {
-                    const cleanContent = model.getValue();
-                    latestCodeRef.current = cleanContent;
+                    const freshContent = store.getState()?.workspace?.currentContent;
+                    if (typeof freshContent === 'string') {
+                        model.setValue(freshContent);
+                        latestCodeRef.current = freshContent;
+                    } else {
+                        latestCodeRef.current = model.getValue();
+                    }
                 }
             } catch (_) {}
 
-            // 7. Release the revert lock after a brief settling period
-            setTimeout(() => { revertLockRef.current = false; }, 200);
+            // 7. Release the revert lock after a longer settling period to
+            //    cover the Yjs provider reconnect + initial sync window.
+            setTimeout(() => { revertLockRef.current = false; }, 600);
         };
 
         window.addEventListener('synthi:file-reverted', handler);
@@ -2431,15 +2475,33 @@ const EditorPanel = ({
     const activeFileIdentity = activeFile ? `${activeFile.path ?? ''}-${activeFile.name ?? ''}` : 'no-file';
     const activeFileIcon = activeFile ? getFileIcon(activeFile.name || activeFile.path || '') : null;
 
-    // Clean up editor instance when activeFile changes to prevent stale references
+    // Pre-create/switch Monaco models when activeFile changes.
+    // This eliminates the 1-second blank flash by reusing cached models
+    // instead of destroying and recreating the editor.
     useEffect(() => {
-        // When file identity changes, clear the editor instance to force re-bind
-        return () => {
-            // On cleanup (file switch), null out editor to prevent stale usage
-            setEditorInstance(null);
-            setCollabConnected(false);
-        };
-    }, [activeFileIdentity]);
+        if (!editorInstance || !monacoInstance || !activeFile) return;
+        const filePath = activeFile.path.startsWith('/') ? activeFile.path.slice(1) : activeFile.path;
+        const uri = monacoInstance.Uri.parse(`file:///synthi/${filePath}`);
+        let model = monacoInstance.editor.getModel(uri);
+        if (!model) {
+            // Pre-create the model with cached content so there's no blank
+            const cachedContent = fileCacheEntries.find(([p]) => p === activeFile.path)?.[1];
+            const initialContent = typeof cachedContent === 'string' ? cachedContent : (code ?? '');
+            const lang = getMonacoLanguage(activeFile.name);
+            model = monacoInstance.editor.createModel(initialContent, lang || 'plaintext', uri);
+        }
+        // Switch to the model atomically — no blank flash
+        const currentModel = editorInstance.getModel();
+        if (currentModel !== model) {
+            editorInstance.setModel(model);
+        }
+        // Correct model language if needed
+        if (activeLanguage && activeLanguage !== 'plaintext' && model.getLanguageId() !== activeLanguage) {
+            monacoInstance.editor.setModelLanguage(model, activeLanguage);
+        }
+        // Disconnect collab binding for previous file — the collab effect below will re-bind
+        setCollabConnected(false);
+    }, [activeFileIdentity]); // eslint-disable-line react-hooks/exhaustive-deps
 
     const {
         aiCompletionState,
@@ -2606,6 +2668,11 @@ const EditorPanel = ({
         // — these should only fire on local user edits
         if (remoteApplying) return;
 
+        // Skip AI auto-complete cancel and re-trigger when the self-healing
+        // system just applied a fix.  Cancelling completions during healing
+        // edits causes unnecessary visual disruption.
+        if (selfEditFlagRef?.current) return;
+
         cancelActiveCompletion({ resetSuggestion: true, reason: 'edit' });
 
         // Debounce AI Auto-Complete (The "Cursor" experience)
@@ -2673,9 +2740,30 @@ const EditorPanel = ({
         if (onSave) onSave(latestCodeRef.current ?? code);
     }, [activeFile, dispatch, onSave, compilerClient, code, slug]);
 
-    // Auto-save mode: persist edits after a short idle period.
-    // Flush the pending Redux debounce first (same as handleSave does for
-    // Ctrl+S) so saveFileContentThunk reads the absolute latest content.
+    // ── Close-tab guard: prompt when a file has unsaved changes ──────
+    // For the *active* file we check the live `isUnsaved` selector.
+    // For background tabs we fall back to the per-tab `file.isUnsaved` flag.
+    const handleCloseTab = useCallback((file) => {
+        if (autoSaveEnabled) {
+            // Auto-save is on — just close, content is already flushed.
+            dispatch(closeFile(file.path));
+            return;
+        }
+        const dirty = activeFile?.path === file.path
+            ? isUnsaved
+            : file.isUnsaved;
+        if (dirty) {
+            setPendingClose({ path: file.path, name: file.name });
+        } else {
+            dispatch(closeFile(file.path));
+        }
+    }, [autoSaveEnabled, activeFile, isUnsaved, dispatch]);
+
+    // Auto-save mode: persist edits after a period of typing inactivity.
+    // Wait 500ms of quiet before firing the save command so the main UI
+    // thread remains unblocked for typing.  Flush the pending Redux
+    // debounce first (same as handleSave does for Ctrl+S) so
+    // saveFileContentThunk reads the absolute latest content.
     useEffect(() => {
         if (!autoSaveEnabled || !activeFile) return;
         const normalizeTrailing = (s) => (typeof s === 'string' ? s.replace(/[\r\n]+$/, '') : '');
@@ -2684,15 +2772,84 @@ const EditorPanel = ({
             // Safety: ensure Redux has the absolute latest content
             dispatch(updateContent(latestCodeRef.current));
             dispatch(saveFileContentThunk());
-        }, 400);
+        }, 500);
         return () => clearTimeout(timer);
     }, [autoSaveEnabled, activeFile, dispatch, code, savedContent, slug]);
 
+    // ── Pre-compile heal: sync fixed code back to the editor ──────────────
+    // When page.jsx's handleSave fixes syntax issues before compilation,
+    // it dispatches `synthi:pre-compile-heal` with the individual line fixes.
+    // We apply those fixes to the Monaco model so the editor stays in sync
+    // with what was actually compiled. Uses the same undo-friendly pattern
+    // as useSelfHealing (executeEdits + pushUndoStop).
+    useEffect(() => {
+        const handler = (e) => {
+            const editor = editorRef?.current;
+            if (!editor) return;
+
+            const model = editor.getModel();
+            if (!model) return;
+
+            const { fixes } = e.detail || {};
+            if (!fixes || fixes.length === 0) return;
+
+            const monaco = typeof window !== 'undefined' && window.monaco;
+            if (!monaco) return;
+
+            // Build edit operations from the fix list
+            const edits = fixes.map((fix) => {
+                const lineNum = fix.line; // 1-indexed
+                if (lineNum < 1 || lineNum > model.getLineCount()) return null;
+
+                const lineContent = model.getLineContent(lineNum);
+                // Only apply if the line still matches the original (hasn't changed)
+                if (lineContent.trimEnd() !== fix.original.trimEnd()) return null;
+
+                return {
+                    range: new monaco.Range(lineNum, 1, lineNum, lineContent.length + 1),
+                    text: fix.fixed,
+                    forceMoveMarkers: true,
+                };
+            }).filter(Boolean);
+
+            if (edits.length === 0) return;
+
+            // Apply with self-edit guard so self-healing doesn't re-trigger
+            editor.executeEdits('pre-compile-heal', edits);
+            editor.pushUndoStop();
+
+            console.log(`[PreCompileHeal] Applied ${edits.length} fix(es) back to editor`);
+        };
+
+        window.addEventListener('synthi:pre-compile-heal', handler);
+        return () => window.removeEventListener('synthi:pre-compile-heal', handler);
+    }, []);
+
     // Latch diffModeEverActive so the DiffEditor stays mounted (hidden) once
     // the user first opens it — avoids React passive-unmount crash.
+    // Also generate a unique diffSessionKey per diff activation to prevent
+    // Monaco model URI collisions between files.
+    const [diffSessionKey, setDiffSessionKey] = useState(0);
     useEffect(() => {
-        if (diffMode) setDiffModeEverActive(true);
+        if (diffMode) {
+            setDiffModeEverActive(true);
+            setDiffSessionKey(k => k + 1);
+        }
     }, [diffMode]);
+
+    // Snapshot diff content when diff mode activates so the DiffEditor
+    // is fully decoupled from live editing state (prevents false "unsaved"
+    // indicator and contamination between files).
+    const diffSnapshotRef = useRef({ original: '', modified: '', path: '' });
+    useEffect(() => {
+        if (diffMode && activeFile) {
+            diffSnapshotRef.current = {
+                original: originalContent || '',
+                modified: code ?? '',
+                path: activeFile.path || '',
+            };
+        }
+    }, [diffMode, activeFile?.path]); // intentionally NOT depending on code/originalContent
 
     // Git status refresh — in manual-save mode, status updates after explicit save.
     // In auto-save mode, status updates after each debounced autosave write.
@@ -3465,7 +3622,7 @@ const EditorPanel = ({
 
                                                     {/* Close button — uses theme variables for text and hover backgrounds */}
                                                     <button
-                                                        onClick={(e) => { e.stopPropagation(); dispatch(closeFile(file.path)); }}
+                                                        onClick={(e) => { e.stopPropagation(); handleCloseTab(file); }}
                                                         className={`absolute inset-0 items-center justify-center rounded-full transition-all duration-150 hidden group-hover:flex 
                                                             ${isActive 
                                                                 ? 'text-[var(--text-primary)] opacity-80 hover:opacity-100 hover:bg-[var(--hover-bg-active)]' 
@@ -3502,7 +3659,7 @@ const EditorPanel = ({
                                         onMouseLeave={() => setTabContext({ visible: false, x: 0, y: 0, file: null, index: -1 })}
                                     >
                                         <div className="rounded-lg shadow-lg text-sm border" style={{ background: TAB_TOKENS.activeBg, borderColor: TAB_TOKENS.borderSubtle, color: TAB_TOKENS.textPrimary }}>
-                                            <div className="px-3 py-2 cursor-pointer rounded-t-lg transition-colors" style={{ ':hover': undefined }} onClick={() => { if (tabContext.file) dispatch(closeFile(tabContext.file.path)); setTabContext({ visible: false, x: 0, y: 0, file: null, index: -1 }); }}>Close</div>
+                                            <div className="px-3 py-2 cursor-pointer rounded-t-lg transition-colors" style={{ ':hover': undefined }} onClick={() => { if (tabContext.file) handleCloseTab(tabContext.file); setTabContext({ visible: false, x: 0, y: 0, file: null, index: -1 }); }}>Close</div>
                                             <div className="px-3 py-2 cursor-pointer transition-colors" onClick={() => {
                                                 if (tabContext.file) {
                                                     const keep = tabContext.file.path;
@@ -3643,6 +3800,7 @@ const EditorPanel = ({
                                 content={code}
                                 filePath={activeFile.path}
                                 slug={slug}
+                                monacoInstance={monacoInstance}
                                 onContentChange={async (newContent) => {
                                     // Apply resolved content to the Monaco model directly.
                                     // The model is bound to Yjs via MonacoBinding, so
@@ -3699,7 +3857,11 @@ const EditorPanel = ({
                                                     <div className="flex items-center gap-2 min-w-0">
                                                         <span className="font-medium truncate" style={{ color: 'var(--text-primary)' }}>{activeFile?.name || 'Unknown'}</span>
                                                         <span style={{ color: 'var(--text-dim, var(--text-muted))' }}>•</span>
-                                                        <span className="whitespace-nowrap" style={{ color: 'var(--text-secondary)' }}>Working Copy ↔ HEAD</span>
+                                                        <span className="whitespace-nowrap" style={{ color: 'var(--text-secondary)' }}>
+                                                            {activeFile?.commitDiff
+                                                                ? `${activeFile.commitHash?.substring(0, 7)}~1 ↔ ${activeFile.commitHash?.substring(0, 7)}`
+                                                                : 'Working Copy ↔ HEAD'}
+                                                        </span>
                                                     </div>
                                                     <button
                                                         onClick={() => dispatch(setDiffMode(false))}
@@ -3711,24 +3873,28 @@ const EditorPanel = ({
                                                         <X className="w-4 h-4" />
                                                     </button>
                                                 </div>
-                                                <div className="flex-1 min-h-0">
+                                                <div className="flex-1 min-h-0 relative overflow-hidden">
                                                     <DiffEditor
+                                                        key={`diff-${diffSessionKey}`}
                                                         height="100%"
-                                                        original={originalContent || ''}
-                                                        modified={code ?? ''}
+                                                        original={diffSnapshotRef.current.original}
+                                                        modified={diffSnapshotRef.current.modified}
                                                         language={activeLanguage}
                                                         theme="synthi-theme"
-                                                        originalModelPath={activeFile ? `inmemory://synthi/diff/original/${activeFile.path}` : undefined}
-                                                        modifiedModelPath={activeFile ? `inmemory://synthi/diff/modified/${activeFile.path}` : undefined}
-                                                        keepCurrentOriginalModel={true}
-                                                        keepCurrentModifiedModel={true}
+                                                        originalModelPath={activeFile ? `inmemory://synthi/diff/original/${activeFile.path}?v=${diffSessionKey}` : undefined}
+                                                        modifiedModelPath={activeFile ? `inmemory://synthi/diff/modified/${activeFile.path}?v=${diffSessionKey}` : undefined}
                                                         options={{
                                                             ...EDITOR_OPTIONS,
                                                             readOnly: true,
-                                                            renderSideBySide: true
+                                                            readOnlyMessage: { value: '' },
+                                                            renderSideBySide: true,
+                                                            glyphMargin: true,
                                                         }}
                                                         beforeMount={(monaco) => {
                                                             monaco.editor.defineTheme('synthi-theme', SYNTHI_THEME);
+                                                        }}
+                                                        onMount={(editor) => {
+                                                            diffEditorRef.current = editor;
                                                         }}
                                                     />
                                                 </div>
@@ -3737,11 +3903,11 @@ const EditorPanel = ({
                                         {/* Regular Editor — hidden when diff is active */}
                                         <div className="h-full w-full" style={{ display: diffMode ? 'none' : undefined }}>
                                             <Editor
-                                                key={activeFileIdentity}
                                                 height="100%"
                                                 path={activeFile ? `file:///synthi/${activeFile.path.startsWith('/') ? activeFile.path.slice(1) : activeFile.path}` : undefined}
-                                                // Use defaultValue for initial content to prevent cursor jumping issues during typing.
-                                                // The key={activeFileIdentity} ensures component remounts on file switch.
+                                                // Model caching: the editor instance stays alive across file switches.
+                                                // Models are pre-created and switched via editor.setModel() in the
+                                                // useEffect above, so there is no blank flash between tab switches.
                                                 defaultValue={code ?? ''}
                                                 language={activeLanguage}
                                                 theme="synthi-theme"
@@ -3915,7 +4081,14 @@ const EditorPanel = ({
                                     <ContextMenuItem onClick={() => editorInstance?.getAction('actions.find')?.run()}>
                                         Find
                                     </ContextMenuItem>
-                                    <ContextMenuItem onClick={() => requestAiCompletion()}>
+                                    <ContextMenuItem onClick={() => {
+                                        // PERF: 250ms cooldown on manual triggers prevents stacking
+                                        // concurrent requests on rapid context-menu invocations.
+                                        const now = Date.now();
+                                        if (now - (window.__lastManualAiTrigger || 0) < 250) return;
+                                        window.__lastManualAiTrigger = now;
+                                        requestAiCompletion();
+                                    }}>
                                         Trigger AI Suggestion
                                     </ContextMenuItem>
                                 </ContextMenuContent>
@@ -3926,7 +4099,26 @@ const EditorPanel = ({
     );
 
     if (dockingMode) {
-        return editorUI;
+        return (<>
+            {editorUI}
+            {pendingClose && (
+                <UnsavedChangesDialog
+                    fileName={pendingClose.name}
+                    onSave={() => {
+                        // Save then close
+                        dispatch(saveFileContentThunk()).then(() => {
+                            dispatch(closeFile(pendingClose.path));
+                        });
+                        setPendingClose(null);
+                    }}
+                    onDiscard={() => {
+                        dispatch(closeFile(pendingClose.path));
+                        setPendingClose(null);
+                    }}
+                    onCancel={() => setPendingClose(null)}
+                />
+            )}
+        </>);
     }
 
     return (
@@ -3945,6 +4137,22 @@ const EditorPanel = ({
                     </>
                 )}
             </ResizablePanelGroup>
+            {pendingClose && (
+                <UnsavedChangesDialog
+                    fileName={pendingClose.name}
+                    onSave={() => {
+                        dispatch(saveFileContentThunk()).then(() => {
+                            dispatch(closeFile(pendingClose.path));
+                        });
+                        setPendingClose(null);
+                    }}
+                    onDiscard={() => {
+                        dispatch(closeFile(pendingClose.path));
+                        setPendingClose(null);
+                    }}
+                    onCancel={() => setPendingClose(null)}
+                />
+            )}
         </ResizablePanel>
     );
 };
