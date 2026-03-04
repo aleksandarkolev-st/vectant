@@ -28,9 +28,10 @@ import {
   CommitHistoryPanelWrapper,
   AIHealingPanelWrapper,
 } from './panel-wrappers';
+import { IDE_PANEL } from './panel-types';
 
 // ────────────────────────────────────────────────────────
-//  Panel type keys (match PANEL_TYPES in panel-registry)
+//  Panel mappings for the registry
 // ────────────────────────────────────────────────────────
 export const IDE_PANEL = Object.freeze({
   EXPLORER:   'explorer',
