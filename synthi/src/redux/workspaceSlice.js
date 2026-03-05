@@ -18,7 +18,7 @@ import { fileCache } from '@/services/fileCache';
 import { loadScheduler } from '@/services/loadScheduler';
 import { perfMeasureToConsole, perfOnce } from '@/services/perfMarkers';
 import { openTab, selectNodes, selectTabs } from '@/components/docking-wm/state/layout-slice';
-import { IDE_PANEL } from '@/components/docking-wm/panels/ide-panels';
+import { IDE_PANEL } from '@/components/docking-wm/panels/panel-types';
 
 // --- Initial State and Utilities ---
 
