@@ -516,7 +516,13 @@ async fn main() -> Result<()> {
     eprintln!("[Worker] Verifying tooling...");
     verify_tooling().await?;
     let signaling_url = get_signaling_url();
+    // SESSION_ID scopes this worker to a single browser peer in the
+    // session-multiplexed signaling server.  Unset → "__legacy__" compat mode.
+    let session_id = env::var("SESSION_ID").ok();
     println!("Connecting to signaling server at: {}", signaling_url);
+    if let Some(ref sid) = session_id {
+        println!("Session ID: {sid}");
+    }
     let (ws_stream, _) = connect_async(&signaling_url).await?;
     let (mut ws_write, mut ws_read) = ws_stream.split();
     let (signal_tx, mut signal_rx) = mpsc::unbounded_channel::<SignalMessage>();
@@ -525,6 +531,7 @@ async fn main() -> Result<()> {
         .send(Message::text(serde_json::to_string(&SignalMessage {
             msg_type: "register".into(),
             role: Some("worker".into()),
+            session_id: session_id.clone(),
             sdp: None,
             sdp_type: None,
             candidate: None,

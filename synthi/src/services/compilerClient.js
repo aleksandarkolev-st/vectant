@@ -85,6 +85,23 @@ export class CompilerClient {
         this.slug = slug;
     }
 
+    /**
+     * Set the signaling session identity. Called before connect() so the
+     * register message includes a session_id for multiplexed routing.
+     * @param {string} sessionId  e.g. "workspace-abc-user-123"
+     */
+    setSignalingSession(sessionId) {
+        this._signalingSessionId = sessionId;
+    }
+
+    /** Build the session_id sent in the signaling "register" message. */
+    _getSignalingSessionId() {
+        if (this._signalingSessionId) return this._signalingSessionId;
+        // Fallback: derive from slug (single-user session).
+        if (this.slug) return this.slug;
+        return undefined; // omit → server falls back to __legacy__
+    }
+
     getMediaStream() {
         if (this.currentStreams && this.currentStreams.length > 0) {
             return this.currentStreams[0];
@@ -659,7 +676,11 @@ export class CompilerClient {
                     console.warn('[CompilerClient] onopen but readyState is not OPEN:', ws.readyState);
                     return;
                 }
-                ws.send(JSON.stringify({ type: 'register', role: 'browser' }));
+                ws.send(JSON.stringify({
+                    type: 'register',
+                    role: 'browser',
+                    session_id: this._getSignalingSessionId(),
+                }));
                 this.compileChannel = this.pc.createDataChannel('compile', { ordered: true });
                 // Terminal channel for stdin forwarding
                 this.terminalChannel = this.pc.createDataChannel('terminal', { ordered: true });

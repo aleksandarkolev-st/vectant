@@ -1,0 +1,113 @@
+# ─────────────────────────────────────────────────────────────────────────────
+#  Kubernetes manifests for the signaling server + Redis
+# ─────────────────────────────────────────────────────────────────────────────
+#
+#  Apply with:  kubectl apply -f k8s-signaling.yaml
+#
+#  Resources created:
+#    1. Redis Deployment + ClusterIP Service   (signaling-redis)
+#    2. Signaling Deployment (2 replicas)       (signaling-server)
+#    3. Signaling Service (ClusterIP)           (signaling-server)
+#
+#  For external access add an Ingress or LoadBalancer in front of the
+#  signaling-server Service.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── Redis ───────────────────────────────────────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: signaling-redis
+  labels:
+    app: signaling-redis
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: signaling-redis
+  template:
+    metadata:
+      labels:
+        app: signaling-redis
+    spec:
+      containers:
+        - name: redis
+          image: redis:7-alpine
+          ports:
+            - containerPort: 6379
+          resources:
+            requests:
+              cpu: 100m
+              memory: 64Mi
+            limits:
+              cpu: 250m
+              memory: 128Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: signaling-redis
+spec:
+  selector:
+    app: signaling-redis
+  ports:
+    - port: 6379
+      targetPort: 6379
+
+# ── Signaling Server ────────────────────────────────────────────────────────
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: signaling-server
+  labels:
+    app: signaling-server
+spec:
+  replicas: 2          # horizontally scalable — sessions are independent
+  selector:
+    matchLabels:
+      app: signaling-server
+  template:
+    metadata:
+      labels:
+        app: signaling-server
+    spec:
+      containers:
+        - name: signaling
+          image: synthi/signaling-server:latest   # replace with your registry
+          ports:
+            - containerPort: 9000
+          env:
+            - name: SIGNALING_PORT
+              value: "9000"
+            - name: REDIS_URL
+              value: "redis://signaling-redis:6379"
+            # NODE_ID defaults to a random UUID per pod — no config needed.
+          resources:
+            requests:
+              cpu: 50m
+              memory: 32Mi
+            limits:
+              cpu: 250m
+              memory: 128Mi
+          readinessProbe:
+            tcpSocket:
+              port: 9000
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket:
+              port: 9000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: signaling-server
+spec:
+  selector:
+    app: signaling-server
+  ports:
+    - port: 9000
+      targetPort: 9000
