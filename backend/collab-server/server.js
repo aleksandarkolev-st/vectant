@@ -1376,6 +1376,61 @@ async function clearDocumentPersistence(docName) {
   }
 }
 
+// ── TURN credential cache (Cloudflare Calls) ────────────────────────────────
+// Reuses the same Cloudflare credential until 80% of the TTL has elapsed,
+// avoiding an extra HTTP round-trip on most create_peer() calls.
+let _turnCache = null; // { iceServers, expiresAt }
+const TURN_REFRESH_MARGIN = 0.2; // refresh when 80% of TTL elapsed
+
+async function getTurnCredentials() {
+  const { CLOUDFLARE_TURN_TOKEN_ID, CLOUDFLARE_TURN_API_TOKEN, TURN_CREDENTIAL_TTL } = config;
+
+  // Not configured → STUN-only fallback.
+  if (!CLOUDFLARE_TURN_TOKEN_ID || !CLOUDFLARE_TURN_API_TOKEN) {
+    return [{ urls: ['stun:stun.l.google.com:19302'] }];
+  }
+
+  // Serve from cache when still fresh enough.
+  if (_turnCache) {
+    const remaining = _turnCache.expiresAt - Date.now();
+    if (remaining > TURN_CREDENTIAL_TTL * 1000 * TURN_REFRESH_MARGIN) {
+      return _turnCache.iceServers;
+    }
+  }
+
+  const cfRes = await fetch(
+    `https://rtc.live.cloudflare.com/v1/turn/keys/${CLOUDFLARE_TURN_TOKEN_ID}/credentials/generate`,
+    {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${CLOUDFLARE_TURN_API_TOKEN}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ ttl: TURN_CREDENTIAL_TTL }),
+    },
+  );
+
+  if (!cfRes.ok) {
+    const text = await cfRes.text().catch(() => '');
+    throw new Error(`Cloudflare TURN API ${cfRes.status}: ${text}`);
+  }
+
+  const data = await cfRes.json();
+  const cf = data.iceServers;
+
+  const iceServers = [
+    { urls: ['stun:stun.cloudflare.com:3478'] },
+    {
+      urls: Array.isArray(cf.urls) ? cf.urls : [cf.urls],
+      username: cf.username,
+      credential: cf.credential,
+    },
+  ];
+
+  _turnCache = { iceServers, expiresAt: Date.now() + TURN_CREDENTIAL_TTL * 1000 };
+  return iceServers;
+}
+
 const server = http.createServer(async (req, res) => {
   // CORS headers
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -1385,6 +1440,31 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'OPTIONS') {
     res.writeHead(204);
     res.end();
+    return;
+  }
+
+  // ========================================================================
+  // TURN CREDENTIALS — /turn-credentials
+  // Internal endpoint for workers (Option B) to fetch short-lived
+  // Cloudflare Calls TURN credentials. Cached server-side so we avoid
+  // hitting Cloudflare on every create_peer().
+  // ========================================================================
+  if (req.url === '/turn-credentials' && req.method === 'GET') {
+    res.setHeader('Content-Type', 'application/json');
+    try {
+      const iceServers = await getTurnCredentials();
+      res.writeHead(200);
+      res.end(JSON.stringify({ iceServers }));
+    } catch (e) {
+      console.error('[TURN] Credential fetch failed:', e.message);
+      // Degrade to STUN-only so the worker isn't completely blocked.
+      res.writeHead(200);
+      res.end(JSON.stringify({
+        iceServers: [{ urls: ['stun:stun.l.google.com:19302'] }],
+        _fallback: true,
+        _error: e.message,
+      }));
+    }
     return;
   }
 

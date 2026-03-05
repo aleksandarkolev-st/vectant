@@ -13,7 +13,27 @@ const parseIceServers = (raw) => {
         return [{ urls: 'stun:stun.l.google.com:19302' }];
     }
 };
-const ICE_SERVERS = parseIceServers(process.env.NEXT_PUBLIC_ICE_SERVERS);
+/** Static fallback used when the TURN credential API is unreachable. */
+const FALLBACK_ICE_SERVERS = parseIceServers(process.env.NEXT_PUBLIC_ICE_SERVERS);
+
+/**
+ * Fetch short-lived TURN credentials from /api/turn-credentials.
+ * Falls back to the static NEXT_PUBLIC_ICE_SERVERS env if the API is not
+ * configured or unreachable, so connectivity is never fully blocked.
+ */
+async function fetchIceServers() {
+    try {
+        const res = await fetch('/api/turn-credentials');
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        if (Array.isArray(data.iceServers) && data.iceServers.length > 0) {
+            return data.iceServers;
+        }
+    } catch (e) {
+        console.warn('[CompilerClient] TURN credential fetch failed, using fallback ICE:', e.message);
+    }
+    return FALLBACK_ICE_SERVERS;
+}
 
 export const CompilerStatus = {
     IDLE: 'idle',
@@ -390,8 +410,11 @@ export class CompilerClient {
         
         this._setStatus(CompilerStatus.CONNECTING);
         
-        this.readyPromise = new Promise((resolve, reject) => {
-            this.pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+        this.readyPromise = new Promise(async (resolve, reject) => {
+            // Fetch fresh TURN credentials before every PeerConnection so
+            // relay candidates are always valid (handles credential TTL).
+            const iceServers = await fetchIceServers();
+            this.pc = new RTCPeerConnection({ iceServers });
 
             // Log supported codecs for debugging
             try {

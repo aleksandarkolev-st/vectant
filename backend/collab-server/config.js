@@ -50,6 +50,16 @@ const CODE_INTEL_AUTO_INDEX = String(process.env.CODE_INTEL_AUTO_INDEX || 'true'
 /** Debounce interval (ms) before Yjs changes are flushed to disk. */
 const FLUSH_DEBOUNCE_MS = Number(process.env.FLUSH_DEBOUNCE_MS) || 150;
 
+// ── TURN credentials (Cloudflare Calls) ──────────────────────────────────────
+/** Cloudflare TURN token ID (from the Calls dashboard). */
+const CLOUDFLARE_TURN_TOKEN_ID = process.env.CLOUDFLARE_TURN_TOKEN_ID || '';
+
+/** Cloudflare TURN API secret token. */
+const CLOUDFLARE_TURN_API_TOKEN = process.env.CLOUDFLARE_TURN_API_TOKEN || '';
+
+/** Credential lifetime in seconds. Default: 86400 (24 h). */
+const TURN_CREDENTIAL_TTL = Number(process.env.TURN_CREDENTIAL_TTL) || 86400;
+
 // ── Ephemeral repo cache ─────────────────────────────────────────────────────
 /**
  * Directory used for ephemeral working trees.  Treat as a disposable cache:
@@ -83,6 +93,9 @@ module.exports = {
     GCS_SYNC_ON_FLUSH,
     CODE_INTEL_AUTO_INDEX,
     FLUSH_DEBOUNCE_MS,
+    CLOUDFLARE_TURN_TOKEN_ID,
+    CLOUDFLARE_TURN_API_TOKEN,
+    TURN_CREDENTIAL_TTL,
     REPO_CACHE_DIR,
     REPO_CACHE_MAX,
     REPO_CACHE_TTL_MS,
