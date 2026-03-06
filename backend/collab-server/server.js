@@ -1626,7 +1626,7 @@ const server = http.createServer(async (req, res) => {
       const sessionId = `ai-${crypto.randomUUID().slice(0, 8)}`;
 
       // Create a real PTY with a known session ID
-      const { ptyProcess, cwd } = createHeadlessSession(sessionId, slug, parsed.userId || '');
+      const { ptyProcess, cwd } = await createHeadlessSession(sessionId, slug, parsed.userId || '');
 
       console.log(`[ExecTerminal] slug=${slug} cwd=${cwd} sessionId=${sessionId} cmd=${command.slice(0, 120)}`);
 
@@ -3319,7 +3319,7 @@ const server = http.createServer(async (req, res) => {
                     // Extract owner/repo from the git remote URL for this workspace.
                     // Used by the PR panel to know which GitHub repo to query.
                     try {
-                        const git = gitService.getGit(slug, effectiveUserId);
+                        const git = await gitService.getGit(slug, effectiveUserId);
                         const remotes = await git.getRemotes(true);
                         const origin = remotes.find(r => r.name === 'origin') || remotes[0];
                         if (!origin || !origin.refs?.fetch) {

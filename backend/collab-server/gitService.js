@@ -297,38 +297,42 @@ class GitService {
         });
     }
 
-    isRepoExists(slug, userId) {
+    async isRepoExists(slug, userId) {
+        const fsp = require('fs').promises;
         const repoPath = this.getEffectiveRepoPath(slug, userId);
-        return fs.existsSync(repoPath);
+        try { await fsp.access(repoPath); return true; } catch (_) { return false; }
     }
 
-    isRepoInitialized(slug, userId) {
+    async isRepoInitialized(slug, userId) {
+        const fsp = require('fs').promises;
         const repoPath = this.getEffectiveRepoPath(slug, userId);
         const gitDir = path.join(repoPath, '.git');
-        if (!fs.existsSync(gitDir)) return false;
-
-        const stat = fs.statSync(gitDir);
-        // Standard repo: .git is a directory
-        if (stat.isDirectory()) return true;
-        // Migrated worktree: .git is a file pointing to the bare repo
-        if (stat.isFile()) return true;
-
-        return false;
+        try {
+            const stat = await fsp.stat(gitDir);
+            return stat.isDirectory() || stat.isFile();
+        } catch (_) {
+            return false;
+        }
     }
 
-    getGit(slug, userId) {
+    async getGit(slug, userId) {
+        const fsp = require('fs').promises;
         const repoPath = this.getEffectiveRepoPath(slug, userId);
-        if (!fs.existsSync(repoPath)) {
+        try {
+            await fsp.access(repoPath);
+        } catch (_) {
             throw new RepoNotFoundError(slug);
         }
         
         // Check for .git (directory for standard repos, file for worktrees)
         const gitDir = path.join(repoPath, '.git');
-        if (!fs.existsSync(gitDir)) {
+        let stat;
+        try {
+            stat = await fsp.stat(gitDir);
+        } catch (_) {
             throw new RepoNotInitializedError(slug);
         }
 
-        const stat = fs.statSync(gitDir);
         if (!stat.isDirectory() && !stat.isFile()) {
             throw new RepoNotInitializedError(slug);
         }
@@ -793,13 +797,13 @@ class GitService {
     }
 
     async getStatus(slug, userId) {
-        if (!this.isRepoExists(slug, userId)) return null;
-        if (!this.isRepoInitialized(slug, userId)) {
+        if (!await this.isRepoExists(slug, userId)) return null;
+        if (!await this.isRepoInitialized(slug, userId)) {
             return null;
         }
         
         try {
-            const git = this.getGit(slug, userId);
+            const git = await this.getGit(slug, userId);
             const status = await git.status();
             
             // Filter out AI-generated index directories that shouldn't appear in SCM
@@ -846,13 +850,13 @@ class GitService {
     }
 
     async getBranches(slug, userId) {
-        if (!this.isRepoExists(slug, userId)) return { local: [], current: '', all: [] };
-        if (!this.isRepoInitialized(slug, userId)) {
+        if (!await this.isRepoExists(slug, userId)) return { local: [], current: '', all: [] };
+        if (!await this.isRepoInitialized(slug, userId)) {
             return { local: [], current: '', all: [] };
         }
         
         try {
-            const git = this.getGit(slug, userId);
+            const git = await this.getGit(slug, userId);
             const localSummary = await git.branchLocal();
             const allSummary = await git.branch(['-a']);
             return { 
@@ -867,10 +871,10 @@ class GitService {
 
     // ── Tag management ─────────────────────────────────
     async getTags(slug, userId) {
-        if (!this.isRepoExists(slug, userId)) return [];
-        if (!this.isRepoInitialized(slug, userId)) return [];
+        if (!await this.isRepoExists(slug, userId)) return [];
+        if (!await this.isRepoInitialized(slug, userId)) return [];
         try {
-            const git = this.getGit(slug, userId);
+            const git = await this.getGit(slug, userId);
             const raw = await git.raw(['tag', '-l', '--sort=-creatordate', '--format=%(refname:short)%09%(objectname:short)%09%(creatordate:iso-strict)%09%(contents:subject)']);
             return raw.trim().split('\n').filter(Boolean).map(line => {
                 const [name, hash, date, message] = line.split('\t');
@@ -883,7 +887,7 @@ class GitService {
 
     async createTag(slug, name, ref = 'HEAD', message, userId) {
         return this.withLock(slug, async () => {
-            const git = this.getGit(slug, userId);
+            const git = await this.getGit(slug, userId);
             try {
                 if (message) {
                     await git.tag(['-a', name, ref, '-m', message]);
@@ -899,7 +903,7 @@ class GitService {
 
     async deleteTag(slug, name, userId) {
         return this.withLock(slug, async () => {
-            const git = this.getGit(slug, userId);
+            const git = await this.getGit(slug, userId);
             try {
                 await git.tag(['-d', name]);
                 return { deleted: name };
@@ -911,7 +915,7 @@ class GitService {
 
     async pushTag(slug, name, userId, token) {
         return this.withLock(slug, async () => {
-            const git = this.getGit(slug, userId);
+            const git = await this.getGit(slug, userId);
             try {
                 const effectiveToken = token || await this._extractTokenFromRemoteUrl(git);
                 if (effectiveToken) {
@@ -938,7 +942,7 @@ class GitService {
 
     async checkout(slug, branchName, create = false, userId, mode = 'normal') {
         return this.withLock(slug, async () => {
-            const git = this.getGit(slug, userId);
+            const git = await this.getGit(slug, userId);
             try {
                 // ── Ensure we have the latest remote refs ──
                 // If the branch doesn't exist locally (e.g. a PR head branch
@@ -1042,7 +1046,7 @@ class GitService {
     async fetch(slug, userId, token) {
         return this.withLock(slug, async () => {
             try {
-                const git = this.getGit(slug, userId);
+                const git = await this.getGit(slug, userId);
                 const effectiveToken = token || await this._extractTokenFromRemoteUrl(git);
                 if (effectiveToken) {
                     const remotes = await git.getRemotes(true);
@@ -1071,7 +1075,7 @@ class GitService {
     async commit(slug, message, userId, amend = false) {
         return this.withLock(slug, async () => {
             try {
-                const git = this.getGit(slug, userId);
+                const git = await this.getGit(slug, userId);
                 // Check if there are staged changes before committing
                 // (skip for amend — amend can just rewrite the message).
                 if (!amend) {
@@ -1109,7 +1113,7 @@ class GitService {
     async interactiveRebase(slug, baseCommit, operations, userId) {
         return this.withLock(slug, async () => {
             try {
-                const git = this.getGit(slug, userId);
+                const git = await this.getGit(slug, userId);
                 const repoPath = this.getEffectiveRepoPath(slug, userId);
 
                 // Build the rebase-todo script
@@ -1178,7 +1182,7 @@ class GitService {
             } catch (e) {
                 // If rebase fails, try to abort so we don't leave repo in bad state
                 try {
-                    const git2 = this.getGit(slug, userId);
+                    const git2 = await this.getGit(slug, userId);
                     await git2.rebase(['--abort']);
                 } catch (_) { /* already clean */ }
                 throw this.mapGitError(e, slug);
@@ -1189,7 +1193,7 @@ class GitService {
     async rebaseAbort(slug, userId) {
         return this.withLock(slug, async () => {
             try {
-                const git = this.getGit(slug, userId);
+                const git = await this.getGit(slug, userId);
                 await git.rebase(['--abort']);
                 return this.getStatus(slug, userId);
             } catch (e) {
@@ -1201,7 +1205,7 @@ class GitService {
     async rebaseContinue(slug, userId) {
         return this.withLock(slug, async () => {
             try {
-                const git = this.getGit(slug, userId);
+                const git = await this.getGit(slug, userId);
                 await git.rebase(['--continue']);
                 this._archiveGitAsync(slug, userId);
                 return this.getStatus(slug, userId);
@@ -1214,7 +1218,7 @@ class GitService {
     async stageFile(slug, filePath, userId) {
         return this.withLock(slug, async () => {
             try {
-                const git = this.getGit(slug, userId);
+                const git = await this.getGit(slug, userId);
                 await git.add(filePath);
                 return this.getStatus(slug, userId);
             } catch (e) {
@@ -1227,7 +1231,7 @@ class GitService {
     async stageLines(slug, filePath, patch, userId) {
         return this.withLock(slug, async () => {
             try {
-                const git = this.getGit(slug, userId);
+                const git = await this.getGit(slug, userId);
                 const repoPath = this.getEffectiveRepoPath(slug, userId);
 
                 // Write the patch to a temp file — simple-git's raw() passes
@@ -1254,7 +1258,7 @@ class GitService {
     async discardLines(slug, filePath, patch, userId) {
         return this.withLock(slug, async () => {
             try {
-                const git = this.getGit(slug, userId);
+                const git = await this.getGit(slug, userId);
                 const repoPath = this.getEffectiveRepoPath(slug, userId);
 
                 const tmpDir = path.join(repoPath, '.git');
@@ -1279,7 +1283,7 @@ class GitService {
     async unstageLines(slug, filePath, patch, userId) {
         return this.withLock(slug, async () => {
             try {
-                const git = this.getGit(slug, userId);
+                const git = await this.getGit(slug, userId);
                 const repoPath = this.getEffectiveRepoPath(slug, userId);
 
                 const tmpDir = path.join(repoPath, '.git');
@@ -1300,7 +1304,7 @@ class GitService {
 
     async unstageFile(slug, filePath, userId) {
         return this.withLock(slug, async () => {
-            const git = this.getGit(slug, userId);
+            const git = await this.getGit(slug, userId);
             try {
                 await git.reset(['HEAD', filePath]);
             } catch (e) {
@@ -1319,7 +1323,7 @@ class GitService {
     async stageAll(slug, userId) {
         return this.withLock(slug, async () => {
             try {
-                const git = this.getGit(slug, userId);
+                const git = await this.getGit(slug, userId);
                 await git.add('-A');
                 return this.getStatus(slug, userId);
             } catch (e) {
@@ -1331,7 +1335,7 @@ class GitService {
     // Unstage all staged changes
     async unstageAll(slug, userId) {
         return this.withLock(slug, async () => {
-            const git = this.getGit(slug, userId);
+            const git = await this.getGit(slug, userId);
             try {
                 await git.reset(['HEAD']);
             } catch (e) {
@@ -1353,7 +1357,7 @@ class GitService {
     async discardAll(slug, userId) {
         return this.withLock(slug, async () => {
             try {
-                const git = this.getGit(slug, userId);
+                const git = await this.getGit(slug, userId);
                 const status = await git.status();
                 
                 // Checkout all modified/deleted tracked files
@@ -1375,7 +1379,7 @@ class GitService {
 
     async push(slug, userId, token, force = false) {
         return this.withLock(slug, async () => {
-            const git = this.getGit(slug, userId);
+            const git = await this.getGit(slug, userId);
             // Make sure we don't trigger interactive credential prompts in the server process
             const prev = process.env.GIT_TERMINAL_PROMPT;
             process.env.GIT_TERMINAL_PROMPT = '0';
@@ -1562,7 +1566,7 @@ class GitService {
     async addRemote(slug, name, url, userId) {
         return this.withLock(slug, async () => {
             try {
-                const git = this.getGit(slug, userId);
+                const git = await this.getGit(slug, userId);
                 await git.addRemote(name, url);
                 return this.getStatus(slug, userId);
             } catch (e) {
@@ -1574,7 +1578,7 @@ class GitService {
     async removeRemote(slug, name, userId) {
         return this.withLock(slug, async () => {
             try {
-                const git = this.getGit(slug, userId);
+                const git = await this.getGit(slug, userId);
                 await git.removeRemote(name);
                 return this.getStatus(slug, userId);
             } catch (e) {
@@ -1591,7 +1595,7 @@ class GitService {
     async setRemoteUrl(slug, name, url, userId) {
         return this.withLock(slug, async () => {
             try {
-                const git = this.getGit(slug, userId);
+                const git = await this.getGit(slug, userId);
                 await git.remote(['set-url', name, url]);
                 return await this.getRemotes(slug, userId);
             } catch (e) {
@@ -1602,7 +1606,7 @@ class GitService {
 
     async getRemotes(slug, userId) {
         try {
-            const git = this.getGit(slug, userId);
+            const git = await this.getGit(slug, userId);
             return await git.getRemotes(true);
         } catch (e) {
             throw this.mapGitError(e, slug);
@@ -1611,7 +1615,7 @@ class GitService {
 
     async pull(slug, userId, token) {
         return this.withLock(slug, async () => {
-            const git = this.getGit(slug, userId);
+            const git = await this.getGit(slug, userId);
             try {
                 // If no explicit token provided, try to extract one from the remote URL
                 let effectiveToken = token;
@@ -1712,7 +1716,7 @@ class GitService {
     async discardChange(slug, filePath, userId) {
         return this.withLock(slug, async () => {
             try {
-                const git = this.getGit(slug, userId);
+                const git = await this.getGit(slug, userId);
                 // Check if file is untracked
                 const status = await git.status();
                 const fileStatus = status.files.find(f => f.path === filePath);
@@ -1740,7 +1744,7 @@ class GitService {
     async resolveConflictOurs(slug, filePath, userId) {
         return this.withLock(slug, async () => {
             try {
-                const git = this.getGit(slug, userId);
+                const git = await this.getGit(slug, userId);
                 await git.checkout(['--ours', filePath]);
                 await git.add(filePath);
                 return this.getStatus(slug, userId);
@@ -1754,7 +1758,7 @@ class GitService {
     async resolveConflictTheirs(slug, filePath, userId) {
         return this.withLock(slug, async () => {
             try {
-                const git = this.getGit(slug, userId);
+                const git = await this.getGit(slug, userId);
                 await git.checkout(['--theirs', filePath]);
                 await git.add(filePath);
                 return this.getStatus(slug, userId);
@@ -1768,7 +1772,7 @@ class GitService {
     async markResolved(slug, filePath, userId) {
         return this.withLock(slug, async () => {
             try {
-                const git = this.getGit(slug, userId);
+                const git = await this.getGit(slug, userId);
                 await git.add(filePath);
                 return this.getStatus(slug, userId);
             } catch (e) {
@@ -1781,7 +1785,7 @@ class GitService {
     async cherryPick(slug, hash, userId) {
         return this.withLock(slug, async () => {
             try {
-                const git = this.getGit(slug, userId);
+                const git = await this.getGit(slug, userId);
                 await git.raw(['cherry-pick', hash]);
                 return this.getStatus(slug, userId);
             } catch (e) {
@@ -1794,7 +1798,7 @@ class GitService {
     async revertCommit(slug, hash, userId) {
         return this.withLock(slug, async () => {
             try {
-                const git = this.getGit(slug, userId);
+                const git = await this.getGit(slug, userId);
                 await git.raw(['revert', hash]);
                 return this.getStatus(slug, userId);
             } catch (e) {
@@ -1806,7 +1810,7 @@ class GitService {
     // Get detailed information about a specific commit
     async getCommitDetail(slug, hash, userId) {
         try {
-            const git = this.getGit(slug, userId);
+            const git = await this.getGit(slug, userId);
             const showOutput = await git.show(['--format=%H%n%an%n%ae%n%aI%n%s%n%b', '--stat', hash]);
             const diff = await git.show(['--format=', '--patch', hash]);
 
@@ -1862,7 +1866,7 @@ class GitService {
     async abortMerge(slug, userId) {
         return this.withLock(slug, async () => {
             try {
-                const git = this.getGit(slug, userId);
+                const git = await this.getGit(slug, userId);
                 await git.merge(['--abort']);
                 return this.getStatus(slug, userId);
             } catch (e) {
@@ -1884,7 +1888,7 @@ class GitService {
      */
     async mergeBranch(slug, branch, userId, token) {
         return this.withLock(slug, async () => {
-            const git = this.getGit(slug, userId);
+            const git = await this.getGit(slug, userId);
 
             // Normalise: strip leading "origin/" so we always work with the
             // bare branch name and prefix it ourselves where needed.
@@ -1958,7 +1962,7 @@ class GitService {
      * @returns {{ hasConflicts: boolean, conflictedFiles: string[] }}
      */
     async checkMergeConflicts(slug, baseBranch, headBranch, userId, token) {
-        const git = this.getGit(slug, userId);
+        const git = await this.getGit(slug, userId);
 
         // Normalise branch names — ensure we reference remote-tracking branches
         const bareBase = baseBranch.replace(/^origin\//, '');
@@ -2054,7 +2058,7 @@ class GitService {
     // Get the content for each version of a conflicted file
     async getConflictVersions(slug, filePath, userId) {
         try {
-            const git = this.getGit(slug, userId);
+            const git = await this.getGit(slug, userId);
             
             // Get the three versions: base, ours, theirs
             let base = '', ours = '', theirs = '';
@@ -2088,11 +2092,11 @@ class GitService {
     // Get structured diff with parsed hunks for better frontend display
     async getDiff(slug, filePath, options = {}) {
         const userId = options.userId;
-        if (!this.isRepoExists(slug, userId)) return { raw: '', hunks: [] };
-        if (!this.isRepoInitialized(slug, userId)) return { raw: '', hunks: [] };
+        if (!await this.isRepoExists(slug, userId)) return { raw: '', hunks: [] };
+        if (!await this.isRepoInitialized(slug, userId)) return { raw: '', hunks: [] };
         
         try {
-            const git = this.getGit(slug, userId);
+            const git = await this.getGit(slug, userId);
             let raw;
             if (filePath) {
                 raw = await git.diff([filePath]);
@@ -2153,11 +2157,11 @@ class GitService {
 
     async getLog(slug, options = {}) {
         const userId = options.userId;
-        if (!this.isRepoExists(slug, userId)) return { all: [], total: 0 };
-        if (!this.isRepoInitialized(slug, userId)) return { all: [], total: 0 };
+        if (!await this.isRepoExists(slug, userId)) return { all: [], total: 0 };
+        if (!await this.isRepoInitialized(slug, userId)) return { all: [], total: 0 };
         
         try {
-            const git = this.getGit(slug, userId);
+            const git = await this.getGit(slug, userId);
             const { page = 1, limit = 50 } = options;
             const skip = (page - 1) * limit;
             
@@ -2246,11 +2250,11 @@ class GitService {
 
     // Git blame support
     async getBlame(slug, filePath, userId) {
-        if (!this.isRepoExists(slug, userId)) return [];
-        if (!this.isRepoInitialized(slug, userId)) return [];
+        if (!await this.isRepoExists(slug, userId)) return [];
+        if (!await this.isRepoInitialized(slug, userId)) return [];
         
         try {
-            const git = this.getGit(slug, userId);
+            const git = await this.getGit(slug, userId);
             // Use porcelain format for easier parsing
             const blameOutput = await git.raw(['blame', '--line-porcelain', filePath]);
             return this.parseBlame(blameOutput);
@@ -2297,7 +2301,7 @@ class GitService {
     // ===== Stash Operations =====
     async stashList(slug, userId) {
         try {
-            const git = this.getGit(slug, userId);
+            const git = await this.getGit(slug, userId);
             const result = await git.stashList();
             return result.all || [];
         } catch (e) {
@@ -2308,7 +2312,7 @@ class GitService {
     async stashPush(slug, message = '', userId) {
         return this.withLock(slug, async () => {
             try {
-                const git = this.getGit(slug, userId);
+                const git = await this.getGit(slug, userId);
                 const options = message ? ['-m', message] : [];
                 await git.stash(['push', ...options]);
                 return this.getStatus(slug, userId);
@@ -2321,7 +2325,7 @@ class GitService {
     async stashPop(slug, index = 0, userId) {
         return this.withLock(slug, async () => {
             try {
-                const git = this.getGit(slug, userId);
+                const git = await this.getGit(slug, userId);
                 await git.stash(['pop', `stash@{${index}}`]);
                 return this.getStatus(slug, userId);
             } catch (e) {
@@ -2333,7 +2337,7 @@ class GitService {
     async stashDrop(slug, index = 0, userId) {
         return this.withLock(slug, async () => {
             try {
-                const git = this.getGit(slug, userId);
+                const git = await this.getGit(slug, userId);
                 await git.stash(['drop', `stash@{${index}}`]);
                 return this.stashList(slug, userId);
             } catch (e) {
@@ -2345,7 +2349,7 @@ class GitService {
     async stashApply(slug, index = 0, userId) {
         return this.withLock(slug, async () => {
             try {
-                const git = this.getGit(slug, userId);
+                const git = await this.getGit(slug, userId);
                 await git.stash(['apply', `stash@{${index}}`]);
                 return this.getStatus(slug, userId);
             } catch (e) {
@@ -2356,9 +2360,9 @@ class GitService {
 
     async getUnpushedCommits(slug, max = 50, userId) {
         try {
-            if (!this.isRepoExists(slug, userId)) return [];
-            if (!this.isRepoInitialized(slug, userId)) return [];
-            const git = this.getGit(slug, userId);
+            if (!await this.isRepoExists(slug, userId)) return [];
+            if (!await this.isRepoInitialized(slug, userId)) return [];
+            const git = await this.getGit(slug, userId);
             const branchSummary = await git.branchLocal();
             const currentBranch = branchSummary.current;
             if (!currentBranch) return [];
@@ -2464,9 +2468,9 @@ class GitService {
     // Get commits that are in upstream but not in local (incoming/behind)
     async getIncomingCommits(slug, max = 50, userId) {
         try {
-            if (!this.isRepoExists(slug, userId)) return [];
-            if (!this.isRepoInitialized(slug, userId)) return [];
-            const git = this.getGit(slug, userId);
+            if (!await this.isRepoExists(slug, userId)) return [];
+            if (!await this.isRepoInitialized(slug, userId)) return [];
+            const git = await this.getGit(slug, userId);
             const branchSummary = await git.branchLocal();
             const currentBranch = branchSummary.current;
             if (!currentBranch) return [];
@@ -2810,9 +2814,9 @@ class GitService {
     }
 
     async getFileContent(slug, filePath, ref = 'HEAD', userId) {
-        if (!this.isRepoExists(slug, userId)) return '';
-        if (!this.isRepoInitialized(slug, userId)) return '';
-        const git = this.getGit(slug, userId);
+        if (!await this.isRepoExists(slug, userId)) return '';
+        if (!await this.isRepoInitialized(slug, userId)) return '';
+        const git = await this.getGit(slug, userId);
         try {
             // Ensure forward slashes for git command and remove leading slash
             let gitPath = filePath.replace(/\\/g, '/');
