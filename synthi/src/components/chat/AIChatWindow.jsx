@@ -101,8 +101,9 @@ const AIChatWindow = ({
     const rawFiles = useAppSelector((state) => state.workspace.rawFiles || []);
     const { metrics: codeIntelMetrics, isLoading: isMetricsLoading, error: metricsError, refresh: refreshMetrics } = useCodeIntelMetrics({
         workspacePath: workspaceSlug,
+        slug: workspaceSlug,
         enabled: isVisible,
-        pollMs: 12000,
+        fallbackPollMs: 120000,
     });
 
     const {
