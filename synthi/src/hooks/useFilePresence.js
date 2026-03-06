@@ -87,12 +87,12 @@ export function useFilePresence(slug, myUserId) {
     // Initial computation
     computePresence();
 
-    // Also poll in case some awareness listeners aren't perfectly wired
-    const interval = setInterval(computePresence, 3000);
+    // Removed 3s polling — awareness listener is the only trigger.
+    // The collabClient awareness listener fires on every remote cursor/
+    // selection change, which is sufficient for real-time presence.
 
     return () => {
       unsub();
-      clearInterval(interval);
     };
   }, [slug, computePresence]);
 
