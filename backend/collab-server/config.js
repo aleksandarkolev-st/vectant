@@ -15,8 +15,15 @@ const path = require('path');
 /** Root directory that holds per-workspace git repositories (one sub-dir per slug). */
 const REPOS_DIR = path.resolve(process.env.REPOS_DIR || path.join(__dirname, 'repos'));
 
-/** Directory used by y-leveldb for Yjs document persistence. */
+/** @deprecated LevelDB removed — CRDT persistence is handled by Y-Sweet. */
 const LEVELDB_DIR = process.env.LEVELDB_DIR || path.join(__dirname, 'data', 'collab-leveldb');
+
+// ── Y-Sweet (CRDT relay + persistence) ───────────────────────────────────────
+/** Connection URL for the Y-Sweet server (e.g. http://y-sweet:8080). */
+const YSWEET_URL = (process.env.YSWEET_URL || 'http://localhost:8080').replace(/\/$/, '');
+
+/** Optional auth key shared with the Y-Sweet server for token signing. */
+const YSWEET_AUTH_KEY = process.env.YSWEET_AUTH_KEY || '';
 
 // ── Networking ───────────────────────────────────────────────────────────────
 const PORT = Number(process.env.COLLAB_PORT) || 1234;
@@ -81,6 +88,8 @@ const REPO_CACHE_TTL_MS = Number(process.env.REPO_CACHE_TTL_MS) || 5 * 60 * 1000
 module.exports = {
     REPOS_DIR,
     LEVELDB_DIR,
+    YSWEET_URL,
+    YSWEET_AUTH_KEY,
     PORT,
     CODE_INTEL_URL,
     CORS_ORIGIN,

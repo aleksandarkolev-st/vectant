@@ -1,0 +1,52 @@
+# ─────────────────────────────────────────────────────────────────────────────
+#  Synthi IDE — Kustomization (apply all manifests in order)
+# ─────────────────────────────────────────────────────────────────────────────
+#
+#  Apply everything:   kubectl apply -k k8s/
+#
+#  Or apply individually in dependency order:
+#    kubectl apply -f k8s/namespace.yaml
+#    kubectl apply -f k8s/secrets.yaml
+#    kubectl apply -f k8s/configmap.yaml
+#    kubectl apply -f k8s/postgres.yaml
+#    kubectl apply -f k8s/redis.yaml
+#    kubectl apply -f k8s/ai-engine.yaml
+#    kubectl apply -f k8s/ai-gateway.yaml
+#    kubectl apply -f k8s/collab-server.yaml
+#    kubectl apply -f k8s/signaling-server.yaml
+#    kubectl apply -f k8s/frontend.yaml
+#    kubectl apply -f k8s/worker.yaml
+#    kubectl apply -f k8s/ingress.yaml
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: synthi
+
+resources:
+  # 1. Foundation
+  - namespace.yaml
+  - secrets.yaml
+  - configmap.yaml
+
+  # 2. Datastores
+  - postgres.yaml
+  - redis.yaml
+
+  # 3. Backend services (order: no inter-dependencies at startup)
+  - ai-engine.yaml
+  - ai-gateway.yaml
+  - y-sweet.yaml
+  - collab-server.yaml
+  - signaling-server.yaml
+
+  # 4. Frontend + workers (depend on backend services)
+  - frontend.yaml
+  - worker.yaml
+
+  # 5. Ingress (depends on all services existing)
+  - ingress.yaml
+
+commonLabels:
+  app.kubernetes.io/managed-by: kustomize
+  app.kubernetes.io/part-of: synthi-ide
