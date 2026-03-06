@@ -68,6 +68,7 @@ import { ProblemsPanel } from '@/components/analysis';
 import { DockablePanel, DockablePanelProvider, PANEL_STATE, DOCK_POSITION } from '@/components/docking';
 import { AlertCircle } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { useSSE, useSSEEvent } from '@/hooks/useSSE';
 import { useCollabNotifications } from '@/hooks/useCollabNotifications';
 import { GuestBanner } from '@/components/collaboration';
 import { useExtensions } from '@/hooks/useExtensions';
@@ -599,6 +600,51 @@ export default function EditorPage({ params }) {
         }, { userId: authUserId, sessionId: activeSessionId });
         return teardown;
     }, [slug, dispatch, authUserId, activeSessionId]);
+
+    // ── SSE connection — event-driven push from backend ──────────────────
+    // Establishes a single EventSource per workspace for server-pushed
+    // notifications (git-status, file-tree, presence, etc.).
+    // This replaces ALL HTTP polling intervals on the frontend.
+    useSSE(slug, { userId: authUserId });
+
+    // SSE: git-status-changed → force refresh git status (replaces 30s poll)
+    useSSEEvent(slug, 'git-status-changed', useCallback(() => {
+        startTransition(() => {
+            dispatch(forceRefreshGitStatus(slug));
+        });
+    }, [dispatch, slug]));
+
+    // SSE: file-tree-changed → refetch file tree
+    useSSEEvent(slug, 'file-tree-changed', useCallback(() => {
+        dispatch(fetchFilesThunk(slug));
+    }, [dispatch, slug]));
+
+    // SSE: file-saved → mark file as saved remotely
+    useSSEEvent(slug, 'file-saved', useCallback((data) => {
+        if (data?.filePath) {
+            dispatch(markFileSavedRemotely(data.filePath));
+        }
+    }, [dispatch]));
+
+    // SSE: file-reverted → invalidate cache and notify editor
+    useSSEEvent(slug, 'file-reverted', useCallback((data) => {
+        const filePaths = data?.filePaths || [];
+        try {
+            if (!filePaths.length) {
+                fileCache.clear();
+            } else {
+                filePaths.forEach(fp => fileCache.delete(fp));
+            }
+            window.dispatchEvent(new CustomEvent('synthi:file-reverted', {
+                detail: { slug, filePaths },
+            }));
+        } catch (e) {
+            console.warn('[Page/SSE] Error in file-reverted handler:', e);
+        }
+        startTransition(() => {
+            dispatch(fetchGitStatus(slug));
+        });
+    }, [dispatch, slug]));
 
     // ── Re-fetch git status when auth or session becomes available ──────
     // On cold page load, the initial fetchGitStatus may fire before
