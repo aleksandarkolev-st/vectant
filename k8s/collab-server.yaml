@@ -1,0 +1,186 @@
+# ─────────────────────────────────────────────────────────────────────────────
+#  Synthi IDE — Collab Server (Node.js, REST + WS notifications)
+# ─────────────────────────────────────────────────────────────────────────────
+#  Handles:
+#    - HTTP API (file hashes, git, workspaces, TURN credentials, Y-Sweet tokens)
+#    - Notification / session / terminal WebSockets
+#    - GCS ↔ disk sync
+#
+#  CRDT document editing is handled by Y-Sweet (see y-sweet.yaml).
+#  This server is stateless for CRDT — uses a PVC only for ephemeral
+#  repo cache.  Safe to run multiple replicas behind a load balancer
+#  once repos are sharded or shared via NFS/GCS.
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: collab-server
+  namespace: synthi
+  labels:
+    app: collab-server
+    app.kubernetes.io/part-of: synthi-ide
+spec:
+  replicas: 1    # Safe to scale once repos are sharded / shared
+  strategy:
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      app: collab-server
+  template:
+    metadata:
+      labels:
+        app: collab-server
+    spec:
+      # If using Workload Identity for GCS, annotate the service account:
+      # serviceAccountName: synthi-collab-sa
+      containers:
+        - name: collab
+          image: REGISTRY/synthi-collab-server:latest  # TODO: replace REGISTRY
+          ports:
+            - containerPort: 1234
+              name: http-ws
+          env:
+            # ── Networking ──────────────────────────────────────────────────
+            - name: COLLAB_PORT
+              value: "1234"
+            - name: CORS_ORIGIN
+              valueFrom:
+                configMapKeyRef:
+                  name: synthi-config
+                  key: CORS_ORIGIN
+            - name: CODE_INTEL_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: synthi-config
+                  key: CODE_INTEL_URL
+            # ── Y-Sweet CRDT server ──────────────────────────────────────
+            - name: YSWEET_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: synthi-config
+                  key: YSWEET_URL
+            - name: YSWEET_AUTH_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: synthi-secrets
+                  key: YSWEET_AUTH_KEY
+                  optional: true
+            # ── Persistence (repo cache only — no LevelDB) ──────────────────
+            - name: REPOS_DIR
+              value: /data/repos
+            - name: REPO_CACHE_DIR
+              value: /data/repos
+            # ── GCS ─────────────────────────────────────────────────────────
+            - name: GCP_PROJECT_ID
+              valueFrom:
+                configMapKeyRef:
+                  name: synthi-config
+                  key: GCP_PROJECT_ID
+            - name: GCS_BUCKET_NAME
+              valueFrom:
+                configMapKeyRef:
+                  name: synthi-config
+                  key: GCS_BUCKET_NAME
+            - name: GCS_WORKSPACE_PREFIX
+              valueFrom:
+                configMapKeyRef:
+                  name: synthi-config
+                  key: GCS_WORKSPACE_PREFIX
+            - name: GCP_CLIENT_EMAIL
+              valueFrom:
+                secretKeyRef:
+                  name: synthi-secrets
+                  key: GCP_CLIENT_EMAIL
+            - name: GCP_PRIVATE_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: synthi-secrets
+                  key: GCP_PRIVATE_KEY
+            # ── Feature flags ───────────────────────────────────────────────
+            - name: GCS_SYNC_ON_FLUSH
+              valueFrom:
+                configMapKeyRef:
+                  name: synthi-config
+                  key: GCS_SYNC_ON_FLUSH
+            - name: CODE_INTEL_AUTO_INDEX
+              valueFrom:
+                configMapKeyRef:
+                  name: synthi-config
+                  key: CODE_INTEL_AUTO_INDEX
+            - name: FLUSH_DEBOUNCE_MS
+              valueFrom:
+                configMapKeyRef:
+                  name: synthi-config
+                  key: FLUSH_DEBOUNCE_MS
+            # ── TURN credentials ────────────────────────────────────────────
+            - name: CLOUDFLARE_TURN_TOKEN_ID
+              valueFrom:
+                secretKeyRef:
+                  name: synthi-secrets
+                  key: CLOUDFLARE_TURN_TOKEN_ID
+            - name: CLOUDFLARE_TURN_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: synthi-secrets
+                  key: CLOUDFLARE_TURN_API_TOKEN
+            - name: TURN_CREDENTIAL_TTL
+              valueFrom:
+                configMapKeyRef:
+                  name: synthi-config
+                  key: TURN_CREDENTIAL_TTL
+          volumeMounts:
+            - name: collab-data
+              mountPath: /data
+          resources:
+            requests:
+              cpu: 200m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+          readinessProbe:
+            httpGet:
+              path: /debug/status
+              port: 1234
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /debug/status
+              port: 1234
+            initialDelaySeconds: 10
+            periodSeconds: 20
+      volumes:
+        - name: collab-data
+          persistentVolumeClaim:
+            claimName: collab-data-pvc
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: collab-data-pvc
+  namespace: synthi
+  labels:
+    app: collab-server
+    app.kubernetes.io/part-of: synthi-ide
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 10Gi    # repo cache only — LevelDB no longer used
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: collab-server
+  namespace: synthi
+  labels:
+    app: collab-server
+    app.kubernetes.io/part-of: synthi-ide
+spec:
+  selector:
+    app: collab-server
+  ports:
+    - port: 1234
+      targetPort: 1234
+      name: http-ws
