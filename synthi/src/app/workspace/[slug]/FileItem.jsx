@@ -26,6 +26,7 @@ const FileItem = memo(({
   dispatch,
   handleKeyDown,
   handleBlur,
+  shallow = false,
 }) => {
 
   const renderTreeGuides = (
@@ -457,7 +458,8 @@ useEffect(() => {
       </div>
 
       {/* Show children if folder is open or if it's the target for creation */}
-      {(isExpandable && (isOpen || isParentForCreation)) && (
+      {/* In shallow mode (virtualised tree), children rendering is handled by the parent Virtuoso list */}
+      {!shallow && (isExpandable && (isOpen || isParentForCreation)) && (
         <div className="flex flex-col">
           {isParentForCreation && (
             <div
@@ -525,6 +527,30 @@ useEffect(() => {
               handleBlur={handleBlur}
             />
           ))}
+        </div>
+      )}
+
+      {/* In shallow mode, still render the creation input row if this folder is the target */}
+      {shallow && isParentForCreation && (
+        <div
+          className="file-item relative flex items-center py-1 px-2"
+          style={{ paddingLeft: `${(level + 1) * 16 + 8}px`, '--indent-level': level + 1 }}
+        >
+          <div className="flex items-center">
+            <div className="w-4 h-4 mr-2 flex-shrink-0 flex items-center justify-center">
+              {isCreatingFolder ? <FolderIcon /> : getFileIcon(name || "newfile")}
+            </div>
+            <input
+              ref={localInputRef}
+              type="text"
+              value={name}
+              onChange={(e) => dispatch(setUiActionName(e.target.value))}
+              onKeyDown={handleKeyDown}
+              onBlur={handleBlur}
+              placeholder={isCreatingFolder ? "New folder name..." : "New file name..."}
+              className="w-full bg-transparent border-none outline-none text-sm text-white placeholder-gray-500"
+            />
+          </div>
         </div>
       )}
     </>
