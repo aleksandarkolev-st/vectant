@@ -82,10 +82,6 @@ async function purgeLegacyRoomState(slug, filePath) {
   try {
     fileHashCache.delete(legacyDoc);
   } catch (_) {}
-
-  try {
-    activeDocuments.delete(legacyDoc);
-  } catch (_) {}
 }
 
 /**
@@ -746,7 +742,8 @@ const server = http.createServer(async (req, res) => {
   if (req.url === '/debug/status' && req.method === 'GET') {
     const status = {
       server: 'running',
-      persistence: LeveldbPersistence ? 'LevelDB' : 'In-Memory',
+      persistence: 'Y-Sweet',
+      ySweetUrl: config.YSWEET_URL,
       fileHashCacheSize: fileHashCache.size,
       fileHashes: Object.fromEntries(
         Array.from(fileHashCache.entries()).map(([k, v]) => [k, { 
@@ -1367,6 +1364,32 @@ const server = http.createServer(async (req, res) => {
     const list = blockedBy.has(userId) ? Array.from(blockedBy.get(userId)) : [];
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ userId, blockedUsers: list }));
+    return;
+  }
+
+  // ========================================================================
+  // Y-SWEET TOKEN API — Issue connection tokens for CRDT document rooms
+  // ========================================================================
+  if (req.url.startsWith('/ysweet/token') && req.method === 'POST') {
+    let body = '';
+    req.on('data', (c) => { body += c; });
+    req.on('end', async () => {
+      try {
+        const { docId } = JSON.parse(body || '{}');
+        if (!docId) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'docId is required' }));
+          return;
+        }
+        const tokenData = await ySweetBridge.getOrCreateToken(docId);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(tokenData));
+      } catch (e) {
+        console.error('[Y-Sweet Token] Error:', e.message);
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: e.message }));
+      }
+    });
     return;
   }
 
@@ -2692,8 +2715,6 @@ const wsPerMessageDeflate = {
   threshold: 128,                  // only compress messages > 128 bytes
 };
 
-const wss = new WebSocket.Server({ noServer: true, perMessageDeflate: wsPerMessageDeflate });
-
 // Lightweight notification WebSocket server for non-Yjs broadcasts
 // (e.g., file-tree-changed). Clients connect to /notifications?slug=<slug>.
 const notifyWss = new WebSocket.Server({ noServer: true, perMessageDeflate: wsPerMessageDeflate });
@@ -2796,159 +2817,7 @@ function sendToSessionUser(sessionId, targetUserId, eventType, payload) {
   });
 }
 
-// Track active documents and their content for debugging
-const activeDocuments = new Map(); // docName -> { ydoc, lastContent, clientCount }
 
-wss.on('connection', (ws, req) => {
-  const roomName = req.url ? req.url.slice(1).split('?')[0] : 'unknown';
-  const { userId, sessionId } = getWsQueryParams(req.url || '');
-  const clientIp = req.socket?.remoteAddress || 'unknown';
-  ws._userId = userId;
-  ws._sessionId = sessionId;
-  
-  console.log(`[Collab DEBUG] === WebSocket Connection ===`);
-  console.log(`[Collab DEBUG]   Room: ${roomName}`);
-  console.log(`[Collab DEBUG]   Client IP: ${clientIp}`);
-  console.log(`[Collab DEBUG]   URL: ${req.url}`);
-  
-  const parsed = parseDocName(roomName);
-  const access = validateDocAccess(parsed, { userId, sessionId });
-  if (!access.ok) {
-    try { ws.close(1008, access.reason); } catch (_) {}
-    console.warn(`[Collab] Denied Yjs WS for room=${roomName}: ${access.reason}`);
-    return;
-  }
-
-  if (parsed && !parsed.isLegacy) {
-    purgeLegacyRoomState(parsed.slug, parsed.filePath).catch(() => {});
-  }
-
-  // ── Message buffering: prevent CRDT merge during async bindState ───
-  // y-websocket's getYDoc() calls persistence.bindState() WITHOUT awaiting.
-  // This means sync messages from the client are processed while bindState
-  // (which reads from disk and may reset the Y.Doc) is still running.
-  // If the client has stale CRDT items, they get merged into the doc
-  // before the server can validate — causing content duplication.
-  //
-  // Fix: wrap the WS so that any 'message' events received before
-  // bindState completes are buffered and replayed afterwards.
-  const messageBuffer = [];
-  let bindReady = false;
-  let messageHandler = null;
-  const originalOn = ws.on.bind(ws);
-  ws.on = function (event, fn) {
-    if (event === 'message' && !bindReady) {
-      messageHandler = fn;
-      return originalOn.call(ws, 'message', function (data) {
-        if (bindReady) {
-          fn.call(this, data);
-        } else {
-          messageBuffer.push(data);
-        }
-      });
-    }
-    return originalOn.call(ws, event, fn);
-  };
-
-  // setupWSConnection handles the y-websocket protocol for a Y.Doc room.
-  // Inside it, getYDoc() fires bindState() (async, not awaited) and then
-  // immediately registers the message handler via ws.on('message', ...).
-  setupWSConnection(ws, req, {
-    persistence,
-    docName: roomName,
-  });
-
-  // Wait for bindState to complete, then replay buffered messages.
-  persistence.waitForBindState(roomName).then(() => {
-    bindReady = true;
-    // Restore native .on so future calls bypass our wrapper
-    ws.on = originalOn;
-    // Replay any messages that arrived during bindState
-    if (messageBuffer.length > 0 && messageHandler) {
-      console.log(`[Collab] Replaying ${messageBuffer.length} buffered messages for ${roomName}`);
-      for (const data of messageBuffer) {
-        try { messageHandler.call(ws, data); } catch (e) {
-          console.error('[Collab] Error replaying buffered message:', e?.message);
-        }
-      }
-    }
-    messageBuffer.length = 0;
-  }).catch(() => {
-    // Ensure we unblock even on error
-    bindReady = true;
-    ws.on = originalOn;
-  });
-
-  // Populate the user display name cache from awareness state changes.
-  // The doc is created/retrieved by y-websocket during setupWSConnection,
-  // so we can look it up from the docs map immediately after.
-  if (yWsDocs && yWsDocs.has(roomName)) {
-    const wsDoc = yWsDocs.get(roomName);
-    if (wsDoc.awareness && !wsDoc._userNameCacheWired) {
-      wsDoc._userNameCacheWired = true;
-      const aw = wsDoc.awareness;
-      refreshUserNameCache(aw); // populate with current states
-      aw.on('change', () => refreshUserNameCache(aw));
-    }
-  }
-
-  // ── Pin the repo in the cache while this Yjs WS is alive ──────────
-  // Without this, a notification WS disconnect (network blip) would
-  // un-pin the repo, and the LRU TTL eviction could delete the working
-  // tree while the Yjs connection is still active — causing ENOENT.
-  if (parsed) {
-    const { slug } = parsed;
-    const effectiveUserId = resolveEffectiveUserForDoc(parsed, userId);
-    repoCache.pin(slug, effectiveUserId || undefined);
-    ws._effectiveUserId = effectiveUserId || null;
-    console.log(`[Collab] Pinned repo "${slug}" for Yjs WS (user=${effectiveUserId || 'n/a'})`);
-  }
-  
-  // Track this connection
-  if (!activeDocuments.has(roomName)) {
-    activeDocuments.set(roomName, { clientCount: 0, lastUpdate: Date.now() });
-  }
-  const docInfo = activeDocuments.get(roomName);
-  docInfo.clientCount++;
-  console.log(`[Collab DEBUG]   Active clients for ${roomName}: ${docInfo.clientCount}`);
-  
-  ws.on('message', (data) => {
-    // Handle both Buffer and string messages safely
-    const byteLen = Buffer.isBuffer(data) ? data.length : (typeof data === 'string' ? Buffer.byteLength(data) : 0);
-    if (byteLen > 0) {
-      console.log(`[Collab DEBUG] Message received for ${roomName}: ${byteLen} bytes`);
-    }
-    docInfo.lastUpdate = Date.now();
-  });
-  
-  ws.on('close', () => {
-    docInfo.clientCount--;
-    console.log(`[Collab DEBUG] Connection closed for ${roomName}. Remaining clients: ${docInfo.clientCount}`);
-
-    // Unpin the repo ONLY if no other Yjs connections remain for the same scope.
-    if (parsed) {
-      const { slug } = parsed;
-      const effectiveUserId = ws._effectiveUserId || resolveEffectiveUserForDoc(parsed, userId);
-      const anyActiveForSlug = [...activeDocuments.entries()].some(
-        ([key, info]) => {
-          if (info.clientCount <= 0) return false;
-          const p = parseDocName(key);
-          if (!p || p.slug !== slug) return false;
-          const pUser = resolveEffectiveUserForDoc(p);
-          return (pUser || null) === (effectiveUserId || null);
-        }
-      );
-      if (!anyActiveForSlug) {
-        repoCache.unpin(slug, effectiveUserId || undefined);
-        console.log(`[Collab] Unpinned repo "${slug}" — no more Yjs clients for user=${effectiveUserId || 'n/a'}`);
-      }
-    }
-  });
-  
-  ws.on('error', (err) => {
-    console.error(`[Collab DEBUG] WebSocket error for ${roomName}:`, err.message);
-  });
-});
 
 server.on('upgrade', (request, socket, head) => {
   const pathname = request.url ? request.url.slice(1).split('?')[0] : 'unknown';
@@ -2970,10 +2839,10 @@ server.on('upgrade', (request, socket, head) => {
       terminalWss.emit('connection', ws, request);
     });
   } else {
-    // All other paths are Yjs document rooms
-    wss.handleUpgrade(request, socket, head, (ws) => {
-      wss.emit('connection', ws, request);
-    });
+    // Unknown upgrade path — Y-Sweet handles CRDT WebSockets directly.
+    console.warn(`[Collab] Rejected unknown WS upgrade: /${pathname}`);
+    socket.write('HTTP/1.1 404 Not Found\r\n\r\n');
+    socket.destroy();
   }
 });
 
@@ -3039,6 +2908,6 @@ sessionManager.on('session:knockCancelled', ({ sessionId, guestId }) => {
 });
 
 server.listen(PORT, '0.0.0.0', () => {
-  console.log(`Collaboration server (y-websocket) listening on port ${PORT}`);
-  console.log(`[Collab DEBUG] Server started with persistence: ${LeveldbPersistence ? 'LevelDB' : 'In-Memory'}`);
+  console.log(`Collaboration server listening on port ${PORT}`);
+  console.log(`[Collab] CRDT persistence: Y-Sweet @ ${config.YSWEET_URL}`);
 });
