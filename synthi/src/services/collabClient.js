@@ -537,17 +537,15 @@ class MonacoTextBinding {
 
 // Small client wrapper for workspace collaboration with Yjs.
 // - Creates/maintains a Y.Doc per workspace:file
-// - Connects via y-websocket provider
+// - Connects via y-websocket provider to Y-Sweet CRDT server
 // - Creates MonacoBinding when a Monaco model is available
 
 class CollabClient {
   constructor(serverUrl) {
-    // Derive WebSocket URL from the env var used everywhere else, or fall back
-    // to auto-detecting from the current page's location.
+    // Derive WebSocket URL for the collab server (notifications, sessions, REST).
     if (serverUrl) {
       this.serverUrl = serverUrl;
     } else if (typeof process !== 'undefined' && process.env && process.env.NEXT_PUBLIC_COLLAB_SERVER_URL) {
-      // Convert http(s) URL to ws(s) URL
       this.serverUrl = process.env.NEXT_PUBLIC_COLLAB_SERVER_URL
         .replace(/^http:/, 'ws:')
         .replace(/^https:/, 'wss:');
@@ -559,6 +557,13 @@ class CollabClient {
     } else {
       this.serverUrl = 'ws://localhost:1234';
     }
+
+    // Y-Sweet CRDT server URL — WebSocket connections for document editing
+    // go directly to Y-Sweet (not through the collab server).
+    const ySweetRaw = (typeof process !== 'undefined' && process.env?.NEXT_PUBLIC_YSWEET_URL)
+      || 'http://localhost:8080';
+    this.ySweetWsUrl = ySweetRaw.replace(/^http:/, 'ws:').replace(/^https:/, 'wss:');
+
     this.docs = new Map(); // key -> {doc, provider, bindings: Set}
     this.identity = { userId: null, sessionId: null, hostId: null };
     // awareness listener registry: key -> Map<originalCb, wrappedCb>
@@ -770,43 +775,21 @@ class CollabClient {
 
     const doc = new Y.Doc();
 
-    // Create a WebSocket wrapper that intercepts close code 4000
-    // (doc-invalidated).  When the server invalidates a Yjs doc it closes
-    // connections with code 4000.  The WebsocketProvider would normally
-    // auto-reconnect with the SAME Y.Doc (carrying stale CRDT state),
-    // merging old + new content and causing duplication.
-    // This wrapper destroys the doc on code 4000 BEFORE the provider's
-    // onclose handler can schedule a reconnect, so the provider sees
-    // shouldConnect === false and aborts.
-    //
-    // For non-4000 closes (network blip, ping timeout), the server-side
-    // message buffering + doc TTL keep-alive prevent doubling.  We reset
-    // the _seeded flag here so that the client knows to wait for server
-    // content on reconnect rather than seeding independently.
+    // Connect to Y-Sweet CRDT server directly.
+    // Y-Sweet speaks the standard Yjs sync protocol, so the y-websocket
+    // WebsocketProvider works unmodified.  Document invalidation is now
+    // handled via the notification WS ('doc-invalidated' event) rather
+    // than close code 4000.
     const self = this;
-    // Capture the entry reference (set after provider creation) so the
-    // microtask only destroys THIS specific entry, not a newer fresh
-    // one that may have been created if ensureDoc was called between
-    // the notification-destroy and the microtask firing.
     let entryRef = null;
-    const InvalidationAwareWS = class extends WebSocket {
+    const SeedResetWS = class extends WebSocket {
       constructor(url, protocols) {
         super(url, protocols);
         this.addEventListener('close', (event) => {
-          if (event.code === 4000) {
-            console.log('[Collab] WS close 4000 (doc-invalidated) for', key);
-            queueMicrotask(() => {
-              // Only destroy if the current entry is still the one we were
-              // created for — prevents accidentally destroying a fresh doc.
-              const current = self.docs.get(key);
-              if (current && current === entryRef) {
-                self.destroyDocument(slug, path);
-              }
-            });
-          } else if (event.code !== 1000) {
-            // Non-clean close (network blip, ping timeout, etc.)
-            // Reset _seeded so attachEditor waits for server content
-            // on reconnect rather than racing it.
+          if (event.code !== 1000) {
+            // Non-clean close (network blip, Y-Sweet restart, etc.)
+            // Reset _seeded so attachEditor waits for server content on
+            // reconnect rather than racing with stale local state.
             queueMicrotask(() => {
               const current = self.docs.get(key);
               if (current && current === entryRef) {
@@ -819,14 +802,19 @@ class CollabClient {
       }
     };
 
-    const provider = new WebsocketProvider(this.serverUrl, key, doc, {
-      connect: true,
-      params: {
-        userId: this.identity.userId,
-        ...(this.identity.sessionId ? { sessionId: this.identity.sessionId } : {}),
-      },
-      WebSocketPolyfill: InvalidationAwareWS,
-    });
+    const provider = new WebsocketProvider(
+      `${this.ySweetWsUrl}/doc`,
+      key,
+      doc,
+      {
+        connect: true,
+        params: {
+          userId: this.identity.userId,
+          ...(this.identity.sessionId ? { sessionId: this.identity.sessionId } : {}),
+        },
+        WebSocketPolyfill: SeedResetWS,
+      }
+    );
     provider.on('status', (ev) => {
       console.debug('[Collab] Provider status for', key, ev.status);
       this._updateConnectionStatus();
@@ -836,7 +824,6 @@ class CollabClient {
     const ytext = doc.getText('monaco');
 
     const entry = { key, doc, provider, ytext, bindings: new Set() };
-    // Set the entry reference for the InvalidationAwareWS identity check.
     entryRef = entry;
     this.docs.set(key, entry);
     return entry;
@@ -1460,13 +1447,8 @@ class CollabClient {
             }
           }
           if (msg.type === 'file-reverted' && msg.slug === slug) {
-            // CRITICAL: Destroy affected Yjs docs IMMEDIATELY — before
-            // calling external handlers and before the Yjs WebsocketProvider
-            // can auto-reconnect with stale CRDT state.  The server closes
-            // the Yjs WS (code 4000) during invalidation, and the provider
-            // schedules a reconnect after ~100ms.  By destroying the doc
-            // here (which sets provider.shouldConnect = false), we prevent
-            // the stale reconnect that causes content duplication.
+            // CRITICAL: Destroy affected Yjs docs IMMEDIATELY so they
+            // reconnect to Y-Sweet with fresh CRDT state.
             const filePaths = msg.filePaths || [];
             if (filePaths.length === 0) {
               this.destroyAllForSlug(slug);
@@ -1477,6 +1459,21 @@ class CollabClient {
             }
             if (typeof handlers.onFileReverted === 'function') {
               handlers.onFileReverted(filePaths);
+            }
+          }
+          if (msg.type === 'doc-invalidated' && msg.slug === slug) {
+            // Server invalidated CRDT docs (e.g. after git pull/checkout).
+            // Destroy local Y.Docs so they reconnect with fresh state.
+            const filePaths = msg.filePaths || [];
+            if (filePaths.length === 0) {
+              this.destroyAllForSlug(slug);
+            } else {
+              for (const fp of filePaths) {
+                this.destroyDocument(slug, fp);
+              }
+            }
+            if (typeof handlers.onDocInvalidated === 'function') {
+              handlers.onDocInvalidated(filePaths);
             }
           }
           if (msg.type === 'git-status-changed' && msg.slug === slug) {
