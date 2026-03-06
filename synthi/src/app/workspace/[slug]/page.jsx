@@ -1,5 +1,5 @@
 'use client';
-import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import { useState, useEffect, useCallback, useRef, useMemo, startTransition, useDeferredValue } from 'react';
 import { use } from 'react';
 import { useSession } from 'next-auth/react';
 import { useRouter } from 'next/navigation';
@@ -616,7 +616,10 @@ export default function EditorPage({ params }) {
         prevAuthRef.current = authUserId;
         prevSessionRef.current = activeSessionId;
         if (authJustBecameAvailable || sessionJustBecameAvailable) {
-            dispatch(forceRefreshGitStatus(slug));
+            // PERF: Git status refresh is non-critical — run in transition lane
+            startTransition(() => {
+                dispatch(forceRefreshGitStatus(slug));
+            });
         }
     }, [slug, dispatch, authUserId, activeSessionId]);
 
@@ -1200,6 +1203,8 @@ export default function EditorPage({ params }) {
                             }));
 
                             // Replace NON-AI diagnostics for this file only (keep AI until AI pass arrives)
+                            // PERF: startTransition — diagnostic rendering is lower-priority than typing
+                            startTransition(() => {
                             setDiagnostics(prev => {
                                 const currentNorm = normalizePath(currentFilePath || '');
                                 const otherFileDiags = prev.filter(d => normalizePath(d.filePath || '') !== currentNorm);
@@ -1211,6 +1216,7 @@ export default function EditorPage({ params }) {
                                 });
                                 console.log('[page.jsx] Setting', normalizedDiags.length, 'diagnostics for', currentFilePath);
                                 return [...otherFileDiags, ...sameFileAi, ...normalizedDiags];
+                            });
                             });
 
                             // ─── Auto-heal: feed validated quick-fixes into self-healing ───
@@ -1414,6 +1420,8 @@ export default function EditorPage({ params }) {
                                 tier: 'ai',
                             }));
 
+                            // PERF: startTransition — AI diagnostic rendering is lower-priority than typing
+                            startTransition(() => {
                             setDiagnostics(prev => {
                                 const currentNorm = normalizePath(currentFilePath || '');
                                 const otherFileDiags = prev.filter(d => normalizePath(d.filePath || '') !== currentNorm);
@@ -1424,6 +1432,7 @@ export default function EditorPage({ params }) {
                                     return !isAi;
                                 });
                                 return [...otherFileDiags, ...sameFileNonAi, ...normalizedDiags];
+                            });
                             });
 
                             // ─── Auto-heal AI quick-fixes ──────────────────────────
@@ -1536,7 +1545,7 @@ export default function EditorPage({ params }) {
     }, [diagnostics, workspaceDiagnostics]);
 
     // Compute diagnostic summary from merged diagnostics
-    const diagnosticSummary = useMemo(() => {
+    const diagnosticSummaryRaw = useMemo(() => {
         const errors = mergedDiagnostics.filter(d => d.severity === 'error').length;
         const warnings = mergedDiagnostics.filter(d => d.severity === 'warning').length;
         return {
@@ -1547,6 +1556,10 @@ export default function EditorPage({ params }) {
             workspaceWarnings: workspaceSummary.warnings,
         };
     }, [mergedDiagnostics, workspaceSummary]);
+
+    // PERF: Defer the diagnostic summary so the StatusBar and ProblemsPanel
+    // re-render in a lower-priority concurrent lane, never blocking keystrokes.
+    const diagnosticSummary = useDeferredValue(diagnosticSummaryRaw);
 
     // NOTE: Completion requests are handled centrally by the Editor component
     // to avoid duplicate requests, races, and abort-related errors. If you need
