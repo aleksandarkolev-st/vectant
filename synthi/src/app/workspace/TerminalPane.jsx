@@ -1,5 +1,5 @@
 'use client';
-import React, { useEffect, useRef, useState, useCallback } from 'react';
+import React, { useEffect, useRef, useState, useCallback, memo } from 'react';
 import { useSession } from 'next-auth/react';
 import { WifiOff, RefreshCw, Terminal, AlertCircle, Zap, EyeOff } from 'lucide-react';
 import { useTheme } from '@/components/ThemeProvider';
@@ -66,7 +66,12 @@ const SYNTHI_THEME_FALLBACK = {
   brightWhite: '#ffffff',
 };
 
-export default function TerminalPane({ terminalId = 'default', paneSide = 'main', workspaceSlug = '', onFsChange, fixedSessionId = null, shellType = null }) {
+/**
+ * TerminalPane is an imperative xterm widget — it should NEVER re-render from
+ * parent prop changes.  All communication happens through refs and WebSocket.
+ * The freeze comparator always returns true (props are equal → skip re-render).
+ */
+const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSide = 'main', workspaceSlug = '', onFsChange, fixedSessionId = null, shellType = null }) {
   const containerRef = useRef(null);
   const terminalRef = useRef(null);   // { term, fitAddon, dispose() }
   const wsRef = useRef(null);
@@ -506,4 +511,6 @@ export default function TerminalPane({ terminalId = 'default', paneSide = 'main'
       )}
     </div>
   );
-}
+}, /* freeze — never re-render from parent */ () => true);
+
+export default TerminalPane;

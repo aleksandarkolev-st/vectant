@@ -198,6 +198,7 @@ export {
 // ─── Hooks ──────────────────────────────────────────────
 export {
   useDocking,
+  useDockingActions,
   useDragPanel,
   parseDragPayload,
   useDropZone,

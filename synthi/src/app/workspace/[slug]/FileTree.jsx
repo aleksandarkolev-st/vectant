@@ -97,7 +97,7 @@ const FileTreeView = ({ onToggleOrientation }) => {
   }, [isCreating, target]);
 
   // Dispatcher for context menu items
-  const handleTreeAction = async (action, item = null) => {
+  const handleTreeAction = useCallback(async (action, item = null) => {
     if (action === "new-file" || action === "new-folder") {
       dispatch(
         startCreate({
@@ -120,10 +120,10 @@ const FileTreeView = ({ onToggleOrientation }) => {
         toast.error(`Delete failed: ${res.error?.message || "Unknown error"}`);
       }
     }
-  };
+  }, [dispatch]);
 
   // Action handlers passed down to FileItem
-  const handleKeyDown = async (e) => {
+  const handleKeyDown = useCallback(async (e) => {
     if (e.key === "Enter") {
       if (isCreating) {
         const res = await dispatch(handleCreateItemThunk());
@@ -143,9 +143,9 @@ const FileTreeView = ({ onToggleOrientation }) => {
     } else if (e.key === "Escape") {
       dispatch(cancelUiAction());
     }
-  };
+  }, [dispatch, isCreating, isRenaming]);
 
-  const handleBlur = async () => {
+  const handleBlur = useCallback(async () => {
     if (isCreating) {
       // For creation, blur acts as cancellation
       dispatch(cancelUiAction());
@@ -162,7 +162,7 @@ const FileTreeView = ({ onToggleOrientation }) => {
         dispatch(cancelUiAction());
       }
     }
-  };
+  }, [dispatch, isCreating, isRenaming, name, target]);
 
   const onOpenMenu = (e) => {
     const el = e?.target?.closest("[data-node-path-id]");

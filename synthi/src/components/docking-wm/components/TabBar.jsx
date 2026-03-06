@@ -7,7 +7,7 @@
 
 import React, { useCallback, useRef, memo } from 'react';
 import { Tab } from './Tab';
-import { useDocking } from '../hooks/use-docking';
+import { useDockingActions } from '../hooks/use-docking';
 import { TAB_HEIGHT } from '../types';
 
 /**
@@ -27,7 +27,7 @@ export const TabBar = memo(function TabBar({
   isFocused,
   onContextMenu,
 }) {
-  const { toggleMaximize, setFocusedTabGroup } = useDocking();
+  const { toggleMaximize, setFocusedTabGroup } = useDockingActions();
   const scrollRef = useRef(null);
 
   const handleFocus = useCallback(() => {

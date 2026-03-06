@@ -24,8 +24,16 @@ import { createSelector } from '@reduxjs/toolkit';
 /** Current branch name (string) — changes only on checkout */
 export const selectCurrentBranch = (state) => state.git?.status?.currentBranch || '';
 
-/** Is a git operation in-flight? (boolean) */
-export const selectGitLoading = (state) => state.git?.loading || false;
+/** Is a git operation in-flight? (boolean) — derived from per-operation flags */
+export const selectGitLoading = (state) => {
+  const g = state.git;
+  if (!g) return false;
+  return g.statusLoading || g.historyLoading || g.unpushedLoading || g.incomingLoading || g.actionLoading || false;
+};
+
+/** Per-operation loading selectors for fine-grained subscriptions */
+export const selectGitStatusLoading = (state) => state.git?.statusLoading || false;
+export const selectGitActionLoading = (state) => state.git?.actionLoading || false;
 
 /** Ahead/behind count (stable object via createSelector) */
 export const selectAheadBehind = createSelector(

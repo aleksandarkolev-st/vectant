@@ -616,7 +616,9 @@ export default function EditorPage({ params }) {
 
     // SSE: file-tree-changed → refetch file tree
     useSSEEvent(slug, 'file-tree-changed', useCallback(() => {
-        dispatch(fetchFilesThunk(slug));
+        startTransition(() => {
+            dispatch(fetchFilesThunk(slug));
+        });
     }, [dispatch, slug]));
 
     // SSE: file-saved → mark file as saved remotely
@@ -770,10 +772,10 @@ export default function EditorPage({ params }) {
     const [panelGroupKey, setPanelGroupKey] = useState(0);
 
     // Toggling the tree orientation updates the local key and dispatches global change
-    const toggleTreeOrientation = () => {
+    const toggleTreeOrientation = useCallback(() => {
         dispatch(setTreeOrientation());
         setPanelGroupKey(prev => prev + 1); // Force remount
-    };
+    }, [dispatch]);
 
     // Static analysis is now handled by proactive analysis (which includes static tier)
     // Keeping this disabled to avoid duplicate/stale diagnostics
@@ -2284,6 +2286,70 @@ export default function EditorPage({ params }) {
         return null;
     }
 
+    // ── Stable callback refs for panelProps (prevents object identity churn) ──
+    const onSuggestCb = useCallback((s) => setLatestCompletion(s), []);
+    const onBusyCb = useCallback((b) => setAiBusy(Boolean(b)), []);
+    const onCloseProblemsCb = useCallback(() => setShowProblemsPanel(false), []);
+    const onOpenScmCb = useCallback(() => setSidebarView('scm'), []);
+    const onToggleTerminalCb = useCallback(() => dispatch(toggleTerminal()), [dispatch]);
+    const onProblemsClickCb = useCallback(() => setShowProblemsPanel(prev => !prev), []);
+
+    // ── Memoised editorProps (nested object in panelProps) ─────────────────────
+    const memoEditorProps = useMemo(() => ({
+        innerRef: setEditor,
+        slug,
+        showTerminal,
+        analyzeCode,
+        analyzeUnified,
+        lastResult,
+        isAnalyzing: isAnalyzingGateway,
+        connectionMeta,
+        latestCompletion,
+        completionClearSignal,
+        onRun: handleRun,
+        onSave: handleSave,
+        onToggleTerminal: onToggleTerminalCb,
+        onEditorMount: handleEditorMount,
+        analysisResult: lastResult,
+        diagnostics: mergedDiagnostics,
+        onAiDiagnosticsRecalibrated: handleAiDiagnosticsRecalibrated,
+        removeDiagnosticByLocation,
+        aiBusy,
+        onClearCompletion: handleClearLatestCompletion,
+        chatVisible,
+        collabHostId,
+    }), [
+        slug, showTerminal, analyzeCode, analyzeUnified, lastResult,
+        isAnalyzingGateway, connectionMeta, latestCompletion, completionClearSignal,
+        handleRun, handleSave, onToggleTerminalCb, handleEditorMount,
+        mergedDiagnostics, handleAiDiagnosticsRecalibrated, removeDiagnosticByLocation,
+        aiBusy, handleClearLatestCompletion, chatVisible, collabHostId,
+    ]);
+
+    // ── Memoised panelProps (the mega-object passed to DockableWorkspace) ──────
+    const memoPanelProps = useMemo(() => ({
+        editor,
+        activeFile,
+        currentCode: currentContent,
+        diagnostics: mergedDiagnostics,
+        diagnosticSummary,
+        isAnalyzing: isAnalyzingProactive || isWorkspaceAnalyzing,
+        onSuggest: onSuggestCb,
+        onBusy: onBusyCb,
+        clearSignal: completionClearSignal,
+        initialPrompt: jumpstartPrompt,
+        initialAttachments: jumpstartAttachments,
+        onCloseProblems: onCloseProblemsCb,
+        onToggleOrientation: toggleTreeOrientation,
+        onOpenScm: onOpenScmCb,
+        editorProps: memoEditorProps,
+    }), [
+        editor, activeFile, currentContent, mergedDiagnostics, diagnosticSummary,
+        isAnalyzingProactive, isWorkspaceAnalyzing, onSuggestCb, onBusyCb,
+        completionClearSignal, jumpstartPrompt, jumpstartAttachments,
+        onCloseProblemsCb, toggleTreeOrientation, onOpenScmCb, memoEditorProps,
+    ]);
+
     return (
         <DockablePanelProvider workspaceId={slug}>
             <div className="flex flex-col h-screen overflow-hidden" style={{ background: 'var(--bg-sidebar)', color: 'var(--text-primary)' }}>
@@ -2343,46 +2409,7 @@ export default function EditorPage({ params }) {
                                 <DockableWorkspace
                                     workspaceSlug={slug}
                                     defaultPreset="classic"
-                                    panelProps={{
-                                        editor,
-                                        activeFile,
-                                        currentCode: currentContent,
-                                        diagnostics: mergedDiagnostics,
-                                        diagnosticSummary,
-                                        isAnalyzing: isAnalyzingProactive || isWorkspaceAnalyzing,
-                                        onSuggest: (s) => setLatestCompletion(s),
-                                        onBusy: (b) => setAiBusy(Boolean(b)),
-                                        clearSignal: completionClearSignal,
-                                        initialPrompt: jumpstartPrompt,
-                                        initialAttachments: jumpstartAttachments,
-                                        onCloseProblems: () => setShowProblemsPanel(false),
-                                        onToggleOrientation: toggleTreeOrientation,
-                                        onOpenScm: () => setSidebarView('scm'),
-                                        editorProps: {
-                                            innerRef: setEditor,
-                                            slug,
-                                            showTerminal,
-                                            analyzeCode,
-                                            analyzeUnified,
-                                            lastResult,
-                                            isAnalyzing: isAnalyzingGateway,
-                                            connectionMeta,
-                                            latestCompletion,
-                                            completionClearSignal,
-                                            onRun: handleRun,
-                                            onSave: handleSave,
-                                            onToggleTerminal: () => dispatch(toggleTerminal()),
-                                            onEditorMount: handleEditorMount,
-                                            analysisResult: lastResult,
-                                            diagnostics: mergedDiagnostics,
-                                            onAiDiagnosticsRecalibrated: handleAiDiagnosticsRecalibrated,
-                                            removeDiagnosticByLocation,
-                                            aiBusy,
-                                            onClearCompletion: handleClearLatestCompletion,
-                                            chatVisible,
-                                            collabHostId,
-                                        },
-                                    }}
+                                    panelProps={memoPanelProps}
                                 />
                             ) : (
                                 <ResizablePanelGroup
@@ -2542,7 +2569,7 @@ export default function EditorPage({ params }) {
                     slug={slug}
                     diagnosticSummary={diagnosticSummary}
                     isAnalyzing={isAnalyzingProactive || isWorkspaceAnalyzing}
-                    onProblemsClick={() => setShowProblemsPanel(prev => !prev)}
+                    onProblemsClick={onProblemsClickCb}
                     extensionStatusBarItems={extensionStatusBarItems}
                     vscodeServerState={vscodeServerState}
                 />

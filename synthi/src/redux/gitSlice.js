@@ -605,7 +605,12 @@ const gitSlice = createSlice({
         tags: [],
         blameData: [],
         currentBranch: 'main',
-        loading: false,
+        // Per-operation loading flags — prevents cross-thunk render cascades
+        statusLoading: false,
+        historyLoading: false,
+        unpushedLoading: false,
+        incomingLoading: false,
+        actionLoading: false,  // User-initiated actions (commit, push, pull, etc.)
         _statusFetching: false, // de-dup guard for fetchGitStatus
         // actionError persists until explicitly dismissed by user or next
         // user-initiated action — background refreshes never clear it.
@@ -645,11 +650,11 @@ const gitSlice = createSlice({
         // These NEVER touch actionError so user-facing errors persist.
         builder
             .addCase(fetchGitStatus.pending, (state) => {
-                state.loading = true;
+                state.statusLoading = true;
                 state._statusFetching = true;
             })
             .addCase(fetchGitStatus.fulfilled, (state, action) => {
-                state.loading = false;
+                state.statusLoading = false;
                 state._statusFetching = false;
                 state.error = null;
                 state.status = action.payload.status;
@@ -664,17 +669,17 @@ const gitSlice = createSlice({
                 }
             })
             .addCase(fetchGitStatus.rejected, (state, action) => {
-                state.loading = false;
+                state.statusLoading = false;
                 state._statusFetching = false;
                 state.error = action.error.message;
                 state.errorCode = action.error.code || null;
             })
             // forceRefreshGitStatus — same reducers, bypasses dedup guard
             .addCase(forceRefreshGitStatus.pending, (state) => {
-                state.loading = true;
+                state.statusLoading = true;
             })
             .addCase(forceRefreshGitStatus.fulfilled, (state, action) => {
-                state.loading = false;
+                state.statusLoading = false;
                 state.error = null;
                 state.status = action.payload.status;
                 state.branches = action.payload.branches || { local: [], all: [] };
@@ -687,24 +692,24 @@ const gitSlice = createSlice({
                 }
             })
             .addCase(forceRefreshGitStatus.rejected, (state, action) => {
-                state.loading = false;
+                state.statusLoading = false;
                 state.error = action.error.message;
                 state.errorCode = action.error.code || null;
             });
 
         builder
-            .addCase(fetchCommitHistory.pending, (state) => { state.loading = true; })
+            .addCase(fetchCommitHistory.pending, (state) => { state.historyLoading = true; })
             .addCase(fetchCommitHistory.fulfilled, (state, action) => { 
-                state.loading = false; 
+                state.historyLoading = false; 
                 state.commitHistory = action.payload || { all: [], total: 0, page: 1, hasMore: false }; 
             })
-            .addCase(fetchCommitHistory.rejected, (state, action) => { state.loading = false; state.error = action.error.message; })
-            .addCase(fetchUnpushedCommits.pending, (state) => { state.loading = true; })
-            .addCase(fetchUnpushedCommits.fulfilled, (state, action) => { state.loading = false; state.unpushedCommits = action.payload || []; })
-            .addCase(fetchUnpushedCommits.rejected, (state, action) => { state.loading = false; state.error = action.error.message; })
-            .addCase(fetchIncomingCommits.pending, (state) => { state.loading = true; })
-            .addCase(fetchIncomingCommits.fulfilled, (state, action) => { state.loading = false; state.incomingCommits = action.payload || []; })
-            .addCase(fetchIncomingCommits.rejected, (state, action) => { state.loading = false; state.error = action.error.message; });
+            .addCase(fetchCommitHistory.rejected, (state, action) => { state.historyLoading = false; state.error = action.error.message; })
+            .addCase(fetchUnpushedCommits.pending, (state) => { state.unpushedLoading = true; })
+            .addCase(fetchUnpushedCommits.fulfilled, (state, action) => { state.unpushedLoading = false; state.unpushedCommits = action.payload || []; })
+            .addCase(fetchUnpushedCommits.rejected, (state, action) => { state.unpushedLoading = false; state.error = action.error.message; })
+            .addCase(fetchIncomingCommits.pending, (state) => { state.incomingLoading = true; })
+            .addCase(fetchIncomingCommits.fulfilled, (state, action) => { state.incomingLoading = false; state.incomingCommits = action.payload || []; })
+            .addCase(fetchIncomingCommits.rejected, (state, action) => { state.incomingLoading = false; state.error = action.error.message; });
         
         builder
             .addCase(fetchStashList.fulfilled, (state, action) => { state.stashList = action.payload || []; })
@@ -719,10 +724,10 @@ const gitSlice = createSlice({
         // ── User-initiated action thunks ──────────────────────
         // These write to actionError on failure and clear it on next attempt.
         builder
-            .addCase(checkoutBranch.pending, (state) => { state.loading = true; state.actionError = null; state.actionErrorCode = null; state.checkoutConflict = null; })
-            .addCase(checkoutBranch.fulfilled, (state) => { state.loading = false; state.checkoutConflict = null; })
+            .addCase(checkoutBranch.pending, (state) => { state.actionLoading = true; state.actionError = null; state.actionErrorCode = null; state.checkoutConflict = null; })
+            .addCase(checkoutBranch.fulfilled, (state) => { state.actionLoading = false; state.checkoutConflict = null; })
             .addCase(checkoutBranch.rejected, (state, action) => {
-                state.loading = false;
+                state.actionLoading = false;
                 if (action.payload?.code === 'UNCOMMITTED_CHANGES') {
                     state.checkoutConflict = { branch: action.payload.branch, create: action.payload.create };
                     state.actionError = action.payload.message;
@@ -732,43 +737,43 @@ const gitSlice = createSlice({
                     state.actionErrorCode = action.error?.code || null;
                 }
             })
-            .addCase(initRepo.pending, (state) => { state.loading = true; state.actionError = null; state.actionErrorCode = null; })
-            .addCase(initRepo.fulfilled, (state) => { state.loading = false; })
-            .addCase(initRepo.rejected, (state, action) => { state.loading = false; state.actionError = action.error.message; state.actionErrorCode = action.error.code || null; })
-            .addCase(cloneRepo.pending, (state) => { state.loading = true; state.actionError = null; state.actionErrorCode = null; })
-            .addCase(cloneRepo.fulfilled, (state) => { state.loading = false; })
-            .addCase(cloneRepo.rejected, (state, action) => { state.loading = false; state.actionError = action.error.message; state.actionErrorCode = action.error.code || null; })
-            .addCase(addRemote.pending, (state) => { state.loading = true; state.actionError = null; state.actionErrorCode = null; })
-            .addCase(addRemote.fulfilled, (state) => { state.loading = false; })
-            .addCase(addRemote.rejected, (state, action) => { state.loading = false; state.actionError = action.error.message; state.actionErrorCode = action.error.code || null; })
-            .addCase(setRemoteUrl.pending, (state) => { state.loading = true; state.actionError = null; state.actionErrorCode = null; })
-            .addCase(setRemoteUrl.fulfilled, (state) => { state.loading = false; })
-            .addCase(setRemoteUrl.rejected, (state, action) => { state.loading = false; state.actionError = action.error.message; state.actionErrorCode = action.error.code || null; })
-            .addCase(stageLines.pending, (state) => { state.loading = true; state.actionError = null; state.actionErrorCode = null; })
-            .addCase(stageLines.fulfilled, (state) => { state.loading = false; })
-            .addCase(stageLines.rejected, (state, action) => { state.loading = false; state.actionError = action.error.message; state.actionErrorCode = action.error.code || null; })
-            .addCase(unstageLines.pending, (state) => { state.loading = true; state.actionError = null; state.actionErrorCode = null; })
-            .addCase(unstageLines.fulfilled, (state) => { state.loading = false; })
-            .addCase(unstageLines.rejected, (state, action) => { state.loading = false; state.actionError = action.error.message; state.actionErrorCode = action.error.code || null; })
-            .addCase(discardLines.pending, (state) => { state.loading = true; state.actionError = null; state.actionErrorCode = null; })
-            .addCase(discardLines.fulfilled, (state) => { state.loading = false; })
-            .addCase(discardLines.rejected, (state, action) => { state.loading = false; state.actionError = action.error.message; state.actionErrorCode = action.error.code || null; })
-            .addCase(cherryPickCommit.pending, (state) => { state.loading = true; state.actionError = null; state.actionErrorCode = null; })
-            .addCase(cherryPickCommit.fulfilled, (state) => { state.loading = false; })
-            .addCase(cherryPickCommit.rejected, (state, action) => { state.loading = false; state.actionError = action.error.message; state.actionErrorCode = action.error.code || null; })
-            .addCase(revertCommit.pending, (state) => { state.loading = true; state.actionError = null; state.actionErrorCode = null; })
-            .addCase(revertCommit.fulfilled, (state) => { state.loading = false; })
-            .addCase(revertCommit.rejected, (state, action) => { state.loading = false; state.actionError = action.error.message; state.actionErrorCode = action.error.code || null; })
+            .addCase(initRepo.pending, (state) => { state.actionLoading = true; state.actionError = null; state.actionErrorCode = null; })
+            .addCase(initRepo.fulfilled, (state) => { state.actionLoading = false; })
+            .addCase(initRepo.rejected, (state, action) => { state.actionLoading = false; state.actionError = action.error.message; state.actionErrorCode = action.error.code || null; })
+            .addCase(cloneRepo.pending, (state) => { state.actionLoading = true; state.actionError = null; state.actionErrorCode = null; })
+            .addCase(cloneRepo.fulfilled, (state) => { state.actionLoading = false; })
+            .addCase(cloneRepo.rejected, (state, action) => { state.actionLoading = false; state.actionError = action.error.message; state.actionErrorCode = action.error.code || null; })
+            .addCase(addRemote.pending, (state) => { state.actionLoading = true; state.actionError = null; state.actionErrorCode = null; })
+            .addCase(addRemote.fulfilled, (state) => { state.actionLoading = false; })
+            .addCase(addRemote.rejected, (state, action) => { state.actionLoading = false; state.actionError = action.error.message; state.actionErrorCode = action.error.code || null; })
+            .addCase(setRemoteUrl.pending, (state) => { state.actionLoading = true; state.actionError = null; state.actionErrorCode = null; })
+            .addCase(setRemoteUrl.fulfilled, (state) => { state.actionLoading = false; })
+            .addCase(setRemoteUrl.rejected, (state, action) => { state.actionLoading = false; state.actionError = action.error.message; state.actionErrorCode = action.error.code || null; })
+            .addCase(stageLines.pending, (state) => { state.actionLoading = true; state.actionError = null; state.actionErrorCode = null; })
+            .addCase(stageLines.fulfilled, (state) => { state.actionLoading = false; })
+            .addCase(stageLines.rejected, (state, action) => { state.actionLoading = false; state.actionError = action.error.message; state.actionErrorCode = action.error.code || null; })
+            .addCase(unstageLines.pending, (state) => { state.actionLoading = true; state.actionError = null; state.actionErrorCode = null; })
+            .addCase(unstageLines.fulfilled, (state) => { state.actionLoading = false; })
+            .addCase(unstageLines.rejected, (state, action) => { state.actionLoading = false; state.actionError = action.error.message; state.actionErrorCode = action.error.code || null; })
+            .addCase(discardLines.pending, (state) => { state.actionLoading = true; state.actionError = null; state.actionErrorCode = null; })
+            .addCase(discardLines.fulfilled, (state) => { state.actionLoading = false; })
+            .addCase(discardLines.rejected, (state, action) => { state.actionLoading = false; state.actionError = action.error.message; state.actionErrorCode = action.error.code || null; })
+            .addCase(cherryPickCommit.pending, (state) => { state.actionLoading = true; state.actionError = null; state.actionErrorCode = null; })
+            .addCase(cherryPickCommit.fulfilled, (state) => { state.actionLoading = false; })
+            .addCase(cherryPickCommit.rejected, (state, action) => { state.actionLoading = false; state.actionError = action.error.message; state.actionErrorCode = action.error.code || null; })
+            .addCase(revertCommit.pending, (state) => { state.actionLoading = true; state.actionError = null; state.actionErrorCode = null; })
+            .addCase(revertCommit.fulfilled, (state) => { state.actionLoading = false; })
+            .addCase(revertCommit.rejected, (state, action) => { state.actionLoading = false; state.actionError = action.error.message; state.actionErrorCode = action.error.code || null; })
             .addCase(fetchCommitDetail.pending, (state) => { state.commitDetailLoading = true; })
             .addCase(fetchCommitDetail.fulfilled, (state, action) => { state.commitDetailLoading = false; state.commitDetail = action.payload; })
             .addCase(fetchCommitDetail.rejected, (state) => { state.commitDetailLoading = false; state.commitDetail = null; })
-            .addCase(pushChanges.pending, (state) => { state.loading = true; state.actionError = null; state.actionErrorCode = null; })
-            .addCase(pushChanges.fulfilled, (state) => { state.loading = false; })
-            .addCase(pushChanges.rejected, (state, action) => { state.loading = false; state.actionError = action.error.message; state.actionErrorCode = action.error.code || null; })
-            .addCase(pullChanges.pending, (state) => { state.loading = true; state.actionError = null; state.actionErrorCode = null; })
-            .addCase(pullChanges.fulfilled, (state) => { state.loading = false; })
+            .addCase(pushChanges.pending, (state) => { state.actionLoading = true; state.actionError = null; state.actionErrorCode = null; })
+            .addCase(pushChanges.fulfilled, (state) => { state.actionLoading = false; })
+            .addCase(pushChanges.rejected, (state, action) => { state.actionLoading = false; state.actionError = action.error.message; state.actionErrorCode = action.error.code || null; })
+            .addCase(pullChanges.pending, (state) => { state.actionLoading = true; state.actionError = null; state.actionErrorCode = null; })
+            .addCase(pullChanges.fulfilled, (state) => { state.actionLoading = false; })
             .addCase(pullChanges.rejected, (state, action) => { 
-                state.loading = false; 
+                state.actionLoading = false; 
                 if (action.payload?.code === 'MERGE_CONFLICT') {
                     const files = action.payload.conflicted || [];
                     state.actionError = `Merge conflict: ${files.length} file${files.length !== 1 ? 's' : ''} need resolution`;
@@ -782,7 +787,7 @@ const gitSlice = createSlice({
                 }
             })
             .addCase(commitChanges.pending, (state) => {
-                state.loading = true; state.actionError = null; state.actionErrorCode = null;
+                state.actionLoading = true; state.actionError = null; state.actionErrorCode = null;
                 // Optimistic: snapshot current files and clear staged entries
                 if (state.status?.files) {
                     state._preCommitFiles = JSON.parse(JSON.stringify(state.status.files));
@@ -791,11 +796,11 @@ const gitSlice = createSlice({
                 }
             })
             .addCase(commitChanges.fulfilled, (state) => {
-                state.loading = false;
+                state.actionLoading = false;
                 delete state._preCommitFiles;
             })
             .addCase(commitChanges.rejected, (state, action) => {
-                state.loading = false;
+                state.actionLoading = false;
                 state.actionError = action.error.message;
                 state.actionErrorCode = action.error.code || null;
                 // Rollback: restore staged files
@@ -885,18 +890,18 @@ const gitSlice = createSlice({
 
         // Merge conflict resolution handlers
         builder
-            .addCase(resolveConflictOurs.pending, (state) => { state.loading = true; state.actionError = null; })
-            .addCase(resolveConflictOurs.fulfilled, (state) => { state.loading = false; })
-            .addCase(resolveConflictOurs.rejected, (state, action) => { state.loading = false; state.actionError = action.error.message; })
-            .addCase(resolveConflictTheirs.pending, (state) => { state.loading = true; state.actionError = null; })
-            .addCase(resolveConflictTheirs.fulfilled, (state) => { state.loading = false; })
-            .addCase(resolveConflictTheirs.rejected, (state, action) => { state.loading = false; state.actionError = action.error.message; })
-            .addCase(markResolved.pending, (state) => { state.loading = true; state.actionError = null; })
-            .addCase(markResolved.fulfilled, (state) => { state.loading = false; })
-            .addCase(markResolved.rejected, (state, action) => { state.loading = false; state.actionError = action.error.message; })
-            .addCase(abortMerge.pending, (state) => { state.loading = true; state.actionError = null; })
-            .addCase(abortMerge.fulfilled, (state) => { state.loading = false; state.conflictResolverFile = null; })
-            .addCase(abortMerge.rejected, (state, action) => { state.loading = false; state.actionError = action.error.message; });
+            .addCase(resolveConflictOurs.pending, (state) => { state.actionLoading = true; state.actionError = null; })
+            .addCase(resolveConflictOurs.fulfilled, (state) => { state.actionLoading = false; })
+            .addCase(resolveConflictOurs.rejected, (state, action) => { state.actionLoading = false; state.actionError = action.error.message; })
+            .addCase(resolveConflictTheirs.pending, (state) => { state.actionLoading = true; state.actionError = null; })
+            .addCase(resolveConflictTheirs.fulfilled, (state) => { state.actionLoading = false; })
+            .addCase(resolveConflictTheirs.rejected, (state, action) => { state.actionLoading = false; state.actionError = action.error.message; })
+            .addCase(markResolved.pending, (state) => { state.actionLoading = true; state.actionError = null; })
+            .addCase(markResolved.fulfilled, (state) => { state.actionLoading = false; })
+            .addCase(markResolved.rejected, (state, action) => { state.actionLoading = false; state.actionError = action.error.message; })
+            .addCase(abortMerge.pending, (state) => { state.actionLoading = true; state.actionError = null; })
+            .addCase(abortMerge.fulfilled, (state) => { state.actionLoading = false; state.conflictResolverFile = null; })
+            .addCase(abortMerge.rejected, (state, action) => { state.actionLoading = false; state.actionError = action.error.message; });
     },
 });
 

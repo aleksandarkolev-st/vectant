@@ -8,6 +8,38 @@ import { ChevronIcon } from "./Icons";
 import { getFileIcon, FolderIcon } from "@/utils/fileIcons";
 import { setUiActionName } from "@/redux/uiSlice";
 
+/** Custom comparator — shallow equality plus array-content check for ancestorHasNext */
+function fileItemAreEqual(prev, next) {
+  // Fast-path: check scalar / reference-stable props
+  if (
+    prev.item !== next.item ||
+    prev.level !== next.level ||
+    prev.hasNextSibling !== next.hasNextSibling ||
+    prev.parentChildCount !== next.parentChildCount ||
+    prev.showAllGuides !== next.showAllGuides ||
+    prev.activeFolderPath !== next.activeFolderPath ||
+    prev.activeFolderLevel !== next.activeFolderLevel ||
+    prev.withinActiveFolderSubtree !== next.withinActiveFolderSubtree ||
+    prev.onFileSelect !== next.onFileSelect ||
+    prev.activeFile !== next.activeFile ||
+    prev.onAction !== next.onAction ||
+    prev.uiActionState !== next.uiActionState ||
+    prev.dispatch !== next.dispatch ||
+    prev.handleKeyDown !== next.handleKeyDown ||
+    prev.handleBlur !== next.handleBlur
+  ) return false;
+
+  // Deep-compare the boolean array (small, typically 0-8 elements)
+  const a = prev.ancestorHasNext;
+  const b = next.ancestorHasNext;
+  if (a === b) return true;
+  if (!a || !b || a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
+}
+
 const FileItem = memo(({
   item,
   level = 0,
@@ -555,5 +587,5 @@ useEffect(() => {
       )}
     </>
   );
-});
+}, fileItemAreEqual);
 export default FileItem;
