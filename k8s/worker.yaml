@@ -1,0 +1,136 @@
+# ─────────────────────────────────────────────────────────────────────────────
+#  Synthi IDE — WebRTC Compiler Worker (Rust + GStreamer)
+# ─────────────────────────────────────────────────────────────────────────────
+#  Each worker pod handles ONE browser session.  The pod connects outbound
+#  to the signaling server (WebSocket) and the collab server (TURN creds).
+#  No inbound ports are exposed.
+#
+#  Scaling strategy:
+#    A. Manual:  set replicas to your expected concurrency.
+#    B. KEDA:    scale to zero when no sessions, 1 pod per session.
+#    C. Custom:  an orchestrator creates a Deployment/Job per session and
+#                injects SESSION_ID as an env var.
+#
+#  This manifest uses approach (A). Each pod gets a unique SESSION_ID
+#  derived from its pod name via the Downward API, which maps 1:1 to a
+#  signaling session.
+#
+#  The worker image MUST include:
+#    - GStreamer 1.x + plugins (gst-plugins-base, good, bad, ugly, libav)
+#    - Xvfb + matchbox-window-manager (for GUI / emulator rendering)
+#    - x264, libvpx (video encoding)
+#    - The compiled `worker` and `runner` binaries
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: worker
+  namespace: synthi
+  labels:
+    app: worker
+    app.kubernetes.io/part-of: synthi-ide
+spec:
+  replicas: 2    # One pod = one concurrent user session. Scale as needed.
+  selector:
+    matchLabels:
+      app: worker
+  template:
+    metadata:
+      labels:
+        app: worker
+    spec:
+      # Spread workers across nodes for resilience and resource isolation.
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app: worker
+                topologyKey: kubernetes.io/hostname
+      # Graceful shutdown: give the GStreamer pipeline time to drain.
+      terminationGracePeriodSeconds: 15
+      containers:
+        - name: worker
+          image: REGISTRY/synthi-worker:latest  # TODO: replace REGISTRY
+          env:
+            # ── Session identity ────────────────────────────────────────────
+            # Unique per pod — maps to a signaling session slot.
+            - name: SESSION_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            # ── Signaling ───────────────────────────────────────────────────
+            - name: SIGNALING_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: synthi-config
+                  key: SIGNALING_URL
+            # ── TURN credentials (fetched from collab-server) ───────────────
+            - name: COLLAB_SERVER_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: synthi-config
+                  key: COLLAB_SERVER_URL
+            # ── AI backend (for code-intel during compilation) ──────────────
+            - name: AI_BACKEND_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: synthi-config
+                  key: CODE_INTEL_URL
+            # ── GCS (for workspace file download in mobile builds) ──────────
+            - name: GCP_PROJECT_ID
+              valueFrom:
+                configMapKeyRef:
+                  name: synthi-config
+                  key: GCP_PROJECT_ID
+            - name: GCS_BUCKET_NAME
+              valueFrom:
+                configMapKeyRef:
+                  name: synthi-config
+                  key: GCS_BUCKET_NAME
+            # ── GStreamer tuning ────────────────────────────────────────────
+            - name: GST_DEBUG
+              value: "2"             # 0=none … 9=memdump
+            - name: DISPLAY
+              value: ":99"           # Xvfb display for GUI rendering
+            # ── HMR / logging ───────────────────────────────────────────────
+            - name: SYNTHI_LOG_LEVEL
+              valueFrom:
+                configMapKeyRef:
+                  name: synthi-config
+                  key: SYNTHI_LOG_LEVEL
+            - name: SYNTHI_ISOLATION_MODEL
+              valueFrom:
+                configMapKeyRef:
+                  name: synthi-config
+                  key: SYNTHI_ISOLATION_MODEL
+          resources:
+            requests:
+              # Workers are CPU-heavy (compilation + video encoding).
+              cpu: "1"
+              memory: 1Gi
+            limits:
+              cpu: "4"
+              memory: 4Gi
+          # Workers have no inbound port — liveness is checked via process.
+          livenessProbe:
+            exec:
+              command: ["pgrep", "-f", "worker"]
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          # /dev/shm is used by the IncrementalCache (RAM-backed compile cache).
+          volumeMounts:
+            - name: dshm
+              mountPath: /dev/shm
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 512Mi
+        - name: tmp
+          emptyDir:
+            sizeLimit: 2Gi

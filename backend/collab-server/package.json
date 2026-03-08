@@ -4,7 +4,11 @@
   "private": true,
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node --openssl-legacy-provider server.js",
+    "dev": "node --openssl-legacy-provider server.js",
+    "y-sweet:start": "docker-compose -f ../../docker-compose.yml up -d y-sweet",
+    "y-sweet:logs": "docker-compose -f ../../docker-compose.yml logs -f y-sweet",
+    "y-sweet:stop": "docker-compose -f ../../docker-compose.yml stop y-sweet"
   },
   "dependencies": {
     "@google-cloud/storage": "^7.14.0",

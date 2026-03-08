@@ -1,0 +1,9 @@
+# ─────────────────────────────────────────────────────────────────────────────
+#  Synthi IDE — GKE Namespace
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: synthi
+  labels:
+    app.kubernetes.io/part-of: synthi-ide

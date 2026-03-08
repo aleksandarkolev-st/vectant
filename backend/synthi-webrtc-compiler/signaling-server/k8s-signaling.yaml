@@ -2,6 +2,9 @@
 #  Kubernetes manifests for the signaling server + Redis
 # ─────────────────────────────────────────────────────────────────────────────
 #
+#  DEPRECATED — Use the consolidated manifests in /k8s/ instead.
+#  This file is kept for reference only.
+#
 #  Apply with:  kubectl apply -f k8s-signaling.yaml
 #
 #  Resources created:

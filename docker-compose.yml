@@ -1,0 +1,17 @@
+version: '3.8'
+
+services:
+  y-sweet:
+    build: 
+      context: ./backend/y-sweet
+      dockerfile: Dockerfile
+    image: synthi-y-sweet
+    ports:
+      - "8080:8080"
+    volumes:
+      - ysweet-data:/data
+    restart: unless-stopped
+    command: y-sweet serve /data --host 0.0.0.0 --port 8080
+
+volumes:
+  ysweet-data:

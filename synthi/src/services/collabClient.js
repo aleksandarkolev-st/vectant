@@ -802,12 +802,14 @@ class CollabClient {
       }
     };
 
+    // 1. Create provider but DO NOT connect yet (wait for token)
+    // We use the base URL initially; _connectWithToken will update it.
     const provider = new WebsocketProvider(
       `${this.ySweetWsUrl}/doc`,
       key,
       doc,
       {
-        connect: true,
+        connect: false, // Wait for token
         params: {
           userId: this.identity.userId,
           ...(this.identity.sessionId ? { sessionId: this.identity.sessionId } : {}),
@@ -826,7 +828,62 @@ class CollabClient {
     const entry = { key, doc, provider, ytext, bindings: new Set() };
     entryRef = entry;
     this.docs.set(key, entry);
+
+    // 2. Fetch token and connect asynchronously
+    // We do NOT await this, so ensureDoc remains synchronous.
+    // The provider will connect a few ms later when the token arrives.
+    this._connectWithToken(entry, key);
+
     return entry;
+  }
+
+  /**
+   * Fetches Y-Sweet client token and connects the provider.
+   */
+  async _connectWithToken(entry, docId) {
+    try {
+        if (!entry || !entry.provider) return;
+        
+        // Derive HTTP URL for Collab Server from the notification websocket URL
+        // e.g. ws://localhost:1234 -> http://localhost:1234
+        // NEXT_PUBLIC_COLLAB_SERVER_URL is usually available
+        let baseUrl;
+        if (typeof process !== 'undefined' && process.env.NEXT_PUBLIC_COLLAB_SERVER_URL) {
+            baseUrl = process.env.NEXT_PUBLIC_COLLAB_SERVER_URL.replace('ws://', 'http://').replace('wss://', 'https://');
+        } else {
+             // Fallback: use current window location or hardcoded local dev default
+            baseUrl = 'http://localhost:1234'; 
+        }
+
+        const tokenUrl = `${baseUrl}/ysweet/token`; 
+
+        const res = await fetch(tokenUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ docId })
+        });
+        
+        if (!res.ok) throw new Error(`Token fetch failed: ${res.status}`);
+        const data = await res.json();
+        
+        // Check if entry was destroyed while waiting
+        if (!this.docs.has(docId) || this.docs.get(docId) !== entry) return;
+        if (!entry.provider) return;
+
+        // Append token to provider URL
+        // Y-Sweet expects token in 'token' query param for standard WS clients
+        const currentUrl = entry.provider.url;
+        const separator = currentUrl.includes('?') ? '&' : '?';
+        const newUrl = `${currentUrl}${separator}token=${data.token}`;
+        
+        entry.provider.url = newUrl;
+        entry.provider.connect();
+        console.log(`[Collab] Connected to Y-Sweet for ${docId}`);
+        
+    } catch (e) {
+        console.error('[Collab] _connectWithToken error:', e);
+        // Retry? For now, just log. 
+    }
   }
 
   getAwarenessStates(slug, path) {

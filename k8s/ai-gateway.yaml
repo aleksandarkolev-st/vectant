@@ -1,0 +1,110 @@
+# ─────────────────────────────────────────────────────────────────────────────
+#  Synthi IDE — AI Gateway (Node.js WebSocket → AI Engine proxy)
+# ─────────────────────────────────────────────────────────────────────────────
+#  Bridges the browser's long-lived WS connection to the AI engine's HTTP
+#  endpoints.  Cluster-mode enabled internally (1 worker per core).
+#  Stateless — safe to scale horizontally.
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ai-gateway
+  namespace: synthi
+  labels:
+    app: ai-gateway
+    app.kubernetes.io/part-of: synthi-ide
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: ai-gateway
+  template:
+    metadata:
+      labels:
+        app: ai-gateway
+    spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app: ai-gateway
+                topologyKey: kubernetes.io/hostname
+      containers:
+        - name: gateway
+          image: REGISTRY/synthi-ai-gateway:latest  # TODO: replace REGISTRY
+          ports:
+            - containerPort: 7070
+              name: ws
+          env:
+            - name: GATEWAY_PORT
+              value: "7070"
+            - name: GATEWAY_WS_PATH
+              value: "/ws"
+            - name: BACKEND_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: synthi-config
+                  key: BACKEND_URL
+            # Disable internal clustering — k8s handles horizontal scaling.
+            - name: GATEWAY_CLUSTER
+              value: "false"
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          readinessProbe:
+            tcpSocket:
+              port: 7070
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket:
+              port: 7070
+            initialDelaySeconds: 5
+            periodSeconds: 15
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ai-gateway
+  namespace: synthi
+  labels:
+    app: ai-gateway
+    app.kubernetes.io/part-of: synthi-ide
+spec:
+  selector:
+    app: ai-gateway
+  ports:
+    - port: 7070
+      targetPort: 7070
+      name: ws
+---
+# ── HPA — scale gateway pods based on CPU ────────────────────────────────────
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: ai-gateway-hpa
+  namespace: synthi
+  labels:
+    app: ai-gateway
+    app.kubernetes.io/part-of: synthi-ide
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: ai-gateway
+  minReplicas: 2
+  maxReplicas: 6
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
