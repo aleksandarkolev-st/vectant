@@ -2284,16 +2284,6 @@ export default function EditorPage({ params }) {
         />
     ) : null;
 
-
-    if (workspaceMissing) {
-        return <WorkspaceNotFoundModal slug={slug} message={workspaceMissingMessage} open={true} />;
-    }
-
-    // While auth is loading or redirect is pending, show nothing
-    if (authStatus !== 'authenticated') {
-        return null;
-    }
-
     // ── Memoised editorProps (nested object in panelProps) ─────────────────────
     const memoEditorProps = useMemo(() => ({
         innerRef: setEditor,
@@ -2349,6 +2339,15 @@ export default function EditorPage({ params }) {
         completionClearSignal, jumpstartPrompt, jumpstartAttachments,
         onCloseProblemsCb, toggleTreeOrientation, onOpenScmCb, memoEditorProps,
     ]);
+
+    if (workspaceMissing) {
+        return <WorkspaceNotFoundModal slug={slug} message={workspaceMissingMessage} open={true} />;
+    }
+
+    // While auth is loading or redirect is pending, show nothing
+    if (authStatus !== 'authenticated') {
+        return null;
+    }
 
     return (
         <DockablePanelProvider workspaceId={slug}>
