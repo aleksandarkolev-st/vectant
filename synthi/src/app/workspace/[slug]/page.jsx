@@ -2277,6 +2277,13 @@ export default function EditorPage({ params }) {
         />
     ) : null;
 
+    const onSuggestCb = useCallback((s) => setLatestCompletion(s), []);
+    const onBusyCb = useCallback((b) => setAiBusy(Boolean(b)), []);
+    const onCloseProblemsCb = useCallback(() => setShowProblemsPanel(false), []);
+    const onOpenScmCb = useCallback(() => setSidebarView('scm'), []);
+    const onToggleTerminalCb = useCallback(() => dispatch(toggleTerminal()), [dispatch]);
+    const onProblemsClickCb = useCallback(() => setShowProblemsPanel(prev => !prev), []);
+
     if (workspaceMissing) {
         return <WorkspaceNotFoundModal slug={slug} message={workspaceMissingMessage} open={true} />;
     }
@@ -2285,14 +2292,6 @@ export default function EditorPage({ params }) {
     if (authStatus !== 'authenticated') {
         return null;
     }
-
-    // ── Stable callback refs for panelProps (prevents object identity churn) ──
-    const onSuggestCb = useCallback((s) => setLatestCompletion(s), []);
-    const onBusyCb = useCallback((b) => setAiBusy(Boolean(b)), []);
-    const onCloseProblemsCb = useCallback(() => setShowProblemsPanel(false), []);
-    const onOpenScmCb = useCallback(() => setSidebarView('scm'), []);
-    const onToggleTerminalCb = useCallback(() => dispatch(toggleTerminal()), [dispatch]);
-    const onProblemsClickCb = useCallback(() => setShowProblemsPanel(prev => !prev), []);
 
     // ── Memoised editorProps (nested object in panelProps) ─────────────────────
     const memoEditorProps = useMemo(() => ({
