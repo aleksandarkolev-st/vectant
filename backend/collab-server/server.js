@@ -3244,7 +3244,12 @@ const server = http.createServer(async (req, res) => {
                   break;
                 case 'search':
                   // Index-first search; never reads disk on request
-                  result = withTelemetry.sync('fs:search', () => fileIndex.search(slug, data.q || data.query || ''));
+                  result = await withTelemetry.async('fs:search', async () => {
+                    // fileIndex.search is still synchronous, but we can offload it to a worker or setImmediate 
+                    // to prevent blocking this specific event loop turn for too long if needed.
+                    // For now, wrapping in withTelemetry.async to prepare for future worker offloading.
+                    return fileIndex.search(slug, data.q || data.query || '');
+                  });
                   break;
                 case 'open-lookup':
                   result = fileIndex.fileLookup(slug, data.q || data.query || '');
