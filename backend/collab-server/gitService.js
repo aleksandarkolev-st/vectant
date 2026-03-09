@@ -349,24 +349,24 @@ class GitService {
      * (the bare repo), not the worktree gitdir, so we write to both
      * locations to cover all cases.
      */
-    _ensureLocalExcludes(repoPath) {
+    async _ensureLocalExcludes(repoPath) {
         try {
             // Resolve the actual git directory — handles both standard (.git dir)
             // and worktree (.git file pointing to gitdir)
             let gitDirPath = path.join(repoPath, '.git');
             let commonDirPath = null;
             try {
-                const stat = fs.statSync(gitDirPath);
+                const stat = await fs.promises.stat(gitDirPath);
                 if (stat.isFile()) {
                     // Worktree: .git file contains "gitdir: /path/to/actual/gitdir"
-                    const content = fs.readFileSync(gitDirPath, 'utf8').trim();
+                    const content = (await fs.promises.readFile(gitDirPath, 'utf8')).trim();
                     const match = content.match(/^gitdir:\s*(.+)$/m);
                     if (match) {
                         gitDirPath = path.resolve(repoPath, match[1].trim());
                         // Read commondir to find the shared bare repo
                         const commondirFile = path.join(gitDirPath, 'commondir');
-                        if (fs.existsSync(commondirFile)) {
-                            const rel = fs.readFileSync(commondirFile, 'utf8').trim();
+                        if (await fs.promises.access(commondirFile).then(() => true).catch(() => false)) {
+                            const rel = (await fs.promises.readFile(commondirFile, 'utf8')).trim();
                             commonDirPath = path.resolve(gitDirPath, rel);
                         }
                     }
@@ -386,13 +386,13 @@ class GitService {
                 const parentDir = path.dirname(repoPath);
                 // Only add user-repo exclusions for the slug-level repo
                 // (not for per-user repos which live inside the slug dir)
-                if (fs.existsSync(parentDir)) {
-                    const entries = fs.readdirSync(repoPath, { withFileTypes: true });
+                if (await fs.promises.access(parentDir).then(() => true).catch(() => false)) {
+                    const entries = await fs.promises.readdir(repoPath, { withFileTypes: true });
                     for (const e of entries) {
                         if (!e.isDirectory()) continue;
                         if (e.name === '.git' || e.name === '_upstream.git' || e.name === 'sessions') continue;
                         // If this subdirectory has its own .git, it's a user repo
-                        if (fs.existsSync(path.join(repoPath, e.name, '.git'))) {
+                        if (await fs.promises.access(path.join(repoPath, e.name, '.git')).then(() => true).catch(() => false)) {
                             if (!patterns.includes(e.name + '/')) {
                                 patterns.push(e.name + '/');
                             }
@@ -402,12 +402,12 @@ class GitService {
             } catch (_) { /* non-fatal */ }
 
             // Write exclude patterns to the gitDirPath (handles normal repos)
-            this._writeExcludePatterns(path.join(gitDirPath, 'info', 'exclude'), patterns);
+            await this._writeExcludePatterns(path.join(gitDirPath, 'info', 'exclude'), patterns);
 
             // For worktrees, also write to the commondir (bare repo) —
             // git reads info/exclude from commondir, not the worktree gitdir.
             if (commonDirPath && commonDirPath !== gitDirPath) {
-                this._writeExcludePatterns(path.join(commonDirPath, 'info', 'exclude'), patterns);
+                await this._writeExcludePatterns(path.join(commonDirPath, 'info', 'exclude'), patterns);
             }
         } catch (e) {
             console.warn('[GitService] Failed to update .git/info/exclude:', e.message);
@@ -417,18 +417,18 @@ class GitService {
     /**
      * Helper: append exclude patterns to a git exclude file if missing.
      */
-    _writeExcludePatterns(excludePath, patterns) {
+    async _writeExcludePatterns(excludePath, patterns) {
         const infoDir = path.dirname(excludePath);
-        if (!fs.existsSync(infoDir)) fs.mkdirSync(infoDir, { recursive: true });
+        if (!await fs.promises.access(infoDir).then(() => true).catch(() => false)) {
+            await fs.promises.mkdir(infoDir, { recursive: true });
+        }
 
-        const existing = fs.existsSync(excludePath)
-            ? fs.readFileSync(excludePath, 'utf8')
-            : '';
+        const existing = await fs.promises.readFile(excludePath, 'utf8').catch(() => '');
 
         const toAppend = patterns.filter(p => !existing.includes(p));
         if (toAppend.length > 0) {
             const suffix = existing.endsWith('\n') || existing === '' ? '' : '\n';
-            fs.appendFileSync(excludePath, suffix + toAppend.join('\n') + '\n');
+            await fs.promises.appendFile(excludePath, suffix + toAppend.join('\n') + '\n');
         }
     }
 
@@ -444,7 +444,7 @@ class GitService {
      */
     async _resolveRemoteUrl(slug) {
         // 1. Check existing user repos for a configured origin remote
-        const userRepos = this.listUserRepos(slug);
+        const userRepos = await this.listUserRepos(slug);
         for (const repo of userRepos) {
             try {
                 const git = simpleGit(repo.path);
@@ -493,7 +493,7 @@ class GitService {
             // ── Lazy migration: upgrade legacy repos transparently ────────
             // Must release the lock before calling ensureMigrated (it acquires its own)
             // But we're already inside withLock, so we check directly without re-locking.
-            if (this.isLegacyRepo(slug)) {
+            if (await this.isLegacyRepo(slug)) {
                 console.log(`[GitService] initRepo: legacy repo detected for "${slug}", migrating…`);
                 try {
                     // Perform inline migration (we already hold the lock)
@@ -504,7 +504,7 @@ class GitService {
                         if (!valid) {
                             throw new MigrationError(slug, 'Post-migration validation failed', 'validation');
                         }
-                        this._cleanupMigrationBackup(slug);
+                        await this._cleanupMigrationBackup(slug);
                         console.log(`[GitService] initRepo: migration complete for "${slug}"`);
                     } catch (e) {
                         console.error(`[GitService] initRepo: migration failed, rolling back:`, e.message);
@@ -535,7 +535,7 @@ class GitService {
                     try {
                         const stat = fs.statSync(spuriousGit);
                         if (stat.isDirectory()) {
-                            fs.rmSync(spuriousGit, { recursive: true, force: true });
+                            await fs.promises.rm(spuriousGit, { recursive: true, force: true });
                             console.log(`[GitService] initRepo: removed spurious .git dir at slug level for "${slug}"`);
                         }
                     } catch (_) { /* non-fatal */ }
@@ -555,7 +555,7 @@ class GitService {
                 await git.commit('Initial commit', { '--allow-empty': null });
             }
             // Defense-in-depth: hide internal artifacts from git status
-            this._ensureLocalExcludes(repoPath);
+            await this._ensureLocalExcludes(repoPath);
             return { success: true, path: repoPath };
         });
 
@@ -610,7 +610,7 @@ class GitService {
                 const hasGit = fs.existsSync(path.join(repoPath, '.git'));
 
                 // If it's a legacy repo, migrate it instead of throwing
-                if (this.isLegacyRepo(slug)) {
+                if (await this.isLegacyRepo(slug)) {
                     console.log(`[GitService] cloneRepo: legacy repo exists for "${slug}", migrating instead of failing…`);
                     try {
                         await this._createMigrationBackup(slug);
@@ -620,7 +620,7 @@ class GitService {
                             if (!valid) {
                                 throw new MigrationError(slug, 'Post-migration validation failed', 'validation');
                             }
-                            this._cleanupMigrationBackup(slug);
+                            await this._cleanupMigrationBackup(slug);
                             console.log(`[GitService] cloneRepo: migration complete, returning existing repo`);
                             return { success: true, path: repoPath, migrated: true };
                         } catch (e) {
@@ -649,7 +649,7 @@ class GitService {
                 // can use the path as its target directory.
                 if (!hasGit) {
                     console.log(`[GitService] cloneRepo: removing empty stub directory for "${slug}"`);
-                    fs.rmSync(repoPath, { recursive: true, force: true });
+                    await fs.promises.rm(repoPath, { recursive: true, force: true });
                 } else {
                     // Has a .git dir but isn't legacy and isn't migrated — genuinely exists
                     throw new GitError(`Repository for slug ${slug} already exists`, 'REPO_EXISTS');
@@ -766,7 +766,7 @@ class GitService {
                         if (fs.existsSync(maybeGit)) continue; // per-user repo
                     }
                     const fullPath = path.join(repoPath, entry.name);
-                    fs.rmSync(fullPath, { recursive: true, force: true });
+                    await fs.promises.rm(fullPath, { recursive: true, force: true });
                 }
                 console.log(`[GitService] Cleaned slug-level working tree for "${slug}"`);
             } catch (e) {
@@ -789,8 +789,8 @@ class GitService {
     }
 
     async listWorkspaces() {
-        if (!fs.existsSync(this.baseDir)) return [];
-        const dirents = fs.readdirSync(this.baseDir, { withFileTypes: true });
+        if (!await fs.promises.access(this.baseDir).then(() => true).catch(() => false)) return [];
+        const dirents = await fs.promises.readdir(this.baseDir, { withFileTypes: true });
         return dirents
             .filter(dirent => dirent.isDirectory())
             .map(dirent => dirent.name);
@@ -1126,7 +1126,7 @@ class GitService {
 
                 // Write todo to a file and use GIT_SEQUENCE_EDITOR to apply it
                 const todoFile = path.join(repoPath, '.git', '_rebase_todo.txt');
-                fs.writeFileSync(todoFile, todoLines.join('\n') + '\n', 'utf8');
+                await fs.promises.writeFile(todoFile, todoLines.join('\n') + '\n', 'utf8');
 
                 // Build reword messages if any
                 const rewords = operations.filter(op => op.action === 'reword' && op.message);
@@ -1174,8 +1174,8 @@ class GitService {
                 await git.env(env).rebase(['-i', baseCommit]);
 
                 // Cleanup temp files
-                try { fs.unlinkSync(todoFile); } catch (_) {}
-                try { fs.unlinkSync(isWin ? seqScript + '.bat' : seqScript); } catch (_) {}
+                try { await fs.promises.unlink(todoFile); } catch (_) {}
+                try { await fs.promises.unlink(isWin ? seqScript + '.bat' : seqScript); } catch (_) {}
 
                 this._archiveGitAsync(slug, userId);
                 return this.getStatus(slug, userId);
@@ -1239,13 +1239,13 @@ class GitService {
                 // so we can't pass the patch content inline.
                 const tmpDir = path.join(repoPath, '.git');
                 const tmpPatch = path.join(tmpDir, `_stage_${Date.now()}.patch`);
-                fs.writeFileSync(tmpPatch, patch, 'utf8');
+                await fs.promises.writeFile(tmpPatch, patch, 'utf8');
 
                 try {
                     await git.raw(['apply', '--cached', '--unidiff-zero', '--recount', '--ignore-whitespace', tmpPatch]);
                 } finally {
                     // Always clean up the temp patch file
-                    try { fs.unlinkSync(tmpPatch); } catch (_) {}
+                    try { await fs.promises.unlink(tmpPatch); } catch (_) {}
                 }
                 return this.getStatus(slug, userId);
             } catch (e) {
@@ -1263,12 +1263,12 @@ class GitService {
 
                 const tmpDir = path.join(repoPath, '.git');
                 const tmpPatch = path.join(tmpDir, `_discard_${Date.now()}.patch`);
-                fs.writeFileSync(tmpPatch, patch, 'utf8');
+                await fs.promises.writeFile(tmpPatch, patch, 'utf8');
 
                 try {
                     await git.raw(['apply', '--reverse', '--unidiff-zero', '--recount', '--ignore-whitespace', tmpPatch]);
                 } finally {
-                    try { fs.unlinkSync(tmpPatch); } catch (_) {}
+                    try { await fs.promises.unlink(tmpPatch); } catch (_) {}
                 }
                 return this.getStatus(slug, userId);
             } catch (e) {
@@ -1288,12 +1288,12 @@ class GitService {
 
                 const tmpDir = path.join(repoPath, '.git');
                 const tmpPatch = path.join(tmpDir, `_unstage_${Date.now()}.patch`);
-                fs.writeFileSync(tmpPatch, patch, 'utf8');
+                await fs.promises.writeFile(tmpPatch, patch, 'utf8');
 
                 try {
                     await git.raw(['apply', '--cached', '--reverse', '--unidiff-zero', '--recount', '--ignore-whitespace', tmpPatch]);
                 } finally {
-                    try { fs.unlinkSync(tmpPatch); } catch (_) {}
+                    try { await fs.promises.unlink(tmpPatch); } catch (_) {}
                 }
                 return this.getStatus(slug, userId);
             } catch (e) {
@@ -1726,7 +1726,7 @@ class GitService {
                     const repoPath = this.getEffectiveRepoPath(slug, userId);
                     const fullPath = path.join(repoPath, filePath);
                     if (fs.existsSync(fullPath)) {
-                        fs.unlinkSync(fullPath);
+                        await fs.promises.unlink(fullPath);
                     }
                 } else {
                     await git.checkout(filePath);
@@ -2080,7 +2080,7 @@ class GitService {
             try {
                 const repoPath = this.getEffectiveRepoPath(slug, userId);
                 const fullPath = path.join(repoPath, filePath);
-                current = fs.readFileSync(fullPath, 'utf-8');
+                current = await fs.promises.readFile(fullPath, 'utf8');
             } catch (e) { /* ignore */ }
             
             return { base, ours, theirs, current };
@@ -2851,34 +2851,33 @@ class GitService {
      * Returns `true` if the repo exists AND is a standard non-bare repo
      * WITHOUT the `.synthi-migrated` marker.
      */
-    isLegacyRepo(slug) {
+    async isLegacyRepo(slug) {
         const repoPath = this.getRepoPath(slug);
         const gitDir = path.join(repoPath, '.git');
         const marker = path.join(repoPath, '.synthi-migrated');
 
         // Must exist and have a .git directory (not a file — files indicate worktrees)
-        if (!fs.existsSync(gitDir)) return false;
+        if (!await fs.promises.access(gitDir).then(() => true).catch(() => false)) return false;
         try {
-            const stat = fs.statSync(gitDir);
+            const stat = await fs.promises.stat(gitDir);
             if (!stat.isDirectory()) return false; // .git file = worktree, not legacy
         } catch (_) {
             return false;
         }
 
         // If already marked as migrated, it's not legacy
-        if (fs.existsSync(marker)) return false;
+        if (await fs.promises.access(marker).then(() => true).catch(() => false)) return false;
 
         // Check it's NOT bare (bare repos have no working tree)
         try {
             const configPath = path.join(gitDir, 'config');
-            if (fs.existsSync(configPath)) {
-                const content = fs.readFileSync(configPath, 'utf8');
+            if (await fs.promises.access(configPath).then(() => true).catch(() => false)) {
+                const content = await fs.promises.readFile(configPath, 'utf8');
                 if (content.includes('bare = true')) return false;
             }
         } catch (_) {
             // If we can't read config, assume non-bare
         }
-
         return true;
     }
 
@@ -2952,7 +2951,7 @@ class GitService {
         // Clean up any stale backup from a previous failed migration
         if (fs.existsSync(backupPath)) {
             console.warn(`[Migration] Removing stale backup: ${backupPath}`);
-            fs.rmSync(backupPath, { recursive: true, force: true });
+            await fs.promises.rm(backupPath, { recursive: true, force: true });
         }
 
         console.log(`[Migration] Creating backup: ${repoPath} → ${backupPath}`);
@@ -2983,7 +2982,7 @@ class GitService {
 
         // Remove the (partially) migrated repo
         if (fs.existsSync(repoPath)) {
-            fs.rmSync(repoPath, { recursive: true, force: true });
+            await fs.promises.rm(repoPath, { recursive: true, force: true });
         }
 
         // Restore from backup
@@ -2994,10 +2993,10 @@ class GitService {
     /**
      * Remove the migration backup after successful migration.
      */
-    _cleanupMigrationBackup(slug) {
+    async _cleanupMigrationBackup(slug) {
         const backupPath = `${this.getRepoPath(slug)}._migration_backup`;
         if (fs.existsSync(backupPath)) {
-            fs.rmSync(backupPath, { recursive: true, force: true });
+            await fs.promises.rm(backupPath, { recursive: true, force: true });
             console.log(`[Migration] Backup cleaned up for ${slug}`);
         }
     }
@@ -3048,7 +3047,7 @@ class GitService {
 
         // ── Step 2: Create bare clone from the legacy repo ────────────────
         if (fs.existsSync(barePath)) {
-            fs.rmSync(barePath, { recursive: true, force: true });
+            await fs.promises.rm(barePath, { recursive: true, force: true });
         }
 
         try {
@@ -3074,7 +3073,7 @@ class GitService {
         // ── Step 4: Remove the legacy .git and re-attach as worktree ──────
         try {
             // Remove the old .git directory
-            fs.rmSync(legacyGitDir, { recursive: true, force: true });
+            await fs.promises.rm(legacyGitDir, { recursive: true, force: true });
             console.log(`[Migration]   Removed legacy .git directory`);
 
             // Manually wire the worktree links.
@@ -3142,13 +3141,13 @@ class GitService {
                     if (fs.existsSync(maybeGit)) continue;
                 }
                 const fullPath = path.join(repoPath, entry.name);
-                fs.rmSync(fullPath, { recursive: true, force: true });
+                await fs.promises.rm(fullPath, { recursive: true, force: true });
             }
             // Also remove the worktree admin entry from the bare repo
             // so git doesn't think there's a linked worktree at the slug path.
             const wtAdminMain = path.join(barePath, 'worktrees', 'main');
             if (fs.existsSync(wtAdminMain)) {
-                fs.rmSync(wtAdminMain, { recursive: true, force: true });
+                await fs.promises.rm(wtAdminMain, { recursive: true, force: true });
             }
             console.log(`[Migration]   Cleaned slug-level working tree files`);
         } catch (e) {
@@ -3218,7 +3217,7 @@ class GitService {
         }
 
         // Not legacy either — brand-new or doesn't exist yet
-        if (!this.isLegacyRepo(slug)) {
+        if (!await this.isLegacyRepo(slug)) {
             return { migrated: false, wasLegacy: false };
         }
 
@@ -3229,7 +3228,7 @@ class GitService {
             if (this.isMigratedRepo(slug)) {
                 return { migrated: true, wasLegacy: false };
             }
-            if (!this.isLegacyRepo(slug)) {
+            if (!await this.isLegacyRepo(slug)) {
                 return { migrated: false, wasLegacy: false };
             }
 
@@ -3257,7 +3256,7 @@ class GitService {
                 }
 
                 // 4. Cleanup backup on success
-                this._cleanupMigrationBackup(slug);
+                await this._cleanupMigrationBackup(slug);
 
                 return { migrated: true, wasLegacy: true };
             } catch (e) {
@@ -3315,7 +3314,7 @@ class GitService {
     async ensureSessionWorktree(slug, userId, branch = null) {
         return this.withLock(slug, async () => {
             // ── Lazy migration: upgrade legacy repos before creating worktrees
-            if (this.isLegacyRepo(slug)) {
+            if (await this.isLegacyRepo(slug)) {
                 console.log(`[GitService] ensureSessionWorktree: legacy repo for "${slug}", migrating…`);
                 try {
                     await this._createMigrationBackup(slug);
@@ -3325,7 +3324,7 @@ class GitService {
                         if (!valid) {
                             throw new MigrationError(slug, 'Post-migration validation failed', 'validation');
                         }
-                        this._cleanupMigrationBackup(slug);
+                        await this._cleanupMigrationBackup(slug);
                     } catch (e) {
                         console.error(`[GitService] ensureSessionWorktree: migration failed, rolling back:`, e.message);
                         try { await this._restoreMigrationBackup(slug); } catch (_) {}
@@ -3369,7 +3368,7 @@ class GitService {
 
             // Exclude sessions directory from git tracking
             if (!this.isMigratedRepo(slug)) {
-                this._ensureLocalExcludes(mainRepoPath);
+                await this._ensureLocalExcludes(mainRepoPath);
             }
 
             const git = simpleGit(gitSourcePath);
@@ -3428,7 +3427,7 @@ class GitService {
                 // Force cleanup if git worktree remove fails
                 console.warn(`[GitService] git worktree remove failed, force-deleting: ${e.message}`);
                 try {
-                    fs.rmSync(worktreePath, { recursive: true, force: true });
+                    await fs.promises.rm(worktreePath, { recursive: true, force: true });
                 } catch (_) {}
             }
 
@@ -3520,12 +3519,12 @@ class GitService {
                     try {
                         const git = simpleGit();
                         await git.clone(remoteUrl, userRepoPath, ['--no-hardlinks']);
-                        this._ensureLocalExcludes(userRepoPath);
+                        await this._ensureLocalExcludes(userRepoPath);
                         console.log(`[GitService] Cloned user repo for ${slug}/${userId} from remote: ${remoteUrl}`);
                         return { path: userRepoPath, created: true };
                     } catch (e) {
                         // Remote clone failed — clean up and try other sources
-                        try { fs.rmSync(userRepoPath, { recursive: true, force: true }); } catch (_) {}
+                        try { await fs.promises.rm(userRepoPath, { recursive: true, force: true }); } catch (_) {}
                         console.warn(`[GitService] Remote clone failed for ${slug}/${userId}: ${e.message}, trying other sources`);
                     }
                 }
@@ -3533,7 +3532,7 @@ class GitService {
 
             // ── Fallback: clone from an existing peer user repo ─────────
             if (!cloneSource) {
-                const existingUserRepos = this.listUserRepos(slug);
+                const existingUserRepos = await this.listUserRepos(slug);
                 const peerRepo = existingUserRepos.find(r => r.userId !== userId);
                 if (peerRepo) {
                     cloneSource = peerRepo.path;
@@ -3552,7 +3551,7 @@ class GitService {
                 // commits yet".
                 await git.commit('Initial commit', { '--allow-empty': null });
                 console.log(`[GitService] Created fresh user repo for ${slug}/${userId}`);
-                this._ensureLocalExcludes(userRepoPath);
+                await this._ensureLocalExcludes(userRepoPath);
                 return { path: userRepoPath, created: true };
             }
 
@@ -3566,7 +3565,7 @@ class GitService {
                     const git = simpleGit(userRepoPath);
                     await git.init();
                     await git.commit('Initial commit', { '--allow-empty': null });
-                    this._ensureLocalExcludes(userRepoPath);
+                    await this._ensureLocalExcludes(userRepoPath);
                     return { path: userRepoPath, created: true };
                 }
 
@@ -3604,12 +3603,12 @@ class GitService {
                     // Non-fatal — local clone is still functional
                 }
 
-                this._ensureLocalExcludes(userRepoPath);
+                await this._ensureLocalExcludes(userRepoPath);
                 console.log(`[GitService] Cloned user repo for ${slug}/${userId} from ${cloneSource}`);
                 return { path: userRepoPath, created: true };
             } catch (e) {
                 // Clean up failed clone
-                try { fs.rmSync(userRepoPath, { recursive: true, force: true }); } catch (_) {}
+                try { await fs.promises.rm(userRepoPath, { recursive: true, force: true }); } catch (_) {}
                 throw new GitError(
                     `Failed to create user repo for ${slug}/${userId}: ${e.message}`,
                     'USER_REPO_ERROR'
@@ -3652,24 +3651,26 @@ class GitService {
      * List all user repos for a workspace slug.
      * Returns array of { userId, path }.
      */
-    listUserRepos(slug) {
+    async listUserRepos(slug) {
         const slugDir = path.join(this.baseDir, slug);
-        if (!fs.existsSync(slugDir)) return [];
+        if (!await fs.promises.access(slugDir).then(() => true).catch(() => false)) return [];
 
         try {
-            const entries = fs.readdirSync(slugDir, { withFileTypes: true });
-            return entries
-                .filter(e => {
-                    if (!e.isDirectory()) return false;
-                    // Exclude internal directories
-                    if (e.name === '_upstream.git' || e.name === 'sessions' || e.name.startsWith('.')) return false;
-                    // Must have a .git to be a valid user repo
-                    return fs.existsSync(path.join(slugDir, e.name, '.git'));
-                })
-                .map(e => ({
-                    userId: e.name,
-                    path: path.join(slugDir, e.name),
-                }));
+            const entries = await fs.promises.readdir(slugDir, { withFileTypes: true });
+            const results = [];
+            for (const e of entries) {
+                if (!e.isDirectory()) continue;
+                // Exclude internal directories
+                if (e.name === '_upstream.git' || e.name === 'sessions' || e.name.startsWith('.')) continue;
+                // Must have a .git to be a valid user repo
+                if (await fs.promises.access(path.join(slugDir, e.name, '.git')).then(() => true).catch(() => false)) {
+                    results.push({
+                        userId: e.name,
+                        path: path.join(slugDir, e.name),
+                    });
+                }
+            }
+            return results;
         } catch (_) {
             return [];
         }
