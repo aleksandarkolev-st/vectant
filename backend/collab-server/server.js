@@ -64,7 +64,7 @@ const gitService = require('./gitService');
 const repoCache = require('./repoCache');
 const sessionManager = require('./SessionManager');
 const { extractSessionContext, requireGitActionPermission, wsRequirePermission, wsDenyAction, wsAttachContext } = require('./permissionMiddleware');
-const { acquireStagingLock, releaseStagingLock, pauseWatcher, resumeWatcher } = require('./fsWatcherService');
+const { acquireStagingLock, releaseStagingLock, pauseWatcher, resumeWatcher, registerChangeListener } = require('./fsWatcherService');
 const { LRUCache } = require('lru-cache');
 const { withTelemetry, getMetrics, resetMetrics, getEventLoopBlockCount } = require('./perfTelemetry');
 const sseService = require('./sseService');
@@ -1291,6 +1291,15 @@ function _matchesNotifyScope(ws, scope = {}) {
   return false;
 }
 
+function _resolveNotifyUserId(scope = {}) {
+  if (scope.userId) return scope.userId;
+  if (scope.sessionId) {
+    const session = sessionManager.getSession(scope.sessionId);
+    return session?.hostId || null;
+  }
+  return null;
+}
+
 /**
  * Broadcast a file-saved event to notification WebSocket clients.
  * Sent after flushDocToDisk so all collaborators can sync their
@@ -1309,10 +1318,15 @@ function broadcastFileSaved(slug, filePath, scope = {}) {
   sseService.emitFileSaved(slug, filePath);
 }
 
-function broadcastGitStatusChanged(slug, filePath, scope = {}, { immediate = false } = {}) {
+function broadcastGitStatusChanged(slug, filePath, scope = {}, { immediate = false, snapshot = null } = {}) {
   if (!slug || !notifyWss) return;
-  const send = () => {
-    const message = JSON.stringify({ type: 'git-status-changed', slug, filePath, scope });
+  const send = async () => {
+    let resolvedSnapshot = snapshot;
+    if (!resolvedSnapshot) {
+      const notifyUserId = _resolveNotifyUserId(scope);
+      resolvedSnapshot = await gitService.invalidateStatusCache(slug, notifyUserId, { scheduleRefresh: true });
+    }
+    const message = JSON.stringify({ type: 'git-status-changed', slug, filePath, scope, snapshot: resolvedSnapshot || null });
     notifyWss.clients.forEach((ws) => {
       if (ws.readyState === WebSocket.OPEN && ws._slug === slug && _matchesNotifyScope(ws, scope)) {
         try { ws.send(message); } catch (_) {}
@@ -1326,7 +1340,7 @@ function broadcastGitStatusChanged(slug, filePath, scope = {}, { immediate = fal
       clearTimeout(_gitStatusBroadcastTimers.get(timerKey));
       _gitStatusBroadcastTimers.delete(timerKey);
     }
-    send();
+    void send();
     // Also push via SSE
     sseService.emitGitStatusChanged(slug, filePath);
     return;
@@ -1338,10 +1352,23 @@ function broadcastGitStatusChanged(slug, filePath, scope = {}, { immediate = fal
   }
   _gitStatusBroadcastTimers.set(timerKey, setTimeout(() => {
     _gitStatusBroadcastTimers.delete(timerKey);
-    send();
+    void send();
     sseService.emitGitStatusChanged(slug, filePath);
   }, 500));
 }
+
+registerChangeListener(({ slug, rootDir, events }) => {
+  gitService.handleFilesystemEvents({ slug, rootDir, events }).then((result) => {
+    if (!result?.bundle || !result.slug) return;
+    const scope = result.userId ? { userId: result.userId } : {};
+    broadcastGitStatusChanged(result.slug, undefined, scope, {
+      immediate: true,
+      snapshot: result.bundle,
+    });
+  }).catch((err) => {
+    console.warn('[Collab] Git cache refresh from fs watcher failed:', err?.message || err);
+  });
+});
 
 /**
  * Broadcast a file-reverted event to all notification clients for a slug.

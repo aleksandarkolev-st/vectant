@@ -189,6 +189,7 @@ function isStagingLocked(slug, relativePath) {
  * }>}
  */
 const activeWatchers = new Map();
+const globalChangeListeners = new Set();
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -370,6 +371,14 @@ async function flushEvents(slug) {
 
   if (classified.length === 0) return;
 
+  for (const listener of globalChangeListeners) {
+    try {
+      listener({ slug, rootDir: entry.rootDir, events: classified });
+    } catch (err) {
+      console.error(`[FSWatch] Global listener error:`, err.message);
+    }
+  }
+
   // Broadcast to all listeners
   const message = { type: 'fs-change', slug, events: classified };
   for (const listener of entry.listeners) {
@@ -417,6 +426,7 @@ module.exports = {
   watchWorkspace,
   stopAll,
   activeWatchers,
+  registerChangeListener,
   acquireStagingLock,
   releaseStagingLock,
   isStagingLocked,
@@ -424,3 +434,9 @@ module.exports = {
   resumeWatcher,
   isWatcherPaused,
 };
+
+function registerChangeListener(listener) {
+  if (typeof listener !== 'function') return () => {};
+  globalChangeListeners.add(listener);
+  return () => globalChangeListeners.delete(listener);
+}
