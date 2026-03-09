@@ -192,9 +192,11 @@ class CRDTWorkerBridge {
 
       // ── Seed flag reset (non-clean WS close) ──
       case 'seed-reset': {
+        this._contentCache.delete(msg.key);
+        this._awarenessCache.delete(msg.key);
         if (handlers) {
           for (const cb of handlers.onSeedReset) {
-            try { cb(); } catch (_) {}
+            try { cb(msg); } catch (_) {}
           }
         }
         break;

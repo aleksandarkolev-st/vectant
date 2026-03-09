@@ -675,6 +675,8 @@ class CollabClient {
     entry._unsubs.push(
       bridge.onSeedReset(key, () => {
         entry._seeded = false;
+        entry.synced = false;
+        entry.wsconnected = false;
         console.log('[Collab] WS non-clean close — resetting seed flag for', key);
       })
     );

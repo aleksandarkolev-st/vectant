@@ -15,6 +15,10 @@ import { WebsocketProvider } from 'y-websocket';
 const docs = new Map(); // key → Entry { doc, provider, ytext, applyingLocal }
 let serverUrl = 'ws://localhost:1234';
 
+function isRecoverableCloseCode(code) {
+  return code === 1001 || code === 1006 || code === 1011 || code === 1012 || code === 1013;
+}
+
 // ── Helpers ─────────────────────────────────────────────────────────────────
 const post = (msg) => self.postMessage(msg);
 
@@ -29,6 +33,8 @@ function makeInvalidationAwareWS(key) {
     constructor(url, protocols) {
       super(url, protocols);
       this.addEventListener('close', (ev) => {
+        const entry = docs.get(key);
+        if (entry?.suppressCloseHandling) return;
         if (ev.code === 4000) {
           post({ type: 'doc-invalidated', key });
           // Destroy BEFORE the provider can schedule a reconnect so it sees
@@ -36,8 +42,11 @@ function makeInvalidationAwareWS(key) {
           destroyDocInternal(key);
         } else if (ev.code !== 1000) {
           // Non-clean close (network blip, ping timeout, etc.)
-          post({ type: 'seed-reset', key });
-          const entry = docs.get(key);
+          post({ type: 'seed-reset', key, code: ev.code, reason: ev.reason || '' });
+          if (isRecoverableCloseCode(ev.code)) {
+            resetDocInternal(key);
+            return;
+          }
           if (entry) entry.seeded = false;
         }
       });
@@ -55,7 +64,16 @@ function ensureDocInternal(key, params) {
     WebSocketPolyfill: makeInvalidationAwareWS(key),
   });
   const ytext = doc.getText('monaco');
-  const entry = { doc, provider, ytext, applyingLocal: false, seeded: false };
+  const entry = {
+    doc,
+    provider,
+    ytext,
+    applyingLocal: false,
+    seeded: false,
+    params: params || {},
+    localAwarenessState: null,
+    suppressCloseHandling: false,
+  };
 
   // ── Y.Text observer — only forward REMOTE deltas to the main thread ──
   ytext.observe((event) => {
@@ -104,15 +122,61 @@ function ensureDocInternal(key, params) {
         localClientId: provider.awareness.clientID,
       });
     });
+
+    queueMicrotask(() => {
+      const activeEntry = docs.get(key);
+      if (activeEntry?.localAwarenessState) {
+        try {
+          provider.awareness.setLocalState(activeEntry.localAwarenessState);
+        } catch (_) {}
+      }
+    });
   }
 
   docs.set(key, entry);
   return entry;
 }
 
+function postDocReady(key, entry) {
+  if (!entry) return;
+  post({
+    type: 'doc-ready',
+    key,
+    synced: !!entry.provider?.synced,
+    content: entry.ytext?.toString() || '',
+    length: entry.ytext?.length || 0,
+    wsconnected: !!entry.provider?.wsconnected,
+  });
+}
+
+function resetDocInternal(key) {
+  const existing = docs.get(key);
+  if (!existing) return null;
+
+  const params = existing.params || {};
+  const localAwarenessState = existing.localAwarenessState || null;
+
+  existing.suppressCloseHandling = true;
+  docs.delete(key);
+  try { existing.provider.destroy(); } catch (_) {}
+  try { existing.doc.destroy(); } catch (_) {}
+
+  const nextEntry = ensureDocInternal(key, params);
+  nextEntry.seeded = false;
+  nextEntry.localAwarenessState = localAwarenessState;
+  if (nextEntry.provider?.awareness && localAwarenessState) {
+    try {
+      nextEntry.provider.awareness.setLocalState(localAwarenessState);
+    } catch (_) {}
+  }
+  postDocReady(key, nextEntry);
+  return nextEntry;
+}
+
 function destroyDocInternal(key) {
   const entry = docs.get(key);
   if (!entry) return;
+  entry.suppressCloseHandling = true;
   try { entry.provider.destroy(); } catch (_) {}
   try { entry.doc.destroy(); } catch (_) {}
   docs.delete(key);
@@ -134,14 +198,7 @@ self.onmessage = (e) => {
       // ── Doc lifecycle ──────────────────────────────────────────────────
       case 'ensure-doc': {
         const entry = ensureDocInternal(msg.key, msg.params);
-        post({
-          type: 'doc-ready',
-          key: msg.key,
-          synced: !!entry.provider.synced,
-          content: entry.ytext.toString(),
-          length: entry.ytext.length,
-          wsconnected: !!entry.provider.wsconnected,
-        });
+        postDocReady(msg.key, entry);
         break;
       }
 
@@ -246,6 +303,7 @@ self.onmessage = (e) => {
       case 'set-awareness-state': {
         const entry = docs.get(msg.key);
         if (!entry?.provider?.awareness) return;
+        entry.localAwarenessState = msg.state;
         entry.provider.awareness.setLocalState(msg.state);
         break;
       }
@@ -253,6 +311,10 @@ self.onmessage = (e) => {
       case 'set-awareness-field': {
         const entry = docs.get(msg.key);
         if (!entry?.provider?.awareness) return;
+        entry.localAwarenessState = {
+          ...(entry.provider.awareness.getLocalState() || entry.localAwarenessState || {}),
+          [msg.field]: msg.value,
+        };
         entry.provider.awareness.setLocalStateField(msg.field, msg.value);
         break;
       }
@@ -260,6 +322,7 @@ self.onmessage = (e) => {
       case 'clear-awareness': {
         const entry = docs.get(msg.key);
         if (!entry?.provider?.awareness) return;
+        entry.localAwarenessState = null;
         entry.provider.awareness.setLocalState(null);
         break;
       }
