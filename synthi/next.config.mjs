@@ -5,6 +5,9 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  // Produce a self-contained build in .next/standalone for Docker deployment.
+  // This copies only the files needed to run the app (~150 MB vs full node_modules).
+  output: 'standalone',
   // Turbopack-specific configuration (used by `next dev --turbopack`)
   turbopack: {
     root: __dirname,

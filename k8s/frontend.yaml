@@ -120,6 +120,31 @@ spec:
               port: 3000
             initialDelaySeconds: 15
             periodSeconds: 30
+        # ── Cloud SQL Auth Proxy sidecar ───────────────────────────────────
+        # Securely tunnels PostgreSQL traffic to the managed Cloud SQL
+        # instance.  The app connects to 127.0.0.1:5432 (localhost) and the
+        # proxy handles IAM auth + TLS to Google's network.
+        - name: cloud-sql-proxy
+          image: gcr.io/cloud-sql-connectors/cloud-sql-proxy:2.14.1
+          args:
+            - "--port=5432"
+            - "--auto-iam-authn"
+            - "$(CLOUD_SQL_INSTANCE)"
+          env:
+            - name: CLOUD_SQL_INSTANCE
+              valueFrom:
+                configMapKeyRef:
+                  name: synthi-config
+                  key: CLOUD_SQL_INSTANCE
+          securityContext:
+            runAsNonRoot: true
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
 ---
 apiVersion: v1
 kind: Service

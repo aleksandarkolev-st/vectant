@@ -13,7 +13,9 @@ data:
   GCP_PROJECT_ID: "overview-synti"
   GCS_BUCKET_NAME: "synthi-cloud-storage"
   GCS_WORKSPACE_PREFIX: "workspaces"
-
+  # Cloud SQL instance connection name (used by the Auth Proxy sidecar).
+  # Format: PROJECT_ID:REGION:INSTANCE_NAME
+  CLOUD_SQL_INSTANCE: "overview-synti:REGION:INSTANCE_NAME"  # TODO: replace REGION and INSTANCE_NAME
   # ── Networking (cluster-internal URLs) ──────────────────────────────────────
   # These use Kubernetes DNS: <service>.<namespace>.svc.cluster.local
   COLLAB_SERVER_URL: "http://collab-server.synthi.svc.cluster.local:1234"

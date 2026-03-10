@@ -150,6 +150,31 @@ spec:
               port: 1234
             initialDelaySeconds: 10
             periodSeconds: 20
+        # ── Cloud SQL Auth Proxy sidecar ───────────────────────────────────
+        # Available for future workspace/user metadata queries against the
+        # shared PostgreSQL database.  The collab server can connect to
+        # 127.0.0.1:5432 when DB access is needed.
+        - name: cloud-sql-proxy
+          image: gcr.io/cloud-sql-connectors/cloud-sql-proxy:2.14.1
+          args:
+            - "--port=5432"
+            - "--auto-iam-authn"
+            - "$(CLOUD_SQL_INSTANCE)"
+          env:
+            - name: CLOUD_SQL_INSTANCE
+              valueFrom:
+                configMapKeyRef:
+                  name: synthi-config
+                  key: CLOUD_SQL_INSTANCE
+          securityContext:
+            runAsNonRoot: true
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
       volumes:
         - name: collab-data
           persistentVolumeClaim:
