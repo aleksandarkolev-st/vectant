@@ -31,8 +31,7 @@ spec:
       labels:
         app: collab-server
     spec:
-      # If using Workload Identity for GCS, annotate the service account:
-      # serviceAccountName: synthi-collab-sa
+      serviceAccountName: collab-server-sa
       containers:
         - name: collab
           image: REGISTRY/synthi-collab-server:latest  # TODO: replace REGISTRY
@@ -128,6 +127,16 @@ spec:
                 configMapKeyRef:
                   name: synthi-config
                   key: TURN_CREDENTIAL_TTL
+            # ── Workspace pod spawner ───────────────────────────────────────
+            - name: K8S_NAMESPACE
+              value: synthi
+            - name: WORKER_IMAGE
+              valueFrom:
+                configMapKeyRef:
+                  name: synthi-config
+                  key: WORKER_IMAGE
+            - name: IDLE_TIMEOUT_MS
+              value: "600000"   # 10 min
           volumeMounts:
             - name: collab-data
               mountPath: /data

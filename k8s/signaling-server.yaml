@@ -45,6 +45,8 @@ spec:
                 configMapKeyRef:
                   name: synthi-config
                   key: REDIS_URL
+            - name: COLLAB_SERVER_URL
+              value: "http://collab-server:1234"
           resources:
             requests:
               cpu: 50m

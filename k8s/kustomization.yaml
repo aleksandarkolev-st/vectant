@@ -8,6 +8,7 @@
 #    kubectl apply -f k8s/namespace.yaml
 #    kubectl apply -f k8s/secrets.yaml
 #    kubectl apply -f k8s/configmap.yaml
+#    kubectl apply -f k8s/spawner-rbac.yaml
 #    kubectl apply -f k8s/postgres.yaml
 #    kubectl apply -f k8s/redis.yaml
 #    kubectl apply -f k8s/ai-engine.yaml
@@ -28,6 +29,7 @@ resources:
   - namespace.yaml
   - secrets.yaml
   - configmap.yaml
+  - spawner-rbac.yaml
 
   # 2. Datastores
   - postgres.yaml

@@ -358,6 +358,7 @@ async function flushDocToDisk(docName, options = {}) {
 }
 
 const workspaceManager = require('./workspaceManager');
+const spawner = require('./workspacePodSpawner');
 
 // ── In-memory userId → displayName cache ──────────────────────────────────
 // Populated from Yjs awareness state changes so that REST endpoints can
@@ -704,6 +705,54 @@ const server = http.createServer(async (req, res) => {
   // Cloudflare Calls TURN credentials. Cached server-side so we avoid
   // hitting Cloudflare on every create_peer().
   // ========================================================================
+  // ========================================================================
+  // SPAWNER WEBHOOK — /api/spawner/session-ended
+  // Called by the signaling server when all peers disconnect from a session.
+  // ========================================================================
+  if (req.url === '/api/spawner/session-ended') {
+    return spawner.handleSessionEnded(req, res);
+  }
+
+  // ========================================================================
+  // SPAWNER — /api/spawner/ensure
+  // Called by the frontend to ensure a workspace pod exists.
+  // Body: { session_id, user_id }
+  // ========================================================================
+  if (req.url === '/api/spawner/ensure' && req.method === 'POST') {
+    let body = '';
+    for await (const chunk of req) body += chunk;
+    let parsed;
+    try { parsed = JSON.parse(body); } catch { res.writeHead(400); res.end('Invalid JSON'); return; }
+    const { session_id, user_id } = parsed;
+    if (!session_id || !user_id) { res.writeHead(400); res.end('Missing session_id or user_id'); return; }
+    try {
+      const result = await spawner.ensurePod(session_id, user_id);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(result));
+    } catch (e) {
+      console.error('[Spawner] ensurePod failed:', e.message);
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: e.message }));
+    }
+    return;
+  }
+
+  // ========================================================================
+  // SPAWNER — /api/spawner/touch
+  // Heartbeat to keep a workspace pod alive. Body: { session_id }
+  // ========================================================================
+  if (req.url === '/api/spawner/touch' && req.method === 'POST') {
+    let body = '';
+    for await (const chunk of req) body += chunk;
+    let parsed;
+    try { parsed = JSON.parse(body); } catch { res.writeHead(400); res.end('Invalid JSON'); return; }
+    if (!parsed.session_id) { res.writeHead(400); res.end('Missing session_id'); return; }
+    await spawner.touch(parsed.session_id);
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ ok: true }));
+    return;
+  }
+
   if (req.url === '/turn-credentials' && req.method === 'GET') {
     res.setHeader('Content-Type', 'application/json');
     try {
@@ -2910,4 +2959,9 @@ sessionManager.on('session:knockCancelled', ({ sessionId, guestId }) => {
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`Collaboration server listening on port ${PORT}`);
   console.log(`[Collab] CRDT persistence: Y-Sweet @ ${config.YSWEET_URL}`);
+
+  // Start the idle-workspace culler (only inside K8s).
+  if (process.env.KUBERNETES_SERVICE_HOST) {
+    spawner.startCuller();
+  }
 });

@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@google-cloud/storage": "^7.14.0",
+    "@kubernetes/client-node": "^0.21.0",
     "dotenv": "^16.4.7",
     "lru-cache": "^11.2.5",
     "node-fetch": "^2.6.7",

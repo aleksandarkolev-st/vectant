@@ -1,0 +1,44 @@
+# ─────────────────────────────────────────────────────────────────────────────
+#  Synthi IDE — RBAC for Workspace Spawner
+# ─────────────────────────────────────────────────────────────────────────────
+#  Grants the collab-server ServiceAccount permission to manage
+#  workspace Deployments in the synthi namespace. The spawner
+#  creates/patches/deletes Deployments named "workspace-*".
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: collab-server-sa
+  namespace: synthi
+  labels:
+    app: collab-server
+    app.kubernetes.io/part-of: synthi-ide
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: workspace-spawner
+  namespace: synthi
+  labels:
+    app.kubernetes.io/part-of: synthi-ide
+rules:
+  # The spawner lists, creates, patches, and deletes Deployments.
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "create", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: collab-server-spawner
+  namespace: synthi
+  labels:
+    app.kubernetes.io/part-of: synthi-ide
+subjects:
+  - kind: ServiceAccount
+    name: collab-server-sa
+    namespace: synthi
+roleRef:
+  kind: Role
+  name: workspace-spawner
+  apiGroup: rbac.authorization.k8s.io

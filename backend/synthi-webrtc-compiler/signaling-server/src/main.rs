@@ -26,6 +26,18 @@ use tokio::{
 };
 use tokio_tungstenite::{accept_async, tungstenite::Message};
 
+// HTTP client for spawner webhook.
+static HTTP_CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+
+fn http_client() -> &'static reqwest::Client {
+    HTTP_CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(5))
+            .build()
+            .expect("failed to build HTTP client")
+    })
+}
+
 // ── Wire protocol ──────────────────────────────────────────────────────────
 
 /// Messages exchanged over the WebSocket between clients and this server.
@@ -77,6 +89,8 @@ struct AppState {
     redis_client: redis::Client,
     /// Unique identifier for this signaling pod instance.
     node_id: String,
+    /// Base URL of the collab server for spawner webhooks.
+    collab_url: Option<String>,
 }
 
 // ── Redis channel name helper ──────────────────────────────────────────────
@@ -101,6 +115,13 @@ async fn main() -> anyhow::Result<()> {
     println!("[Signaling] redis    = {redis_url}");
 
     let redis_client = redis::Client::open(redis_url.as_str())?;
+    let collab_url = env::var("COLLAB_SERVER_URL").ok();
+
+    if let Some(ref url) = collab_url {
+        println!("[Signaling] collab   = {url}");
+    } else {
+        println!("[Signaling] COLLAB_SERVER_URL not set — disconnect webhook disabled");
+    }
 
     // Quick connectivity check — fail fast if Redis is unreachable.
     {
@@ -113,6 +134,7 @@ async fn main() -> anyhow::Result<()> {
         peers: RwLock::new(HashMap::new()),
         redis_client: redis_client.clone(),
         node_id: node_id.clone(),
+        collab_url,
     });
 
     // ── Background: Redis subscriber ───────────────────────────────────
@@ -315,12 +337,42 @@ async fn handle_connection(
 
     // ── Cleanup on disconnect ──────────────────────────────────────────
     if let (Some(sid), Some(role)) = (&my_session, &my_role) {
-        state
-            .peers
-            .write()
-            .await
-            .remove(&(sid.clone(), role.clone()));
+        let session_empty = {
+            let mut peers = state.peers.write().await;
+            peers.remove(&(sid.clone(), role.clone()));
+
+            // Check if any peer in this session remains (browser or worker).
+            let has_browser = peers.contains_key(&(sid.clone(), "browser".to_string()));
+            let has_worker = peers.contains_key(&(sid.clone(), "worker".to_string()));
+            !has_browser && !has_worker
+        };
+
         println!("[Signaling] Unregistered {role} for session '{sid}' (addr={addr})");
+
+        // If no peers remain for this session, notify the collab server
+        // so it can tear down the workspace pod.
+        if session_empty {
+            if let Some(ref base_url) = state.collab_url {
+                let url = format!("{base_url}/api/spawner/session-ended");
+                let sid_clone = sid.clone();
+                tokio::spawn(async move {
+                    let body = serde_json::json!({ "session_id": sid_clone });
+                    match http_client().post(&url).json(&body).send().await {
+                        Ok(resp) => {
+                            println!(
+                                "[Signaling] Session-ended webhook for '{sid_clone}': {}",
+                                resp.status()
+                            );
+                        }
+                        Err(e) => {
+                            eprintln!(
+                                "[Signaling] Session-ended webhook failed for '{sid_clone}': {e}"
+                            );
+                        }
+                    }
+                });
+            }
+        }
     }
 
     send_task.abort();
