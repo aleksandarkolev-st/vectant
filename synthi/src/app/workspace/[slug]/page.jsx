@@ -3,8 +3,8 @@ import { useState, useEffect, useCallback, useRef, useMemo, startTransition, use
 import { use } from 'react';
 import { useSession } from 'next-auth/react';
 import { useRouter } from 'next/navigation';
-import { useAppDispatch, useAppSelector } from '@/redux/hooks';
-import { fetchFilesThunk, selectActiveFile, setSlug, selectFileThunk, selectCurrentContent, selectFileCacheEntries, markFileSavedRemotely } from '@/redux/workspaceSlice';
+import { useAppDispatch, useAppSelector, useAppStore } from '@/redux/hooks';
+import { fetchFilesThunk, selectActiveFile, setSlug, selectFileThunk, markFileSavedRemotely } from '@/redux/workspaceSlice';
 import { fetchGitStatus, forceRefreshGitStatus } from '@/redux/gitSlice';
 import collabClient from '@/services/collabClient';
 import collabSessionService from '@/services/collabSessionService';
@@ -85,6 +85,7 @@ const USE_DOCKING_WM = true;
 
 export default function EditorPage({ params }) {
     const dispatch = useAppDispatch();
+    const store = useAppStore();
     const { data: authSession, status: authStatus } = useSession();
     const router = useRouter();
 
@@ -675,10 +676,33 @@ export default function EditorPage({ params }) {
     const showTerminal = useAppSelector(selectShowTerminal);
     const showEmulatorPreview = useAppSelector(selectShowEmulatorPreview);
     const treeOnRight = useAppSelector(selectTreeOnRight);
-    const currentContent = useAppSelector(selectCurrentContent);
     const rawFiles = useAppSelector(state => state.workspace.rawFiles);
-    // Redux file content cache - contains edited content of open files
-    const fileCacheEntries = useAppSelector(selectFileCacheEntries);
+    const currentContentRef = useRef(store.getState()?.workspace?.currentContent || '');
+    const fileCacheEntriesRef = useRef([]);
+
+    useEffect(() => {
+        const syncWorkspaceRefs = () => {
+            const state = store.getState();
+            currentContentRef.current = state?.workspace?.currentContent || '';
+            const cache = state?.workspace?.fileContentCache;
+            fileCacheEntriesRef.current = cache && typeof cache.entries === 'function'
+                ? Array.from(cache.entries())
+                : [];
+        };
+
+        syncWorkspaceRefs();
+        return store.subscribe(syncWorkspaceRefs);
+    }, [store]);
+
+    const getLatestCurrentContent = useCallback(() => {
+        if (editor?.getValue) {
+            const liveValue = editor.getValue();
+            if (typeof liveValue === 'string') {
+                return liveValue;
+            }
+        }
+        return typeof currentContentRef.current === 'string' ? currentContentRef.current : '';
+    }, [editor]);
 
     // Remove a specific diagnostic by location (called when a fix is applied)
     const removeDiagnosticByLocation = useCallback((location, filePath) => {
@@ -840,12 +864,12 @@ export default function EditorPage({ params }) {
 
         // Build a map from fileCacheEntries for fast lookup
         // This contains the LATEST edited content of open files
-        const reduxCacheMap = new Map(fileCacheEntries);
+        const reduxCacheMap = new Map(fileCacheEntriesRef.current);
 
         const getContentForDep = async (path) => {
             // If it's the active file, use the current editor content
             if (path === activeFile.path) {
-                return typeof currentContent === 'string' ? currentContent : '';
+                return getLatestCurrentContent();
             }
 
             // PRIORITY 1: Check Redux cache (has edited content of open files)
@@ -884,7 +908,7 @@ export default function EditorPage({ params }) {
             console.warn('Failed to resolve dependencies for analysis:', e);
             return [];
         }
-    }, [activeFile, rawFiles, currentContent, slug, fileCacheEntries]);
+    }, [activeFile, rawFiles, slug, getLatestCurrentContent]);
 
     // Subscribe to editor changes to force re-analysis even for remote changes or undo/redo
     useEffect(() => {
@@ -919,9 +943,7 @@ export default function EditorPage({ params }) {
         // Get content from Monaco if available, falling back to Redux
         // IMPORTANT: On initial load, Monaco might not have Y.js synced changes yet.
         // We use a small delay to allow Y.js to sync before running analysis.
-        const getContentToAnalyze = () => {
-            return editor ? editor.getValue() : (typeof currentContent === 'string' ? currentContent : '');
-        };
+        const getContentToAnalyze = () => getLatestCurrentContent();
 
         let contentToAnalyze = getContentToAnalyze();
 
@@ -1095,7 +1117,7 @@ export default function EditorPage({ params }) {
                             if (proactiveTimeoutRef.current) proactiveTimeoutRef.current = null;
                             // STALE DETECTION: Check if version (hash) matches current content hash
                             // We re-compute hash from current editor content to be absolutely sure
-                            const currentEditorContent = editor ? editor.getValue() : (typeof currentContent === 'string' ? currentContent : '');
+                            const currentEditorContent = getLatestCurrentContent();
                             const currentEditorHash = computeContentHash(currentEditorContent);
 
                             if (result?.version !== undefined && result.version !== currentEditorHash) {
@@ -1372,7 +1394,7 @@ export default function EditorPage({ params }) {
                                 return;
                             }
 
-                            const currentEditorContent = editor ? editor.getValue() : (typeof currentContent === 'string' ? currentContent : '');
+                            const currentEditorContent = getLatestCurrentContent();
                             const currentEditorHash = computeContentHash(currentEditorContent);
 
                             if (result?.version !== undefined && result.version !== currentEditorHash) {
@@ -1522,7 +1544,6 @@ export default function EditorPage({ params }) {
             }
         };
     }, [
-        currentContent,
         activeFile,
         hasLoadedInitialFile,
         connectionMeta?.isConnected,
@@ -1532,7 +1553,7 @@ export default function EditorPage({ params }) {
         analyzeUnified,
         computeContentHash,
         editorVersion,
-        editor,
+        getLatestCurrentContent,
         healFromDiagnostics,
     ]);
 
@@ -1810,7 +1831,7 @@ export default function EditorPage({ params }) {
             }));
         }
 
-        const source = typeof latestCode === 'string' ? latestCode : (typeof currentContent === 'string' ? currentContent : '');
+        const source = typeof latestCode === 'string' ? latestCode : getLatestCurrentContent();
         // Use the full path to preserve directory structure in the worker
         const filename = activeFile?.path || activeFile?.name || 'main';
         // Ensure a terminal is visible when running so output is shown
@@ -1827,7 +1848,7 @@ export default function EditorPage({ params }) {
         const getContentForDependency = async (path) => {
             // If it's the active file, use the current editor content (which might be unsaved)
             if (path === activeFile.path) {
-                return typeof latestCode === 'string' ? latestCode : (typeof currentContent === 'string' ? currentContent : '');
+                return typeof latestCode === 'string' ? latestCode : getLatestCurrentContent();
             }
             // Check cache
             const cached = fileCache.get(path);
@@ -1923,7 +1944,7 @@ export default function EditorPage({ params }) {
                 setEmulatorForcedError(msg);
             }
         }
-    }, [activeFile, currentContent, appendBuildLog, dispatch, showTerminal, rawFiles, slug, compile, detectReactNativeProject, detectReactNativeInSource, runInGuiMode, emulatorSessionId, cancelMobileJob]);
+    }, [activeFile, appendBuildLog, dispatch, showTerminal, rawFiles, slug, compile, detectReactNativeProject, detectReactNativeInSource, runInGuiMode, emulatorSessionId, cancelMobileJob, getLatestCurrentContent]);
 
     const handleStop = useCallback(async () => {
         const activeSessionId = client?.getActiveSessionId?.();
@@ -1991,7 +2012,7 @@ export default function EditorPage({ params }) {
         }
 
         // Similar to handleRun but silent and doesn't force terminal open
-        let source = typeof latestCode === 'string' ? latestCode : (typeof currentContent === 'string' ? currentContent : '');
+        let source = typeof latestCode === 'string' ? latestCode : getLatestCurrentContent();
         const filename = activeFile?.path || activeFile?.name || 'main';
 
         // Note: CodeIntel re-index is triggered by saveFileContentThunk
@@ -2029,7 +2050,7 @@ export default function EditorPage({ params }) {
         }
 
         const getContentForDependency = async (path) => {
-            if (path === activeFile.path) return typeof latestCode === 'string' ? latestCode : (typeof currentContent === 'string' ? currentContent : '');
+            if (path === activeFile.path) return typeof latestCode === 'string' ? latestCode : getLatestCurrentContent();
             const cached = fileCache.get(path);
             if (cached !== undefined) return cached;
             return await api.fetchFileContent(slug, path);
@@ -2081,7 +2102,7 @@ export default function EditorPage({ params }) {
             if (msg.includes('HMR restart') || msg.includes('Cancelled')) return;
             console.error('[HMR] HMR re-run failed', err);
         }
-    }, [activeFile, currentContent, rawFiles, slug, compile, hmrEnabled, runInGuiMode, isGuiRunning, client]);
+    }, [activeFile, rawFiles, slug, compile, hmrEnabled, runInGuiMode, isGuiRunning, client, getLatestCurrentContent]);
 
     const handleEditorMount = useCallback((editorInstance) => {
         setEditor(editorInstance);
@@ -2098,7 +2119,7 @@ export default function EditorPage({ params }) {
         setChatVisible((v) => !v);
     }, []);
 
-    const handleUndo = () => {
+    const handleUndo = useCallback(() => {
         if (editor) {
             const currentValue = editor.getValue();
             // Prevent undo if no change since initial load
@@ -2106,19 +2127,19 @@ export default function EditorPage({ params }) {
                 editor.trigger('keyboard', 'undo', null);
             }
         }
-    };
+    }, [editor, initialContent]);
 
-    const handleRedo = () => {
+    const handleRedo = useCallback(() => {
         if (editor) {
             editor.trigger('keyboard', 'redo', null);
         }
-    };
+    }, [editor]);
 
-    const handleCopyLineUp = () => editor?.getAction('editor.action.copyLinesUpAction')?.run();
-    const handleCopyLineDown = () => editor?.getAction('editor.action.copyLinesDownAction')?.run();
-    const handleMoveLineUp = () => editor?.getAction('editor.action.moveLinesUpAction')?.run();
-    const handleMoveLineDown = () => editor?.getAction('editor.action.moveLinesDownAction')?.run();
-    const handleDuplicateSelection = () => editor?.getAction('editor.action.duplicateSelection')?.run();
+    const handleCopyLineUp = useCallback(() => editor?.getAction('editor.action.copyLinesUpAction')?.run(), [editor]);
+    const handleCopyLineDown = useCallback(() => editor?.getAction('editor.action.copyLinesDownAction')?.run(), [editor]);
+    const handleMoveLineUp = useCallback(() => editor?.getAction('editor.action.moveLinesUpAction')?.run(), [editor]);
+    const handleMoveLineDown = useCallback(() => editor?.getAction('editor.action.moveLinesDownAction')?.run(), [editor]);
+    const handleDuplicateSelection = useCallback(() => editor?.getAction('editor.action.duplicateSelection')?.run(), [editor]);
 
     const EditorPanelComponent = (
         <EditorPanel
@@ -2236,7 +2257,7 @@ export default function EditorPage({ params }) {
                 isVisible={chatVisible}
                 onClose={() => setChatVisible(false)}
                 activeFile={activeFile}
-                currentCode={currentContent}
+                getCurrentCode={getLatestCurrentContent}
                 editor={editor}
                 onSuggest={(s) => setLatestCompletion(s)}
                 onBusy={(b) => setAiBusy(Boolean(b))}
@@ -2320,12 +2341,12 @@ export default function EditorPage({ params }) {
     const memoPanelProps = useMemo(() => ({
         editor,
         activeFile,
-        currentCode: currentContent,
         diagnostics: mergedDiagnostics,
         diagnosticSummary,
         isAnalyzing: isAnalyzingProactive || isWorkspaceAnalyzing,
         onSuggest: onSuggestCb,
         onBusy: onBusyCb,
+        getCurrentCode: getLatestCurrentContent,
         clearSignal: completionClearSignal,
         initialPrompt: jumpstartPrompt,
         initialAttachments: jumpstartAttachments,
@@ -2334,9 +2355,9 @@ export default function EditorPage({ params }) {
         onOpenScm: onOpenScmCb,
         editorProps: memoEditorProps,
     }), [
-        editor, activeFile, currentContent, mergedDiagnostics, diagnosticSummary,
+        editor, activeFile, mergedDiagnostics, diagnosticSummary,
         isAnalyzingProactive, isWorkspaceAnalyzing, onSuggestCb, onBusyCb,
-        completionClearSignal, jumpstartPrompt, jumpstartAttachments,
+        getLatestCurrentContent, completionClearSignal, jumpstartPrompt, jumpstartAttachments,
         onCloseProblemsCb, toggleTreeOrientation, onOpenScmCb, memoEditorProps,
     ]);
 
@@ -2366,7 +2387,7 @@ export default function EditorPage({ params }) {
                         onStop={handleStop}
                         onReload={handleRestart}
                         isRunning={isCompiling}
-                        onToggleTerminal={() => dispatch(toggleTerminal())}
+                        onToggleTerminal={onToggleTerminalCb}
                         onUndo={handleUndo}
                         onRedo={handleRedo}
                         onToggleChat={handleToggleChat}
