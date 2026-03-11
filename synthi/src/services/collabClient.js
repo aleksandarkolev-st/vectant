@@ -802,14 +802,15 @@ class CollabClient {
       }
     };
 
-    // 1. Create provider but DO NOT connect yet (wait for token)
-    // We use the base URL initially; _connectWithToken will update it.
+    // 1. Create provider — connects to the collab server's Yjs WebSocket relay.
+    // URL format: ws://localhost:1234/yjs/<roomKey>
+    const collabWsUrl = this.serverUrl; // e.g. ws://localhost:1234
     const provider = new WebsocketProvider(
-      `${this.ySweetWsUrl}/doc`,
+      `${collabWsUrl}/yjs`,
       key,
       doc,
       {
-        connect: false, // Wait for token
+        connect: true,
         params: {
           userId: this.identity.userId,
           ...(this.identity.sessionId ? { sessionId: this.identity.sessionId } : {}),
@@ -829,16 +830,12 @@ class CollabClient {
     entryRef = entry;
     this.docs.set(key, entry);
 
-    // 2. Fetch token and connect asynchronously
-    // We do NOT await this, so ensureDoc remains synchronous.
-    // The provider will connect a few ms later when the token arrives.
-    this._connectWithToken(entry, key);
-
     return entry;
   }
 
   /**
    * Fetches Y-Sweet client token and connects the provider.
+   * (Kept for backward compatibility but no longer called in the default flow.)
    */
   async _connectWithToken(entry, docId) {
     try {
