@@ -2764,6 +2764,12 @@ const wsPerMessageDeflate = {
   threshold: 128,                  // only compress messages > 128 bytes
 };
 
+// ── Yjs document WebSocket relay ─────────────────────────────────────────────
+// Minimal Yjs sync protocol handler — Y-Sweet 0.9.x serve doesn't expose
+// WebSocket, so we host the document relay here on the collab server.
+const yjsWss = new WebSocket.Server({ noServer: true });
+const yjsWsServer = require('./yjsWsServer');
+
 // Lightweight notification WebSocket server for non-Yjs broadcasts
 // (e.g., file-tree-changed). Clients connect to /notifications?slug=<slug>.
 const notifyWss = new WebSocket.Server({ noServer: true, perMessageDeflate: wsPerMessageDeflate });
@@ -2886,6 +2892,13 @@ server.on('upgrade', (request, socket, head) => {
     // Route to terminal PTY WebSocket server
     terminalWss.handleUpgrade(request, socket, head, (ws) => {
       terminalWss.emit('connection', ws, request);
+    });
+  } else if (pathname.startsWith('yjs/')) {
+    // Route to Yjs document sync WebSocket (y-websocket protocol)
+    // Room name = everything after 'yjs/'
+    yjsWss.handleUpgrade(request, socket, head, (ws) => {
+      const docName = decodeURIComponent(pathname.slice(4));
+      yjsWsServer.setupConnection(ws, docName);
     });
   } else {
     // Unknown upgrade path — Y-Sweet handles CRDT WebSockets directly.
