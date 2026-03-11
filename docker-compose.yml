@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   y-sweet:
     build: 
@@ -7,11 +5,17 @@ services:
       dockerfile: Dockerfile
     image: synthi-y-sweet
     ports:
-      - "8080:8080"
+      - "8180:8080"
     volumes:
       - ysweet-data:/data
     restart: unless-stopped
     command: y-sweet serve /data --host 0.0.0.0 --port 8080
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    restart: unless-stopped
 
 volumes:
   ysweet-data:

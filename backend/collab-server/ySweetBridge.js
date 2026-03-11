@@ -12,6 +12,18 @@
 const Y = require('yjs');
 const config = require('./config');
 
+// ── Doc-ID encoding ──────────────────────────────────────────────────────────
+// Y-Sweet 0.9.x only allows alphanumeric chars, hyphens, and underscores in
+// document IDs. Room keys from the frontend contain colons, slashes, spaces,
+// and dots.  We encode them with a reversible Base64url (no padding) scheme.
+function encodeDocId(raw) {
+  return Buffer.from(raw, 'utf8')
+    .toString('base64')
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/, '');
+}
+
 // ── Lazy-loaded SDK ──────────────────────────────────────────────────────────
 // @y-sweet/sdk is ESM-only in recent versions. We handle both ESM and CJS
 // imports so the server works regardless of the installed version.
@@ -55,8 +67,9 @@ function getManager() {
  * @returns {Promise<{ url: string, docId: string, token: string }>}
  */
 async function getOrCreateToken(docId) {
+  const safeId = encodeDocId(docId);
   const mgr = await getManager();
-  return mgr.getOrCreateDocAndToken(docId);
+  return mgr.getOrCreateDocAndToken(safeId);
 }
 
 /**
@@ -70,10 +83,11 @@ async function getOrCreateToken(docId) {
  * @returns {Promise<string|null>} document text, or null if empty / not found.
  */
 async function readDocContent(docId) {
+  const safeId = encodeDocId(docId);
   const mgr = await getManager();
   try {
     // getDocAsUpdate returns a Uint8Array with the full Yjs update
-    const update = await mgr.getDocAsUpdate(docId);
+    const update = await mgr.getDocAsUpdate(safeId);
     if (!update || update.length === 0) return null;
 
     const doc = new Y.Doc();
@@ -96,9 +110,10 @@ async function readDocContent(docId) {
  * @returns {Promise<boolean>}
  */
 async function docExists(docId) {
+  const safeId = encodeDocId(docId);
   const mgr = await getManager();
   try {
-    await mgr.getDoc(docId);
+    await mgr.getDoc(safeId);
     return true;
   } catch {
     return false;

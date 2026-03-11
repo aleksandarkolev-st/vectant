@@ -973,6 +973,7 @@ async fn main() -> Result<()> {
                     signal_tx.send(SignalMessage {
                         msg_type: "answer".into(),
                         role: None,
+                        session_id: None,
                         sdp: Some(answer.sdp),
                         sdp_type: Some(answer.sdp_type.to_string()),
                         candidate: None,
@@ -1246,6 +1247,7 @@ async fn create_peer(
                         let _ = tx.send(SignalMessage {
                             msg_type: "candidate".into(),
                             role: None,
+                            session_id: None,
                             sdp: None,
                             sdp_type: None,
                             candidate: Some(init),
@@ -2054,7 +2056,7 @@ async fn wire_peer_channels(
                         },
                         "ruby" | "rb" => {
                             // ruby-lsp (Shopify) — modern Ruby language server
-                            let mut c = system_command("ruby-lsp");
+                            let c = system_command("ruby-lsp");
                             c
                         },
                         "php" => {
@@ -2065,12 +2067,12 @@ async fn wire_peer_channels(
                         },
                         "kotlin" | "kt" => {
                             // Kotlin Language Server
-                            let mut c = system_command("kotlin-language-server");
+                            let c = system_command("kotlin-language-server");
                             c
                         },
                         "zig" => {
                             // ZLS — Zig Language Server
-                            let mut c = system_command("zls");
+                            let c = system_command("zls");
                             c
                         },
                         "dart" => {
@@ -2122,12 +2124,12 @@ async fn wire_peer_channels(
                         },
                         "lua" => {
                             // lua-language-server (LuaLS)
-                            let mut c = system_command("lua-language-server");
+                            let c = system_command("lua-language-server");
                             c
                         },
                         "elixir" | "ex" => {
                             // ElixirLS language server
-                            let mut c = system_command("elixir-ls");
+                            let c = system_command("elixir-ls");
                             c
                         },
                         "svelte" => {
@@ -6078,7 +6080,7 @@ path = "{}"
                             for candidate in &candidates {
                                 if candidate.contains('*') {
                                     // Glob expansion for system packages
-                                    if let Ok(mut entries) = std::fs::read_dir("/usr/src") {
+                                    if let Ok(entries) = std::fs::read_dir("/usr/src") {
                                         if let Some(entry) = entries.flatten().find(|e| {
                                             let name = e.file_name();
                                             let n = name.to_string_lossy();

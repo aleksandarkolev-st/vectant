@@ -85,6 +85,9 @@ type PeerKey = (String, String); // (session_id, role)
 struct AppState {
     /// Local peers connected to **this** pod.
     peers: RwLock<HashMap<PeerKey, mpsc::UnboundedSender<Message>>>,
+    /// Maps a `__legacy__` worker to the real session it is currently serving.
+    /// Used in local dev when the worker has no SESSION_ID set.
+    legacy_session: RwLock<Option<String>>,
     /// Redis client for Pub/Sub relay.
     redis_client: redis::Client,
     /// Unique identifier for this signaling pod instance.
@@ -132,6 +135,7 @@ async fn main() -> anyhow::Result<()> {
 
     let state = Arc::new(AppState {
         peers: RwLock::new(HashMap::new()),
+        legacy_session: RwLock::new(None),
         redis_client: redis_client.clone(),
         node_id: node_id.clone(),
         collab_url,
@@ -310,28 +314,58 @@ async fn handle_connection(
             "browser"
         };
 
+        // ── Legacy-worker bridging ─────────────────────────────────────
+        // In local dev the worker runs without SESSION_ID and registers
+        // as "__legacy__".  When the __legacy__ worker sends a response
+        // (answer / candidate), rewrite the target session to whichever
+        // real browser session it is serving.
+        let effective_session = if session_id == "__legacy__" && role == "worker" {
+            // Worker responding — route to the real browser session.
+            state.legacy_session.read().await.clone().unwrap_or(session_id.clone())
+        } else {
+            session_id.clone()
+        };
+
         // Try local delivery first.
         let delivered_locally = {
             let peers = state.peers.read().await;
-            if let Some(target_tx) = peers.get(&(session_id.clone(), target_role.to_string())) {
-                target_tx.send(Message::text(text.clone())).is_ok()
+            // Look for exact session match first, then fall back to the
+            // __legacy__ worker.  This lets a single local-dev worker
+            // (no SESSION_ID set) serve any browser session.
+            let fell_back_to_legacy;
+            let target_tx = match peers.get(&(effective_session.clone(), target_role.to_string())) {
+                Some(tx) => { fell_back_to_legacy = false; Some(tx) }
+                None if target_role == "worker" => {
+                    fell_back_to_legacy = true;
+                    peers.get(&("__legacy__".to_string(), "worker".to_string()))
+                }
+                None => { fell_back_to_legacy = false; None }
+            };
+            if let Some(tx) = target_tx {
+                let ok = tx.send(Message::text(text.clone())).is_ok();
+                // Remember which real session the legacy worker is serving.
+                if ok && fell_back_to_legacy && effective_session != "__legacy__" {
+                    drop(peers); // release read lock before taking write lock
+                    *state.legacy_session.write().await = Some(effective_session.clone());
+                }
+                ok
             } else {
                 false
             }
         };
 
         if delivered_locally {
-            log_forward(&parsed.msg_type, &session_id, &role, target_role, "local");
+            log_forward(&parsed.msg_type, &effective_session, &role, target_role, "local");
         } else {
             // Target peer is not on this pod — publish via Redis for
             // whichever pod holds the other end.
             publish_to_redis(
                 &state,
-                &make_target_key(&session_id, target_role),
+                &make_target_key(&effective_session, target_role),
                 &text,
             )
             .await;
-            log_forward(&parsed.msg_type, &session_id, &role, target_role, "redis");
+            log_forward(&parsed.msg_type, &effective_session, &role, target_role, "redis");
         }
     }
 

@@ -870,13 +870,15 @@ class CollabClient {
         if (!this.docs.has(docId) || this.docs.get(docId) !== entry) return;
         if (!entry.provider) return;
 
-        // Append token to provider URL
-        // Y-Sweet expects token in 'token' query param for standard WS clients
-        const currentUrl = entry.provider.url;
-        const separator = currentUrl.includes('?') ? '&' : '?';
-        const newUrl = `${currentUrl}${separator}token=${data.token}`;
+        // Use the WebSocket URL returned by Y-Sweet which already contains
+        // the correct (encoded) doc path.
+        let wsUrl = data.url;
+        if (data.token) {
+          const sep = wsUrl.includes('?') ? '&' : '?';
+          wsUrl = `${wsUrl}${sep}token=${data.token}`;
+        }
         
-        entry.provider.url = newUrl;
+        entry.provider.url = wsUrl;
         entry.provider.connect();
         console.log(`[Collab] Connected to Y-Sweet for ${docId}`);
         
