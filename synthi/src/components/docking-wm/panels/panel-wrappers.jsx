@@ -72,6 +72,11 @@ const ThemeEditorPanel = dynamic(
   { ssr: false, loading: Placeholder },
 );
 
+const OutputPanel = dynamic(
+  () => import('./OutputPanel'),
+  { ssr: false, loading: Placeholder },
+);
+  
 const PullRequestsPanel = dynamic(
   () => import('@/components/git/PullRequestsPanel').then(m => ({ default: m.PullRequestsPanel })),
   { ssr: false, loading: Placeholder },
@@ -79,6 +84,11 @@ const PullRequestsPanel = dynamic(
 
 const CommitHistoryPanel = dynamic(
   () => import('@/components/git/CommitHistoryPanel'),
+  { ssr: false, loading: Placeholder },
+);
+
+const AIHealingPanel = dynamic(
+  () => import('@/components/healing/AIHealingPanel').then(m => ({ default: m.AIHealingPanel })),
   { ssr: false, loading: Placeholder },
 );
 
@@ -263,12 +273,10 @@ export const OutputPanelWrapper = memo(function OutputPanelWrapper({ data }) {
   return (
     <div
       data-panel-type="output"
-      className="h-full w-full overflow-hidden font-mono text-xs p-2"
-      style={{ background: 'var(--bg-sidebar)', color: 'var(--text-muted)' }}
+      className="h-full w-full overflow-hidden"
+      style={{ background: 'var(--bg-sidebar)' }}
     >
-      <div className="flex h-full items-center justify-center">
-        Output panel — no output yet
-      </div>
+      <OutputPanel />
     </div>
   );
 });
@@ -365,6 +373,24 @@ export const CommitHistoryPanelWrapper = memo(function CommitHistoryPanelWrapper
 });
 
 // ────────────────────────────────────────────────────────
+//  AI Healing Panel Wrapper
+// ────────────────────────────────────────────────────────
+
+export const AIHealingPanelWrapper = memo(function AIHealingPanelWrapper({ data }) {
+  const ctx = useWorkspacePanelContext();
+
+  return (
+    <div
+      data-panel-type="ai-healing"
+      className="h-full w-full overflow-hidden"
+      style={{ background: 'var(--bg-sidebar)' }}
+    >
+      <AIHealingPanel aiHealing={ctx?.aiHealing} />
+    </div>
+  );
+});
+
+// ────────────────────────────────────────────────────────
 //  Wrapper registry (type → component)
 // ────────────────────────────────────────────────────────
 
@@ -383,4 +409,5 @@ export const PANEL_WRAPPERS = {
   'theme-editor': ThemeEditorPanelWrapper,
   pullrequests:    PullRequestsPanelWrapper,
   commithistory:   CommitHistoryPanelWrapper,
+  'ai-healing':    AIHealingPanelWrapper,
 };

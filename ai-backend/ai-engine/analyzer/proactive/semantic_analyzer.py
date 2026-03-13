@@ -1228,18 +1228,27 @@ class CppSemanticAnalyzer(BaseSemanticAnalyzer):
                 # Variable declarations without semicolon
                 type_pattern = r'^(int|float|double|char|bool|long|short|unsigned|auto|const|void|string|std::\w+)\s+\w+'
                 if re.match(type_pattern, stripped):
+                    eol_col = len(line.rstrip())
                     diagnostics.append(Diagnostic(
                         message="Missing semicolon at end of statement",
                         severity=Severity.ERROR,
                         tier=AnalysisTier.SEMANTIC,
                         location=DiagnosticLocation(
                             line=i,
-                            column=len(line.rstrip()),
+                            column=eol_col,
                             end_line=i,
-                            end_column=len(line.rstrip()) + 1,
+                            end_column=eol_col + 1,
                         ),
                         code="SEM210",
                         category=DiagnosticCategory.SYNTAX,
+                        fixes=[
+                            CodeFix(
+                                description="Add missing semicolon",
+                                replacement_text=line.rstrip() + ";",
+                                location=DiagnosticLocation(i, 0, i, eol_col),
+                                is_preferred=True,
+                            ),
+                        ],
                     ))
         
         return diagnostics

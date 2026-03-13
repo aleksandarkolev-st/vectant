@@ -39,9 +39,14 @@ const EditorPanel = dynamic(() => import('./Editor/Editor.jsx'), {
 import { getFileLanguage } from '@/utils/fileUtils';
 import { useAnalyzerGateway } from '@/hooks/useAnalyzerGateway';
 import { useSelfHealing } from '@/hooks/useSelfHealing';
+import { useAIHealing } from '@/hooks/useAIHealing';
+import { useAIHealingKeyboard } from '@/hooks/useAIHealingKeyboard';
+import { useAIAutoAnalysis } from '@/hooks/useAIAutoAnalysis';
+import { useAISelectionAnalysis } from '@/hooks/useAISelectionAnalysis';
 import { useHealingUndo } from '@/hooks/useHealingUndo';
 import { HealingToast } from '@/components/healing/HealingToast';
 import { PreCompileHealToast } from '@/components/healing/PreCompileHealToast';
+import { AIHealingPanel } from '@/components/healing/AIHealingPanel';
 import { useWorkspaceAnalysis } from '@/hooks/useWorkspaceAnalysis';
 import { useCompiler } from '@/hooks/useCompiler';
 import { useCodeIntelIndex } from '@/hooks/useCodeIntelIndex';
@@ -150,8 +155,66 @@ export default function EditorPage({ params }) {
         filePath: activeFilePath,
         language: activeLanguage,
         active: !!editor && !!activeFile,
+        onFixesApplied: useCallback((healedIds) => {
+            // Remove healed diagnostics from the Problems panel so
+            // auto-fixed issues no longer linger after the fix is applied.
+            //
+            // healedIds === null  → file was edited by the regex heal pass;
+            //                       ALL diagnostics for the current file are stale.
+            // healedIds === Set   → specific diagnostics were fixed by the
+            //                       AI-driven healFromDiagnostics path.
+            setDiagnostics(prev => prev.filter(d => {
+                const diagId = d.__id || d.id;
+                if (healedIds === null) {
+                    // Drop every diagnostic that belongs to the active file
+                    const dPath = (d.filePath || d.file || '').replace(/^[./\\]+/, '').replace(/\\/g, '/').toLowerCase();
+                    const aPath = (activeFilePath || '').replace(/^[./\\]+/, '').replace(/\\/g, '/').toLowerCase();
+                    return dPath !== aPath;
+                }
+                return !diagId || !healedIds.has(diagId);
+            }));
+        }, [activeFilePath]),
     });
     const { undoLastFix } = useHealingUndo({ editorRef });
+
+    // ─── AI Healing system (LLM-powered deep analysis) ─────
+    // Complements useSelfHealing (regex): catches logic errors, type
+    // mismatches, null safety, off-by-one, missing awaits, etc.
+    const aiHealing = useAIHealing({
+        editorRef,
+        gateway,
+        filePath: activeFilePath,
+        language: activeLanguage,
+        workspaceRoot: slug,
+        analyzeOnSave: true,     // auto-trigger on Ctrl+S
+        mode: 'ai',
+        selfEditFlagRef,
+    });
+
+    // Keyboard shortcuts: Ctrl+Shift+I (analyze), Y (apply safe), N (dismiss), M (toggle mode)
+    useAIHealingKeyboard({ aiHealing });
+
+    // Auto-analyze after 4s of inactivity (background, non-intrusive)
+    useAIAutoAnalysis({
+        editorRef,
+        analyzeCallback: aiHealing.analyze,
+        enabled: !!editor && !!activeFile,
+        debounceMs: 4000,
+    });
+
+    // Right-click → "AI: Analyze Selection" context menu
+    const { registerContextMenu: registerAISelectionMenu } = useAISelectionAnalysis({
+        aiHealing,
+        editorRef,
+    });
+
+    // Register context menu when editor mounts
+    useEffect(() => {
+        if (!editor) return;
+        const disposable = registerAISelectionMenu(editor);
+        return () => disposable?.dispose();
+    }, [editor, registerAISelectionMenu]);
+
     useEffect(() => {
         const handleSwitchView = (e) => {
             if (e.detail) setSidebarView(e.detail);
@@ -269,12 +332,31 @@ export default function EditorPage({ params }) {
                 const nextLoc = updateMap.get(key);
                 if (!nextLoc) return d;
                 changed = true;
+                
+                // Compute how many lines/columns the diagnostic shifted by
+                const prevLoc = d.location || {};
+                const lineDelta = (nextLoc.line ?? 0) - (prevLoc.line ?? 0);
+                
+                // Also shift fix locations so they stay aligned with the moved diagnostic
+                const updatedFixes = (d.fixes || []).map(fix => {
+                    if (!fix.location) return fix;
+                    return {
+                        ...fix,
+                        location: {
+                            ...fix.location,
+                            line: (fix.location.line ?? 0) + lineDelta,
+                            endLine: (fix.location.endLine ?? fix.location.line ?? 0) + lineDelta,
+                        },
+                    };
+                });
+                
                 return {
                     ...d,
                     location: {
                         ...(d.location || {}),
                         ...nextLoc,
                     },
+                    fixes: updatedFixes,
                 };
             });
             return changed ? next : prev;
@@ -945,6 +1027,12 @@ export default function EditorPage({ params }) {
             aiTimeoutRef.current = null;
         }
 
+
+        // CRITICAL: Skip analysis when the self-healing system just applied a fix.
+        // Without this, the fix changes content → Redux updates currentContent →
+        // this effect re-runs → schedules new analysis → which finds the same issue
+        // or triggers another fix → infinite loop.
+        if (selfEditFlagRef.current) return;
 
         // Get content from Monaco if available, falling back to Redux
         // IMPORTANT: On initial load, Monaco might not have Y.js synced changes yet.
@@ -1833,6 +1921,13 @@ export default function EditorPage({ params }) {
 
         setBuildLogs([`Running build for ${filename}...`]);
 
+        // Auto-switch to the Output panel in the docking WM so users see program output
+        try {
+            if (typeof window !== 'undefined' && window.dispatchEvent) {
+                window.dispatchEvent(new CustomEvent('synthi:show-output-panel'));
+            }
+        } catch (_) { /* ignore */ }
+
         // Define a getter for content that checks current editor state, cache, or API
         const getContentForDependency = async (path) => {
             // If it's the active file, use the current editor content (which might be unsaved)
@@ -1868,11 +1963,25 @@ export default function EditorPage({ params }) {
         const hasFlutterPackage = await detectFlutterProject();
         const isFlutter = hasFlutterImports || hasFlutterPackage;
 
+        // Detect Java GUI (Swing / AWT / JavaFX) — auto-enable GUI mode.
+        // Check both the active file AND resolved dependency files, because
+        // the main class may delegate to a GUI class without importing Swing directly.
+        const isJavaFile = ext === 'java';
+        const javaGuiRe = /\bimport\s+(javax\.swing|java\.awt|javafx\.)/m;
+        const hasJavaGuiImports = isJavaFile && (
+            javaGuiRe.test(source) ||
+            additionalFiles.some(f => javaGuiRe.test(f.content || ''))
+        );
+
         let target = null;
         if (isReactNative) target = 'react-native-emulator';
         else if (isFlutter) target = 'flutter-android-emulator';
 
         const isMobile = isReactNative || isFlutter;
+
+        // If Java GUI imports are detected, override isGui to true so the
+        // backend spawns Xvfb + GStreamer and streams to the in-app preview.
+        const effectiveGuiMode = runInGuiMode || hasJavaGuiImports;
 
         // Auto-open the emulator panel when we run a mobile build.
         let mobileSid = null;
@@ -1910,7 +2019,7 @@ export default function EditorPage({ params }) {
                 filename,
                 source,
                 files: additionalFiles,
-                isGui: runInGuiMode,
+                isGui: effectiveGuiMode,
                 target,
                 projectRoot,
                 slug, // Pass workspace slug for mobile builds to download synced files
@@ -2065,7 +2174,14 @@ export default function EditorPage({ params }) {
 
             // If there's no active GUI session, we need isGui=true for the
             // worker to set up the video pipeline.
-            const shouldRunGui = runInGuiMode || isGuiRunning;
+            // Also auto-detect Java GUI (Swing/AWT/JavaFX) imports in main + deps.
+            const ext = (filename || '').split('.').pop().toLowerCase();
+            const javaGuiRe = /\bimport\s+(javax\.swing|java\.awt|javafx\.)/m;
+            const hasJavaGui = ext === 'java' && (
+                javaGuiRe.test(source) ||
+                additionalFiles.some(f => javaGuiRe.test(f.content || ''))
+            );
+            const shouldRunGui = runInGuiMode || isGuiRunning || hasJavaGui;
 
             const activeSessionId = client?.getActiveSessionId?.();
             if (activeSessionId) {
@@ -2145,6 +2261,7 @@ export default function EditorPage({ params }) {
             onClearCompletion={handleClearLatestCompletion}
             chatVisible={chatVisible}
             collabHostId={collabHostId}
+            selfEditFlagRef={selfEditFlagRef}
         />
     );
 
@@ -2180,7 +2297,7 @@ export default function EditorPage({ params }) {
                         }
                     }}
                     extensionContainers={contributedContainers}
-                    badges={{ pullrequests: openPRCount }}
+                    badges={{ pullrequests: openPRCount, 'ai-healing': aiHealing.fixCount || 0 }}
                 />
                 <div className="flex-1 min-w-0 overflow-hidden flex flex-col">
                     {sidebarView === 'scm' ? (
@@ -2224,6 +2341,9 @@ export default function EditorPage({ params }) {
                         );
                     })() : sidebarView === 'settings' ? (
                         <SettingsPanelContent />
+                    ) : sidebarView === 'ai-healing' ? (
+                        <AIHealingPanel aiHealing={aiHealing} />
+                    ) : (
                     ) : sidebarView ? (
                         <div className="flex flex-col h-full min-h-0">
                             <div className="flex-1 min-h-0 overflow-y-auto">

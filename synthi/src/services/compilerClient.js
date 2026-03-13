@@ -128,6 +128,7 @@ export class CompilerClient {
     _mapLanguage(filename = '') {
         const ext = filename.split('.').pop().toLowerCase();
         if (['c', 'cpp', 'cc', 'cxx', 'hpp', 'h'].includes(ext)) return 'cpp';
+        if (ext === 'java') return 'java';
         if (ext === 'rs') return 'rust';
         if (ext === 'ts' || ext === 'tsx') return 'ts';
         if (ext === 'dart') return 'dart';
@@ -199,6 +200,26 @@ export class CompilerClient {
                 if (typeof window !== 'undefined' && window.dispatchEvent) {
                     window.dispatchEvent(new CustomEvent('synthi:gui-start', { detail: parsed }));
                 }
+                // The backend just called replace_track() — the real GStreamer
+                // video is now flowing through the existing transceiver.  Re-emit
+                // the media-track event so the <video> element in the GUI widget
+                // gets a fresh srcObject assignment and calls play().  Without
+                // this, the video can stay frozen on the placeholder (white).
+                try {
+                    if (this.currentStreams && this.currentStreams.length > 0) {
+                        const stream = this.currentStreams[0];
+                        const vt = stream?.getVideoTracks?.();
+                        if (vt && vt.length > 0) {
+                            // Create a fresh MediaStream so React detects the change
+                            const freshStream = new MediaStream(stream.getTracks());
+                            this.currentStreams = [freshStream];
+                            window.dispatchEvent(new CustomEvent('synthi:media-track', {
+                                detail: { track: vt[0], streams: [freshStream] }
+                            }));
+                            console.debug('[CompilerClient] Re-emitted media-track after gui-start');
+                        }
+                    }
+                } catch (_) {}
             } else if (parsed && parsed.type === 'run-gui-end') {
                 console.log('[CompilerClient] Dispatching synthi:gui-end', parsed);
                 if (typeof window !== 'undefined' && window.dispatchEvent) {
@@ -265,6 +286,20 @@ export class CompilerClient {
         } catch (e) {
             // ignore
         }
+
+        // Dispatch structured program output event for the Output panel.
+        // stdout/stderr lines are forwarded with their type so the panel can
+        // distinguish program output from build system messages.
+        try {
+            const p = JSON.parse(text);
+            if (p && (p.type === 'stdout' || p.type === 'stderr') && p.line != null) {
+                if (typeof window !== 'undefined' && window.dispatchEvent) {
+                    window.dispatchEvent(new CustomEvent('synthi:program-output', {
+                        detail: { type: p.type, line: p.line, sessionId: p.sessionId }
+                    }));
+                }
+            }
+        } catch (_) { /* not JSON — ignore */ }
 
         this.logHandlers.forEach((fn) => {
             try { fn(text); } catch (e) { /* ignore */ }
@@ -1230,9 +1265,9 @@ export class CompilerClient {
 
                 // Mobile emulator streams video over WebRTC. If the browser connected earlier without
                 // negotiating an m=video section, ontrack will never fire. Ensure recvonly video now.
-                if (effectiveTarget === 'react-native-emulator') {
+                if (effectiveTarget === 'react-native-emulator' || isGui) {
                     // Fire-and-forget; we don't want to block the job on renegotiation.
-                    this._ensureRecvTransceivers({ video: true, audio: false, forceRenegotiate: true, sessionId, onLog: (l) => clientLog(l, sessionId) })
+                    this._ensureRecvTransceivers({ video: true, audio: isGui, forceRenegotiate: true, sessionId, onLog: (l) => clientLog(l, sessionId) })
                         .catch(() => {});
                 }
 
@@ -1247,8 +1282,25 @@ export class CompilerClient {
                     // If the worker included a sessionId and it doesn't match this run, ignore.
                     if (parsed && parsed.sessionId && parsed.sessionId !== sessionId) return;
 
-                    // Forward raw log line to caller callback if provided
-                    try { if (onLog) onLog(line); } catch (e) { /* ignore */ }
+                    // Extract clean display text from structured messages.
+                    // stdout/stderr JSON from the runner carries the actual output in `.line`.
+                    // Internal status messages (stage/done) should not clutter the build log.
+                    // lsp-stderr is diagnostic noise from the language server — always hide.
+                    let displayLine = line;
+                    if (parsed) {
+                        if (parsed.type === 'lsp-stderr' || parsed.type === 'hmr-status' || parsed.type === 'run-gui-start' || parsed.type === 'run-gui-end') {
+                            // Internal diagnostic / HMR / GUI-signal noise — suppress entirely
+                            displayLine = null;
+                        } else if ((parsed.type === 'stdout' || parsed.type === 'stderr') && parsed.line != null) {
+                            displayLine = String(parsed.line);
+                        } else if (parsed.status === 'done' || parsed.status === 'error') {
+                            // Internal completion signals — don't forward to user-visible log.
+                            displayLine = null;
+                        }
+                    }
+
+                    // Forward clean log line to caller callback if provided
+                    try { if (onLog && displayLine != null) onLog(displayLine); } catch (e) { /* ignore */ }
 
                     // Determine which sessionId to expose to UI consumers: prefer worker-provided sessionId
                     const sidToExpose = parsed && parsed.sessionId ? parsed.sessionId : sessionId;
@@ -1261,7 +1313,8 @@ export class CompilerClient {
                     // Emit a stream event for UI consumers that want session-scoped streaming
                     try {
                         if (typeof window !== 'undefined' && window.dispatchEvent) {
-                            const ev = new CustomEvent('synthi:build-stream', { detail: { sessionId: sidToExpose, line } });
+                            const streamLine = displayLine != null ? displayLine : line;
+                            const ev = new CustomEvent('synthi:build-stream', { detail: { sessionId: sidToExpose, line: streamLine } });
                             window.dispatchEvent(ev);
                         }
                     } catch (e) { /* ignore */ }

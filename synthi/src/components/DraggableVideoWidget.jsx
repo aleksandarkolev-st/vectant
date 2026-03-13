@@ -188,6 +188,31 @@ export function DraggableVideoWidget({
         return () => window.removeEventListener('synthi:hmr-update', handleHmrUpdate);
     }, [mediaStream]);
 
+    // When guiConfig or mediaStream changes (e.g. after replace_track on
+    // the server), the <video> element may be in a suspended state because it
+    // was assigned a placeholder stream with no frames.  Kick it with play().
+    useEffect(() => {
+        if (!guiConfig || !mediaStream || !videoRef.current) return;
+        const el = videoRef.current;
+        // Ensure srcObject is set (React ref callback may not re-fire)
+        if (el.srcObject !== mediaStream) {
+            el.srcObject = mediaStream;
+        }
+        // Retry play() a few times to handle delayed frame arrival
+        let attempts = 0;
+        const kick = () => {
+            if (!videoRef.current) return;
+            videoRef.current.play().catch(() => {});
+        };
+        kick();
+        const timer = setInterval(() => {
+            attempts++;
+            if (attempts > 10) { clearInterval(timer); return; }
+            kick();
+        }, 500);
+        return () => clearInterval(timer);
+    }, [guiConfig, mediaStream]);
+
     if (!guiConfig) return null;
 
     // If position is not yet calculated, render hidden or default
