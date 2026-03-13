@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useRef, useEffect, useCallback, useMemo, memo } from 'react';
 import dynamic from 'next/dynamic';
 import { SplitSquareHorizontal, Plus, X, TerminalSquare, Bot, Settings } from 'lucide-react';
 import { useDispatch } from 'react-redux';
@@ -19,7 +19,7 @@ function setStoredDefaultShell(shellKey) {
   try { if (shellKey) localStorage.setItem(DEFAULT_SHELL_KEY, shellKey); else localStorage.removeItem(DEFAULT_SHELL_KEY); } catch (_) {}
 }
 
-export default function TerminalManager({ visible, onCloseAll, workspaceSlug = '' }) {
+const TerminalManager = memo(function TerminalManager({ visible, onCloseAll, workspaceSlug = '' }) {
   const [defaultShellPref, setDefaultShellPref] = useState(() => getStoredDefaultShell());
   const [terminals, setTerminals] = useState([{ id: 'term-1', label: getShellMeta(getStoredDefaultShell())?.label || 'Terminal', split: false, shellType: getStoredDefaultShell() }]);
   const [activeId, setActiveId] = useState('term-1');
@@ -308,4 +308,6 @@ export default function TerminalManager({ visible, onCloseAll, workspaceSlug = '
       {body}
     </div>
   );
-}
+});
+
+export default TerminalManager;

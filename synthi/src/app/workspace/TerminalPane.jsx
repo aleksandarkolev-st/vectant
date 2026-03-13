@@ -1,5 +1,5 @@
 'use client';
-import React, { useEffect, useRef, useState, useCallback } from 'react';
+import React, { useEffect, useRef, useState, useCallback, memo } from 'react';
 import { useSession } from 'next-auth/react';
 import { WifiOff, RefreshCw, Terminal, AlertCircle, Zap, EyeOff } from 'lucide-react';
 import { useTheme } from '@/components/ThemeProvider';
@@ -66,7 +66,12 @@ const SYNTHI_THEME_FALLBACK = {
   brightWhite: '#ffffff',
 };
 
-export default function TerminalPane({ terminalId = 'default', paneSide = 'main', workspaceSlug = '', onFsChange, fixedSessionId = null, shellType = null }) {
+/**
+ * TerminalPane is an imperative xterm widget — it should NEVER re-render from
+ * parent prop changes.  All communication happens through refs and WebSocket.
+ * The freeze comparator always returns true (props are equal → skip re-render).
+ */
+const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSide = 'main', workspaceSlug = '', onFsChange, fixedSessionId = null, shellType = null }) {
   const containerRef = useRef(null);
   const terminalRef = useRef(null);   // { term, fitAddon, dispose() }
   const wsRef = useRef(null);
@@ -150,6 +155,17 @@ export default function TerminalPane({ terminalId = 'default', paneSide = 'main'
         import('xterm-addon-web-links'),
       ]);
 
+      // PERF: Attempt to load WebGL renderer addon for GPU-accelerated
+      // terminal rendering. Falls back to the default canvas renderer
+      // if WebGL is unavailable (e.g., software rendering, privacy mode).
+      let WebglAddon = null;
+      try {
+        const webglModule = await import('xterm-addon-webgl');
+        WebglAddon = webglModule.WebglAddon;
+      } catch (_) {
+        console.log('[Terminal] WebGL addon not available, using canvas renderer');
+      }
+
       if (disposed || !containerRef.current) return;
 
       // ── Create xterm instance ───────────────────────────────────────
@@ -171,10 +187,32 @@ export default function TerminalPane({ terminalId = 'default', paneSide = 'main'
       term.loadAddon(linksAddon);
       term.open(containerRef.current);
 
+      // PERF: Activate GPU-accelerated WebGL renderer.
+      // This offloads heavy I/O log streaming (thousands of rows/sec) from
+      // the CPU canvas to the user's GPU, dramatically reducing main-thread
+      // blocking during terminal-heavy operations (build output, streaming logs).
+      let webglAddon = null;
+      if (WebglAddon) {
+        try {
+          webglAddon = new WebglAddon();
+          // If the WebGL context is lost (GPU driver reset, tab background),
+          // gracefully fall back to the canvas renderer.
+          webglAddon.onContextLoss(() => {
+            console.warn('[Terminal] WebGL context lost, falling back to canvas');
+            try { webglAddon.dispose(); } catch (_) {}
+          });
+          term.loadAddon(webglAddon);
+          console.log('[Terminal] WebGL renderer activated — GPU-accelerated');
+        } catch (err) {
+          console.warn('[Terminal] WebGL renderer failed to activate, using canvas:', err?.message);
+          webglAddon = null;
+        }
+      }
+
       // Initial fit
       try { fitAddon.fit(); } catch (_) {}
 
-      terminalRef.current = { term, fitAddon };
+      terminalRef.current = { term, fitAddon, webglAddon };
 
       // ── Connect WebSocket ─────────────────────────────────────────
       connectWS(term, fitAddon);
@@ -206,6 +244,7 @@ export default function TerminalPane({ terminalId = 'default', paneSide = 'main'
         resizeObserver.disconnect();
         window.removeEventListener('resize', scheduleResize);
         if (resizeRaf) cancelAnimationFrame(resizeRaf);
+        if (webglAddon) try { webglAddon.dispose(); } catch (_) {}
         linksAddon.dispose();
         fitAddon.dispose();
         term.dispose();
@@ -472,4 +511,6 @@ export default function TerminalPane({ terminalId = 'default', paneSide = 'main'
       )}
     </div>
   );
-}
+}, /* freeze — never re-render from parent */ () => true);
+
+export default TerminalPane;

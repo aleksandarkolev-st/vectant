@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useMemo } from 'react';
+import { memo, useEffect, useState, useMemo } from 'react';
 import { Search, TerminalSquare, Play, Settings, MessageSquare, Square, RotateCw } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
@@ -12,7 +12,7 @@ import { toast } from 'sonner';
 import CollabToolbar from '@/components/collaboration/CollabToolbar';
 import { useTheme } from '@/components/ThemeProvider';
 
-export default function TopNav({ 
+function TopNav({ 
   title, 
   onRun, 
   runInGuiMode,
@@ -264,3 +264,5 @@ export default function TopNav({
     </div>
   );
 }
+
+export default memo(TopNav);

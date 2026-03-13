@@ -11,8 +11,8 @@ import { useHealingStats } from "@/hooks/useHealingStats";
  * - Fixes detected / applied / rejected
  * - Cache hit rate and size
  */
-export default function HealingStatsDashboard() {
-  const { stats, cacheStats, loading, refresh } = useHealingStats(15000);
+export default function HealingStatsDashboard({ slug }) {
+  const { stats, cacheStats, loading, refresh } = useHealingStats(slug);
   const [expanded, setExpanded] = useState(false);
 
   return (

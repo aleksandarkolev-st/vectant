@@ -161,11 +161,13 @@ export const useAISuggestions = ({
         resetSuggestionsForSession,
     activeFile,
     currentCode,
+    getCurrentCode = null,
     editor,
     onSuggest,
     onBusy,
     clearSignal,
     fileCacheEntries,
+    getFileCacheEntries = null,
     workspaceSlug,
     rawFiles,
     dispatch,
@@ -175,10 +177,27 @@ export const useAISuggestions = ({
     const clientReady = true;
     const [isLoading, setIsLoading] = useState(false);
     const lastClearSignalRef = useRef(clearSignal);
-    const cachedFileMap = useMemo(() => new Map(fileCacheEntries), [fileCacheEntries]);
     const lastSuggestionSnapshotRef = useRef(null);
     const onSuggestRef = useRef(onSuggest);
-    const currentCodeRef = useRef(currentCode);
+    const getLiveCurrentCode = useCallback(() => {
+        if (typeof getCurrentCode === 'function') {
+            const liveValue = getCurrentCode();
+            if (typeof liveValue === 'string') return liveValue;
+        }
+        if (editor?.getValue) {
+            const liveValue = editor.getValue();
+            if (typeof liveValue === 'string') return liveValue;
+        }
+        return typeof currentCode === 'string' ? currentCode : '';
+    }, [currentCode, editor, getCurrentCode]);
+    const getFileCacheEntriesSnapshot = useCallback(() => {
+        if (typeof getFileCacheEntries === 'function') {
+            return getFileCacheEntries() || [];
+        }
+        return fileCacheEntries || [];
+    }, [fileCacheEntries, getFileCacheEntries]);
+    const getCachedFileMap = useCallback(() => new Map(getFileCacheEntriesSnapshot()), [getFileCacheEntriesSnapshot]);
+    const currentCodeRef = useRef(getLiveCurrentCode());
     const fallbackPathRef = useRef(activeFile?.path || activeFile?.name || null);
     const activeFileRef = useRef(activeFile);
     const chatSessionsRef = useRef(chatSessions);
@@ -199,8 +218,8 @@ export const useAISuggestions = ({
 
     // Track the latest editor code snapshot for diffing partial suggestions.
     useEffect(() => {
-        currentCodeRef.current = currentCode;
-    }, [currentCode]);
+        currentCodeRef.current = getLiveCurrentCode();
+    }, [activeFile?.path, getLiveCurrentCode]);
 
     useEffect(() => {
         activeFileRef.current = activeFile;
@@ -642,11 +661,9 @@ export const useAISuggestions = ({
     const getBaseContentForPath = useCallback(async (targetPath) => {
         if (!targetPath) return null;
         const resolvedPath = resolveWorkspacePath(targetPath) || targetPath;
+        const cachedFileMap = getCachedFileMap();
         if (activeFile?.path === resolvedPath) {
-            if (editor?.getValue) {
-                return editor.getValue();
-            }
-            return currentCode || '';
+            return getLiveCurrentCode();
         }
         if (cachedFileMap.has(resolvedPath)) {
             return cachedFileMap.get(resolvedPath);
@@ -684,7 +701,7 @@ export const useAISuggestions = ({
             }
         }
         return null;
-    }, [activeFile?.path, cachedFileMap, currentCode, editor, flattenWorkspaceFiles, resolveWorkspacePath, workspaceSlug]);
+    }, [activeFile?.path, flattenWorkspaceFiles, getCachedFileMap, getLiveCurrentCode, resolveWorkspacePath, workspaceSlug]);
 
     // ── Agent Pipeline ──────────────────────────────────────────────
     const {
@@ -700,6 +717,7 @@ export const useAISuggestions = ({
         workspaceSlug,
         activeFile,
         currentCode,
+        getCurrentCode: getLiveCurrentCode,
         getBaseContentForPath,
         flattenWorkspaceFiles,
         resolveWorkspacePath,
@@ -1332,7 +1350,7 @@ export const useAISuggestions = ({
             let diffChunks = [];
             try {
                 diffChunks = suggestedCode
-                    ? computeDiffChunks(currentCodeRef.current || currentCode || '', suggestedCode)
+                    ? computeDiffChunks(currentCodeRef.current || getLiveCurrentCode(), suggestedCode)
                     : (fallback?.diffChunks || []);
             } catch (e) {
                 diffChunks = fallback?.diffChunks || [];
@@ -1344,7 +1362,7 @@ export const useAISuggestions = ({
         } catch (e) {
             return null;
         }
-    }, [currentCode, currentCodeRef]);
+    }, [getLiveCurrentCode]);
 
     // Persist a suggestion snapshot into the message history and clear live state.
     const pushSnapshotToHistory = useCallback((sessionId, snapshot) => {
@@ -1547,7 +1565,7 @@ export const useAISuggestions = ({
                     'plaintext')
                 : 'plaintext';
             const normalizedLang = (langSource || 'plaintext').toLowerCase();
-            const code = includeActiveFile ? (currentCode || '') : '';
+            const code = includeActiveFile ? getLiveCurrentCode() : '';
             const userPrompt = inputValue;
             
             // Classify user intent using LLM-based backend (with local fallback)
@@ -1739,7 +1757,7 @@ If image attachments are present, read/ocr the images and extract any text or co
                 ? await Promise.all(relatedPaths.map(async (path) => [path, await getBaseContentForPath(path)]))
                 : [];
             const referencedCacheEntries = referencedEntries.filter((entry) => entry[0] && typeof entry[1] === 'string');
-            const cacheEntryMap = new Map(skipFileContext ? [] : fileCacheEntries);
+            const cacheEntryMap = new Map(skipFileContext ? [] : getFileCacheEntriesSnapshot());
             referencedCacheEntries.forEach(([path, content]) => {
                 if (!cacheEntryMap.has(path)) cacheEntryMap.set(path, content);
             });
@@ -1776,7 +1794,7 @@ If image attachments are present, read/ocr the images and extract any text or co
                 // Also include all known workspace file paths from the cache
                 const allKnownPaths = Array.from(new Set([
                     ...existingPaths,
-                    ...Array.from(cachedFileMap.keys()),
+                    ...Array.from(getCachedFileMap().keys()),
                     ...flattenWorkspaceFiles,
                 ]));
                 if (allKnownPaths.length > 0) {
@@ -2410,7 +2428,7 @@ If image attachments are present, read/ocr the images and extract any text or co
                 lastSuggestionSnapshotRef.current = {
                     fileSuggestions: [],
                     suggestedCode: codeOnly,
-                    diffChunks: computeDiffChunks(currentCode || '', codeOnly),
+                    diffChunks: computeDiffChunks(getLiveCurrentCode(), codeOnly),
                     timestamp: new Date(),
                 };
                 try {
@@ -2460,15 +2478,15 @@ If image attachments are present, read/ocr the images and extract any text or co
             setIsLoading(false);
             try { if (typeof onBusy === 'function') onBusy(false); } catch(e){}
         }
-    }, [activeSession, activeFile, appendMessagesToSession, archiveCurrentSuggestion, buildMultiFileSuggestions, currentCode, fileCacheEntries, mutateSession, onBusy, onSuggest, aiApiKey, aiModel, buildContextWindow, formatForAPI, getContextDebugInfo, availableTokens, shouldUseAgents, runPipeline, agentMode, extractPromptMentionedPaths, flattenWorkspaceFiles, extractAgentDiscoveredPaths, discoverPromptRelevantPaths, inferDesignCompanionPaths, isContextExcluded]);
+    }, [activeSession, activeFile, appendMessagesToSession, archiveCurrentSuggestion, buildMultiFileSuggestions, mutateSession, onBusy, onSuggest, aiApiKey, aiModel, buildContextWindow, formatForAPI, getContextDebugInfo, availableTokens, shouldUseAgents, runPipeline, agentMode, extractPromptMentionedPaths, flattenWorkspaceFiles, extractAgentDiscoveredPaths, discoverPromptRelevantPaths, inferDesignCompanionPaths, isContextExcluded, getCachedFileMap, getFileCacheEntriesSnapshot, getLiveCurrentCode, dispatch, extractReferencedPaths, getBaseContentForPath, inferSiblingPaths, resolveWorkspacePath, workspaceSlug]);
 
     const suggestedCode = activeSession?.suggestedCode ?? null;
     const fileSuggestions = activeSession?.fileSuggestions ?? [];
 
     const diffChunks = useMemo(() => {
         if (!suggestedCode) return [];
-        return computeDiffChunks(currentCode || '', suggestedCode);
-    }, [currentCode, suggestedCode]);
+        return computeDiffChunks(getLiveCurrentCode(), suggestedCode);
+    }, [getLiveCurrentCode, suggestedCode]);
 
     return {
         isLoading,

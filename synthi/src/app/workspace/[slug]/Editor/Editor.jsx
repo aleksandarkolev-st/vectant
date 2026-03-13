@@ -224,7 +224,7 @@ const EditorPanel = ({
 
     //Global state access djsaiodjasiodjasiodjasiodjaoidjasoidjsaiodjasiodjasjdnsaj
     const activeFile = useAppSelector(selectActiveFile);
-    const code = useAppSelector(selectCurrentContent);
+    const code = store.getState().workspace.currentContent;
     const isUnsaved = useAppSelector(selectIsUnsaved);
     const breadcrumb = useAppSelector(selectBreadcrumb);
     const fileCacheEntries = useAppSelector(selectFileCacheEntries);
@@ -2584,7 +2584,7 @@ const EditorPanel = ({
 
     useEffect(() => {
         latestCodeRef.current = code;
-    }, [code]);
+    }, []);
 
     // Update ref on every render to ensure it's always fresh for callbacks/effects
     // This prevents stale closures in effects that run before the useEffect above
@@ -2738,7 +2738,7 @@ const EditorPanel = ({
         // Trigger HMR/Compilation on save
         console.log('[Editor] Calling onSave prop with latest code');
         if (onSave) onSave(latestCodeRef.current ?? code);
-    }, [activeFile, dispatch, onSave, compilerClient, code, slug]);
+    }, [activeFile, dispatch, onSave, compilerClient, slug]);
 
     // ── Close-tab guard: prompt when a file has unsaved changes ──────
     // For the *active* file we check the live `isUnsaved` selector.
@@ -2774,7 +2774,7 @@ const EditorPanel = ({
             dispatch(saveFileContentThunk());
         }, 500);
         return () => clearTimeout(timer);
-    }, [autoSaveEnabled, activeFile, dispatch, code, savedContent, slug]);
+    }, [autoSaveEnabled, activeFile, dispatch, savedContent, slug]);
 
     // ── Pre-compile heal: sync fixed code back to the editor ──────────────
     // When page.jsx's handleSave fixes syntax issues before compilation,
@@ -3393,7 +3393,7 @@ const EditorPanel = ({
                 } catch (e) { }
             }
         }
-    }, [latestCompletion, editorInstance, code, activeLanguage]);
+    }, [latestCompletion, editorInstance, activeLanguage]);
 
     // --- Custom Scrollbar Logic ---
     const {

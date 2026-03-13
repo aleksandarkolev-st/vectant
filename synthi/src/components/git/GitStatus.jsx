@@ -1,5 +1,6 @@
-import React, { useEffect, useState, useCallback, useMemo, useRef } from 'react';
+import React, { useEffect, useState, useCallback, useMemo, useRef, memo } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
+import { Virtuoso } from 'react-virtuoso';
 import {
   fetchGitStatus, fetchRemote, commitChanges, pushChanges, pullChanges,
   stageFile, unstageFile, discardChange, initRepo, cloneRepo,
@@ -159,7 +160,7 @@ function TokenSecurityAlert({ remotes, onDismiss }) {
   );
 }
 
-export function GitStatus({ slug }) {
+function GitStatusInner({ slug }) {
   const dispatch = useDispatch();
   const {
     status, loading, error, actionError, actionErrorCode,
@@ -314,10 +315,10 @@ export function GitStatus({ slug }) {
     refreshGitData();
     const handleFocus = () => refreshGitData();
     window.addEventListener('focus', handleFocus);
-    const interval = setInterval(() => {
-      if (document.hasFocus()) dispatch(fetchGitStatus(slug));
-    }, 30000);
-    return () => { clearInterval(interval); window.removeEventListener('focus', handleFocus); };
+    // SSE-driven: the backend pushes 'git-status-changed' events via SSE.
+    // The page-level SSE subscriber dispatches forceRefreshGitStatus.
+    // Keep only window-focus refresh as a safety-net (no more 30s interval).
+    return () => { window.removeEventListener('focus', handleFocus); };
   }, [slug, dispatch, refreshGitData]);
 
   // ── handlers ───────────────────────────────────
@@ -1315,6 +1316,26 @@ export function GitStatus({ slug }) {
                     Unstage All
                   </button>
                 </div>
+                {staged.length > 30 ? (
+                  <Virtuoso
+                    data={staged}
+                    style={{ height: Math.min(staged.length * 32, 320) }}
+                    itemContent={(index, file) => (
+                      <div key={`staged-${file.path}`}
+                        className="flex items-center justify-between hover:bg-[#27272a] px-1.5 py-1 rounded group cursor-pointer transition-colors"
+                        onClick={() => handleFileClick(file)}>
+                        <div className="flex items-center gap-1.5 overflow-hidden min-w-0">
+                          <span className="w-3 text-center font-mono text-[10px] text-emerald-400 flex-shrink-0">{file.index}</span>
+                          <span className="truncate text-xs text-[#e4e4e7]" title={file.path}>{file.path}</span>
+                        </div>
+                        <button onClick={(e) => handleUnstage(e, file.path)}
+                          className="opacity-0 group-hover:opacity-100 hover:bg-[#3f3f46] p-0.5 rounded text-[#a1a1aa] hover:text-[#e4e4e7] transition-all flex-shrink-0" title="Unstage">
+                          <Minus className="w-3 h-3" strokeWidth={1.5} />
+                        </button>
+                      </div>
+                    )}
+                  />
+                ) : (
                 <ul className="space-y-0.5">
                   {staged.map(file => (
                     <li key={`staged-${file.path}`}
@@ -1331,6 +1352,7 @@ export function GitStatus({ slug }) {
                     </li>
                   ))}
                 </ul>
+                )}
               </SectionHeader>
             )}
 
@@ -1344,6 +1366,55 @@ export function GitStatus({ slug }) {
                     Stage All
                   </button>
                 </div>
+                {changes.length > 30 ? (
+                  <Virtuoso
+                    data={changes}
+                    style={{ height: Math.min(changes.length * 32, 320) }}
+                    itemContent={(index, file) => {
+                      const isUntracked = file.working_dir === '?';
+                      const showHunkStaging = hunkStagingFile === file.path;
+                      return (
+                        <div key={`changes-${file.path}`} className="space-y-0">
+                          <div
+                            className="flex items-center justify-between hover:bg-[#27272a] px-1.5 py-1 rounded group cursor-pointer transition-colors"
+                            onClick={() => handleFileClick(file)}>
+                            <div className="flex items-center gap-1.5 overflow-hidden min-w-0">
+                              <span className="w-3 text-center font-mono text-[10px] text-amber-400 flex-shrink-0">
+                                {isUntracked ? 'U' : 'M'}
+                              </span>
+                              <span className="truncate text-xs text-[#e4e4e7]" title={file.path}>{file.path}</span>
+                            </div>
+                            <div className="flex gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0">
+                              <button onClick={(e) => handleDiscard(e, file.path)}
+                                className="hover:bg-[#3f3f46] p-0.5 rounded text-[#a1a1aa] hover:text-[#e4e4e7]" title="Discard Changes">
+                                <Undo2 className="w-3 h-3" strokeWidth={1.5} />
+                              </button>
+                              {!isUntracked && (
+                                <button onClick={(e) => {
+                                  e.stopPropagation();
+                                  setHunkStagingFile(showHunkStaging ? null : file.path);
+                                }}
+                                  className={`hover:bg-[#3b82f6]/10 p-0.5 rounded transition-colors ${showHunkStaging ? 'text-[#3b82f6] bg-[#3b82f6]/10' : 'text-[#a1a1aa] hover:text-[#3b82f6]'}`}
+                                  title={showHunkStaging ? 'Close selective staging' : 'Stage selected lines'}>
+                                  <Edit3 className="w-3 h-3" strokeWidth={1.5} />
+                                </button>
+                              )}
+                              <button onClick={(e) => handleStage(e, file.path)}
+                                className="hover:bg-[#3f3f46] p-0.5 rounded text-[#a1a1aa] hover:text-[#e4e4e7]" title="Stage">
+                                <Plus className="w-3 h-3" strokeWidth={1.5} />
+                              </button>
+                            </div>
+                          </div>
+                          {showHunkStaging && (
+                            <div className="ml-4 mr-1 mt-0.5 mb-1 border border-[#27272a] rounded-md overflow-hidden">
+                              <HunkStagingView slug={slug} filePath={file.path} onClose={() => setHunkStagingFile(null)} />
+                            </div>
+                          )}
+                        </div>
+                      );
+                    }}
+                  />
+                ) : (
                 <ul className="space-y-0.5">
                   {changes.map(file => {
                     const isUntracked = file.working_dir === '?';
@@ -1367,7 +1438,6 @@ export function GitStatus({ slug }) {
                             {!isUntracked && (
                               <button onClick={(e) => {
                                 e.stopPropagation();
-                                // Toggle inline hunk staging view in the SCM panel
                                 setHunkStagingFile(showHunkStaging ? null : file.path);
                               }}
                                 className={`hover:bg-[#3b82f6]/10 p-0.5 rounded transition-colors ${showHunkStaging ? 'text-[#3b82f6] bg-[#3b82f6]/10' : 'text-[#a1a1aa] hover:text-[#3b82f6]'}`}
@@ -1381,7 +1451,6 @@ export function GitStatus({ slug }) {
                             </button>
                           </div>
                         </div>
-                        {/* Inline hunk staging view — React DOM, no Monaco dependency */}
                         {showHunkStaging && (
                           <div className="ml-4 mr-1 mt-0.5 mb-1 border border-[#27272a] rounded-md overflow-hidden">
                             <HunkStagingView
@@ -1395,6 +1464,7 @@ export function GitStatus({ slug }) {
                     );
                   })}
                 </ul>
+                )}
               </SectionHeader>
             )}
           </div>
@@ -1495,3 +1565,5 @@ export function GitStatus({ slug }) {
     </>
   );
 }
+
+export const GitStatus = memo(GitStatusInner);

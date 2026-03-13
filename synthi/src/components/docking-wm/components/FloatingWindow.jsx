@@ -9,7 +9,7 @@ import React, { useMemo, memo } from 'react';
 import { useSelector } from 'react-redux';
 import { selectTabs } from '../state/layout-slice';
 import { useFloatingWindow } from '../hooks/use-floating-window';
-import { useDocking } from '../hooks/use-docking';
+import { useDockingActions } from '../hooks/use-docking';
 import { useDragPanel } from '../hooks/use-drag-panel';
 import { PanelContainer } from './PanelContainer';
 import { PanelGrip } from './PanelGrip';
@@ -30,7 +30,7 @@ export const FloatingWindow = memo(function FloatingWindow({ floatingWindow }) {
   const { id, tabId, x, y, width, height, zIndex, isMinimized } = floatingWindow;
   const tabs = useSelector(selectTabs);
   const tab = tabs[tabId];
-  const { dockFloat, closeTab, registry } = useDocking();
+  const { dockFloat, closeTab, registry } = useDockingActions();
 
   const {
     isDragging,

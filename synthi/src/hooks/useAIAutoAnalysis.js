@@ -1,105 +1,61 @@
 // src/hooks/useAIAutoAnalysis.js
-// Auto-triggers AI analysis after the user stops typing for a configurable delay.
+// Auto-triggers AI analysis using SYNTAX-AWARE boundary detection.
 //
-// This makes the AI agent feel proactive — it detects issues in the
-// background without requiring the user to press a shortcut.
+// This replaces the old "dumb debounce" approach with intelligent keystroke
+// evaluation via useBoundaryTrigger:
+//
+//  • EAGER fire on semantic boundaries (\n, ;, }, ), etc.)
+//  • AGGRESSIVE abort on continuous alphanumeric typing (mid-word)
+//  • ABORT in-flight requests when user resumes typing
+//  • FALLBACK timer for max idle silence
+//
+// This makes the AI agent feel proactive — it detects issues at exactly the
+// right moments without spamming the backend during continuous typing.
 //
 // Usage:
 //   useAIAutoAnalysis({
 //     editorRef,
 //     analyzeCallback: aiHealing.analyze,
 //     enabled: true,
-//     debounceMs: 3000,  // 3 seconds after last keystroke
+//     fallbackMs: 3000,  // Max silence before forced analysis
+//     graceMs: 150,      // Delay after boundary char
 //   });
 
 import { useCallback, useEffect, useRef } from 'react';
+import { useBoundaryTrigger } from './useBoundaryTrigger';
 
 /**
  * @param {Object}  opts
  * @param {object}  opts.editorRef       – React ref to Monaco editor
  * @param {Function} opts.analyzeCallback – () => Promise — the analyze function to call
  * @param {boolean} [opts.enabled=true]  – master toggle
- * @param {number}  [opts.debounceMs=3000] – milliseconds to wait after last change
+ * @param {number}  [opts.debounceMs=3000] – (legacy) maps to fallbackMs
+ * @param {number}  [opts.graceMs=150]   – delay after boundary character
+ * @param {number}  [opts.fallbackMs]    – max silence before forced fire (defaults to debounceMs)
  * @param {number}  [opts.minContentLength=20] – skip analysis for tiny files
- * @param {boolean} [opts.skipWhileTyping=true] – reset timer on each keystroke
+ * @param {boolean} [opts.skipWhileTyping=true] – (legacy, always true with boundary trigger)
  */
 export function useAIAutoAnalysis({
   editorRef,
   analyzeCallback,
   enabled = true,
   debounceMs = 3000,
+  graceMs = 150,
+  fallbackMs,
   minContentLength = 20,
   skipWhileTyping = true,
 } = {}) {
-  const timerRef = useRef(null);
-  const runningRef = useRef(false);
-  const mountedRef = useRef(true);
+  // Use boundary trigger: fires eagerly on semantic boundaries,
+  // debounces aggressively during continuous typing
+  const { cancel, isRunning, abortInFlight } = useBoundaryTrigger({
+    editorRef,
+    analyzeCallback,
+    enabled,
+    graceMs,
+    fallbackMs: fallbackMs ?? debounceMs,
+    minContentLength,
+  });
 
-  useEffect(() => {
-    mountedRef.current = true;
-    return () => {
-      mountedRef.current = false;
-      if (timerRef.current) clearTimeout(timerRef.current);
-    };
-  }, []);
-
-  const scheduleAnalysis = useCallback(() => {
-    if (!enabled || !analyzeCallback) return;
-    if (runningRef.current) return;
-
-    // Clear previous timer
-    if (timerRef.current) clearTimeout(timerRef.current);
-
-    timerRef.current = setTimeout(async () => {
-      if (!mountedRef.current) return;
-      if (runningRef.current) return;
-
-      const editor = editorRef?.current;
-      if (!editor) return;
-
-      const model = editor.getModel();
-      if (!model) return;
-
-      const content = model.getValue();
-      if (!content || content.length < minContentLength) return;
-
-      try {
-        runningRef.current = true;
-        await analyzeCallback();
-      } catch {
-        // swallow — the analyze function handles its own errors
-      } finally {
-        runningRef.current = false;
-      }
-    }, debounceMs);
-  }, [enabled, analyzeCallback, editorRef, debounceMs, minContentLength]);
-
-  // Listen for editor content changes
-  useEffect(() => {
-    if (!enabled) return;
-
-    const editor = editorRef?.current;
-    if (!editor) return;
-
-    const model = editor.getModel();
-    if (!model) return;
-
-    const disposable = model.onDidChangeContent(() => {
-      if (skipWhileTyping) {
-        scheduleAnalysis();
-      }
-    });
-
-    return () => disposable?.dispose();
-  }, [enabled, editorRef, scheduleAnalysis, skipWhileTyping]);
-
-  // Public: cancel any pending auto-analysis
-  const cancel = useCallback(() => {
-    if (timerRef.current) {
-      clearTimeout(timerRef.current);
-      timerRef.current = null;
-    }
-  }, []);
-
-  return { cancel, isAutoRunning: runningRef.current };
+  return { cancel, isAutoRunning: isRunning };
 }
+

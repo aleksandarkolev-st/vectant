@@ -8,6 +8,9 @@ import sys
 import os
 import asyncio
 import logging
+from pathlib import Path
+
+from dotenv import load_dotenv
 
 # Configure logging for detailed debugging
 logging.basicConfig(
@@ -19,6 +22,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger('ai-engine')
 logger.setLevel(logging.INFO)
+
+AI_ENGINE_ROOT = Path(__file__).resolve().parent
+load_dotenv(AI_ENGINE_ROOT / '.env', override=False)
 
 # Also set up logging for proactive analyzer modules
 for module in ['analyzer.proactive', 'analyzer.proactive.semantic_analyzer', 'analyzer.proactive.orchestrator']:

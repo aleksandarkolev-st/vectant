@@ -1,12 +1,13 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useCallback, useMemo } from "react";
 import { useAppDispatch, useAppSelector } from "@/redux/hooks";
 import { selectFileThunk } from "@/redux/workspaceSlice";
 import { api } from "@/services/api";
 import { PanelLeftClose, PanelRightClose, ChevronDown, ChevronRight, Search } from "lucide-react";
 import { selectTreeOnRight } from "@/redux/uiSlice";
 import { perfMeasureToConsole } from "@/services/perfMarkers";
+import { Virtuoso } from 'react-virtuoso';
 
 const Section = ({ children, className = "" }) => (
   <div className={`mx-2 mb-2 rounded-lg border ${className}`} style={{ background: 'var(--bg-surface)', borderColor: 'var(--border-subtle)' }}>
@@ -181,8 +182,13 @@ export default function SearchView({ slug, onToggleOrientation }) {
         {results.length > 0 && (
           <Section className="pb-1">
             <SectionHead label="Results" count={results.length} />
-            <div className="pb-1">
-              {results.map((r) => {
+            {/* PERF: Virtualized result list — only renders visible file rows,
+                keeping DOM node count proportional to the viewport. */}
+            <Virtuoso
+              style={{ height: 'calc(100% - 40px)', minHeight: 120 }}
+              data={results}
+              overscan={100}
+              itemContent={(index, r) => {
                 const filePath = r.file.path;
                 const isOpen = expanded.has(filePath);
 
@@ -192,7 +198,6 @@ export default function SearchView({ slug, onToggleOrientation }) {
                       type="button"
                       onClick={() => toggleExpanded(filePath)}
                       className="w-full flex items-center gap-2 px-3 py-2 text-left transition-colors"
-                      style={{ ':hover': undefined }}
                       title={filePath}
                     >
                       {isOpen ? (
@@ -226,8 +231,8 @@ export default function SearchView({ slug, onToggleOrientation }) {
                     )}
                   </div>
                 );
-              })}
-            </div>
+              }}
+            />
           </Section>
         )}
       </div>
