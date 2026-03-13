@@ -987,11 +987,14 @@ export default function EditorPage({ params }) {
         // immediately and let the next unified analysis repopulate.
         if (isFileSwitch) {
             const currentNorm = normalizePath(currentFilePath);
-            setDiagnostics(prev => prev.filter(d => {
-                const diagPath = d?.filePath || d?.file || d?.path || '';
-                if (!diagPath) return true;
-                return normalizePath(diagPath) !== currentNorm;
-            }));
+            setDiagnostics(prev => {
+                const next = prev.filter(d => {
+                    const diagPath = d?.filePath || d?.file || d?.path || '';
+                    if (!diagPath) return true;
+                    return normalizePath(diagPath) !== currentNorm;
+                });
+                return next.length === prev.length ? prev : next;
+            });
 
             // Force a fresh analysis even if we previously analyzed the same hash.
             lastFastHashMapRef.current.delete(currentFilePath);
@@ -1026,7 +1029,7 @@ export default function EditorPage({ params }) {
             // until the next AI analysis result arrives.
             setDiagnostics(prev => {
                 const currentNorm = normalizePath(currentFilePath);
-                return prev.filter(d => {
+                const next = prev.filter(d => {
                     const diagPath = d.filePath || d.file || '';
                     if (!diagPath) return false;
                     const isSameFile = normalizePath(diagPath) === currentNorm;
@@ -1034,6 +1037,7 @@ export default function EditorPage({ params }) {
                     const isAi = d.tier === 'ai' || (d.source && String(d.source).toLowerCase().includes('ai'));
                     return isAi;
                 });
+                return next.length === prev.length ? prev : next;
             });
         }
 

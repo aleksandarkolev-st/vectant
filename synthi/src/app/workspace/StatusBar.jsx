@@ -21,6 +21,19 @@ import { HealingIndicator } from '@/components/healing/HealingIndicator';
  *       never blocks Monaco's critical rendering path. React will schedule
  *       StatusBar re-renders in a lower-priority lane.
  */
+
+const StatusBarCursorInfo = memo(function StatusBarCursorInfo() {
+  const positionRaw = useSelector(selectCursorPosition);
+  const position = useDeferredValue(positionRaw);
+  return (
+    <div className="flex items-center gap-1 px-2 py-0.5 rounded-md cursor-pointer transition-colors">
+      <span className="font-medium" style={{ color: 'var(--text-secondary)' }}>Ln {position.lineNumber}</span>
+      <span style={{ color: 'var(--text-dim)' }}>:</span>
+      <span className="font-medium" style={{ color: 'var(--text-secondary)' }}>Col {position.column}</span>
+    </div>
+  );
+});
+
 function StatusBarInner({ 
   slug,
   compilerStatus = 'disconnected',
@@ -33,8 +46,6 @@ function StatusBarInner({
   // PERF: Defer all Redux reads so StatusBar never blocks the editor
   const currentBranchRaw = useSelector(state => state.git?.currentBranch);
   const currentBranch = useDeferredValue(currentBranchRaw);
-  const positionRaw = useSelector(selectCursorPosition);
-  const position = useDeferredValue(positionRaw);
   const activeFileRaw = useSelector(selectActiveFile);
   const activeFile = useDeferredValue(activeFileRaw);
 
@@ -257,11 +268,7 @@ function StatusBarInner({
         )}
 
         {/* Line/Column - Clearer */}
-        <div className="flex items-center gap-1 px-2 py-0.5 rounded-md cursor-pointer transition-colors">
-          <span className="font-medium" style={{ color: 'var(--text-secondary)' }}>Ln {position.lineNumber}</span>
-          <span style={{ color: 'var(--text-dim)' }}>:</span>
-          <span className="font-medium" style={{ color: 'var(--text-secondary)' }}>Col {position.column}</span>
-        </div>
+        <StatusBarCursorInfo />
         
         <div className="w-px h-4" style={{ background: 'var(--border-subtle)' }}></div>
         
