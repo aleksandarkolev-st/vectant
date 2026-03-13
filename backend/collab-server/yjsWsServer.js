@@ -19,11 +19,14 @@ const messageAwareness = 1;
 /** @type {Map<string, { doc: Y.Doc, awareness: awarenessProtocol.Awareness, conns: Set<WebSocket> }>} */
 const rooms = new Map();
 
-function getRoom(docName) {
+function getRoom(docName, initialContent) {
   let room = rooms.get(docName);
   if (room) return room;
 
   const doc = new Y.Doc();
+  if (initialContent) {
+    doc.getText('monaco').insert(0, initialContent);
+  }
   const awareness = new awarenessProtocol.Awareness(doc);
 
   // Clean up when the last client disconnects
@@ -47,9 +50,10 @@ function getRoom(docName) {
  * Handle a new WebSocket connection for a Yjs document room.
  * @param {WebSocket} ws
  * @param {string} docName
+ * @param {string} [initialContent] - Optional content to seed newly created rooms from disk
  */
-function setupConnection(ws, docName) {
-  const room = getRoom(docName);
+function setupConnection(ws, docName, initialContent = null) {
+  const room = getRoom(docName, initialContent);
   room.conns.add(ws);
 
   ws.binaryType = 'arraybuffer';

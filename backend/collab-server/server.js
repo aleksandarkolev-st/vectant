@@ -2896,9 +2896,40 @@ server.on('upgrade', (request, socket, head) => {
   } else if (pathname.startsWith('yjs/')) {
     // Route to Yjs document sync WebSocket (y-websocket protocol)
     // Room name = everything after 'yjs/'
-    yjsWss.handleUpgrade(request, socket, head, (ws) => {
+    yjsWss.handleUpgrade(request, socket, head, async (ws) => {
       const docName = decodeURIComponent(pathname.slice(4));
-      yjsWsServer.setupConnection(ws, docName);
+      let initialContent = null;
+      let slug = null, userId = null;
+
+      try {
+        // Parse docName: workspace:${slug}:user:${userId}:${path}
+        const parts = docName.split(':');
+        if (parts.length >= 5 && parts[0] === 'workspace' && parts[2] === 'user') {
+           slug = parts[1];
+           userId = decodeURIComponent(parts[3]);
+           // Path starts at index 4, rejoin rest
+           const filePath = parts.slice(4).join(':');
+
+           // Acquire repo to ensure file exists on disk
+           const repoPath = await repoCache.acquire(slug, userId);
+           try {
+             // Handle both slash styles
+             const cleanPath = filePath.split('/').join(path.sep).split('\\').join(path.sep);
+             const fullPath = path.join(repoPath, cleanPath);
+             
+             // Check if file is inside the repo (security check)
+             if (fullPath.startsWith(repoPath) && fs.existsSync(fullPath) && (await fsPromises.stat(fullPath)).isFile()) {
+                initialContent = await fsPromises.readFile(fullPath, 'utf8');
+             }
+           } finally {
+             repoCache.release(slug, userId);
+           }
+        }
+      } catch (e) {
+        console.warn('[Collab] Failed to seed Yjs doc from disk', docName, e.message);
+      }
+
+      yjsWsServer.setupConnection(ws, docName, initialContent);
     });
   } else {
     // Unknown upgrade path — Y-Sweet handles CRDT WebSockets directly.
