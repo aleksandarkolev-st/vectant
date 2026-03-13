@@ -134,7 +134,7 @@ export default function EditorPage({ params }) {
     const [editor, setEditor] = useState(null);
     const editorRef = useRef(null); // Ref wrapper for editor state (used by useSelfHealing)
     // Track editor content version to force re-analysis on every change (including remote/undo)
-    const [editorVersion, setEditorVersion] = useState(0);
+    const triggerAnalysisRef = useRef(null);
     const gateway = useAnalyzerGateway();
     const { analyzeCode, analyzeProactive, analyzeContainer, analyzeUnified, lastResult, isAnalyzing: isAnalyzingGateway, connectionMeta } = gateway;
     const { client, compile, mediaStream, cancelMobileJob, isCompiling, status: compilerStatus } = useCompiler();
@@ -913,32 +913,38 @@ export default function EditorPage({ params }) {
     // Subscribe to editor changes to force re-analysis even for remote changes or undo/redo
     useEffect(() => {
         if (!activeFile || !hasLoadedInitialFile) return;
-
-        // The first file can be selected before the gateway WebSocket is ready;
-        // waiting for CONNECTED ensures we don't "miss" the initial analysis.
         if (!connectionMeta?.isConnected) return;
         if (!editor) return;
 
         const disposable = editor.onDidChangeModelContent(() => {
-            setEditorVersion(v => v + 1);
+            if (triggerAnalysisRef.current) triggerAnalysisRef.current();
         });
 
-        // Important: Monaco/Yjs may apply an initial sync update immediately after the editor instance
-        // is created, before we can attach onDidChangeModelContent. Force a short re-check to avoid
-        // analyzing an old snapshot and pinning diagnostics to the wrong lines.
-        setEditorVersion(v => v + 1);
+        if (triggerAnalysisRef.current) triggerAnalysisRef.current();
         const recheckTimer = setTimeout(() => {
-            setEditorVersion(v => v + 1);
+            if (triggerAnalysisRef.current) triggerAnalysisRef.current();
         }, 250);
 
         return () => {
             disposable.dispose();
             clearTimeout(recheckTimer);
         };
-    }, [editor]);
+    }, [editor, activeFile, hasLoadedInitialFile, connectionMeta?.isConnected]);
 
     useEffect(() => {
+        triggerAnalysisRef.current = () => {
         if (!activeFile || !hasLoadedInitialFile || !slug) return;
+        
+        // Clear timeouts exactly as we did before
+        if (proactiveTimeoutRef.current) {
+            clearTimeout(proactiveTimeoutRef.current);
+            proactiveTimeoutRef.current = null;
+        }
+        if (aiTimeoutRef.current) {
+            clearTimeout(aiTimeoutRef.current);
+            aiTimeoutRef.current = null;
+        }
+
 
         // Get content from Monaco if available, falling back to Redux
         // IMPORTANT: On initial load, Monaco might not have Y.js synced changes yet.
@@ -1533,29 +1539,8 @@ export default function EditorPage({ params }) {
             }
         }
 
-        return () => {
-            if (proactiveTimeoutRef.current) {
-                clearTimeout(proactiveTimeoutRef.current);
-                proactiveTimeoutRef.current = null;
-            }
-            if (aiTimeoutRef.current) {
-                clearTimeout(aiTimeoutRef.current);
-                aiTimeoutRef.current = null;
-            }
-        };
-    }, [
-        activeFile,
-        hasLoadedInitialFile,
-        connectionMeta?.isConnected,
-        analyzeProactive,
-        getRelatedFilesForAnalysis,
-        slug,
-        analyzeUnified,
-        computeContentHash,
-        editorVersion,
-        getLatestCurrentContent,
-        healFromDiagnostics,
-    ]);
+        }; // end of triggerAnalysisRef.current function
+    }); // Runs on every render without deps so it captures fresh scope!
 
 
     // Track focused file and content changes for workspace analysis
