@@ -2821,14 +2821,25 @@ class GitService {
             // Use raw show command to avoid simple-git parsing issues
             return await git.raw(['show', `${ref}:${gitPath}`]);
         } catch (e) {
-            console.error(`Error fetching content for ${ref}:${filePath}`, e.message);
+            // Fallback 1: try cat-file -p which is plumbing and might be more robust
             try {
-                // Fallback: try cat-file -p which is plumbing and might be more robust
                 let gitPath = filePath.replace(/\\/g, '/');
                 if (gitPath.startsWith('/')) gitPath = gitPath.substring(1);
                 return await git.raw(['cat-file', '-p', `${ref}:${gitPath}`]);
             } catch (e2) {
                 console.error(`Fallback cat-file failed for ${ref}:${filePath}`, e2.message);
+                
+                // Fallback 2: If we are asking for HEAD and the file exists on disk (untracked), return that.
+                if (ref === 'HEAD' || !ref) {
+                     try {
+                        const repoPath = this.getEffectiveRepoPath(slug, userId);
+                        const fullPath = path.join(repoPath, filePath);
+                        if (fs.existsSync(fullPath)) {
+                             console.log(`[GitService] Serving untracked content for ${filePath}`);
+                             return await fs.promises.readFile(fullPath, 'utf8');
+                        }
+                     } catch (e3) { /* ignore */ }
+                }
                 return '';
             }
         }
