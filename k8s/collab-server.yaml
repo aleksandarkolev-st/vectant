@@ -137,6 +137,12 @@ spec:
                   key: WORKER_IMAGE
             - name: IDLE_TIMEOUT_MS
               value: "600000"   # 10 min
+            - name: MAX_WORKSPACE_PODS
+              value: "50"
+            - name: POD_READY_TIMEOUT_MS
+              value: "120000"   # 2 min
+            - name: SPAWNER_CLEANUP_ON_SHUTDOWN
+              value: "false"
           volumeMounts:
             - name: collab-data
               mountPath: /data

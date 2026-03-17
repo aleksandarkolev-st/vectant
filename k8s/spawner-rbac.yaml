@@ -2,8 +2,9 @@
 #  Synthi IDE — RBAC for Workspace Spawner
 # ─────────────────────────────────────────────────────────────────────────────
 #  Grants the collab-server ServiceAccount permission to manage
-#  workspace Deployments in the synthi namespace. The spawner
-#  creates/patches/deletes Deployments named "workspace-*".
+#  workspace Deployments, watch Pods, and manage per-workspace Services
+#  in the synthi namespace. The spawner creates/patches/deletes
+#  Deployments named "workspace-*" and Services named "ws-svc-*".
 # ─────────────────────────────────────────────────────────────────────────────
 apiVersion: v1
 kind: ServiceAccount
@@ -13,6 +14,8 @@ metadata:
   labels:
     app: collab-server
     app.kubernetes.io/part-of: synthi-ide
+  annotations:
+    iam.gke.io/gcp-service-account: synthi-gcs-sa@overview-synti.iam.gserviceaccount.com
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
@@ -22,10 +25,18 @@ metadata:
   labels:
     app.kubernetes.io/part-of: synthi-ide
 rules:
-  # The spawner lists, creates, patches, and deletes Deployments.
+  # The spawner lists, creates, patches, deletes, and watches Deployments.
   - apiGroups: ["apps"]
     resources: ["deployments"]
-    verbs: ["get", "list", "create", "patch", "delete"]
+    verbs: ["get", "list", "create", "patch", "delete", "watch"]
+  # Watch pods to detect Running state and PodIP readiness.
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+  # Create/delete ClusterIP Services per workspace for health checks.
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["get", "list", "create", "delete"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

@@ -22,11 +22,14 @@
  *   1. Frontend opens a WebSocket for workspace X, user Y.
  *   2. Collab server calls spawner.ensurePod(sessionId, userId).
  *   3. Spawner creates a Deployment "workspace-<sessionId>" if none exists.
- *   4. Spawner annotates the Deployment with `synthi/lastActive = Date.now()`.
- *   5. On every heartbeat from the frontend, spawner.touch(sessionId) updates
- *      the annotation.
- *   6. A periodic culler deletes Deployments whose lastActive > IDLE_TIMEOUT.
- *   7. On signaling disconnect, spawner.teardown(sessionId) deletes immediately.
+ *   4. Spawner uses the Watch API to wait until the pod reaches Running
+ *      with a valid PodIP and all containers ready.
+ *   5. Spawner returns { name, created, podIP, podName } to the caller.
+ *   6. On every heartbeat from the frontend, spawner.touch(sessionId) updates
+ *      the lastActive annotation.
+ *   7. A periodic culler deletes Deployments whose lastActive > IDLE_TIMEOUT.
+ *   8. On signaling disconnect, spawner.teardown(sessionId) deletes immediately.
+ *   9. On SIGTERM, the spawner logs active sessions and optionally cleans up.
  */
 
 const k8s = require('@kubernetes/client-node');
@@ -38,6 +41,8 @@ const NAMESPACE = process.env.K8S_NAMESPACE || 'synthi';
 const WORKER_IMAGE = process.env.WORKER_IMAGE || 'REGISTRY/synthi-worker:latest';
 const IDLE_TIMEOUT_MS = Number(process.env.IDLE_TIMEOUT_MS) || 10 * 60 * 1000; // 10 min
 const CULL_INTERVAL_MS = Number(process.env.CULL_INTERVAL_MS) || 60 * 1000;    // 1 min
+const MAX_WORKSPACE_PODS = Number(process.env.MAX_WORKSPACE_PODS) || 50;
+const POD_READY_TIMEOUT_MS = Number(process.env.POD_READY_TIMEOUT_MS) || 120_000; // 2 min
 
 // ── K8s client ─────────────────────────────────────────────────────────────
 
@@ -51,6 +56,13 @@ if (process.env.KUBERNETES_SERVICE_HOST) {
 }
 
 const appsApi = kc.makeApiClient(k8s.AppsV1Api);
+const coreApi = kc.makeApiClient(k8s.CoreV1Api);
+const watcher = new k8s.Watch(kc);
+
+// ── Session tracking ──────────────────────────────────────────────────────
+
+/** Track sessions managed by this process instance. */
+const activeSessions = new Set();
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -63,6 +75,149 @@ function deploymentName(sessionId) {
   return `workspace-${safeName(sessionId)}`;
 }
 
+function serviceName(sessionId) {
+  return `ws-svc-${safeName(sessionId)}`;
+}
+
+// ── Watch API: Wait for pod readiness ─────────────────────────────────────
+
+/**
+ * Watch pods for a session until one reaches Running with a PodIP and all
+ * containers ready.  Returns { podIP, podName } or throws on timeout.
+ *
+ * @param {string} sessionId
+ * @returns {Promise<{podIP: string, podName: string}>}
+ */
+function waitForPodRunning(sessionId) {
+  return new Promise((resolve, reject) => {
+    const labelSelector = `synthi/session=${safeName(sessionId)}`;
+    const watchPath = `/api/v1/namespaces/${NAMESPACE}/pods`;
+    let resolved = false;
+    let watchReq = null;
+
+    const timer = setTimeout(() => {
+      if (!resolved) {
+        resolved = true;
+        if (watchReq) {
+          try { watchReq.destroy(); } catch (_) { /* ignore */ }
+        }
+        reject(new Error(`Pod for session ${sessionId} did not become Ready within ${POD_READY_TIMEOUT_MS}ms`));
+      }
+    }, POD_READY_TIMEOUT_MS);
+
+    watcher.watch(
+      watchPath,
+      { labelSelector },
+      (phase, pod) => {
+        if (resolved) return;
+
+        // Check for Running phase with a PodIP
+        if (pod?.status?.phase === 'Running' && pod?.status?.podIP) {
+          const containerStatuses = pod.status.containerStatuses || [];
+          const allReady = containerStatuses.length > 0 &&
+            containerStatuses.every(c => c.ready);
+
+          if (allReady) {
+            resolved = true;
+            clearTimeout(timer);
+            if (watchReq) {
+              try { watchReq.destroy(); } catch (_) { /* ignore */ }
+            }
+            resolve({ podIP: pod.status.podIP, podName: pod.metadata.name });
+          }
+        }
+      },
+      (err) => {
+        if (!resolved) {
+          resolved = true;
+          clearTimeout(timer);
+          reject(err || new Error('Watch stream closed unexpectedly'));
+        }
+      },
+    ).then(req => {
+      watchReq = req;
+    });
+  });
+}
+
+// ── Dynamic Service per workspace ─────────────────────────────────────────
+
+/**
+ * Create a ClusterIP Service pointing at the workspace pod.
+ * Idempotent — 409 Conflict means it already exists.
+ */
+async function ensureService(sessionId) {
+  const name = serviceName(sessionId);
+  const service = {
+    apiVersion: 'v1',
+    kind: 'Service',
+    metadata: {
+      name,
+      namespace: NAMESPACE,
+      labels: {
+        app: 'workspace',
+        'synthi/session': safeName(sessionId),
+        'app.kubernetes.io/managed-by': 'workspace-spawner',
+      },
+    },
+    spec: {
+      type: 'ClusterIP',
+      selector: {
+        app: 'workspace',
+        'synthi/session': safeName(sessionId),
+      },
+      ports: [
+        { name: 'health', port: 8080, targetPort: 8080 },
+      ],
+    },
+  };
+
+  try {
+    await coreApi.createNamespacedService(NAMESPACE, service);
+    console.log(`[Spawner] Created Service: ${name}`);
+  } catch (err) {
+    if (err.response?.statusCode === 409) {
+      // Already exists — fine
+    } else {
+      console.error(`[Spawner] Service creation failed for ${name}:`, err.message);
+    }
+  }
+}
+
+/**
+ * Delete the per-workspace Service.
+ */
+async function deleteService(sessionId) {
+  const name = serviceName(sessionId);
+  try {
+    await coreApi.deleteNamespacedService(name, NAMESPACE);
+  } catch (err) {
+    if (err.response?.statusCode !== 404) {
+      console.error(`[Spawner] Service deletion failed for ${name}:`, err.message);
+    }
+  }
+}
+
+// ── Max-pods guard ────────────────────────────────────────────────────────
+
+/**
+ * Count active spawner-managed workspace Deployments.
+ * @returns {Promise<number>}
+ */
+async function getActiveWorkspaceCount() {
+  try {
+    const { body } = await appsApi.listNamespacedDeployment(
+      NAMESPACE,
+      undefined, undefined, undefined, undefined,
+      'app.kubernetes.io/managed-by=workspace-spawner',
+    );
+    return body.items.length;
+  } catch (err) {
+    console.error('[Spawner] Failed to count workspaces:', err.message);
+    return activeSessions.size; // Fallback to local tracking
+  }
+}
+
 // ── Core API ───────────────────────────────────────────────────────────────
 
 /**
@@ -72,7 +227,7 @@ function deploymentName(sessionId) {
  *
  * @param {string} sessionId — Unique session identifier (workspace-slug + userId hash)
  * @param {string} userId    — Opaque user identifier for labelling
- * @returns {Promise<{name: string, created: boolean}>}
+ * @returns {Promise<{name: string, created: boolean, podIP: string|null, podName: string|null}>}
  */
 async function ensurePod(sessionId, userId) {
   const name = deploymentName(sessionId);
@@ -86,7 +241,8 @@ async function ensurePod(sessionId, userId) {
     await appsApi.patchNamespacedDeployment(name, NAMESPACE, existing, undefined, undefined, undefined, undefined, undefined, {
       headers: { 'Content-Type': 'application/strategic-merge-patch+json' },
     });
-    return { name, created: false };
+    activeSessions.add(sessionId);
+    return { name, created: false, podIP: null, podName: null };
   } catch (err) {
     if (err.response && err.response.statusCode === 404) {
       // Doesn't exist yet — fall through to creation.
@@ -95,7 +251,13 @@ async function ensurePod(sessionId, userId) {
     }
   }
 
-  // 2. Create the Deployment.
+  // 2. Max-pods guard.
+  const currentCount = await getActiveWorkspaceCount();
+  if (currentCount >= MAX_WORKSPACE_PODS) {
+    throw new Error(`Workspace limit reached (${MAX_WORKSPACE_PODS}). Try again later.`);
+  }
+
+  // 3. Create the Deployment.
   const deployment = {
     apiVersion: 'apps/v1',
     kind: 'Deployment',
@@ -189,14 +351,30 @@ async function ensurePod(sessionId, userId) {
   try {
     await appsApi.createNamespacedDeployment(NAMESPACE, deployment);
     console.log(`[Spawner] Created workspace pod: ${name} (session=${sessionId}, user=${userId})`);
-    return { name, created: true };
+    activeSessions.add(sessionId);
   } catch (err) {
     // Race condition: another request created it between our check and create.
     if (err.response && err.response.statusCode === 409) {
       console.log(`[Spawner] Deployment ${name} already exists (conflict), treating as success.`);
-      return { name, created: false };
+      activeSessions.add(sessionId);
+    } else {
+      throw err;
     }
-    throw err;
+  }
+
+  // 4. Create ClusterIP Service (non-fatal on failure).
+  await ensureService(sessionId);
+
+  // 5. Wait for pod to become Running with a PodIP.
+  try {
+    const { podIP, podName } = await waitForPodRunning(sessionId);
+    console.log(`[Spawner] Pod ${podName} is Running (IP=${podIP})`);
+    return { name, created: true, podIP, podName };
+  } catch (err) {
+    // Timeout: tear down the failed deployment to avoid ghost pods.
+    console.error(`[Spawner] Pod readiness timeout for ${name}, tearing down:`, err.message);
+    await teardown(sessionId);
+    throw new Error(`Workspace pod failed to start within ${POD_READY_TIMEOUT_MS / 1000}s`);
   }
 }
 
@@ -226,11 +404,17 @@ async function touch(sessionId) {
 }
 
 /**
- * Immediately delete the workspace Deployment for a session.
+ * Immediately delete the workspace Deployment and Service for a session.
  * Called when the signaling server reports both peers disconnected.
  */
 async function teardown(sessionId) {
   const name = deploymentName(sessionId);
+  activeSessions.delete(sessionId);
+
+  // Delete Service first (non-fatal).
+  await deleteService(sessionId);
+
+  // Delete Deployment.
   try {
     await appsApi.deleteNamespacedDeployment(name, NAMESPACE);
     console.log(`[Spawner] Deleted workspace pod: ${name}`);
@@ -264,6 +448,11 @@ async function cullIdleWorkspaces() {
         const depName = dep.metadata.name;
         const sid = dep.metadata.annotations?.['synthi/sessionId'] || '?';
         console.log(`[Culler] Deleting idle workspace ${depName} (session=${sid}, idle=${Math.round((now - lastActive) / 1000)}s)`);
+
+        // Delete the associated Service.
+        await deleteService(sid);
+        activeSessions.delete(sid);
+
         try {
           await appsApi.deleteNamespacedDeployment(depName, NAMESPACE);
         } catch (delErr) {
@@ -296,6 +485,38 @@ function stopCuller() {
     cullerInterval = null;
   }
 }
+
+// ── SIGTERM / SIGINT graceful shutdown ──────────────────────────────────────
+
+/**
+ * On process shutdown, log active sessions and optionally clean them up.
+ * By default, we do NOT teardown pods — the culler on the next instance
+ * startup will handle orphans.  Set SPAWNER_CLEANUP_ON_SHUTDOWN=true
+ * to force teardown of all tracked sessions.
+ */
+async function gracefulShutdown(signal) {
+  console.log(`[Spawner] Received ${signal}, ${activeSessions.size} active session(s).`);
+  stopCuller();
+
+  for (const sid of activeSessions) {
+    console.log(`[Spawner] Active session at shutdown: ${deploymentName(sid)} (session=${sid})`);
+  }
+
+  if (process.env.SPAWNER_CLEANUP_ON_SHUTDOWN === 'true') {
+    console.log('[Spawner] SPAWNER_CLEANUP_ON_SHUTDOWN=true, tearing down all sessions...');
+    const promises = [...activeSessions].map(sid =>
+      teardown(sid).catch(err =>
+        console.error(`[Spawner] Cleanup error for ${sid}:`, err.message)
+      )
+    );
+    await Promise.allSettled(promises);
+  }
+
+  console.log('[Spawner] Shutdown cleanup complete.');
+}
+
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 
 // ── HTTP handler for signaling disconnect webhook ──────────────────────────
 
@@ -348,4 +569,6 @@ module.exports = {
   startCuller,
   stopCuller,
   handleSessionEnded,
+  gracefulShutdown,
+  getActiveWorkspaceCount,
 };
