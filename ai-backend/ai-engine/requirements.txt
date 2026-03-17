@@ -1,9 +1,7 @@
-fastapi
-uvicorn
-google-generativeai
-#tree_sitter
-#tree_sitter_languages
-python-dotenv
-requests
-numpy
-tiktoken
+fastapi==0.115.6
+uvicorn==0.34.0
+google-generativeai==0.8.4
+python-dotenv==1.0.1
+requests==2.32.3
+numpy==1.26.4
+tiktoken==0.8.0
