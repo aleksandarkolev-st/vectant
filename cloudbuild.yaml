@@ -124,6 +124,17 @@ steps:
       - --cache-ttl=168h
     timeout: 1800s
 
+  # ── 7. Prisma Migration Image (lightweight, for K8s Job) ────────────────
+  - id: build-prisma-migrate
+    name: gcr.io/kaniko-project/executor:latest
+    args:
+      - --dockerfile=synthi/Dockerfile.migrate
+      - --context=dir:///workspace/synthi
+      - --destination=${_REGISTRY}/synthi-prisma-migrate:${SHORT_SHA}
+      - --destination=${_REGISTRY}/synthi-prisma-migrate:latest
+      - --cache=true
+      - --cache-ttl=168h
+
   # ═══════════════════════════════════════════════════════════════════════════
   # SCAN — Vulnerability scan on representative images
   # ═══════════════════════════════════════════════════════════════════════════
