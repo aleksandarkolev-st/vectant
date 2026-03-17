@@ -34,7 +34,7 @@ spec:
                 topologyKey: kubernetes.io/hostname
       containers:
         - name: gateway
-          image: REGISTRY/synthi-ai-gateway:latest  # TODO: replace REGISTRY
+          image: us-central1-docker.pkg.dev/overview-synti/synthi/synthi-ai-gateway:latest
           ports:
             - containerPort: 7070
               name: ws

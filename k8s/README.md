@@ -64,38 +64,40 @@ gcloud compute addresses describe synthi-ip --global
 
 ### Build & Push Images
 
-Replace `REGISTRY` with your Artifact Registry path (e.g., `us-docker.pkg.dev/overview-synti/synthi`).
+Replace `REGISTRY` with your Artifact Registry path (e.g., `us-central1-docker.pkg.dev/overview-synti/synthi`).
 
 ```bash
+REGISTRY=us-central1-docker.pkg.dev/overview-synti/synthi
+
 # Frontend
 cd synthi
-docker build -t REGISTRY/synthi-frontend:latest .
-docker push REGISTRY/synthi-frontend:latest
+docker build -t $REGISTRY/synthi-frontend:latest .
+docker push $REGISTRY/synthi-frontend:latest
 
 # Collab Server
 cd backend/collab-server
-docker build -t REGISTRY/synthi-collab-server:latest .
-docker push REGISTRY/synthi-collab-server:latest
+docker build -t $REGISTRY/synthi-collab-server:latest .
+docker push $REGISTRY/synthi-collab-server:latest
 
 # AI Engine
 cd ai-backend/ai-engine
-docker build -t REGISTRY/synthi-ai-engine:latest .
-docker push REGISTRY/synthi-ai-engine:latest
+docker build -t $REGISTRY/synthi-ai-engine:latest .
+docker push $REGISTRY/synthi-ai-engine:latest
 
 # AI Gateway
 cd ai-backend/gateway
-docker build -t REGISTRY/synthi-ai-gateway:latest .
-docker push REGISTRY/synthi-ai-gateway:latest
+docker build -t $REGISTRY/synthi-ai-gateway:latest .
+docker push $REGISTRY/synthi-ai-gateway:latest
 
 # Signaling Server
 cd backend/synthi-webrtc-compiler/signaling-server
-docker build -t REGISTRY/synthi-signaling-server:latest .
-docker push REGISTRY/synthi-signaling-server:latest
+docker build -t $REGISTRY/synthi-signaling-server:latest .
+docker push $REGISTRY/synthi-signaling-server:latest
 
 # Worker
 cd backend/synthi-webrtc-compiler/worker
-docker build -t REGISTRY/synthi-worker:latest .
-docker push REGISTRY/synthi-worker:latest
+docker build -t $REGISTRY/synthi-worker:latest .
+docker push $REGISTRY/synthi-worker:latest
 ```
 
 ### Configure Secrets
@@ -114,14 +116,41 @@ Search-and-replace `synthi.example.com` in:
 
 ### Configure Registry
 
-Search-and-replace `REGISTRY` in all Deployment manifests, or use Kustomize image overrides:
+Image references in all manifests default to `us-central1-docker.pkg.dev/overview-synti/synthi/`.
+To use a different registry, override via Kustomize:
 
 ```bash
 cd k8s
 kustomize edit set image \
-  REGISTRY/synthi-frontend=us-docker.pkg.dev/MY_PROJECT/synthi/frontend:v1.0 \
-  REGISTRY/synthi-collab-server=us-docker.pkg.dev/MY_PROJECT/synthi/collab-server:v1.0 \
+  us-central1-docker.pkg.dev/overview-synti/synthi/synthi-frontend=YOUR_REGISTRY/synthi-frontend:v1.0 \
+  us-central1-docker.pkg.dev/overview-synti/synthi/synthi-collab-server=YOUR_REGISTRY/synthi-collab-server:v1.0 \
   # ...etc
+```
+
+### CI/CD (Cloud Build)
+
+The project includes a `cloudbuild.yaml` at the repo root that automates build and deploy:
+
+```bash
+# One-time setup: create Artifact Registry
+gcloud artifacts repositories create synthi \
+  --repository-format=docker --location=us-central1 --project=overview-synti
+
+# Grant Cloud Build permissions
+PROJECT_NUM=$(gcloud projects describe overview-synti --format='value(projectNumber)')
+gcloud projects add-iam-policy-binding overview-synti \
+  --member="serviceAccount:${PROJECT_NUM}@cloudbuild.gserviceaccount.com" \
+  --role="roles/artifactregistry.writer"
+gcloud projects add-iam-policy-binding overview-synti \
+  --member="serviceAccount:${PROJECT_NUM}@cloudbuild.gserviceaccount.com" \
+  --role="roles/container.developer"
+
+# Create trigger (push to main)
+gcloud builds triggers create github \
+  --name="synthi-deploy-main" \
+  --repo-name="synthi-ide" --repo-owner="YOUR_ORG" \
+  --branch-pattern="^main$" --build-config="cloudbuild.yaml" \
+  --project=overview-synti
 ```
 
 ### Deploy

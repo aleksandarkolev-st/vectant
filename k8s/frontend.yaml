@@ -38,7 +38,7 @@ spec:
                 topologyKey: kubernetes.io/hostname
       containers:
         - name: nextjs
-          image: REGISTRY/synthi-frontend:latest  # TODO: replace REGISTRY
+          image: us-central1-docker.pkg.dev/overview-synti/synthi/synthi-frontend:latest
           ports:
             - containerPort: 3000
               name: http

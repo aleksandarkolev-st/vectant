@@ -53,7 +53,7 @@ spec:
       terminationGracePeriodSeconds: 15
       containers:
         - name: worker
-          image: REGISTRY/synthi-worker:latest  # TODO: replace REGISTRY
+          image: us-central1-docker.pkg.dev/overview-synti/synthi/synthi-worker:latest
           env:
             # ── Session identity ────────────────────────────────────────────
             # Unique per pod — maps to a signaling session slot.

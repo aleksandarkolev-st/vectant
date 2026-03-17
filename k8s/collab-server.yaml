@@ -34,7 +34,7 @@ spec:
       serviceAccountName: collab-server-sa
       containers:
         - name: collab
-          image: REGISTRY/synthi-collab-server:latest  # TODO: replace REGISTRY
+          image: us-central1-docker.pkg.dev/overview-synti/synthi/synthi-collab-server:latest
           ports:
             - containerPort: 1234
               name: http-ws

@@ -47,4 +47,4 @@ data:
   SYNTHI_LOG_LEVEL: "info"
   SYNTHI_ISOLATION_MODEL: "single_worker"
   # Worker container image (used by the dynamic spawner in collab-server).
-  WORKER_IMAGE: "REGISTRY/synthi-worker:latest"  # TODO: replace REGISTRY with Artifact Registry path
+  WORKER_IMAGE: "us-central1-docker.pkg.dev/overview-synti/synthi/synthi-worker:latest"
