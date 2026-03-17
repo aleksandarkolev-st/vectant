@@ -51,6 +51,22 @@ spec:
   connectionDraining:
     drainingTimeoutSec: 30
 
+---
+# ── FrontendConfig (HTTP → HTTPS 301 redirect) ────────────────────────────
+# Instead of blocking HTTP entirely (allow-http: "false"), this issues a
+# proper 301 redirect so browsers and crawlers follow HTTPS correctly.
+apiVersion: networking.gke.io/v1beta1
+kind: FrontendConfig
+metadata:
+  name: synthi-frontend-config
+  namespace: synthi
+  labels:
+    app.kubernetes.io/part-of: synthi-ide
+spec:
+  redirectToHttps:
+    enabled: true
+    responseCodeName: MOVED_PERMANENTLY_DEFAULT
+
 # ── Service annotations for BackendConfig binding ────────────────────────────
 # These patch the existing Services to reference the BackendConfigs above.
 # Apply AFTER the base service manifests.
@@ -140,8 +156,9 @@ metadata:
     kubernetes.io/ingress.class: "gce"
     kubernetes.io/ingress.global-static-ip-name: "synthi-ip"
     networking.gke.io/managed-certificates: "synthi-cert"
-    # Redirect HTTP → HTTPS
-    kubernetes.io/ingress.allow-http: "false"
+    # Allow HTTP so FrontendConfig can issue 301 redirect to HTTPS
+    kubernetes.io/ingress.allow-http: "true"
+    networking.gke.io/v1beta1.FrontendConfig: "synthi-frontend-config"
 spec:
   rules:
     - host: synthi.example.com   # TODO: replace with your domain
