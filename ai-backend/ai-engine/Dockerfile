@@ -23,6 +23,10 @@ RUN pip wheel --no-cache-dir --wheel-dir /build/wheels -r requirements.txt
 FROM python:3.10-slim
 WORKDIR /app
 
+# Prevent .pyc files and ensure real-time log output
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+
 # Install pre-built wheels — no compiler needed at runtime
 COPY --from=builder /build/wheels /tmp/wheels
 COPY --from=builder /build/requirements.txt .
