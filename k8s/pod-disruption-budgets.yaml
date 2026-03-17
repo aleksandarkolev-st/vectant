@@ -1,0 +1,72 @@
+# ─────────────────────────────────────────────────────────────────────────────
+#  Synthi IDE — PodDisruptionBudgets
+# ─────────────────────────────────────────────────────────────────────────────
+#  Ensure minimum availability during voluntary disruptions (node upgrades,
+#  cluster autoscaler scale-down, kubectl drain).
+#
+#  Services with HPA or multiple replicas get a PDB to guarantee at least
+#  one pod remains available during rolling operations.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Frontend (HPA: 2–8 replicas)
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: frontend-pdb
+  namespace: synthi
+  labels:
+    app: frontend
+    app.kubernetes.io/part-of: synthi-ide
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: frontend
+
+---
+# AI Gateway (HPA: 2–6 replicas)
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: ai-gateway-pdb
+  namespace: synthi
+  labels:
+    app: ai-gateway
+    app.kubernetes.io/part-of: synthi-ide
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: ai-gateway
+
+---
+# Signaling Server (2 replicas, stateless)
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: signaling-server-pdb
+  namespace: synthi
+  labels:
+    app: signaling-server
+    app.kubernetes.io/part-of: synthi-ide
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: signaling-server
+
+---
+# Y-Sweet (CRDT relay — needs at least 1 available)
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: y-sweet-pdb
+  namespace: synthi
+  labels:
+    app: y-sweet
+    app.kubernetes.io/part-of: synthi-ide
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: y-sweet

@@ -6,7 +6,7 @@
 #
 #  Or apply individually in dependency order:
 #    kubectl apply -f k8s/namespace.yaml
-#    kubectl apply -f k8s/secrets.yaml
+#    kubectl apply -f k8s/external-secrets.yaml
 #    kubectl apply -f k8s/configmap.yaml
 #    kubectl apply -f k8s/spawner-rbac.yaml
 #    kubectl apply -f k8s/postgres.yaml
@@ -18,6 +18,8 @@
 #    kubectl apply -f k8s/frontend.yaml
 #    kubectl apply -f k8s/worker.yaml
 #    kubectl apply -f k8s/ingress.yaml
+#    kubectl apply -f k8s/network-policies.yaml
+#    kubectl apply -f k8s/pod-disruption-budgets.yaml
 # ─────────────────────────────────────────────────────────────────────────────
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
@@ -27,7 +29,8 @@ namespace: synthi
 resources:
   # 1. Foundation
   - namespace.yaml
-  - secrets.yaml
+  # - secrets.yaml           # REPLACED by External Secrets Operator
+  - external-secrets.yaml    # SecretStore + ExternalSecret → auto-syncs synthi-secrets
   - configmap.yaml
   - spawner-rbac.yaml
 
@@ -48,6 +51,10 @@ resources:
 
   # 5. Ingress (depends on all services existing)
   - ingress.yaml
+
+  # 6. Production hardening
+  - network-policies.yaml
+  - pod-disruption-budgets.yaml
 
 commonLabels:
   app.kubernetes.io/managed-by: kustomize

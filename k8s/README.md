@@ -201,11 +201,11 @@ The collab server holds Yjs documents in memory and uses LevelDB on disk — it 
 3. **Accept single-replica** — adequate for most deployments; GCS is the durable store
 
 ### Production Hardening
-- [ ] Replace `secrets.yaml` with GCP Secret Manager + External Secrets Operator
-- [ ] Enable Workload Identity for GCS access (remove GCP_CLIENT_EMAIL/KEY)
+- [x] Replace `secrets.yaml` with GCP Secret Manager + External Secrets Operator
+- [x] Enable Workload Identity for GCS access (remove GCP_CLIENT_EMAIL/KEY)
 - [ ] Set up Cloud SQL instead of in-cluster PostgreSQL
 - [ ] Set up Memorystore instead of in-cluster Redis
-- [ ] Add NetworkPolicies to restrict pod-to-pod traffic
-- [ ] Add PodDisruptionBudgets for frontend, gateway, signaling
+- [x] Add NetworkPolicies to restrict pod-to-pod traffic
+- [x] Add PodDisruptionBudgets for frontend, gateway, signaling
 - [ ] Configure Cloud Armor WAF rules on the Ingress
 - [ ] Set up Cloud Monitoring alerts for pod restarts and error rates
