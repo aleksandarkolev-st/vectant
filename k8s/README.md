@@ -114,6 +114,30 @@ Search-and-replace `synthi.example.com` in:
 - `k8s/configmap.yaml` — public URLs
 - `k8s/ingress.yaml` — Ingress host + ManagedCertificate
 
+### Configure DNS
+
+After reserving the static IP and deploying the Ingress, set up DNS:
+
+```bash
+# Get the static IP address
+gcloud compute addresses describe synthi-ip --global --format='value(address)'
+```
+
+Create a DNS A record pointing your domain to this IP:
+
+| Type | Name | Value | TTL |
+|------|------|-------|-----|
+| A | synthi.example.com | *(output of above command)* | 300 |
+
+**ManagedCertificate provisioning:**
+- GCP will **not** provision the SSL certificate until DNS resolves to the static IP
+- Certificate provisioning takes 10–60 minutes after DNS propagation
+- Check status: `kubectl describe managedcertificate synthi-cert -n synthi`
+- Status transitions: `Provisioning` → `Active`
+
+**HTTP to HTTPS redirect:**
+The Ingress uses a `FrontendConfig` to redirect all HTTP traffic to HTTPS with a 301 status code. No additional configuration needed.
+
 ### Configure Registry
 
 Image references in all manifests default to `us-central1-docker.pkg.dev/overview-synti/synthi/`.
@@ -159,8 +183,11 @@ gcloud builds triggers create github \
 # Apply everything in dependency order
 kubectl apply -k k8s/
 
-# Run Prisma migrations (one-time)
-kubectl exec -n synthi deploy/frontend -- npx prisma migrate deploy
+# Run Prisma migrations (via dedicated Job with Cloud SQL Auth Proxy)
+kubectl delete job prisma-migrate -n synthi --ignore-not-found
+kubectl apply -f k8s/prisma-migrate-job.yaml
+kubectl wait --for=condition=complete job/prisma-migrate -n synthi --timeout=120s
+kubectl logs job/prisma-migrate -n synthi -c migrate
 
 # Verify
 kubectl get pods -n synthi
@@ -207,5 +234,7 @@ The collab server holds Yjs documents in memory and uses LevelDB on disk — it 
 - [ ] Set up Memorystore instead of in-cluster Redis
 - [x] Add NetworkPolicies to restrict pod-to-pod traffic
 - [x] Add PodDisruptionBudgets for frontend, gateway, signaling
+- [x] HTTP → HTTPS 301 redirect via FrontendConfig
+- [x] Prisma migration Job with Cloud SQL Auth Proxy sidecar
 - [ ] Configure Cloud Armor WAF rules on the Ingress
 - [ ] Set up Cloud Monitoring alerts for pod restarts and error rates
