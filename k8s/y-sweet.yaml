@@ -27,9 +27,11 @@ spec:
       labels:
         app: y-sweet
     spec:
+      securityContext:
+        runAsNonRoot: true
       containers:
         - name: y-sweet
-          image: ghcr.io/jamsocket/y-sweet:latest   # pin a tag in prod
+          image: ghcr.io/jamsocket/y-sweet:0.9.1
           args:
             - serve
             - --host=0.0.0.0

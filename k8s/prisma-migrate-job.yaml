@@ -37,6 +37,8 @@ spec:
       labels:
         app: prisma-migrate
     spec:
+      securityContext:
+        runAsNonRoot: true
       restartPolicy: Never
       containers:
         # ── Migration runner ────────────────────────────────────────────────

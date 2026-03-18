@@ -22,6 +22,8 @@ spec:
       labels:
         app: signaling-server
     spec:
+      securityContext:
+        runAsNonRoot: true
       affinity:
         podAntiAffinity:
           preferredDuringSchedulingIgnoredDuringExecution:
@@ -73,6 +75,8 @@ metadata:
   labels:
     app: signaling-server
     app.kubernetes.io/part-of: synthi-ide
+  annotations:
+    cloud.google.com/backend-config: '{"default": "ws-backend-config"}'
 spec:
   selector:
     app: signaling-server

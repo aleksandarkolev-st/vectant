@@ -27,6 +27,8 @@ spec:
       labels:
         app: frontend
     spec:
+      securityContext:
+        runAsNonRoot: true
       affinity:
         podAntiAffinity:
           preferredDuringSchedulingIgnoredDuringExecution:
@@ -153,6 +155,8 @@ metadata:
   labels:
     app: frontend
     app.kubernetes.io/part-of: synthi-ide
+  annotations:
+    cloud.google.com/backend-config: '{"default": "http-backend-config"}'
 spec:
   selector:
     app: frontend

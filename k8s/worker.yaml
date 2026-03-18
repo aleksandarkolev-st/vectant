@@ -39,6 +39,8 @@ spec:
       labels:
         app: worker
     spec:
+      securityContext:
+        runAsNonRoot: true
       # Spread workers across nodes for resilience and resource isolation.
       affinity:
         podAntiAffinity:

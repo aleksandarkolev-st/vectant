@@ -31,6 +31,8 @@ spec:
       labels:
         app: collab-server
     spec:
+      securityContext:
+        runAsNonRoot: true
       serviceAccountName: collab-server-sa
       containers:
         - name: collab
@@ -216,6 +218,8 @@ metadata:
   labels:
     app: collab-server
     app.kubernetes.io/part-of: synthi-ide
+  annotations:
+    cloud.google.com/backend-config: '{"default": "ws-backend-config"}'
 spec:
   selector:
     app: collab-server

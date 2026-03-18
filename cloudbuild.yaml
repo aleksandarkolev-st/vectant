@@ -54,6 +54,7 @@ steps:
 
   # ── 1. Frontend (Next.js) ────────────────────────────────────────────────
   - id: build-frontend
+    waitFor: ['-']
     name: gcr.io/kaniko-project/executor:latest
     args:
       - --dockerfile=synthi/Dockerfile
@@ -70,6 +71,7 @@ steps:
 
   # ── 2. Collab Server (Node.js) ──────────────────────────────────────────
   - id: build-collab-server
+    waitFor: ['-']
     name: gcr.io/kaniko-project/executor:latest
     args:
       - --dockerfile=backend/collab-server/Dockerfile
@@ -81,6 +83,7 @@ steps:
 
   # ── 3. AI Engine (Python FastAPI) ───────────────────────────────────────
   - id: build-ai-engine
+    waitFor: ['-']
     name: gcr.io/kaniko-project/executor:latest
     args:
       - --dockerfile=ai-backend/ai-engine/Dockerfile
@@ -92,6 +95,7 @@ steps:
 
   # ── 4. AI Gateway (Node.js WS proxy) ───────────────────────────────────
   - id: build-ai-gateway
+    waitFor: ['-']
     name: gcr.io/kaniko-project/executor:latest
     args:
       - --dockerfile=ai-backend/gateway/Dockerfile
@@ -103,6 +107,7 @@ steps:
 
   # ── 5. Signaling Server (Rust) ─────────────────────────────────────────
   - id: build-signaling
+    waitFor: ['-']
     name: gcr.io/kaniko-project/executor:latest
     args:
       - --dockerfile=backend/synthi-webrtc-compiler/signaling-server/Dockerfile
@@ -114,6 +119,7 @@ steps:
 
   # ── 6. Worker (Rust + GStreamer — large image, extended timeout) ────────
   - id: build-worker
+    waitFor: ['-']
     name: gcr.io/kaniko-project/executor:latest
     args:
       - --dockerfile=backend/synthi-webrtc-compiler/worker/Dockerfile
@@ -126,6 +132,7 @@ steps:
 
   # ── 7. Prisma Migration Image (lightweight, for K8s Job) ────────────────
   - id: build-prisma-migrate
+    waitFor: ['-']
     name: gcr.io/kaniko-project/executor:latest
     args:
       - --dockerfile=synthi/Dockerfile.migrate

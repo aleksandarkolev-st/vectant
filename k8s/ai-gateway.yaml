@@ -23,6 +23,8 @@ spec:
       labels:
         app: ai-gateway
     spec:
+      securityContext:
+        runAsNonRoot: true
       affinity:
         podAntiAffinity:
           preferredDuringSchedulingIgnoredDuringExecution:
@@ -77,6 +79,8 @@ metadata:
   labels:
     app: ai-gateway
     app.kubernetes.io/part-of: synthi-ide
+  annotations:
+    cloud.google.com/backend-config: '{"default": "ws-backend-config"}'
 spec:
   selector:
     app: ai-gateway

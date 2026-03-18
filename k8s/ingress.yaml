@@ -67,83 +67,10 @@ spec:
     enabled: true
     responseCodeName: MOVED_PERMANENTLY_DEFAULT
 
-# ── Service annotations for BackendConfig binding ────────────────────────────
-# These patch the existing Services to reference the BackendConfigs above.
-# Apply AFTER the base service manifests.
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: frontend
-  namespace: synthi
-  labels:
-    app: frontend
-    app.kubernetes.io/part-of: synthi-ide
-  annotations:
-    cloud.google.com/backend-config: '{"default": "http-backend-config"}'
-spec:
-  selector:
-    app: frontend
-  ports:
-    - port: 3000
-      targetPort: 3000
-      name: http
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: collab-server
-  namespace: synthi
-  labels:
-    app: collab-server
-    app.kubernetes.io/part-of: synthi-ide
-  annotations:
-    cloud.google.com/backend-config: '{"default": "ws-backend-config"}'
-spec:
-  selector:
-    app: collab-server
-  ports:
-    - port: 1234
-      targetPort: 1234
-      name: http-ws
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: signaling-server
-  namespace: synthi
-  labels:
-    app: signaling-server
-    app.kubernetes.io/part-of: synthi-ide
-  annotations:
-    cloud.google.com/backend-config: '{"default": "ws-backend-config"}'
-spec:
-  selector:
-    app: signaling-server
-  ports:
-    - port: 9000
-      targetPort: 9000
-      name: ws
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: ai-gateway
-  namespace: synthi
-  labels:
-    app: ai-gateway
-    app.kubernetes.io/part-of: synthi-ide
-  annotations:
-    cloud.google.com/backend-config: '{"default": "ws-backend-config"}'
-spec:
-  selector:
-    app: ai-gateway
-  ports:
-    - port: 7070
-      targetPort: 7070
-      name: ws
-
 # ── Ingress ──────────────────────────────────────────────────────────────────
+# NOTE: BackendConfig annotations are defined on the Services in their own
+# manifests (frontend.yaml, collab-server.yaml, signaling-server.yaml,
+# ai-gateway.yaml) — NOT duplicated here.
 ---
 apiVersion: networking.k8s.io/v1
 kind: Ingress
