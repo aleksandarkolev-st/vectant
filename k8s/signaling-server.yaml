@@ -35,7 +35,7 @@ spec:
                 topologyKey: kubernetes.io/hostname
       containers:
         - name: signaling
-          image: us-central1-docker.pkg.dev/overview-synti/synthi/synthi-signaling-server:latest
+          image: europe-west10-docker.pkg.dev/overview-synti/synthi/synthi-signaling-server:latest
           ports:
             - containerPort: 9000
               name: ws

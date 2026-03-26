@@ -5,14 +5,14 @@
 #  Steps:  Build (Kaniko, parallel) → Vulnerability Scan → Deploy (kubectl)
 #
 #  Substitutions (override via trigger config or --substitutions):
-#    _REGION:       Artifact Registry + GKE region    (default: us-central1)
+#    _REGION:       Artifact Registry + GKE region    (default: europe-west10)
 #    _GKE_CLUSTER:  GKE cluster name
 #    _GKE_ZONE:     GKE cluster zone / location
 #
 #  Prerequisites:
 #    1. Artifact Registry repo:
 #         gcloud artifacts repositories create synthi \
-#           --repository-format=docker --location=us-central1
+#           --repository-format=docker --location=europe-west10
 #    2. IAM for Cloud Build service account:
 #         roles/artifactregistry.writer
 #         roles/container.developer
@@ -25,9 +25,9 @@
 # ─────────────────────────────────────────────────────────────────────────────
 
 substitutions:
-  _REGION: us-central1
+  _REGION: europe-west10
   _GKE_CLUSTER: synthi-cluster
-  _GKE_ZONE: us-central1-a
+  _GKE_ZONE: europe-west10-a
   _REGISTRY: ${_REGION}-docker.pkg.dev/${PROJECT_ID}/synthi
 
   # NEXT_PUBLIC_* build args baked into the frontend client bundle.

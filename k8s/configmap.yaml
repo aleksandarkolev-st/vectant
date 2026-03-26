@@ -15,7 +15,7 @@ data:
   GCS_WORKSPACE_PREFIX: "workspaces"
   # Cloud SQL instance connection name (used by the Auth Proxy sidecar).
   # Format: PROJECT_ID:REGION:INSTANCE_NAME
-  CLOUD_SQL_INSTANCE: "overview-synti:europe-west10:synthi-dev"  # TODO: replace REGION and INSTANCE_NAME
+  CLOUD_SQL_INSTANCE: "overview-synti:europe-west10:synthi-dev" 
   # ── Networking (cluster-internal URLs) ──────────────────────────────────────
   # These use Kubernetes DNS: <service>.<namespace>.svc.cluster.local
   COLLAB_SERVER_URL: "http://collab-server.synthi.svc.cluster.local:1234"
@@ -26,16 +26,16 @@ data:
   REDIS_URL: "redis://redis.synthi.svc.cluster.local:6379"
 
   # ── Public URLs (replace with your domain) ──────────────────────────────────
-  NEXTAUTH_URL: "https://synthi.example.com"
-  CORS_ORIGIN: "https://synthi.example.com"
+  NEXTAUTH_URL: "https://beta.synthi.app"
+  CORS_ORIGIN: "https://beta.synthi.app"
 
   # ── Next.js public env (baked into client bundle at build time) ─────────────
   # These MUST be set at `next build` time, not just runtime.
-  NEXT_PUBLIC_COLLAB_SERVER_URL: "https://synthi.example.com/collab"
-  NEXT_PUBLIC_YSWEET_URL: "https://synthi.example.com/ysweet"
+  NEXT_PUBLIC_COLLAB_SERVER_URL: "https://beta.synthi.app/collab"
+  NEXT_PUBLIC_YSWEET_URL: "https://beta.synthi.app/ysweet"
   NEXT_PUBLIC_COLLAB_PORT: "443"
-  NEXT_PUBLIC_COMPILE_SIGNAL_URL: "wss://synthi.example.com/signal"
-  NEXT_PUBLIC_GATEWAY_WS_URL: "wss://synthi.example.com/gateway/ws"
+  NEXT_PUBLIC_COMPILE_SIGNAL_URL: "wss://beta.synthi.app/signal"
+  NEXT_PUBLIC_GATEWAY_WS_URL: "wss://beta.synthi.app/gateway/ws"
 
   # ── Feature flags ──────────────────────────────────────────────────────────
   GCS_SYNC_ON_FLUSH: "true"
@@ -47,4 +47,4 @@ data:
   SYNTHI_LOG_LEVEL: "info"
   SYNTHI_ISOLATION_MODEL: "single_worker"
   # Worker container image (used by the dynamic spawner in collab-server).
-  WORKER_IMAGE: "us-central1-docker.pkg.dev/overview-synti/synthi/synthi-worker:latest"
+  WORKER_IMAGE: "europe-west10-docker.pkg.dev/overview-synti/synthi/synthi-worker:latest"

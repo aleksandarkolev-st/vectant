@@ -24,7 +24,7 @@ metadata:
   namespace: synthi
 spec:
   domains:
-    - synthi.example.com   # TODO: replace with your domain
+    - beta.synthi.app   # TODO: replace with your domain
 
 # ── BackendConfigs (WebSocket timeout) ───────────────────────────────────────
 # GCE default timeout is 30s which kills WebSocket connections.
@@ -39,6 +39,10 @@ spec:
   timeoutSec: 3600           # 1 hour — keeps WS connections alive
   connectionDraining:
     drainingTimeoutSec: 60
+  iap:
+    enabled: true
+    oauthclientCredentials:
+      secretName: iap-oauth-secret
 
 ---
 apiVersion: cloud.google.com/v1
@@ -50,6 +54,10 @@ spec:
   timeoutSec: 300             # 5 min — generous for SSR / API routes
   connectionDraining:
     drainingTimeoutSec: 30
+  iap:
+    enabled: true
+    oauthclientCredentials:
+      secretName: iap-oauth-secret
 
 ---
 # ── FrontendConfig (HTTP → HTTPS 301 redirect) ────────────────────────────
@@ -88,7 +96,7 @@ metadata:
     networking.gke.io/v1beta1.FrontendConfig: "synthi-frontend-config"
 spec:
   rules:
-    - host: synthi.example.com   # TODO: replace with your domain
+    - host: beta.synthi.app   # TODO: replace with your domain
       http:
         paths:
           # ── Frontend (default) ────────────────────────────────────────────

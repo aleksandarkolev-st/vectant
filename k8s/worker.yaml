@@ -55,7 +55,7 @@ spec:
       terminationGracePeriodSeconds: 15
       containers:
         - name: worker
-          image: us-central1-docker.pkg.dev/overview-synti/synthi/synthi-worker:latest
+          image: europe-west10-docker.pkg.dev/overview-synti/synthi/synthi-worker:latest
           env:
             # ── Session identity ────────────────────────────────────────────
             # Unique per pod — maps to a signaling session slot.

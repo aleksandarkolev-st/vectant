@@ -26,7 +26,7 @@ spec:
         runAsNonRoot: true
       containers:
         - name: ai-engine
-          image: us-central1-docker.pkg.dev/overview-synti/synthi/synthi-ai-engine:latest
+          image: europe-west10-docker.pkg.dev/overview-synti/synthi/synthi-ai-engine:latest
           ports:
             - containerPort: 8000
               name: http

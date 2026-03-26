@@ -43,7 +43,7 @@ spec:
       containers:
         # ── Migration runner ────────────────────────────────────────────────
         - name: migrate
-          image: us-central1-docker.pkg.dev/overview-synti/synthi/synthi-prisma-migrate:latest
+          image: europe-west10-docker.pkg.dev/overview-synti/synthi/synthi-prisma-migrate:latest
           command: ["/bin/sh", "-c"]
           args:
             - |

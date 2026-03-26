@@ -40,7 +40,7 @@ spec:
                 topologyKey: kubernetes.io/hostname
       containers:
         - name: nextjs
-          image: us-central1-docker.pkg.dev/overview-synti/synthi/synthi-frontend:latest
+          image: europe-west10-docker.pkg.dev/overview-synti/synthi/synthi-frontend:latest
           ports:
             - containerPort: 3000
               name: http
