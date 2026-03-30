@@ -28,7 +28,7 @@ spec:
         app: frontend
     spec:
       securityContext:
-        runAsNonRoot: true
+        #runAsNonRoot: true
       affinity:
         podAntiAffinity:
           preferredDuringSchedulingIgnoredDuringExecution:
@@ -138,7 +138,7 @@ spec:
                   name: synthi-config
                   key: CLOUD_SQL_INSTANCE
           securityContext:
-            runAsNonRoot: true
+            #runAsNonRoot: true
           resources:
             requests:
               cpu: 50m

@@ -150,7 +150,7 @@ class RetrievalController:
         self.default_module_budget = ModuleBudget()
 
     def _is_blocked_path(self, file_path: str) -> bool:
-        normalized = f"/{file_path.replace('\\', '/').lstrip('/')}"
+        normalized = '/' + file_path.replace('\\', '/').lstrip('/')
         return any(marker in normalized for marker in self._blocked_path_markers)
     
     def decide(

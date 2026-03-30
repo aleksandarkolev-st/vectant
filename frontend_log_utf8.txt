@@ -1,0 +1,25 @@
+﻿python.exe : Creating temporary archive of 416 file(s) totalling 5.7 MiB 
+before compression.
+At C:\Program Files (x86)\Google\Cloud SDK\google-cloud-sdk\bin\gcloud.ps1:114 
+char:3
++   & "$cloudsdk_python" $run_args_array
++   ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (Creating tempor...re compression. 
+   :String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+Some files were not included in the source upload.
+
+Check the gcloud log 
+[C:\Users\HP\AppData\Roaming\gcloud\logs\2026.03.30\13.44.41.716855.log] to 
+see which files and the contents of the
+default gcloudignore file used (see `$ gcloud topic gcloudignore` to learn
+more).
+
+Uploading tarball of [./synthi] to [gs://overview-synti_cloudbuild/source/17748
+67482.023054-6639583379df4b4bae9e09d111b307b5.tgz]
+Created [https://cloudbuild.googleapis.com/v1/projects/overview-synti/locations
+/global/builds/936f3e09-b3bf-4309-bbb9-8c550f9a294b].
+Logs are available at [ https://console.cloud.google.com/cloud-build/builds/936
+f3e09-b3bf-4309-bbb9-8c550f9a294b?project=767721372193 ].
+Waiting for build to complete. Polling interval: 1 second(s).

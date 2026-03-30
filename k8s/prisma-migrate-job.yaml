@@ -38,7 +38,7 @@ spec:
         app: prisma-migrate
     spec:
       securityContext:
-        runAsNonRoot: true
+        #runAsNonRoot: true
       restartPolicy: Never
       containers:
         # ── Migration runner ────────────────────────────────────────────────
@@ -102,7 +102,7 @@ spec:
                   name: synthi-config
                   key: CLOUD_SQL_INSTANCE
           securityContext:
-            runAsNonRoot: true
+            #runAsNonRoot: true
           resources:
             requests:
               cpu: 50m

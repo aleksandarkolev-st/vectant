@@ -12,7 +12,7 @@
 # ─────────────────────────────────────────────────────────────────────────────
 
 # ── Stage 1: Rust build ─────────────────────────────────────────────────────
-FROM rust:1.75-bookworm AS builder
+FROM rust:1.88-bookworm AS builder
 
 WORKDIR /build
 
@@ -22,7 +22,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libgstreamer1.0-dev \
     libgstreamer-plugins-base1.0-dev \
     libx11-dev libxcb1-dev \
-    protobuf-compiler \
+    libsdl2-dev \
+    clang libclang-dev llvm-dev \
+    protobuf-compiler libprotobuf-dev \
     pkg-config \
     cmake \
     && rm -rf /var/lib/apt/lists/*

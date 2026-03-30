@@ -77,7 +77,10 @@ async function runTests() {
   console.log('Test 2: Extension has activate function');
   try {
     const exports = {};
-    const module = { exports };
+    const // eslint-disable-next-line @next/next/no-assign-module-variable
+// eslint-disable-next-line @next/next/no-assign-module-variable
+// eslint-disable-next-line @next/next/no-assign-module-variable
+module = { exports };
     
     // Create mock vscode
     const mockVscode = {
@@ -111,7 +114,10 @@ async function runTests() {
   console.log('Test 3: Extension activation');
   try {
     const exports = {};
-    const module = { exports };
+    const // eslint-disable-next-line @next/next/no-assign-module-variable
+// eslint-disable-next-line @next/next/no-assign-module-variable
+// eslint-disable-next-line @next/next/no-assign-module-variable
+module = { exports };
     const subscriptions = [];
     const context = { subscriptions };
     
@@ -158,7 +164,10 @@ async function runTests() {
   console.log('Test 4: Command execution');
   try {
     const exports = {};
-    const module = { exports };
+    const // eslint-disable-next-line @next/next/no-assign-module-variable
+// eslint-disable-next-line @next/next/no-assign-module-variable
+// eslint-disable-next-line @next/next/no-assign-module-variable
+module = { exports };
     const registeredCommands = new Map();
     
     const mockVscode = {

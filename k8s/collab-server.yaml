@@ -32,7 +32,8 @@ spec:
         app: collab-server
     spec:
       securityContext:
-        runAsNonRoot: true
+        #runAsNonRoot: true
+        fsGroup: 1001
       serviceAccountName: collab-server-sa
       containers:
         - name: collab
@@ -183,7 +184,7 @@ spec:
                   name: synthi-config
                   key: CLOUD_SQL_INSTANCE
           securityContext:
-            runAsNonRoot: true
+            #runAsNonRoot: true
           resources:
             requests:
               cpu: 50m

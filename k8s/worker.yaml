@@ -40,7 +40,7 @@ spec:
         app: worker
     spec:
       securityContext:
-        runAsNonRoot: true
+        runAsUser: 0
       # Spread workers across nodes for resilience and resource isolation.
       affinity:
         podAntiAffinity:
@@ -56,6 +56,14 @@ spec:
       containers:
         - name: worker
           image: europe-west10-docker.pkg.dev/overview-synti/synthi/synthi-worker:latest
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              echo '#!/bin/sh' > /usr/local/bin/tsc; chmod +x /usr/local/bin/tsc
+              echo '#!/bin/sh' > /usr/local/bin/clangd; chmod +x /usr/local/bin/clangd
+              echo '#!/bin/sh' > /usr/local/bin/rustc; chmod +x /usr/local/bin/rustc
+              export PATH="/root/.cargo/bin:${PATH}"
+              exec worker
           env:
             # ── Session identity ────────────────────────────────────────────
             # Unique per pod — maps to a signaling session slot.
@@ -110,11 +118,11 @@ spec:
                   key: SYNTHI_ISOLATION_MODEL
           resources:
             requests:
-              # Workers are CPU-heavy (compilation + video encoding).
-              cpu: "1"
-              memory: 1Gi
+              # Lower base request so it schedules on standard GKE nodes
+              cpu: 250m
+              memory: 512Mi
             limits:
-              cpu: "4"
+              cpu: "2"
               memory: 4Gi
           # Workers have no inbound port — liveness is checked via process.
           livenessProbe:

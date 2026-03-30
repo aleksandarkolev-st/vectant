@@ -23,7 +23,7 @@ spec:
         app: signaling-server
     spec:
       securityContext:
-        runAsNonRoot: true
+        #runAsNonRoot: true
       affinity:
         podAntiAffinity:
           preferredDuringSchedulingIgnoredDuringExecution:

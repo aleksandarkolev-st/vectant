@@ -4,13 +4,14 @@
 # ─────────────────────────────────────────────────────────────────────────────
 
 # ── Stage 1: Build ──────────────────────────────────────────────────────────
-FROM rust:1.75-bookworm AS builder
+FROM rust:1.88-bookworm AS builder
 
 WORKDIR /build
 COPY Cargo.toml Cargo.lock ./
 COPY src/ src/
 
 # Build release binary with full optimisations.
+RUN apt-get update && apt-get install -y clang libclang-dev llvm-dev
 RUN cargo build --release
 
 # ── Stage 2: Runtime ────────────────────────────────────────────────────────

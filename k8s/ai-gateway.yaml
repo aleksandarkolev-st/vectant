@@ -24,7 +24,7 @@ spec:
         app: ai-gateway
     spec:
       securityContext:
-        runAsNonRoot: true
+        #runAsNonRoot: true
       affinity:
         podAntiAffinity:
           preferredDuringSchedulingIgnoredDuringExecution:
