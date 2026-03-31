@@ -44,7 +44,7 @@ spec:
             - name: GATEWAY_PORT
               value: "7070"
             - name: GATEWAY_WS_PATH
-              value: "/ws"
+              value: "/gateway/ws"
             - name: BACKEND_URL
               valueFrom:
                 configMapKeyRef:
@@ -61,12 +61,14 @@ spec:
               cpu: 500m
               memory: 512Mi
           readinessProbe:
-            tcpSocket:
+            httpGet:
+              path: /gateway/health
               port: 7070
             initialDelaySeconds: 3
             periodSeconds: 5
           livenessProbe:
-            tcpSocket:
+            httpGet:
+              path: /gateway/health
               port: 7070
             initialDelaySeconds: 5
             periodSeconds: 15
@@ -80,7 +82,7 @@ metadata:
     app: ai-gateway
     app.kubernetes.io/part-of: synthi-ide
   annotations:
-    cloud.google.com/backend-config: '{"default": "ws-backend-config"}'
+    cloud.google.com/backend-config: '{"default": "gateway-ws-backend-config"}'
 spec:
   selector:
     app: ai-gateway

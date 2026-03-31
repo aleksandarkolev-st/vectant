@@ -41,7 +41,7 @@
 | **Signaling Server** (Rust) | `synthi-signaling-server` | 9000 | 2 | Manual (stateless) |
 | **AI Gateway** (Node.js) | `synthi-ai-gateway` | 7070 | 2 | HPA (2–6, CPU 70%) |
 | **AI Engine** (Python) | `synthi-ai-engine` | 8000 | 1 | Manual / HPA |
-| **Worker** (Rust+GStreamer) | `synthi-worker` | — | 2 | Manual (1 pod = 1 session) |
+| **Worker** (Rust+GStreamer) | `synthi-worker` | — | 0 static | Dynamic via collab spawner (1 pod = 1 session) |
 | **PostgreSQL** | `postgres:16-alpine` | 5432 | 1 | StatefulSet |
 | **Redis** | `redis:7-alpine` | 6379 | 1 | Single |
 
@@ -203,9 +203,12 @@ kubectl get pods -n synthi -w
 # Check Ingress got an IP (may take 5-10 min for GCE LB provisioning)
 kubectl get ingress -n synthi synthi-ingress
 
+# Confirm gateway and signaling backends are healthy at the load balancer
+kubectl get ingress synthi-ingress -n synthi -o jsonpath="{.metadata.annotations.ingress\.kubernetes\.io/backends}"
+
 # Test internal connectivity
 kubectl exec -n synthi deploy/ai-gateway -- wget -qO- http://ai-engine:8000/docs | head -5
-kubectl exec -n synthi deploy/worker -- wget -qO- http://collab-server:1234/turn-credentials
+kubectl exec -n synthi deploy/collab-server -c collab -- wget -qO- http://127.0.0.1:1234/turn-credentials
 ```
 
 ## Important Notes
@@ -219,7 +222,13 @@ These are baked into the JavaScript bundle at **build time**, not runtime. You m
 The GCE Ingress default backend timeout is 30s, which kills WebSocket connections. The `BackendConfig` resources in `ingress.yaml` set a 1-hour timeout for WS services.
 
 ### Worker Scaling
-Each worker pod handles exactly ONE user session. Scale `replicas` in `worker.yaml` to match your expected concurrent users. For dynamic scaling, consider KEDA with a custom metric (active signaling sessions).
+Static worker replicas are kept at `0`. The collab server creates a one-replica Deployment per active compiler session via `/api/spawner/ensure`, keeps it alive with `/api/spawner/touch`, and tears it down when the signaling session ends.
+
+### WebSocket Health Checks
+For GKE Ingress, timeout settings alone are not enough. Each public WebSocket backend also needs a valid HTTP health target. In this deployment:
+- `collab-server` uses `/debug/status` on port `1234`
+- `ai-gateway` uses `/gateway/health` on port `7070`
+- `signaling-server` uses a lightweight sidecar health endpoint on port `8080`
 
 ### Collab Server HA
 The collab server holds Yjs documents in memory and uses LevelDB on disk — it cannot be trivially replicated. Options:

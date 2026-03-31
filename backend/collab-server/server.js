@@ -688,6 +688,10 @@ async function getTurnCredentials() {
 }
 
 const server = http.createServer(async (req, res) => {
+  // Strip /collab or /collab/ prefix if passed by ingress
+  req.url = req.url.replace(/^\/collab/, '');
+  if (!req.url.startsWith('/')) req.url = '/' + req.url;
+
   // CORS headers
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS, DELETE');
@@ -2875,6 +2879,9 @@ function sendToSessionUser(sessionId, targetUserId, eventType, payload) {
 
 
 server.on('upgrade', (request, socket, head) => {
+  // Use replace to safely strip the prefix
+  request.url = request.url.replace(/^\/collab/, '');
+  if (!request.url.startsWith('/')) request.url = '/' + request.url;
   const pathname = request.url ? request.url.slice(1).split('?')[0] : 'unknown';
   console.log(`[Collab DEBUG] Upgrade request for room: ${pathname}`);
 
@@ -3009,3 +3016,4 @@ server.listen(PORT, '0.0.0.0', () => {
     spawner.startCuller();
   }
 });
+

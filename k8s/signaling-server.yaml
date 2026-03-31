@@ -66,6 +66,21 @@ spec:
               port: 9000
             initialDelaySeconds: 5
             periodSeconds: 10
+        - name: healthz
+          image: hashicorp/http-echo:0.2.3
+          args:
+            - "-listen=:8080"
+            - "-text=ok"
+          ports:
+            - containerPort: 8080
+              name: health
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 50m
+              memory: 32Mi
 ---
 apiVersion: v1
 kind: Service
@@ -76,7 +91,7 @@ metadata:
     app: signaling-server
     app.kubernetes.io/part-of: synthi-ide
   annotations:
-    cloud.google.com/backend-config: '{"default": "ws-backend-config"}'
+    cloud.google.com/backend-config: '{"default": "signaling-ws-backend-config"}'
 spec:
   selector:
     app: signaling-server
@@ -84,3 +99,6 @@ spec:
     - port: 9000
       targetPort: 9000
       name: ws
+    - port: 8080
+      targetPort: 8080
+      name: health

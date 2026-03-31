@@ -64,6 +64,15 @@ const activeSessions = new Map();
 
 // ─── Shell Detection ────────────────────────────────────────────────────────
 
+function shellExists(shellPath) {
+  if (!shellPath) return false;
+  try {
+    return fs.existsSync(shellPath);
+  } catch (_) {
+    return false;
+  }
+}
+
 /**
  * Determine the default shell for the current platform.
  */
@@ -74,8 +83,18 @@ function getDefaultShell() {
       ? 'powershell.exe'
       : 'cmd.exe';
   }
-  // Unix: respect $SHELL, fall back to /bin/bash then /bin/sh
-  return process.env.SHELL || '/bin/bash';
+  // Unix: respect $SHELL when it exists, otherwise prefer bash and finally sh.
+  const candidates = [process.env.SHELL, '/bin/bash', '/bin/sh'].filter(Boolean);
+  for (const candidate of candidates) {
+    if (shellExists(candidate)) return candidate;
+  }
+  return '/bin/sh';
+}
+
+function getDefaultShellArgs(shell) {
+  if (os.platform() === 'win32') return [];
+  const shellName = path.basename(shell || '');
+  return ['bash', 'zsh', 'fish'].includes(shellName) ? ['--login'] : [];
 }
 
 // ─── Shell Registry ─────────────────────────────────────────────────────────
@@ -495,7 +514,7 @@ function createPtyProcess({ cwd, cols = 80, rows = 24, env = {}, shellType = nul
   // Resolve requested shell type, or fall back to platform default
   const resolved = shellType ? resolveShellType(shellType) : null;
   const shell = resolved ? resolved.executable : getDefaultShell();
-  const shellArgs = resolved ? resolved.args : (os.platform() === 'win32' ? [] : ['--login']);
+  const shellArgs = resolved ? resolved.args : getDefaultShellArgs(shell);
 
   // Build a clean environment: inherit process.env, add overrides, strip
   // anything that could leak server internals.
@@ -503,6 +522,11 @@ function createPtyProcess({ cwd, cols = 80, rows = 24, env = {}, shellType = nul
     TERM: 'xterm-256color',
     COLORTERM: 'truecolor',
   });
+
+  const homeDir = os.homedir();
+  if (!ptyEnv.HOME || !path.isAbsolute(ptyEnv.HOME) || !fs.existsSync(ptyEnv.HOME)) {
+    ptyEnv.HOME = homeDir;
+  }
 
   // Prepend discovered SDK paths (Flutter, Dart, Android, etc.) to PATH
   const sdkPaths = getSdkPaths();

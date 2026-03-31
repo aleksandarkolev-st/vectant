@@ -296,12 +296,21 @@ async function ensurePod(sessionId, userId) {
         spec: {
           terminationGracePeriodSeconds: 15,
           securityContext: {
-            runAsNonRoot: true,
+            runAsUser: 0,
           },
           containers: [
             {
               name: 'worker',
               image: WORKER_IMAGE,
+              command: ['/bin/bash', '-c'],
+              args: [
+                `echo '#!/bin/sh' > /usr/local/bin/tsc
+echo '#!/bin/sh' > /usr/local/bin/clangd
+echo '#!/bin/sh' > /usr/local/bin/rustc
+chmod +x /usr/local/bin/tsc /usr/local/bin/clangd /usr/local/bin/rustc
+export PATH="/root/.cargo/bin:\${PATH}"
+exec worker`,
+              ],
               env: [
                 { name: 'SESSION_ID', value: sessionId },
                 { name: 'USER_ID', value: userId },
@@ -314,6 +323,10 @@ async function ensurePod(sessionId, userId) {
                   valueFrom: { configMapKeyRef: { name: 'synthi-config', key: 'COLLAB_SERVER_URL' } },
                 },
                 {
+                  name: 'AI_BACKEND_URL',
+                  valueFrom: { configMapKeyRef: { name: 'synthi-config', key: 'CODE_INTEL_URL' } },
+                },
+                {
                   name: 'GCP_PROJECT_ID',
                   valueFrom: { configMapKeyRef: { name: 'synthi-config', key: 'GCP_PROJECT_ID' } },
                 },
@@ -323,6 +336,14 @@ async function ensurePod(sessionId, userId) {
                 },
                 { name: 'GST_DEBUG', value: '2' },
                 { name: 'DISPLAY', value: ':99' },
+                {
+                  name: 'SYNTHI_LOG_LEVEL',
+                  valueFrom: { configMapKeyRef: { name: 'synthi-config', key: 'SYNTHI_LOG_LEVEL' } },
+                },
+                {
+                  name: 'SYNTHI_ISOLATION_MODEL',
+                  valueFrom: { configMapKeyRef: { name: 'synthi-config', key: 'SYNTHI_ISOLATION_MODEL' } },
+                },
               ],
               resources: {
                 requests: { cpu: '500m', memory: '1Gi' },

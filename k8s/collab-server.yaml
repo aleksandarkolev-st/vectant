@@ -22,7 +22,8 @@ metadata:
 spec:
   replicas: 1    # Safe to scale once repos are sharded / shared
   strategy:
-    type: RollingUpdate
+    type: Recreate
+    rollingUpdate: null
   selector:
     matchLabels:
       app: collab-server
@@ -45,6 +46,8 @@ spec:
             # ── Networking ──────────────────────────────────────────────────
             - name: COLLAB_PORT
               value: "1234"
+            - name: SYNTHI_APP_URL
+              value: "http://frontend:3000"
             - name: CORS_ORIGIN
               valueFrom:
                 configMapKeyRef:

@@ -87,6 +87,22 @@ spec:
                 secretKeyRef:
                   name: synthi-secrets
                   key: DATABASE_URL
+            # ── Internal service URLs for Next.js API routes ───────────────
+            - name: COLLAB_SERVER_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: synthi-config
+                  key: COLLAB_SERVER_URL
+            - name: CODE_INTEL_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: synthi-config
+                  key: CODE_INTEL_URL
+            - name: AI_ENGINE_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: synthi-config
+                  key: CODE_INTEL_URL
             # ── TURN credentials (server-side API route) ────────────────────
             - name: CLOUDFLARE_TURN_TOKEN_ID
               valueFrom:

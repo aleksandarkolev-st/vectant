@@ -14,19 +14,15 @@
 FROM node:20-alpine
 WORKDIR /app
 
-# Install only prisma CLI and its dependencies
-COPY package.json package-lock.json ./
-RUN npm ci --ignore-scripts && \
-    npx prisma version > /dev/null 2>&1
+# Install only the Prisma CLI needed for migration deploys.
+RUN npm install -g prisma@6.17.1 && \
+    prisma version > /dev/null 2>&1
 
 # Copy Prisma schema and migration SQL files
 COPY prisma ./prisma
 
-# Generate the Prisma client (validates schema + prepares engine binaries)
-RUN npx prisma generate
-
 # Run as non-root
 USER node
 
-ENTRYPOINT ["npx", "prisma"]
-CMD ["migrate", "deploy"]
+ENTRYPOINT ["prisma"]
+CMD ["migrate", "deploy", "--schema=/app/prisma/schema.prisma"]

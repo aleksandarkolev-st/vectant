@@ -153,9 +153,69 @@ const repoLock = new RepoLock();
 class GitService {
     constructor(baseDir) {
         this.baseDir = baseDir || config.REPO_CACHE_DIR;
+        this.authTokens = new Map();
         if (!fs.existsSync(this.baseDir)) {
             fs.mkdirSync(this.baseDir, { recursive: true });
         }
+    }
+
+    _authKey(slug, userId) {
+        return userId ? `${slug}:${userId}` : slug;
+    }
+
+    _rememberAuthToken(slug, userId, token) {
+        const value = typeof token === 'string' ? token.trim() : '';
+        if (!value) return;
+        this.authTokens.set(this._authKey(slug, userId), value);
+    }
+
+    _getStoredAuthToken(slug, userId) {
+        const direct = this.authTokens.get(this._authKey(slug, userId));
+        if (direct) return direct;
+        if (userId) {
+            return this.authTokens.get(this._authKey(slug));
+        }
+        return null;
+    }
+
+    _extractTokenFromHttpsUrl(remoteUrl) {
+        if (typeof remoteUrl !== 'string' || !remoteUrl.startsWith('https://')) {
+            return { cleanUrl: remoteUrl, token: null };
+        }
+
+        try {
+            const parsedUrl = new URL(remoteUrl);
+            let token = null;
+
+            if (parsedUrl.password) {
+                token = decodeURIComponent(parsedUrl.password);
+            } else if (
+                parsedUrl.username &&
+                parsedUrl.username !== 'git' &&
+                parsedUrl.username !== 'oauth2' &&
+                parsedUrl.username !== 'x-access-token'
+            ) {
+                token = decodeURIComponent(parsedUrl.username);
+            }
+
+            if (parsedUrl.username || parsedUrl.password) {
+                parsedUrl.username = '';
+                parsedUrl.password = '';
+                return { cleanUrl: parsedUrl.toString(), token };
+            }
+
+            return { cleanUrl: remoteUrl, token };
+        } catch (_) {
+            return { cleanUrl: remoteUrl, token: null };
+        }
+    }
+
+    async _resolveAuthToken(git, slug, userId, explicitToken) {
+        const effectiveToken = explicitToken || this._getStoredAuthToken(slug, userId) || await this._extractTokenFromRemoteUrl(git);
+        if (effectiveToken) {
+            this._rememberAuthToken(slug, userId, effectiveToken);
+        }
+        return effectiveToken || null;
     }
 
     // Helper to run operations with lock + repo cache acquire/release
@@ -716,6 +776,10 @@ class GitService {
             } else {
                 await git.clone(cleanRepoUrl, repoPath);
             }
+
+            if (effectiveToken) {
+                this._rememberAuthToken(slug, userId, effectiveToken);
+            }
             
             // Upload cloned files to GCS so frontend can access them
             if (gcsSync.isGcsConfigured()) {
@@ -913,7 +977,7 @@ class GitService {
         return this.withLock(slug, async () => {
             const git = this.getGit(slug, userId);
             try {
-                const effectiveToken = token || await this._extractTokenFromRemoteUrl(git);
+                const effectiveToken = await this._resolveAuthToken(git, slug, userId, token);
                 if (effectiveToken) {
                     const remotes = await git.getRemotes(true);
                     const remoteUrl = remotes?.[0]?.refs?.push || remotes?.[0]?.refs?.fetch || '';
@@ -952,7 +1016,7 @@ class GitService {
                         if (!localExists) {
                             // Fetch the specific branch from origin
                             try {
-                                const token = await this._extractTokenFromRemoteUrl(git);
+                                const token = await this._resolveAuthToken(git, slug, userId);
                                 if (token) {
                                     const remotes = await git.getRemotes(true);
                                     const remoteUrl = remotes?.[0]?.refs?.fetch || remotes?.[0]?.refs?.push || '';
@@ -1043,7 +1107,7 @@ class GitService {
         return this.withLock(slug, async () => {
             try {
                 const git = this.getGit(slug, userId);
-                const effectiveToken = token || await this._extractTokenFromRemoteUrl(git);
+                const effectiveToken = await this._resolveAuthToken(git, slug, userId, token);
                 if (effectiveToken) {
                     const remotes = await git.getRemotes(true);
                     const remoteUrl = remotes?.[0]?.refs?.fetch || remotes?.[0]?.refs?.push || '';
@@ -1380,11 +1444,7 @@ class GitService {
             const prev = process.env.GIT_TERMINAL_PROMPT;
             process.env.GIT_TERMINAL_PROMPT = '0';
 
-            // If no explicit token provided, try to extract one from the remote URL
-            let effectiveToken = token;
-            if (!effectiveToken) {
-                effectiveToken = await this._extractTokenFromRemoteUrl(git);
-            }
+            const effectiveToken = await this._resolveAuthToken(git, slug, userId, token);
 
             /**
              * Build an authenticated push URL by embedding the token directly
@@ -1563,7 +1623,11 @@ class GitService {
         return this.withLock(slug, async () => {
             try {
                 const git = this.getGit(slug, userId);
-                await git.addRemote(name, url);
+                const { cleanUrl, token } = this._extractTokenFromHttpsUrl(url);
+                if (token) {
+                    this._rememberAuthToken(slug, userId, token);
+                }
+                await git.addRemote(name, cleanUrl);
                 return this.getStatus(slug, userId);
             } catch (e) {
                 throw this.mapGitError(e, slug);
@@ -1592,7 +1656,11 @@ class GitService {
         return this.withLock(slug, async () => {
             try {
                 const git = this.getGit(slug, userId);
-                await git.remote(['set-url', name, url]);
+                const { cleanUrl, token } = this._extractTokenFromHttpsUrl(url);
+                if (token) {
+                    this._rememberAuthToken(slug, userId, token);
+                }
+                await git.remote(['set-url', name, cleanUrl]);
                 return await this.getRemotes(slug, userId);
             } catch (e) {
                 throw this.mapGitError(e, slug);
@@ -1613,11 +1681,7 @@ class GitService {
         return this.withLock(slug, async () => {
             const git = this.getGit(slug, userId);
             try {
-                // If no explicit token provided, try to extract one from the remote URL
-                let effectiveToken = token;
-                if (!effectiveToken) {
-                    effectiveToken = await this._extractTokenFromRemoteUrl(git);
-                }
+                const effectiveToken = await this._resolveAuthToken(git, slug, userId, token);
 
                 let pullResult;
                 if (effectiveToken) {
@@ -1894,7 +1958,7 @@ class GitService {
             // 1. Fetch the specific branch from origin so the remote-tracking
             //    ref is guaranteed to exist and be up-to-date.
             try {
-                const effectiveToken = token || await this._extractTokenFromRemoteUrl(git);
+                const effectiveToken = await this._resolveAuthToken(git, slug, userId, token);
                 if (effectiveToken) {
                     const remotes = await git.getRemotes(true);
                     const remoteUrl = remotes?.[0]?.refs?.fetch || remotes?.[0]?.refs?.push || '';
@@ -1975,7 +2039,7 @@ class GitService {
         ];
         let fetchOk = false;
         try {
-            const effectiveToken = token || await this._extractTokenFromRemoteUrl(git);
+            const effectiveToken = await this._resolveAuthToken(git, slug, userId, token);
             if (effectiveToken) {
                 const remotes = await git.getRemotes(true);
                 const remoteUrl = remotes?.[0]?.refs?.fetch || remotes?.[0]?.refs?.push || '';

@@ -38,6 +38,9 @@ COPY --chown=synthi:synthi . .
 # Create data directories for repo cache and workspace storage
 RUN mkdir -p /data/repos && chown -R synthi:synthi /data
 
+RUN git config --system user.email "synthi@overview-synti.com" && \
+    git config --system user.name "Synthi Autocommit"
+
 USER synthi
 
 EXPOSE 1234

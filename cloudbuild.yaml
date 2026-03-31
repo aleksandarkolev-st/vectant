@@ -26,9 +26,10 @@
 
 substitutions:
   _REGION: europe-west10
-  _GKE_CLUSTER: synthi-cluster
+  _GKE_CLUSTER: synthi-beta-cluster
   _GKE_ZONE: europe-west10-a
   _REGISTRY: ${_REGION}-docker.pkg.dev/${PROJECT_ID}/synthi
+  _IMAGE_TAG: ${BUILD_ID}
 
   # NEXT_PUBLIC_* build args baked into the frontend client bundle.
   # Override these per environment via trigger substitutions.
@@ -37,6 +38,8 @@ substitutions:
   _NEXT_PUBLIC_COLLAB_PORT: "443"
   _NEXT_PUBLIC_COMPILE_SIGNAL_URL: "wss://beta.synthi.app/signal"
   _NEXT_PUBLIC_GATEWAY_WS_URL: "wss://beta.synthi.app/gateway/ws"
+  _NEXT_PUBLIC_CODE_INTEL_URL: "https://beta.synthi.app"
+  _NEXT_PUBLIC_AI_ENGINE_URL: "https://beta.synthi.app"
 
 options:
   machineType: E2_HIGHCPU_8
@@ -63,15 +66,19 @@ steps:
       - 'NEXT_PUBLIC_COLLAB_PORT=${_NEXT_PUBLIC_COLLAB_PORT}'
       - 'NEXT_PUBLIC_COMPILE_SIGNAL_URL=${_NEXT_PUBLIC_COMPILE_SIGNAL_URL}'
       - 'NEXT_PUBLIC_GATEWAY_WS_URL=${_NEXT_PUBLIC_GATEWAY_WS_URL}'
+      - 'NEXT_PUBLIC_CODE_INTEL_URL=${_NEXT_PUBLIC_CODE_INTEL_URL}'
+      - 'NEXT_PUBLIC_AI_ENGINE_URL=${_NEXT_PUBLIC_AI_ENGINE_URL}'
     args:
       - '-c'
       - |
         cat <<EOF > synthi/.env.production
-        NEXT_PUBLIC_COLLAB_SERVER_URL=\$NEXT_PUBLIC_COLLAB_SERVER_URL
-        NEXT_PUBLIC_YSWEET_URL=\$NEXT_PUBLIC_YSWEET_URL
-        NEXT_PUBLIC_COLLAB_PORT=\$NEXT_PUBLIC_COLLAB_PORT
-        NEXT_PUBLIC_COMPILE_SIGNAL_URL=\$NEXT_PUBLIC_COMPILE_SIGNAL_URL
-        NEXT_PUBLIC_GATEWAY_WS_URL=\$NEXT_PUBLIC_GATEWAY_WS_URL
+        NEXT_PUBLIC_COLLAB_SERVER_URL=$$NEXT_PUBLIC_COLLAB_SERVER_URL
+        NEXT_PUBLIC_YSWEET_URL=$$NEXT_PUBLIC_YSWEET_URL
+        NEXT_PUBLIC_COLLAB_PORT=$$NEXT_PUBLIC_COLLAB_PORT
+        NEXT_PUBLIC_COMPILE_SIGNAL_URL=$$NEXT_PUBLIC_COMPILE_SIGNAL_URL
+        NEXT_PUBLIC_GATEWAY_WS_URL=$$NEXT_PUBLIC_GATEWAY_WS_URL
+        NEXT_PUBLIC_CODE_INTEL_URL=$$NEXT_PUBLIC_CODE_INTEL_URL
+        NEXT_PUBLIC_AI_ENGINE_URL=$$NEXT_PUBLIC_AI_ENGINE_URL
         EOF
 
   # ── 1. Frontend (Next.js) ────────────────────────────────────────────────
@@ -81,7 +88,7 @@ steps:
     args:
       - --dockerfile=synthi/Dockerfile
       - --context=dir:///workspace/synthi
-      - --destination=${_REGISTRY}/synthi-frontend:${SHORT_SHA}
+      - --destination=${_REGISTRY}/synthi-frontend:${_IMAGE_TAG}
       - --destination=${_REGISTRY}/synthi-frontend:latest
       - --cache=true
       - --cache-ttl=168h
@@ -93,7 +100,7 @@ steps:
     args:
       - --dockerfile=backend/collab-server/Dockerfile
       - --context=dir:///workspace/backend/collab-server
-      - --destination=${_REGISTRY}/synthi-collab-server:${SHORT_SHA}
+      - --destination=${_REGISTRY}/synthi-collab-server:${_IMAGE_TAG}
       - --destination=${_REGISTRY}/synthi-collab-server:latest
       - --cache=true
       - --cache-ttl=168h
@@ -105,7 +112,7 @@ steps:
     args:
       - --dockerfile=ai-backend/ai-engine/Dockerfile
       - --context=dir:///workspace/ai-backend/ai-engine
-      - --destination=${_REGISTRY}/synthi-ai-engine:${SHORT_SHA}
+      - --destination=${_REGISTRY}/synthi-ai-engine:${_IMAGE_TAG}
       - --destination=${_REGISTRY}/synthi-ai-engine:latest
       - --cache=true
       - --cache-ttl=168h
@@ -117,7 +124,7 @@ steps:
     args:
       - --dockerfile=ai-backend/gateway/Dockerfile
       - --context=dir:///workspace/ai-backend/gateway
-      - --destination=${_REGISTRY}/synthi-ai-gateway:${SHORT_SHA}
+      - --destination=${_REGISTRY}/synthi-ai-gateway:${_IMAGE_TAG}
       - --destination=${_REGISTRY}/synthi-ai-gateway:latest
       - --cache=true
       - --cache-ttl=168h
@@ -129,7 +136,7 @@ steps:
     args:
       - --dockerfile=backend/synthi-webrtc-compiler/signaling-server/Dockerfile
       - --context=dir:///workspace/backend/synthi-webrtc-compiler/signaling-server
-      - --destination=${_REGISTRY}/synthi-signaling-server:${SHORT_SHA}
+      - --destination=${_REGISTRY}/synthi-signaling-server:${_IMAGE_TAG}
       - --destination=${_REGISTRY}/synthi-signaling-server:latest
       - --cache=true
       - --cache-ttl=168h
@@ -141,7 +148,7 @@ steps:
     args:
       - --dockerfile=backend/synthi-webrtc-compiler/worker/Dockerfile
       - --context=dir:///workspace/backend/synthi-webrtc-compiler/worker
-      - --destination=${_REGISTRY}/synthi-worker:${SHORT_SHA}
+      - --destination=${_REGISTRY}/synthi-worker:${_IMAGE_TAG}
       - --destination=${_REGISTRY}/synthi-worker:latest
       - --cache=true
       - --cache-ttl=168h
@@ -154,7 +161,7 @@ steps:
     args:
       - --dockerfile=synthi/Dockerfile.migrate
       - --context=dir:///workspace/synthi
-      - --destination=${_REGISTRY}/synthi-prisma-migrate:${SHORT_SHA}
+      - --destination=${_REGISTRY}/synthi-prisma-migrate:${_IMAGE_TAG}
       - --destination=${_REGISTRY}/synthi-prisma-migrate:latest
       - --cache=true
       - --cache-ttl=168h
@@ -173,9 +180,9 @@ steps:
         echo "=== Vulnerability Scan ==="
 
         for IMAGE in \
-          "${_REGISTRY}/synthi-frontend:${SHORT_SHA}" \
-          "${_REGISTRY}/synthi-collab-server:${SHORT_SHA}" \
-          "${_REGISTRY}/synthi-ai-engine:${SHORT_SHA}"
+          "${_REGISTRY}/synthi-frontend:${_IMAGE_TAG}" \
+          "${_REGISTRY}/synthi-collab-server:${_IMAGE_TAG}" \
+          "${_REGISTRY}/synthi-ai-engine:${_IMAGE_TAG}"
         do
           echo ""
           echo "Scanning: $${IMAGE}"
@@ -233,10 +240,20 @@ steps:
       - |
         set -euo pipefail
         REGISTRY="${_REGISTRY}"
-        TAG="${SHORT_SHA}"
+        TAG="${_IMAGE_TAG}"
         NS="synthi"
 
         echo "=== Deploying tag: $${TAG} ==="
+
+        # Apply manifest changes first so Services, Ingress, ConfigMaps,
+        # BackendConfigs, and Deployment specs stay in sync with the images.
+        kubectl apply -k k8s/
+
+        # Update the worker image in ConfigMap before restarting collab-server.
+        # The dynamic spawner reads WORKER_IMAGE from its process env, so the
+        # collab rollout must happen after this patch.
+        kubectl patch configmap synthi-config -n $${NS} \
+          -p "{\"data\":{\"WORKER_IMAGE\":\"$${REGISTRY}/synthi-worker:$${TAG}\"}}"
 
         # Update each Deployment's container image
         kubectl set image deployment/frontend \
@@ -253,10 +270,6 @@ steps:
 
         kubectl set image deployment/signaling-server \
           signaling=$${REGISTRY}/synthi-signaling-server:$${TAG} -n $${NS}
-
-        # Update the worker image in ConfigMap for the dynamic spawner
-        kubectl patch configmap synthi-config -n $${NS} \
-          -p "{\"data\":{\"WORKER_IMAGE\":\"$${REGISTRY}/synthi-worker:$${TAG}\"}}"
 
         echo "=== Waiting for rollouts ==="
         kubectl rollout status deployment/frontend -n $${NS} --timeout=300s

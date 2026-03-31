@@ -60,6 +60,52 @@ spec:
       secretName: iap-oauth-secret
 
 ---
+apiVersion: cloud.google.com/v1
+kind: BackendConfig
+metadata:
+  name: gateway-ws-backend-config
+  namespace: synthi
+spec:
+  timeoutSec: 3600
+  connectionDraining:
+    drainingTimeoutSec: 60
+  healthCheck:
+    checkIntervalSec: 15
+    timeoutSec: 5
+    healthyThreshold: 1
+    unhealthyThreshold: 2
+    type: HTTP
+    requestPath: /gateway/health
+    port: 7070
+  iap:
+    enabled: true
+    oauthclientCredentials:
+      secretName: iap-oauth-secret
+
+---
+apiVersion: cloud.google.com/v1
+kind: BackendConfig
+metadata:
+  name: signaling-ws-backend-config
+  namespace: synthi
+spec:
+  timeoutSec: 3600
+  connectionDraining:
+    drainingTimeoutSec: 60
+  healthCheck:
+    checkIntervalSec: 15
+    timeoutSec: 5
+    healthyThreshold: 1
+    unhealthyThreshold: 2
+    type: HTTP
+    requestPath: /
+    port: 8080
+  iap:
+    enabled: true
+    oauthclientCredentials:
+      secretName: iap-oauth-secret
+
+---
 # ── FrontendConfig (HTTP → HTTPS 301 redirect) ────────────────────────────
 # Instead of blocking HTTP entirely (allow-http: "false"), this issues a
 # proper 301 redirect so browsers and crawlers follow HTTPS correctly.
@@ -99,6 +145,55 @@ spec:
     - host: beta.synthi.app   # TODO: replace with your domain
       http:
         paths:
+          # ── AI Engine public HTTP APIs ────────────────────────────────────
+          - path: /code-intel
+            pathType: Prefix
+            backend:
+              service:
+                name: ai-engine
+                port:
+                  number: 8000
+
+          - path: /classify
+            pathType: Prefix
+            backend:
+              service:
+                name: ai-engine
+                port:
+                  number: 8000
+
+          - path: /provenance
+            pathType: Prefix
+            backend:
+              service:
+                name: ai-engine
+                port:
+                  number: 8000
+
+          - path: /analyze
+            pathType: Prefix
+            backend:
+              service:
+                name: ai-engine
+                port:
+                  number: 8000
+
+          - path: /heal
+            pathType: Prefix
+            backend:
+              service:
+                name: ai-engine
+                port:
+                  number: 8000
+
+          - path: /health
+            pathType: Prefix
+            backend:
+              service:
+                name: ai-engine
+                port:
+                  number: 8000
+
           # ── Frontend (default) ────────────────────────────────────────────
           - path: /
             pathType: Prefix
@@ -116,15 +211,6 @@ spec:
                 name: collab-server
                 port:
                   number: 1234
-
-          # ── Y-Sweet (CRDT WebSocket relay) ────────────────────────────────
-          - path: /ysweet
-            pathType: Prefix
-            backend:
-              service:
-                name: y-sweet
-                port:
-                  number: 8080
 
           # ── Signaling (WebSocket) ─────────────────────────────────────────
           - path: /signal

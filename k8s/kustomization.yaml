@@ -6,7 +6,7 @@
 #
 #  Or apply individually in dependency order:
 #    kubectl apply -f k8s/namespace.yaml
-#    kubectl apply -f k8s/external-secrets.yaml
+#    kubectl apply -f k8s/secrets.yaml
 #    kubectl apply -f k8s/configmap.yaml
 #    kubectl apply -f k8s/spawner-rbac.yaml
 #    kubectl apply -f k8s/postgres.yaml
@@ -29,8 +29,8 @@ namespace: synthi
 resources:
   # 1. Foundation
   - namespace.yaml
-  # - secrets.yaml           # REPLACED by External Secrets Operator
-  - external-secrets.yaml    # SecretStore + ExternalSecret → auto-syncs synthi-secrets
+  - secrets.yaml             # Beta default: simple K8s Secret for synthi-secrets
+  # - external-secrets.yaml  # Enable after installing External Secrets Operator CRDs
   - configmap.yaml
   - spawner-rbac.yaml
 

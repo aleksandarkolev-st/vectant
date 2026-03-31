@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
-const CODE_INTEL_URL = process.env.NEXT_PUBLIC_CODE_INTEL_URL || 'http://localhost:8000';
+const CODE_INTEL_URL = process.env.NEXT_PUBLIC_CODE_INTEL_URL
+  || (typeof window !== 'undefined' && window.location.hostname !== 'localhost'
+    ? window.location.origin
+    : 'http://localhost:8000');
 
 export function useCodeIntelMetrics({ workspacePath, enabled = true, pollMs = 10000 } = {}) {
   const [metrics, setMetrics] = useState(null);

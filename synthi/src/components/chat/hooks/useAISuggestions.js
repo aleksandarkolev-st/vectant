@@ -10,7 +10,10 @@ import { useContextWindow } from './useContextWindow';
 import { useAgentPipeline, PIPELINE_MODES } from './useAgentPipeline';
 
 // AI Engine base URL for intent classification
-const AI_ENGINE_BASE = process.env.NEXT_PUBLIC_AI_ENGINE_URL || 'http://localhost:8000';
+const AI_ENGINE_BASE = process.env.NEXT_PUBLIC_AI_ENGINE_URL
+    || (typeof window !== 'undefined' && window.location.hostname !== 'localhost'
+        ? window.location.origin
+        : 'http://localhost:8000');
 
 /**
  * Classify user query intent using the AI backend's LLM-based classifier.

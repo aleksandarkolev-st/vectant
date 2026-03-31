@@ -30,7 +30,7 @@ metadata:
     app: worker
     app.kubernetes.io/part-of: synthi-ide
 spec:
-  replicas: 2    # One pod = one concurrent user session. Scale as needed.
+  replicas: 0    # Disabled: collab-server dynamically spawns one worker per active session.
   selector:
     matchLabels:
       app: worker

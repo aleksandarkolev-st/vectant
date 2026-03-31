@@ -165,12 +165,23 @@ async fn fetch_turn_credentials() -> Vec<webrtc::ice_transport::ice_server::RTCI
                 Ok(data) => {
                     let mut servers = Vec::new();
                     for srv in data.ice_servers {
-                        servers.push(webrtc::ice_transport::ice_server::RTCIceServer {
+                        let mut server = webrtc::ice_transport::ice_server::RTCIceServer {
                             urls: srv.urls,
-                            username: srv.username.unwrap_or_default(),
-                            credential: srv.credential.unwrap_or_default(),
                             ..Default::default()
-                        });
+                        };
+
+                        if let Some(username) = srv.username {
+                            server.username = username;
+                        }
+
+                        if let Some(credential) = srv.credential {
+                            if !credential.is_empty() {
+                                server.credential = credential;
+                                server.credential_type = webrtc::ice_transport::ice_credential_type::RTCIceCredentialType::Password;
+                            }
+                        }
+
+                        servers.push(server);
                     }
                     if servers.is_empty() {
                         servers.push(webrtc::ice_transport::ice_server::RTCIceServer {
