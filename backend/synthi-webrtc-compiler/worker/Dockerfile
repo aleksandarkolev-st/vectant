@@ -61,11 +61,26 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     openjdk-17-jdk-headless \
     # Python
     python3 python3-pip \
-    # Node.js (via nodesource would be better, but for base image this works)
-    nodejs npm \
-    # Rust (rustup for user code compilation; not our worker binary)
-    curl ca-certificates \
+    # Runtime utilities used by language runtimes and downloads
+    curl ca-certificates xz-utils \
     && rm -rf /var/lib/apt/lists/*
+
+ARG NODE_VERSION=20.20.2
+
+# Install a modern Node runtime because the VS Code bridge assets rely on
+# language features that Ubuntu's stock Node 12 package does not support.
+RUN set -eux; \
+    arch="$(dpkg --print-architecture)"; \
+    case "$arch" in \
+        amd64) node_arch='x64' ;; \
+        arm64) node_arch='arm64' ;; \
+        *) echo "Unsupported architecture: $arch" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-${node_arch}.tar.xz" -o /tmp/node.tar.xz; \
+    tar -xJf /tmp/node.tar.xz -C /usr/local --strip-components=1 --no-same-owner; \
+    rm /tmp/node.tar.xz; \
+    npm install -g typescript typescript-language-server; \
+    npm cache clean --force
 
 # Install Rust toolchain for user code compilation
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
@@ -103,6 +118,9 @@ RUN rustup component add rust-analyzer
 # ── Copy compiled worker binaries ──────────────────────────────────────────
 COPY --from=builder /build/target/release/worker /usr/local/bin/worker
 COPY --from=builder /build/target/release/runner /usr/local/bin/runner
+COPY vscode-server-manager.js /usr/local/bin/vscode-server-manager.js
+COPY ext-host-preload.js /usr/local/bin/ext-host-preload.js
+COPY esm-vscode-hook.mjs /usr/local/bin/esm-vscode-hook.mjs
 
 # ── Security hardening ─────────────────────────────────────────────────────
 RUN useradd -m -s /bin/bash runner

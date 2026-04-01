@@ -304,11 +304,7 @@ async function ensurePod(sessionId, userId) {
               image: WORKER_IMAGE,
               command: ['/bin/bash', '-c'],
               args: [
-                `echo '#!/bin/sh' > /usr/local/bin/tsc
-echo '#!/bin/sh' > /usr/local/bin/clangd
-echo '#!/bin/sh' > /usr/local/bin/rustc
-chmod +x /usr/local/bin/tsc /usr/local/bin/clangd /usr/local/bin/rustc
-export PATH="/root/.cargo/bin:\${PATH}"
+                `export PATH="/root/.cargo/bin:/usr/local/bin:\${PATH}"
 exec worker`,
               ],
               env: [

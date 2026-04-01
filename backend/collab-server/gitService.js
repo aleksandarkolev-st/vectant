@@ -159,6 +159,44 @@ class GitService {
         }
     }
 
+    _safeAuthPathPart(value, fallback = 'default') {
+        const normalized = String(value || fallback).trim();
+        const safe = normalized.replace(/[^a-zA-Z0-9_@.\-]/g, '_');
+        return safe || fallback;
+    }
+
+    _getAuthTokenPath(slug, userId) {
+        const slugPart = this._safeAuthPathPart(slug, 'workspace');
+        const userPart = this._safeAuthPathPart(userId || 'shared', 'shared');
+        return path.join(this.baseDir, '_auth', slugPart, `${userPart}.json`);
+    }
+
+    _persistAuthToken(slug, userId, token) {
+        const value = typeof token === 'string' ? token.trim() : '';
+        if (!value) return;
+        const tokenPath = this._getAuthTokenPath(slug, userId);
+        try {
+            fs.mkdirSync(path.dirname(tokenPath), { recursive: true });
+            fs.writeFileSync(tokenPath, JSON.stringify({ token: value }), 'utf8');
+        } catch (e) {
+            console.warn(`[GitService] Failed to persist auth token for ${slug}${userId ? '/' + userId : ''}: ${e.message}`);
+        }
+    }
+
+    _loadPersistedAuthToken(slug, userId) {
+        const tokenPath = this._getAuthTokenPath(slug, userId);
+        try {
+            if (!fs.existsSync(tokenPath)) return null;
+            const raw = fs.readFileSync(tokenPath, 'utf8');
+            const parsed = JSON.parse(raw);
+            const value = parsed && typeof parsed.token === 'string' ? parsed.token.trim() : '';
+            return value || null;
+        } catch (e) {
+            console.warn(`[GitService] Failed to read persisted auth token for ${slug}${userId ? '/' + userId : ''}: ${e.message}`);
+            return null;
+        }
+    }
+
     _authKey(slug, userId) {
         return userId ? `${slug}:${userId}` : slug;
     }
@@ -167,13 +205,28 @@ class GitService {
         const value = typeof token === 'string' ? token.trim() : '';
         if (!value) return;
         this.authTokens.set(this._authKey(slug, userId), value);
+        this._persistAuthToken(slug, userId, value);
     }
 
     _getStoredAuthToken(slug, userId) {
         const direct = this.authTokens.get(this._authKey(slug, userId));
         if (direct) return direct;
+
+        const persistedDirect = this._loadPersistedAuthToken(slug, userId);
+        if (persistedDirect) {
+            this.authTokens.set(this._authKey(slug, userId), persistedDirect);
+            return persistedDirect;
+        }
+
         if (userId) {
-            return this.authTokens.get(this._authKey(slug));
+            const shared = this.authTokens.get(this._authKey(slug));
+            if (shared) return shared;
+
+            const persistedShared = this._loadPersistedAuthToken(slug);
+            if (persistedShared) {
+                this.authTokens.set(this._authKey(slug), persistedShared);
+                return persistedShared;
+            }
         }
         return null;
     }

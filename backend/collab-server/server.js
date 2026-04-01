@@ -2072,6 +2072,7 @@ const server = http.createServer(async (req, res) => {
             }
 
             const notifyScope = { userId: effectiveUserId || null, sessionId: sessionId || null };
+            const bootstrapUserId = effectiveUserId || userId || null;
 
             // ── Permission check FIRST ──────────────────────────────────
             // Check permissions BEFORE provisioning repos to prevent
@@ -2174,8 +2175,8 @@ const server = http.createServer(async (req, res) => {
 
             switch (action) {
                 case 'init':
-                    result = await gitService.initRepo(slug, data.remoteUrl, userId);
-                    hydratedSlugs.add(hydrationKey(slug, userId));
+                result = await gitService.initRepo(slug, data.remoteUrl, bootstrapUserId);
+                hydratedSlugs.add(hydrationKey(slug, bootstrapUserId));
                     break;
                 case 'add-remote':
                     result = await gitService.addRemote(slug, data.name, data.url, effectiveUserId);
@@ -2190,8 +2191,8 @@ const server = http.createServer(async (req, res) => {
                     result = await gitService.getRemotes(slug, effectiveUserId);
                     break;
                 case 'clone':
-                  result = await gitService.cloneRepo(slug, data.repoUrl, data.token, userId);
-                  hydratedSlugs.add(hydrationKey(slug, userId));
+                  result = await gitService.cloneRepo(slug, data.repoUrl, data.token, bootstrapUserId);
+                  hydratedSlugs.add(hydrationKey(slug, bootstrapUserId));
                   // Save metadata locally
                   workspaceManager.addWorkspace(slug, data.repoUrl, data.owner, data.name);
 
