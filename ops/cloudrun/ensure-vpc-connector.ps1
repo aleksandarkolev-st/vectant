@@ -1,6 +1,3 @@
-Set-StrictMode -Version Latest
-$ErrorActionPreference = 'Stop'
-
 param(
     [string]$ProjectId = 'overview-synti',
     [string]$Region = 'europe-west10',
@@ -12,14 +9,19 @@ param(
     [string]$MachineType = 'e2-micro'
 )
 
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+
 Write-Host 'Ensuring required APIs are enabled ...'
 gcloud services enable run.googleapis.com vpcaccess.googleapis.com --project $ProjectId | Out-Host
 
-try {
-    gcloud compute networks vpc-access connectors describe $ConnectorName `
+    $existingConnector = gcloud compute networks vpc-access connectors list `
         --project $ProjectId `
-        --region $Region | Out-Null
+        --region $Region `
+        --filter "name=$ConnectorName" `
+        --format 'value(name)'
 
+if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($existingConnector)) {
     Write-Host "Updating existing connector $ConnectorName ..."
     gcloud compute networks vpc-access connectors update $ConnectorName `
         --project $ProjectId `
@@ -28,7 +30,7 @@ try {
         --max-instances $MaxInstances `
         --machine-type $MachineType | Out-Host
 }
-catch {
+else {
     Write-Host "Creating connector $ConnectorName ..."
     gcloud compute networks vpc-access connectors create $ConnectorName `
         --project $ProjectId `

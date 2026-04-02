@@ -83,3 +83,30 @@
 - The controlled maintenance rollout completed successfully and `collab-server` is now running `europe-west10-docker.pkg.dev/overview-synti/synthi/synthi-collab-server:workspacepoolfix-20260402112432`.
 - Synthetic validation session `step2-smoke-20260402113350` created deployment `workspace-step2-smoke-20260402113350`; its Deployment requested `nodeSelector cloud.google.com/gke-nodepool=workspace-pool`, tolerated `workload=workspace:NoSchedule`, and the running pod landed on node pool `workspace-pool`.
 - Collab logs confirmed idle culling: `[Culler] Deleting idle workspace workspace-step2-smoke-20260402113350 (session=step2-smoke-20260402113350, idle=193s)`, and the workspace Deployment no longer exists in the cluster.
+
+## Hybrid Step 4 Cloud Run Dark Deploy
+
+### Scope
+- Deploy `synthi-ai-engine`, `synthi-ai-gateway`, and `synthi-frontend` to Cloud Run with no public-serving ingress.
+- Provision the shared Serverless VPC Access connector, runtime identities, and Secret Manager inputs required by those services.
+- Validate private connectivity to the live Redis/Postgres tier before any ALB cutover.
+
+### Checklist
+- [x] Enable Cloud Run, Secret Manager, and Serverless VPC Access APIs.
+- [x] Create Cloud Run runtime service accounts and required IAM bindings.
+- [x] Seed Secret Manager from the live `synthi-secrets` data with a Cloud Run-compatible `DATABASE_URL`.
+- [x] Create the `synthi-serverless-ew10` VPC connector.
+- [x] Deploy `synthi-ai-engine` and `synthi-ai-gateway` dark to Cloud Run.
+- [x] Deploy `synthi-frontend` dark to Cloud Run.
+- [x] Validate connector reachability to Redis and Postgres.
+- [x] Validate the new Cloud Run services are not publicly serving traffic.
+
+### Review
+- All three Cloud Run services are live in `europe-west10` with `run.googleapis.com/ingress=internal-and-cloud-load-balancing`, `minScale=0`, and the shared `synthi-serverless-ew10` connector.
+- Deployed service URLs are:
+	- `synthi-ai-engine`: `https://synthi-ai-engine-767721372193.europe-west10.run.app`
+	- `synthi-ai-gateway`: `https://synthi-ai-gateway-767721372193.europe-west10.run.app`
+	- `synthi-frontend`: `https://synthi-frontend-767721372193.europe-west10.run.app`
+- The Cloud Run manifests were corrected to use explicit image tags, Knative `valueFrom.secretKeyRef` secret syntax, and Service-level ingress annotations.
+- A Cloud Run job `synthi-vpc-smoke` reached the live private endpoints successfully: `10.72.3.8:5432` open and `10.72.2.11:6379` open.
+- Direct workstation requests to the new run.app URLs returned `404`, which confirms the services are not publicly serving traffic before the standalone ALB cutover.

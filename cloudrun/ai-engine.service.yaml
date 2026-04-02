@@ -4,20 +4,22 @@ metadata:
   name: synthi-ai-engine
   annotations:
     run.googleapis.com/launch-stage: GA
+    run.googleapis.com/ingress: internal-and-cloud-load-balancing
 spec:
   template:
     metadata:
       annotations:
         autoscaling.knative.dev/minScale: "0"
         autoscaling.knative.dev/maxScale: "4"
-        run.googleapis.com/ingress: internal-and-cloud-load-balancing
         run.googleapis.com/startup-cpu-boost: "true"
+        run.googleapis.com/vpc-access-connector: synthi-serverless-ew10
+        run.googleapis.com/vpc-access-egress: private-ranges-only
     spec:
       containerConcurrency: 8
       timeoutSeconds: 300
       serviceAccountName: synthi-ai-engine-run@overview-synti.iam.gserviceaccount.com
       containers:
-        - image: europe-west10-docker.pkg.dev/overview-synti/synthi/synthi-ai-engine:latest
+        - image: europe-west10-docker.pkg.dev/overview-synti/synthi/synthi-ai-engine:4e639d76-c12d-43ea-8ce8-177ea87d37a6
           ports:
             - name: http1
               containerPort: 8000
@@ -30,15 +32,15 @@ spec:
             - --timeout-keep-alive=120
           env:
             - name: GOOGLE_AI_API_KEY
-              valueSource:
+              valueFrom:
                 secretKeyRef:
-                  secret: GOOGLE_AI_API_KEY
-                  version: latest
+                  name: GOOGLE_AI_API_KEY
+                  key: latest
             - name: OPENAI_API_KEY
-              valueSource:
+              valueFrom:
                 secretKeyRef:
-                  secret: OPENAI_API_KEY
-                  version: latest
+                  name: OPENAI_API_KEY
+                  key: latest
           resources:
             limits:
               cpu: 2000m
