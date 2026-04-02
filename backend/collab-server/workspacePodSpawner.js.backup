@@ -43,11 +43,6 @@ const IDLE_TIMEOUT_MS = Number(process.env.IDLE_TIMEOUT_MS) || 10 * 60 * 1000; /
 const CULL_INTERVAL_MS = Number(process.env.CULL_INTERVAL_MS) || 60 * 1000;    // 1 min
 const MAX_WORKSPACE_PODS = Number(process.env.MAX_WORKSPACE_PODS) || 50;
 const POD_READY_TIMEOUT_MS = Number(process.env.POD_READY_TIMEOUT_MS) || 120_000; // 2 min
-const WORKSPACE_NODE_SELECTOR_KEY = (process.env.WORKSPACE_NODE_SELECTOR_KEY || 'cloud.google.com/gke-nodepool').trim();
-const WORKSPACE_NODE_SELECTOR_VALUE = (process.env.WORKSPACE_NODE_SELECTOR_VALUE || 'workspace-pool').trim();
-const WORKSPACE_NODE_TAINT_KEY = (process.env.WORKSPACE_NODE_TAINT_KEY || 'workload').trim();
-const WORKSPACE_NODE_TAINT_VALUE = (process.env.WORKSPACE_NODE_TAINT_VALUE || 'workspace').trim();
-const WORKSPACE_NODE_TAINT_EFFECT = (process.env.WORKSPACE_NODE_TAINT_EFFECT || 'NoSchedule').trim();
 
 // ── K8s client ─────────────────────────────────────────────────────────────
 
@@ -82,23 +77,6 @@ function deploymentName(sessionId) {
 
 function serviceName(sessionId) {
   return `ws-svc-${safeName(sessionId)}`;
-}
-
-function buildWorkspaceScheduling() {
-  const nodeSelector = WORKSPACE_NODE_SELECTOR_KEY && WORKSPACE_NODE_SELECTOR_VALUE
-    ? { [WORKSPACE_NODE_SELECTOR_KEY]: WORKSPACE_NODE_SELECTOR_VALUE }
-    : undefined;
-
-  const tolerations = WORKSPACE_NODE_TAINT_KEY && WORKSPACE_NODE_TAINT_VALUE
-    ? [{
-        key: WORKSPACE_NODE_TAINT_KEY,
-        operator: 'Equal',
-        value: WORKSPACE_NODE_TAINT_VALUE,
-        effect: WORKSPACE_NODE_TAINT_EFFECT,
-      }]
-    : [];
-
-  return { nodeSelector, tolerations };
 }
 
 // ── Watch API: Wait for pod readiness ─────────────────────────────────────
@@ -253,7 +231,6 @@ async function getActiveWorkspaceCount() {
  */
 async function ensurePod(sessionId, userId) {
   const name = deploymentName(sessionId);
-  const workspaceScheduling = buildWorkspaceScheduling();
 
   // 1. Check if it already exists — fast path.
   try {
@@ -321,8 +298,6 @@ async function ensurePod(sessionId, userId) {
           securityContext: {
             runAsUser: 0,
           },
-          ...(workspaceScheduling.nodeSelector ? { nodeSelector: workspaceScheduling.nodeSelector } : {}),
-          ...(workspaceScheduling.tolerations.length ? { tolerations: workspaceScheduling.tolerations } : {}),
           containers: [
             {
               name: 'worker',

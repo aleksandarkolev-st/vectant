@@ -141,33 +141,8 @@ spec:
                 configMapKeyRef:
                   name: synthi-config
                   key: WORKER_IMAGE
-            - name: WORKSPACE_NODE_SELECTOR_KEY
-              valueFrom:
-                configMapKeyRef:
-                  name: synthi-config
-                  key: WORKSPACE_NODE_SELECTOR_KEY
-            - name: WORKSPACE_NODE_SELECTOR_VALUE
-              valueFrom:
-                configMapKeyRef:
-                  name: synthi-config
-                  key: WORKSPACE_NODE_SELECTOR_VALUE
-            - name: WORKSPACE_NODE_TAINT_KEY
-              valueFrom:
-                configMapKeyRef:
-                  name: synthi-config
-                  key: WORKSPACE_NODE_TAINT_KEY
-            - name: WORKSPACE_NODE_TAINT_VALUE
-              valueFrom:
-                configMapKeyRef:
-                  name: synthi-config
-                  key: WORKSPACE_NODE_TAINT_VALUE
-            - name: WORKSPACE_NODE_TAINT_EFFECT
-              valueFrom:
-                configMapKeyRef:
-                  name: synthi-config
-                  key: WORKSPACE_NODE_TAINT_EFFECT
             - name: IDLE_TIMEOUT_MS
-              value: "180000"   # 3 min
+              value: "600000"   # 10 min
             - name: MAX_WORKSPACE_PODS
               value: "50"
             - name: POD_READY_TIMEOUT_MS

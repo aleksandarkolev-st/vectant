@@ -1,0 +1,94 @@
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: synthi-frontend
+  annotations:
+    run.googleapis.com/launch-stage: GA
+spec:
+  template:
+    metadata:
+      annotations:
+        autoscaling.knative.dev/minScale: "0"
+        autoscaling.knative.dev/maxScale: "5"
+        run.googleapis.com/ingress: all
+        run.googleapis.com/startup-cpu-boost: "true"
+        run.googleapis.com/cloudsql-instances: overview-synti:europe-west10:synthi-dev
+    spec:
+      containerConcurrency: 80
+      timeoutSeconds: 300
+      serviceAccountName: synthi-frontend-run@overview-synti.iam.gserviceaccount.com
+      containers:
+        - image: europe-west10-docker.pkg.dev/overview-synti/synthi/synthi-frontend:latest
+          ports:
+            - name: http1
+              containerPort: 3000
+          env:
+            - name: NEXTAUTH_URL
+              value: https://beta.synthi.app
+            - name: NEXT_PUBLIC_COLLAB_SERVER_URL
+              value: https://beta.synthi.app/collab
+            - name: NEXT_PUBLIC_YSWEET_URL
+              value: https://beta.synthi.app/ysweet
+            - name: NEXT_PUBLIC_GATEWAY_WS_URL
+              value: wss://beta.synthi.app/gateway/ws
+            - name: NEXT_PUBLIC_CODE_INTEL_URL
+              value: https://beta.synthi.app
+            - name: NEXT_PUBLIC_AI_ENGINE_URL
+              value: https://beta.synthi.app
+            - name: COLLAB_SERVER_URL
+              value: https://beta.synthi.app/collab
+            - name: CODE_INTEL_URL
+              value: https://synthi-ai-engine-REPLACE_WITH_HASH-ew.a.run.app
+            - name: AI_ENGINE_URL
+              value: https://synthi-ai-engine-REPLACE_WITH_HASH-ew.a.run.app
+            - name: TURN_CREDENTIAL_TTL
+              value: "86400"
+            - name: AUTH_SECRET
+              valueSource:
+                secretKeyRef:
+                  secret: AUTH_SECRET
+                  version: latest
+            - name: NEXTAUTH_SECRET
+              valueSource:
+                secretKeyRef:
+                  secret: NEXTAUTH_SECRET
+                  version: latest
+            - name: GOOGLE_CLIENT_ID
+              valueSource:
+                secretKeyRef:
+                  secret: GOOGLE_CLIENT_ID
+                  version: latest
+            - name: GOOGLE_CLIENT_SECRET
+              valueSource:
+                secretKeyRef:
+                  secret: GOOGLE_CLIENT_SECRET
+                  version: latest
+            - name: GITHUB_ID
+              valueSource:
+                secretKeyRef:
+                  secret: GITHUB_ID
+                  version: latest
+            - name: GITHUB_SECRET
+              valueSource:
+                secretKeyRef:
+                  secret: GITHUB_SECRET
+                  version: latest
+            - name: DATABASE_URL
+              valueSource:
+                secretKeyRef:
+                  secret: DATABASE_URL
+                  version: latest
+            - name: CLOUDFLARE_TURN_TOKEN_ID
+              valueSource:
+                secretKeyRef:
+                  secret: CLOUDFLARE_TURN_TOKEN_ID
+                  version: latest
+            - name: CLOUDFLARE_TURN_API_TOKEN
+              valueSource:
+                secretKeyRef:
+                  secret: CLOUDFLARE_TURN_API_TOKEN
+                  version: latest
+          resources:
+            limits:
+              cpu: 1000m
+              memory: 1Gi

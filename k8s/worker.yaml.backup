@@ -41,13 +41,6 @@ spec:
     spec:
       securityContext:
         runAsUser: 0
-      nodeSelector:
-        cloud.google.com/gke-nodepool: workspace-pool
-      tolerations:
-        - key: workload
-          operator: Equal
-          value: workspace
-          effect: NoSchedule
       # Spread workers across nodes for resilience and resource isolation.
       affinity:
         podAntiAffinity:

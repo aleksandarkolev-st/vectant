@@ -13,7 +13,7 @@ metadata:
     app: signaling-server
     app.kubernetes.io/part-of: synthi-ide
 spec:
-  replicas: 1
+  replicas: 2
   selector:
     matchLabels:
       app: signaling-server
@@ -102,29 +102,3 @@ spec:
     - port: 8080
       targetPort: 8080
       name: health
-
----
-# Keep one always-on signaling pod for beta, but allow short bursts when
-# concurrent workspace sessions increase.
-apiVersion: autoscaling/v2
-kind: HorizontalPodAutoscaler
-metadata:
-  name: signaling-server-hpa
-  namespace: synthi
-  labels:
-    app: signaling-server
-    app.kubernetes.io/part-of: synthi-ide
-spec:
-  scaleTargetRef:
-    apiVersion: apps/v1
-    kind: Deployment
-    name: signaling-server
-  minReplicas: 1
-  maxReplicas: 4
-  metrics:
-    - type: Resource
-      resource:
-        name: cpu
-        target:
-          type: Utilization
-          averageUtilization: 70

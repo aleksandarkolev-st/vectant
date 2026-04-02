@@ -18,7 +18,7 @@ metadata:
     app: y-sweet
     app.kubernetes.io/part-of: synthi-ide
 spec:
-  replicas: 1    # Beta floor — keep a single relay warm until Cloud Run cutover.
+  replicas: 2    # Stateless — scale freely behind the Service
   selector:
     matchLabels:
       app: y-sweet
@@ -104,29 +104,3 @@ spec:
     - port: 8080
       targetPort: 8080
       name: http-ws
-
----
-# Keep a single warm relay for beta, but allow burst scaling when multiple
-# users are collaborating at once.
-apiVersion: autoscaling/v2
-kind: HorizontalPodAutoscaler
-metadata:
-  name: y-sweet-hpa
-  namespace: synthi
-  labels:
-    app: y-sweet
-    app.kubernetes.io/part-of: synthi-ide
-spec:
-  scaleTargetRef:
-    apiVersion: apps/v1
-    kind: Deployment
-    name: y-sweet
-  minReplicas: 1
-  maxReplicas: 4
-  metrics:
-    - type: Resource
-      resource:
-        name: cpu
-        target:
-          type: Utilization
-          averageUtilization: 70

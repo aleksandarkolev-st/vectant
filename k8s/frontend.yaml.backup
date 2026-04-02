@@ -18,7 +18,7 @@ metadata:
     app: frontend
     app.kubernetes.io/part-of: synthi-ide
 spec:
-  replicas: 1
+  replicas: 2
   selector:
     matchLabels:
       app: frontend
@@ -195,7 +195,7 @@ spec:
     apiVersion: apps/v1
     kind: Deployment
     name: frontend
-  minReplicas: 1
+  minReplicas: 2
   maxReplicas: 8
   metrics:
     - type: Resource
