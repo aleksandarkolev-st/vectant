@@ -58,3 +58,28 @@
 - The remaining live git failure is scoped to legacy auth state: `/data/repos/_auth` is still empty for `y3jmn3x7`, so this workspace needs one successful token-bearing fetch/pull/push after the upgrade to seed persistence.
 - Follow-up repo fix applied: `backend/collab-server/server.js` now uses the resolved effective repo owner for `init`/`clone` bootstrap paths so guests do not persist auth against the wrong repo scope.
 - Live collab-server rollout now runs `europe-west10-docker.pkg.dev/overview-synti/synthi/synthi-collab-server:authscopefix-20260401092848`, so the effective-user bootstrap fix is active in the beta cluster.
+
+## Hybrid Step 2 Practical Rollout
+
+### Scope
+- Roll out workspace-pool-aware collab spawning with a controlled maintenance restart.
+- Preserve the live worker image pin while applying the new ConfigMap keys.
+- Validate that new workspace pods land on `workspace-pool` and reap after the reduced idle timeout.
+
+### Checklist
+- [x] Build and push explicit collab image `workspacepoolfix-20260402112432`.
+- [x] Pin `k8s/configmap.yaml` worker image to `f9e33bbe-runtimefix1`.
+- [x] Pin `k8s/collab-server.yaml` to `workspacepoolfix-20260402112432`.
+- [x] Apply `synthi-config` and `collab-server` manifests to the live cluster.
+- [x] Validate `/api/spawner/ensure` creates a workspace on `workspace-pool`.
+- [x] Validate idle reap after ~3 minutes without activity.
+
+### Review
+- `workspace-pool` already exists live with autoscaling, workspace labels, and the `workload=workspace:NoSchedule` taint.
+- The remaining live gap before this rollout is config drift: the current `synthi-config` in-cluster does not yet expose the workspace selector and toleration keys.
+- The collab rollout must use an explicit image tag, not `:latest`, to avoid regressing the working beta deployment during maintenance.
+- `kubectl apply -f k8s/configmap.yaml` succeeded, so the live `synthi-config` now exposes the workspace selector and toleration keys while preserving `WORKER_IMAGE=f9e33bbe-runtimefix1`.
+- The initial collab apply failed because the repo Deployment selector had drifted from the live kustomize-managed selector. `k8s/collab-server.yaml` was updated to include the live `app.kubernetes.io/managed-by` and `app.kubernetes.io/part-of` selector labels so future applies are clean.
+- The controlled maintenance rollout completed successfully and `collab-server` is now running `europe-west10-docker.pkg.dev/overview-synti/synthi/synthi-collab-server:workspacepoolfix-20260402112432`.
+- Synthetic validation session `step2-smoke-20260402113350` created deployment `workspace-step2-smoke-20260402113350`; its Deployment requested `nodeSelector cloud.google.com/gke-nodepool=workspace-pool`, tolerated `workload=workspace:NoSchedule`, and the running pod landed on node pool `workspace-pool`.
+- Collab logs confirmed idle culling: `[Culler] Deleting idle workspace workspace-step2-smoke-20260402113350 (session=step2-smoke-20260402113350, idle=193s)`, and the workspace Deployment no longer exists in the cluster.

@@ -49,7 +49,7 @@ data:
   SYNTHI_LOG_LEVEL: "info"
   SYNTHI_ISOLATION_MODEL: "single_worker"
   # Worker container image (used by the dynamic spawner in collab-server).
-  WORKER_IMAGE: "europe-west10-docker.pkg.dev/overview-synti/synthi/synthi-worker:latest"
+  WORKER_IMAGE: "europe-west10-docker.pkg.dev/overview-synti/synthi/synthi-worker:f9e33bbe-runtimefix1"
   # Schedule dynamically spawned workspace pods onto the autoscaled workspace pool.
   WORKSPACE_NODE_SELECTOR_KEY: "cloud.google.com/gke-nodepool"
   WORKSPACE_NODE_SELECTOR_VALUE: "workspace-pool"

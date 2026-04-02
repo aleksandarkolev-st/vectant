@@ -1,10 +1,9 @@
-Set-StrictMode -Version Latest
-$ErrorActionPreference = 'Stop'
-
 param(
     [string]$ProjectId = 'overview-synti',
     [string]$ClusterName = 'synthi-beta-cluster',
     [string]$Zone = 'europe-west10-a',
+    [switch]$SkipCorePool,
+    [switch]$SkipWorkspacePool,
     [string]$CorePoolName = 'core-pool',
     [string]$WorkspacePoolName = 'workspace-pool',
     [string]$CoreMachineType = 'e2-small',
@@ -21,6 +20,9 @@ param(
     [string]$WorkspaceLabels = 'workload=workspace,pool-role=workspace',
     [string]$CoreLabels = 'pool-role=core'
 )
+
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
 
 function Get-NodePoolNames {
     $output = gcloud container node-pools list `
@@ -66,6 +68,14 @@ function Ensure-NodePool {
     }
 
     Write-Host "Creating node pool $Name ..."
+    $initialNodeCount = $NumNodes
+    if ($MinNodes -eq 0 -and $initialNodeCount -lt 1) {
+        # GKE node-pool creation requires an initial node count even when the
+        # autoscaling floor is zero. Create one bootstrap node and let the
+        # autoscaler scale the pool back down once it is idle.
+        $initialNodeCount = 1
+    }
+
     $createArgs = @(
         'container', 'node-pools', 'create', $Name,
         '--project', $ProjectId,
@@ -77,7 +87,7 @@ function Ensure-NodePool {
         '--enable-autoscaling',
         '--min-nodes', $MinNodes,
         '--max-nodes', $MaxNodes,
-        '--num-nodes', $NumNodes,
+        '--num-nodes', $initialNodeCount,
         '--node-labels', $Labels
     )
 
@@ -88,22 +98,26 @@ function Ensure-NodePool {
     & gcloud @createArgs
 }
 
-Ensure-NodePool `
-    -Name $CorePoolName `
-    -MachineType $CoreMachineType `
-    -MinNodes $CoreMinNodes `
-    -MaxNodes $CoreMaxNodes `
-    -NumNodes $CoreNumNodes `
-    -Labels $CoreLabels
+if (-not $SkipCorePool) {
+    Ensure-NodePool `
+        -Name $CorePoolName `
+        -MachineType $CoreMachineType `
+        -MinNodes $CoreMinNodes `
+        -MaxNodes $CoreMaxNodes `
+        -NumNodes $CoreNumNodes `
+        -Labels $CoreLabels
+}
 
-Ensure-NodePool `
-    -Name $WorkspacePoolName `
-    -MachineType $WorkspaceMachineType `
-    -MinNodes $WorkspaceMinNodes `
-    -MaxNodes $WorkspaceMaxNodes `
-    -NumNodes $WorkspaceNumNodes `
-    -Labels $WorkspaceLabels `
-    -Taints $WorkspaceTaint
+if (-not $SkipWorkspacePool) {
+    Ensure-NodePool `
+        -Name $WorkspacePoolName `
+        -MachineType $WorkspaceMachineType `
+        -MinNodes $WorkspaceMinNodes `
+        -MaxNodes $WorkspaceMaxNodes `
+        -NumNodes $WorkspaceNumNodes `
+        -Labels $WorkspaceLabels `
+        -Taints $WorkspaceTaint
+}
 
 Write-Host ''
 Write-Host 'Hybrid node pools are present.'
