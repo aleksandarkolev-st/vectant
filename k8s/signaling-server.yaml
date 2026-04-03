@@ -11,19 +11,26 @@ metadata:
   namespace: synthi
   labels:
     app: signaling-server
+    app.kubernetes.io/managed-by: kustomize
     app.kubernetes.io/part-of: synthi-ide
 spec:
   replicas: 1
   selector:
     matchLabels:
       app: signaling-server
+      app.kubernetes.io/managed-by: kustomize
+      app.kubernetes.io/part-of: synthi-ide
   template:
     metadata:
       labels:
         app: signaling-server
+        app.kubernetes.io/managed-by: kustomize
+        app.kubernetes.io/part-of: synthi-ide
     spec:
       securityContext:
         #runAsNonRoot: true
+      nodeSelector:
+        cloud.google.com/gke-nodepool: core-pool
       affinity:
         podAntiAffinity:
           preferredDuringSchedulingIgnoredDuringExecution:
@@ -92,6 +99,7 @@ metadata:
     app.kubernetes.io/part-of: synthi-ide
   annotations:
     cloud.google.com/backend-config: '{"default": "signaling-ws-backend-config"}'
+    cloud.google.com/neg: '{"exposed_ports":{"9000":{"name":"signaling-server-alb-neg"}}}'
 spec:
   selector:
     app: signaling-server

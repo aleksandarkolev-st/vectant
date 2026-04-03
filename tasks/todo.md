@@ -110,3 +110,30 @@
 - The Cloud Run manifests were corrected to use explicit image tags, Knative `valueFrom.secretKeyRef` secret syntax, and Service-level ingress annotations.
 - A Cloud Run job `synthi-vpc-smoke` reached the live private endpoints successfully: `10.72.3.8:5432` open and `10.72.2.11:6379` open.
 - Direct workstation requests to the new run.app URLs returned `404`, which confirms the services are not publicly serving traffic before the standalone ALB cutover.
+
+## Hybrid Step 5 and 6 Edge + Core Migration
+
+### Scope
+- Provision a standalone global external Application Load Balancer in front of the Cloud Run frontend/AI services and the GKE collab, signaling, and y-sweet services.
+- Restore the missing public `/ysweet` route while preserving the direct ai-engine paths the current frontend still calls.
+- Move `collab-server`, `signaling-server`, and `y-sweet` onto the dedicated `core-pool`.
+
+### Checklist
+- [x] Create the standalone global external ALB resources.
+- [x] Create serverless NEGs for `synthi-frontend`, `synthi-ai-gateway`, and `synthi-ai-engine`.
+- [x] Reuse the standalone zonal GKE NEGs for `collab-server`, `signaling-server`, and `y-sweet`.
+- [x] Recreate the route map for `/`, `/collab/*`, `/signal/*`, `/ysweet/*`, and `/gateway/*`.
+- [x] Preserve direct ai-engine routes `/code-intel/*`, `/classify/*`, `/provenance/*`, `/analyze/*`, `/heal/*`, and `/health/*`.
+- [x] Mirror IAP onto the standalone backend services using the existing `iap-oauth-secret` credentials.
+- [x] Create the `core-pool` and move `collab-server`, `signaling-server`, and `y-sweet` onto it.
+- [x] Fix the stuck `y-sweet` rollout by switching to a no-surge single-node rollout strategy.
+
+### Review
+- Standalone ALB resources are live under names including `synthi-edge-ip`, `synthi-edge-url-map`, `synthi-edge-https-proxy`, and the backend services `synthi-edge-frontend-bs`, `synthi-edge-gateway-bs`, `synthi-edge-ai-engine-bs`, `synthi-edge-collab-bs`, `synthi-edge-signaling-bs`, and `synthi-edge-ysweet-bs`.
+- The standalone IP is `34.49.90.162` and the URL map now includes `/ysweet` plus the original direct ai-engine public paths.
+- HTTPS host-header smoke tests against `beta.synthi.app` on the standalone IP returned `302` for `/`, `/collab/debug/status`, `/signal/health`, `/ysweet/ready`, `/gateway/health`, and `/health`, which confirms the route map and IAP redirect behavior are active.
+- `collab-server`, `signaling-server`, and `y-sweet` all run on `core-pool` in the live cluster.
+- `y-sweet` initially deadlocked because the single-node `core-pool` could not host both rollout revisions at once. `k8s/y-sweet.yaml` now uses `maxSurge: 0` and `maxUnavailable: 1`, and the rollout has converged to a single live replica.
+- `signaling-server` is healthy at the standalone ALB, and `y-sweet` is healthy on its new live endpoint after the rollout convergence.
+- `collab-server` is reachable on both `10.72.1.7:1234/healthz` and `10.72.1.7:1235/debug/status` from a Cloud Run VPC-connected probe. The ALB helper was updated to health-check the native app endpoint `1235 /debug/status`, while control-plane `get-health` output may lag immediately after that update.
+- The legacy ingress-managed collab backend also reports `UNHEALTHY`, so the remaining collab health-reporting mismatch appears inherited from the prior edge path rather than introduced by the standalone ALB migration.

@@ -40,17 +40,19 @@ spec:
       securityContext:
         #runAsNonRoot: true
         fsGroup: 1001
+      nodeSelector:
+        cloud.google.com/gke-nodepool: core-pool
       serviceAccountName: collab-server-sa
       containers:
         - name: collab
           image: europe-west10-docker.pkg.dev/overview-synti/synthi/synthi-collab-server:workspacepoolfix-20260402112432
           ports:
-            - containerPort: 1234
-              name: http-ws
+            - containerPort: 1235
+              name: app
           env:
             # ── Networking ──────────────────────────────────────────────────
             - name: COLLAB_PORT
-              value: "1234"
+              value: "1235"
             - name: SYNTHI_APP_URL
               value: "http://frontend:3000"
             - name: CORS_ORIGIN
@@ -192,15 +194,69 @@ spec:
           readinessProbe:
             httpGet:
               path: /debug/status
-              port: 1234
+              port: 1235
             initialDelaySeconds: 5
             periodSeconds: 10
           livenessProbe:
             httpGet:
               path: /debug/status
-              port: 1234
+              port: 1235
             initialDelaySeconds: 10
             periodSeconds: 20
+        - name: edge-proxy
+          image: nginx:1.27-alpine
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              cat <<'EOF' >/etc/nginx/nginx.conf
+              worker_processes auto;
+              events {}
+              http {
+                map $http_upgrade $connection_upgrade {
+                  default upgrade;
+                  '' close;
+                }
+                server {
+                  listen 1234;
+                  location = /healthz {
+                    add_header Content-Type text/plain;
+                    return 200 'ok';
+                  }
+                  location / {
+                    proxy_pass http://127.0.0.1:1235;
+                    proxy_http_version 1.1;
+                    proxy_set_header Host $host;
+                    proxy_set_header Upgrade $http_upgrade;
+                    proxy_set_header Connection $connection_upgrade;
+                    proxy_read_timeout 3600s;
+                    proxy_send_timeout 3600s;
+                  }
+                }
+              }
+              EOF
+              exec nginx -g 'daemon off;'
+          ports:
+            - containerPort: 1234
+              name: http-ws
+          resources:
+            requests:
+              cpu: 25m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 1234
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 1234
+            initialDelaySeconds: 5
+            periodSeconds: 10
         # ── Cloud SQL Auth Proxy sidecar ───────────────────────────────────
         # Available for future workspace/user metadata queries against the
         # shared PostgreSQL database.  The collab server can connect to
@@ -254,6 +310,7 @@ metadata:
     app.kubernetes.io/part-of: synthi-ide
   annotations:
     cloud.google.com/backend-config: '{"default": "ws-backend-config"}'
+    cloud.google.com/neg: '{"exposed_ports":{"1234":{"name":"collab-server-alb-neg"}}}'
 spec:
   selector:
     app: collab-server

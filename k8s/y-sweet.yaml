@@ -16,19 +16,31 @@ metadata:
   namespace: synthi
   labels:
     app: y-sweet
+    app.kubernetes.io/managed-by: kustomize
     app.kubernetes.io/part-of: synthi-ide
 spec:
   replicas: 1    # Beta floor — keep a single relay warm until Cloud Run cutover.
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 0
+      maxUnavailable: 1
   selector:
     matchLabels:
       app: y-sweet
+      app.kubernetes.io/managed-by: kustomize
+      app.kubernetes.io/part-of: synthi-ide
   template:
     metadata:
       labels:
         app: y-sweet
+        app.kubernetes.io/managed-by: kustomize
+        app.kubernetes.io/part-of: synthi-ide
     spec:
       securityContext:
         #runAsNonRoot: true
+      nodeSelector:
+        cloud.google.com/gke-nodepool: core-pool
       containers:
         - name: y-sweet
           image: ghcr.io/jamsocket/y-sweet:latest
@@ -97,6 +109,7 @@ metadata:
     app.kubernetes.io/part-of: synthi-ide
   annotations:
     cloud.google.com/backend-config: '{"default": "ws-backend-config"}'
+    cloud.google.com/neg: '{"exposed_ports":{"8080":{"name":"y-sweet-alb-neg"}}}'
 spec:
   selector:
     app: y-sweet
