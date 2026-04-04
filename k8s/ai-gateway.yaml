@@ -12,16 +12,21 @@ metadata:
   namespace: synthi
   labels:
     app: ai-gateway
+    app.kubernetes.io/managed-by: kustomize
     app.kubernetes.io/part-of: synthi-ide
 spec:
-  replicas: 1
+  replicas: 0
   selector:
     matchLabels:
       app: ai-gateway
+      app.kubernetes.io/managed-by: kustomize
+      app.kubernetes.io/part-of: synthi-ide
   template:
     metadata:
       labels:
         app: ai-gateway
+        app.kubernetes.io/managed-by: kustomize
+        app.kubernetes.io/part-of: synthi-ide
     spec:
       securityContext:
         #runAsNonRoot: true
@@ -33,6 +38,8 @@ spec:
                 labelSelector:
                   matchLabels:
                     app: ai-gateway
+                    app.kubernetes.io/managed-by: kustomize
+                    app.kubernetes.io/part-of: synthi-ide
                 topologyKey: kubernetes.io/hostname
       containers:
         - name: gateway
@@ -80,9 +87,8 @@ metadata:
   namespace: synthi
   labels:
     app: ai-gateway
+    app.kubernetes.io/managed-by: kustomize
     app.kubernetes.io/part-of: synthi-ide
-  annotations:
-    cloud.google.com/backend-config: '{"default": "gateway-ws-backend-config"}'
 spec:
   selector:
     app: ai-gateway
@@ -90,27 +96,3 @@ spec:
     - port: 7070
       targetPort: 7070
       name: ws
----
-# ── HPA — scale gateway pods based on CPU ────────────────────────────────────
-apiVersion: autoscaling/v2
-kind: HorizontalPodAutoscaler
-metadata:
-  name: ai-gateway-hpa
-  namespace: synthi
-  labels:
-    app: ai-gateway
-    app.kubernetes.io/part-of: synthi-ide
-spec:
-  scaleTargetRef:
-    apiVersion: apps/v1
-    kind: Deployment
-    name: ai-gateway
-  minReplicas: 1
-  maxReplicas: 6
-  metrics:
-    - type: Resource
-      resource:
-        name: cpu
-        target:
-          type: Utilization
-          averageUtilization: 70

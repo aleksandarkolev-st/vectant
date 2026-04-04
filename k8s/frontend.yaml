@@ -16,16 +16,21 @@ metadata:
   namespace: synthi
   labels:
     app: frontend
+    app.kubernetes.io/managed-by: kustomize
     app.kubernetes.io/part-of: synthi-ide
 spec:
-  replicas: 1
+  replicas: 0
   selector:
     matchLabels:
       app: frontend
+      app.kubernetes.io/managed-by: kustomize
+      app.kubernetes.io/part-of: synthi-ide
   template:
     metadata:
       labels:
         app: frontend
+        app.kubernetes.io/managed-by: kustomize
+        app.kubernetes.io/part-of: synthi-ide
     spec:
       securityContext:
         #runAsNonRoot: true
@@ -37,6 +42,8 @@ spec:
                 labelSelector:
                   matchLabels:
                     app: frontend
+                    app.kubernetes.io/managed-by: kustomize
+                    app.kubernetes.io/part-of: synthi-ide
                 topologyKey: kubernetes.io/hostname
       containers:
         - name: nextjs
@@ -170,9 +177,8 @@ metadata:
   namespace: synthi
   labels:
     app: frontend
+    app.kubernetes.io/managed-by: kustomize
     app.kubernetes.io/part-of: synthi-ide
-  annotations:
-    cloud.google.com/backend-config: '{"default": "http-backend-config"}'
 spec:
   selector:
     app: frontend
@@ -180,27 +186,3 @@ spec:
     - port: 3000
       targetPort: 3000
       name: http
----
-# ── HPA — scale frontend pods based on CPU ───────────────────────────────────
-apiVersion: autoscaling/v2
-kind: HorizontalPodAutoscaler
-metadata:
-  name: frontend-hpa
-  namespace: synthi
-  labels:
-    app: frontend
-    app.kubernetes.io/part-of: synthi-ide
-spec:
-  scaleTargetRef:
-    apiVersion: apps/v1
-    kind: Deployment
-    name: frontend
-  minReplicas: 1
-  maxReplicas: 8
-  metrics:
-    - type: Resource
-      resource:
-        name: cpu
-        target:
-          type: Utilization
-          averageUtilization: 70

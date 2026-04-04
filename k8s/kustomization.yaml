@@ -17,7 +17,6 @@
 #    kubectl apply -f k8s/signaling-server.yaml
 #    kubectl apply -f k8s/frontend.yaml
 #    kubectl apply -f k8s/worker.yaml
-#    kubectl apply -f k8s/ingress.yaml
 #    kubectl apply -f k8s/network-policies.yaml
 #    kubectl apply -f k8s/pod-disruption-budgets.yaml
 # ─────────────────────────────────────────────────────────────────────────────
@@ -49,10 +48,7 @@ resources:
   - frontend.yaml
   - worker.yaml
 
-  # 5. Ingress (depends on all services existing)
-  - ingress.yaml
-
-  # 6. Production hardening
+  # 5. Production hardening
   - network-policies.yaml
   - pod-disruption-budgets.yaml
 

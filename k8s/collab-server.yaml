@@ -309,7 +309,6 @@ metadata:
     app: collab-server
     app.kubernetes.io/part-of: synthi-ide
   annotations:
-    cloud.google.com/backend-config: '{"default": "ws-backend-config"}'
     cloud.google.com/neg: '{"exposed_ports":{"1234":{"name":"collab-server-alb-neg"}}}'
 spec:
   selector:

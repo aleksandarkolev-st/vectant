@@ -1,5 +1,6 @@
 param(
     [string]$ProjectId = 'overview-synti',
+    [string]$ClusterName = 'synthi-beta-cluster',
     [string]$Region = 'europe-west10',
     [string]$Zone = 'europe-west10-a',
     [string]$Namespace = 'synthi',
@@ -23,7 +24,8 @@ param(
     [string]$CollabHealthCheckName = 'synthi-collab-hc',
     [string]$SignalingHealthCheckName = 'synthi-signaling-hc',
     [string]$YSweetHealthCheckName = 'synthi-ysweet-hc',
-    [string]$CertificateName = ''
+    [string]$HealthCheckFirewallRuleName = 'synthi-edge-gke-hc-fw',
+    [string]$CertificateName = 'synthi-edge-cert'
 )
 
 Set-StrictMode -Version Latest
@@ -70,6 +72,94 @@ function Test-ZonalNegExists($name) {
     return -not [string]::IsNullOrWhiteSpace($result)
 }
 
+function Resolve-ClusterNodeTag() {
+    $instances = Invoke-GcloudJson @(
+        'compute', 'instances', 'list',
+        '--project', $ProjectId,
+        '--filter', "name~'^gke-$ClusterName-'",
+        '--format', 'json(name,tags.items)'
+    )
+
+    if (-not $instances) {
+        throw "No GKE instances found for cluster $ClusterName"
+    }
+
+    foreach ($instance in $instances) {
+        foreach ($tag in $instance.tags.items) {
+            if ($tag -like "gke-$ClusterName-*-node") {
+                return $tag
+            }
+        }
+    }
+
+    throw "Could not resolve the GKE node tag for cluster $ClusterName"
+}
+
+function Get-ProjectNumber() {
+    return Invoke-GcloudValue @('projects', 'describe', $ProjectId, '--format', 'value(projectNumber)')
+}
+
+function Ensure-IapServiceIdentity($projectNumber) {
+    $token = Invoke-GcloudValue @('auth', 'print-access-token')
+    $headers = @{
+        Authorization = "Bearer $token"
+        'Content-Type' = 'application/json'
+    }
+    $uri = "https://serviceusage.googleapis.com/v1beta1/projects/$projectNumber/services/iap.googleapis.com:generateServiceIdentity"
+
+    try {
+        Invoke-RestMethod -Method Post -Headers $headers -Uri $uri -Body '{}' | Out-Null
+    }
+    catch {
+        $message = $_.Exception.Message
+        if ($message -notmatch '409') {
+            throw "Failed to ensure IAP service identity: $message"
+        }
+    }
+}
+
+function Ensure-CloudRunInvoker($serviceName, $projectNumber) {
+    & gcloud run services add-iam-policy-binding $serviceName `
+        --project $ProjectId `
+        --region $Region `
+        --member "serviceAccount:service-$projectNumber@gcp-sa-iap.iam.gserviceaccount.com" `
+        --role 'roles/run.invoker' `
+        --quiet | Out-Host
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed to grant Cloud Run Invoker to the IAP service agent for $serviceName"
+    }
+}
+
+function Ensure-HealthCheckFirewallRule($nodeTag) {
+    $sourceRanges = '35.191.0.0/16,130.211.0.0/22'
+    $allowed = 'tcp:1234,tcp:1235,tcp:8080,tcp:9000'
+
+    if (-not (Test-GlobalResourceExists 'firewall-rules' $HealthCheckFirewallRuleName)) {
+        gcloud compute firewall-rules create $HealthCheckFirewallRuleName `
+            --project $ProjectId `
+            --network default `
+            --direction INGRESS `
+            --priority 1000 `
+            --action ALLOW `
+            --rules $allowed `
+            --source-ranges $sourceRanges `
+            --target-tags $nodeTag | Out-Host
+        if ($LASTEXITCODE -ne 0) { throw "Failed to create firewall rule $HealthCheckFirewallRuleName" }
+        return
+    }
+
+    gcloud compute firewall-rules update $HealthCheckFirewallRuleName `
+        --project $ProjectId `
+        --network default `
+        --direction INGRESS `
+        --priority 1000 `
+        --action ALLOW `
+        --rules $allowed `
+        --source-ranges $sourceRanges `
+        --target-tags $nodeTag | Out-Host
+    if ($LASTEXITCODE -ne 0) { throw "Failed to update firewall rule $HealthCheckFirewallRuleName" }
+}
+
 function Ensure-GlobalAddress() {
     if (-not (Test-GlobalResourceExists 'addresses' $AddressName)) {
         gcloud compute addresses create $AddressName --global --project $ProjectId | Out-Host
@@ -77,21 +167,24 @@ function Ensure-GlobalAddress() {
     }
 }
 
+function Ensure-ManagedSslCertificate($name) {
+    if (Test-GlobalResourceExists 'ssl-certificates' $name) {
+        return $name
+    }
+
+    & gcloud compute ssl-certificates create $name `
+        --project $ProjectId `
+        --global `
+        --domains $Domain | Out-Host
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed to create managed SSL certificate $name"
+    }
+
+    return $name
+}
+
 function Resolve-CertificateName() {
-    if (-not [string]::IsNullOrWhiteSpace($CertificateName)) {
-        return $CertificateName
-    }
-
-    $certs = Invoke-GcloudJson @('compute', 'ssl-certificates', 'list', '--project', $ProjectId, '--format', 'json')
-    $active = $certs | Where-Object {
-        $_.managed.status -eq 'ACTIVE' -and $_.managed.domains -contains $Domain
-    } | Select-Object -First 1
-
-    if (-not $active) {
-        throw "No active managed SSL certificate found for $Domain"
-    }
-
-    return $active.name
+    return Ensure-ManagedSslCertificate -name $CertificateName
 }
 
 function Get-IapSecretValue($key) {
@@ -330,11 +423,19 @@ function Ensure-HttpsForwardingRule() {
     }
 }
 
+$projectNumber = Get-ProjectNumber
 $certificateName = Resolve-CertificateName
 $clientId = Get-IapSecretValue 'client_id'
 $clientSecret = Get-IapSecretValue 'client_secret'
+$nodeTag = Resolve-ClusterNodeTag
+
+Ensure-IapServiceIdentity -projectNumber $projectNumber
+Ensure-CloudRunInvoker -serviceName 'synthi-frontend' -projectNumber $projectNumber
+Ensure-CloudRunInvoker -serviceName 'synthi-ai-gateway' -projectNumber $projectNumber
+Ensure-CloudRunInvoker -serviceName 'synthi-ai-engine' -projectNumber $projectNumber
 
 Ensure-GlobalAddress
+Ensure-HealthCheckFirewallRule -nodeTag $nodeTag
 
 Ensure-ServerlessNeg -name $FrontendNegName -cloudRunService 'synthi-frontend'
 Ensure-ServerlessNeg -name $AiGatewayNegName -cloudRunService 'synthi-ai-gateway'

@@ -11,16 +11,21 @@ metadata:
   namespace: synthi
   labels:
     app: ai-engine
+    app.kubernetes.io/managed-by: kustomize
     app.kubernetes.io/part-of: synthi-ide
 spec:
-  replicas: 1
+  replicas: 0
   selector:
     matchLabels:
       app: ai-engine
+      app.kubernetes.io/managed-by: kustomize
+      app.kubernetes.io/part-of: synthi-ide
   template:
     metadata:
       labels:
         app: ai-engine
+        app.kubernetes.io/managed-by: kustomize
+        app.kubernetes.io/part-of: synthi-ide
     spec:
       securityContext:
         #runAsNonRoot: true
@@ -76,6 +81,7 @@ metadata:
   namespace: synthi
   labels:
     app: ai-engine
+    app.kubernetes.io/managed-by: kustomize
     app.kubernetes.io/part-of: synthi-ide
 spec:
   selector:

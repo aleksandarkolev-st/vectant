@@ -137,3 +137,49 @@
 - `signaling-server` is healthy at the standalone ALB, and `y-sweet` is healthy on its new live endpoint after the rollout convergence.
 - `collab-server` is reachable on both `10.72.1.7:1234/healthz` and `10.72.1.7:1235/debug/status` from a Cloud Run VPC-connected probe. The ALB helper was updated to health-check the native app endpoint `1235 /debug/status`, while control-plane `get-health` output may lag immediately after that update.
 - The legacy ingress-managed collab backend also reports `UNHEALTHY`, so the remaining collab health-reporting mismatch appears inherited from the prior edge path rather than introduced by the standalone ALB migration.
+
+## Hybrid Step 7 and 8 Default-Pool Retirement
+
+### Scope
+- Retire the remaining legacy GKE frontend, ai-gateway, ai-engine, and postgres workloads from `default-pool`.
+- Prove the standalone ALB is stable after DNS cutover and keep the old ingress at zero beta-domain traffic before pool deletion.
+- Delete `default-pool` without breaking the core collab/signaling/y-sweet path.
+
+### Checklist
+- [x] Fix the standalone collab backend unhealthy report.
+- [x] Point collab and worker AI traffic at the Cloud Run ai-engine URL.
+- [x] Move Redis onto `core-pool`.
+- [x] Scale legacy GKE frontend, ai-gateway, ai-engine, and postgres to zero.
+- [x] Prove `beta.synthi.app` uses the standalone ALB and the old ingress has zero beta-domain traffic for 15 minutes.
+- [x] Drain and delete `default-pool`.
+- [x] Summarize the steady-state idle burn delta.
+
+### Review
+- Root cause of the standalone collab unhealthy report was missing firewall coverage for Google health-check source ranges to the collab ports. `ops/gcp/ensure-standalone-edge-alb.ps1` now reconciles `synthi-edge-gke-hc-fw`, and `synthi-edge-collab-bs` became `HEALTHY` after the rule was applied.
+- `k8s/configmap.yaml` now points `CODE_INTEL_URL` and `BACKEND_URL` at `https://synthi-ai-engine-767721372193.europe-west10.run.app`, and a live collab restart verified the Cloud Run ai-engine `/health` endpoint returns `200 OK` from inside the cluster.
+- `k8s/redis.yaml` now pins Redis to `core-pool`, and Redis was migrated live before the default-pool drain.
+- `k8s/frontend.yaml`, `k8s/ai-gateway.yaml`, `k8s/ai-engine.yaml`, and `k8s/postgres.yaml` were aligned to the live kustomize-managed selectors so `kubectl apply` could scale them cleanly to zero instead of failing on immutable selector or StatefulSet drift.
+- The standalone ALB stayed stable through the cutover window. Post-cutover checks reported `old_beta_15m=0`, `new_5xx_15m=0`, and synthetic requests to `/`, `/collab/debug/status`, `/signal/health`, `/ysweet/ready`, and `/gateway/health` all returned the expected `302` IAP redirect.
+- The `default-pool` deletion was blocked initially by regional CPU and in-use-address quotas, so the safe fix was a rolling pool swap: drain one default node, resize `default-pool` down by one, resize `core-pool` up by one, and repeat. Final steady state is three `core-pool` nodes and zero `default-pool` nodes.
+- Post-delete verification shows only `core-pool` nodes remain, all synthi and cluster-system pods are running there, and the standalone ALB backends for collab, signaling, and y-sweet all report `HEALTHY`.
+- Approximate steady-state idle burn for the always-on node layer dropped from about `$157.65/month` (`3 x e2-standard-2` default nodes plus `1 x e2-small` core node) to about `$32.85/month` (`3 x e2-small` core nodes), a reduction of about `$124.80/month` or `79%`. This excludes Cloud Run request-driven usage and assumes public on-demand Compute Engine list pricing over `730` hours/month.
+
+## Post-Ingress Cleanup Follow-Through
+
+### Scope
+- Remove ingress-era manifests and service annotations from the repo so the old GKE ingress stack cannot be recreated.
+- Give the standalone ALB its own managed certificate and make it self-sufficient for Cloud Run IAP.
+- Delete the remaining live ingress-era GCLB and Kubernetes resources after confirming standalone ownership is complete.
+
+### Checklist
+- [x] Remove `k8s/ingress.yaml` from the repo and from `k8s/kustomization.yaml`.
+- [x] Remove ingress-only BackendConfig annotations from the retained services.
+- [x] Update `ops/gcp/ensure-standalone-edge-alb.ps1` to manage its own cert and Cloud Run IAP service identity.
+- [x] Provision the IAP service identity and restore the public `302` IAP flow for Cloud Run-backed routes.
+- [ ] Delete the remaining live ingress-era Kubernetes and GCLB resources.
+
+### Review
+- Repo cleanup is complete: `k8s/ingress.yaml` is deleted, `k8s/kustomization.yaml` no longer references ingress, and ingress-era BackendConfig annotations were removed from `frontend`, `ai-gateway`, `collab-server`, and `signaling-server` service manifests.
+- `ops/gcp/ensure-standalone-edge-alb.ps1` now defaults to a dedicated managed certificate name `synthi-edge-cert`, creates the IAP service identity through the Service Usage REST API, and grants the IAP service agent `roles/run.invoker` on `synthi-frontend`, `synthi-ai-gateway`, and `synthi-ai-engine` before updating the standalone backend services.
+- The live Cloud Run IAP failure was fixed by generating the IAP service identity for project `767721372193`. After that change, `https://beta.synthi.app/` and workspace routes resumed returning the expected Google IAP `302` redirect instead of the `IAP service account is not provisioned` error.
+- Final live deletion of the old ingress-era resources is currently blocked only by expired local `gcloud` credentials. `gcloud` can list the active account but cannot refresh access tokens non-interactively, so `kubectl` and `gcloud compute` mutations now require a fresh interactive `gcloud auth login` before the old `synthi-ingress` and `k8s1`/`k8s2` load-balancer resources can be deleted safely.

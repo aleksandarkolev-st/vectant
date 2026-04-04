@@ -14,17 +14,22 @@ metadata:
   namespace: synthi
   labels:
     app: postgres
+    app.kubernetes.io/managed-by: kustomize
     app.kubernetes.io/part-of: synthi-ide
 spec:
   serviceName: postgres
-  replicas: 1
+  replicas: 0
   selector:
     matchLabels:
       app: postgres
+      app.kubernetes.io/managed-by: kustomize
+      app.kubernetes.io/part-of: synthi-ide
   template:
     metadata:
       labels:
         app: postgres
+        app.kubernetes.io/managed-by: kustomize
+        app.kubernetes.io/part-of: synthi-ide
     spec:
       containers:
         - name: postgres
@@ -72,6 +77,9 @@ spec:
   volumeClaimTemplates:
     - metadata:
         name: postgres-data
+        labels:
+          app.kubernetes.io/managed-by: kustomize
+          app.kubernetes.io/part-of: synthi-ide
       spec:
         accessModes: ["ReadWriteOnce"]
         # Uses the GKE default StorageClass (pd-standard).
@@ -87,6 +95,7 @@ metadata:
   namespace: synthi
   labels:
     app: postgres
+    app.kubernetes.io/managed-by: kustomize
     app.kubernetes.io/part-of: synthi-ide
 spec:
   clusterIP: None   # headless for StatefulSet

@@ -98,7 +98,6 @@ metadata:
     app: signaling-server
     app.kubernetes.io/part-of: synthi-ide
   annotations:
-    cloud.google.com/backend-config: '{"default": "signaling-ws-backend-config"}'
     cloud.google.com/neg: '{"exposed_ports":{"9000":{"name":"signaling-server-alb-neg"}}}'
 spec:
   selector:

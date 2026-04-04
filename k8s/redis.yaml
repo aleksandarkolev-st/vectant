@@ -13,17 +13,24 @@ metadata:
   namespace: synthi
   labels:
     app: redis
+    app.kubernetes.io/managed-by: kustomize
     app.kubernetes.io/part-of: synthi-ide
 spec:
   replicas: 1
   selector:
     matchLabels:
       app: redis
+      app.kubernetes.io/managed-by: kustomize
+      app.kubernetes.io/part-of: synthi-ide
   template:
     metadata:
       labels:
         app: redis
+        app.kubernetes.io/managed-by: kustomize
+        app.kubernetes.io/part-of: synthi-ide
     spec:
+      nodeSelector:
+        cloud.google.com/gke-nodepool: core-pool
       containers:
         - name: redis
           image: redis:7-alpine
