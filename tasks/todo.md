@@ -183,3 +183,25 @@
 - `ops/gcp/ensure-standalone-edge-alb.ps1` now defaults to a dedicated managed certificate name `synthi-edge-cert`, creates the IAP service identity through the Service Usage REST API, and grants the IAP service agent `roles/run.invoker` on `synthi-frontend`, `synthi-ai-gateway`, and `synthi-ai-engine` before updating the standalone backend services.
 - The live Cloud Run IAP failure was fixed by generating the IAP service identity for project `767721372193`. After that change, `https://beta.synthi.app/` and workspace routes resumed returning the expected Google IAP `302` redirect instead of the `IAP service account is not provisioned` error.
 - Final live deletion of the old ingress-era resources is currently blocked only by expired local `gcloud` credentials. `gcloud` can list the active account but cannot refresh access tokens non-interactively, so `kubectl` and `gcloud compute` mutations now require a fresh interactive `gcloud auth login` before the old `synthi-ingress` and `k8s1`/`k8s2` load-balancer resources can be deleted safely.
+
+## Test Repair and Workspace Import Reliability
+
+### Scope
+- Green the remaining pre-existing targeted frontend and ai-engine test failures without changing current runtime semantics.
+- Make workspace clone/import resilient when the secondary app-side workspace registration call is delayed or unavailable.
+- Keep the fix minimal and aligned with the post-migration architecture where the browser is already authenticated against the main app.
+
+### Checklist
+- [x] Update stale frontend tests to match current docking and AI suppression behavior.
+- [x] Update the targeted ai-engine registry tests to match current language-scoped rule semantics.
+- [x] Make collab clone workspace registration best-effort instead of fatal after a successful clone.
+- [x] Have the dashboard explicitly ensure the workspace record exists in the app before redirecting.
+- [x] Re-run the targeted frontend and ai-engine suites.
+
+### Review
+- `aiSuppressedRules.test.js` now imports the module with a direct relative path and its `mergeRemote` expectation acknowledges the local pending op before asserting remote replacement.
+- `layout-ops.test.js` now builds its fixture without the placeholder root tab group and asserts against the current `findTabGroup`, `collectTabIds`, `walkTree`, and `resizeSplit` APIs.
+- `test_rule_registry.py` now validates the current mix of global and language-scoped rules instead of assuming every registry entry is `languages={"*"}`.
+- `backend/collab-server/server.js` no longer turns a successful clone into a hard failure when the secondary app-side workspace registration call cannot be completed; the result now reports registration state for callers.
+- `synthi/src/app/page.jsx` now explicitly posts to `/api/workspace` after a successful clone, so the authenticated frontend ensures the workspace DB row exists before redirecting.
+- Targeted verification passed: `vitest` reported `47 passed`, and `pytest test/test_cache.py test/test_rule_registry.py -q` reported `17 passed`.

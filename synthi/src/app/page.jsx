@@ -41,6 +41,19 @@ function relativeTime(dateStr) {
   return date.toLocaleDateString();
 }
 
+async function readResponseError(response, fallbackMessage) {
+  try {
+    const data = await response.json();
+    if (data?.error) return data.error;
+    if (data?.message) return data.message;
+  } catch (_) {
+    const text = await response.text().catch(() => "");
+    if (text) return text;
+  }
+
+  return fallbackMessage;
+}
+
 /* ──────────────────────────── main ──────────────────────────── */
 
 export default function Dashboard() {
@@ -90,6 +103,24 @@ export default function Dashboard() {
     }
   }, []);
 
+  const ensureWorkspaceRecord = useCallback(async ({ slug, name, repoUrl }) => {
+    const response = await fetch("/api/workspace", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ slug, name, repoUrl }),
+    });
+
+    if (response.ok || response.status === 409) {
+      return;
+    }
+
+    const errorMessage = await readResponseError(
+      response,
+      "Failed to register workspace.",
+    );
+    throw new Error(errorMessage);
+  }, []);
+
   useEffect(() => {
     if (session?.user?.email) {
       fetchWorkspaces(session.user.email);
@@ -125,25 +156,32 @@ export default function Dashboard() {
       });
 
       if (res.ok) {
+        await ensureWorkspaceRecord({ slug, name, repoUrl });
+
         // Store the OAuth token for subsequent git operations
         if (session?.accessToken) {
           try { storeToken(slug, session.accessToken); } catch (_) {}
         }
-        await fetchWorkspaces(session.user.email);
+        if (session?.user?.email) {
+          await fetchWorkspaces(session.user.email);
+        }
         setRepoUrl("");
         router.push(`/workspace/${slug}`);
       } else {
-        const err = await res.json();
+        const errorMessage = await readResponseError(res, "Unknown error");
         setFeedback({
           type: "error",
-          message: `Import failed: ${err.error || "Unknown error"}`,
+          message: `Import failed: ${errorMessage}`,
         });
       }
     } catch (e) {
       console.error(e);
       setFeedback({
         type: "error",
-        message: "Import failed. Check the URL and try again.",
+        message:
+          e instanceof Error
+            ? e.message
+            : "Import failed. Check the URL and try again.",
       });
     } finally {
       setImporting(false);
@@ -212,10 +250,20 @@ export default function Dashboard() {
       });
 
       if (cloneRes.ok) {
+        await ensureWorkspaceRecord({
+          slug,
+          name: repo.name,
+          repoUrl: repo.cloneUrl,
+        });
+
         // Store the OAuth token so subsequent git operations (push, pull,
         // fetch) can authenticate without prompting the user for a PAT.
         if (session?.accessToken) {
           try { storeToken(slug, session.accessToken); } catch (_) {}
+        }
+
+        if (session?.user?.email) {
+          await fetchWorkspaces(session.user.email);
         }
 
         // 3. If AI Jumpstart is enabled, persist prompt data for workspace
@@ -233,17 +281,23 @@ export default function Dashboard() {
         setAiAttachments([]);
         router.push(`/workspace/${slug}`);
       } else {
-        const err = await cloneRes.json();
+        const errorMessage = await readResponseError(
+          cloneRes,
+          "Unknown error",
+        );
         setFeedback({
           type: "error",
-          message: `Repository created on GitHub but workspace setup failed: ${err.error || "Unknown error"}`,
+          message: `Repository created on GitHub but workspace setup failed: ${errorMessage}`,
         });
       }
     } catch (e) {
       console.error(e);
       setFeedback({
         type: "error",
-        message: "Something went wrong. Please try again.",
+        message:
+          e instanceof Error
+            ? e.message
+            : "Something went wrong. Please try again.",
       });
     } finally {
       setCreating(false);

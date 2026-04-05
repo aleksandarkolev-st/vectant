@@ -2195,6 +2195,11 @@ const server = http.createServer(async (req, res) => {
                   hydratedSlugs.add(hydrationKey(slug, bootstrapUserId));
                   // Save metadata locally
                   workspaceManager.addWorkspace(slug, data.repoUrl, data.owner, data.name);
+                  let workspaceRegistration = {
+                    attempted: false,
+                    created: false,
+                    pending: false,
+                  };
 
                   // Try to create the workspace in the main Synthi app DB so the web UI finds it.
                   // Use environment var SYNTHI_APP_URL or default to http://localhost:3000
@@ -2213,6 +2218,7 @@ const server = http.createServer(async (req, res) => {
                   }
 
                   if (fetchFunc) {
+                    workspaceRegistration.attempted = true;
                     const payload = {
                       name: data.name || slug,
                       slug: slug,
@@ -2232,7 +2238,7 @@ const server = http.createServer(async (req, res) => {
                           body: JSON.stringify(payload),
                         });
 
-                        if (res.ok || res.status === 409) { // 201 created or 409 already exists are acceptable
+                        if (res.status === 201 || res.status === 409) { // created or already exists are acceptable
                           created = true;
                           console.log(`[Collab] Notified Synthi app to create workspace '${slug}' (status ${res.status})`);
                           break;
@@ -2251,16 +2257,21 @@ const server = http.createServer(async (req, res) => {
                     }
 
                     if (!created) {
-                      // If we could not create the workspace record, fail the request - otherwise the UI will redirect to a workspace that 404s
                       const errMsg = `Failed to notify Synthi app to create workspace '${slug}' after ${maxAttempts} attempts.`;
-                      console.error('[Collab]', errMsg);
-                      // Throw an error to be handled by the outer catch and return non-200
-                      throw new Error(errMsg);
+                      console.warn('[Collab]', errMsg);
+                      workspaceRegistration.pending = true;
                     }
+
+                    workspaceRegistration.created = created;
                   } else {
                     console.warn('[Collab] Fetch not available - skipping workspace creation in main app. Set SYNTHI_APP_URL or install node-fetch.');
+                    workspaceRegistration.pending = true;
                   }
 
+                  result = {
+                    ...result,
+                    workspaceRegistration,
+                  };
                   broadcastFileTreeChanged(slug, notifyScope);
                   break;
                 case 'status':
