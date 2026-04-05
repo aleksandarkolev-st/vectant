@@ -10,6 +10,7 @@ import {
   discardAll, resolveConflictOurs, resolveConflictTheirs,
   markResolved, abortMerge, openConflictResolver
 } from '@/redux/gitSlice';
+import { selectGitLoading } from '@/redux/isolatedSelectors';
 import { refreshWorkspaceThunk, openDiffThunk, fetchFilesThunk, selectFileThunk } from '@/redux/workspaceSlice';
 import {
   RefreshCw, Check, CheckCircle2, UploadCloud, Plus, Minus, DownloadCloud,
@@ -162,8 +163,9 @@ function TokenSecurityAlert({ remotes, onDismiss }) {
 
 function GitStatusInner({ slug }) {
   const dispatch = useDispatch();
+  const loading = useSelector(selectGitLoading);
   const {
-    status, loading, error, actionError, actionErrorCode,
+    status, error, actionError, actionErrorCode,
     remotes, stashList, commitHistory, unpushedCommits, incomingCommits,
   } = useSelector(s => s.git);
   const { githubInfo, prList, prListLoading, hasToken: prHasToken } = useSelector(s => s.pr);

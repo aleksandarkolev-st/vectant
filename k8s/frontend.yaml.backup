@@ -1,0 +1,206 @@
+# ─────────────────────────────────────────────────────────────────────────────
+#  Synthi IDE — Next.js Frontend
+# ─────────────────────────────────────────────────────────────────────────────
+#  The Next.js app serves both the static client bundle and the API routes
+#  (auth, TURN credentials, workspace CRUD).
+#
+#  IMPORTANT: NEXT_PUBLIC_* env vars are baked into the client bundle at
+#  `next build` time.  They must be set in the Dockerfile / CI build step,
+#  NOT just at runtime.  The runtime env vars below (AUTH_SECRET, DATABASE_URL
+#  etc.) are read server-side by API routes and work normally.
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend
+  namespace: synthi
+  labels:
+    app: frontend
+    app.kubernetes.io/part-of: synthi-ide
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: frontend
+  template:
+    metadata:
+      labels:
+        app: frontend
+    spec:
+      securityContext:
+        #runAsNonRoot: true
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app: frontend
+                topologyKey: kubernetes.io/hostname
+      containers:
+        - name: nextjs
+          image: europe-west10-docker.pkg.dev/overview-synti/synthi/synthi-frontend:latest
+          ports:
+            - containerPort: 3000
+              name: http
+          env:
+            # ── Auth ────────────────────────────────────────────────────────
+            - name: AUTH_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: synthi-secrets
+                  key: AUTH_SECRET
+            - name: NEXTAUTH_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: synthi-secrets
+                  key: NEXTAUTH_SECRET
+            - name: NEXTAUTH_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: synthi-config
+                  key: NEXTAUTH_URL
+            - name: GOOGLE_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: synthi-secrets
+                  key: GOOGLE_CLIENT_ID
+            - name: GOOGLE_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: synthi-secrets
+                  key: GOOGLE_CLIENT_SECRET
+            - name: GITHUB_ID
+              valueFrom:
+                secretKeyRef:
+                  name: synthi-secrets
+                  key: GITHUB_ID
+            - name: GITHUB_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: synthi-secrets
+                  key: GITHUB_SECRET
+            # ── Database (Prisma) ───────────────────────────────────────────
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: synthi-secrets
+                  key: DATABASE_URL
+            # ── Internal service URLs for Next.js API routes ───────────────
+            - name: COLLAB_SERVER_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: synthi-config
+                  key: COLLAB_SERVER_URL
+            - name: CODE_INTEL_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: synthi-config
+                  key: CODE_INTEL_URL
+            - name: AI_ENGINE_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: synthi-config
+                  key: CODE_INTEL_URL
+            # ── TURN credentials (server-side API route) ────────────────────
+            - name: CLOUDFLARE_TURN_TOKEN_ID
+              valueFrom:
+                secretKeyRef:
+                  name: synthi-secrets
+                  key: CLOUDFLARE_TURN_TOKEN_ID
+            - name: CLOUDFLARE_TURN_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: synthi-secrets
+                  key: CLOUDFLARE_TURN_API_TOKEN
+            - name: TURN_CREDENTIAL_TTL
+              valueFrom:
+                configMapKeyRef:
+                  name: synthi-config
+                  key: TURN_CREDENTIAL_TTL
+          resources:
+            requests:
+              cpu: 200m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+          readinessProbe:
+            httpGet:
+              path: /api/auth/providers
+              port: 3000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /api/auth/providers
+              port: 3000
+            initialDelaySeconds: 15
+            periodSeconds: 30
+        # ── Cloud SQL Auth Proxy sidecar ───────────────────────────────────
+        # Securely tunnels PostgreSQL traffic to the managed Cloud SQL
+        # instance.  The app connects to 127.0.0.1:5432 (localhost) and the
+        # proxy handles IAM auth + TLS to Google's network.
+        - name: cloud-sql-proxy
+          image: gcr.io/cloud-sql-connectors/cloud-sql-proxy:2.14.1
+          args:
+            - "--port=5432"
+            - "$(CLOUD_SQL_INSTANCE)"
+          env:
+            - name: CLOUD_SQL_INSTANCE
+              valueFrom:
+                configMapKeyRef:
+                  name: synthi-config
+                  key: CLOUD_SQL_INSTANCE
+          securityContext:
+            #runAsNonRoot: true
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend
+  namespace: synthi
+  labels:
+    app: frontend
+    app.kubernetes.io/part-of: synthi-ide
+  annotations:
+    cloud.google.com/backend-config: '{"default": "http-backend-config"}'
+spec:
+  selector:
+    app: frontend
+  ports:
+    - port: 3000
+      targetPort: 3000
+      name: http
+---
+# ── HPA — scale frontend pods based on CPU ───────────────────────────────────
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: frontend-hpa
+  namespace: synthi
+  labels:
+    app: frontend
+    app.kubernetes.io/part-of: synthi-ide
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: frontend
+  minReplicas: 2
+  maxReplicas: 8
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70

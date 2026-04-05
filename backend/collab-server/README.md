@@ -1,6 +1,10 @@
 # Synthi Collaboration Server
 
-This directory contains a small y-websocket-based collaboration server used by the Synthi IDE to synchronize file contents in real-time among multiple clients.
+REST + WebSocket notification server for the Synthi IDE. Handles file CRUD, git operations, workspace management, terminal proxy, GCS sync, and Y-Sweet CRDT token issuance.
+
+**CRDT document editing** (real-time collaborative text sync) is handled by the
+[Y-Sweet](https://github.com/jamsocket/y-sweet) pod — not this server.  Clients
+connect to Y-Sweet directly for document WebSocket connections.
 
 Getting started (development):
 
@@ -8,9 +12,6 @@ Getting started (development):
 
 ```powershell
 cd backend/collab-server
-# If you encounter peer dependency errors with npm v7+/v8+ use:
-# npm install --legacy-peer-deps
-# or explicitly install compatible yjs version declared in package.json
 npm install
 ```
 
@@ -21,6 +22,6 @@ npm start
 ```
 
 Notes:
-- The server prefers LevelDB persistence (y-leveldb) at ./data/collab-leveldb to persist Yjs documents across restarts, but it is optional.
-- If the `y-leveldb` package isn't available on your platform/registry, the server will fall back to an in-memory persistence (non-persistent) so the server still runs. For production you should install and enable `y-leveldb` or configure another persistence layer.
-- For production, place this behind a robust HTTP(S) reverse proxy, secure with authentication, and use a persistent, backed store.
+- Requires a running Y-Sweet instance (default: `http://localhost:8080`). Configure via `YSWEET_URL` env var.
+- Uses a local directory for ephemeral git repo cache. Configure via `REPOS_DIR` env var.
+- For production, place behind an HTTPS reverse proxy with authentication.

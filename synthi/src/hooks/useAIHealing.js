@@ -14,7 +14,13 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useSelector, useDispatch } from 'react-redux';
-import * as monacoEditor from 'monaco-editor';
+// monaco-editor cannot be imported during SSR (server-side rendering) because
+// it references the window object. We import it lazily or use a dynamic import.
+// For type checking, we can use the typeof import('monaco-editor').
+let monacoEditor;
+if (typeof window !== 'undefined') {
+  monacoEditor = require('monaco-editor');
+}
 
 import {
   showHealingDecorations,

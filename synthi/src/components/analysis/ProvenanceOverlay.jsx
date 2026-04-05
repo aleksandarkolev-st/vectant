@@ -2,6 +2,11 @@
 
 import React, { useState, useEffect, useCallback } from 'react';
 
+const DEFAULT_AI_ENGINE_BASE = process.env.NEXT_PUBLIC_AI_ENGINE_URL
+  || (typeof window !== 'undefined' && window.location.hostname !== 'localhost'
+    ? window.location.origin
+    : 'http://localhost:8000');
+
 /**
  * AI Change Provenance Overlay
  * 
@@ -22,7 +27,7 @@ export function ProvenanceOverlay({
   filePath,
   isOpen,
   onClose,
-  apiBaseUrl = 'http://localhost:8000',
+  apiBaseUrl = DEFAULT_AI_ENGINE_BASE,
   onRollback,      // Callback when rollback is requested
   onPin,           // Callback when output is pinned
   onRevert,        // Callback when specific version revert is requested

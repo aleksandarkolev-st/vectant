@@ -161,11 +161,85 @@ const repoLock = new RepoLock();
 class GitService {
     constructor(baseDir) {
         this.baseDir = baseDir || config.REPO_CACHE_DIR;
+        this.authTokens = new Map();
         this.statusCache = new Map();
         this.statusRefreshes = new Map();
         if (!fs.existsSync(this.baseDir)) {
             fs.mkdirSync(this.baseDir, { recursive: true });
         }
+    }
+
+    _safeAuthPathPart(value, fallback = 'default') {
+        const normalized = String(value || fallback).trim();
+        const safe = normalized.replace(/[^a-zA-Z0-9_@.\-]/g, '_');
+        return safe || fallback;
+    }
+
+    _getAuthTokenPath(slug, userId) {
+        const slugPart = this._safeAuthPathPart(slug, 'workspace');
+        const userPart = this._safeAuthPathPart(userId || 'shared', 'shared');
+        return path.join(this.baseDir, '_auth', slugPart, `${userPart}.json`);
+    }
+
+    _persistAuthToken(slug, userId, token) {
+        const value = typeof token === 'string' ? token.trim() : '';
+        if (!value) return;
+        const tokenPath = this._getAuthTokenPath(slug, userId);
+        try {
+            fs.mkdirSync(path.dirname(tokenPath), { recursive: true });
+            fs.writeFileSync(tokenPath, JSON.stringify({ token: value }), 'utf8');
+        } catch (e) {
+            console.warn(`[GitService] Failed to persist auth token for ${slug}${userId ? '/' + userId : ''}: ${e.message}`);
+        }
+    }
+
+    _loadPersistedAuthToken(slug, userId) {
+        const tokenPath = this._getAuthTokenPath(slug, userId);
+        try {
+            if (!fs.existsSync(tokenPath)) return null;
+            const raw = fs.readFileSync(tokenPath, 'utf8');
+            const parsed = JSON.parse(raw);
+            const value = parsed && typeof parsed.token === 'string' ? parsed.token.trim() : '';
+            return value || null;
+        } catch (e) {
+            console.warn(`[GitService] Failed to read persisted auth token for ${slug}${userId ? '/' + userId : ''}: ${e.message}`);
+            return null;
+        }
+    }
+
+    _authKey(slug, userId) {
+        return userId ? `${slug}:${userId}` : slug;
+    }
+
+    _rememberAuthToken(slug, userId, token) {
+        const value = typeof token === 'string' ? token.trim() : '';
+        if (!value) return;
+        this.authTokens.set(this._authKey(slug, userId), value);
+        this._persistAuthToken(slug, userId, value);
+    }
+
+    _getStoredAuthToken(slug, userId) {
+        const direct = this.authTokens.get(this._authKey(slug, userId));
+        if (direct) return direct;
+
+        const persistedDirect = this._loadPersistedAuthToken(slug, userId);
+        if (persistedDirect) {
+            this.authTokens.set(this._authKey(slug, userId), persistedDirect);
+            return persistedDirect;
+        }
+
+        if (userId) {
+            const shared = this.authTokens.get(this._authKey(slug));
+            if (shared) return shared;
+
+            const persistedShared = this._loadPersistedAuthToken(slug);
+            if (persistedShared) {
+                this.authTokens.set(this._authKey(slug), persistedShared);
+                return persistedShared;
+            }
+        }
+
+        return null;
     }
 
     _cacheKeyForRepoPath(repoPath) {
@@ -300,6 +374,46 @@ class GitService {
             return { name: refName.slice('refs/heads/'.length), type: 'branch' };
         }
         return null;
+    }
+
+    _extractTokenFromHttpsUrl(remoteUrl) {
+        if (typeof remoteUrl !== 'string' || !remoteUrl.startsWith('https://')) {
+            return { cleanUrl: remoteUrl, token: null };
+        }
+
+        try {
+            const parsedUrl = new URL(remoteUrl);
+            let token = null;
+
+            if (parsedUrl.password) {
+                token = decodeURIComponent(parsedUrl.password);
+            } else if (
+                parsedUrl.username &&
+                parsedUrl.username !== 'git' &&
+                parsedUrl.username !== 'oauth2' &&
+                parsedUrl.username !== 'x-access-token'
+            ) {
+                token = decodeURIComponent(parsedUrl.username);
+            }
+
+            if (parsedUrl.username || parsedUrl.password) {
+                parsedUrl.username = '';
+                parsedUrl.password = '';
+                return { cleanUrl: parsedUrl.toString(), token };
+            }
+
+            return { cleanUrl: remoteUrl, token };
+        } catch (_) {
+            return { cleanUrl: remoteUrl, token: null };
+        }
+    }
+
+    async _resolveAuthToken(git, slug, userId, explicitToken) {
+        const effectiveToken = explicitToken || this._getStoredAuthToken(slug, userId) || await this._extractTokenFromRemoteUrl(git);
+        if (effectiveToken) {
+            this._rememberAuthToken(slug, userId, effectiveToken);
+        }
+        return effectiveToken || null;
     }
 
     async _readCommitRefsWithNodeGit(repo) {
@@ -1010,6 +1124,44 @@ class GitService {
         }
     }
 
+    async _resolveCloneBranch(sourcePath) {
+        if (!sourcePath || !fs.existsSync(sourcePath)) return null;
+
+        const git = simpleGit(sourcePath);
+
+        try {
+            const headBranch = (await git.raw(['symbolic-ref', '--quiet', '--short', 'HEAD'])).trim();
+            if (headBranch) return headBranch;
+        } catch (_) {
+            // Detached HEAD is expected for migrated bare repos.
+        }
+
+        for (const branch of ['main', 'master']) {
+            try {
+                const ref = (await git.raw(['show-ref', '--verify', `refs/heads/${branch}`])).trim();
+                if (ref) return branch;
+            } catch (_) {
+                // Ignore missing preferred branches and try the next fallback.
+            }
+        }
+
+        try {
+            const raw = await git.raw([
+                'for-each-ref',
+                '--sort=-committerdate',
+                '--format=%(refname:short)',
+                'refs/heads/',
+            ]);
+            const branches = raw
+                .split(/\r?\n/)
+                .map((line) => line.trim())
+                .filter(Boolean);
+            return branches[0] || null;
+        } catch (_) {
+            return null;
+        }
+    }
+
     /**
      * Resolve the remote origin URL for a workspace.
      *
@@ -1298,6 +1450,10 @@ class GitService {
             } else {
                 await git.clone(cleanRepoUrl, repoPath);
             }
+
+            if (effectiveToken) {
+                this._rememberAuthToken(slug, userId, effectiveToken);
+            }
             
             // Upload cloned files to GCS so frontend can access them
             if (gcsSync.isGcsConfigured()) {
@@ -1458,7 +1614,7 @@ class GitService {
         return this.withLock(slug, async () => {
             const git = await this.getGit(slug, userId);
             try {
-                const effectiveToken = token || await this._extractTokenFromRemoteUrl(git);
+                const effectiveToken = await this._resolveAuthToken(git, slug, userId, token);
                 if (effectiveToken) {
                     const remotes = await git.getRemotes(true);
                     const remoteUrl = remotes?.[0]?.refs?.push || remotes?.[0]?.refs?.fetch || '';
@@ -1497,7 +1653,7 @@ class GitService {
                         if (!localExists) {
                             // Fetch the specific branch from origin
                             try {
-                                const token = await this._extractTokenFromRemoteUrl(git);
+                                const token = await this._resolveAuthToken(git, slug, userId);
                                 if (token) {
                                     const remotes = await git.getRemotes(true);
                                     const remoteUrl = remotes?.[0]?.refs?.fetch || remotes?.[0]?.refs?.push || '';
@@ -1588,7 +1744,7 @@ class GitService {
         return this.withLock(slug, async () => {
             try {
                 const git = await this.getGit(slug, userId);
-                const effectiveToken = token || await this._extractTokenFromRemoteUrl(git);
+                const effectiveToken = await this._resolveAuthToken(git, slug, userId, token);
                 if (effectiveToken) {
                     const remotes = await git.getRemotes(true);
                     const remoteUrl = remotes?.[0]?.refs?.fetch || remotes?.[0]?.refs?.push || '';
@@ -1925,11 +2081,7 @@ class GitService {
             const prev = process.env.GIT_TERMINAL_PROMPT;
             process.env.GIT_TERMINAL_PROMPT = '0';
 
-            // If no explicit token provided, try to extract one from the remote URL
-            let effectiveToken = token;
-            if (!effectiveToken) {
-                effectiveToken = await this._extractTokenFromRemoteUrl(git);
-            }
+            const effectiveToken = await this._resolveAuthToken(git, slug, userId, token);
 
             /**
              * Build an authenticated push URL by embedding the token directly
@@ -2108,7 +2260,11 @@ class GitService {
         return this.withLock(slug, async () => {
             try {
                 const git = await this.getGit(slug, userId);
-                await git.addRemote(name, url);
+                const { cleanUrl, token } = this._extractTokenFromHttpsUrl(url);
+                if (token) {
+                    this._rememberAuthToken(slug, userId, token);
+                }
+                await git.addRemote(name, cleanUrl);
                 return this.getStatus(slug, userId);
             } catch (e) {
                 throw this.mapGitError(e, slug);
@@ -2137,7 +2293,11 @@ class GitService {
         return this.withLock(slug, async () => {
             try {
                 const git = await this.getGit(slug, userId);
-                await git.remote(['set-url', name, url]);
+                const { cleanUrl, token } = this._extractTokenFromHttpsUrl(url);
+                if (token) {
+                    this._rememberAuthToken(slug, userId, token);
+                }
+                await git.remote(['set-url', name, cleanUrl]);
                 return await this.getRemotes(slug, userId);
             } catch (e) {
                 throw this.mapGitError(e, slug);
@@ -2158,11 +2318,7 @@ class GitService {
         return this.withLock(slug, async () => {
             const git = await this.getGit(slug, userId);
             try {
-                // If no explicit token provided, try to extract one from the remote URL
-                let effectiveToken = token;
-                if (!effectiveToken) {
-                    effectiveToken = await this._extractTokenFromRemoteUrl(git);
-                }
+                const effectiveToken = await this._resolveAuthToken(git, slug, userId, token);
 
                 let pullResult;
                 if (effectiveToken) {
@@ -2439,7 +2595,7 @@ class GitService {
             // 1. Fetch the specific branch from origin so the remote-tracking
             //    ref is guaranteed to exist and be up-to-date.
             try {
-                const effectiveToken = token || await this._extractTokenFromRemoteUrl(git);
+                const effectiveToken = await this._resolveAuthToken(git, slug, userId, token);
                 if (effectiveToken) {
                     const remotes = await git.getRemotes(true);
                     const remoteUrl = remotes?.[0]?.refs?.fetch || remotes?.[0]?.refs?.push || '';
@@ -2520,7 +2676,7 @@ class GitService {
         ];
         let fetchOk = false;
         try {
-            const effectiveToken = token || await this._extractTokenFromRemoteUrl(git);
+            const effectiveToken = await this._resolveAuthToken(git, slug, userId, token);
             if (effectiveToken) {
                 const remotes = await git.getRemotes(true);
                 const remoteUrl = remotes?.[0]?.refs?.fetch || remotes?.[0]?.refs?.push || '';
@@ -3295,14 +3451,25 @@ class GitService {
             // Use raw show command to avoid simple-git parsing issues
             return await git.raw(['show', `${ref}:${gitPath}`]);
         } catch (e) {
-            console.error(`Error fetching content for ${ref}:${filePath}`, e.message);
+            // Fallback 1: try cat-file -p which is plumbing and might be more robust
             try {
-                // Fallback: try cat-file -p which is plumbing and might be more robust
                 let gitPath = filePath.replace(/\\/g, '/');
                 if (gitPath.startsWith('/')) gitPath = gitPath.substring(1);
                 return await git.raw(['cat-file', '-p', `${ref}:${gitPath}`]);
             } catch (e2) {
                 console.error(`Fallback cat-file failed for ${ref}:${filePath}`, e2.message);
+                
+                // Fallback 2: If we are asking for HEAD and the file exists on disk (untracked), return that.
+                if (ref === 'HEAD' || !ref) {
+                     try {
+                        const repoPath = this.getEffectiveRepoPath(slug, userId);
+                        const fullPath = path.join(repoPath, filePath);
+                        if (fs.existsSync(fullPath)) {
+                             console.log(`[GitService] Serving untracked content for ${filePath}`);
+                             return await fs.promises.readFile(fullPath, 'utf8');
+                        }
+                     } catch (e3) { /* ignore */ }
+                }
                 return '';
             }
         }
@@ -4041,7 +4208,16 @@ class GitService {
 
                 const git = simpleGit();
                 // Use --no-hardlinks to ensure complete isolation between users
-                await git.clone(cloneSource, userRepoPath, ['--no-hardlinks']);
+                const cloneArgs = ['--no-hardlinks'];
+                if (cloneSource === barePath) {
+                    const cloneBranch = await this._resolveCloneBranch(cloneSource);
+                    if (cloneBranch) {
+                        cloneArgs.push('--branch', cloneBranch);
+                    } else {
+                        console.warn(`[GitService] Could not resolve a branch for ${cloneSource}; falling back to bare HEAD for ${slug}/${userId}`);
+                    }
+                }
+                await git.clone(cloneSource, userRepoPath, cloneArgs);
 
                 // If we cloned from the bare repo or a peer, re-set the remote to
                 // the original upstream URL (if any) rather than the local path.

@@ -442,7 +442,7 @@ pub unsafe fn process_load_command(
                         "[Runner] [HOST-KV] Module '{}' declares {} namespaces: {:?}",
                         name,
                         schemas.len(),
-                        schemas.iter().map(|(ns, _)| ns).collect::<Vec<_>>()
+                        schemas.iter().map(|(ns, _)| ns.as_str()).collect::<Vec<_>>()
                     );
 
                     // Register schemas and handle any resets

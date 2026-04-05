@@ -1,0 +1,147 @@
+# ─────────────────────────────────────────────────────────────────────────────
+#  Synthi IDE — Network Policies
+# ─────────────────────────────────────────────────────────────────────────────
+#  Restrict pod-to-pod traffic to known communication paths only.
+#  Requires a CNI with NetworkPolicy support (GKE Dataplane V2 or Calico).
+#
+#  Enable on GKE Standard:  --enable-network-policy
+#  GKE Autopilot:           enabled by default
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── Default deny all ingress in the namespace ──────────────────────────────
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+  namespace: synthi
+  labels:
+    app.kubernetes.io/part-of: synthi-ide
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+
+---
+# ── Allow Ingress LB → public-facing services ─────────────────────────────
+# Frontend, Collab Server, Signaling, AI Gateway, and Y-Sweet are exposed
+# via the GCE Ingress. Allow ingress from any source on their service ports.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ingress-to-public-services
+  namespace: synthi
+  labels:
+    app.kubernetes.io/part-of: synthi-ide
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app
+        operator: In
+        values:
+          - frontend
+          - collab-server
+          - signaling-server
+          - ai-gateway
+          - y-sweet
+  ingress:
+    - {}
+  policyTypes:
+    - Ingress
+
+---
+# ── AI Engine: accept from gateway, collab-server, and workspace pods ──────
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-to-ai-engine
+  namespace: synthi
+  labels:
+    app.kubernetes.io/part-of: synthi-ide
+spec:
+  podSelector:
+    matchLabels:
+      app: ai-engine
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: ai-gateway
+        - podSelector:
+            matchLabels:
+              app: collab-server
+        - podSelector:
+            matchLabels:
+              app: workspace
+      ports:
+        - port: 8000
+          protocol: TCP
+  policyTypes:
+    - Ingress
+
+---
+# ── Redis: accept from any pod in the namespace ───────────────────────────
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-to-redis
+  namespace: synthi
+  labels:
+    app.kubernetes.io/part-of: synthi-ide
+spec:
+  podSelector:
+    matchLabels:
+      app: redis
+  ingress:
+    - from:
+        - podSelector: {}
+      ports:
+        - port: 6379
+          protocol: TCP
+  policyTypes:
+    - Ingress
+
+---
+# ── PostgreSQL: accept from any pod in the namespace ──────────────────────
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-to-postgres
+  namespace: synthi
+  labels:
+    app.kubernetes.io/part-of: synthi-ide
+spec:
+  podSelector:
+    matchLabels:
+      app: postgres
+  ingress:
+    - from:
+        - podSelector: {}
+      ports:
+        - port: 5432
+          protocol: TCP
+  policyTypes:
+    - Ingress
+
+---
+# ── Workspace pods: allow health checks from collab-server only ───────────
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-to-workspace-pods
+  namespace: synthi
+  labels:
+    app.kubernetes.io/part-of: synthi-ide
+spec:
+  podSelector:
+    matchLabels:
+      app: workspace
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: collab-server
+      ports:
+        - port: 8080
+          protocol: TCP
+  policyTypes:
+    - Ingress

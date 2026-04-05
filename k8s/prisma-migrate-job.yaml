@@ -1,0 +1,112 @@
+# ─────────────────────────────────────────────────────────────────────────────
+#  Synthi IDE — Prisma Migration Job (Cloud SQL)
+# ─────────────────────────────────────────────────────────────────────────────
+#  Runs `npx prisma migrate deploy` against the Cloud SQL instance via
+#  the Cloud SQL Auth Proxy sidecar.
+#
+#  Usage:
+#    kubectl delete job prisma-migrate -n synthi --ignore-not-found
+#    kubectl apply -f k8s/prisma-migrate-job.yaml
+#    kubectl wait --for=condition=complete job/prisma-migrate -n synthi --timeout=120s
+#    kubectl logs job/prisma-migrate -n synthi -c migrate
+#
+#  Why a Job instead of initContainer / startup script:
+#    - Idempotent: can be re-run safely at any time
+#    - Decoupled from app lifecycle: migration failures don't block rollouts
+#    - Auditable: visible in `kubectl get jobs` with status and logs
+#    - Controllable: backoffLimit prevents infinite retry loops
+#    - Independent: can be triggered by CI/CD or manually, separately from deploys
+#
+#  NOT included in kustomization.yaml — migrations are triggered manually
+#  or by CI/CD, not on every `kubectl apply -k`.
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: prisma-migrate
+  namespace: synthi
+  labels:
+    app: prisma-migrate
+    app.kubernetes.io/part-of: synthi-ide
+spec:
+  backoffLimit: 3                # Max retries before marking as Failed
+  activeDeadlineSeconds: 300     # Hard 5-minute timeout for the entire job
+  ttlSecondsAfterFinished: 3600  # Auto-cleanup 1 hour after completion
+  template:
+    metadata:
+      labels:
+        app: prisma-migrate
+    spec:
+      securityContext:
+        #runAsNonRoot: true
+      restartPolicy: Never
+      containers:
+        # ── Migration runner ────────────────────────────────────────────────
+        - name: migrate
+          image: europe-west10-docker.pkg.dev/overview-synti/synthi/synthi-prisma-migrate:latest
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -e
+              echo "=== Waiting for Cloud SQL proxy ==="
+              RETRIES=0
+              until wget -qO- http://localhost:9091/readiness >/dev/null 2>&1; do
+                RETRIES=$((RETRIES + 1))
+                if [ "$RETRIES" -ge 30 ]; then
+                  echo "ERROR: Cloud SQL proxy not ready after 30s"
+                  exit 1
+                fi
+                echo "  Waiting for proxy... ($RETRIES/30)"
+                sleep 1
+              done
+              echo "=== Proxy ready ==="
+
+              echo "=== Running Prisma migrate deploy ==="
+              npx prisma migrate deploy
+              MIGRATE_EXIT=$?
+
+              echo "=== Migration finished (exit code: $MIGRATE_EXIT) ==="
+
+              # Signal the Cloud SQL proxy to shut down cleanly
+              echo "=== Shutting down Cloud SQL proxy ==="
+              wget -qO- --post-data="" http://localhost:9091/quitquitquit || true
+
+              exit $MIGRATE_EXIT
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: synthi-secrets
+                  key: DATABASE_URL
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+
+        # ── Cloud SQL Auth Proxy sidecar ──────────────────────────────────
+        - name: cloud-sql-proxy
+          image: gcr.io/cloud-sql-connectors/cloud-sql-proxy:2.14.1
+          args:
+            - "--port=5432"
+            - "--admin-port=9091"
+            - "--health-check"
+            - "--quitquitquit"
+            - "$(CLOUD_SQL_INSTANCE)"
+          env:
+            - name: CLOUD_SQL_INSTANCE
+              valueFrom:
+                configMapKeyRef:
+                  name: synthi-config
+                  key: CLOUD_SQL_INSTANCE
+          securityContext:
+            #runAsNonRoot: true
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi

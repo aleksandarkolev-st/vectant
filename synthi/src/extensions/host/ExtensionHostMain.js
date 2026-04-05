@@ -384,7 +384,7 @@ export class ExtensionHostMain {
     `;
 
     try {
-      // eslint-disable-next-line no-new-func
+       
       const factory = new Function('return ' + wrappedCode)();
       const exports = {};
       const module = { exports };

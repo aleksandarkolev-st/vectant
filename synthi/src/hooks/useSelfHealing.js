@@ -12,7 +12,16 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useSelector, useDispatch } from 'react-redux';
-import * as monacoEditor from 'monaco-editor';
+
+// monaco-editor accesses `window` at import time, which breaks SSR.
+// Lazy-require it only on the client side.
+let monacoEditor = null;
+function getMonaco() {
+  if (!monacoEditor && typeof window !== 'undefined') {
+    monacoEditor = require('monaco-editor');
+  }
+  return monacoEditor;
+}
 
 import {
   showHealingDecorations,
@@ -310,7 +319,7 @@ export function useSelfHealing({
         if (startLine > model.getLineCount() + 1) return false;
 
         // Capture original text for undo tracking
-        const range = new monacoEditor.Range(startLine, startCol, endLine, endCol);
+        const range = new (getMonaco().Range)(startLine, startCol, endLine, endCol);
         const originalText = model.getValueInRange(range);
 
         // Flag that we're about to make a self-edit
@@ -475,7 +484,7 @@ export function useSelfHealing({
 
         if (startLine > model.getLineCount() + 1) continue;
 
-        const range = new monacoEditor.Range(startLine, startCol, eL, eC);
+        const range = new (getMonaco().Range)(startLine, startCol, eL, eC);
         const originalText = model.getValueInRange(range);
 
         // Guard: don't delete significantly more text than we're inserting
@@ -784,7 +793,7 @@ export function useSelfHealing({
           continue;
         }
 
-        const range = new monacoEditor.Range(startLine, startCol, endLine, endCol);
+        const range = new (getMonaco().Range)(startLine, startCol, endLine, endCol);
         const originalText = model.getValueInRange(range);
 
         // Guard: don't delete significantly more text than we're inserting

@@ -11,6 +11,7 @@
  */
 
 const COLLAB_URL = (
+  process.env.NEXT_PUBLIC_COLLAB_SERVER_URL ||
   process.env.NEXT_PUBLIC_COLLAB_URL ||
   process.env.NEXT_PUBLIC_YJS_URL ||
   'ws://localhost:1234'

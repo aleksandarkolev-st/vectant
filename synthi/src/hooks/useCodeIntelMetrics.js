@@ -1,7 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import sseClient from '@/services/sseClient';
 
-const CODE_INTEL_URL = process.env.NEXT_PUBLIC_CODE_INTEL_URL || 'http://localhost:8000';
+const CODE_INTEL_URL = process.env.NEXT_PUBLIC_CODE_INTEL_URL
+  || (typeof window !== 'undefined' && window.location.hostname !== 'localhost'
+    ? window.location.origin
+    : 'http://localhost:8000');
 
 /**
  * Hook for code-intel metrics.

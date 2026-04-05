@@ -3,6 +3,7 @@ const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '::1']);
 const stripTrailingSlash = (value = '') => value.replace(/\/+$/, '');
 
 const toHttpUrl = (value = '') => value.replace(/^ws/i, 'http');
+const toWsUrl = (value = '') => value.replace(/^http/i, 'ws');
 
 export function resolveCollabHttpUrl() {
     const configured =
@@ -15,12 +16,15 @@ export function resolveCollabHttpUrl() {
     }
 
     if (typeof window !== 'undefined' && window.location) {
-        const { protocol, hostname } = window.location;
-        const scheme = protocol === 'https:' ? 'https:' : 'http:';
-        const resolvedHost = hostname || 'localhost';
-        const host = LOCAL_HOSTS.has(resolvedHost) ? 'localhost' : resolvedHost;
-        return `${scheme}//${host}:1234`;
+        const { origin, hostname } = window.location;
+        if (!LOCAL_HOSTS.has(hostname || '')) {
+            return `${stripTrailingSlash(origin)}/collab`;
+        }
     }
 
     return 'http://localhost:1234';
+}
+
+export function resolveCollabWsUrl() {
+    return toWsUrl(resolveCollabHttpUrl());
 }

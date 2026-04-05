@@ -455,8 +455,10 @@ class MonacoTextBinding {
 // Delegates all CRDT / WebSocket work to the CRDT worker via the bridge.
 // ─────────────────────────────────────────────────────────────────────────────
 
+
 class CollabClient {
   constructor(serverUrl) {
+    // Derive WebSocket URL for the collab server (notifications, sessions, REST).
     if (serverUrl) {
       this.serverUrl = serverUrl;
     } else if (typeof process !== 'undefined' && process.env && process.env.NEXT_PUBLIC_COLLAB_SERVER_URL) {
@@ -472,10 +474,13 @@ class CollabClient {
       this.serverUrl = 'ws://localhost:1234';
     }
 
-    // Lightweight entries — no Y.Doc on main thread.
-    // key → { key, bindings: Set<MonacoTextBinding>, _seeded, synced, wsconnected, _unsubs, _seedTimer }
-    this.docs = new Map();
+    // Y-Sweet CRDT server URL — WebSocket connections for document editing
+    // go directly to Y-Sweet (not through the collab server).
+    const ySweetRaw = (typeof process !== 'undefined' && process.env?.NEXT_PUBLIC_YSWEET_URL)
+      || 'http://localhost:8080';
+    this.ySweetWsUrl = ySweetRaw.replace(/^http:/, 'ws:').replace(/^https:/, 'wss:');
 
+    this.docs = new Map(); // key -> lightweight bridge-managed entry
     this.identity = { userId: null, sessionId: null, hostId: null };
     this._awarenessListeners = new Map(); // key → Map<originalCb, { wrapped, unsub }>
     this._cachedUserImage = null;
@@ -652,7 +657,6 @@ class CollabClient {
       _unsubs: [],
     };
 
-    // ── Bridge event handlers for this key ──
     entry._unsubs.push(
       bridge.onStatus(key, (status, wsconnected, wsconnecting) => {
         entry.wsconnected = wsconnected;
@@ -683,7 +687,6 @@ class CollabClient {
 
     this.docs.set(key, entry);
 
-    // Tell the worker to create Y.Doc + WebsocketProvider
     bridge.ensureDoc(key, {
       userId: this.identity.userId,
       ...(this.identity.sessionId ? { sessionId: this.identity.sessionId } : {}),
@@ -691,8 +694,6 @@ class CollabClient {
 
     return entry;
   }
-
-  // ── Awareness state access ────────────────────────────────────────────────
 
   getAwarenessStates(slug, path) {
     const key = this._roomKey(slug, path);
@@ -1120,6 +1121,13 @@ class CollabClient {
             if (typeof handlers.onFileTreeChanged === 'function') handlers.onFileTreeChanged();
           }
           if (msg.type === 'file-reverted' && msg.slug === slug) {
+            // CRITICAL: Destroy affected Yjs docs IMMEDIATELY — before
+            // calling external handlers and before the Yjs WebsocketProvider
+            // can auto-reconnect with stale CRDT state.  The server closes
+            // the Yjs WS (code 4000) during invalidation, and the provider
+            // schedules a reconnect after ~100ms.  By destroying the doc
+            // here (which sets provider.shouldConnect = false), we prevent
+            // the stale reconnect that causes content duplication.
             const filePaths = msg.filePaths || [];
             if (filePaths.length === 0) {
               this.destroyAllForSlug(slug);
@@ -1127,6 +1135,21 @@ class CollabClient {
               for (const fp of filePaths) this.destroyDocument(slug, fp);
             }
             if (typeof handlers.onFileReverted === 'function') handlers.onFileReverted(filePaths);
+          }
+          if (msg.type === 'doc-invalidated' && msg.slug === slug) {
+            // Server invalidated CRDT docs (e.g. after git pull/checkout).
+            // Destroy local Y.Docs so they reconnect with fresh state.
+            const filePaths = msg.filePaths || [];
+            if (filePaths.length === 0) {
+              this.destroyAllForSlug(slug);
+            } else {
+              for (const fp of filePaths) {
+                this.destroyDocument(slug, fp);
+              }
+            }
+            if (typeof handlers.onDocInvalidated === 'function') {
+              handlers.onDocInvalidated(filePaths);
+            }
           }
           if (msg.type === 'git-status-changed' && msg.slug === slug) {
             if (typeof handlers.onGitStatusChanged === 'function') handlers.onGitStatusChanged(msg.filePath || null);

@@ -15,7 +15,7 @@
 //! - Idempotent: skipped if `.synthi_imports_scanned` marker exists.
 
 use std::collections::HashSet;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Stdio;
 use tokio::process::Command;
 

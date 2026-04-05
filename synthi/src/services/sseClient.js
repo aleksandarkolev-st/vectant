@@ -1,3 +1,5 @@
+import { resolveCollabHttpUrl } from '@/lib/collab-url';
+
 /**
  * sseClient.js — Frontend SSE (Server-Sent Events) client for Synthi IDE
  *
@@ -19,8 +21,6 @@
  *   - Typed event listeners with cleanup support
  *   - Falls back gracefully if SSE endpoint is unavailable
  */
-
-const COLLAB_SERVER_URL = process.env.NEXT_PUBLIC_COLLAB_SERVER_URL || 'http://localhost:1234';
 
 /** @type {Map<string, EventSource>} slug → EventSource */
 const connections = new Map();
@@ -87,7 +87,8 @@ function connect(slug, { userId = null } = {}) {
   const params = new URLSearchParams();
   if (userId) params.set('userId', userId);
 
-  const url = `${COLLAB_SERVER_URL}/sse/${encodeURIComponent(slug)}${params.toString() ? `?${params}` : ''}`;
+  const collabServerUrl = resolveCollabHttpUrl();
+  const url = `${collabServerUrl}/sse/${encodeURIComponent(slug)}${params.toString() ? `?${params}` : ''}`;
 
   let es;
   try {
@@ -150,7 +151,6 @@ function disconnect(slug) {
     connectionStatus.set(slug, 'disconnected');
     es.close();
     connections.delete(slug);
-    listeners.delete(slug);
     console.log(`[SSE] Disconnected from workspace "${slug}"`);
   }
 }

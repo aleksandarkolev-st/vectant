@@ -1,55 +1,6 @@
 const http = require('http');
 const WebSocket = require('ws');
-// y-websocket exports have changed across versions and some environments do
-// not allow accessing internal subpaths via package exports. Try a few
-// common locations and fall back with a clear error message.
 require('dotenv').config();
-let setupWSConnection = null;
-try {
-  // Try the package export path without extension first (preferred)
-  setupWSConnection = require('y-websocket/bin/utils').setupWSConnection;
-  if (typeof setupWSConnection === 'function') {
-    console.log('[Collab] loaded setupWSConnection from y-websocket/bin/utils');
-  } else {
-    throw new Error('setupWSConnection not exported at y-websocket/bin/utils');
-  }
-} catch (errA) {
-  try {
-    // Some installs put utils under bin/utils.js (legacy)
-    setupWSConnection = require('y-websocket/bin/utils.js').setupWSConnection;
-    if (typeof setupWSConnection === 'function') {
-      console.log('[Collab] loaded setupWSConnection from y-websocket/bin/utils.js');
-    } else {
-      throw new Error('setupWSConnection not found at y-websocket/bin/utils.js');
-    }
-  } catch (errB) {
-    try {
-      // Common fallback for older builds
-      setupWSConnection = require('y-websocket/dist/bin/utils.cjs').setupWSConnection;
-      if (typeof setupWSConnection === 'function') {
-        console.log('[Collab] loaded setupWSConnection from y-websocket/dist/bin/utils.cjs');
-      } else {
-        throw new Error('setupWSConnection not found at y-websocket/dist/bin/utils.cjs');
-      }
-    } catch (errC) {
-      try {
-        // As a last resort try the root package export (may not include server utils)
-        const root = require('y-websocket');
-        if (root && typeof root.setupWSConnection === 'function') {
-          setupWSConnection = root.setupWSConnection;
-          console.log('[Collab] loaded setupWSConnection from y-websocket (root export)');
-        } else {
-          throw new Error('setupWSConnection unavailable on y-websocket root export');
-        }
-      } catch (errD) {
-        console.error('[Collab] Unable to load setupWSConnection from y-websocket.');
-        console.error('Tried multiple locations and failed - ensure you have y-websocket installed and that it provides server utils.');
-        console.error('Errors (most recent first):', errD?.message || errD, errC?.message || errC, errB?.message || errB, errA?.message || errA);
-        process.exit(1);
-      }
-    }
-  }
-}
 const Y = require('yjs');
 const fileIndex = require('./fileIndex');
 const fs = require('fs');
@@ -66,6 +17,7 @@ const sessionManager = require('./SessionManager');
 const { extractSessionContext, requireGitActionPermission, wsRequirePermission, wsDenyAction, wsAttachContext } = require('./permissionMiddleware');
 const { acquireStagingLock, releaseStagingLock, pauseWatcher, resumeWatcher, registerChangeListener } = require('./fsWatcherService');
 const { LRUCache } = require('lru-cache');
+const ySweetBridge = require('./ySweetBridge');
 const { withTelemetry, getMetrics, resetMetrics, getEventLoopBlockCount } = require('./perfTelemetry');
 const sseService = require('./sseService');
 
@@ -87,17 +39,6 @@ if (typeof fetch === 'function') {
 }
 
 const CODE_INTEL_URL = config.CODE_INTEL_URL;
-
-// LevelDB persistence is optional — some environments (or registries) may not
-// provide a compatible `y-leveldb` binary. Try to load it and fall back to
-// an in-memory persistence implementation if it's not available.
-let LeveldbPersistence = null;
-try {
-  LeveldbPersistence = require('y-leveldb').LeveldbPersistence;
-  console.log('[Collab] y-leveldb persistence available');
-} catch (e) {
-  console.warn('[Collab] y-leveldb not available, using in-memory persistence fallback');
-}
 
 const PORT = config.PORT;
 
@@ -141,25 +82,7 @@ async function purgeLegacyRoomState(slug, filePath) {
   purgedLegacyRooms.add(legacyDoc);
 
   try {
-    await persistence.clearDocument(legacyDoc);
-  } catch (_) {}
-
-  try {
     fileHashCache.delete(legacyDoc);
-  } catch (_) {}
-
-  try {
-    if (yWsDocs && yWsDocs.has(legacyDoc)) {
-      const wsDoc = yWsDocs.get(legacyDoc);
-      if (wsDoc?.conns?.size > 0) {
-        for (const conn of Array.from(wsDoc.conns.keys())) {
-          try { conn.close(4001, 'legacy-room-purged'); } catch (_) {}
-        }
-      }
-      try { wsDoc.destroy(); } catch (_) {}
-      yWsDocs.delete(legacyDoc);
-    }
-    activeDocuments.delete(legacyDoc);
   } catch (_) {}
 }
 
@@ -359,665 +282,85 @@ function getYDocContent(ydoc) {
   }
 }
 
-// Use LevelDB persistence when available, otherwise use an in-memory fallback
-let basePersistence;
-if (LeveldbPersistence) {
-  basePersistence = new LeveldbPersistence(config.LEVELDB_DIR);
-} else {
-  // Simple in-memory persistence that encodes/decodes Yjs state updates
-  class InMemoryPersistence {
-    constructor() {
-      this.store = new Map();
-    }
-
-    async bindState(docName, ydoc) {
-      const update = this.store.get(docName);
-      if (update) {
-        try {
-          Y.applyUpdate(ydoc, update);
-        } catch (e) {
-          console.warn('[Collab] failed to apply stored update for', docName, e?.message || e);
-        }
-      }
-    }
-
-    async writeState(docName, ydoc) {
-      try {
-        const update = Y.encodeStateAsUpdate(ydoc);
-        this.store.set(docName, update);
-      } catch (e) {
-        console.warn('[Collab] failed to encode state for', docName, e?.message || e);
-      }
-    }
-    
-    async clearDocument(docName) {
-      this.store.delete(docName);
-    }
-  }
-
-  basePersistence = new InMemoryPersistence();
-}
+// ─── Y-Sweet handles CRDT relay + persistence ───────────────────────────────
+// ValidatingPersistence, y-websocket, and LevelDB have been replaced by
+// Y-Sweet (a standalone Yrs/Rust CRDT server). The collab server is now
+// stateless: REST API + git + terminal + GCS file sync + sessions.
+//
+// flushDocToDisk() is retained as a lightweight helper that writes content
+// to disk + GCS when the client explicitly saves (the 'sync' REST action
+// already passes content in the request body).
 
 /**
- * Wrapper persistence that validates cached state against actual file content,
- * AND automatically flushes Y.js changes to disk for Container-First architecture.
- * This ensures the compiler/AI always sees the latest content.
+ * Write file content to the scoped git working tree + GCS.
+ * Called from the 'sync' REST action (explicit save).
+ *
+ * @param {string} docName – Yjs room name (workspace:slug:user:uid:path)
+ * @param {{ contentOverride?: string }} options
  */
-class ValidatingPersistence {
-  constructor(innerPersistence) {
-    this.inner = innerPersistence;
-    // Track Y.js document observers for auto-flush
-    this.docObservers = new Map(); // docName -> { ydoc, observer, flushTimer }
-    // Debounce interval for disk writes (ms)
-    this.FLUSH_DEBOUNCE_MS = config.FLUSH_DEBOUNCE_MS;
-    // Track in-flight bindState promises so the connection handler can
-    // buffer sync messages until the doc is fully initialised.
-    this._bindingDocs = new Map(); // docName -> { promise, resolve }
-    // TTL timers: keep docs alive after last client disconnects to avoid
-    // stale-CRDT-merge on fast reconnects.
-    this._keepAliveTimers = new Map(); // docName -> timer
+async function flushDocToDisk(docName, options = {}) {
+  const parsed = parseDocName(docName);
+  if (!parsed) return;
+
+  const { slug, filePath, userId: docUserId, sessionId: docSessionId } = parsed;
+  let effectiveUserId = docUserId || null;
+
+  if (docSessionId && !effectiveUserId) {
+    const session = sessionManager.getSession(docSessionId);
+    if (!session) throw new Error(`Session ${docSessionId} not found for doc ${docName}`);
+    effectiveUserId = session.hostId;
   }
+  if (!effectiveUserId) throw new Error(`Refusing unscoped flush for doc ${docName}`);
 
-  /**
-   * Returns a Promise that resolves once bindState() for `docName` has
-   * finished (or immediately if no bind is in progress).
-   */
-  waitForBindState(docName) {
-    const entry = this._bindingDocs.get(docName);
-    return entry ? entry.promise : Promise.resolve();
+  // Content is always provided by the client via the 'sync' REST body.
+  // Fallback: read from Y-Sweet if not provided (pre-stage flush).
+  let content = typeof options.contentOverride === 'string'
+    ? options.contentOverride
+    : null;
+
+  if (content == null) {
+    content = await ySweetBridge.readDocContent(docName);
   }
+  if (content == null) return;
 
-  /**
-   * Set up auto-flush observer for a Y.js document.
-   *
-   * The observer keeps the in-memory hash cache up to date on every edit
-   * (debounced at FLUSH_DEBOUNCE_MS) AND writes the content to the
-   * git working tree on a longer throttled interval (DISK_FLUSH_THROTTLE_MS).
-   *
-   * Disk writes are essential so that `git status` reflects in-progress
-   * edits — without them, the Source Control panel stays empty because
-   * the working tree never diverges from HEAD.
-   *
-   * The `entry.dirty` flag is cleared by explicit saves (via the 'sync'
-   * REST action).  The throttled disk write checks this flag and skips
-   * if an explicit save already persisted newer content.
-   */
-  _setupAutoFlush(docName, ydoc) {
-    // Only set up for workspace documents
-    const parsed = parseDocName(docName);
-    if (!parsed) return;
-
-    // Clean up existing observer if any
-    this._cleanupAutoFlush(docName);
-
-    const { slug, filePath } = parsed;
-    
-    // Use the canonical text type
-    const targetText = ydoc.getText(YTEXT_TYPE);
-    if (!targetText) return;
-
-    // Minimum interval between disk writes per document (ms).
-    const DISK_FLUSH_THROTTLE_MS = 2000;
-
-    // Store the entry reference up-front so the observer closure can update
-    // `entry.flushTimer` in-place — _cleanupAutoFlush reads `entry.flushTimer`
-    // to cancel pending timers, so the two MUST share the same object.
-    const entry = { ydoc, text: targetText, observer: null, flushTimer: null, diskFlushTimer: null, docLevelObserver: null, dirty: false, lastDiskWrite: 0 };
-
-    const observer = () => {
-      // Mark as dirty so writeState / explicit-save knows content changed
-      entry.dirty = true;
-
-      // ── 1. Hash cache update (fast, debounced at FLUSH_DEBOUNCE_MS) ──
-      if (entry.flushTimer) clearTimeout(entry.flushTimer);
-      entry.flushTimer = setTimeout(async () => {
-        entry.flushTimer = null;
-        try {
-          const content = targetText.toString();
-          const repoPath = path.join(__dirname, 'repos', slug);
-          const fullPath = path.join(repoPath, filePath);
-          
-          // Ensure directory exists
-          const dirPath = path.dirname(fullPath);
-          await fsPromises.mkdir(dirPath, { recursive: true });
-          
-          // Write to disk
-          await fsPromises.writeFile(fullPath, content, 'utf-8');
-          
-          // Update hash cache
-          fileHashCache.set(docName, { hash: computeHash(content), timestamp: Date.now() });
-        } catch (e) {
-          console.error(`[Collab AutoFlush] Hash update failed for ${filePath}:`, e.message);
-        }
-      }, this.FLUSH_DEBOUNCE_MS);
-
-      // ── 2. Disk write (throttled at DISK_FLUSH_THROTTLE_MS) ──────────
-      // Ensures `git status` reflects ongoing edits.  Skipped when an
-      // explicit save already flushed the latest content (dirty === false).
-      if (!entry.diskFlushTimer) {
-        const delay = Math.max(0, DISK_FLUSH_THROTTLE_MS - (Date.now() - entry.lastDiskWrite));
-        entry.diskFlushTimer = setTimeout(async () => {
-          entry.diskFlushTimer = null;
-          // Skip if an explicit save already wrote newer content
-          if (!entry.dirty) return;
-          try {
-            const content = targetText.toString();
-            const effectiveUserId = resolveEffectiveUserForDoc(parsed);
-            if (!effectiveUserId) return;
-            const repoPath = gitService.getEffectiveRepoPath(slug, effectiveUserId);
-            if (!fs.existsSync(repoPath)) return;
-            const fullPath = path.join(repoPath, filePath);
-            await fsPromises.mkdir(path.dirname(fullPath), { recursive: true });
-            await fsPromises.writeFile(fullPath, content, 'utf-8');
-            entry.lastDiskWrite = Date.now();
-            // Also update the hash cache with the content we just wrote
-            fileHashCache.set(docName, { hash: computeHash(content), timestamp: Date.now() });
-            // Notify clients so the Source Control panel refreshes
-            broadcastGitStatusChanged(slug, filePath, {
-              userId: effectiveUserId,
-              sessionId: parsed.sessionId || null,
-            });
-          } catch (e) {
-            console.error(`[Collab AutoFlush] Disk write failed for ${filePath}:`, e.message);
-          }
-        }, delay);
-      }
-    };
-
-    // Observe changes on the text type
-    entry.observer = observer;
-    targetText.observe(observer);
-
-    // Also observe at the Y.Doc level as a safety net.  In some race
-    // conditions (async bindState vs sync protocol messages) the Y.Text
-    // observer can miss the very first remote update.  The doc-level
-    // handler re-triggers the same debounced flush so there's no double-write.
-    const docLevelObserver = (update, origin) => {
-      // Only trigger for remote updates (origin is the WS connection object)
-      if (origin !== null && origin !== undefined) {
-        observer();
-      }
-    };
-    entry.docLevelObserver = docLevelObserver;
-    ydoc.on('update', docLevelObserver);
-
-    // Store for cleanup
-    this.docObservers.set(docName, entry);
-    
-    console.log(`[Collab AutoFlush] Set up auto-flush for ${docName}`);
-  }
-
-  /**
-   * Clean up auto-flush observer
-   */
-  _cleanupAutoFlush(docName) {
-    const entry = this.docObservers.get(docName);
-    if (entry) {
-      try {
-        if (entry.text && entry.observer) {
-          entry.text.unobserve(entry.observer);
-        }
-        if (entry.ydoc && entry.docLevelObserver) {
-          entry.ydoc.off('update', entry.docLevelObserver);
-        }
-        if (entry.flushTimer) {
-          clearTimeout(entry.flushTimer);
-        }
-        if (entry.diskFlushTimer) {
-          clearTimeout(entry.diskFlushTimer);
-        }
-      } catch (e) {
-        console.warn(`[Collab AutoFlush] Cleanup error for ${docName}:`, e.message);
-      }
-      this.docObservers.delete(docName);
-    }
-  }
-
-  /**
-   * Explicitly flush the current CRDT content for a document to disk and
-   * GCS.  Called from the 'sync' action handler when the user saves.
-   *
-   * The auto-flush observer writes edits to disk on a debounced schedule
-   * (so git status stays current), but explicit saves also flush to GCS
-   * and broadcast events.
-   *
-   * @param {string} docName  e.g. "workspace:slug:path/to/file.js"
-   */
-  async flushDocToDisk(docName, options = {}) {
-    const parsed = parseDocName(docName);
-    if (!parsed) return;
-
-    const { slug, filePath, userId: docUserId, sessionId: docSessionId } = parsed;
-    let effectiveUserId = docUserId || null;
-
-    // For shared session docs, writes should target the host's working tree.
-    if (docSessionId && !effectiveUserId) {
-      const session = sessionManager.getSession(docSessionId);
-      if (!session) {
-        throw new Error(`Session ${docSessionId} not found for doc ${docName}`);
-      }
-      effectiveUserId = session.hostId;
-    }
-
-    if (!effectiveUserId) {
-      throw new Error(`Refusing unscoped flush for doc ${docName}`);
-    }
-
-    // Prefer explicit content during save to avoid races where the in-memory
-    // Yjs state lags behind the payload currently being persisted.
-    let content = typeof options.contentOverride === 'string'
-      ? options.contentOverride
-      : null;
-
-    // Read content from the in-memory Yjs doc (the observer tracks it)
-    const entry = this.docObservers.get(docName);
-    if (content == null) {
-      if (entry && entry.text) {
-        content = entry.text.toString();
-      } else {
-        // Fallback: look up the Y.Doc directly
-        const ydoc = this.inner && typeof this.inner.getYDoc === 'function'
-          ? this.inner.getYDoc(docName)
-          : null;
-        if (!ydoc) return;
-        content = ydoc.getText(YTEXT_TYPE).toString();
-      }
-    }
-
-    if (content == null) return;
-
-    // ── 1. GCS sync (durable store) ──────────────────────────────────
-    if (config.GCS_SYNC_ON_FLUSH && gcsSync && typeof gcsSync.isGcsConfigured === 'function' && gcsSync.isGcsConfigured()) {
-      try {
-        await gcsSync.syncFileToGcs(slug, filePath, content, effectiveUserId);
-      } catch (e) {
-        console.warn(`[Collab Flush] GCS sync failed for ${filePath}:`, e?.message || e);
-      }
-    }
-
-    // ── 2. Disk write to the scoped repo only ────────────────────────
-    const repoPath = gitService.getEffectiveRepoPath(slug, effectiveUserId);
-    if (fs.existsSync(repoPath)) {
-      const fullPath = path.join(repoPath, filePath);
-      await fsPromises.mkdir(path.dirname(fullPath), { recursive: true });
-      await fsPromises.writeFile(fullPath, content, 'utf-8');
-    }
-
-    // Update hash cache
-    fileHashCache.set(docName, { hash: computeHash(content), timestamp: Date.now() });
-
-    // Keep live Yjs text aligned with persisted content when save payload
-    // was provided explicitly.
-    if (typeof options.contentOverride === 'string' && entry?.text) {
-      try {
-        const current = entry.text.toString();
-        if (current !== options.contentOverride) {
-          entry.ydoc?.transact(() => {
-            entry.text.delete(0, entry.text.length);
-            entry.text.insert(0, options.contentOverride);
-          });
-        }
-        entry.dirty = false;
-      } catch (_) {}
-    }
-
-    // Optional: code-intel indexing
-    if (config.CODE_INTEL_AUTO_INDEX && fetchFunc && CODE_INTEL_URL) {
-      try {
-        fetchFunc(`${CODE_INTEL_URL}/code-intel/index/file`, {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ workspace_path: slug, file_path: filePath }),
-        }).catch(() => {});
-      } catch (_) { /* non-fatal */ }
-    }
-
-    broadcastGitStatusChanged(slug, filePath, { userId: effectiveUserId, sessionId: docSessionId || null });
-
-    // Broadcast file-saved so all collaborators can sync their saved state
-    broadcastFileSaved(slug, filePath, { userId: effectiveUserId, sessionId: docSessionId || null });
-
-    console.log(`[Collab Flush] Explicit save: ${filePath} -> disk + GCS (${content.length} chars)`);
-  }
-
-  async bindState(docName, ydoc) {
-    // Register a Promise that the connection handler can await to buffer
-    // sync messages until this async initialisation is complete.  Without
-    // this, y-websocket's getYDoc() returns the doc immediately (it does
-    // NOT await bindState), so client sync messages race with our file
-    // validation — the CRDT merge of stale client items + fresh server
-    // items doubles the content.
-    let bindResolve;
-    const bindPromise = new Promise(r => { bindResolve = r; });
-    this._bindingDocs.set(docName, { promise: bindPromise, resolve: bindResolve });
-
+  // 1. GCS sync (durable store)
+  if (config.GCS_SYNC_ON_FLUSH && gcsSync && typeof gcsSync.isGcsConfigured === 'function' && gcsSync.isGcsConfigured()) {
     try {
-      return await this._doBindState(docName, ydoc);
-    } finally {
-      // Always resolve — even if bindState threw — so buffered messages
-      // aren't stuck forever.
-      const entry = this._bindingDocs.get(docName);
-      if (entry && entry.resolve === bindResolve) {
-        entry.resolve();
-        this._bindingDocs.delete(docName);
-      }
+      await gcsSync.syncFileToGcs(slug, filePath, content, effectiveUserId);
+    } catch (e) {
+      console.warn(`[Collab Flush] GCS sync failed for ${filePath}:`, e?.message || e);
     }
   }
 
-  async _doBindState(docName, ydoc) {
-    // First, bind the persisted state (if any)
-    if (this.inner.bindState) {
-      await this.inner.bindState(docName, ydoc);
-    }
-
-    // Now validate against actual file
-    const parsed = parseDocName(docName);
-    if (!parsed) {
-      // Not a workspace document, skip validation
-      return;
-    }
-
-    const { slug, filePath } = parsed;
-    
-    const effectiveUserId = resolveEffectiveUserForDoc(parsed);
-    const actualContent = await getActualFileContent(slug, filePath, effectiveUserId);
-    
-    if (actualContent === null) {
-      // File doesn't exist on disk yet — still set up auto-flush so that
-      // when the client starts typing, the content is written to disk.
-      // Without this, new files created through the Yjs editor would never
-      // be flushed (the old code returned early here, skipping _setupAutoFlush).
-      this._setupAutoFlush(docName, ydoc);
-      return;
-    }
-
-    const persistedContent = getYDocContent(ydoc);
-    const actualHash = computeHash(actualContent);
-    const persistedHash = computeHash(persistedContent);
-
-    // Condensed logging - only log when relevant
-    if (actualHash !== persistedHash) {
-      console.log(`[Collab] STALE DATA: ${filePath} | persisted=${persistedHash.substring(0, 8)} | actual=${actualHash.substring(0, 8)} | resetting...`);
-
-      // Clear the persisted state and reset to actual content
-      if (this.inner.clearDocument) {
-        await this.inner.clearDocument(docName);
-      }
-
-      // Reset Yjs document to actual file content
-      // Find the text type and replace its content
-      const textTypes = ['monaco', 'content', 'text', 'codemirror'];
-      for (const name of textTypes) {
-        const text = ydoc.getText(name);
-        if (text) {
-          ydoc.transact(() => {
-            text.delete(0, text.length);
-            text.insert(0, actualContent);
-          });
-          break;
-        }
-      }
-
-      // Update hash cache
-      fileHashCache.set(docName, { hash: actualHash, timestamp: Date.now() });
-
-      // SAFEGUARD: After resetting, a reconnecting client may still send
-      // stale CRDT state via the sync protocol, which Yjs merges into this
-      // doc — causing content duplication.  Install a one-shot update
-      // handler that detects unexpected growth and re-resets the doc.
-      // Active for 30 seconds after reset, then auto-removed.
-      //
-      // Improved detection: Instead of requiring the classic "doubling
-      // signature" (which misses many duplication patterns), we check
-      // whether the content is the original text repeated N times, OR
-      // whether the length grew by more than half the expected size from
-      // sync-protocol origins only (not local edits).
-      const resetLength = actualContent.length;
-      const GROWTH_THRESHOLD = 1.5; // Flag if content grows >50% beyond expected
-      let guardRemoved = false;
-      let reResetCount = 0;
-      let hasLocalEdit = false;
-      const MAX_RE_RESETS = 10; // prevent infinite reset loops
-      const staleGuard = (_update, origin) => {
-        if (guardRemoved) return;
-        // Once a local (non-sync-protocol) edit arrives, the doc is
-        // actively being used — disable the guard to avoid destroying
-        // legitimate user edits (e.g., large pastes).
-        if (origin !== 'y-sync$1' && origin !== 'y-sync$2' && origin !== null) {
-          hasLocalEdit = true;
-          return;
-        }
-        if (hasLocalEdit) return;
-        try {
-          const currentText = ydoc.getText(YTEXT_TYPE).toString();
-          if (currentText.length > resetLength * GROWTH_THRESHOLD && resetLength > 0 && reResetCount < MAX_RE_RESETS) {
-            // Check for N× repetition of the canonical content
-            const isExactRepeat = currentText.length >= resetLength * 2
-              && currentText.length % resetLength === 0
-              && currentText === actualContent.repeat(currentText.length / resetLength);
-
-            // Fallback: check for doubling signature (partial match)
-            const looksDoubled = isExactRepeat
-              || currentText.startsWith(actualContent + actualContent.charAt(0))
-              || currentText.endsWith(actualContent.charAt(actualContent.length - 1) + actualContent)
-              || currentText.includes(actualContent.slice(0, Math.min(200, actualContent.length)) + actualContent.slice(0, Math.min(50, actualContent.length)));
-
-            // Aggressive fallback: if growth is >2× and it's from sync
-            // protocol, it's almost certainly a stale merge.
-            const extremeGrowth = currentText.length >= resetLength * 2;
-
-            if (!looksDoubled && !extremeGrowth) return; // Legitimate growth — let it through
-
-            reResetCount++;
-            console.warn(`[Collab] STALE MERGE detected for ${filePath}: expected ~${resetLength} chars, got ${currentText.length}. Re-resetting (attempt ${reResetCount}).`);
-            ydoc.transact(() => {
-              const canonical = ydoc.getText(YTEXT_TYPE);
-              canonical.delete(0, canonical.length);
-              canonical.insert(0, actualContent);
-            });
-            fileHashCache.set(docName, { hash: actualHash, timestamp: Date.now() });
-          }
-        } catch (_) {}
-      };
-      ydoc.on('update', staleGuard);
-      setTimeout(() => {
-        guardRemoved = true;
-        try { ydoc.off('update', staleGuard); } catch (_) {}
-      }, 30000);
-    } else {
-      fileHashCache.set(docName, { hash: actualHash, timestamp: Date.now() });
-    }
-
-    // ── Post-reset duplicate guard ─────────────────────────────────────
-    // Because y-websocket fires bindState *without* awaiting it, a client
-    // may have already synced its own content into the Y.Doc while we were
-    // performing async I/O above.  If the Y.Doc content is now the file
-    // content repeated (CRDT merge of two independent inserts), fix it.
-    const postContent = getYDocContent(ydoc);
-    if (postContent.length > 0 && actualContent && actualContent.length > 0
-        && postContent.length > actualContent.length
-        && postContent !== actualContent) {
-      // Check if it's an exact N× repetition of the correct content
-      if (postContent.length % actualContent.length === 0) {
-        const repeats = postContent.length / actualContent.length;
-        if (repeats >= 2 && postContent === actualContent.repeat(repeats)) {
-          console.warn(`[Collab] CRDT duplicate detected after bindState for ${filePath} (${repeats}× repeat). Fixing...`);
-          const textTypes2 = ['monaco', 'content', 'text', 'codemirror'];
-          for (const name of textTypes2) {
-            const text = ydoc.getText(name);
-            if (text && text.length > 0) {
-              ydoc.transact(() => {
-                text.delete(0, text.length);
-                text.insert(0, actualContent);
-              }, 'bindState-dedup');
-              break;
-            }
-          }
-          fileHashCache.set(docName, { hash: actualHash, timestamp: Date.now() });
-        }
-      }
-    }
-    // ───────────────────────────────────────────────────────────────────
-    
-    // Set up auto-flush so all future Y.js changes are written to disk
-    // This is critical for Container-First architecture
-    this._setupAutoFlush(docName, ydoc);
+  // 2. Disk write to the scoped repo
+  const repoPath = gitService.getEffectiveRepoPath(slug, effectiveUserId);
+  if (fs.existsSync(repoPath)) {
+    const fullPath = path.join(repoPath, filePath);
+    await fsPromises.mkdir(path.dirname(fullPath), { recursive: true });
+    await fsPromises.writeFile(fullPath, content, 'utf-8');
   }
 
-  async writeState(docName, ydoc) {
-    const content = getYDocContent(ydoc);
-    
-    if (this.inner.writeState) {
-      await this.inner.writeState(docName, ydoc);
-    }
-    
-    // Update hash cache when writing
-    fileHashCache.set(docName, { hash: computeHash(content), timestamp: Date.now() });
+  // Update hash cache
+  fileHashCache.set(docName, { hash: computeHash(content), timestamp: Date.now() });
 
-    // Do NOT flush to disk on close in manual-save mode.
-    // Persisting unsaved buffers to git worktrees causes unexpected source-control changes.
-
-    // ── Keep-alive: re-add the doc to the y-websocket docs map ────────
-    // y-websocket's closeConn() calls docs.delete(docName) synchronously
-    // BEFORE writeState resolves, then chains .then(() => doc.destroy()).
-    // If a client reconnects before destroy fires, getYDoc() creates a
-    // NEW empty doc, and the CRDT merge of stale client items + fresh
-    // server items doubles the content.
-    //
-    // Fix: re-add the doc to the docs map (via microtask — runs after
-    // the synchronous docs.delete in closeConn) and block the Promise
-    // from resolving for DOC_KEEPALIVE_MS.  This keeps the doc alive so
-    // reconnecting clients get the SAME doc (same item IDs → sync is a
-    // no-op → no duplication).
-    //
-    // We also monkey-patch ydoc.destroy() so the chained
-    // .then(() => doc.destroy()) in closeConn is safe even if the doc
-    // has gained new connections during the keep-alive window.
-    const DOC_KEEPALIVE_MS = 30_000;
-
-    // Cancel any previous keep-alive for this doc name
-    if (this._keepAliveTimers.has(docName)) {
-      clearTimeout(this._keepAliveTimers.get(docName));
-      this._keepAliveTimers.delete(docName);
-    }
-
-    // Protect ydoc.destroy() — must not fire while connections exist
-    // or while the keep-alive timer is running (waiting for potential reconnect).
-    // When invalidateDocsForSlug runs, it calls clearDocument() first which
-    // cancels the timer, then calls destroy() — the guard allows it through.
-    const persistSelf = this;
-    if (!ydoc._origDestroy) {
-      const origDestroy = ydoc.destroy.bind(ydoc);
-      ydoc._origDestroy = origDestroy;
-      ydoc.destroy = function () {
-        // If connections were re-established during keep-alive, skip destroy
-        if (this.conns && this.conns.size > 0) return;
-        // If the keep-alive timer is still running, skip — writeState's
-        // blocked Promise hasn't resolved yet, and .then(destroy) will
-        // call us again after the timer fires and self-removes.
-        if (persistSelf._keepAliveTimers.has(docName)) return;
-        // Clean up docs map entry if still pointing to us
-        if (yWsDocs && yWsDocs.has(docName) && yWsDocs.get(docName) === this) {
-          yWsDocs.delete(docName);
-        }
-        origDestroy();
-      };
-    }
-
-    // Re-add to docs map after closeConn's synchronous delete
-    queueMicrotask(() => {
-      if (yWsDocs && !yWsDocs.has(docName)) {
-        yWsDocs.set(docName, ydoc);
-      }
-    });
-
-    // Schedule real cleanup after TTL — remove the timer entry and
-    // destroy the doc if still idle.  This fires slightly BEFORE the
-    // writeState Promise resolves (below), so closeConn's chained
-    // .then(() => doc.destroy()) is effectively a harmless no-op.
-    this._keepAliveTimers.set(docName, setTimeout(() => {
-      this._keepAliveTimers.delete(docName);
-      // Destroy now if still idle
-      if (yWsDocs && yWsDocs.has(docName) && yWsDocs.get(docName) === ydoc) {
-        if (!ydoc.conns || ydoc.conns.size === 0) {
-          yWsDocs.delete(docName);
-          if (ydoc._origDestroy) ydoc._origDestroy();
-        }
-      }
-    }, DOC_KEEPALIVE_MS));
-
-    // Block the Promise from resolving during the keep-alive window + a
-    // small buffer so the timer fires first and handles cleanup.
-    // closeConn chains .then(() => doc.destroy()) after writeState, so
-    // delaying resolution delays the destroy call.
-    await new Promise(r => setTimeout(r, DOC_KEEPALIVE_MS + 500));
+  // Optional: code-intel indexing
+  if (config.CODE_INTEL_AUTO_INDEX && fetchFunc && CODE_INTEL_URL) {
+    try {
+      fetchFunc(`${CODE_INTEL_URL}/code-intel/index/file`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ workspace_path: slug, file_path: filePath }),
+      }).catch(() => {});
+    } catch (_) { /* non-fatal */ }
   }
 
-  async clearDocument(docName) {
-    fileHashCache.delete(docName);
-
-    // Cancel any keep-alive timer so that invalidateDocsForSlug's
-    // subsequent wsDoc.destroy() isn't blocked by our monkey-patch.
-    if (this._keepAliveTimers.has(docName)) {
-      clearTimeout(this._keepAliveTimers.get(docName));
-      this._keepAliveTimers.delete(docName);
-    }
-
-    if (this.inner.clearDocument) {
-      await this.inner.clearDocument(docName);
-    }
-  }
-
-  // Proxy other methods to inner persistence
-  async flushDocument(docName) {
-    if (this.inner.flushDocument) {
-      await this.inner.flushDocument(docName);
-    }
-  }
-}
-
-// Wrap the base persistence with validation
-const persistence = new ValidatingPersistence(basePersistence);
-
-// CRITICAL: y-websocket uses a module-level persistence variable, NOT the
-// options passed to setupWSConnection. We must call setPersistence() so
-// that getYDoc() → bindState() → auto-flush actually fires.
-try {
-  const { setPersistence } = require('y-websocket/bin/utils');
-  setPersistence(persistence);
-  console.log('[Collab] Persistence registered via setPersistence()');
-} catch (e) {
-  console.warn('[Collab] Could not call setPersistence:', e.message);
+  broadcastGitStatusChanged(slug, filePath, { userId: effectiveUserId, sessionId: docSessionId || null });
+  broadcastFileSaved(slug, filePath, { userId: effectiveUserId, sessionId: docSessionId || null });
+  console.log(`[Collab Flush] Explicit save: ${filePath} -> disk + GCS (${content.length} chars)`);
 }
 
 const workspaceManager = require('./workspaceManager');
-
-// ── Access y-websocket internal docs for invalidation ──
-// y-websocket's utils module exports a `docs` Map<docName, WSSharedDoc>.
-// We use this to programmatically destroy stale Y.Docs when git operations
-// change files on disk (checkout, pull, discard, etc.)
-let yWsUtils = null;
-try {
-  yWsUtils = require('y-websocket/bin/utils');
-} catch (_) {
-  try { yWsUtils = require('y-websocket/bin/utils.js'); } catch (_2) {
-    try { yWsUtils = require('y-websocket/dist/bin/utils.cjs'); } catch (_3) { /* already loaded via root */ }
-  }
-}
-const yWsDocs = (yWsUtils && yWsUtils.docs) ? yWsUtils.docs : null;
-
-// ── CRITICAL: Register our persistence with y-websocket ──────────────────────
-// y-websocket uses a module-level `persistence` variable that must be set via
-// setPersistence(). Passing `persistence` as an option to setupWSConnection()
-// does NOT work — that function only destructures { docName, gc } and silently
-// ignores any other keys.  Without this call, bindState / writeState / the
-// auto-flush observer are never invoked and Yjs edits are never written to disk.
-if (yWsUtils && typeof yWsUtils.setPersistence === 'function') {
-  yWsUtils.setPersistence(persistence);
-  console.log('[Collab] Registered ValidatingPersistence with y-websocket via setPersistence()');
-} else {
-  console.error('[Collab] WARNING: Could not register persistence with y-websocket — setPersistence not available. Auto-flush to disk will NOT work.');
-}
+const spawner = require('./workspacePodSpawner');
 
 // ── In-memory userId → displayName cache ──────────────────────────────────
 // Populated from Yjs awareness state changes so that REST endpoints can
@@ -1087,151 +430,72 @@ function validateFilePath(filePath) {
 async function flushYjsDocForFile(slug, filePath, scope = {}) {
   if (!slug || !filePath) return;
 
-  // Try the most likely doc name first (user-scoped)
+  // Read current CRDT content from Y-Sweet and write to the git worktree.
+  // This ensures the on-disk content matches the editor state before git ops.
   const docName = buildDocName(slug, filePath, scope);
-  const entry = persistence.docObservers.get(docName);
-  if (entry && entry.text) {
-    // Cancel any pending debounced flush — we're writing immediately
-    if (entry.flushTimer) { clearTimeout(entry.flushTimer); entry.flushTimer = null; }
-    if (entry.diskFlushTimer) { clearTimeout(entry.diskFlushTimer); entry.diskFlushTimer = null; }
+  const content = await ySweetBridge.readDocContent(docName);
+  if (content == null) return;
 
-    const content = entry.text.toString();
-    const effectiveUser = scope.userId || null;
-    if (effectiveUser) {
-      const repoPath = gitService.getEffectiveRepoPath(slug, effectiveUser);
-      if (fs.existsSync(repoPath)) {
-        const fullPath = path.join(repoPath, filePath);
-        await fsPromises.mkdir(path.dirname(fullPath), { recursive: true });
-        await fsPromises.writeFile(fullPath, content, 'utf-8');
-        entry.lastDiskWrite = Date.now();
-        entry.dirty = false;
-        const docKey = buildDocName(slug, filePath, scope);
-        fileHashCache.set(docKey, { hash: computeHash(content), timestamp: Date.now() });
-        console.log(`[Collab] Pre-stage flush: ${filePath} (${content.length} chars)`);
-      }
-    }
-    return;
-  }
+  const effectiveUser = scope.userId || null;
+  if (!effectiveUser) return;
 
-  // Fallback: scan all doc observers for any doc matching this slug+filePath
-  for (const [dn, obs] of persistence.docObservers.entries()) {
-    const parsed = parseDocName(dn);
-    if (!parsed || parsed.slug !== slug || parsed.filePath !== filePath) continue;
-    if (obs.text) {
-      if (obs.flushTimer) { clearTimeout(obs.flushTimer); obs.flushTimer = null; }
-      if (obs.diskFlushTimer) { clearTimeout(obs.diskFlushTimer); obs.diskFlushTimer = null; }
-      const content = obs.text.toString();
-      const uid = resolveEffectiveUserForDoc(parsed);
-      if (uid) {
-        const repoPath = gitService.getEffectiveRepoPath(slug, uid);
-        if (fs.existsSync(repoPath)) {
-          const fullPath = path.join(repoPath, filePath);
-          await fsPromises.mkdir(path.dirname(fullPath), { recursive: true });
-          await fsPromises.writeFile(fullPath, content, 'utf-8');
-          obs.lastDiskWrite = Date.now();
-          obs.dirty = false;
-          fileHashCache.set(dn, { hash: computeHash(content), timestamp: Date.now() });
-          console.log(`[Collab] Pre-stage flush (scan): ${filePath} (${content.length} chars)`);
-        }
-      }
-    }
-  }
+  const repoPath = gitService.getEffectiveRepoPath(slug, effectiveUser);
+  if (!fs.existsSync(repoPath)) return;
+
+  const fullPath = path.join(repoPath, filePath);
+  await fsPromises.mkdir(path.dirname(fullPath), { recursive: true });
+  await fsPromises.writeFile(fullPath, content, 'utf-8');
+  fileHashCache.set(docName, { hash: computeHash(content), timestamp: Date.now() });
+  console.log(`[Collab] Pre-stage flush via Y-Sweet: ${filePath} (${content.length} chars)`);
 }
 
 async function invalidateDocsForSlug(slug, filePaths = null, scope = {}) {
+  // Y-Sweet owns doc persistence — we no longer hold Yjs docs in-process.
+  // Invalidation now means:
+  //   1. Clear the hash cache so subsequent reads re-check disk.
+  //   2. Broadcast a 'doc-invalidated' notification via notifyWss so
+  //      connected frontends destroy their Y.Docs and reconnect to
+  //      Y-Sweet with fresh state.
+  //   3. Set revert cooldowns to reject stale in-flight save requests.
   const prefix = `workspace:${slug}:`;
-  const toInvalidate = [];
 
-  // Direct-access model: scope may have both sessionId and userId.
-  // Match docs by userId (repo owner) OR sessionId (session-scoped docs).
-  const matchesScope = (parsed) => {
-    if (!scope.sessionId && !scope.userId) return true; // no scope filter
-    const docUserId = resolveEffectiveUserForDoc(parsed);
-    // Match if the doc belongs to the scope's user (direct-access)
-    if (scope.userId && docUserId === scope.userId) return true;
-    // Match session-scoped docs by sessionId (legacy compat)
-    if (scope.sessionId && parsed.sessionId === scope.sessionId) return true;
-    return false;
-  };
-
-  // Collect doc names to invalidate
-  if (yWsDocs) {
-    for (const docName of yWsDocs.keys()) {
-      if (!docName.startsWith(prefix)) continue;
-      const parsed = parseDocName(docName);
-      if (!parsed) continue;
-      if (!matchesScope(parsed)) continue;
-      if (filePaths && filePaths.length > 0) {
-        const docPath = parsed?.filePath || docName.slice(prefix.length);
-        if (!filePaths.includes(docPath)) continue;
-      }
-      toInvalidate.push(docName);
-    }
-  }
-
-  // Also scan persistence observer map for docs that may not be in yWsDocs
-  for (const docName of persistence.docObservers.keys()) {
-    if (!docName.startsWith(prefix)) continue;
-    const parsed = parseDocName(docName);
-    if (!parsed) continue;
-    if (!matchesScope(parsed)) continue;
+  // Clear hash cache entries for affected files
+  for (const key of fileHashCache.keys()) {
+    if (!key.startsWith(prefix)) continue;
     if (filePaths && filePaths.length > 0) {
-      const docPath = parsed?.filePath || docName.slice(prefix.length);
-      if (!filePaths.includes(docPath)) continue;
+      const parsed = parseDocName(key);
+      if (parsed && !filePaths.includes(parsed.filePath)) continue;
     }
-    if (!toInvalidate.includes(docName)) toInvalidate.push(docName);
+    fileHashCache.delete(key);
   }
 
-  for (const docName of toInvalidate) {
-    // 1. Clean up auto-flush observer so it doesn't overwrite git changes
-    persistence._cleanupAutoFlush(docName);
-
-    // 2. Clear persisted (LevelDB/in-memory) state
-    await persistence.clearDocument(docName);
-
-    // 3. Clear hash cache so next bindState re-reads from disk
-    fileHashCache.delete(docName);
-
-    // 4. Close all WebSocket connections for this doc BEFORE destroying it.
-    //    y-websocket's WSSharedDoc tracks connections in doc.conns (Map<ws, Set>).
-    //    If we only call wsDoc.destroy() without closing these connections,
-    //    the clients' WebsocketProviders stay connected and auto-reconnect.
-    //    On reconnect y-websocket creates a fresh doc, but the client sends
-    //    its stale CRDT state via the sync protocol — the merge of stale
-    //    client state + fresh server state causes content duplication.
-    //    By closing connections first, the client provider detects the
-    //    disconnect and reconnects cleanly — with an empty local doc that
-    //    receives fresh content from the server's new bindState.
-    if (yWsDocs && yWsDocs.has(docName)) {
-      const wsDoc = yWsDocs.get(docName);
-      // Close every WebSocket attached to this doc
-      if (wsDoc.conns && wsDoc.conns.size > 0) {
-        for (const conn of Array.from(wsDoc.conns.keys())) {
-          try {
-            wsDoc.conns.delete(conn);
-            conn.close(4000, 'doc-invalidated');
-          } catch (_) {}
-        }
+  // Broadcast invalidation to frontends via notification WebSocket.
+  // Clients listen for 'doc-invalidated' and destroy + reconnect their Y.Docs.
+  if (notifyWss) {
+    const message = JSON.stringify({
+      type: 'doc-invalidated',
+      slug,
+      filePaths: filePaths || [],
+      scope,
+    });
+    notifyWss.clients.forEach((ws) => {
+      if (ws.readyState === WebSocket.OPEN && ws._slug === slug && _matchesNotifyScope(ws, scope)) {
+        try { ws.send(message); } catch (_) {}
       }
-      try { wsDoc.destroy(); } catch (_) {}
-      yWsDocs.delete(docName);
-    }
-
-    activeDocuments.delete(docName);
+    });
   }
 
-  if (toInvalidate.length > 0) {
-    console.log(`[Collab] Invalidated ${toInvalidate.length} Yjs docs for slug ${slug}`);
+  // Set revert cooldown for affected paths
+  const now = Date.now();
+  const affectedPaths = filePaths && filePaths.length > 0 ? filePaths : [];
+  for (const fp of affectedPaths) {
+    revertCooldowns.set(`${slug}:${fp}`, now);
+  }
 
-    // Set revert cooldown for affected file paths — reject stale sync (save)
-    // requests that were in-flight before the invalidation.
-    const now = Date.now();
-    const affectedPaths = filePaths && filePaths.length > 0
-      ? filePaths
-      : toInvalidate.map(dn => { const p = parseDocName(dn); return p?.filePath; }).filter(Boolean);
-    for (const fp of affectedPaths) {
-      revertCooldowns.set(`${slug}:${fp}`, now);
-    }
+  if (filePaths) {
+    console.log(`[Collab] Invalidated ${filePaths.length} docs for slug ${slug}`);
+  } else {
+    console.log(`[Collab] Invalidated all docs for slug ${slug}`);
   }
 }
 
@@ -1393,26 +657,77 @@ function broadcastFileReverted(slug, filePaths = [], scope = {}) {
 }
 
 /**
- * Clear Yjs persistence for a document (used when merge conflicts need fresh file content).
- * @param {string} docName - The document name (room key), e.g., "workspace:slug:filepath"
+ * Clear local cache state for a document.
+ * Y-Sweet owns persistence — this just clears the hash cache entry
+ * so subsequent reads re-validate against disk.
+ *
+ * @param {string} docName - The document name (room key)
  */
 async function clearDocumentPersistence(docName) {
-  try {
-    if (persistence.clearDocument && typeof persistence.clearDocument === 'function') {
-      await persistence.clearDocument(docName);
-      console.log('[Collab] Cleared persistence for document:', docName);
-    } else if (persistence.flushDocument && typeof persistence.flushDocument === 'function') {
-      await persistence.flushDocument(docName);
-      console.log('[Collab] Flushed document from persistence:', docName);
-    } else {
-      console.warn('[Collab] No clearDocument method available on persistence');
-    }
-  } catch (e) {
-    console.warn('[Collab] Error clearing persistence for', docName, e?.message || e);
+  fileHashCache.delete(docName);
+  console.log('[Collab] Cleared local cache for document:', docName);
+}
+
+// ── TURN credential cache (Cloudflare Calls) ────────────────────────────────
+// Reuses the same Cloudflare credential until 80% of the TTL has elapsed,
+// avoiding an extra HTTP round-trip on most create_peer() calls.
+let _turnCache = null; // { iceServers, expiresAt }
+const TURN_REFRESH_MARGIN = 0.2; // refresh when 80% of TTL elapsed
+
+async function getTurnCredentials() {
+  const { CLOUDFLARE_TURN_TOKEN_ID, CLOUDFLARE_TURN_API_TOKEN, TURN_CREDENTIAL_TTL } = config;
+
+  // Not configured → STUN-only fallback.
+  if (!CLOUDFLARE_TURN_TOKEN_ID || !CLOUDFLARE_TURN_API_TOKEN) {
+    return [{ urls: ['stun:stun.l.google.com:19302'] }];
   }
+
+  // Serve from cache when still fresh enough.
+  if (_turnCache) {
+    const remaining = _turnCache.expiresAt - Date.now();
+    if (remaining > TURN_CREDENTIAL_TTL * 1000 * TURN_REFRESH_MARGIN) {
+      return _turnCache.iceServers;
+    }
+  }
+
+  const cfRes = await fetch(
+    `https://rtc.live.cloudflare.com/v1/turn/keys/${CLOUDFLARE_TURN_TOKEN_ID}/credentials/generate`,
+    {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${CLOUDFLARE_TURN_API_TOKEN}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ ttl: TURN_CREDENTIAL_TTL }),
+    },
+  );
+
+  if (!cfRes.ok) {
+    const text = await cfRes.text().catch(() => '');
+    throw new Error(`Cloudflare TURN API ${cfRes.status}: ${text}`);
+  }
+
+  const data = await cfRes.json();
+  const cf = data.iceServers;
+
+  const iceServers = [
+    { urls: ['stun:stun.cloudflare.com:3478'] },
+    {
+      urls: Array.isArray(cf.urls) ? cf.urls : [cf.urls],
+      username: cf.username,
+      credential: cf.credential,
+    },
+  ];
+
+  _turnCache = { iceServers, expiresAt: Date.now() + TURN_CREDENTIAL_TTL * 1000 };
+  return iceServers;
 }
 
 const server = http.createServer(async (req, res) => {
+  // Strip /collab or /collab/ prefix if passed by ingress
+  req.url = req.url.replace(/^\/collab/, '');
+  if (!req.url.startsWith('/')) req.url = '/' + req.url;
+
   // CORS headers
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS, DELETE');
@@ -1421,6 +736,79 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'OPTIONS') {
     res.writeHead(204);
     res.end();
+    return;
+  }
+
+  // ========================================================================
+  // TURN CREDENTIALS — /turn-credentials
+  // Internal endpoint for workers (Option B) to fetch short-lived
+  // Cloudflare Calls TURN credentials. Cached server-side so we avoid
+  // hitting Cloudflare on every create_peer().
+  // ========================================================================
+  // ========================================================================
+  // SPAWNER WEBHOOK — /api/spawner/session-ended
+  // Called by the signaling server when all peers disconnect from a session.
+  // ========================================================================
+  if (req.url === '/api/spawner/session-ended') {
+    return spawner.handleSessionEnded(req, res);
+  }
+
+  // ========================================================================
+  // SPAWNER — /api/spawner/ensure
+  // Called by the frontend to ensure a workspace pod exists.
+  // Body: { session_id, user_id }
+  // ========================================================================
+  if (req.url === '/api/spawner/ensure' && req.method === 'POST') {
+    let body = '';
+    for await (const chunk of req) body += chunk;
+    let parsed;
+    try { parsed = JSON.parse(body); } catch { res.writeHead(400); res.end('Invalid JSON'); return; }
+    const { session_id, user_id } = parsed;
+    if (!session_id || !user_id) { res.writeHead(400); res.end('Missing session_id or user_id'); return; }
+    try {
+      const result = await spawner.ensurePod(session_id, user_id);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(result));
+    } catch (e) {
+      console.error('[Spawner] ensurePod failed:', e.message);
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: e.message }));
+    }
+    return;
+  }
+
+  // ========================================================================
+  // SPAWNER — /api/spawner/touch
+  // Heartbeat to keep a workspace pod alive. Body: { session_id }
+  // ========================================================================
+  if (req.url === '/api/spawner/touch' && req.method === 'POST') {
+    let body = '';
+    for await (const chunk of req) body += chunk;
+    let parsed;
+    try { parsed = JSON.parse(body); } catch { res.writeHead(400); res.end('Invalid JSON'); return; }
+    if (!parsed.session_id) { res.writeHead(400); res.end('Missing session_id'); return; }
+    await spawner.touch(parsed.session_id);
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ ok: true }));
+    return;
+  }
+
+  if (req.url === '/turn-credentials' && req.method === 'GET') {
+    res.setHeader('Content-Type', 'application/json');
+    try {
+      const iceServers = await getTurnCredentials();
+      res.writeHead(200);
+      res.end(JSON.stringify({ iceServers }));
+    } catch (e) {
+      console.error('[TURN] Credential fetch failed:', e.message);
+      // Degrade to STUN-only so the worker isn't completely blocked.
+      res.writeHead(200);
+      res.end(JSON.stringify({
+        iceServers: [{ urls: ['stun:stun.l.google.com:19302'] }],
+        _fallback: true,
+        _error: e.message,
+      }));
+    }
     return;
   }
 
@@ -1443,7 +831,8 @@ const server = http.createServer(async (req, res) => {
   if (req.url === '/debug/status' && req.method === 'GET') {
     const status = {
       server: 'running',
-      persistence: LeveldbPersistence ? 'LevelDB' : 'In-Memory',
+      persistence: 'Y-Sweet',
+      ySweetUrl: config.YSWEET_URL,
       fileHashCacheSize: fileHashCache.size,
       fileHashes: Object.fromEntries(
         Array.from(fileHashCache.entries()).map(([k, v]) => [k, { 
@@ -2111,6 +1500,32 @@ const server = http.createServer(async (req, res) => {
   }
 
   // ========================================================================
+  // Y-SWEET TOKEN API — Issue connection tokens for CRDT document rooms
+  // ========================================================================
+  if (req.url.startsWith('/ysweet/token') && req.method === 'POST') {
+    let body = '';
+    req.on('data', (c) => { body += c; });
+    req.on('end', async () => {
+      try {
+        const { docId } = JSON.parse(body || '{}');
+        if (!docId) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'docId is required' }));
+          return;
+        }
+        const tokenData = await ySweetBridge.getOrCreateToken(docId);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(tokenData));
+      } catch (e) {
+        console.error('[Y-Sweet Token] Error:', e.message);
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: e.message }));
+      }
+    });
+    return;
+  }
+
+  // ========================================================================
   // WORKSPACE PRESENCE API — Active users + sessions for a workspace
   // ========================================================================
   if (req.url.startsWith('/workspace-presence/') && req.method === 'GET') {
@@ -2123,28 +1538,23 @@ const server = http.createServer(async (req, res) => {
     }
 
     try {
-      // 1) Gather active Yjs awareness users for this slug
-      const prefix = `workspace:${slug}:`;
+      // 1) Gather active users from notification WebSocket connections.
+      //    Each notification WS client carries _slug, _userId, _userName,
+      //    _userImage metadata set during the connection handshake.
       const seen = new Map();
-      // yWsDocs is the y-websocket internal Map<docName, WSSharedDoc>
-      const docsMap = yWsDocs || new Map();
-      for (const [docName, doc] of docsMap) {
-        if (!docName.startsWith(prefix)) continue;
-        const awareness = doc.awareness;
-        if (!awareness) continue;
-        awareness.getStates().forEach((state, clientId) => {
-          if (!state || !state.user) return;
-          const userId = String(state.user.id || clientId);
-          const prev = seen.get(userId);
-          const ts = state.lastActive || 0;
-          if (!prev || (prev.lastActive || 0) < ts) {
-            seen.set(userId, {
-              id: userId,
-              name: state.user.name || 'Anonymous',
-              color: state.user.color || '#888',
-              image: state.user.image || null,
-              lastActive: ts,
-              currentFile: docName.slice(prefix.length).replace(/^user:[^:]+:/, ''),
+      if (notifyWss) {
+        notifyWss.clients.forEach((ws) => {
+          if (ws.readyState !== WebSocket.OPEN || ws._slug !== slug) return;
+          const uid = ws._userId;
+          if (!uid) return;
+          if (!seen.has(uid)) {
+            seen.set(uid, {
+              id: uid,
+              name: ws._userName || userDisplayNameCache.get(uid)?.name || 'Anonymous',
+              color: ws._userColor || '#888',
+              image: ws._userImage || userDisplayNameCache.get(uid)?.avatar || null,
+              lastActive: Date.now(),
+              currentFile: null,
             });
           }
         });
@@ -2154,17 +1564,13 @@ const server = http.createServer(async (req, res) => {
       // 2) Get active collaboration sessions for this slug
       const sessions = sessionManager.getSessionsForSlug(slug);
 
-      // 3) Filter out blocked users.
-      //    If requesterId is provided, hide users who have blocked them
-      //    AND users whom they have blocked.
+      // 3) Filter out blocked users
       const requesterId = urlObj.searchParams.get('userId');
       if (requesterId) {
-        const myBlocked = blockedBy.get(requesterId) || new Set(); // users I blocked
+        const myBlocked = blockedBy.get(requesterId) || new Set();
         activeUsers = activeUsers.filter(u => {
-          if (u.id === requesterId) return true; // always include self
-          // Hide users I blocked
+          if (u.id === requesterId) return true;
           if (myBlocked.has(u.id)) return false;
-          // Hide users who blocked me
           const theirBlocked = blockedBy.get(u.id);
           if (theirBlocked && theirBlocked.has(requesterId)) return false;
           return true;
@@ -2745,6 +2151,7 @@ const server = http.createServer(async (req, res) => {
             }
 
             const notifyScope = { userId: effectiveUserId || null, sessionId: sessionId || null };
+            const bootstrapUserId = effectiveUserId || userId || null;
 
             // ── Permission check FIRST ──────────────────────────────────
             // Check permissions BEFORE provisioning repos to prevent
@@ -2847,8 +2254,8 @@ const server = http.createServer(async (req, res) => {
 
             switch (action) {
                 case 'init':
-                    result = await gitService.initRepo(slug, data.remoteUrl, userId);
-                    hydratedSlugs.add(hydrationKey(slug, userId));
+                result = await gitService.initRepo(slug, data.remoteUrl, bootstrapUserId);
+                hydratedSlugs.add(hydrationKey(slug, bootstrapUserId));
                     break;
                 case 'add-remote':
                     result = await gitService.addRemote(slug, data.name, data.url, effectiveUserId);
@@ -2863,10 +2270,15 @@ const server = http.createServer(async (req, res) => {
                     result = await gitService.getRemotes(slug, effectiveUserId);
                     break;
                 case 'clone':
-                  result = await gitService.cloneRepo(slug, data.repoUrl, data.token, userId);
-                  hydratedSlugs.add(hydrationKey(slug, userId));
+                  result = await gitService.cloneRepo(slug, data.repoUrl, data.token, bootstrapUserId);
+                  hydratedSlugs.add(hydrationKey(slug, bootstrapUserId));
                   // Save metadata locally
                   workspaceManager.addWorkspace(slug, data.repoUrl, data.owner, data.name);
+                  let workspaceRegistration = {
+                    attempted: false,
+                    created: false,
+                    pending: false,
+                  };
 
                   // Try to create the workspace in the main Synthi app DB so the web UI finds it.
                   // Use environment var SYNTHI_APP_URL or default to http://localhost:3000
@@ -2885,6 +2297,7 @@ const server = http.createServer(async (req, res) => {
                   }
 
                   if (fetchFunc) {
+                    workspaceRegistration.attempted = true;
                     const payload = {
                       name: data.name || slug,
                       slug: slug,
@@ -2904,7 +2317,7 @@ const server = http.createServer(async (req, res) => {
                           body: JSON.stringify(payload),
                         });
 
-                        if (res.ok || res.status === 409) { // 201 created or 409 already exists are acceptable
+                        if (res.status === 201 || res.status === 409) { // created or already exists are acceptable
                           created = true;
                           console.log(`[Collab] Notified Synthi app to create workspace '${slug}' (status ${res.status})`);
                           break;
@@ -2923,16 +2336,21 @@ const server = http.createServer(async (req, res) => {
                     }
 
                     if (!created) {
-                      // If we could not create the workspace record, fail the request - otherwise the UI will redirect to a workspace that 404s
                       const errMsg = `Failed to notify Synthi app to create workspace '${slug}' after ${maxAttempts} attempts.`;
-                      console.error('[Collab]', errMsg);
-                      // Throw an error to be handled by the outer catch and return non-200
-                      throw new Error(errMsg);
+                      console.warn('[Collab]', errMsg);
+                      workspaceRegistration.pending = true;
                     }
+
+                    workspaceRegistration.created = created;
                   } else {
                     console.warn('[Collab] Fetch not available - skipping workspace creation in main app. Set SYNTHI_APP_URL or install node-fetch.');
+                    workspaceRegistration.pending = true;
                   }
 
+                  result = {
+                    ...result,
+                    workspaceRegistration,
+                  };
                   broadcastFileTreeChanged(slug, notifyScope);
                   break;
                 case 'status':
@@ -3244,7 +2662,7 @@ const server = http.createServer(async (req, res) => {
                       //    This ensures GCS stays up-to-date and all per-user
                       //    repos get the latest content on explicit save.
                       const docKey = buildDocName(slug, data.filePath, notifyScope);
-                      await persistence.flushDocToDisk(docKey, { contentOverride: data.content });
+                      await flushDocToDisk(docKey, { contentOverride: data.content });
                     }
                     result = { success: true };
                     break;
@@ -3446,7 +2864,11 @@ const wsPerMessageDeflate = {
   threshold: 128,                  // only compress messages > 128 bytes
 };
 
-const wss = new WebSocket.Server({ noServer: true, perMessageDeflate: wsPerMessageDeflate });
+// ── Yjs document WebSocket relay ─────────────────────────────────────────────
+// Minimal Yjs sync protocol handler — Y-Sweet 0.9.x serve doesn't expose
+// WebSocket, so we host the document relay here on the collab server.
+const yjsWss = new WebSocket.Server({ noServer: true });
+const yjsWsServer = require('./yjsWsServer');
 
 // Lightweight notification WebSocket server for non-Yjs broadcasts
 // (e.g., file-tree-changed). Clients connect to /notifications?slug=<slug>.
@@ -3550,161 +2972,12 @@ function sendToSessionUser(sessionId, targetUserId, eventType, payload) {
   });
 }
 
-// Track active documents and their content for debugging
-const activeDocuments = new Map(); // docName -> { ydoc, lastContent, clientCount }
 
-wss.on('connection', (ws, req) => {
-  const roomName = req.url ? req.url.slice(1).split('?')[0] : 'unknown';
-  const { userId, sessionId } = getWsQueryParams(req.url || '');
-  const clientIp = req.socket?.remoteAddress || 'unknown';
-  ws._userId = userId;
-  ws._sessionId = sessionId;
-  
-  console.log(`[Collab DEBUG] === WebSocket Connection ===`);
-  console.log(`[Collab DEBUG]   Room: ${roomName}`);
-  console.log(`[Collab DEBUG]   Client IP: ${clientIp}`);
-  console.log(`[Collab DEBUG]   URL: ${req.url}`);
-  
-  const parsed = parseDocName(roomName);
-  const access = validateDocAccess(parsed, { userId, sessionId });
-  if (!access.ok) {
-    try { ws.close(1008, access.reason); } catch (_) {}
-    console.warn(`[Collab] Denied Yjs WS for room=${roomName}: ${access.reason}`);
-    return;
-  }
-
-  if (parsed && !parsed.isLegacy) {
-    purgeLegacyRoomState(parsed.slug, parsed.filePath).catch(() => {});
-  }
-
-  // ── Message buffering: prevent CRDT merge during async bindState ───
-  // y-websocket's getYDoc() calls persistence.bindState() WITHOUT awaiting.
-  // This means sync messages from the client are processed while bindState
-  // (which reads from disk and may reset the Y.Doc) is still running.
-  // If the client has stale CRDT items, they get merged into the doc
-  // before the server can validate — causing content duplication.
-  //
-  // Fix: wrap the WS so that any 'message' events received before
-  // bindState completes are buffered and replayed afterwards.
-  const messageBuffer = [];
-  let bindReady = false;
-  let messageHandler = null;
-  const originalOn = ws.on.bind(ws);
-  ws.on = function (event, fn) {
-    if (event === 'message' && !bindReady) {
-      messageHandler = fn;
-      return originalOn.call(ws, 'message', function (data) {
-        if (bindReady) {
-          fn.call(this, data);
-        } else {
-          messageBuffer.push(data);
-        }
-      });
-    }
-    return originalOn.call(ws, event, fn);
-  };
-
-  // setupWSConnection handles the y-websocket protocol for a Y.Doc room.
-  // Inside it, getYDoc() fires bindState() (async, not awaited) and then
-  // immediately registers the message handler via ws.on('message', ...).
-  setupWSConnection(ws, req, {
-    persistence,
-    docName: roomName,
-  });
-
-  // Wait for bindState to complete, then replay buffered messages.
-  persistence.waitForBindState(roomName).then(() => {
-    bindReady = true;
-    // Restore native .on so future calls bypass our wrapper
-    ws.on = originalOn;
-    // Replay any messages that arrived during bindState
-    if (messageBuffer.length > 0 && messageHandler) {
-      console.log(`[Collab] Replaying ${messageBuffer.length} buffered messages for ${roomName}`);
-      for (const data of messageBuffer) {
-        try { messageHandler.call(ws, data); } catch (e) {
-          console.error('[Collab] Error replaying buffered message:', e?.message);
-        }
-      }
-    }
-    messageBuffer.length = 0;
-  }).catch(() => {
-    // Ensure we unblock even on error
-    bindReady = true;
-    ws.on = originalOn;
-  });
-
-  // Populate the user display name cache from awareness state changes.
-  // The doc is created/retrieved by y-websocket during setupWSConnection,
-  // so we can look it up from the docs map immediately after.
-  if (yWsDocs && yWsDocs.has(roomName)) {
-    const wsDoc = yWsDocs.get(roomName);
-    if (wsDoc.awareness && !wsDoc._userNameCacheWired) {
-      wsDoc._userNameCacheWired = true;
-      const aw = wsDoc.awareness;
-      refreshUserNameCache(aw); // populate with current states
-      aw.on('change', () => refreshUserNameCache(aw));
-    }
-  }
-
-  // ── Pin the repo in the cache while this Yjs WS is alive ──────────
-  // Without this, a notification WS disconnect (network blip) would
-  // un-pin the repo, and the LRU TTL eviction could delete the working
-  // tree while the Yjs connection is still active — causing ENOENT.
-  if (parsed) {
-    const { slug } = parsed;
-    const effectiveUserId = resolveEffectiveUserForDoc(parsed, userId);
-    repoCache.pin(slug, effectiveUserId || undefined);
-    ws._effectiveUserId = effectiveUserId || null;
-    console.log(`[Collab] Pinned repo "${slug}" for Yjs WS (user=${effectiveUserId || 'n/a'})`);
-  }
-  
-  // Track this connection
-  if (!activeDocuments.has(roomName)) {
-    activeDocuments.set(roomName, { clientCount: 0, lastUpdate: Date.now() });
-  }
-  const docInfo = activeDocuments.get(roomName);
-  docInfo.clientCount++;
-  console.log(`[Collab DEBUG]   Active clients for ${roomName}: ${docInfo.clientCount}`);
-  
-  ws.on('message', (data) => {
-    // Handle both Buffer and string messages safely
-    const byteLen = Buffer.isBuffer(data) ? data.length : (typeof data === 'string' ? Buffer.byteLength(data) : 0);
-    if (byteLen > 0) {
-      console.log(`[Collab DEBUG] Message received for ${roomName}: ${byteLen} bytes`);
-    }
-    docInfo.lastUpdate = Date.now();
-  });
-  
-  ws.on('close', () => {
-    docInfo.clientCount--;
-    console.log(`[Collab DEBUG] Connection closed for ${roomName}. Remaining clients: ${docInfo.clientCount}`);
-
-    // Unpin the repo ONLY if no other Yjs connections remain for the same scope.
-    if (parsed) {
-      const { slug } = parsed;
-      const effectiveUserId = ws._effectiveUserId || resolveEffectiveUserForDoc(parsed, userId);
-      const anyActiveForSlug = [...activeDocuments.entries()].some(
-        ([key, info]) => {
-          if (info.clientCount <= 0) return false;
-          const p = parseDocName(key);
-          if (!p || p.slug !== slug) return false;
-          const pUser = resolveEffectiveUserForDoc(p);
-          return (pUser || null) === (effectiveUserId || null);
-        }
-      );
-      if (!anyActiveForSlug) {
-        repoCache.unpin(slug, effectiveUserId || undefined);
-        console.log(`[Collab] Unpinned repo "${slug}" — no more Yjs clients for user=${effectiveUserId || 'n/a'}`);
-      }
-    }
-  });
-  
-  ws.on('error', (err) => {
-    console.error(`[Collab DEBUG] WebSocket error for ${roomName}:`, err.message);
-  });
-});
 
 server.on('upgrade', (request, socket, head) => {
+  // Use replace to safely strip the prefix
+  request.url = request.url.replace(/^\/collab/, '');
+  if (!request.url.startsWith('/')) request.url = '/' + request.url;
   const pathname = request.url ? request.url.slice(1).split('?')[0] : 'unknown';
   console.log(`[Collab DEBUG] Upgrade request for room: ${pathname}`);
 
@@ -3723,11 +2996,49 @@ server.on('upgrade', (request, socket, head) => {
     terminalWss.handleUpgrade(request, socket, head, (ws) => {
       terminalWss.emit('connection', ws, request);
     });
-  } else {
-    // All other paths are Yjs document rooms
-    wss.handleUpgrade(request, socket, head, (ws) => {
-      wss.emit('connection', ws, request);
+  } else if (pathname.startsWith('yjs/')) {
+    // Route to Yjs document sync WebSocket (y-websocket protocol)
+    // Room name = everything after 'yjs/'
+    yjsWss.handleUpgrade(request, socket, head, async (ws) => {
+      const docName = decodeURIComponent(pathname.slice(4));
+      let initialContent = null;
+      let slug = null, userId = null;
+
+      try {
+        // Parse docName: workspace:${slug}:user:${userId}:${path}
+        const parts = docName.split(':');
+        if (parts.length >= 5 && parts[0] === 'workspace' && parts[2] === 'user') {
+           slug = parts[1];
+           userId = decodeURIComponent(parts[3]);
+           // Path starts at index 4, rejoin rest
+           const filePath = parts.slice(4).join(':');
+
+           // Acquire repo to ensure file exists on disk
+           const repoPath = await repoCache.acquire(slug, userId);
+           try {
+             // Handle both slash styles
+             const cleanPath = filePath.split('/').join(path.sep).split('\\').join(path.sep);
+             const fullPath = path.join(repoPath, cleanPath);
+             
+             // Check if file is inside the repo (security check)
+             if (fullPath.startsWith(repoPath) && fs.existsSync(fullPath) && (await fsPromises.stat(fullPath)).isFile()) {
+                initialContent = await fsPromises.readFile(fullPath, 'utf8');
+             }
+           } finally {
+             repoCache.release(slug, userId);
+           }
+        }
+      } catch (e) {
+        console.warn('[Collab] Failed to seed Yjs doc from disk', docName, e.message);
+      }
+
+      yjsWsServer.setupConnection(ws, docName, initialContent);
     });
+  } else {
+    // Unknown upgrade path — Y-Sweet handles CRDT WebSockets directly.
+    console.warn(`[Collab] Rejected unknown WS upgrade: /${pathname}`);
+    socket.write('HTTP/1.1 404 Not Found\r\n\r\n');
+    socket.destroy();
   }
 });
 
@@ -3793,6 +3104,12 @@ sessionManager.on('session:knockCancelled', ({ sessionId, guestId }) => {
 });
 
 server.listen(PORT, '0.0.0.0', () => {
-  console.log(`Collaboration server (y-websocket) listening on port ${PORT}`);
-  console.log(`[Collab DEBUG] Server started with persistence: ${LeveldbPersistence ? 'LevelDB' : 'In-Memory'}`);
+  console.log(`Collaboration server listening on port ${PORT}`);
+  console.log(`[Collab] CRDT persistence: Y-Sweet @ ${config.YSWEET_URL}`);
+
+  // Start the idle-workspace culler (only inside K8s).
+  if (process.env.KUBERNETES_SERVICE_HOST) {
+    spawner.startCuller();
+  }
 });
+

@@ -130,6 +130,94 @@ fn get_ai_backend_url() -> String {
     "http://localhost:8000".to_string()
 }
 
+// ── TURN credential fetch (Option B: worker → collab-server) ──────────────
+/// Response shape from collab-server /turn-credentials.
+#[derive(Debug, Deserialize)]
+struct TurnCredentialResponse {
+    #[serde(rename = "iceServers")]
+    ice_servers: Vec<IceServerEnv>,
+}
+
+/// Fetches short-lived TURN credentials from the collab-server's internal
+/// endpoint. Falls back to a plain STUN entry if the request fails or the
+/// env var is not configured.
+async fn fetch_turn_credentials() -> Vec<webrtc::ice_transport::ice_server::RTCIceServer> {
+    let collab_url = match env::var("COLLAB_SERVER_URL") {
+        Ok(u) => u.trim_end_matches('/').to_string(),
+        Err(_) => {
+            eprintln!("[ICE] COLLAB_SERVER_URL not set — using default STUN");
+            return vec![webrtc::ice_transport::ice_server::RTCIceServer {
+                urls: vec!["stun:stun.l.google.com:19302".to_string()],
+                ..Default::default()
+            }];
+        }
+    };
+
+    let url = format!("{}/turn-credentials", collab_url);
+    match reqwest::Client::new()
+        .get(&url)
+        .timeout(std::time::Duration::from_secs(5))
+        .send()
+        .await
+    {
+        Ok(resp) if resp.status().is_success() => {
+            match resp.json::<TurnCredentialResponse>().await {
+                Ok(data) => {
+                    let mut servers = Vec::new();
+                    for srv in data.ice_servers {
+                        let mut server = webrtc::ice_transport::ice_server::RTCIceServer {
+                            urls: srv.urls,
+                            ..Default::default()
+                        };
+
+                        if let Some(username) = srv.username {
+                            server.username = username;
+                        }
+
+                        if let Some(credential) = srv.credential {
+                            if !credential.is_empty() {
+                                server.credential = credential;
+                                server.credential_type = webrtc::ice_transport::ice_credential_type::RTCIceCredentialType::Password;
+                            }
+                        }
+
+                        servers.push(server);
+                    }
+                    if servers.is_empty() {
+                        servers.push(webrtc::ice_transport::ice_server::RTCIceServer {
+                            urls: vec!["stun:stun.l.google.com:19302".to_string()],
+                            ..Default::default()
+                        });
+                    }
+                    eprintln!("[ICE] Fetched {} ICE server(s) from collab-server", servers.len());
+                    servers
+                }
+                Err(e) => {
+                    eprintln!("[ICE] Failed to parse TURN response: {} — using default STUN", e);
+                    vec![webrtc::ice_transport::ice_server::RTCIceServer {
+                        urls: vec!["stun:stun.l.google.com:19302".to_string()],
+                        ..Default::default()
+                    }]
+                }
+            }
+        }
+        Ok(resp) => {
+            eprintln!("[ICE] TURN endpoint returned {} — using default STUN", resp.status());
+            vec![webrtc::ice_transport::ice_server::RTCIceServer {
+                urls: vec!["stun:stun.l.google.com:19302".to_string()],
+                ..Default::default()
+            }]
+        }
+        Err(e) => {
+            eprintln!("[ICE] TURN credential fetch error: {} — using default STUN", e);
+            vec![webrtc::ice_transport::ice_server::RTCIceServer {
+                urls: vec!["stun:stun.l.google.com:19302".to_string()],
+                ..Default::default()
+            }]
+        }
+    }
+}
+
 const GUI_TOOLS: &[&str] = &["Xvfb", "matchbox-window-manager"]; // xdotool no longer needed — input goes through runner stdin
 
 /// Convert JavaScript `ev.key` names to SDL2 keycodes (SDLK_*)
@@ -516,7 +604,13 @@ async fn main() -> Result<()> {
     eprintln!("[Worker] Verifying tooling...");
     verify_tooling().await?;
     let signaling_url = get_signaling_url();
+    // SESSION_ID scopes this worker to a single browser peer in the
+    // session-multiplexed signaling server.  Unset → "__legacy__" compat mode.
+    let session_id = env::var("SESSION_ID").ok();
     println!("Connecting to signaling server at: {}", signaling_url);
+    if let Some(ref sid) = session_id {
+        println!("Session ID: {sid}");
+    }
     let (ws_stream, _) = connect_async(&signaling_url).await?;
     let (mut ws_write, mut ws_read) = ws_stream.split();
     let (signal_tx, mut signal_rx) = mpsc::unbounded_channel::<SignalMessage>();
@@ -525,6 +619,7 @@ async fn main() -> Result<()> {
         .send(Message::text(serde_json::to_string(&SignalMessage {
             msg_type: "register".into(),
             role: Some("worker".into()),
+            session_id: session_id.clone(),
             sdp: None,
             sdp_type: None,
             candidate: None,
@@ -539,7 +634,8 @@ async fn main() -> Result<()> {
         }
     });
 
-    let mut pc = create_peer(signal_tx.clone()).await?;
+    let ice_servers = fetch_turn_credentials().await;
+    let mut pc = create_peer(signal_tx.clone(), ice_servers).await?;
     let log_channel_store: Arc<Mutex<Option<Arc<RTCDataChannel>>>> = Arc::new(Mutex::new(None));
     // Store of sessionId -> stdin sender so datachannel 'terminal' messages can be
     // routed to the running process's stdin.
@@ -830,7 +926,8 @@ async fn main() -> Result<()> {
                             let mut guard = log_channel_store.lock().await;
                             *guard = None;
                         }
-                        match create_peer(signal_tx.clone()).await {
+                        let ice_servers = fetch_turn_credentials().await;
+                        match create_peer(signal_tx.clone(), ice_servers).await {
                             Ok(new_pc) => {
                                 wire_peer_channels(
                                     &new_pc,
@@ -887,6 +984,7 @@ async fn main() -> Result<()> {
                     signal_tx.send(SignalMessage {
                         msg_type: "answer".into(),
                         role: None,
+                        session_id: None,
                         sdp: Some(answer.sdp),
                         sdp_type: Some(answer.sdp_type.to_string()),
                         candidate: None,
@@ -946,7 +1044,8 @@ async fn main() -> Result<()> {
                 }
 
                 // 4. Create a fresh PeerConnection
-                match create_peer(signal_tx.clone()).await {
+                let ice_servers = fetch_turn_credentials().await;
+                match create_peer(signal_tx.clone(), ice_servers).await {
                     Ok(new_pc) => {
                         wire_peer_channels(
                             &new_pc,
@@ -987,6 +1086,7 @@ async fn main() -> Result<()> {
 
 async fn create_peer(
     signal_tx: mpsc::UnboundedSender<SignalMessage>,
+    ice_servers: Vec<webrtc::ice_transport::ice_server::RTCIceServer>,
 ) -> Result<Arc<RTCPeerConnection>> {
     let mut m = MediaEngine::default();
     m.register_default_codecs()?;
@@ -1060,39 +1160,6 @@ async fn create_peer(
         .with_media_engine(m)
         .with_interceptor_registry(registry)
         .build();
-    // Allow configuring ICE servers via COMPILER_ICE_SERVERS environment variable as JSON
-    // Example: COMPILER_ICE_SERVERS='[{"urls":["stun:stun.l.google.com:19302"]},{"urls":["turn:turn.example.com:3478"],"username":"user","credential":"pass"}]'
-    let ice_servers_env = env::var("COMPILER_ICE_SERVERS").ok();
-    let mut ice_servers: Vec<webrtc::ice_transport::ice_server::RTCIceServer> = Vec::new();
-    if let Some(raw) = ice_servers_env {
-        match serde_json::from_str::<Vec<IceServerEnv>>(&raw) {
-            Ok(parsed) => {
-                for srv in parsed {
-                    ice_servers.push(webrtc::ice_transport::ice_server::RTCIceServer {
-                        urls: srv.urls,
-                        username: srv.username.unwrap_or_default(),
-                        credential: srv.credential.unwrap_or_default(),
-                        ..Default::default()
-                    });
-                }
-            }
-            Err(e) => {
-                eprintln!(
-                    "Failed to parse COMPILER_ICE_SERVERS - falling back to default STUN: {}",
-                    e
-                );
-                ice_servers.push(webrtc::ice_transport::ice_server::RTCIceServer {
-                    urls: vec!["stun:stun.l.google.com:19302".to_string()],
-                    ..Default::default()
-                });
-            }
-        }
-    } else {
-        ice_servers.push(webrtc::ice_transport::ice_server::RTCIceServer {
-            urls: vec!["stun:stun.l.google.com:19302".to_string()],
-            ..Default::default()
-        });
-    }
 
     let config = RTCConfiguration {
         ice_servers,
@@ -1191,6 +1258,7 @@ async fn create_peer(
                         let _ = tx.send(SignalMessage {
                             msg_type: "candidate".into(),
                             role: None,
+                            session_id: None,
                             sdp: None,
                             sdp_type: None,
                             candidate: Some(init),
@@ -1999,7 +2067,7 @@ async fn wire_peer_channels(
                         },
                         "ruby" | "rb" => {
                             // ruby-lsp (Shopify) — modern Ruby language server
-                            let mut c = system_command("ruby-lsp");
+                            let c = system_command("ruby-lsp");
                             c
                         },
                         "php" => {
@@ -2010,12 +2078,12 @@ async fn wire_peer_channels(
                         },
                         "kotlin" | "kt" => {
                             // Kotlin Language Server
-                            let mut c = system_command("kotlin-language-server");
+                            let c = system_command("kotlin-language-server");
                             c
                         },
                         "zig" => {
                             // ZLS — Zig Language Server
-                            let mut c = system_command("zls");
+                            let c = system_command("zls");
                             c
                         },
                         "dart" => {
@@ -2067,12 +2135,12 @@ async fn wire_peer_channels(
                         },
                         "lua" => {
                             // lua-language-server (LuaLS)
-                            let mut c = system_command("lua-language-server");
+                            let c = system_command("lua-language-server");
                             c
                         },
                         "elixir" | "ex" => {
                             // ElixirLS language server
-                            let mut c = system_command("elixir-ls");
+                            let c = system_command("elixir-ls");
                             c
                         },
                         "svelte" => {
@@ -6023,7 +6091,7 @@ path = "{}"
                             for candidate in &candidates {
                                 if candidate.contains('*') {
                                     // Glob expansion for system packages
-                                    if let Ok(mut entries) = std::fs::read_dir("/usr/src") {
+                                    if let Ok(entries) = std::fs::read_dir("/usr/src") {
                                         if let Some(entry) = entries.flatten().find(|e| {
                                             let name = e.file_name();
                                             let n = name.to_string_lossy();

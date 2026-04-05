@@ -4,6 +4,7 @@ import { useSession } from 'next-auth/react';
 import { WifiOff, RefreshCw, Terminal, AlertCircle, Zap, EyeOff } from 'lucide-react';
 import { useTheme } from '@/components/ThemeProvider';
 import { useSessionPermissions } from '@/hooks/useCollabSession';
+import { resolveCollabWsUrl } from '@/lib/collab-url';
 
 /**
  * TerminalPane — Renders a single interactive terminal backed by a real PTY
@@ -22,16 +23,9 @@ import { useSessionPermissions } from '@/hooks/useCollabSession';
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 
-const TERMINAL_SERVER_URL =
-  typeof window !== 'undefined' &&
-  typeof process !== 'undefined' &&
-  process?.env?.NEXT_PUBLIC_TERMINAL_URL
-    ? process.env.NEXT_PUBLIC_TERMINAL_URL
-    : (typeof window !== 'undefined' &&
-       typeof process !== 'undefined' &&
-       process?.env?.NEXT_PUBLIC_COLLAB_SERVER_URL
-         ? process.env.NEXT_PUBLIC_COLLAB_SERVER_URL.replace(/^http/, 'ws')
-         : 'ws://localhost:1234');
+const TERMINAL_SERVER_URL = process.env.NEXT_PUBLIC_TERMINAL_URL 
+  ? process.env.NEXT_PUBLIC_TERMINAL_URL
+  : resolveCollabWsUrl();
 
 const RECONNECT_DELAYS = [1000, 2000, 4000, 8000]; // Exponential backoff
 const MAX_RECONNECT_ATTEMPTS = 4;
@@ -89,7 +83,7 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
   canTerminalRef.current = canTerminal;
   const isGuest = role === 'guest';
   // Use the same SIGNAL URL as compilerClient when available, fallback to localhost
-  const MACHINE_WS = typeof process !== 'undefined' && process?.env?.NEXT_PUBLIC_COMPILE_SIGNAL_URL
+  const MACHINE_WS = process.env.NEXT_PUBLIC_COMPILE_SIGNAL_URL
     ? process.env.NEXT_PUBLIC_COMPILE_SIGNAL_URL
     : 'https://lumpish-undevoutly-sonja.ngrok-free.dev/';
   const sessionIdRef = useRef(null);

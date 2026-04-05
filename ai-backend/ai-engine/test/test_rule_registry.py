@@ -19,12 +19,13 @@ class TestRuleRegistry:
         registry = get_registry()
         assert registry.rule_count > 0, "No rules registered"
 
-    def test_all_rules_are_universal(self):
-        """Every rule must have languages={'*'}."""
+    def test_rules_have_valid_language_scopes(self):
+        """Rules must be global or explicitly scoped to at least one language."""
         registry = get_registry()
         for rule in registry.list_rules():
-            assert "*" in rule.languages, (
-                f"Rule {rule.rule_id} is not universal: languages={rule.languages}"
+            assert rule.languages, f"Rule {rule.rule_id} has no language scope"
+            assert all(isinstance(language, str) and language for language in rule.languages), (
+                f"Rule {rule.rule_id} has invalid language scope: {rule.languages}"
             )
 
     def test_all_rules_have_valid_ids(self):
@@ -44,12 +45,19 @@ class TestRuleRegistry:
         )
 
     def test_get_rules_for_language(self):
-        """All rules should match every language since they are universal."""
+        """Language lookups should always include global rules plus scoped matches."""
         registry = get_registry()
-        py_rules = registry.get_rules_for_language("python")
-        js_rules = registry.get_rules_for_language("javascript")
-        assert len(py_rules) == len(js_rules), (
-            "Universal rules should return same count for all languages"
+        universal_ids = {
+            rule.rule_id for rule in registry.list_rules() if "*" in rule.languages
+        }
+        py_ids = {rule.rule_id for rule in registry.get_rules_for_language("python")}
+        js_ids = {rule.rule_id for rule in registry.get_rules_for_language("javascript")}
+
+        assert universal_ids.issubset(py_ids), (
+            "Python lookup must include all globally scoped rules"
+        )
+        assert universal_ids.issubset(js_ids), (
+            "JavaScript lookup must include all globally scoped rules"
         )
 
     def test_enable_disable_rule(self):

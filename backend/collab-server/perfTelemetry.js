@@ -115,6 +115,8 @@ async function withTelemetry(name, fn) {
   }
 }
 
+withTelemetry.async = withTelemetry;
+
 /**
  * Wrap a synchronous function with high-resolution timing.
  * @param {string} name — Category name

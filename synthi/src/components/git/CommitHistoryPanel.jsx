@@ -6,6 +6,7 @@ import {
   fetchCommitHistory, cherryPickCommit, revertCommit, fetchCommitDetail,
   fetchGitStatus, fetchUnpushedCommits, createTag,
 } from '@/redux/gitSlice';
+import { selectGitLoading } from '@/redux/isolatedSelectors';
 import { openCommitFileDiffThunk } from '@/redux/workspaceSlice';
 import { toast } from 'sonner';
 import {
@@ -337,7 +338,8 @@ function FilterBar({
 
 export default function CommitHistoryPanel({ slug }) {
   const dispatch = useDispatch();
-  const { commitHistory, commitDetail, commitDetailLoading, loading } = useSelector(s => s.git);
+  const loading = useSelector(selectGitLoading);
+  const { commitHistory, commitDetail, commitDetailLoading } = useSelector(s => s.git);
   const unpushedCommits = useSelector(s => s.git.unpushedCommits);
   const remotes = useSelector(s => s.git.remotes);
   const primaryRemoteUrl = remotes?.[0]?.refs?.push ?? null;
