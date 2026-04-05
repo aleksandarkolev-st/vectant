@@ -6,6 +6,14 @@ const gcsSync = require('./gcsSync');
 const config = require('./config');
 const repoCache = require('./repoCache');
 
+let NodeGit = null;
+let nodeGitLoadError = null;
+try {
+    NodeGit = require('nodegit');
+} catch (error) {
+    nodeGitLoadError = error;
+}
+
 const TEXT_EXTENSIONS = new Set([
     'js','jsx','ts','tsx','json','md','txt','py','rs','go','java','c','h','cpp','hpp','cs','html','css','yml','yaml','toml','xml','sh',
     'env','gitignore','dockerfile','makefile','gradle','lock'
@@ -154,6 +162,8 @@ class GitService {
     constructor(baseDir) {
         this.baseDir = baseDir || config.REPO_CACHE_DIR;
         this.authTokens = new Map();
+        this.statusCache = new Map();
+        this.statusRefreshes = new Map();
         if (!fs.existsSync(this.baseDir)) {
             fs.mkdirSync(this.baseDir, { recursive: true });
         }
@@ -228,6 +238,141 @@ class GitService {
                 return persistedShared;
             }
         }
+
+        return null;
+    }
+
+    _cacheKeyForRepoPath(repoPath) {
+        return path.resolve(repoPath);
+    }
+
+    _inferScopeFromRepoPath(repoPath, fallbackSlug = null) {
+        try {
+            const relative = path.relative(this.baseDir, repoPath || '');
+            const parts = relative.split(path.sep).filter(Boolean);
+            if (parts.length >= 2) {
+                return { slug: parts[0], userId: parts[1] };
+            }
+            if (parts.length === 1) {
+                return { slug: parts[0], userId: null };
+            }
+        } catch (_) {}
+        return { slug: fallbackSlug || null, userId: null };
+    }
+
+    _emptyStatus(current = 'main') {
+        return {
+            not_added: [], created: [], deleted: [], modified: [],
+            renamed: [], staged: [], conflicted: [],
+            files: [], ahead: 0, behind: 0, current, tracking: null,
+            hasConflicts: false, conflictedFiles: [],
+        };
+    }
+
+    _filterStatus(status) {
+        const AI_INDEX_PREFIXES = ['.synthi/', '.code_intel/', '.code_intel_backups/'];
+        const isAIPath = (filePath) => AI_INDEX_PREFIXES.some(p => filePath.startsWith(p));
+        const filterFiles = (arr) => (arr || []).filter(f => !isAIPath(typeof f === 'string' ? f : f.path || ''));
+
+        const filteredStatus = {
+            ...status,
+            files: filterFiles(status.files),
+            not_added: (status.not_added || []).filter(f => !isAIPath(f)),
+            created: (status.created || []).filter(f => !isAIPath(f)),
+            deleted: (status.deleted || []).filter(f => !isAIPath(f)),
+            modified: (status.modified || []).filter(f => !isAIPath(f)),
+            renamed: filterFiles(status.renamed),
+            staged: (status.staged || []).filter(f => !isAIPath(f)),
+            conflicted: (status.conflicted || []).filter(f => !isAIPath(f)),
+        };
+
+        const hasConflicts = filteredStatus.conflicted && filteredStatus.conflicted.length > 0;
+
+        return {
+            ...filteredStatus,
+            hasConflicts,
+            conflictedFiles: filteredStatus.conflicted || []
+        };
+    }
+
+    _normalizeBranchRefName(refName) {
+        const raw = String(refName || '').trim();
+        if (!raw) return '';
+        if (raw.startsWith('refs/heads/')) return raw.slice('refs/heads/'.length);
+        if (raw.startsWith('refs/remotes/')) return raw.slice('refs/remotes/'.length);
+        return raw;
+    }
+
+    _buildStatusFileEntry(filePath, statusBits) {
+        const STATUS = NodeGit?.Status?.STATUS || {};
+        let index = ' ';
+        let workingDir = ' ';
+
+        if (statusBits & STATUS.CONFLICTED) {
+            index = 'U';
+            workingDir = 'U';
+        } else {
+            if (statusBits & STATUS.INDEX_NEW) index = 'A';
+            else if (statusBits & STATUS.INDEX_MODIFIED) index = 'M';
+            else if (statusBits & STATUS.INDEX_DELETED) index = 'D';
+            else if (statusBits & STATUS.INDEX_RENAMED) index = 'R';
+            else if (statusBits & STATUS.INDEX_TYPECHANGE) index = 'T';
+
+            if (statusBits & STATUS.WT_NEW) {
+                index = '?';
+                workingDir = '?';
+            } else if (statusBits & STATUS.WT_MODIFIED) {
+                workingDir = 'M';
+            } else if (statusBits & STATUS.WT_DELETED) {
+                workingDir = 'D';
+            } else if (statusBits & STATUS.WT_RENAMED) {
+                workingDir = 'R';
+            } else if (statusBits & STATUS.WT_TYPECHANGE) {
+                workingDir = 'T';
+            }
+        }
+
+        return {
+            path: filePath,
+            index,
+            working_dir: workingDir,
+        };
+    }
+
+    _pushUniquePath(list, seen, filePath) {
+        const normalized = String(filePath || '').trim();
+        if (!normalized || seen.has(normalized)) return;
+        seen.add(normalized);
+        list.push(normalized);
+    }
+
+    _pushUniqueRename(list, seen, filePath) {
+        const normalized = String(filePath || '').trim();
+        if (!normalized || seen.has(normalized)) return;
+        seen.add(normalized);
+        list.push({ from: normalized, to: normalized });
+    }
+
+    _decorateCommitRef(refs, shortHash, name, type) {
+        if (!shortHash || !name || !type) return;
+        if (!refs[shortHash]) refs[shortHash] = [];
+        if (!refs[shortHash].some((ref) => ref.name === name && ref.type === type)) {
+            refs[shortHash].push({ name, type });
+        }
+    }
+
+    _classifyDecoratedRef(refName) {
+        if (refName.startsWith('refs/tags/')) {
+            return { name: refName.slice('refs/tags/'.length), type: 'tag' };
+        }
+        if (refName.startsWith('refs/remotes/')) {
+            const normalized = refName.slice('refs/remotes/'.length);
+            if (!normalized || /\/HEAD$/.test(normalized)) return null;
+            return { name: normalized, type: 'remote' };
+        }
+        if (refName.startsWith('refs/heads/')) {
+            return { name: refName.slice('refs/heads/'.length), type: 'branch' };
+        }
         return null;
     }
 
@@ -269,6 +414,440 @@ class GitService {
             this._rememberAuthToken(slug, userId, effectiveToken);
         }
         return effectiveToken || null;
+    }
+
+    async _readCommitRefsWithNodeGit(repo) {
+        const refs = {};
+        let currentBranchRefName = null;
+
+        try {
+            const currentBranch = await repo.getCurrentBranch();
+            currentBranchRefName = currentBranch?.name?.() || null;
+        } catch (_) {}
+
+        const refNames = await repo.getReferenceNames(NodeGit.Reference.TYPE.ALL);
+        for (const refName of refNames) {
+            const decorated = this._classifyDecoratedRef(refName);
+            if (!decorated) continue;
+
+            try {
+                const commit = await repo.getReferenceCommit(refName);
+                const shortHash = commit?.sha?.()?.slice(0, 7);
+                if (!shortHash) continue;
+                this._decorateCommitRef(refs, shortHash, decorated.name, decorated.type);
+                if (decorated.type === 'branch' && currentBranchRefName === refName) {
+                    this._decorateCommitRef(refs, shortHash, decorated.name, 'head');
+                }
+            } catch (_) {
+                // Best-effort decoration only.
+            }
+        }
+
+        return refs;
+    }
+
+    async _countCommitsWithNodeGit(repo, headOid) {
+        const walker = repo.createRevWalk();
+        walker.sorting(NodeGit.Revwalk.SORT.TOPOLOGICAL, NodeGit.Revwalk.SORT.TIME);
+        walker.push(headOid);
+
+        let total = 0;
+        while (true) {
+            try {
+                await walker.next();
+                total += 1;
+            } catch (error) {
+                if (error?.errno === NodeGit.Error.CODE.ITEROVER) {
+                    break;
+                }
+                throw error;
+            }
+        }
+
+        return total;
+    }
+
+    async _readLogWithNodeGit(repoPath, options = {}) {
+        const repo = await NodeGit.Repository.open(repoPath);
+        const { page = 1, limit = 50 } = options;
+        const skip = Math.max(0, (page - 1) * limit);
+        const headCommit = await repo.getHeadCommit();
+
+        if (!headCommit) {
+            return { all: [], total: 0, refs: {}, page, limit, hasMore: false };
+        }
+
+        const walker = repo.createRevWalk();
+        walker.sorting(NodeGit.Revwalk.SORT.TOPOLOGICAL, NodeGit.Revwalk.SORT.TIME);
+        walker.push(headCommit.id());
+
+        const fetched = await walker.getCommits(skip + limit + 1);
+        const pageCommits = fetched.slice(skip, skip + limit);
+        const hasMore = fetched.length > skip + limit;
+
+        const all = pageCommits.map((commit) => {
+            const author = typeof commit.author === 'function' ? commit.author() : null;
+            const fullMessage = typeof commit.message === 'function' ? (commit.message() || '') : '';
+            const summary = typeof commit.summary === 'function'
+                ? (commit.summary() || '')
+                : (fullMessage.split(/\r?\n/, 1)[0] || '');
+            const body = typeof commit.body === 'function'
+                ? (commit.body() || '').trim()
+                : fullMessage.replace(/^.*(?:\r?\n|$)/, '').trim();
+
+            const parents = [];
+            for (let i = 0; i < commit.parentcount(); i += 1) {
+                parents.push(commit.parentId(i).toString());
+            }
+
+            return {
+                hash: commit.sha(),
+                parents: parents.join(' '),
+                author_name: author?.name?.() || '',
+                author_email: author?.email?.() || '',
+                date: commit.date().toISOString(),
+                message: summary.trim(),
+                body,
+            };
+        });
+
+        const [total, refs] = await Promise.all([
+            this._countCommitsWithNodeGit(repo, headCommit.id()),
+            this._readCommitRefsWithNodeGit(repo),
+        ]);
+
+        return {
+            all,
+            total,
+            refs,
+            page,
+            limit,
+            hasMore,
+        };
+    }
+
+    async _readLogWithSimpleGit(slug, options = {}) {
+        const userId = options.userId;
+        const git = await this.getGit(slug, userId);
+        const { page = 1, limit = 50 } = options;
+        const skip = (page - 1) * limit;
+
+        // Use a custom format that includes parent hashes (%P) for the
+        // commit graph.  simple-git's default log() omits parents, so
+        // the frontend receives no branching information and renders a
+        // single vertical line.
+        const SEP = '---COMMIT_SEP---';
+        const FIELD = '---FIELD---';
+        // Format: hash | parents | author_name | author_email | date | subject | body
+        const fmt = [`--format=${SEP}%H${FIELD}%P${FIELD}%aN${FIELD}%aE${FIELD}%aI${FIELD}%s${FIELD}%b`];
+        const logArgs = ['log', ...fmt, `-n`, `${limit}`];
+        if (skip > 0) logArgs.push(`--skip=${skip}`);
+
+        const rawOutput = await git.raw(logArgs);
+
+        // Parse the raw output into commit objects
+        const all = rawOutput
+            .split(SEP)
+            .filter(Boolean)
+            .map(block => {
+                const parts = block.split(FIELD);
+                return {
+                    hash: (parts[0] || '').trim(),
+                    parents: (parts[1] || '').trim(),
+                    author_name: (parts[2] || '').trim(),
+                    author_email: (parts[3] || '').trim(),
+                    date: (parts[4] || '').trim(),
+                    message: (parts[5] || '').trim(),
+                    body: (parts[6] || '').trim(),
+                };
+            })
+            .filter(c => c.hash);
+
+        // Get total count for pagination info
+        let total;
+        try {
+            const countResult = await git.raw(['rev-list', '--count', 'HEAD']);
+            total = parseInt(countResult.trim()) || 0;
+        } catch {
+            total = all.length;
+        }
+
+        // Collect branch & tag refs mapped to commit hashes
+        let refs = {};
+        try {
+            const branchRaw = await git.raw(['for-each-ref', '--format=%(objectname:short) %(refname:short)', 'refs/heads/', 'refs/remotes/', 'refs/tags/']);
+            for (const line of branchRaw.trim().split('\n').filter(Boolean)) {
+                const spaceIdx = line.indexOf(' ');
+                if (spaceIdx < 0) continue;
+                const hash = line.substring(0, spaceIdx);
+                const name = line.substring(spaceIdx + 1);
+                if (!refs[hash]) refs[hash] = [];
+                let type = 'branch';
+                if (name.startsWith('origin/') || name.startsWith('upstream/')) type = 'remote';
+                if (name.startsWith('v') && /^v?\d/.test(name)) type = 'tag';
+                refs[hash].push({ name, type });
+            }
+            const tagRaw = await git.raw(['tag', '--format=%(objectname:short) %(refname:short)']);
+            for (const line of tagRaw.trim().split('\n').filter(Boolean)) {
+                const spaceIdx = line.indexOf(' ');
+                if (spaceIdx < 0) continue;
+                const hash = line.substring(0, spaceIdx);
+                const name = line.substring(spaceIdx + 1);
+                if (!refs[hash]) refs[hash] = [];
+                if (!refs[hash].some(r => r.name === name)) {
+                    refs[hash].push({ name, type: 'tag' });
+                }
+            }
+        } catch { /* refs decoration is best-effort */ }
+
+        return {
+            all,
+            total,
+            refs,
+            page,
+            limit,
+            hasMore: skip + all.length < total,
+        };
+    }
+
+    async _readStatusBundleWithNodeGit(repoPath) {
+        const repo = await NodeGit.Repository.open(repoPath);
+        const refNames = await repo.getReferenceNames(NodeGit.Reference.TYPE.ALL);
+
+        const localBranches = refNames
+            .filter((name) => name.startsWith('refs/heads/'))
+            .map((name) => this._normalizeBranchRefName(name))
+            .sort();
+
+        const allBranches = refNames
+            .filter((name) => name.startsWith('refs/heads/') || name.startsWith('refs/remotes/'))
+            .map((name) => this._normalizeBranchRefName(name))
+            .filter((name) => name && !/\/HEAD$/.test(name))
+            .sort();
+
+        let current = '';
+        let tracking = null;
+        let ahead = 0;
+        let behind = 0;
+
+        try {
+            const currentBranch = await repo.getCurrentBranch();
+            current = currentBranch?.shorthand?.() || this._normalizeBranchRefName(currentBranch?.name?.());
+
+            try {
+                const upstreamBranch = await NodeGit.Branch.upstream(currentBranch);
+                tracking = upstreamBranch?.shorthand?.() || this._normalizeBranchRefName(upstreamBranch?.name?.());
+                const currentTarget = currentBranch?.target?.();
+                const upstreamTarget = upstreamBranch?.target?.();
+                if (currentTarget && upstreamTarget) {
+                    const counts = await NodeGit.Graph.aheadBehind(repo, currentTarget, upstreamTarget);
+                    ahead = Number(counts?.ahead) || 0;
+                    behind = Number(counts?.behind) || 0;
+                }
+            } catch (_) {}
+        } catch (error) {
+            const msg = error?.message || '';
+            if (!msg.includes('reference') && !msg.includes('HEAD') && !msg.includes('unborn')) {
+                throw error;
+            }
+        }
+
+        const status = this._emptyStatus(current || 'main');
+        status.current = current || status.current;
+        status.tracking = tracking;
+        status.ahead = ahead;
+        status.behind = behind;
+
+        const seen = {
+            not_added: new Set(),
+            created: new Set(),
+            deleted: new Set(),
+            modified: new Set(),
+            renamed: new Set(),
+            staged: new Set(),
+            conflicted: new Set(),
+            files: new Set(),
+        };
+
+        await NodeGit.Status.foreachExt(
+            repo,
+            {
+                show: NodeGit.Status.SHOW.INDEX_AND_WORKDIR,
+                flags: NodeGit.Status.OPT.INCLUDE_UNTRACKED |
+                    NodeGit.Status.OPT.RECURSE_UNTRACKED_DIRS |
+                    NodeGit.Status.OPT.RENAMES_HEAD_TO_INDEX |
+                    NodeGit.Status.OPT.RENAMES_INDEX_TO_WORKDIR,
+            },
+            (filePath, statusBits) => {
+                if (!filePath) return 0;
+
+                const entry = this._buildStatusFileEntry(filePath, statusBits);
+                if (!seen.files.has(filePath)) {
+                    seen.files.add(filePath);
+                    status.files.push(entry);
+                }
+
+                const STATUS = NodeGit.Status.STATUS;
+                if (statusBits & STATUS.CONFLICTED) {
+                    this._pushUniquePath(status.conflicted, seen.conflicted, filePath);
+                }
+                if (statusBits & STATUS.WT_NEW) {
+                    this._pushUniquePath(status.not_added, seen.not_added, filePath);
+                }
+                if (statusBits & STATUS.INDEX_NEW) {
+                    this._pushUniquePath(status.created, seen.created, filePath);
+                    this._pushUniquePath(status.staged, seen.staged, filePath);
+                }
+                if (statusBits & STATUS.INDEX_MODIFIED) {
+                    this._pushUniquePath(status.staged, seen.staged, filePath);
+                }
+                if (statusBits & STATUS.INDEX_DELETED) {
+                    this._pushUniquePath(status.deleted, seen.deleted, filePath);
+                    this._pushUniquePath(status.staged, seen.staged, filePath);
+                }
+                if (statusBits & STATUS.WT_MODIFIED) {
+                    this._pushUniquePath(status.modified, seen.modified, filePath);
+                }
+                if (statusBits & STATUS.WT_DELETED) {
+                    this._pushUniquePath(status.deleted, seen.deleted, filePath);
+                }
+                if (statusBits & (STATUS.INDEX_RENAMED | STATUS.WT_RENAMED)) {
+                    this._pushUniqueRename(status.renamed, seen.renamed, filePath);
+                }
+
+                return 0;
+            }
+        );
+
+        const filteredStatus = this._filterStatus(status);
+        const bundle = {
+            status: filteredStatus,
+            branches: {
+                local: localBranches,
+                current: current || filteredStatus.current || '',
+                all: allBranches.length > 0 ? allBranches : localBranches,
+            },
+            timestamp: Date.now(),
+            source: 'nodegit',
+        };
+
+        const key = this._cacheKeyForRepoPath(repoPath);
+        this.statusCache.set(key, bundle);
+        return bundle;
+    }
+
+    async _readStatusBundleWithSimpleGit(repoPath) {
+        const git = simpleGit(repoPath);
+
+        let status;
+        try {
+            status = await git.status();
+        } catch (e) {
+            const msg = e.message || '';
+            if (msg.includes('does not have any commits yet') || msg.includes('ambiguous argument \'HEAD\'')) {
+                status = this._emptyStatus();
+            } else {
+                throw e;
+            }
+        }
+
+        let localSummary = { all: [], current: status.current || '' };
+        let allSummary = { all: [] };
+        try {
+            localSummary = await git.branchLocal();
+            allSummary = await git.branch(['-a']);
+        } catch (e) {
+            const msg = e.message || '';
+            if (!msg.includes('does not have any commits yet') && !msg.includes('ambiguous argument \'HEAD\'')) {
+                throw e;
+            }
+        }
+
+        const filteredStatus = this._filterStatus(status);
+        const bundle = {
+            status: filteredStatus,
+            branches: {
+                local: localSummary.all || [],
+                current: localSummary.current || filteredStatus.current || '',
+                all: allSummary.all || localSummary.all || [],
+            },
+            timestamp: Date.now(),
+            source: 'simple-git',
+        };
+
+        const key = this._cacheKeyForRepoPath(repoPath);
+        this.statusCache.set(key, bundle);
+        return bundle;
+    }
+
+    async _readStatusBundleByRepoPath(repoPath) {
+        if (NodeGit) {
+            try {
+                return await this._readStatusBundleWithNodeGit(repoPath);
+            } catch (error) {
+                const reason = error?.message || error?.code || 'unknown error';
+                console.warn(`[GitService] Native git status failed for ${repoPath}; falling back to simple-git: ${reason}`);
+            }
+        } else if (nodeGitLoadError) {
+            const reason = nodeGitLoadError?.message || nodeGitLoadError?.code || 'not available';
+            console.warn(`[GitService] Native git bindings unavailable; using simple-git fallback: ${reason}`);
+            nodeGitLoadError = null;
+        }
+
+        return this._readStatusBundleWithSimpleGit(repoPath);
+    }
+
+    async _ensureStatusBundle(slug, userId, { force = false } = {}) {
+        const repoPath = this.getEffectiveRepoPath(slug, userId);
+        const key = this._cacheKeyForRepoPath(repoPath);
+
+        if (!force && this.statusCache.has(key)) {
+            return { repoPath, bundle: this.statusCache.get(key) };
+        }
+
+        if (this.statusRefreshes.has(key)) {
+            return { repoPath, bundle: await this.statusRefreshes.get(key) };
+        }
+
+        const refreshPromise = this._readStatusBundleByRepoPath(repoPath)
+            .finally(() => this.statusRefreshes.delete(key));
+        this.statusRefreshes.set(key, refreshPromise);
+
+        return { repoPath, bundle: await refreshPromise };
+    }
+
+    async prewarmStatusCache(slug, userId) {
+        const { bundle } = await this._ensureStatusBundle(slug, userId, { force: true });
+        return bundle;
+    }
+
+    invalidateStatusCache(slug, userId, { scheduleRefresh = false } = {}) {
+        const repoPath = this.getEffectiveRepoPath(slug, userId);
+        return this.invalidateStatusCacheByRepoPath(repoPath, { scheduleRefresh, slug, userId });
+    }
+
+    invalidateStatusCacheByRepoPath(repoPath, { scheduleRefresh = false, slug = null, userId = null } = {}) {
+        const key = this._cacheKeyForRepoPath(repoPath);
+        this.statusCache.delete(key);
+        if (!scheduleRefresh) return null;
+        const scope = slug ? { slug, userId } : this._inferScopeFromRepoPath(repoPath);
+        if (!scope.slug) return null;
+        return this.prewarmStatusCache(scope.slug, scope.userId).catch((e) => {
+            console.warn(`[GitService] Failed to prewarm git cache for ${scope.slug}${scope.userId ? '/' + scope.userId : ''}: ${e.message}`);
+            return null;
+        });
+    }
+
+    async handleFilesystemEvents({ slug, rootDir, events = [] } = {}) {
+        if (!rootDir || !Array.isArray(events) || events.length === 0) return null;
+        const scope = this._inferScopeFromRepoPath(rootDir, slug);
+        const bundle = await this.invalidateStatusCacheByRepoPath(rootDir, {
+            scheduleRefresh: true,
+            slug: scope.slug,
+            userId: scope.userId,
+        });
+        if (!bundle || !scope.slug) return null;
+        return { slug: scope.slug, userId: scope.userId, bundle, rootDir, events };
     }
 
     // Helper to run operations with lock + repo cache acquire/release
@@ -410,38 +989,42 @@ class GitService {
         });
     }
 
-    isRepoExists(slug, userId) {
+    async isRepoExists(slug, userId) {
+        const fsp = require('fs').promises;
         const repoPath = this.getEffectiveRepoPath(slug, userId);
-        return fs.existsSync(repoPath);
+        try { await fsp.access(repoPath); return true; } catch (_) { return false; }
     }
 
-    isRepoInitialized(slug, userId) {
+    async isRepoInitialized(slug, userId) {
+        const fsp = require('fs').promises;
         const repoPath = this.getEffectiveRepoPath(slug, userId);
         const gitDir = path.join(repoPath, '.git');
-        if (!fs.existsSync(gitDir)) return false;
-
-        const stat = fs.statSync(gitDir);
-        // Standard repo: .git is a directory
-        if (stat.isDirectory()) return true;
-        // Migrated worktree: .git is a file pointing to the bare repo
-        if (stat.isFile()) return true;
-
-        return false;
+        try {
+            const stat = await fsp.stat(gitDir);
+            return stat.isDirectory() || stat.isFile();
+        } catch (_) {
+            return false;
+        }
     }
 
-    getGit(slug, userId) {
+    async getGit(slug, userId) {
+        const fsp = require('fs').promises;
         const repoPath = this.getEffectiveRepoPath(slug, userId);
-        if (!fs.existsSync(repoPath)) {
+        try {
+            await fsp.access(repoPath);
+        } catch (_) {
             throw new RepoNotFoundError(slug);
         }
         
         // Check for .git (directory for standard repos, file for worktrees)
         const gitDir = path.join(repoPath, '.git');
-        if (!fs.existsSync(gitDir)) {
+        let stat;
+        try {
+            stat = await fsp.stat(gitDir);
+        } catch (_) {
             throw new RepoNotInitializedError(slug);
         }
 
-        const stat = fs.statSync(gitDir);
         if (!stat.isDirectory() && !stat.isFile()) {
             throw new RepoNotInitializedError(slug);
         }
@@ -458,24 +1041,24 @@ class GitService {
      * (the bare repo), not the worktree gitdir, so we write to both
      * locations to cover all cases.
      */
-    _ensureLocalExcludes(repoPath) {
+    async _ensureLocalExcludes(repoPath) {
         try {
             // Resolve the actual git directory — handles both standard (.git dir)
             // and worktree (.git file pointing to gitdir)
             let gitDirPath = path.join(repoPath, '.git');
             let commonDirPath = null;
             try {
-                const stat = fs.statSync(gitDirPath);
+                const stat = await fs.promises.stat(gitDirPath);
                 if (stat.isFile()) {
                     // Worktree: .git file contains "gitdir: /path/to/actual/gitdir"
-                    const content = fs.readFileSync(gitDirPath, 'utf8').trim();
+                    const content = (await fs.promises.readFile(gitDirPath, 'utf8')).trim();
                     const match = content.match(/^gitdir:\s*(.+)$/m);
                     if (match) {
                         gitDirPath = path.resolve(repoPath, match[1].trim());
                         // Read commondir to find the shared bare repo
                         const commondirFile = path.join(gitDirPath, 'commondir');
-                        if (fs.existsSync(commondirFile)) {
-                            const rel = fs.readFileSync(commondirFile, 'utf8').trim();
+                        if (await fs.promises.access(commondirFile).then(() => true).catch(() => false)) {
+                            const rel = (await fs.promises.readFile(commondirFile, 'utf8')).trim();
                             commonDirPath = path.resolve(gitDirPath, rel);
                         }
                     }
@@ -495,13 +1078,13 @@ class GitService {
                 const parentDir = path.dirname(repoPath);
                 // Only add user-repo exclusions for the slug-level repo
                 // (not for per-user repos which live inside the slug dir)
-                if (fs.existsSync(parentDir)) {
-                    const entries = fs.readdirSync(repoPath, { withFileTypes: true });
+                if (await fs.promises.access(parentDir).then(() => true).catch(() => false)) {
+                    const entries = await fs.promises.readdir(repoPath, { withFileTypes: true });
                     for (const e of entries) {
                         if (!e.isDirectory()) continue;
                         if (e.name === '.git' || e.name === '_upstream.git' || e.name === 'sessions') continue;
                         // If this subdirectory has its own .git, it's a user repo
-                        if (fs.existsSync(path.join(repoPath, e.name, '.git'))) {
+                        if (await fs.promises.access(path.join(repoPath, e.name, '.git')).then(() => true).catch(() => false)) {
                             if (!patterns.includes(e.name + '/')) {
                                 patterns.push(e.name + '/');
                             }
@@ -511,12 +1094,12 @@ class GitService {
             } catch (_) { /* non-fatal */ }
 
             // Write exclude patterns to the gitDirPath (handles normal repos)
-            this._writeExcludePatterns(path.join(gitDirPath, 'info', 'exclude'), patterns);
+            await this._writeExcludePatterns(path.join(gitDirPath, 'info', 'exclude'), patterns);
 
             // For worktrees, also write to the commondir (bare repo) —
             // git reads info/exclude from commondir, not the worktree gitdir.
             if (commonDirPath && commonDirPath !== gitDirPath) {
-                this._writeExcludePatterns(path.join(commonDirPath, 'info', 'exclude'), patterns);
+                await this._writeExcludePatterns(path.join(commonDirPath, 'info', 'exclude'), patterns);
             }
         } catch (e) {
             console.warn('[GitService] Failed to update .git/info/exclude:', e.message);
@@ -526,18 +1109,56 @@ class GitService {
     /**
      * Helper: append exclude patterns to a git exclude file if missing.
      */
-    _writeExcludePatterns(excludePath, patterns) {
+    async _writeExcludePatterns(excludePath, patterns) {
         const infoDir = path.dirname(excludePath);
-        if (!fs.existsSync(infoDir)) fs.mkdirSync(infoDir, { recursive: true });
+        if (!await fs.promises.access(infoDir).then(() => true).catch(() => false)) {
+            await fs.promises.mkdir(infoDir, { recursive: true });
+        }
 
-        const existing = fs.existsSync(excludePath)
-            ? fs.readFileSync(excludePath, 'utf8')
-            : '';
+        const existing = await fs.promises.readFile(excludePath, 'utf8').catch(() => '');
 
         const toAppend = patterns.filter(p => !existing.includes(p));
         if (toAppend.length > 0) {
             const suffix = existing.endsWith('\n') || existing === '' ? '' : '\n';
-            fs.appendFileSync(excludePath, suffix + toAppend.join('\n') + '\n');
+            await fs.promises.appendFile(excludePath, suffix + toAppend.join('\n') + '\n');
+        }
+    }
+
+    async _resolveCloneBranch(sourcePath) {
+        if (!sourcePath || !fs.existsSync(sourcePath)) return null;
+
+        const git = simpleGit(sourcePath);
+
+        try {
+            const headBranch = (await git.raw(['symbolic-ref', '--quiet', '--short', 'HEAD'])).trim();
+            if (headBranch) return headBranch;
+        } catch (_) {
+            // Detached HEAD is expected for migrated bare repos.
+        }
+
+        for (const branch of ['main', 'master']) {
+            try {
+                const ref = (await git.raw(['show-ref', '--verify', `refs/heads/${branch}`])).trim();
+                if (ref) return branch;
+            } catch (_) {
+                // Ignore missing preferred branches and try the next fallback.
+            }
+        }
+
+        try {
+            const raw = await git.raw([
+                'for-each-ref',
+                '--sort=-committerdate',
+                '--format=%(refname:short)',
+                'refs/heads/',
+            ]);
+            const branches = raw
+                .split(/\r?\n/)
+                .map((line) => line.trim())
+                .filter(Boolean);
+            return branches[0] || null;
+        } catch (_) {
+            return null;
         }
     }
 
@@ -553,7 +1174,7 @@ class GitService {
      */
     async _resolveRemoteUrl(slug) {
         // 1. Check existing user repos for a configured origin remote
-        const userRepos = this.listUserRepos(slug);
+        const userRepos = await this.listUserRepos(slug);
         for (const repo of userRepos) {
             try {
                 const git = simpleGit(repo.path);
@@ -602,7 +1223,7 @@ class GitService {
             // ── Lazy migration: upgrade legacy repos transparently ────────
             // Must release the lock before calling ensureMigrated (it acquires its own)
             // But we're already inside withLock, so we check directly without re-locking.
-            if (this.isLegacyRepo(slug)) {
+            if (await this.isLegacyRepo(slug)) {
                 console.log(`[GitService] initRepo: legacy repo detected for "${slug}", migrating…`);
                 try {
                     // Perform inline migration (we already hold the lock)
@@ -613,7 +1234,7 @@ class GitService {
                         if (!valid) {
                             throw new MigrationError(slug, 'Post-migration validation failed', 'validation');
                         }
-                        this._cleanupMigrationBackup(slug);
+                        await this._cleanupMigrationBackup(slug);
                         console.log(`[GitService] initRepo: migration complete for "${slug}"`);
                     } catch (e) {
                         console.error(`[GitService] initRepo: migration failed, rolling back:`, e.message);
@@ -644,7 +1265,7 @@ class GitService {
                     try {
                         const stat = fs.statSync(spuriousGit);
                         if (stat.isDirectory()) {
-                            fs.rmSync(spuriousGit, { recursive: true, force: true });
+                            await fs.promises.rm(spuriousGit, { recursive: true, force: true });
                             console.log(`[GitService] initRepo: removed spurious .git dir at slug level for "${slug}"`);
                         }
                     } catch (_) { /* non-fatal */ }
@@ -664,7 +1285,7 @@ class GitService {
                 await git.commit('Initial commit', { '--allow-empty': null });
             }
             // Defense-in-depth: hide internal artifacts from git status
-            this._ensureLocalExcludes(repoPath);
+            await this._ensureLocalExcludes(repoPath);
             return { success: true, path: repoPath };
         });
 
@@ -719,7 +1340,7 @@ class GitService {
                 const hasGit = fs.existsSync(path.join(repoPath, '.git'));
 
                 // If it's a legacy repo, migrate it instead of throwing
-                if (this.isLegacyRepo(slug)) {
+                if (await this.isLegacyRepo(slug)) {
                     console.log(`[GitService] cloneRepo: legacy repo exists for "${slug}", migrating instead of failing…`);
                     try {
                         await this._createMigrationBackup(slug);
@@ -729,7 +1350,7 @@ class GitService {
                             if (!valid) {
                                 throw new MigrationError(slug, 'Post-migration validation failed', 'validation');
                             }
-                            this._cleanupMigrationBackup(slug);
+                            await this._cleanupMigrationBackup(slug);
                             console.log(`[GitService] cloneRepo: migration complete, returning existing repo`);
                             return { success: true, path: repoPath, migrated: true };
                         } catch (e) {
@@ -758,7 +1379,7 @@ class GitService {
                 // can use the path as its target directory.
                 if (!hasGit) {
                     console.log(`[GitService] cloneRepo: removing empty stub directory for "${slug}"`);
-                    fs.rmSync(repoPath, { recursive: true, force: true });
+                    await fs.promises.rm(repoPath, { recursive: true, force: true });
                 } else {
                     // Has a .git dir but isn't legacy and isn't migrated — genuinely exists
                     throw new GitError(`Repository for slug ${slug} already exists`, 'REPO_EXISTS');
@@ -879,7 +1500,7 @@ class GitService {
                         if (fs.existsSync(maybeGit)) continue; // per-user repo
                     }
                     const fullPath = path.join(repoPath, entry.name);
-                    fs.rmSync(fullPath, { recursive: true, force: true });
+                    await fs.promises.rm(fullPath, { recursive: true, force: true });
                 }
                 console.log(`[GitService] Cleaned slug-level working tree for "${slug}"`);
             } catch (e) {
@@ -902,48 +1523,22 @@ class GitService {
     }
 
     async listWorkspaces() {
-        if (!fs.existsSync(this.baseDir)) return [];
-        const dirents = fs.readdirSync(this.baseDir, { withFileTypes: true });
+        if (!await fs.promises.access(this.baseDir).then(() => true).catch(() => false)) return [];
+        const dirents = await fs.promises.readdir(this.baseDir, { withFileTypes: true });
         return dirents
             .filter(dirent => dirent.isDirectory())
             .map(dirent => dirent.name);
     }
 
     async getStatus(slug, userId) {
-        if (!this.isRepoExists(slug, userId)) return null;
-        if (!this.isRepoInitialized(slug, userId)) {
+        if (!await this.isRepoExists(slug, userId)) return null;
+        if (!await this.isRepoInitialized(slug, userId)) {
             return null;
         }
         
         try {
-            const git = this.getGit(slug, userId);
-            const status = await git.status();
-            
-            // Filter out AI-generated index directories that shouldn't appear in SCM
-            const AI_INDEX_PREFIXES = ['.synthi/', '.code_intel/', '.code_intel_backups/'];
-            const isAIPath = (filePath) => AI_INDEX_PREFIXES.some(p => filePath.startsWith(p));
-            const filterFiles = (arr) => (arr || []).filter(f => !isAIPath(typeof f === 'string' ? f : f.path || ''));
-            
-            const filteredStatus = {
-                ...status,
-                files: filterFiles(status.files),
-                not_added: (status.not_added || []).filter(f => !isAIPath(f)),
-                created: (status.created || []).filter(f => !isAIPath(f)),
-                deleted: (status.deleted || []).filter(f => !isAIPath(f)),
-                modified: (status.modified || []).filter(f => !isAIPath(f)),
-                renamed: filterFiles(status.renamed),
-                staged: (status.staged || []).filter(f => !isAIPath(f)),
-                conflicted: (status.conflicted || []).filter(f => !isAIPath(f)),
-            };
-            
-            // Check for merge conflicts
-            const hasConflicts = filteredStatus.conflicted && filteredStatus.conflicted.length > 0;
-            
-            return {
-                ...filteredStatus,
-                hasConflicts,
-                conflictedFiles: filteredStatus.conflicted || []
-            };
+            const { bundle } = await this._ensureStatusBundle(slug, userId);
+            return bundle ? bundle.status : null;
         } catch (e) {
             // Gracefully handle repos that have no commits yet (orphan branch).
             // This can happen if the initial commit failed or the repo was
@@ -951,32 +1546,21 @@ class GitService {
             const msg = e.message || '';
             if (msg.includes('does not have any commits yet') || msg.includes('ambiguous argument \'HEAD\'')) {
                 console.warn(`[GitService] getStatus: repo ${slug}/${userId || ''} has no commits — returning empty status`);
-                return {
-                    not_added: [], created: [], deleted: [], modified: [],
-                    renamed: [], staged: [], conflicted: [],
-                    files: [], ahead: 0, behind: 0, current: 'main', tracking: null,
-                    hasConflicts: false, conflictedFiles: [],
-                };
+                return this._emptyStatus();
             }
             throw this.mapGitError(e, slug);
         }
     }
 
     async getBranches(slug, userId) {
-        if (!this.isRepoExists(slug, userId)) return { local: [], current: '', all: [] };
-        if (!this.isRepoInitialized(slug, userId)) {
+        if (!await this.isRepoExists(slug, userId)) return { local: [], current: '', all: [] };
+        if (!await this.isRepoInitialized(slug, userId)) {
             return { local: [], current: '', all: [] };
         }
         
         try {
-            const git = this.getGit(slug, userId);
-            const localSummary = await git.branchLocal();
-            const allSummary = await git.branch(['-a']);
-            return { 
-                local: localSummary.all, 
-                current: localSummary.current,
-                all: allSummary.all 
-            };
+            const { bundle } = await this._ensureStatusBundle(slug, userId);
+            return bundle ? bundle.branches : { local: [], current: '', all: [] };
         } catch (e) {
             throw this.mapGitError(e, slug);
         }
@@ -984,10 +1568,10 @@ class GitService {
 
     // ── Tag management ─────────────────────────────────
     async getTags(slug, userId) {
-        if (!this.isRepoExists(slug, userId)) return [];
-        if (!this.isRepoInitialized(slug, userId)) return [];
+        if (!await this.isRepoExists(slug, userId)) return [];
+        if (!await this.isRepoInitialized(slug, userId)) return [];
         try {
-            const git = this.getGit(slug, userId);
+            const git = await this.getGit(slug, userId);
             const raw = await git.raw(['tag', '-l', '--sort=-creatordate', '--format=%(refname:short)%09%(objectname:short)%09%(creatordate:iso-strict)%09%(contents:subject)']);
             return raw.trim().split('\n').filter(Boolean).map(line => {
                 const [name, hash, date, message] = line.split('\t');
@@ -1000,7 +1584,7 @@ class GitService {
 
     async createTag(slug, name, ref = 'HEAD', message, userId) {
         return this.withLock(slug, async () => {
-            const git = this.getGit(slug, userId);
+            const git = await this.getGit(slug, userId);
             try {
                 if (message) {
                     await git.tag(['-a', name, ref, '-m', message]);
@@ -1016,7 +1600,7 @@ class GitService {
 
     async deleteTag(slug, name, userId) {
         return this.withLock(slug, async () => {
-            const git = this.getGit(slug, userId);
+            const git = await this.getGit(slug, userId);
             try {
                 await git.tag(['-d', name]);
                 return { deleted: name };
@@ -1028,7 +1612,7 @@ class GitService {
 
     async pushTag(slug, name, userId, token) {
         return this.withLock(slug, async () => {
-            const git = this.getGit(slug, userId);
+            const git = await this.getGit(slug, userId);
             try {
                 const effectiveToken = await this._resolveAuthToken(git, slug, userId, token);
                 if (effectiveToken) {
@@ -1055,7 +1639,7 @@ class GitService {
 
     async checkout(slug, branchName, create = false, userId, mode = 'normal') {
         return this.withLock(slug, async () => {
-            const git = this.getGit(slug, userId);
+            const git = await this.getGit(slug, userId);
             try {
                 // ── Ensure we have the latest remote refs ──
                 // If the branch doesn't exist locally (e.g. a PR head branch
@@ -1159,7 +1743,7 @@ class GitService {
     async fetch(slug, userId, token) {
         return this.withLock(slug, async () => {
             try {
-                const git = this.getGit(slug, userId);
+                const git = await this.getGit(slug, userId);
                 const effectiveToken = await this._resolveAuthToken(git, slug, userId, token);
                 if (effectiveToken) {
                     const remotes = await git.getRemotes(true);
@@ -1188,7 +1772,7 @@ class GitService {
     async commit(slug, message, userId, amend = false) {
         return this.withLock(slug, async () => {
             try {
-                const git = this.getGit(slug, userId);
+                const git = await this.getGit(slug, userId);
                 // Check if there are staged changes before committing
                 // (skip for amend — amend can just rewrite the message).
                 if (!amend) {
@@ -1226,7 +1810,7 @@ class GitService {
     async interactiveRebase(slug, baseCommit, operations, userId) {
         return this.withLock(slug, async () => {
             try {
-                const git = this.getGit(slug, userId);
+                const git = await this.getGit(slug, userId);
                 const repoPath = this.getEffectiveRepoPath(slug, userId);
 
                 // Build the rebase-todo script
@@ -1239,7 +1823,7 @@ class GitService {
 
                 // Write todo to a file and use GIT_SEQUENCE_EDITOR to apply it
                 const todoFile = path.join(repoPath, '.git', '_rebase_todo.txt');
-                fs.writeFileSync(todoFile, todoLines.join('\n') + '\n', 'utf8');
+                await fs.promises.writeFile(todoFile, todoLines.join('\n') + '\n', 'utf8');
 
                 // Build reword messages if any
                 const rewords = operations.filter(op => op.action === 'reword' && op.message);
@@ -1287,15 +1871,15 @@ class GitService {
                 await git.env(env).rebase(['-i', baseCommit]);
 
                 // Cleanup temp files
-                try { fs.unlinkSync(todoFile); } catch (_) {}
-                try { fs.unlinkSync(isWin ? seqScript + '.bat' : seqScript); } catch (_) {}
+                try { await fs.promises.unlink(todoFile); } catch (_) {}
+                try { await fs.promises.unlink(isWin ? seqScript + '.bat' : seqScript); } catch (_) {}
 
                 this._archiveGitAsync(slug, userId);
                 return this.getStatus(slug, userId);
             } catch (e) {
                 // If rebase fails, try to abort so we don't leave repo in bad state
                 try {
-                    const git2 = this.getGit(slug, userId);
+                    const git2 = await this.getGit(slug, userId);
                     await git2.rebase(['--abort']);
                 } catch (_) { /* already clean */ }
                 throw this.mapGitError(e, slug);
@@ -1306,7 +1890,7 @@ class GitService {
     async rebaseAbort(slug, userId) {
         return this.withLock(slug, async () => {
             try {
-                const git = this.getGit(slug, userId);
+                const git = await this.getGit(slug, userId);
                 await git.rebase(['--abort']);
                 return this.getStatus(slug, userId);
             } catch (e) {
@@ -1318,7 +1902,7 @@ class GitService {
     async rebaseContinue(slug, userId) {
         return this.withLock(slug, async () => {
             try {
-                const git = this.getGit(slug, userId);
+                const git = await this.getGit(slug, userId);
                 await git.rebase(['--continue']);
                 this._archiveGitAsync(slug, userId);
                 return this.getStatus(slug, userId);
@@ -1331,7 +1915,7 @@ class GitService {
     async stageFile(slug, filePath, userId) {
         return this.withLock(slug, async () => {
             try {
-                const git = this.getGit(slug, userId);
+                const git = await this.getGit(slug, userId);
                 await git.add(filePath);
                 return this.getStatus(slug, userId);
             } catch (e) {
@@ -1344,7 +1928,7 @@ class GitService {
     async stageLines(slug, filePath, patch, userId) {
         return this.withLock(slug, async () => {
             try {
-                const git = this.getGit(slug, userId);
+                const git = await this.getGit(slug, userId);
                 const repoPath = this.getEffectiveRepoPath(slug, userId);
 
                 // Write the patch to a temp file — simple-git's raw() passes
@@ -1352,13 +1936,13 @@ class GitService {
                 // so we can't pass the patch content inline.
                 const tmpDir = path.join(repoPath, '.git');
                 const tmpPatch = path.join(tmpDir, `_stage_${Date.now()}.patch`);
-                fs.writeFileSync(tmpPatch, patch, 'utf8');
+                await fs.promises.writeFile(tmpPatch, patch, 'utf8');
 
                 try {
                     await git.raw(['apply', '--cached', '--unidiff-zero', '--recount', '--ignore-whitespace', tmpPatch]);
                 } finally {
                     // Always clean up the temp patch file
-                    try { fs.unlinkSync(tmpPatch); } catch (_) {}
+                    try { await fs.promises.unlink(tmpPatch); } catch (_) {}
                 }
                 return this.getStatus(slug, userId);
             } catch (e) {
@@ -1371,17 +1955,17 @@ class GitService {
     async discardLines(slug, filePath, patch, userId) {
         return this.withLock(slug, async () => {
             try {
-                const git = this.getGit(slug, userId);
+                const git = await this.getGit(slug, userId);
                 const repoPath = this.getEffectiveRepoPath(slug, userId);
 
                 const tmpDir = path.join(repoPath, '.git');
                 const tmpPatch = path.join(tmpDir, `_discard_${Date.now()}.patch`);
-                fs.writeFileSync(tmpPatch, patch, 'utf8');
+                await fs.promises.writeFile(tmpPatch, patch, 'utf8');
 
                 try {
                     await git.raw(['apply', '--reverse', '--unidiff-zero', '--recount', '--ignore-whitespace', tmpPatch]);
                 } finally {
-                    try { fs.unlinkSync(tmpPatch); } catch (_) {}
+                    try { await fs.promises.unlink(tmpPatch); } catch (_) {}
                 }
                 return this.getStatus(slug, userId);
             } catch (e) {
@@ -1396,17 +1980,17 @@ class GitService {
     async unstageLines(slug, filePath, patch, userId) {
         return this.withLock(slug, async () => {
             try {
-                const git = this.getGit(slug, userId);
+                const git = await this.getGit(slug, userId);
                 const repoPath = this.getEffectiveRepoPath(slug, userId);
 
                 const tmpDir = path.join(repoPath, '.git');
                 const tmpPatch = path.join(tmpDir, `_unstage_${Date.now()}.patch`);
-                fs.writeFileSync(tmpPatch, patch, 'utf8');
+                await fs.promises.writeFile(tmpPatch, patch, 'utf8');
 
                 try {
                     await git.raw(['apply', '--cached', '--reverse', '--unidiff-zero', '--recount', '--ignore-whitespace', tmpPatch]);
                 } finally {
-                    try { fs.unlinkSync(tmpPatch); } catch (_) {}
+                    try { await fs.promises.unlink(tmpPatch); } catch (_) {}
                 }
                 return this.getStatus(slug, userId);
             } catch (e) {
@@ -1417,7 +2001,7 @@ class GitService {
 
     async unstageFile(slug, filePath, userId) {
         return this.withLock(slug, async () => {
-            const git = this.getGit(slug, userId);
+            const git = await this.getGit(slug, userId);
             try {
                 await git.reset(['HEAD', filePath]);
             } catch (e) {
@@ -1436,7 +2020,7 @@ class GitService {
     async stageAll(slug, userId) {
         return this.withLock(slug, async () => {
             try {
-                const git = this.getGit(slug, userId);
+                const git = await this.getGit(slug, userId);
                 await git.add('-A');
                 return this.getStatus(slug, userId);
             } catch (e) {
@@ -1448,7 +2032,7 @@ class GitService {
     // Unstage all staged changes
     async unstageAll(slug, userId) {
         return this.withLock(slug, async () => {
-            const git = this.getGit(slug, userId);
+            const git = await this.getGit(slug, userId);
             try {
                 await git.reset(['HEAD']);
             } catch (e) {
@@ -1470,7 +2054,7 @@ class GitService {
     async discardAll(slug, userId) {
         return this.withLock(slug, async () => {
             try {
-                const git = this.getGit(slug, userId);
+                const git = await this.getGit(slug, userId);
                 const status = await git.status();
                 
                 // Checkout all modified/deleted tracked files
@@ -1492,7 +2076,7 @@ class GitService {
 
     async push(slug, userId, token, force = false) {
         return this.withLock(slug, async () => {
-            const git = this.getGit(slug, userId);
+            const git = await this.getGit(slug, userId);
             // Make sure we don't trigger interactive credential prompts in the server process
             const prev = process.env.GIT_TERMINAL_PROMPT;
             process.env.GIT_TERMINAL_PROMPT = '0';
@@ -1675,7 +2259,7 @@ class GitService {
     async addRemote(slug, name, url, userId) {
         return this.withLock(slug, async () => {
             try {
-                const git = this.getGit(slug, userId);
+                const git = await this.getGit(slug, userId);
                 const { cleanUrl, token } = this._extractTokenFromHttpsUrl(url);
                 if (token) {
                     this._rememberAuthToken(slug, userId, token);
@@ -1691,7 +2275,7 @@ class GitService {
     async removeRemote(slug, name, userId) {
         return this.withLock(slug, async () => {
             try {
-                const git = this.getGit(slug, userId);
+                const git = await this.getGit(slug, userId);
                 await git.removeRemote(name);
                 return this.getStatus(slug, userId);
             } catch (e) {
@@ -1708,7 +2292,7 @@ class GitService {
     async setRemoteUrl(slug, name, url, userId) {
         return this.withLock(slug, async () => {
             try {
-                const git = this.getGit(slug, userId);
+                const git = await this.getGit(slug, userId);
                 const { cleanUrl, token } = this._extractTokenFromHttpsUrl(url);
                 if (token) {
                     this._rememberAuthToken(slug, userId, token);
@@ -1723,7 +2307,7 @@ class GitService {
 
     async getRemotes(slug, userId) {
         try {
-            const git = this.getGit(slug, userId);
+            const git = await this.getGit(slug, userId);
             return await git.getRemotes(true);
         } catch (e) {
             throw this.mapGitError(e, slug);
@@ -1732,7 +2316,7 @@ class GitService {
 
     async pull(slug, userId, token) {
         return this.withLock(slug, async () => {
-            const git = this.getGit(slug, userId);
+            const git = await this.getGit(slug, userId);
             try {
                 const effectiveToken = await this._resolveAuthToken(git, slug, userId, token);
 
@@ -1829,7 +2413,7 @@ class GitService {
     async discardChange(slug, filePath, userId) {
         return this.withLock(slug, async () => {
             try {
-                const git = this.getGit(slug, userId);
+                const git = await this.getGit(slug, userId);
                 // Check if file is untracked
                 const status = await git.status();
                 const fileStatus = status.files.find(f => f.path === filePath);
@@ -1839,7 +2423,7 @@ class GitService {
                     const repoPath = this.getEffectiveRepoPath(slug, userId);
                     const fullPath = path.join(repoPath, filePath);
                     if (fs.existsSync(fullPath)) {
-                        fs.unlinkSync(fullPath);
+                        await fs.promises.unlink(fullPath);
                     }
                 } else {
                     await git.checkout(filePath);
@@ -1857,7 +2441,7 @@ class GitService {
     async resolveConflictOurs(slug, filePath, userId) {
         return this.withLock(slug, async () => {
             try {
-                const git = this.getGit(slug, userId);
+                const git = await this.getGit(slug, userId);
                 await git.checkout(['--ours', filePath]);
                 await git.add(filePath);
                 return this.getStatus(slug, userId);
@@ -1871,7 +2455,7 @@ class GitService {
     async resolveConflictTheirs(slug, filePath, userId) {
         return this.withLock(slug, async () => {
             try {
-                const git = this.getGit(slug, userId);
+                const git = await this.getGit(slug, userId);
                 await git.checkout(['--theirs', filePath]);
                 await git.add(filePath);
                 return this.getStatus(slug, userId);
@@ -1885,7 +2469,7 @@ class GitService {
     async markResolved(slug, filePath, userId) {
         return this.withLock(slug, async () => {
             try {
-                const git = this.getGit(slug, userId);
+                const git = await this.getGit(slug, userId);
                 await git.add(filePath);
                 return this.getStatus(slug, userId);
             } catch (e) {
@@ -1898,7 +2482,7 @@ class GitService {
     async cherryPick(slug, hash, userId) {
         return this.withLock(slug, async () => {
             try {
-                const git = this.getGit(slug, userId);
+                const git = await this.getGit(slug, userId);
                 await git.raw(['cherry-pick', hash]);
                 return this.getStatus(slug, userId);
             } catch (e) {
@@ -1911,7 +2495,7 @@ class GitService {
     async revertCommit(slug, hash, userId) {
         return this.withLock(slug, async () => {
             try {
-                const git = this.getGit(slug, userId);
+                const git = await this.getGit(slug, userId);
                 await git.raw(['revert', hash]);
                 return this.getStatus(slug, userId);
             } catch (e) {
@@ -1923,7 +2507,7 @@ class GitService {
     // Get detailed information about a specific commit
     async getCommitDetail(slug, hash, userId) {
         try {
-            const git = this.getGit(slug, userId);
+            const git = await this.getGit(slug, userId);
             const showOutput = await git.show(['--format=%H%n%an%n%ae%n%aI%n%s%n%b', '--stat', hash]);
             const diff = await git.show(['--format=', '--patch', hash]);
 
@@ -1979,7 +2563,7 @@ class GitService {
     async abortMerge(slug, userId) {
         return this.withLock(slug, async () => {
             try {
-                const git = this.getGit(slug, userId);
+                const git = await this.getGit(slug, userId);
                 await git.merge(['--abort']);
                 return this.getStatus(slug, userId);
             } catch (e) {
@@ -2001,7 +2585,7 @@ class GitService {
      */
     async mergeBranch(slug, branch, userId, token) {
         return this.withLock(slug, async () => {
-            const git = this.getGit(slug, userId);
+            const git = await this.getGit(slug, userId);
 
             // Normalise: strip leading "origin/" so we always work with the
             // bare branch name and prefix it ourselves where needed.
@@ -2075,7 +2659,7 @@ class GitService {
      * @returns {{ hasConflicts: boolean, conflictedFiles: string[] }}
      */
     async checkMergeConflicts(slug, baseBranch, headBranch, userId, token) {
-        const git = this.getGit(slug, userId);
+        const git = await this.getGit(slug, userId);
 
         // Normalise branch names — ensure we reference remote-tracking branches
         const bareBase = baseBranch.replace(/^origin\//, '');
@@ -2171,7 +2755,7 @@ class GitService {
     // Get the content for each version of a conflicted file
     async getConflictVersions(slug, filePath, userId) {
         try {
-            const git = this.getGit(slug, userId);
+            const git = await this.getGit(slug, userId);
             
             // Get the three versions: base, ours, theirs
             let base = '', ours = '', theirs = '';
@@ -2193,7 +2777,7 @@ class GitService {
             try {
                 const repoPath = this.getEffectiveRepoPath(slug, userId);
                 const fullPath = path.join(repoPath, filePath);
-                current = fs.readFileSync(fullPath, 'utf-8');
+                current = await fs.promises.readFile(fullPath, 'utf8');
             } catch (e) { /* ignore */ }
             
             return { base, ours, theirs, current };
@@ -2205,11 +2789,11 @@ class GitService {
     // Get structured diff with parsed hunks for better frontend display
     async getDiff(slug, filePath, options = {}) {
         const userId = options.userId;
-        if (!this.isRepoExists(slug, userId)) return { raw: '', hunks: [] };
-        if (!this.isRepoInitialized(slug, userId)) return { raw: '', hunks: [] };
+        if (!await this.isRepoExists(slug, userId)) return { raw: '', hunks: [] };
+        if (!await this.isRepoInitialized(slug, userId)) return { raw: '', hunks: [] };
         
         try {
-            const git = this.getGit(slug, userId);
+            const git = await this.getGit(slug, userId);
             let raw;
             if (filePath) {
                 raw = await git.diff([filePath]);
@@ -2270,92 +2854,21 @@ class GitService {
 
     async getLog(slug, options = {}) {
         const userId = options.userId;
-        if (!this.isRepoExists(slug, userId)) return { all: [], total: 0 };
-        if (!this.isRepoInitialized(slug, userId)) return { all: [], total: 0 };
+        if (!await this.isRepoExists(slug, userId)) return { all: [], total: 0 };
+        if (!await this.isRepoInitialized(slug, userId)) return { all: [], total: 0 };
         
         try {
-            const git = this.getGit(slug, userId);
-            const { page = 1, limit = 50 } = options;
-            const skip = (page - 1) * limit;
-            
-            // Use a custom format that includes parent hashes (%P) for the
-            // commit graph.  simple-git's default log() omits parents, so
-            // the frontend receives no branching information and renders a
-            // single vertical line.
-            const SEP = '---COMMIT_SEP---';
-            const FIELD = '---FIELD---';
-            // Format: hash | parents | author_name | author_email | date | subject | body
-            const fmt = [`--format=${SEP}%H${FIELD}%P${FIELD}%aN${FIELD}%aE${FIELD}%aI${FIELD}%s${FIELD}%b`];
-            const logArgs = ['log', ...fmt, `-n`, `${limit}`];
-            if (skip > 0) logArgs.push(`--skip=${skip}`);
-            
-            const rawOutput = await git.raw(logArgs);
-            
-            // Parse the raw output into commit objects
-            const all = rawOutput
-                .split(SEP)
-                .filter(Boolean)
-                .map(block => {
-                    const parts = block.split(FIELD);
-                    return {
-                        hash: (parts[0] || '').trim(),
-                        parents: (parts[1] || '').trim(),       // space-separated parent hashes
-                        author_name: (parts[2] || '').trim(),
-                        author_email: (parts[3] || '').trim(),
-                        date: (parts[4] || '').trim(),
-                        message: (parts[5] || '').trim(),
-                        body: (parts[6] || '').trim(),
-                    };
-                })
-                .filter(c => c.hash);   // drop any empty entries
-            
-            // Get total count for pagination info
-            let total;
-            try {
-                const countResult = await git.raw(['rev-list', '--count', 'HEAD']);
-                total = parseInt(countResult.trim()) || 0;
-            } catch {
-                total = all.length;
+            if (NodeGit) {
+                try {
+                    const repoPath = this.getEffectiveRepoPath(slug, userId);
+                    return await this._readLogWithNodeGit(repoPath, options);
+                } catch (error) {
+                    const reason = error?.message || error?.code || 'unknown error';
+                    console.warn(`[GitService] Native git log failed for ${slug}${userId ? '/' + userId : ''}; falling back to simple-git: ${reason}`);
+                }
             }
-            
-            // Collect branch & tag refs mapped to commit hashes
-            let refs = {};
-            try {
-                const branchRaw = await git.raw(['for-each-ref', '--format=%(objectname:short) %(refname:short)', 'refs/heads/', 'refs/remotes/', 'refs/tags/']);
-                for (const line of branchRaw.trim().split('\n').filter(Boolean)) {
-                    const spaceIdx = line.indexOf(' ');
-                    if (spaceIdx < 0) continue;
-                    const hash = line.substring(0, spaceIdx);
-                    const name = line.substring(spaceIdx + 1);
-                    if (!refs[hash]) refs[hash] = [];
-                    // Classify ref type
-                    let type = 'branch';
-                    if (name.startsWith('origin/') || name.startsWith('upstream/')) type = 'remote';
-                    if (name.startsWith('v') && /^v?\d/.test(name)) type = 'tag';
-                    refs[hash].push({ name, type });
-                }
-                // Also explicitly get tags
-                const tagRaw = await git.raw(['tag', '--format=%(objectname:short) %(refname:short)']);
-                for (const line of tagRaw.trim().split('\n').filter(Boolean)) {
-                    const spaceIdx = line.indexOf(' ');
-                    if (spaceIdx < 0) continue;
-                    const hash = line.substring(0, spaceIdx);
-                    const name = line.substring(spaceIdx + 1);
-                    if (!refs[hash]) refs[hash] = [];
-                    if (!refs[hash].some(r => r.name === name)) {
-                        refs[hash].push({ name, type: 'tag' });
-                    }
-                }
-            } catch { /* refs decoration is best-effort */ }
-            
-            return { 
-                all, 
-                total,
-                refs,
-                page,
-                limit,
-                hasMore: skip + all.length < total
-            };
+
+            return await this._readLogWithSimpleGit(slug, options);
         } catch (e) {
             throw this.mapGitError(e, slug);
         }
@@ -2363,11 +2876,11 @@ class GitService {
 
     // Git blame support
     async getBlame(slug, filePath, userId) {
-        if (!this.isRepoExists(slug, userId)) return [];
-        if (!this.isRepoInitialized(slug, userId)) return [];
+        if (!await this.isRepoExists(slug, userId)) return [];
+        if (!await this.isRepoInitialized(slug, userId)) return [];
         
         try {
-            const git = this.getGit(slug, userId);
+            const git = await this.getGit(slug, userId);
             // Use porcelain format for easier parsing
             const blameOutput = await git.raw(['blame', '--line-porcelain', filePath]);
             return this.parseBlame(blameOutput);
@@ -2414,7 +2927,7 @@ class GitService {
     // ===== Stash Operations =====
     async stashList(slug, userId) {
         try {
-            const git = this.getGit(slug, userId);
+            const git = await this.getGit(slug, userId);
             const result = await git.stashList();
             return result.all || [];
         } catch (e) {
@@ -2425,7 +2938,7 @@ class GitService {
     async stashPush(slug, message = '', userId) {
         return this.withLock(slug, async () => {
             try {
-                const git = this.getGit(slug, userId);
+                const git = await this.getGit(slug, userId);
                 const options = message ? ['-m', message] : [];
                 await git.stash(['push', ...options]);
                 return this.getStatus(slug, userId);
@@ -2438,7 +2951,7 @@ class GitService {
     async stashPop(slug, index = 0, userId) {
         return this.withLock(slug, async () => {
             try {
-                const git = this.getGit(slug, userId);
+                const git = await this.getGit(slug, userId);
                 await git.stash(['pop', `stash@{${index}}`]);
                 return this.getStatus(slug, userId);
             } catch (e) {
@@ -2450,7 +2963,7 @@ class GitService {
     async stashDrop(slug, index = 0, userId) {
         return this.withLock(slug, async () => {
             try {
-                const git = this.getGit(slug, userId);
+                const git = await this.getGit(slug, userId);
                 await git.stash(['drop', `stash@{${index}}`]);
                 return this.stashList(slug, userId);
             } catch (e) {
@@ -2462,7 +2975,7 @@ class GitService {
     async stashApply(slug, index = 0, userId) {
         return this.withLock(slug, async () => {
             try {
-                const git = this.getGit(slug, userId);
+                const git = await this.getGit(slug, userId);
                 await git.stash(['apply', `stash@{${index}}`]);
                 return this.getStatus(slug, userId);
             } catch (e) {
@@ -2473,9 +2986,9 @@ class GitService {
 
     async getUnpushedCommits(slug, max = 50, userId) {
         try {
-            if (!this.isRepoExists(slug, userId)) return [];
-            if (!this.isRepoInitialized(slug, userId)) return [];
-            const git = this.getGit(slug, userId);
+            if (!await this.isRepoExists(slug, userId)) return [];
+            if (!await this.isRepoInitialized(slug, userId)) return [];
+            const git = await this.getGit(slug, userId);
             const branchSummary = await git.branchLocal();
             const currentBranch = branchSummary.current;
             if (!currentBranch) return [];
@@ -2581,9 +3094,9 @@ class GitService {
     // Get commits that are in upstream but not in local (incoming/behind)
     async getIncomingCommits(slug, max = 50, userId) {
         try {
-            if (!this.isRepoExists(slug, userId)) return [];
-            if (!this.isRepoInitialized(slug, userId)) return [];
-            const git = this.getGit(slug, userId);
+            if (!await this.isRepoExists(slug, userId)) return [];
+            if (!await this.isRepoInitialized(slug, userId)) return [];
+            const git = await this.getGit(slug, userId);
             const branchSummary = await git.branchLocal();
             const currentBranch = branchSummary.current;
             if (!currentBranch) return [];
@@ -2927,9 +3440,9 @@ class GitService {
     }
 
     async getFileContent(slug, filePath, ref = 'HEAD', userId) {
-        if (!this.isRepoExists(slug, userId)) return '';
-        if (!this.isRepoInitialized(slug, userId)) return '';
-        const git = this.getGit(slug, userId);
+        if (!await this.isRepoExists(slug, userId)) return '';
+        if (!await this.isRepoInitialized(slug, userId)) return '';
+        const git = await this.getGit(slug, userId);
         try {
             // Ensure forward slashes for git command and remove leading slash
             let gitPath = filePath.replace(/\\/g, '/');
@@ -2975,34 +3488,33 @@ class GitService {
      * Returns `true` if the repo exists AND is a standard non-bare repo
      * WITHOUT the `.synthi-migrated` marker.
      */
-    isLegacyRepo(slug) {
+    async isLegacyRepo(slug) {
         const repoPath = this.getRepoPath(slug);
         const gitDir = path.join(repoPath, '.git');
         const marker = path.join(repoPath, '.synthi-migrated');
 
         // Must exist and have a .git directory (not a file — files indicate worktrees)
-        if (!fs.existsSync(gitDir)) return false;
+        if (!await fs.promises.access(gitDir).then(() => true).catch(() => false)) return false;
         try {
-            const stat = fs.statSync(gitDir);
+            const stat = await fs.promises.stat(gitDir);
             if (!stat.isDirectory()) return false; // .git file = worktree, not legacy
         } catch (_) {
             return false;
         }
 
         // If already marked as migrated, it's not legacy
-        if (fs.existsSync(marker)) return false;
+        if (await fs.promises.access(marker).then(() => true).catch(() => false)) return false;
 
         // Check it's NOT bare (bare repos have no working tree)
         try {
             const configPath = path.join(gitDir, 'config');
-            if (fs.existsSync(configPath)) {
-                const content = fs.readFileSync(configPath, 'utf8');
+            if (await fs.promises.access(configPath).then(() => true).catch(() => false)) {
+                const content = await fs.promises.readFile(configPath, 'utf8');
                 if (content.includes('bare = true')) return false;
             }
         } catch (_) {
             // If we can't read config, assume non-bare
         }
-
         return true;
     }
 
@@ -3076,7 +3588,7 @@ class GitService {
         // Clean up any stale backup from a previous failed migration
         if (fs.existsSync(backupPath)) {
             console.warn(`[Migration] Removing stale backup: ${backupPath}`);
-            fs.rmSync(backupPath, { recursive: true, force: true });
+            await fs.promises.rm(backupPath, { recursive: true, force: true });
         }
 
         console.log(`[Migration] Creating backup: ${repoPath} → ${backupPath}`);
@@ -3107,7 +3619,7 @@ class GitService {
 
         // Remove the (partially) migrated repo
         if (fs.existsSync(repoPath)) {
-            fs.rmSync(repoPath, { recursive: true, force: true });
+            await fs.promises.rm(repoPath, { recursive: true, force: true });
         }
 
         // Restore from backup
@@ -3118,10 +3630,10 @@ class GitService {
     /**
      * Remove the migration backup after successful migration.
      */
-    _cleanupMigrationBackup(slug) {
+    async _cleanupMigrationBackup(slug) {
         const backupPath = `${this.getRepoPath(slug)}._migration_backup`;
         if (fs.existsSync(backupPath)) {
-            fs.rmSync(backupPath, { recursive: true, force: true });
+            await fs.promises.rm(backupPath, { recursive: true, force: true });
             console.log(`[Migration] Backup cleaned up for ${slug}`);
         }
     }
@@ -3172,7 +3684,7 @@ class GitService {
 
         // ── Step 2: Create bare clone from the legacy repo ────────────────
         if (fs.existsSync(barePath)) {
-            fs.rmSync(barePath, { recursive: true, force: true });
+            await fs.promises.rm(barePath, { recursive: true, force: true });
         }
 
         try {
@@ -3198,7 +3710,7 @@ class GitService {
         // ── Step 4: Remove the legacy .git and re-attach as worktree ──────
         try {
             // Remove the old .git directory
-            fs.rmSync(legacyGitDir, { recursive: true, force: true });
+            await fs.promises.rm(legacyGitDir, { recursive: true, force: true });
             console.log(`[Migration]   Removed legacy .git directory`);
 
             // Manually wire the worktree links.
@@ -3266,13 +3778,13 @@ class GitService {
                     if (fs.existsSync(maybeGit)) continue;
                 }
                 const fullPath = path.join(repoPath, entry.name);
-                fs.rmSync(fullPath, { recursive: true, force: true });
+                await fs.promises.rm(fullPath, { recursive: true, force: true });
             }
             // Also remove the worktree admin entry from the bare repo
             // so git doesn't think there's a linked worktree at the slug path.
             const wtAdminMain = path.join(barePath, 'worktrees', 'main');
             if (fs.existsSync(wtAdminMain)) {
-                fs.rmSync(wtAdminMain, { recursive: true, force: true });
+                await fs.promises.rm(wtAdminMain, { recursive: true, force: true });
             }
             console.log(`[Migration]   Cleaned slug-level working tree files`);
         } catch (e) {
@@ -3342,7 +3854,7 @@ class GitService {
         }
 
         // Not legacy either — brand-new or doesn't exist yet
-        if (!this.isLegacyRepo(slug)) {
+        if (!await this.isLegacyRepo(slug)) {
             return { migrated: false, wasLegacy: false };
         }
 
@@ -3353,7 +3865,7 @@ class GitService {
             if (this.isMigratedRepo(slug)) {
                 return { migrated: true, wasLegacy: false };
             }
-            if (!this.isLegacyRepo(slug)) {
+            if (!await this.isLegacyRepo(slug)) {
                 return { migrated: false, wasLegacy: false };
             }
 
@@ -3381,7 +3893,7 @@ class GitService {
                 }
 
                 // 4. Cleanup backup on success
-                this._cleanupMigrationBackup(slug);
+                await this._cleanupMigrationBackup(slug);
 
                 return { migrated: true, wasLegacy: true };
             } catch (e) {
@@ -3439,7 +3951,7 @@ class GitService {
     async ensureSessionWorktree(slug, userId, branch = null) {
         return this.withLock(slug, async () => {
             // ── Lazy migration: upgrade legacy repos before creating worktrees
-            if (this.isLegacyRepo(slug)) {
+            if (await this.isLegacyRepo(slug)) {
                 console.log(`[GitService] ensureSessionWorktree: legacy repo for "${slug}", migrating…`);
                 try {
                     await this._createMigrationBackup(slug);
@@ -3449,7 +3961,7 @@ class GitService {
                         if (!valid) {
                             throw new MigrationError(slug, 'Post-migration validation failed', 'validation');
                         }
-                        this._cleanupMigrationBackup(slug);
+                        await this._cleanupMigrationBackup(slug);
                     } catch (e) {
                         console.error(`[GitService] ensureSessionWorktree: migration failed, rolling back:`, e.message);
                         try { await this._restoreMigrationBackup(slug); } catch (_) {}
@@ -3493,7 +4005,7 @@ class GitService {
 
             // Exclude sessions directory from git tracking
             if (!this.isMigratedRepo(slug)) {
-                this._ensureLocalExcludes(mainRepoPath);
+                await this._ensureLocalExcludes(mainRepoPath);
             }
 
             const git = simpleGit(gitSourcePath);
@@ -3552,7 +4064,7 @@ class GitService {
                 // Force cleanup if git worktree remove fails
                 console.warn(`[GitService] git worktree remove failed, force-deleting: ${e.message}`);
                 try {
-                    fs.rmSync(worktreePath, { recursive: true, force: true });
+                    await fs.promises.rm(worktreePath, { recursive: true, force: true });
                 } catch (_) {}
             }
 
@@ -3644,12 +4156,12 @@ class GitService {
                     try {
                         const git = simpleGit();
                         await git.clone(remoteUrl, userRepoPath, ['--no-hardlinks']);
-                        this._ensureLocalExcludes(userRepoPath);
+                        await this._ensureLocalExcludes(userRepoPath);
                         console.log(`[GitService] Cloned user repo for ${slug}/${userId} from remote: ${remoteUrl}`);
                         return { path: userRepoPath, created: true };
                     } catch (e) {
                         // Remote clone failed — clean up and try other sources
-                        try { fs.rmSync(userRepoPath, { recursive: true, force: true }); } catch (_) {}
+                        try { await fs.promises.rm(userRepoPath, { recursive: true, force: true }); } catch (_) {}
                         console.warn(`[GitService] Remote clone failed for ${slug}/${userId}: ${e.message}, trying other sources`);
                     }
                 }
@@ -3657,7 +4169,7 @@ class GitService {
 
             // ── Fallback: clone from an existing peer user repo ─────────
             if (!cloneSource) {
-                const existingUserRepos = this.listUserRepos(slug);
+                const existingUserRepos = await this.listUserRepos(slug);
                 const peerRepo = existingUserRepos.find(r => r.userId !== userId);
                 if (peerRepo) {
                     cloneSource = peerRepo.path;
@@ -3676,7 +4188,7 @@ class GitService {
                 // commits yet".
                 await git.commit('Initial commit', { '--allow-empty': null });
                 console.log(`[GitService] Created fresh user repo for ${slug}/${userId}`);
-                this._ensureLocalExcludes(userRepoPath);
+                await this._ensureLocalExcludes(userRepoPath);
                 return { path: userRepoPath, created: true };
             }
 
@@ -3690,13 +4202,22 @@ class GitService {
                     const git = simpleGit(userRepoPath);
                     await git.init();
                     await git.commit('Initial commit', { '--allow-empty': null });
-                    this._ensureLocalExcludes(userRepoPath);
+                    await this._ensureLocalExcludes(userRepoPath);
                     return { path: userRepoPath, created: true };
                 }
 
                 const git = simpleGit();
                 // Use --no-hardlinks to ensure complete isolation between users
-                await git.clone(cloneSource, userRepoPath, ['--no-hardlinks']);
+                const cloneArgs = ['--no-hardlinks'];
+                if (cloneSource === barePath) {
+                    const cloneBranch = await this._resolveCloneBranch(cloneSource);
+                    if (cloneBranch) {
+                        cloneArgs.push('--branch', cloneBranch);
+                    } else {
+                        console.warn(`[GitService] Could not resolve a branch for ${cloneSource}; falling back to bare HEAD for ${slug}/${userId}`);
+                    }
+                }
+                await git.clone(cloneSource, userRepoPath, cloneArgs);
 
                 // If we cloned from the bare repo or a peer, re-set the remote to
                 // the original upstream URL (if any) rather than the local path.
@@ -3728,12 +4249,12 @@ class GitService {
                     // Non-fatal — local clone is still functional
                 }
 
-                this._ensureLocalExcludes(userRepoPath);
+                await this._ensureLocalExcludes(userRepoPath);
                 console.log(`[GitService] Cloned user repo for ${slug}/${userId} from ${cloneSource}`);
                 return { path: userRepoPath, created: true };
             } catch (e) {
                 // Clean up failed clone
-                try { fs.rmSync(userRepoPath, { recursive: true, force: true }); } catch (_) {}
+                try { await fs.promises.rm(userRepoPath, { recursive: true, force: true }); } catch (_) {}
                 throw new GitError(
                     `Failed to create user repo for ${slug}/${userId}: ${e.message}`,
                     'USER_REPO_ERROR'
@@ -3776,24 +4297,26 @@ class GitService {
      * List all user repos for a workspace slug.
      * Returns array of { userId, path }.
      */
-    listUserRepos(slug) {
+    async listUserRepos(slug) {
         const slugDir = path.join(this.baseDir, slug);
-        if (!fs.existsSync(slugDir)) return [];
+        if (!await fs.promises.access(slugDir).then(() => true).catch(() => false)) return [];
 
         try {
-            const entries = fs.readdirSync(slugDir, { withFileTypes: true });
-            return entries
-                .filter(e => {
-                    if (!e.isDirectory()) return false;
-                    // Exclude internal directories
-                    if (e.name === '_upstream.git' || e.name === 'sessions' || e.name.startsWith('.')) return false;
-                    // Must have a .git to be a valid user repo
-                    return fs.existsSync(path.join(slugDir, e.name, '.git'));
-                })
-                .map(e => ({
-                    userId: e.name,
-                    path: path.join(slugDir, e.name),
-                }));
+            const entries = await fs.promises.readdir(slugDir, { withFileTypes: true });
+            const results = [];
+            for (const e of entries) {
+                if (!e.isDirectory()) continue;
+                // Exclude internal directories
+                if (e.name === '_upstream.git' || e.name === 'sessions' || e.name.startsWith('.')) continue;
+                // Must have a .git to be a valid user repo
+                if (await fs.promises.access(path.join(slugDir, e.name, '.git')).then(() => true).catch(() => false)) {
+                    results.push({
+                        userId: e.name,
+                        path: path.join(slugDir, e.name),
+                    });
+                }
+            }
+            return results;
         } catch (_) {
             return [];
         }

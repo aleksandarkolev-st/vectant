@@ -19,11 +19,9 @@ import {
 } from "lucide-react";
 import AIJumpstartSection from "@/components/dashboard/AIJumpstartSection";
 import { storeJumpstartPayload } from "@/lib/ai-jumpstart-session";
+import { resolveCollabHttpUrl } from "@/lib/collab-url";
 import { storeToken } from "@/services/prClient";
 import { toast } from "sonner";
-
-const COLLAB_SERVER_URL =
-  process.env.NEXT_PUBLIC_COLLAB_SERVER_URL || "http://localhost:1234";
 
 /* ──────────────────────────── helpers ──────────────────────────── */
 
@@ -83,6 +81,7 @@ export default function Dashboard() {
 
   // Error / success feedback
   const [feedback, setFeedback] = useState(null); // { type: 'error'|'success', message }
+  const collabServerUrl = resolveCollabHttpUrl();
 
   /* ── data fetching ── */
 
@@ -90,7 +89,7 @@ export default function Dashboard() {
     setLoadingWorkspaces(true);
     try {
       const res = await fetch(
-        `${COLLAB_SERVER_URL}/workspaces?owner=${encodeURIComponent(email)}`,
+        `${collabServerUrl}/workspaces?owner=${encodeURIComponent(email)}`,
       );
       if (res.ok) {
         const data = await res.json();
@@ -101,7 +100,7 @@ export default function Dashboard() {
     } finally {
       setLoadingWorkspaces(false);
     }
-  }, []);
+  }, [collabServerUrl]);
 
   const ensureWorkspaceRecord = useCallback(async ({ slug, name, repoUrl }) => {
     const response = await fetch("/api/workspace", {
@@ -141,7 +140,7 @@ export default function Dashboard() {
       const name = repoUrl.split("/").pop().replace(".git", "");
       const userId = session?.user?.id || session?.user?.email;
 
-      const res = await fetch(`${COLLAB_SERVER_URL}/git/${slug}/clone`, {
+      const res = await fetch(`${collabServerUrl}/git/${slug}/clone`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -235,7 +234,7 @@ export default function Dashboard() {
       const slug = Math.random().toString(36).substring(2, 10);
       const userId = session?.user?.id || session?.user?.email;
 
-      const cloneRes = await fetch(`${COLLAB_SERVER_URL}/git/${slug}/clone`, {
+      const cloneRes = await fetch(`${collabServerUrl}/git/${slug}/clone`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",

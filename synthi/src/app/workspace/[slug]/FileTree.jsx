@@ -1,6 +1,7 @@
 "use client";
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useEffect, useCallback, memo, useMemo } from "react";
 import { toast } from "sonner";
+import { Virtuoso } from "react-virtuoso";
 import { useAppDispatch, useAppSelector } from "@/redux/hooks";
 import {
   selectFilesTree,
@@ -32,6 +33,7 @@ import {
 import { PanelLeftClose, PanelRightClose, FolderOpen } from "lucide-react";
 import { getFileIcon, FolderIcon } from "@/utils/fileIcons";
 import FileItem from "./FileItem";
+import { useVirtualizedTree } from "@/hooks/useVirtualizedTree";
 
 const FileTreeView = ({ onToggleOrientation }) => {
   const dispatch = useAppDispatch();
@@ -95,7 +97,7 @@ const FileTreeView = ({ onToggleOrientation }) => {
   }, [isCreating, target]);
 
   // Dispatcher for context menu items
-  const handleTreeAction = async (action, item = null) => {
+  const handleTreeAction = useCallback(async (action, item = null) => {
     if (action === "new-file" || action === "new-folder") {
       dispatch(
         startCreate({
@@ -118,10 +120,10 @@ const FileTreeView = ({ onToggleOrientation }) => {
         toast.error(`Delete failed: ${res.error?.message || "Unknown error"}`);
       }
     }
-  };
+  }, [dispatch]);
 
   // Action handlers passed down to FileItem
-  const handleKeyDown = async (e) => {
+  const handleKeyDown = useCallback(async (e) => {
     if (e.key === "Enter") {
       if (isCreating) {
         const res = await dispatch(handleCreateItemThunk());
@@ -141,9 +143,9 @@ const FileTreeView = ({ onToggleOrientation }) => {
     } else if (e.key === "Escape") {
       dispatch(cancelUiAction());
     }
-  };
+  }, [dispatch, isCreating, isRenaming]);
 
-  const handleBlur = async () => {
+  const handleBlur = useCallback(async () => {
     if (isCreating) {
       // For creation, blur acts as cancellation
       dispatch(cancelUiAction());
@@ -160,7 +162,7 @@ const FileTreeView = ({ onToggleOrientation }) => {
         dispatch(cancelUiAction());
       }
     }
-  };
+  }, [dispatch, isCreating, isRenaming, name, target]);
 
   const onOpenMenu = (e) => {
     const el = e?.target?.closest("[data-node-path-id]");
@@ -190,6 +192,39 @@ const FileTreeView = ({ onToggleOrientation }) => {
     },
     [dispatch, layoutTabs],
   );
+
+  // Flatten the recursive tree into a virtualised flat list
+  const flatNodes = useVirtualizedTree(files, uiActionState);
+
+  // Stable row renderer for Virtuoso
+  const renderRow = useCallback((index) => {
+    const row = flatNodes[index];
+    if (!row) return null;
+    return (
+      <FileItem
+        item={row.item}
+        level={row.level}
+        ancestorHasNext={row.ancestorHasNext}
+        hasNextSibling={row.hasNextSibling}
+        parentChildCount={row.parentChildCount}
+        showAllGuides={isTreeHovered}
+        activeFolderPath={activeFolderPath}
+        activeFolderLevel={activeFolderPath === null ? -1 : null}
+        withinActiveFolderSubtree={
+          activeFolderPath === null && activeFolderPath !== undefined
+        }
+        onFileSelect={onFileSelectHandler}
+        activeFile={activeFile}
+        onAction={handleTreeAction}
+        onRightMouseButtonClick={setContextTarget}
+        uiActionState={uiActionState}
+        dispatch={dispatch}
+        handleKeyDown={handleKeyDown}
+        handleBlur={handleBlur}
+        shallow
+      />
+    );
+  }, [flatNodes, isTreeHovered, activeFolderPath, onFileSelectHandler, activeFile, handleTreeAction, uiActionState, dispatch, handleKeyDown, handleBlur]);
 
   return (
     <ContextMenu
@@ -253,39 +288,16 @@ const FileTreeView = ({ onToggleOrientation }) => {
             </div>
           </div>
 
-          {/* File list - slightly tighter spacing for compactness */}
-          <div className="flex-1 overflow-y-auto py-0.5">
-            {[...files]
-              .sort((a, b) => {
-                // Sort folders first, then by name
-                if (a.isFolder && !b.isFolder) return -1;
-                if (!a.isFolder && b.isFolder) return 1;
-                return a.name.localeCompare(b.name);
-              })
-              .map((item, index, arr) => (
-                <FileItem
-                  key={item.path || index}
-                  item={item}
-                  level={0}
-                  ancestorHasNext={[]}
-                  hasNextSibling={index < arr.length - 1}
-                  parentChildCount={arr.length}
-                  showAllGuides={isTreeHovered}
-                  activeFolderPath={activeFolderPath}
-                  activeFolderLevel={activeFolderPath === null ? -1 : null}
-                  withinActiveFolderSubtree={
-                    activeFolderPath === null && activeFolderPath !== undefined
-                  }
-                  onFileSelect={onFileSelectHandler}
-                  activeFile={activeFile}
-                  onAction={handleTreeAction}
-                  onRightMouseButtonClick={setContextTarget}
-                  uiActionState={uiActionState}
-                  dispatch={dispatch}
-                  handleKeyDown={handleKeyDown}
-                  handleBlur={handleBlur}
-                />
-              ))}
+          {/* Virtualised file list */}
+          <div className="flex-1 py-0.5" style={{ minHeight: 0 }}>
+            <Virtuoso
+              totalCount={flatNodes.length}
+              overscan={200}
+              itemContent={renderRow}
+              computeItemKey={(index) => flatNodes[index]?.key ?? index}
+              style={{ height: '100%' }}
+              increaseViewportBy={{ top: 200, bottom: 200 }}
+            />
 
             {/* Root creation input */}
             {isCreating && !target && (
@@ -430,4 +442,4 @@ const FileTreeView = ({ onToggleOrientation }) => {
     </ContextMenu>
   );
 };
-export default FileTreeView;
+export default memo(FileTreeView);

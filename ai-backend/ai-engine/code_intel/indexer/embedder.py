@@ -28,6 +28,10 @@ from ..core.config import get_config
 logger = logging.getLogger("code_intel.indexer.embedder")
 
 
+def resolve_embedding_api_key(api_key: Optional[str] = None) -> Optional[str]:
+    return api_key or os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+
+
 def extract_key_lines(code: str, max_lines: int = 10) -> str:
     """
     Extract key lines from code for embedding.
@@ -172,7 +176,7 @@ class Embedder:
         cache_size: int = 1000,  # Increased cache size for better TTFT
     ):
         self.model = model
-        self.api_key = api_key or os.getenv("GEMINI_API_KEY")
+        self.api_key = resolve_embedding_api_key(api_key)
         self.batch_size = batch_size
         
         self._client = None
@@ -187,11 +191,16 @@ class Embedder:
         self._in_flight: dict = {}
         import threading
         self._in_flight_lock = threading.Lock()
+
+    def has_api_key(self) -> bool:
+        return bool(self.api_key)
     
     def _get_client(self):
         """Lazy-load Google GenAI client."""
         if self._client is None:
             try:
+                if not self.api_key:
+                    raise ValueError("Embedding API key is not configured. Set GEMINI_API_KEY or GOOGLE_API_KEY.")
                 import google.generativeai as genai
                 genai.configure(api_key=self.api_key)
                 self._client = genai
@@ -314,7 +323,7 @@ class Embedder:
         # If we found an in-flight request, wait for it
         if future.done() or (normalized in self._in_flight and self._in_flight[normalized] is not future):
             try:
-                return future.result(timeout=30)
+                return future.result(timeout=10)
             except Exception:
                 pass  # Fall through to make our own request
         

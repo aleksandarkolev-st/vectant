@@ -16,6 +16,7 @@
  */
 
 import React, { useCallback, useMemo, useState, useRef, useEffect } from 'react';
+import { Virtuoso } from 'react-virtuoso';
 import {
   AlertCircle,
   AlertTriangle,
@@ -900,8 +901,14 @@ export function ProblemsPanel({
             )}
           </div>
         ) : (
-          <div>
-            {Array.from(groupedDiagnostics.entries()).map(([path, fileDiagnostics]) => (
+          /* PERF: Virtualized file-group list — only renders visible groups,
+             preventing thousands of DOM nodes from accumulating in large
+             workspaces with many diagnostics. */
+          <Virtuoso
+            style={{ height: '100%' }}
+            data={Array.from(groupedDiagnostics.entries())}
+            overscan={200}
+            itemContent={(index, [path, fileDiagnostics]) => (
               <FileGroup
                 key={path}
                 filePath={path}
@@ -911,8 +918,8 @@ export function ProblemsPanel({
                 isExpanded={expandedFiles.has(path)}
                 onToggle={() => toggleFile(path)}
               />
-            ))}
-          </div>
+            )}
+          />
         )}
       </div>
       

@@ -107,33 +107,35 @@ function getDefaultShellArgs(shell) {
 
 /** Cache for the discovered Git Bash executable path */
 let _gitBashPath = undefined; // undefined = not yet searched, null = not found
+/** Promise for async Git Bash discovery (resolved once, reused forever) */
+let _gitBashPromise = null;
+
+const { exec: _exec } = require('child_process');
+const { promisify } = require('util');
+const execAsync = promisify(_exec);
 
 /**
- * Find the Git Bash executable on Windows.
+ * Find the Git Bash executable on Windows — **async, non-blocking**.
  * Uses the same discovery strategy as VS Code:
  *   1. Windows Registry (HKLM\SOFTWARE\GitForWindows — most reliable)
  *   2. Common install paths (Program Files, scoop, etc.)
  *   3. `where git` to derive the install root
  */
-function findGitBash() {
+async function findGitBashAsync() {
   if (_gitBashPath !== undefined) return _gitBashPath;
 
-  const { execSync } = require('child_process');
+  const fsp = require('fs').promises;
 
   // 1. Windows Registry — most reliable, this is how VS Code finds Git
   try {
-    const regOutput = execSync(
+    const { stdout: regOutput } = await execAsync(
       'REG QUERY "HKLM\\SOFTWARE\\GitForWindows" /v InstallPath',
       { encoding: 'utf-8', timeout: 3000, windowsHide: true }
     );
     const match = regOutput.match(/InstallPath\s+REG_SZ\s+(.+)/i);
     if (match) {
       const bashPath = path.join(match[1].trim(), 'bin', 'bash.exe');
-      if (fs.existsSync(bashPath)) {
-        _gitBashPath = bashPath;
-        console.log(`[Terminal] Git Bash found via Registry: ${bashPath}`);
-        return bashPath;
-      }
+      try { await fsp.access(bashPath); _gitBashPath = bashPath; console.log(`[Terminal] Git Bash found via Registry: ${bashPath}`); return bashPath; } catch (_) {}
     }
   } catch (_) { /* Registry query failed */ }
 
@@ -146,26 +148,17 @@ function findGitBash() {
     'C:\\Git\\bin\\bash.exe',
   ];
   for (const p of candidates) {
-    try {
-      if (fs.existsSync(p)) {
-        _gitBashPath = p;
-        console.log(`[Terminal] Git Bash found at: ${p}`);
-        return p;
-      }
-    } catch (_) { /* skip */ }
+    try { await fsp.access(p); _gitBashPath = p; console.log(`[Terminal] Git Bash found at: ${p}`); return p; } catch (_) { /* skip */ }
   }
 
   // 3. `where git` fallback — derive install root from git.exe location
   try {
-    const gitPath = execSync('where git', { encoding: 'utf-8', timeout: 3000, windowsHide: true }).split('\n')[0].trim();
+    const { stdout } = await execAsync('where git', { encoding: 'utf-8', timeout: 3000, windowsHide: true });
+    const gitPath = stdout.split('\n')[0].trim();
     if (gitPath) {
       const gitRoot = path.dirname(path.dirname(gitPath));
       const bashPath = path.join(gitRoot, 'bin', 'bash.exe');
-      if (fs.existsSync(bashPath)) {
-        _gitBashPath = bashPath;
-        console.log(`[Terminal] Git Bash found via \`where git\`: ${bashPath}`);
-        return bashPath;
-      }
+      try { await fsp.access(bashPath); _gitBashPath = bashPath; console.log(`[Terminal] Git Bash found via \`where git\`: ${bashPath}`); return bashPath; } catch (_) {}
     }
   } catch (_) { /* where git failed */ }
 
@@ -174,36 +167,41 @@ function findGitBash() {
   return null;
 }
 
+/**
+ * Synchronous accessor — returns cached result or null if discovery hasn't
+ * finished yet.  The async discovery is kicked off at module load time via
+ * _initShellDiscovery(), so by the time a terminal is opened it's resolved.
+ */
+function findGitBash() {
+  return _gitBashPath !== undefined ? _gitBashPath : null;
+}
+
 /** Cache for discovered bash executable path (WSL / PATH-based) */
 let _bashPath = undefined;
 
 /**
- * Find a working bash.exe on Windows.
+ * Find a working bash.exe on Windows — **async, non-blocking**.
  * Filters out the WindowsApps WSL stub (which fails if WSL is not installed).
  * Falls back to Git Bash's bash.exe if no other bash is available.
  */
-function findBashExe() {
+async function findBashExeAsync() {
   if (_bashPath !== undefined) return _bashPath;
 
-  const { execSync } = require('child_process');
+  const fsp = require('fs').promises;
 
   // `where bash.exe` may return multiple results, one per line
   try {
-    const output = execSync('where bash.exe', { encoding: 'utf-8', timeout: 3000, windowsHide: true });
-    const paths = output.split('\n').map(l => l.trim()).filter(Boolean);
+    const { stdout } = await execAsync('where bash.exe', { encoding: 'utf-8', timeout: 3000, windowsHide: true });
+    const paths = stdout.split('\n').map(l => l.trim()).filter(Boolean);
     for (const p of paths) {
       // Skip the WindowsApps stub — it only works when WSL is actually installed
       if (p.toLowerCase().includes('windowsapps')) continue;
-      if (fs.existsSync(p)) {
-        _bashPath = p;
-        console.log(`[Terminal] bash.exe found in PATH: ${p}`);
-        return p;
-      }
+      try { await fsp.access(p); _bashPath = p; console.log(`[Terminal] bash.exe found in PATH: ${p}`); return p; } catch (_) {}
     }
   } catch (_) { /* where bash.exe failed */ }
 
   // Fall back to Git Bash's bash.exe
-  const gitBash = findGitBash();
+  const gitBash = await findGitBashAsync();
   if (gitBash) {
     _bashPath = gitBash;
     console.log(`[Terminal] bash.exe using Git Bash: ${gitBash}`);
@@ -213,6 +211,13 @@ function findBashExe() {
   _bashPath = null;
   console.log('[Terminal] No working bash.exe found');
   return null;
+}
+
+/**
+ * Synchronous accessor — returns cached result or null.
+ */
+function findBashExe() {
+  return _bashPath !== undefined ? _bashPath : null;
 }
 
 const SHELL_REGISTRY = {
@@ -301,11 +306,18 @@ function resolveShellType(shellType) {
   return { executable, args, label: entry.label };
 }
 
+/** Cached result of shell discovery */
+let _availableShellsCache = null;
+let _availableShellsPromise = null;
+
 /**
- * Detect which shells are available on the current system.
+ * Detect which shells are available on the current system — **async, non-blocking**.
  * Returns an array of { key, label, executable } for shells that exist on disk.
  */
-function getAvailableShells() {
+async function getAvailableShellsAsync() {
+  if (_availableShellsCache) return _availableShellsCache;
+
+  const fsp = require('fs').promises;
   const platform = os.platform() === 'win32' ? 'win32' : 'unix';
   const available = [];
 
@@ -314,18 +326,13 @@ function getAvailableShells() {
     if (entry.dynamic) {
       if (platform === 'win32') {
         let exe = null;
-        if (key === 'gitbash') exe = findGitBash();
-        else if (key === 'bash') exe = findBashExe();
+        if (key === 'gitbash') exe = await findGitBashAsync();
+        else if (key === 'bash') exe = await findBashExeAsync();
         if (exe) {
           available.push({ key, label: entry.label, executable: exe });
         }
       } else if (entry.unix) {
-        // On Unix, dynamic entries still have a unix path
-        try {
-          if (fs.existsSync(entry.unix)) {
-            available.push({ key, label: entry.label, executable: entry.unix });
-          }
-        } catch (_) {}
+        try { await fsp.access(entry.unix); available.push({ key, label: entry.label, executable: entry.unix }); } catch (_) {}
       }
       continue;
     }
@@ -336,23 +343,44 @@ function getAvailableShells() {
     // Check if the executable actually exists
     try {
       if (path.isAbsolute(executable)) {
-        if (fs.existsSync(executable)) {
-          available.push({ key, label: entry.label, executable });
-        }
+        try { await fsp.access(executable); available.push({ key, label: entry.label, executable }); } catch (_) {}
       } else {
         // Verify non-absolute executables are actually in PATH
-        const { execSync } = require('child_process');
         const cmd = platform === 'win32' ? `where ${executable}` : `which ${executable}`;
-        const result = execSync(cmd, { encoding: 'utf-8', timeout: 2000, windowsHide: true }).trim();
-        if (result) {
+        const { stdout } = await execAsync(cmd, { encoding: 'utf-8', timeout: 2000, windowsHide: true });
+        if (stdout.trim()) {
           available.push({ key, label: entry.label, executable });
         }
       }
     } catch (_) { /* not in PATH — skip */ }
   }
 
+  _availableShellsCache = available;
   return available;
 }
+
+/**
+ * Synchronous accessor — returns cached result (populated at module load).
+ * Falls back to an empty array if discovery hasn't completed yet.
+ */
+function getAvailableShells() {
+  return _availableShellsCache || [];
+}
+
+// ─── Eager Initialization ───────────────────────────────────────────────────
+// Kick off shell discovery at module load time. By the time
+// the first HTTP request arrives, the caches are already warm.
+async function _initShellDiscovery() {
+  try {
+    await findGitBashAsync();
+    await findBashExeAsync();
+    await getAvailableShellsAsync();
+    console.log(`[Terminal] Shell discovery complete: ${(_availableShellsCache || []).length} shells found`);
+  } catch (err) {
+    console.error('[Terminal] Shell discovery failed:', err.message);
+  }
+}
+_initShellDiscovery();
 
 // ─── PTY Factory (swap-point for Docker in the future) ──────────────────────
 
@@ -566,27 +594,22 @@ const REPOS_DIR = path.resolve(__dirname, 'repos');
  * Set the WORKSPACE_ROOT env var to override the base path (useful for
  * Docker / K8s where the volume mount differs from the local layout).
  */
-function resolveWorkspaceCwd(slug, userId) {
+async function resolveWorkspaceCwd(slug, userId) {
+  const fsp = require('fs').promises;
   const baseDir = process.env.WORKSPACE_ROOT || REPOS_DIR;
 
   if (slug) {
     // 1. Try per-user directory: repos/<slug>/<userId>  (matches gitService layout)
     if (userId) {
       const perUserDir = path.join(baseDir, slug, userId);
-      try {
-        if (fs.existsSync(perUserDir)) return perUserDir;
-      } catch (_) { /* ignore */ }
+      try { await fsp.access(perUserDir); return perUserDir; } catch (_) {}
     }
     // 2. Fall back to workspace root: repos/<slug>
     const wsDir = path.join(baseDir, slug);
-    try {
-      if (fs.existsSync(wsDir)) return wsDir;
-    } catch (_) { /* ignore */ }
+    try { await fsp.access(wsDir); return wsDir; } catch (_) {}
   }
   // 3. Fallback: base directory itself, then $HOME
-  try {
-    if (fs.existsSync(baseDir)) return baseDir;
-  } catch (_) { /* ignore */ }
+  try { await fsp.access(baseDir); return baseDir; } catch (_) {}
   return os.homedir();
 }
 
@@ -635,8 +658,8 @@ function sanitizeResize(cols, rows) {
  * @param {number} rows      - Terminal rows (default 30)
  * @returns {{ ptyProcess, shell, cwd, sessionId }}
  */
-function createHeadlessSession(sessionId, slug, userId, cols = 120, rows = 30) {
-  const cwd = resolveWorkspaceCwd(slug, userId);
+async function createHeadlessSession(sessionId, slug, userId, cols = 120, rows = 30) {
+  const cwd = await resolveWorkspaceCwd(slug, userId);
   const { ptyProcess, shell } = createPtyProcess({ cwd, cols, rows });
 
   // Buffer output so we can replay it when the frontend connects
@@ -684,7 +707,7 @@ function createTerminalWSS() {
     },
   });
 
-  wss.on('connection', (ws, req) => {
+  wss.on('connection', async (ws, req) => {
     // ── Parse query parameters ──────────────────────────────────────────
     let parsedUrl;
     try {
@@ -805,7 +828,7 @@ function createTerminalWSS() {
 
     // ── Generate session ID ─────────────────────────────────────────────
     const sessionId = requestedSessionId || crypto.randomUUID();
-    const cwd = resolveWorkspaceCwd(workspaceSlug, requestedUserId);
+    const cwd = await resolveWorkspaceCwd(workspaceSlug, requestedUserId);
 
     console.log(`[Terminal] New session ${sessionId} | workspace=${workspaceSlug} | userId=${requestedUserId} | cwd=${cwd} | shell=${requestedShellType || 'default'}`);
 

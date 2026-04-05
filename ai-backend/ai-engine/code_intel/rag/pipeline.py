@@ -829,6 +829,8 @@ class RAGPipeline:
                 return vec
 
         text = summary.to_embed_text()
+        embed_failure = None
+        embedder = None
         try:
             embedder = self._get_embedder()
             if embedder:
@@ -836,16 +838,25 @@ class RAGPipeline:
                 if vec is not None:
                     return np.asarray(vec, dtype=np.float32)
         except Exception as e:
+            embed_failure = e
             logger.warning(f"Embedding generation failed: {e}")
 
         # Fallback: zero vector — vector search is effectively disabled
         self._zero_vector_count += 1
         if self._zero_vector_count == 1:
-            logger.warning(
-                "No embedding API available — using zero-vector fallback. "
-                "Vector search in macro-retrieval will not return results. "
-                "Set GEMINI_API_KEY to enable real embeddings."
-            )
+            has_api_key = bool(embedder and getattr(embedder, 'has_api_key', lambda: False)())
+            if has_api_key:
+                logger.warning(
+                    "Embedding backend unavailable — using zero-vector fallback. "
+                    "Vector search in macro-retrieval will not return results until Gemini embedding requests recover. "
+                    f"Last error: {embed_failure}"
+                )
+            else:
+                logger.warning(
+                    "Embedding API key is not configured — using zero-vector fallback. "
+                    "Vector search in macro-retrieval will not return results. "
+                    "Set GEMINI_API_KEY or GOOGLE_API_KEY to enable real embeddings."
+                )
         return np.zeros(self.config.embedding_dimension, dtype=np.float32)
 
     def _get_embedder(self):

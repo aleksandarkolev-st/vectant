@@ -129,6 +129,7 @@ export const useAgentPipeline = ({
     workspaceSlug,
     activeFile,
     currentCode,
+    getCurrentCode,
     getBaseContentForPath,
     flattenWorkspaceFiles,
     resolveWorkspacePath,
@@ -138,6 +139,12 @@ export const useAgentPipeline = ({
     const [pipelineHistory, setPipelineHistory] = useState([]);
     const [currentMode, setCurrentMode] = useState(PIPELINE_MODES.DIRECT);
     const abortRef = useRef(null);
+    const readCurrentCode = useCallback(() => {
+        if (typeof getCurrentCode === 'function') {
+            return getCurrentCode() || '';
+        }
+        return currentCode || '';
+    }, [currentCode, getCurrentCode]);
 
     /**
      * Determine which sub-agents to invoke based on the user prompt and context.
@@ -312,7 +319,7 @@ export const useAgentPipeline = ({
                         tools: AGENT_REGISTRY[step.agentType]?.tools || [],
                         workspacePath: workspaceSlug || null,
                         activeFilePath: activeFile?.path || null,
-                        activeFileContent: step.agentType === 'reader' ? null : currentCode,
+                        activeFileContent: step.agentType === 'reader' ? null : readCurrentCode(),
                     }),
                 });
 
@@ -344,7 +351,7 @@ export const useAgentPipeline = ({
                 };
             }
         },
-        [workspaceSlug, activeFile?.path, currentCode]
+        [workspaceSlug, activeFile?.path, readCurrentCode]
     );
 
     /**
@@ -356,6 +363,7 @@ export const useAgentPipeline = ({
             const startTime = Date.now();
 
             try {
+                const liveCurrentCode = readCurrentCode();
                 let output = '';
                 const toolCalls = [];
 
@@ -386,9 +394,9 @@ export const useAgentPipeline = ({
                         // If no explicit paths found, read the active file + siblings
                         if (contents.length === 0) {
                             const activePath = activeFile?.path || activeFile?.name;
-                            if (activePath && currentCode) {
+                            if (activePath && liveCurrentCode) {
                                 contents.push(
-                                    `FILE: ${activePath} (active file)\n\`\`\`\n${currentCode.slice(0, 6000)}\n\`\`\``
+                                    `FILE: ${activePath} (active file)\n\`\`\`\n${liveCurrentCode.slice(0, 6000)}\n\`\`\``
                                 );
                                 toolCalls.push({ tool: 'read_file', args: { path: activePath }, result: 'success' });
                             }
@@ -461,9 +469,9 @@ export const useAgentPipeline = ({
 
                         // Always include the active file as context even if search found nothing
                         const activePath = activeFile?.path || activeFile?.name;
-                        if (activePath && currentCode && !matchingFiles.includes(activePath)) {
+                        if (activePath && liveCurrentCode && !matchingFiles.includes(activePath)) {
                             fileContents.unshift(
-                                `FILE: ${activePath} (active file)\n\`\`\`\n${currentCode.slice(0, 4000)}\n\`\`\``
+                                `FILE: ${activePath} (active file)\n\`\`\`\n${liveCurrentCode.slice(0, 4000)}\n\`\`\``
                             );
                         }
 
@@ -480,8 +488,8 @@ export const useAgentPipeline = ({
 
                     case 'analyzer': {
                         // Provide current file context for error analysis
-                        output = currentCode
-                            ? `Active file for analysis (${activeFile?.path || 'unknown'}):\n\`\`\`\n${currentCode.slice(0, 6000)}\n\`\`\``
+                        output = liveCurrentCode
+                            ? `Active file for analysis (${activeFile?.path || 'unknown'}):\n\`\`\`\n${liveCurrentCode.slice(0, 6000)}\n\`\`\``
                             : 'No active file content available for analysis.';
                         toolCalls.push({
                             tool: 'analyze_error',
@@ -500,8 +508,8 @@ export const useAgentPipeline = ({
 
                         // Include active file content so planner can see actual code
                         const planActivePath = activeFile?.path || activeFile?.name;
-                        if (planActivePath && currentCode) {
-                            output += `\n\nActive file (${planActivePath}):\n\`\`\`\n${currentCode.slice(0, 6000)}\n\`\`\``;
+                        if (planActivePath && liveCurrentCode) {
+                            output += `\n\nActive file (${planActivePath}):\n\`\`\`\n${liveCurrentCode.slice(0, 6000)}\n\`\`\``;
                         }
 
                         // Include prior agent context
@@ -524,9 +532,9 @@ export const useAgentPipeline = ({
                         // Gather all context for final code generation
                         const execParts = [];
                         const execActivePath = activeFile?.path || activeFile?.name;
-                        if (execActivePath && currentCode) {
+                        if (execActivePath && liveCurrentCode) {
                             execParts.push(
-                                `Active file (${execActivePath}):\n\`\`\`\n${currentCode.slice(0, 6000)}\n\`\`\``
+                                `Active file (${execActivePath}):\n\`\`\`\n${liveCurrentCode.slice(0, 6000)}\n\`\`\``
                             );
                         }
                         if (accumulatedContext) {
@@ -566,9 +574,10 @@ export const useAgentPipeline = ({
         },
         [
             activeFile?.path,
-            currentCode,
+            activeFile?.name,
             flattenWorkspaceFiles,
             getBaseContentForPath,
+            readCurrentCode,
             resolveWorkspacePath,
         ]
     );

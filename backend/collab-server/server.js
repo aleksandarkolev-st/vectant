@@ -15,9 +15,11 @@ const gitService = require('./gitService');
 const repoCache = require('./repoCache');
 const sessionManager = require('./SessionManager');
 const { extractSessionContext, requireGitActionPermission, wsRequirePermission, wsDenyAction, wsAttachContext } = require('./permissionMiddleware');
-const { acquireStagingLock, releaseStagingLock, pauseWatcher, resumeWatcher } = require('./fsWatcherService');
+const { acquireStagingLock, releaseStagingLock, pauseWatcher, resumeWatcher, registerChangeListener } = require('./fsWatcherService');
 const { LRUCache } = require('lru-cache');
 const ySweetBridge = require('./ySweetBridge');
+const { withTelemetry, getMetrics, resetMetrics, getEventLoopBlockCount } = require('./perfTelemetry');
+const sseService = require('./sseService');
 
 // ── User block list (in-memory) ──────────────────────────────────────────────
 // blockedBy: userId → Set<blockedUserId>
@@ -553,6 +555,15 @@ function _matchesNotifyScope(ws, scope = {}) {
   return false;
 }
 
+function _resolveNotifyUserId(scope = {}) {
+  if (scope.userId) return scope.userId;
+  if (scope.sessionId) {
+    const session = sessionManager.getSession(scope.sessionId);
+    return session?.hostId || null;
+  }
+  return null;
+}
+
 /**
  * Broadcast a file-saved event to notification WebSocket clients.
  * Sent after flushDocToDisk so all collaborators can sync their
@@ -567,12 +578,19 @@ function broadcastFileSaved(slug, filePath, scope = {}) {
       try { ws.send(message); } catch (_) {}
     }
   });
+  // Also push via SSE so polling-free clients receive the event
+  sseService.emitFileSaved(slug, filePath);
 }
 
-function broadcastGitStatusChanged(slug, filePath, scope = {}, { immediate = false } = {}) {
+function broadcastGitStatusChanged(slug, filePath, scope = {}, { immediate = false, snapshot = null } = {}) {
   if (!slug || !notifyWss) return;
-  const send = () => {
-    const message = JSON.stringify({ type: 'git-status-changed', slug, filePath, scope });
+  const send = async () => {
+    let resolvedSnapshot = snapshot;
+    if (!resolvedSnapshot) {
+      const notifyUserId = _resolveNotifyUserId(scope);
+      resolvedSnapshot = await gitService.invalidateStatusCache(slug, notifyUserId, { scheduleRefresh: true });
+    }
+    const message = JSON.stringify({ type: 'git-status-changed', slug, filePath, scope, snapshot: resolvedSnapshot || null });
     notifyWss.clients.forEach((ws) => {
       if (ws.readyState === WebSocket.OPEN && ws._slug === slug && _matchesNotifyScope(ws, scope)) {
         try { ws.send(message); } catch (_) {}
@@ -586,7 +604,9 @@ function broadcastGitStatusChanged(slug, filePath, scope = {}, { immediate = fal
       clearTimeout(_gitStatusBroadcastTimers.get(timerKey));
       _gitStatusBroadcastTimers.delete(timerKey);
     }
-    send();
+    void send();
+    // Also push via SSE
+    sseService.emitGitStatusChanged(slug, filePath);
     return;
   }
   // Auto-flush / background changes — debounce per-slug (500ms)
@@ -596,9 +616,23 @@ function broadcastGitStatusChanged(slug, filePath, scope = {}, { immediate = fal
   }
   _gitStatusBroadcastTimers.set(timerKey, setTimeout(() => {
     _gitStatusBroadcastTimers.delete(timerKey);
-    send();
+    void send();
+    sseService.emitGitStatusChanged(slug, filePath);
   }, 500));
 }
+
+registerChangeListener(({ slug, rootDir, events }) => {
+  gitService.handleFilesystemEvents({ slug, rootDir, events }).then((result) => {
+    if (!result?.bundle || !result.slug) return;
+    const scope = result.userId ? { userId: result.userId } : {};
+    broadcastGitStatusChanged(result.slug, undefined, scope, {
+      immediate: true,
+      snapshot: result.bundle,
+    });
+  }).catch((err) => {
+    console.warn('[Collab] Git cache refresh from fs watcher failed:', err?.message || err);
+  });
+});
 
 /**
  * Broadcast a file-reverted event to all notification clients for a slug.
@@ -618,6 +652,8 @@ function broadcastFileReverted(slug, filePaths = [], scope = {}) {
     }
   });
   console.log(`[Collab] Broadcast file-reverted for slug ${slug}, files:`, filePaths.length ? filePaths : '*');
+  // Also push via SSE
+  sseService.emitFileReverted(slug, filePaths);
 }
 
 /**
@@ -809,6 +845,49 @@ const server = http.createServer(async (req, res) => {
     res.end(JSON.stringify(status, null, 2));
     return;
   }
+
+  // ========================================================================
+  // SSE ENDPOINT — /sse/:slug — Server-Sent Events for real-time push
+  // Replaces HTTP polling for git-status, file-tree-changed, presence, etc.
+  // ========================================================================
+  if (req.url.startsWith('/sse/') && req.method === 'GET') {
+    const urlObj = new URL(req.url, `http://${req.headers.host}`);
+    const slug = urlObj.pathname.split('/')[2];
+    const userId = req.headers['x-user-id'] || urlObj.searchParams.get('userId') || null;
+    if (!slug) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Missing slug', usage: '/sse/:slug?userId=...' }));
+      return;
+    }
+    sseService.handleSSEConnection(req, res, slug, userId);
+    return;
+  }
+
+  // ========================================================================
+  // TELEMETRY ENDPOINT — /telemetry/metrics — Performance metrics snapshot
+  // ========================================================================
+  if (req.url === '/telemetry/metrics' && req.method === 'GET') {
+    const metrics = getMetrics();
+    const elBlocks = getEventLoopBlockCount();
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ metrics, eventLoopBlocks: elBlocks, timestamp: Date.now() }, null, 2));
+    return;
+  }
+
+  // POST /telemetry/reset — Reset performance counters
+  if (req.url === '/telemetry/reset' && req.method === 'POST') {
+    resetMetrics();
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ ok: true, message: 'Metrics reset' }));
+    return;
+  }
+
+  // SSE stats endpoint
+  if (req.url === '/sse/stats' && req.method === 'GET') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(sseService.getStats()));
+    return;
+  }
   
   // Debug endpoint to validate a specific file
   if (req.url.startsWith('/debug/validate/') && req.method === 'GET') {
@@ -963,7 +1042,7 @@ const server = http.createServer(async (req, res) => {
       const sessionId = `ai-${crypto.randomUUID().slice(0, 8)}`;
 
       // Create a real PTY with a known session ID
-      const { ptyProcess, cwd } = createHeadlessSession(sessionId, slug, parsed.userId || '');
+      const { ptyProcess, cwd } = await createHeadlessSession(sessionId, slug, parsed.userId || '');
 
       console.log(`[ExecTerminal] slug=${slug} cwd=${cwd} sessionId=${sessionId} cmd=${command.slice(0, 120)}`);
 
@@ -2275,10 +2354,10 @@ const server = http.createServer(async (req, res) => {
                   broadcastFileTreeChanged(slug, notifyScope);
                   break;
                 case 'status':
-                    result = await gitService.getStatus(slug, effectiveUserId);
+                    result = await withTelemetry('git:status', () => gitService.getStatus(slug, effectiveUserId));
                     break;
                 case 'branches':
-                    result = await gitService.getBranches(slug, effectiveUserId);
+                    result = await withTelemetry('git:branches', () => gitService.getBranches(slug, effectiveUserId));
                     break;
                 case 'checkout':
                     pauseWatcher(slug);
@@ -2294,10 +2373,10 @@ const server = http.createServer(async (req, res) => {
                     }
                     break;
                 case 'fetch':
-                    result = await gitService.fetch(slug, effectiveUserId, data.token);
+                    result = await withTelemetry('git:fetch', () => gitService.fetch(slug, effectiveUserId, data.token));
                     break;
                 case 'commit':
-                    result = await gitService.commit(slug, data.message, effectiveUserId, data.amend);
+                    result = await withTelemetry('git:commit', () => gitService.commit(slug, data.message, effectiveUserId, data.amend));
                     broadcastGitStatusChanged(slug, undefined, notifyScope, { immediate: true });
                     break;
                 case 'stage':
@@ -2354,7 +2433,7 @@ const server = http.createServer(async (req, res) => {
                 case 'push':
                     pauseWatcher(slug);
                     try {
-                      result = await gitService.push(slug, effectiveUserId, data.token, data.force);
+                      result = await withTelemetry('git:push', () => gitService.push(slug, effectiveUserId, data.token, data.force));
                       broadcastGitStatusChanged(slug, undefined, notifyScope, { immediate: true });
                     } finally {
                       resumeWatcher(slug);
@@ -2363,7 +2442,7 @@ const server = http.createServer(async (req, res) => {
                 case 'pull':
                     pauseWatcher(slug);
                     try {
-                      result = await gitService.pull(slug, effectiveUserId, data.token);
+                      result = await withTelemetry('git:pull', () => gitService.pull(slug, effectiveUserId, data.token));
                       // Broadcast BEFORE invalidation so clients destroy stale
                       // Yjs docs before WS close triggers provider reconnect.
                       broadcastFileReverted(slug, [], notifyScope);
@@ -2446,14 +2525,14 @@ const server = http.createServer(async (req, res) => {
                     result = await gitService.getConflictVersions(slug, data.filePath, effectiveUserId);
                     break;
                 case 'diff':
-                    result = await gitService.getDiff(slug, data.filePath, { parsed: data.parsed, userId: effectiveUserId });
+                    result = await withTelemetry('git:diff', () => gitService.getDiff(slug, data.filePath, { parsed: data.parsed, userId: effectiveUserId }));
                     break;
                 case 'file-content':
-                    const fileContent = await gitService.getFileContent(slug, data.filePath, data.ref, effectiveUserId);
+                    const fileContent = await withTelemetry('git:file-content', () => gitService.getFileContent(slug, data.filePath, data.ref, effectiveUserId));
                     result = { content: fileContent };
                     break;
                 case 'log':
-                    result = await gitService.getLog(slug, { page: data.page, limit: data.limit, userId: effectiveUserId });
+                    result = await withTelemetry('git:log', () => gitService.getLog(slug, { page: data.page, limit: data.limit, userId: effectiveUserId }));
                     break;
                 case 'unpushed':
                     const max = data && data.max ? parseInt(data.max, 10) : 50;
@@ -2610,7 +2689,12 @@ const server = http.createServer(async (req, res) => {
                   break;
                 case 'search':
                   // Index-first search; never reads disk on request
-                  result = fileIndex.search(slug, data.q || data.query || '');
+                  result = await withTelemetry.async('fs:search', async () => {
+                    // fileIndex.search is still synchronous, but we can offload it to a worker or setImmediate 
+                    // to prevent blocking this specific event loop turn for too long if needed.
+                    // For now, wrapping in withTelemetry.async to prepare for future worker offloading.
+                    return fileIndex.search(slug, data.q || data.query || '');
+                  });
                   break;
                 case 'open-lookup':
                   result = fileIndex.fileLookup(slug, data.q || data.query || '');
@@ -2621,7 +2705,7 @@ const server = http.createServer(async (req, res) => {
                 case 'file':
                     // Normalize path - convert backslashes and strip leading slashes
                     const filePath_file = (data.path || '').replace(/\\/g, '/').replace(/^\/+/, '');
-                    const content = await gitService.readFile(slug, filePath_file, effectiveUserId);
+                    const content = await withTelemetry('fs:read', () => gitService.readFile(slug, filePath_file, effectiveUserId));
                     result = { content };
                     break;
                 case 'file-hash':
@@ -2636,7 +2720,7 @@ const server = http.createServer(async (req, res) => {
                     }
                     break;
                 case 'write-file':
-                    await gitService.writeFile(slug, data.path, data.content, effectiveUserId);
+                    await withTelemetry('fs:write', () => gitService.writeFile(slug, data.path, data.content, effectiveUserId));
                     result = { success: true };
                     broadcastFileTreeChanged(slug, notifyScope);
                     break;
@@ -2685,7 +2769,7 @@ const server = http.createServer(async (req, res) => {
                     // Extract owner/repo from the git remote URL for this workspace.
                     // Used by the PR panel to know which GitHub repo to query.
                     try {
-                        const git = gitService.getGit(slug, effectiveUserId);
+                        const git = await gitService.getGit(slug, effectiveUserId);
                         const remotes = await git.getRemotes(true);
                         const origin = remotes.find(r => r.name === 'origin') || remotes[0];
                         if (!origin || !origin.refs?.fetch) {

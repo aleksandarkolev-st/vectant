@@ -3,12 +3,14 @@ import { useCallback, useState } from 'react';
 const MAX_INLINE_BYTES = 120 * 1024; // keep payloads small to avoid gateway timeouts
 
 export const useChatAttachments = (options = {}) => {
-    const { fileCacheEntries = [], rawFiles = [] } = options;
+    const { fileCacheEntries = [], getFileCacheEntries = null, rawFiles = [] } = options;
     const [attachments, setAttachments] = useState([]);
     const [isDragging, setIsDragging] = useState(false);
 
-    // Build cache map for quick lookups
-    const cachedFileMap = new Map(fileCacheEntries);
+    const getCachedFileMap = useCallback(() => {
+        const entries = typeof getFileCacheEntries === 'function' ? getFileCacheEntries() : fileCacheEntries;
+        return new Map(entries || []);
+    }, [fileCacheEntries, getFileCacheEntries]);
 
     // Recursively collect all files from a folder node
     const collectFilesFromFolder = useCallback((folderNode, collected = []) => {
@@ -39,6 +41,7 @@ export const useChatAttachments = (options = {}) => {
 
     // Add workspace files as attachments
     const addWorkspaceFiles = useCallback((filePaths) => {
+        const cachedFileMap = getCachedFileMap();
         const newAttachments = [];
         
         for (const path of filePaths) {
@@ -87,7 +90,7 @@ export const useChatAttachments = (options = {}) => {
             setAttachments((prev) => [...prev, ...newAttachments]);
         }
         return newAttachments.length;
-    }, [cachedFileMap, collectFilesFromFolder, findNodeByPath, rawFiles]);
+    }, [collectFilesFromFolder, findNodeByPath, getCachedFileMap, rawFiles]);
 
     const handleFilesSelected = useCallback((files) => {
         if (!files || !files.length) return;

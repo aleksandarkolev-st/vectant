@@ -2,7 +2,7 @@
  * @fileoverview Hooks barrel export.
  */
 
-export { useDocking } from './use-docking';
+export { useDocking, useDockingActions } from './use-docking';
 export { useDragPanel, parseDragPayload } from './use-drag-panel';
 export { useDropZone } from './use-drop-zone';
 export { useSplitter, useSplitterKeyboard } from './use-splitter';
