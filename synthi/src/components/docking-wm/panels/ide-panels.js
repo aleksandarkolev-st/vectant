@@ -28,8 +28,7 @@ import {
   CommitHistoryPanelWrapper,
   AIHealingPanelWrapper,
 } from './panel-wrappers';
-export { IDE_PANEL } from './panel-types';   // re-export for consumers
-import  { IDE_PANEL } from './panel-types';
+import { IDE_PANEL } from './panel-types';
 
 // ────────────────────────────────────────────────────────
 //  Panel definition objects
