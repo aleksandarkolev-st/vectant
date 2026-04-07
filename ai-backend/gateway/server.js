@@ -170,7 +170,7 @@ server.listen(gatewayPort, '0.0.0.0', () => {
 });
 
 function handleHttpRequest(req, res) {
-  if (req.method === "GET" && req.url === "/health") {
+  if (req.method === "GET" && (req.url === "/health" || req.url === "/gateway/health")) {
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(
       JSON.stringify({

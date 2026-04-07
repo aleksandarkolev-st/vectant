@@ -1,5 +1,6 @@
 "use client";
 
+import { memo, useDeferredValue } from 'react';
 import { useSelector } from 'react-redux';
 import { BranchSelector } from '@/components/git/BranchSelector';
 import { selectCursorPosition } from '@/redux/uiSlice';
@@ -15,8 +16,25 @@ import { HealingIndicator } from '@/components/healing/HealingIndicator';
  * StatusBar Component - Synthi styled bottom status bar
  * Contains: Branch selector, Compiler status, Line/Column info, etc.
  * Features pill/badge shaped status indicators
+ *
+ * PERF: All selectors are deferred via useDeferredValue so the StatusBar
+ *       never blocks Monaco's critical rendering path. React will schedule
+ *       StatusBar re-renders in a lower-priority lane.
  */
-export default function StatusBar({ 
+
+const StatusBarCursorInfo = memo(function StatusBarCursorInfo() {
+  const positionRaw = useSelector(selectCursorPosition);
+  const position = useDeferredValue(positionRaw);
+  return (
+    <div className="flex items-center gap-1 px-2 py-0.5 rounded-md cursor-pointer transition-colors">
+      <span className="font-medium" style={{ color: 'var(--text-secondary)' }}>Ln {position.lineNumber}</span>
+      <span style={{ color: 'var(--text-dim)' }}>:</span>
+      <span className="font-medium" style={{ color: 'var(--text-secondary)' }}>Col {position.column}</span>
+    </div>
+  );
+});
+
+function StatusBarInner({ 
   slug,
   compilerStatus = 'disconnected',
   diagnosticSummary = { errors: 0, warnings: 0, total: 0 },
@@ -25,9 +43,15 @@ export default function StatusBar({
   extensionStatusBarItems = [],
   vscodeServerState = 'disconnected',
 }) {
-  const currentBranch = useSelector(state => state.git?.currentBranch);
-  const position = useSelector(selectCursorPosition);
-  const activeFile = useSelector(selectActiveFile);
+  // PERF: Defer all Redux reads so StatusBar never blocks the editor
+  const currentBranchRaw = useSelector(state => state.git?.currentBranch);
+  const currentBranch = useDeferredValue(currentBranchRaw);
+  const activeFileRaw = useSelector(selectActiveFile);
+  const activeFile = useDeferredValue(activeFileRaw);
+
+  // Defer props that change frequently during typing
+  const deferredSummary = useDeferredValue(diagnosticSummary);
+  const deferredIsAnalyzing = useDeferredValue(isAnalyzing);
   
   // Detect language from active file extension
   const language = activeFile?.name ? getMonacoLanguage(activeFile.name) : 'plaintext';
@@ -89,8 +113,8 @@ export default function StatusBar({
   };
   const collabStyle = getCollabStyle();
   
-  // Determine if there are problems to show
-  const hasProblems = diagnosticSummary.errors > 0 || diagnosticSummary.warnings > 0;
+  // Determine if there are problems to show (use deferred values)
+  const hasProblems = deferredSummary.errors > 0 || deferredSummary.warnings > 0;
 
   return (
     <div className="h-7 flex-shrink-0 flex items-center justify-between px-3 border-t-2 text-[12px] select-none font-[var(--font-ui)]" style={{ background: 'var(--bg-app)', borderColor: 'var(--border-subtle)' }}>
@@ -109,7 +133,7 @@ export default function StatusBar({
           className={`flex items-center gap-2 px-2 py-0.5 rounded-md cursor-pointer transition-all`}
           style={hasProblems ? { background: 'color-mix(in srgb, var(--accent-danger) 3%, transparent)' } : {}}
         >
-          {isAnalyzing ? (
+          {deferredIsAnalyzing ? (
             <>
               <Loader2 className="w-3.5 h-3.5 animate-spin" style={{ color: 'var(--text-secondary)' }} strokeWidth={2} />
               <span style={{ color: 'var(--text-secondary)' }}>Analyzing...</span>
@@ -118,19 +142,19 @@ export default function StatusBar({
             <>
               <AlertCircle 
                 className="w-3.5 h-3.5" 
-                style={{ color: diagnosticSummary.errors > 0 ? 'var(--accent-danger)' : 'var(--text-muted)' }}
+                style={{ color: deferredSummary.errors > 0 ? 'var(--accent-danger)' : 'var(--text-muted)' }}
                 strokeWidth={2} 
               />
-              <span style={diagnosticSummary.errors > 0 ? { color: 'var(--accent-danger)', fontWeight: 600 } : { color: 'var(--text-secondary)' }}>
-                {diagnosticSummary.errors}
+              <span style={deferredSummary.errors > 0 ? { color: 'var(--accent-danger)', fontWeight: 600 } : { color: 'var(--text-secondary)' }}>
+                {deferredSummary.errors}
               </span>
               <AlertTriangle 
                 className="w-3.5 h-3.5" 
-                style={{ color: diagnosticSummary.warnings > 0 ? 'var(--accent-warning)' : 'var(--text-muted)' }}
+                style={{ color: deferredSummary.warnings > 0 ? 'var(--accent-warning)' : 'var(--text-muted)' }}
                 strokeWidth={2} 
               />
-              <span style={diagnosticSummary.warnings > 0 ? { color: 'var(--accent-warning)', fontWeight: 600 } : { color: 'var(--text-secondary)' }}>
-                {diagnosticSummary.warnings}
+              <span style={deferredSummary.warnings > 0 ? { color: 'var(--accent-warning)', fontWeight: 600 } : { color: 'var(--text-secondary)' }}>
+                {deferredSummary.warnings}
               </span>
             </>
           )}
@@ -244,11 +268,7 @@ export default function StatusBar({
         )}
 
         {/* Line/Column - Clearer */}
-        <div className="flex items-center gap-1 px-2 py-0.5 rounded-md cursor-pointer transition-colors">
-          <span className="font-medium" style={{ color: 'var(--text-secondary)' }}>Ln {position.lineNumber}</span>
-          <span style={{ color: 'var(--text-dim)' }}>:</span>
-          <span className="font-medium" style={{ color: 'var(--text-secondary)' }}>Col {position.column}</span>
-        </div>
+        <StatusBarCursorInfo />
         
         <div className="w-px h-4" style={{ background: 'var(--border-subtle)' }}></div>
         
@@ -261,3 +281,9 @@ export default function StatusBar({
     </div>
   );
 }
+
+// PERF: Memoize StatusBar — it re-renders only when props genuinely change.
+// Combined with useDeferredValue on Redux reads, this ensures StatusBar
+// never forces a synchronous repaint during Monaco keystroke processing.
+const StatusBar = memo(StatusBarInner);
+export default StatusBar;

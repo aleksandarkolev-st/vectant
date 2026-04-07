@@ -21,4 +21,5 @@ export const IDE_PANEL = Object.freeze({
   THEME_EDITOR: 'theme-editor',
   PULL_REQUESTS: 'pullrequests',
   COMMIT_HISTORY: 'commithistory',
+  AI_HEALING: 'ai-healing',
 });

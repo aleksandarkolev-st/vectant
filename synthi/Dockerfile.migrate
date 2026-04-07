@@ -1,0 +1,28 @@
+# ─────────────────────────────────────────────────────────────────────────────
+#  Synthi IDE — Prisma Migration Image
+# ─────────────────────────────────────────────────────────────────────────────
+#  Lightweight image for running `npx prisma migrate deploy` against
+#  Cloud SQL via the Auth Proxy sidecar in a K8s Job.
+#
+#  The main frontend Dockerfile uses Next.js standalone output which does
+#  NOT include the prisma CLI binary — only the generated client.
+#  This image installs the full prisma CLI + schema for migrations.
+#
+#  Build:
+#    docker build -f Dockerfile.migrate -t synthi-prisma-migrate .
+# ─────────────────────────────────────────────────────────────────────────────
+FROM node:20-alpine
+WORKDIR /app
+
+# Install only the Prisma CLI needed for migration deploys.
+RUN npm install -g prisma@6.17.1 && \
+    prisma version > /dev/null 2>&1
+
+# Copy Prisma schema and migration SQL files
+COPY prisma ./prisma
+
+# Run as non-root
+USER node
+
+ENTRYPOINT ["prisma"]
+CMD ["migrate", "deploy", "--schema=/app/prisma/schema.prisma"]

@@ -6,9 +6,8 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
-import { useAppDispatch, useAppSelector } from '@/redux/hooks';
+import { useAppDispatch, useAppSelector, useAppStore } from '@/redux/hooks';
 import { selectFileThunk } from '@/redux/workspaceSlice';
-import { selectFileCacheEntries } from '@/redux/workspaceSlice';
 import { setShowTerminal } from '@/redux/uiSlice';
 import { findFileInTree } from '@/utils/fileUtils';
 import { useChatSessions } from './hooks/useChatSessions';
@@ -85,6 +84,7 @@ const AIChatWindow = ({
     isVisible = true,
     activeFile,
     currentCode,
+    getCurrentCode = null,
     editor = null,
     docked = false,
     onSuggest = null,
@@ -96,13 +96,29 @@ const AIChatWindow = ({
     const scrollRef = useRef(null);
     const fileInputRef = useRef(null);
     const dispatch = useAppDispatch();
-    const fileCacheEntries = useAppSelector(selectFileCacheEntries);
+    const store = useAppStore();
+    const fileCacheEntriesRef = useRef([]);
     const workspaceSlug = useAppSelector((state) => state.workspace.slug);
     const rawFiles = useAppSelector((state) => state.workspace.rawFiles || []);
+
+    useEffect(() => {
+        const syncFileCacheEntries = () => {
+            const cache = store.getState()?.workspace?.fileContentCache;
+            fileCacheEntriesRef.current = cache && typeof cache.entries === 'function'
+                ? Array.from(cache.entries())
+                : [];
+        };
+
+        syncFileCacheEntries();
+        return store.subscribe(syncFileCacheEntries);
+    }, [store]);
+
+    const getFileCacheEntries = useCallback(() => fileCacheEntriesRef.current, []);
     const { metrics: codeIntelMetrics, isLoading: isMetricsLoading, error: metricsError, refresh: refreshMetrics } = useCodeIntelMetrics({
         workspacePath: workspaceSlug,
+        slug: workspaceSlug,
         enabled: isVisible,
-        pollMs: 12000,
+        fallbackPollMs: 120000,
     });
 
     const {
@@ -187,11 +203,12 @@ const AIChatWindow = ({
         resetSuggestionsForSession,
         activeFile,
         currentCode,
+        getCurrentCode,
         editor,
         onSuggest,
         onBusy,
         clearSignal,
-        fileCacheEntries,
+        getFileCacheEntries,
         workspaceSlug,
         rawFiles,
         dispatch,
@@ -211,7 +228,7 @@ const AIChatWindow = ({
         clearAttachments,
         formatBytes,
         addWorkspaceFiles,
-    } = useChatAttachments({ fileCacheEntries, rawFiles });
+    } = useChatAttachments({ getFileCacheEntries, rawFiles });
 
     const { inputValue, setInputValue, handleKeyPress, handleSubmit } = useChatInput((value) => {
         const aborter = new AbortController();
@@ -500,15 +517,14 @@ const AIChatWindow = ({
         setTimeout(() => { scrollLockRef.current = false; }, 100);
     };
 
-    // Build a map from fileCacheEntries for fast lookup
-    const cachedFileMap = useMemo(() => new Map(fileCacheEntries), [fileCacheEntries]);
-
     /**
      * Search for a symbol definition across all cached files.
      * Prioritizes actual definitions (class, struct, function) over usages.
      * For C++, prioritizes header files (.h, .hpp) for class definitions.
      */
     const findSymbolInWorkspace = useCallback((symbolName) => {
+        const cachedFileMap = new Map(getFileCacheEntries());
+
         // Helper to find file node by path
         const findNodeByPath = (nodes, targetPath) => {
             for (const node of nodes) {
@@ -597,7 +613,7 @@ const AIChatWindow = ({
         }
         
         return null;
-    }, [cachedFileMap, rawFiles]);
+    }, [getFileCacheEntries, rawFiles]);
 
     /**
      * Handle clicks on file names and symbols in AI chat messages.

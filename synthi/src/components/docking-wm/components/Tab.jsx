@@ -7,7 +7,7 @@
 
 import React, { useCallback, memo } from "react";
 import { useDragPanel } from "../hooks/use-drag-panel";
-import { useDocking } from "../hooks/use-docking";
+import { useDockingActions } from "../hooks/use-docking";
 
 /**
  * A single tab element in the tab bar.
@@ -26,7 +26,7 @@ export const Tab = memo(function Tab({
   isActive,
   isFocusedGroup,
 }) {
-  const { closeTab, activateTab, floatTab, registry } = useDocking();
+  const { closeTab, activateTab, floatTab, registry } = useDockingActions();
 
   // Check if this tab's panel type is non-draggable (e.g. editor)
   const panelDef = registry.get(tab.panelType);

@@ -15,8 +15,15 @@ const path = require('path');
 /** Root directory that holds per-workspace git repositories (one sub-dir per slug). */
 const REPOS_DIR = path.resolve(process.env.REPOS_DIR || path.join(__dirname, 'repos'));
 
-/** Directory used by y-leveldb for Yjs document persistence. */
+/** @deprecated LevelDB removed — CRDT persistence is handled by Y-Sweet. */
 const LEVELDB_DIR = process.env.LEVELDB_DIR || path.join(__dirname, 'data', 'collab-leveldb');
+
+// ── Y-Sweet (CRDT relay + persistence) ───────────────────────────────────────
+/** Connection URL for the Y-Sweet server (e.g. http://y-sweet:8080). */
+const YSWEET_URL = (process.env.YSWEET_URL || 'http://localhost:8080').replace(/\/$/, '');
+
+/** Optional auth key shared with the Y-Sweet server for token signing. */
+const YSWEET_AUTH_KEY = process.env.YSWEET_AUTH_KEY || '';
 
 // ── Networking ───────────────────────────────────────────────────────────────
 const PORT = Number(process.env.COLLAB_PORT) || 1234;
@@ -50,6 +57,16 @@ const CODE_INTEL_AUTO_INDEX = String(process.env.CODE_INTEL_AUTO_INDEX || 'true'
 /** Debounce interval (ms) before Yjs changes are flushed to disk. */
 const FLUSH_DEBOUNCE_MS = Number(process.env.FLUSH_DEBOUNCE_MS) || 150;
 
+// ── TURN credentials (Cloudflare Calls) ──────────────────────────────────────
+/** Cloudflare TURN token ID (from the Calls dashboard). */
+const CLOUDFLARE_TURN_TOKEN_ID = process.env.CLOUDFLARE_TURN_TOKEN_ID || '';
+
+/** Cloudflare TURN API secret token. */
+const CLOUDFLARE_TURN_API_TOKEN = process.env.CLOUDFLARE_TURN_API_TOKEN || '';
+
+/** Credential lifetime in seconds. Default: 86400 (24 h). */
+const TURN_CREDENTIAL_TTL = Number(process.env.TURN_CREDENTIAL_TTL) || 86400;
+
 // ── Ephemeral repo cache ─────────────────────────────────────────────────────
 /**
  * Directory used for ephemeral working trees.  Treat as a disposable cache:
@@ -71,6 +88,8 @@ const REPO_CACHE_TTL_MS = Number(process.env.REPO_CACHE_TTL_MS) || 5 * 60 * 1000
 module.exports = {
     REPOS_DIR,
     LEVELDB_DIR,
+    YSWEET_URL,
+    YSWEET_AUTH_KEY,
     PORT,
     CODE_INTEL_URL,
     CORS_ORIGIN,
@@ -83,6 +102,9 @@ module.exports = {
     GCS_SYNC_ON_FLUSH,
     CODE_INTEL_AUTO_INDEX,
     FLUSH_DEBOUNCE_MS,
+    CLOUDFLARE_TURN_TOKEN_ID,
+    CLOUDFLARE_TURN_API_TOKEN,
+    TURN_CREDENTIAL_TTL,
     REPO_CACHE_DIR,
     REPO_CACHE_MAX,
     REPO_CACHE_TTL_MS,

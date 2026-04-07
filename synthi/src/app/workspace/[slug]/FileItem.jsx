@@ -8,6 +8,38 @@ import { ChevronIcon } from "./Icons";
 import { getFileIcon, FolderIcon } from "@/utils/fileIcons";
 import { setUiActionName } from "@/redux/uiSlice";
 
+/** Custom comparator — shallow equality plus array-content check for ancestorHasNext */
+function fileItemAreEqual(prev, next) {
+  // Fast-path: check scalar / reference-stable props
+  if (
+    prev.item !== next.item ||
+    prev.level !== next.level ||
+    prev.hasNextSibling !== next.hasNextSibling ||
+    prev.parentChildCount !== next.parentChildCount ||
+    prev.showAllGuides !== next.showAllGuides ||
+    prev.activeFolderPath !== next.activeFolderPath ||
+    prev.activeFolderLevel !== next.activeFolderLevel ||
+    prev.withinActiveFolderSubtree !== next.withinActiveFolderSubtree ||
+    prev.onFileSelect !== next.onFileSelect ||
+    prev.activeFile !== next.activeFile ||
+    prev.onAction !== next.onAction ||
+    prev.uiActionState !== next.uiActionState ||
+    prev.dispatch !== next.dispatch ||
+    prev.handleKeyDown !== next.handleKeyDown ||
+    prev.handleBlur !== next.handleBlur
+  ) return false;
+
+  // Deep-compare the boolean array (small, typically 0-8 elements)
+  const a = prev.ancestorHasNext;
+  const b = next.ancestorHasNext;
+  if (a === b) return true;
+  if (!a || !b || a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
+}
+
 const FileItem = memo(({
   item,
   level = 0,
@@ -26,6 +58,7 @@ const FileItem = memo(({
   dispatch,
   handleKeyDown,
   handleBlur,
+  shallow = false,
 }) => {
 
   const renderTreeGuides = (
@@ -457,7 +490,8 @@ useEffect(() => {
       </div>
 
       {/* Show children if folder is open or if it's the target for creation */}
-      {(isExpandable && (isOpen || isParentForCreation)) && (
+      {/* In shallow mode (virtualised tree), children rendering is handled by the parent Virtuoso list */}
+      {!shallow && (isExpandable && (isOpen || isParentForCreation)) && (
         <div className="flex flex-col">
           {isParentForCreation && (
             <div
@@ -527,7 +561,31 @@ useEffect(() => {
           ))}
         </div>
       )}
+
+      {/* In shallow mode, still render the creation input row if this folder is the target */}
+      {shallow && isParentForCreation && (
+        <div
+          className="file-item relative flex items-center py-1 px-2"
+          style={{ paddingLeft: `${(level + 1) * 16 + 8}px`, '--indent-level': level + 1 }}
+        >
+          <div className="flex items-center">
+            <div className="w-4 h-4 mr-2 flex-shrink-0 flex items-center justify-center">
+              {isCreatingFolder ? <FolderIcon /> : getFileIcon(name || "newfile")}
+            </div>
+            <input
+              ref={localInputRef}
+              type="text"
+              value={name}
+              onChange={(e) => dispatch(setUiActionName(e.target.value))}
+              onKeyDown={handleKeyDown}
+              onBlur={handleBlur}
+              placeholder={isCreatingFolder ? "New folder name..." : "New file name..."}
+              className="w-full bg-transparent border-none outline-none text-sm text-white placeholder-gray-500"
+            />
+          </div>
+        </div>
+      )}
     </>
   );
-});
+}, fileItemAreEqual);
 export default FileItem;

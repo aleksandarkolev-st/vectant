@@ -1,7 +1,10 @@
 import SynthiException from "@/components/SynthiException";
 
 const DEFAULT_WS_URL =
-  process.env.NEXT_PUBLIC_GATEWAY_WS_URL || 'ws://localhost:7070/ws';
+  process.env.NEXT_PUBLIC_GATEWAY_WS_URL
+  || (typeof window !== 'undefined' && window.location.hostname !== 'localhost'
+    ? `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}/gateway/ws`
+    : 'ws://localhost:7070/ws');
 // Increase timeout to better accommodate long-running AI/gateway requests.
 const DEFAULT_TIMEOUT = 120_000;
 

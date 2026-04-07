@@ -1,0 +1,98 @@
+# ─────────────────────────────────────────────────────────────────────────────
+#  Synthi IDE — AI Gateway (Node.js WebSocket → AI Engine proxy)
+# ─────────────────────────────────────────────────────────────────────────────
+#  Bridges the browser's long-lived WS connection to the AI engine's HTTP
+#  endpoints.  Cluster-mode enabled internally (1 worker per core).
+#  Stateless — safe to scale horizontally.
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ai-gateway
+  namespace: synthi
+  labels:
+    app: ai-gateway
+    app.kubernetes.io/managed-by: kustomize
+    app.kubernetes.io/part-of: synthi-ide
+spec:
+  replicas: 0
+  selector:
+    matchLabels:
+      app: ai-gateway
+      app.kubernetes.io/managed-by: kustomize
+      app.kubernetes.io/part-of: synthi-ide
+  template:
+    metadata:
+      labels:
+        app: ai-gateway
+        app.kubernetes.io/managed-by: kustomize
+        app.kubernetes.io/part-of: synthi-ide
+    spec:
+      securityContext:
+        #runAsNonRoot: true
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app: ai-gateway
+                    app.kubernetes.io/managed-by: kustomize
+                    app.kubernetes.io/part-of: synthi-ide
+                topologyKey: kubernetes.io/hostname
+      containers:
+        - name: gateway
+          image: europe-west10-docker.pkg.dev/overview-synti/synthi/synthi-ai-gateway:latest
+          ports:
+            - containerPort: 7070
+              name: ws
+          env:
+            - name: GATEWAY_PORT
+              value: "7070"
+            - name: GATEWAY_WS_PATH
+              value: "/gateway/ws"
+            - name: BACKEND_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: synthi-config
+                  key: BACKEND_URL
+            # Disable internal clustering — k8s handles horizontal scaling.
+            - name: GATEWAY_CLUSTER
+              value: "false"
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          readinessProbe:
+            httpGet:
+              path: /gateway/health
+              port: 7070
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /gateway/health
+              port: 7070
+            initialDelaySeconds: 5
+            periodSeconds: 15
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ai-gateway
+  namespace: synthi
+  labels:
+    app: ai-gateway
+    app.kubernetes.io/managed-by: kustomize
+    app.kubernetes.io/part-of: synthi-ide
+spec:
+  selector:
+    app: ai-gateway
+  ports:
+    - port: 7070
+      targetPort: 7070
+      name: ws

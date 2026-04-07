@@ -1,0 +1,92 @@
+# ─────────────────────────────────────────────────────────────────────────────
+#  Synthi IDE — AI Engine (Python FastAPI, uvicorn)
+# ─────────────────────────────────────────────────────────────────────────────
+#  Code analysis, self-healing, proactive analysis, LLM orchestration.
+#  Stateless — safe to scale horizontally. GPU optional (for local models).
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ai-engine
+  namespace: synthi
+  labels:
+    app: ai-engine
+    app.kubernetes.io/managed-by: kustomize
+    app.kubernetes.io/part-of: synthi-ide
+spec:
+  replicas: 0
+  selector:
+    matchLabels:
+      app: ai-engine
+      app.kubernetes.io/managed-by: kustomize
+      app.kubernetes.io/part-of: synthi-ide
+  template:
+    metadata:
+      labels:
+        app: ai-engine
+        app.kubernetes.io/managed-by: kustomize
+        app.kubernetes.io/part-of: synthi-ide
+    spec:
+      securityContext:
+        #runAsNonRoot: true
+      containers:
+        - name: ai-engine
+          image: europe-west10-docker.pkg.dev/overview-synti/synthi/synthi-ai-engine:latest
+          ports:
+            - containerPort: 8000
+              name: http
+          env:
+            - name: GOOGLE_AI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: synthi-secrets
+                  key: GOOGLE_AI_API_KEY
+            - name: OPENAI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: synthi-secrets
+                  key: OPENAI_API_KEY
+          # Uvicorn command — adjust workers based on CPU allocation.
+          command: ["uvicorn"]
+          args:
+            - "main:app"
+            - "--host=0.0.0.0"
+            - "--port=8000"
+            - "--workers=2"
+            - "--timeout-keep-alive=120"
+          resources:
+            requests:
+              cpu: 500m
+              memory: 512Mi
+            limits:
+              cpu: "2"
+              memory: 2Gi
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 15
+            periodSeconds: 30
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ai-engine
+  namespace: synthi
+  labels:
+    app: ai-engine
+    app.kubernetes.io/managed-by: kustomize
+    app.kubernetes.io/part-of: synthi-ide
+spec:
+  selector:
+    app: ai-engine
+  ports:
+    - port: 8000
+      targetPort: 8000
+      name: http

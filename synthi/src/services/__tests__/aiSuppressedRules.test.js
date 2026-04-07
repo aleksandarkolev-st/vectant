@@ -30,7 +30,7 @@ globalThis.localStorage = localStorageStub;
 
 // Now import after the stub is in place
 const { aiSuppressedRules, computeFingerprint } = await import(
-  '@/services/aiSuppressedRules'
+  '../aiSuppressedRules.js'
 );
 
 
@@ -212,6 +212,7 @@ describe('toJSON / mergeRemote', () => {
 
   it('mergeRemote full-replaces local state with remote (remote is authority)', () => {
     aiSuppressedRules.suppress('LOCAL_RULE', makeFix());
+    aiSuppressedRules.ackOp('LOCAL_RULE', 'suppress');
     const remoteState = {
       version: 2,
       entries: {

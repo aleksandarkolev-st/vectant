@@ -1,6 +1,27 @@
 import SynthiException from "@/components/SynthiException";
 
-const SIGNAL_URL = process.env.NEXT_PUBLIC_COMPILE_SIGNAL_URL || 'ws://localhost:9000';
+const SIGNAL_URL = process.env.NEXT_PUBLIC_COMPILE_SIGNAL_URL
+    || (typeof window !== 'undefined' && window.location.hostname !== 'localhost'
+        ? `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}/signal`
+        : 'ws://localhost:9000');
+const WORKER_SPAWNER_HEARTBEAT_MS = 60_000;
+const USER_ID_STORAGE_KEY = 'synthi-user-id';
+
+function getCollabHttpBaseUrl() {
+    const envUrl = process.env.NEXT_PUBLIC_COLLAB_SERVER_URL;
+    if (envUrl) {
+        return envUrl
+            .replace(/^ws:/, 'http:')
+            .replace(/^wss:/, 'https:')
+            .replace(/\/$/, '');
+    }
+
+    if (typeof window !== 'undefined' && window.location.hostname !== 'localhost') {
+        return `${window.location.origin}/collab`;
+    }
+
+    return 'http://localhost:1234';
+}
 
 const parseIceServers = (raw) => {
     if (!raw) return [{ urls: 'stun:stun.l.google.com:19302' }];
@@ -13,7 +34,27 @@ const parseIceServers = (raw) => {
         return [{ urls: 'stun:stun.l.google.com:19302' }];
     }
 };
-const ICE_SERVERS = parseIceServers(process.env.NEXT_PUBLIC_ICE_SERVERS);
+/** Static fallback used when the TURN credential API is unreachable. */
+const FALLBACK_ICE_SERVERS = parseIceServers(process.env.NEXT_PUBLIC_ICE_SERVERS);
+
+/**
+ * Fetch short-lived TURN credentials from /api/turn-credentials.
+ * Falls back to the static NEXT_PUBLIC_ICE_SERVERS env if the API is not
+ * configured or unreachable, so connectivity is never fully blocked.
+ */
+async function fetchIceServers() {
+    try {
+        const res = await fetch('/api/turn-credentials');
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        if (Array.isArray(data.iceServers) && data.iceServers.length > 0) {
+            return data.iceServers;
+        }
+    } catch (e) {
+        console.warn('[CompilerClient] TURN credential fetch failed, using fallback ICE:', e.message);
+    }
+    return FALLBACK_ICE_SERVERS;
+}
 
 export const CompilerStatus = {
     IDLE: 'idle',
@@ -74,6 +115,8 @@ export class CompilerClient {
         // seconds — we only set DISCONNECTED after this grace period.
         this._disconnectGraceTimer = null;
         this._DISCONNECT_GRACE_MS = 5000;
+        this._registeredSignalingSessionId = null;
+        this._spawnerTouchTimer = null;
 
         
         this._handleTerminalInput = this._handleTerminalInput.bind(this);
@@ -83,6 +126,86 @@ export class CompilerClient {
 
     setSlug(slug) {
         this.slug = slug;
+    }
+
+    /**
+     * Set the signaling session identity. Called before connect() so the
+     * register message includes a session_id for multiplexed routing.
+     * @param {string} sessionId  e.g. "workspace-abc-user-123"
+     */
+    setSignalingSession(sessionId) {
+        this._signalingSessionId = sessionId;
+    }
+
+    /** Build the session_id sent in the signaling "register" message. */
+    _getSignalingSessionId() {
+        if (this._signalingSessionId) return this._signalingSessionId;
+        // Fallback: derive from slug (single-user session).
+        if (this.slug) return this.slug;
+        return undefined; // omit → server falls back to __legacy__
+    }
+
+    _getCompilerUserId() {
+        if (typeof window === 'undefined' || !window.localStorage) return null;
+        return window.localStorage.getItem(USER_ID_STORAGE_KEY) || null;
+    }
+
+    async _ensureWorkerPod(sessionId = this._getSignalingSessionId()) {
+        if (!sessionId) return;
+
+        const response = await fetch(`${getCollabHttpBaseUrl()}/api/spawner/ensure`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify({
+                session_id: sessionId,
+                user_id: this._getCompilerUserId() || sessionId,
+            }),
+        });
+
+        if (response.ok) return;
+
+        let detail = `HTTP ${response.status}`;
+        try {
+            const data = await response.json();
+            detail = data?.error || detail;
+        } catch (_) {
+            // ignore JSON parse errors for non-JSON bodies
+        }
+
+        throw new Error(`Worker ensure failed: ${detail}`);
+    }
+
+    async _touchWorkerPod(sessionId = this._getSignalingSessionId()) {
+        if (!sessionId) return;
+
+        try {
+            await fetch(`${getCollabHttpBaseUrl()}/api/spawner/touch`, {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                credentials: 'include',
+                keepalive: true,
+                body: JSON.stringify({ session_id: sessionId }),
+            });
+        } catch (e) {
+            console.warn('[CompilerClient] Worker heartbeat failed:', e.message);
+        }
+    }
+
+    _clearSpawnerHeartbeat() {
+        if (this._spawnerTouchTimer) {
+            clearInterval(this._spawnerTouchTimer);
+            this._spawnerTouchTimer = null;
+        }
+    }
+
+    _startSpawnerHeartbeat(sessionId = this._getSignalingSessionId()) {
+        this._clearSpawnerHeartbeat();
+        if (!sessionId || typeof window === 'undefined') return;
+
+        this._spawnerTouchTimer = window.setInterval(() => {
+            this._touchWorkerPod(sessionId);
+        }, WORKER_SPAWNER_HEARTBEAT_MS);
     }
 
     getMediaStream() {
@@ -373,8 +496,11 @@ export class CompilerClient {
         
         this._setStatus(CompilerStatus.CONNECTING);
         
-        this.readyPromise = new Promise((resolve, reject) => {
-            this.pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+        this.readyPromise = new Promise(async (resolve, reject) => {
+            // Fetch fresh TURN credentials before every PeerConnection so
+            // relay candidates are always valid (handles credential TTL).
+            const iceServers = await fetchIceServers();
+            this.pc = new RTCPeerConnection({ iceServers });
 
             // Log supported codecs for debugging
             try {
@@ -541,12 +667,26 @@ export class CompilerClient {
                 }
             };
 
+            const signalingSessionId = this._getSignalingSessionId();
+            if (signalingSessionId) {
+                try {
+                    await this._ensureWorkerPod(signalingSessionId);
+                } catch (e) {
+                    this.readyPromise = null;
+                    this._setStatus(CompilerStatus.ERROR);
+                    reject(e);
+                    return;
+                }
+            }
+
             console.log('CompilerClient connecting to', this.url);
             const ws = new WebSocket(this.url);
             this.ws = ws;
 
             ws.onerror = (err) => {
                 console.error('CompilerClient ws error', err);
+                this._clearSpawnerHeartbeat();
+                this._registeredSignalingSessionId = null;
                 this.readyPromise = null;
                 this._setStatus(CompilerStatus.ERROR);
                 reject(err);
@@ -571,6 +711,8 @@ export class CompilerClient {
                     }
 
                     // PC is not connected — full teardown
+                    this._clearSpawnerHeartbeat();
+                    this._registeredSignalingSessionId = null;
                     this.readyPromise = null;
                     this.compileChannel = null;
                     this.buildLogChannel = null;
@@ -659,7 +801,14 @@ export class CompilerClient {
                     console.warn('[CompilerClient] onopen but readyState is not OPEN:', ws.readyState);
                     return;
                 }
-                ws.send(JSON.stringify({ type: 'register', role: 'browser' }));
+                ws.send(JSON.stringify({
+                    type: 'register',
+                    role: 'browser',
+                    session_id: signalingSessionId,
+                }));
+                this._registeredSignalingSessionId = signalingSessionId || null;
+                void this._touchWorkerPod(signalingSessionId);
+                this._startSpawnerHeartbeat(signalingSessionId);
                 this.compileChannel = this.pc.createDataChannel('compile', { ordered: true });
                 // Terminal channel for stdin forwarding
                 this.terminalChannel = this.pc.createDataChannel('terminal', { ordered: true });
@@ -1021,6 +1170,9 @@ export class CompilerClient {
             this._offerRetryInterval = null;
         }
 
+        this._clearSpawnerHeartbeat();
+        this._registeredSignalingSessionId = null;
+
         if (this.ws) { this.ws.close(); }
         if (this.pc) { this.pc.close(); }
 
@@ -1066,6 +1218,9 @@ export class CompilerClient {
             clearInterval(this._offerRetryInterval);
             this._offerRetryInterval = null;
         }
+
+        this._clearSpawnerHeartbeat();
+        this._registeredSignalingSessionId = null;
 
         if (this.ws) {
             this.ws.close();
@@ -1194,8 +1349,11 @@ export class CompilerClient {
 
             try {
                 // If we didn't reconnect above (non-mobile targets), ensure we're connected
-                if (!this.pc || this.pc.connectionState === 'closed') {
-                   await this.connect();
+                const desiredSignalingSessionId = this._getSignalingSessionId() || null;
+                if (this._registeredSignalingSessionId !== desiredSignalingSessionId) {
+                    await this.softReconnect();
+                } else if (!this.pc || this.pc.connectionState === 'closed') {
+                    await this.connect();
                 }
 
                 // For mobile runs: sample WebRTC stats briefly to confirm inbound video bytes/frames.
@@ -1583,6 +1741,8 @@ export class CompilerClient {
     }
 
     dispose() {
+        this._clearSpawnerHeartbeat();
+        this._registeredSignalingSessionId = null;
         if (this.ws) {
             this.ws.close();
         }

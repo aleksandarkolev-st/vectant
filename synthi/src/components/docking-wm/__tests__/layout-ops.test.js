@@ -55,6 +55,9 @@ import { NODE_TYPE, DIRECTION } from '../types';
 
 function createTestLayout() {
   const layout = createEmptyLayout();
+  layout.nodes = {};
+  layout.rootId = null;
+  layout.focusedTabGroupId = null;
 
   const tab1 = createTab({ panelType: 'explorer', title: 'Explorer' });
   const tab2 = createTab({ panelType: 'editor', title: 'File.js' });
@@ -156,12 +159,12 @@ describe('Tree Queries', () => {
   it('findTabGroup locates a tab by ID', () => {
     const { layout, tab2, rightGroup } = createTestLayout();
     const found = findTabGroup(layout, tab2.id);
-    expect(found).toBe(rightGroup.id);
+    expect(found?.id).toBe(rightGroup.id);
   });
 
   it('collectTabIds returns all tab IDs', () => {
     const { layout } = createTestLayout();
-    const tabIds = collectTabIds(layout);
+    const tabIds = collectTabIds(layout, layout.rootId);
     expect(tabIds).toHaveLength(3);
   });
 
@@ -173,7 +176,7 @@ describe('Tree Queries', () => {
   it('walkTree visits all nodes', () => {
     const { layout } = createTestLayout();
     const visited = [];
-    walkTree(layout, layout.rootId, (nodeId) => visited.push(nodeId));
+    walkTree(layout, layout.rootId, (node) => visited.push(node.id));
     // 2 split nodes + 3 tab groups = 5
     expect(visited).toHaveLength(5);
   });
@@ -219,7 +222,7 @@ describe('Tree Operations', () => {
 
   it('resizeSplit updates sizes array', () => {
     const { layout, root } = createTestLayout();
-    const result = resizeSplit(layout, root.id, [0.30, 0.70]);
+    const result = resizeSplit(layout, root.id, 0, 0.05);
     expect(result.nodes[root.id].sizes[0]).toBeCloseTo(0.30);
     expect(result.nodes[root.id].sizes[1]).toBeCloseTo(0.70);
   });

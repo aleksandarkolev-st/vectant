@@ -1,0 +1,52 @@
+# ─────────────────────────────────────────────────────────────────────────────
+#  Synthi IDE — ConfigMap (non-sensitive, shared configuration)
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: synthi-config
+  namespace: synthi
+  labels:
+    app.kubernetes.io/part-of: synthi-ide
+data:
+  # ── GCP ──────────────────────────────────────────────────────────────────────
+  GCP_PROJECT_ID: "overview-synti"
+  GCS_BUCKET_NAME: "synthi-cloud-storage"
+  GCS_WORKSPACE_PREFIX: "workspaces"
+  # Cloud SQL instance connection name (used by the Auth Proxy sidecar).
+  # Format: PROJECT_ID:REGION:INSTANCE_NAME
+  CLOUD_SQL_INSTANCE: "overview-synti:europe-west10:synthi-dev" 
+  # ── Networking (cluster-internal URLs) ──────────────────────────────────────
+  # These use Kubernetes DNS: <service>.<namespace>.svc.cluster.local
+  COLLAB_SERVER_URL: "http://collab-server.synthi.svc.cluster.local:1234"
+  YSWEET_URL: "http://y-sweet.synthi.svc.cluster.local:8080"
+  CODE_INTEL_URL: "http://ai-engine.synthi.svc.cluster.local:8000"
+  BACKEND_URL: "http://ai-engine.synthi.svc.cluster.local:8000"
+  SIGNALING_URL: "ws://signaling-server.synthi.svc.cluster.local:9000"
+  REDIS_URL: "redis://redis.synthi.svc.cluster.local:6379"
+
+  # ── Public URLs (replace with your domain) ──────────────────────────────────
+  NEXTAUTH_URL: "https://beta.synthi.app"
+  CORS_ORIGIN: "https://beta.synthi.app"
+
+  # ── Next.js public env (baked into client bundle at build time) ─────────────
+  # These MUST be set at `next build` time, not just runtime.
+  NEXT_PUBLIC_COLLAB_SERVER_URL: "https://beta.synthi.app/collab"
+  NEXT_PUBLIC_YSWEET_URL: "https://beta.synthi.app/ysweet"
+  NEXT_PUBLIC_COLLAB_PORT: "443"
+  NEXT_PUBLIC_COMPILE_SIGNAL_URL: "wss://beta.synthi.app/signal"
+  NEXT_PUBLIC_GATEWAY_WS_URL: "wss://beta.synthi.app/gateway/ws"
+  NEXT_PUBLIC_CODE_INTEL_URL: "https://beta.synthi.app"
+  NEXT_PUBLIC_AI_ENGINE_URL: "https://beta.synthi.app"
+
+  # ── Feature flags ──────────────────────────────────────────────────────────
+  GCS_SYNC_ON_FLUSH: "true"
+  CODE_INTEL_AUTO_INDEX: "true"
+  FLUSH_DEBOUNCE_MS: "150"
+  TURN_CREDENTIAL_TTL: "86400"
+
+  # ── Worker tuning ──────────────────────────────────────────────────────────
+  SYNTHI_LOG_LEVEL: "info"
+  SYNTHI_ISOLATION_MODEL: "single_worker"
+  # Worker container image (used by the dynamic spawner in collab-server).
+  WORKER_IMAGE: "europe-west10-docker.pkg.dev/overview-synti/synthi/synthi-worker:latest"

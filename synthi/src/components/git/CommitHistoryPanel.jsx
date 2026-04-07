@@ -1,10 +1,12 @@
 'use client';
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
+import { Virtuoso } from 'react-virtuoso';
 import { useDispatch, useSelector } from 'react-redux';
 import {
   fetchCommitHistory, cherryPickCommit, revertCommit, fetchCommitDetail,
   fetchGitStatus, fetchUnpushedCommits, createTag,
 } from '@/redux/gitSlice';
+import { selectGitLoading } from '@/redux/isolatedSelectors';
 import { openCommitFileDiffThunk } from '@/redux/workspaceSlice';
 import { toast } from 'sonner';
 import {
@@ -336,7 +338,8 @@ function FilterBar({
 
 export default function CommitHistoryPanel({ slug }) {
   const dispatch = useDispatch();
-  const { commitHistory, commitDetail, commitDetailLoading, loading } = useSelector(s => s.git);
+  const loading = useSelector(selectGitLoading);
+  const { commitHistory, commitDetail, commitDetailLoading } = useSelector(s => s.git);
   const unpushedCommits = useSelector(s => s.git.unpushedCommits);
   const remotes = useSelector(s => s.git.remotes);
   const primaryRemoteUrl = remotes?.[0]?.refs?.push ?? null;
@@ -552,18 +555,34 @@ export default function CommitHistoryPanel({ slug }) {
         />
       )}
 
-      {/* Commit list */}
-      <div ref={scrollRef} className="flex-1 overflow-auto">
+      {/* Commit list — PERF: Virtualized with react-virtuoso.
+           Flattens date-group headers + commit rows into a single list
+           so only visible rows are rendered in the DOM. */}
+      <div ref={scrollRef} className="flex-1 overflow-hidden">
         {dateGroups.length > 0 ? (
-          <div>
-            {dateGroups.map(group => (
-              <div key={group.label}>
-                {/* Date section header */}
-                <div className="sticky top-0 z-[5] px-3 py-1 bg-[#0d0d0f] border-b border-[#1a1a1e]">
-                  <span className="text-[10px] text-[#52525b] font-semibold uppercase tracking-wider">{group.label}</span>
-                </div>
-                {/* Commits in this date group */}
-                {group.commits.map(commit => {
+          (() => {
+            // Flatten date groups + commits into a single array for virtualization
+            const flatItems = [];
+            for (const group of dateGroups) {
+              flatItems.push({ type: 'header', label: group.label, key: `hdr-${group.label}` });
+              for (const commit of group.commits) {
+                flatItems.push({ type: 'commit', commit, key: commit.hash });
+              }
+            }
+            return (
+              <Virtuoso
+                style={{ height: '100%' }}
+                data={flatItems}
+                overscan={150}
+                itemContent={(index, item) => {
+                  if (item.type === 'header') {
+                    return (
+                      <div className="sticky top-0 z-[5] px-3 py-1 bg-[#0d0d0f] border-b border-[#1a1a1e]">
+                        <span className="text-[10px] text-[#52525b] font-semibold uppercase tracking-wider">{item.label}</span>
+                      </div>
+                    );
+                  }
+                  const commit = item.commit;
                   const gIdx = filteredCommits.indexOf(commit);
                   const gn = graphNodes[gIdx];
                   const webUrl = commitWebUrl(primaryRemoteUrl, commit.hash);
@@ -575,7 +594,6 @@ export default function CommitHistoryPanel({ slug }) {
 
                   return (
                     <div
-                      key={commit.hash}
                       className={`flex items-center cursor-pointer transition-colors border-l-2
                         ${isSelected
                           ? 'bg-[#3b82f6]/10 border-l-[#3b82f6]'
@@ -609,12 +627,9 @@ export default function CommitHistoryPanel({ slug }) {
                               ↑
                             </span>
                           )}
-                          {/* Branch / tag ref badges */}
                           {(refsMap[commit.hash?.substring(0, 7)] || []).map((ref, ri) => {
-                            // Unify tag colors with lane colors: use the graph node's
-                            // lane color so the branch tag matches the physical lane line
                             const laneColor = ref.type === 'tag'
-                              ? '#f59e0b'  // amber for tags
+                              ? '#f59e0b'
                               : ref.type === 'remote'
                                 ? (gn?.color || hashBranchColor(ref.name))
                                 : (gn?.color || hashBranchColor(ref.name));
@@ -648,7 +663,6 @@ export default function CommitHistoryPanel({ slug }) {
                           <span className="flex-shrink-0">{relativeTime(commit.date)}</span>
                         </div>
                       </div>
-                      {/* Quick actions (visible on hover) */}
                       <div className="flex items-center gap-0.5 pr-2 opacity-0 hover:opacity-100 transition-opacity flex-shrink-0"
                         style={{ opacity: isSelected ? 1 : undefined }}>
                         <button
@@ -673,10 +687,10 @@ export default function CommitHistoryPanel({ slug }) {
                       </div>
                     </div>
                   );
-                })}
-              </div>
-            ))}
-          </div>
+                }}
+              />
+            );
+          })()
         ) : (
           <div className="flex items-center justify-center h-32 text-[#52525b] text-xs italic">
             {searchQuery || authorFilter ? 'No matching commits' : 'No commit history'}

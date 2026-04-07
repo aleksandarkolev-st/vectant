@@ -192,7 +192,7 @@ pub async fn run_java(
         if req.is_gui { "-Djava.awt.headless=false -Dsun.java2d.xrender=false" } else { "" },
         main_class,
         req.is_gui,
-        if req.is_gui { &wsl_display_str } else { &String::new() }
+        if req.is_gui { wsl_display_str.as_str() } else { "" }
     );
 
     let mut child = cmd.spawn().context("Failed to spawn java — is openjdk installed?")?;

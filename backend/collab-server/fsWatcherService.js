@@ -189,6 +189,7 @@ function isStagingLocked(slug, relativePath) {
  * }>}
  */
 const activeWatchers = new Map();
+const globalChangeListeners = new Set();
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -228,10 +229,12 @@ function shouldIgnore(relativePath) {
 
 /**
  * Classify a fs.watch event into a more useful type by checking the filesystem.
+ * Uses async stat to avoid blocking the event loop.
  */
-function classifyEvent(fullPath) {
+async function classifyEvent(fullPath) {
   try {
-    const stat = fs.statSync(fullPath);
+    const fsp = require('fs').promises;
+    const stat = await fsp.stat(fullPath);
     return stat.isDirectory() ? 'dir' : 'file';
   } catch (_) {
     // File was deleted (stat fails)
@@ -328,39 +331,56 @@ function watchWorkspace(slug, rootDir, onChange) {
 
 /**
  * Flush accumulated events to all listeners.
+ * Uses async classifyEvent with Promise.all for parallel stat calls.
  */
-function flushEvents(slug) {
+async function flushEvents(slug) {
   const entry = activeWatchers.get(slug);
   if (!entry || entry.pendingEvents.size === 0) return;
 
-  // Build the event list, skipping staging-locked files
-  const events = [];
-  for (const [relativePath, eventType] of entry.pendingEvents) {
-    // Skip files currently being staged to prevent editor flickering
-    if (isStagingLocked(slug, relativePath)) {
-      continue;
-    }
-
-    if (events.length >= MAX_EVENTS_PER_BATCH) {
-      // Too many individual events — just tell the client to do a full refresh
-      events.length = 0;
-      events.push({ path: '/', kind: 'bulk' });
-      break;
-    }
-
-    const fullPath = path.join(entry.rootDir, relativePath);
-    const kind = classifyEvent(fullPath);
-    events.push({ path: relativePath, kind });
-  }
-
+  // Snapshot and clear immediately to avoid re-processing on concurrent flush
+  const snapshot = new Map(entry.pendingEvents);
   entry.pendingEvents.clear();
   entry.debounceTimer = null;
 
-  // Only broadcast if there are events left after filtering
-  if (events.length === 0) return;
+  // Check for bulk overflow
+  if (snapshot.size > MAX_EVENTS_PER_BATCH) {
+    const message = { type: 'fs-change', slug, events: [{ path: '/', kind: 'bulk' }] };
+    for (const listener of entry.listeners) {
+      try { listener(message); } catch (err) { console.error(`[FSWatch] Listener error:`, err.message); }
+    }
+    return;
+  }
+
+  // Build event list — classify in parallel, skip staging-locked files
+  const entries = [];
+  for (const [relativePath, eventType] of snapshot) {
+    if (isStagingLocked(slug, relativePath)) continue;
+    entries.push(relativePath);
+  }
+
+  if (entries.length === 0) return;
+
+  // Parallel async stat — all syscalls are issued concurrently
+  const classified = await Promise.all(
+    entries.map(async (relativePath) => {
+      const fullPath = path.join(entry.rootDir, relativePath);
+      const kind = await classifyEvent(fullPath);
+      return { path: relativePath, kind };
+    })
+  );
+
+  if (classified.length === 0) return;
+
+  for (const listener of globalChangeListeners) {
+    try {
+      listener({ slug, rootDir: entry.rootDir, events: classified });
+    } catch (err) {
+      console.error(`[FSWatch] Global listener error:`, err.message);
+    }
+  }
 
   // Broadcast to all listeners
-  const message = { type: 'fs-change', slug, events };
+  const message = { type: 'fs-change', slug, events: classified };
   for (const listener of entry.listeners) {
     try {
       listener(message);
@@ -406,6 +426,7 @@ module.exports = {
   watchWorkspace,
   stopAll,
   activeWatchers,
+  registerChangeListener,
   acquireStagingLock,
   releaseStagingLock,
   isStagingLocked,
@@ -413,3 +434,9 @@ module.exports = {
   resumeWatcher,
   isWatcherPaused,
 };
+
+function registerChangeListener(listener) {
+  if (typeof listener !== 'function') return () => {};
+  globalChangeListeners.add(listener);
+  return () => globalChangeListeners.delete(listener);
+}

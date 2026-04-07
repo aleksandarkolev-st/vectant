@@ -1,10 +1,10 @@
 'use client';
-import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import { useState, useEffect, useCallback, useRef, useMemo, startTransition, useDeferredValue } from 'react';
 import { use } from 'react';
 import { useSession } from 'next-auth/react';
 import { useRouter } from 'next/navigation';
-import { useAppDispatch, useAppSelector } from '@/redux/hooks';
-import { fetchFilesThunk, selectActiveFile, setSlug, selectFileThunk, selectCurrentContent, selectFileCacheEntries, markFileSavedRemotely } from '@/redux/workspaceSlice';
+import { useAppDispatch, useAppSelector, useAppStore } from '@/redux/hooks';
+import { fetchFilesThunk, selectActiveFile, setSlug, selectFileThunk, markFileSavedRemotely } from '@/redux/workspaceSlice';
 import { fetchGitStatus, forceRefreshGitStatus } from '@/redux/gitSlice';
 import collabClient from '@/services/collabClient';
 import collabSessionService from '@/services/collabSessionService';
@@ -73,6 +73,7 @@ import { ProblemsPanel } from '@/components/analysis';
 import { DockablePanel, DockablePanelProvider, PANEL_STATE, DOCK_POSITION } from '@/components/docking';
 import { AlertCircle } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { useSSE, useSSEEvent } from '@/hooks/useSSE';
 import { useCollabNotifications } from '@/hooks/useCollabNotifications';
 import { GuestBanner } from '@/components/collaboration';
 import { useExtensions } from '@/hooks/useExtensions';
@@ -89,6 +90,7 @@ const USE_DOCKING_WM = true;
 
 export default function EditorPage({ params }) {
     const dispatch = useAppDispatch();
+    const store = useAppStore();
     const { data: authSession, status: authStatus } = useSession();
     const router = useRouter();
 
@@ -137,7 +139,7 @@ export default function EditorPage({ params }) {
     const [editor, setEditor] = useState(null);
     const editorRef = useRef(null); // Ref wrapper for editor state (used by useSelfHealing)
     // Track editor content version to force re-analysis on every change (including remote/undo)
-    const [editorVersion, setEditorVersion] = useState(0);
+    const triggerAnalysisRef = useRef(null);
     const gateway = useAnalyzerGateway();
     const { analyzeCode, analyzeProactive, analyzeContainer, analyzeUnified, lastResult, isAnalyzing: isAnalyzingGateway, connectionMeta } = gateway;
     const { client, compile, mediaStream, cancelMobileJob, isCompiling, status: compilerStatus } = useCompiler();
@@ -682,6 +684,53 @@ export default function EditorPage({ params }) {
         return teardown;
     }, [slug, dispatch, authUserId, activeSessionId]);
 
+    // ── SSE connection — event-driven push from backend ──────────────────
+    // Establishes a single EventSource per workspace for server-pushed
+    // notifications (git-status, file-tree, presence, etc.).
+    // This replaces ALL HTTP polling intervals on the frontend.
+    useSSE(slug, { userId: authUserId });
+
+    // SSE: git-status-changed → force refresh git status (replaces 30s poll)
+    useSSEEvent(slug, 'git-status-changed', useCallback(() => {
+        startTransition(() => {
+            dispatch(forceRefreshGitStatus(slug));
+        });
+    }, [dispatch, slug]));
+
+    // SSE: file-tree-changed → refetch file tree
+    useSSEEvent(slug, 'file-tree-changed', useCallback(() => {
+        startTransition(() => {
+            dispatch(fetchFilesThunk(slug));
+        });
+    }, [dispatch, slug]));
+
+    // SSE: file-saved → mark file as saved remotely
+    useSSEEvent(slug, 'file-saved', useCallback((data) => {
+        if (data?.filePath) {
+            dispatch(markFileSavedRemotely(data.filePath));
+        }
+    }, [dispatch]));
+
+    // SSE: file-reverted → invalidate cache and notify editor
+    useSSEEvent(slug, 'file-reverted', useCallback((data) => {
+        const filePaths = data?.filePaths || [];
+        try {
+            if (!filePaths.length) {
+                fileCache.clear();
+            } else {
+                filePaths.forEach(fp => fileCache.delete(fp));
+            }
+            window.dispatchEvent(new CustomEvent('synthi:file-reverted', {
+                detail: { slug, filePaths },
+            }));
+        } catch (e) {
+            console.warn('[Page/SSE] Error in file-reverted handler:', e);
+        }
+        startTransition(() => {
+            dispatch(fetchGitStatus(slug));
+        });
+    }, [dispatch, slug]));
+
     // ── Re-fetch git status when auth or session becomes available ──────
     // On cold page load, the initial fetchGitStatus may fire before
     // getSession() returns auth data (no x-user-id header → wrong repo).
@@ -698,7 +747,10 @@ export default function EditorPage({ params }) {
         prevAuthRef.current = authUserId;
         prevSessionRef.current = activeSessionId;
         if (authJustBecameAvailable || sessionJustBecameAvailable) {
-            dispatch(forceRefreshGitStatus(slug));
+            // PERF: Git status refresh is non-critical — run in transition lane
+            startTransition(() => {
+                dispatch(forceRefreshGitStatus(slug));
+            });
         }
     }, [slug, dispatch, authUserId, activeSessionId]);
 
@@ -706,10 +758,33 @@ export default function EditorPage({ params }) {
     const showTerminal = useAppSelector(selectShowTerminal);
     const showEmulatorPreview = useAppSelector(selectShowEmulatorPreview);
     const treeOnRight = useAppSelector(selectTreeOnRight);
-    const currentContent = useAppSelector(selectCurrentContent);
     const rawFiles = useAppSelector(state => state.workspace.rawFiles);
-    // Redux file content cache - contains edited content of open files
-    const fileCacheEntries = useAppSelector(selectFileCacheEntries);
+    const currentContentRef = useRef(store.getState()?.workspace?.currentContent || '');
+    const fileCacheEntriesRef = useRef([]);
+
+    useEffect(() => {
+        const syncWorkspaceRefs = () => {
+            const state = store.getState();
+            currentContentRef.current = state?.workspace?.currentContent || '';
+            const cache = state?.workspace?.fileContentCache;
+            fileCacheEntriesRef.current = cache && typeof cache.entries === 'function'
+                ? Array.from(cache.entries())
+                : [];
+        };
+
+        syncWorkspaceRefs();
+        return store.subscribe(syncWorkspaceRefs);
+    }, [store]);
+
+    const getLatestCurrentContent = useCallback(() => {
+        if (editor?.getValue) {
+            const liveValue = editor.getValue();
+            if (typeof liveValue === 'string') {
+                return liveValue;
+            }
+        }
+        return typeof currentContentRef.current === 'string' ? currentContentRef.current : '';
+    }, [editor]);
 
     // Remove a specific diagnostic by location (called when a fix is applied)
     const removeDiagnosticByLocation = useCallback((location, filePath) => {
@@ -803,10 +878,10 @@ export default function EditorPage({ params }) {
     const [panelGroupKey, setPanelGroupKey] = useState(0);
 
     // Toggling the tree orientation updates the local key and dispatches global change
-    const toggleTreeOrientation = () => {
+    const toggleTreeOrientation = useCallback(() => {
         dispatch(setTreeOrientation());
         setPanelGroupKey(prev => prev + 1); // Force remount
-    };
+    }, [dispatch]);
 
     // Static analysis is now handled by proactive analysis (which includes static tier)
     // Keeping this disabled to avoid duplicate/stale diagnostics
@@ -871,12 +946,12 @@ export default function EditorPage({ params }) {
 
         // Build a map from fileCacheEntries for fast lookup
         // This contains the LATEST edited content of open files
-        const reduxCacheMap = new Map(fileCacheEntries);
+        const reduxCacheMap = new Map(fileCacheEntriesRef.current);
 
         const getContentForDep = async (path) => {
             // If it's the active file, use the current editor content
             if (path === activeFile.path) {
-                return typeof currentContent === 'string' ? currentContent : '';
+                return getLatestCurrentContent();
             }
 
             // PRIORITY 1: Check Redux cache (has edited content of open files)
@@ -915,42 +990,43 @@ export default function EditorPage({ params }) {
             console.warn('Failed to resolve dependencies for analysis:', e);
             return [];
         }
-    }, [activeFile, rawFiles, currentContent, slug, fileCacheEntries]);
+    }, [activeFile, rawFiles, slug, getLatestCurrentContent]);
 
     // Subscribe to editor changes to force re-analysis even for remote changes or undo/redo
     useEffect(() => {
         if (!activeFile || !hasLoadedInitialFile) return;
-
-        // The first file can be selected before the gateway WebSocket is ready;
-        // waiting for CONNECTED ensures we don't "miss" the initial analysis.
         if (!connectionMeta?.isConnected) return;
         if (!editor) return;
 
         const disposable = editor.onDidChangeModelContent(() => {
-            // CRITICAL: Do NOT re-trigger analysis when the self-healing system
-            // just applied a fix.  Without this gate, applying a fix changes
-            // content → bumps editorVersion → re-runs analysis → finds the
-            // same (now-stale) diagnostics → applies the fix again → infinite loop.
-            if (selfEditFlagRef.current) return;
-            setEditorVersion(v => v + 1);
+            if (triggerAnalysisRef.current) triggerAnalysisRef.current();
         });
 
-        // Important: Monaco/Yjs may apply an initial sync update immediately after the editor instance
-        // is created, before we can attach onDidChangeModelContent. Force a short re-check to avoid
-        // analyzing an old snapshot and pinning diagnostics to the wrong lines.
-        setEditorVersion(v => v + 1);
+        if (triggerAnalysisRef.current) triggerAnalysisRef.current();
         const recheckTimer = setTimeout(() => {
-            setEditorVersion(v => v + 1);
+            if (triggerAnalysisRef.current) triggerAnalysisRef.current();
         }, 250);
 
         return () => {
             disposable.dispose();
             clearTimeout(recheckTimer);
         };
-    }, [editor]);
+    }, [editor, activeFile, hasLoadedInitialFile, connectionMeta?.isConnected]);
 
     useEffect(() => {
+        triggerAnalysisRef.current = () => {
         if (!activeFile || !hasLoadedInitialFile || !slug) return;
+        
+        // Clear timeouts exactly as we did before
+        if (proactiveTimeoutRef.current) {
+            clearTimeout(proactiveTimeoutRef.current);
+            proactiveTimeoutRef.current = null;
+        }
+        if (aiTimeoutRef.current) {
+            clearTimeout(aiTimeoutRef.current);
+            aiTimeoutRef.current = null;
+        }
+
 
         // CRITICAL: Skip analysis when the self-healing system just applied a fix.
         // Without this, the fix changes content → Redux updates currentContent →
@@ -961,9 +1037,7 @@ export default function EditorPage({ params }) {
         // Get content from Monaco if available, falling back to Redux
         // IMPORTANT: On initial load, Monaco might not have Y.js synced changes yet.
         // We use a small delay to allow Y.js to sync before running analysis.
-        const getContentToAnalyze = () => {
-            return editor ? editor.getValue() : (typeof currentContent === 'string' ? currentContent : '');
-        };
+        const getContentToAnalyze = () => getLatestCurrentContent();
 
         let contentToAnalyze = getContentToAnalyze();
 
@@ -1001,11 +1075,14 @@ export default function EditorPage({ params }) {
         // immediately and let the next unified analysis repopulate.
         if (isFileSwitch) {
             const currentNorm = normalizePath(currentFilePath);
-            setDiagnostics(prev => prev.filter(d => {
-                const diagPath = d?.filePath || d?.file || d?.path || '';
-                if (!diagPath) return true;
-                return normalizePath(diagPath) !== currentNorm;
-            }));
+            setDiagnostics(prev => {
+                const next = prev.filter(d => {
+                    const diagPath = d?.filePath || d?.file || d?.path || '';
+                    if (!diagPath) return true;
+                    return normalizePath(diagPath) !== currentNorm;
+                });
+                return next.length === prev.length ? prev : next;
+            });
 
             // Force a fresh analysis even if we previously analyzed the same hash.
             lastFastHashMapRef.current.delete(currentFilePath);
@@ -1040,7 +1117,7 @@ export default function EditorPage({ params }) {
             // until the next AI analysis result arrives.
             setDiagnostics(prev => {
                 const currentNorm = normalizePath(currentFilePath);
-                return prev.filter(d => {
+                const next = prev.filter(d => {
                     const diagPath = d.filePath || d.file || '';
                     if (!diagPath) return false;
                     const isSameFile = normalizePath(diagPath) === currentNorm;
@@ -1048,6 +1125,7 @@ export default function EditorPage({ params }) {
                     const isAi = d.tier === 'ai' || (d.source && String(d.source).toLowerCase().includes('ai'));
                     return isAi;
                 });
+                return next.length === prev.length ? prev : next;
             });
         }
 
@@ -1137,7 +1215,7 @@ export default function EditorPage({ params }) {
                             if (proactiveTimeoutRef.current) proactiveTimeoutRef.current = null;
                             // STALE DETECTION: Check if version (hash) matches current content hash
                             // We re-compute hash from current editor content to be absolutely sure
-                            const currentEditorContent = editor ? editor.getValue() : (typeof currentContent === 'string' ? currentContent : '');
+                            const currentEditorContent = getLatestCurrentContent();
                             const currentEditorHash = computeContentHash(currentEditorContent);
 
                             if (result?.version !== undefined && result.version !== currentEditorHash) {
@@ -1293,6 +1371,8 @@ export default function EditorPage({ params }) {
                             }));
 
                             // Replace NON-AI diagnostics for this file only (keep AI until AI pass arrives)
+                            // PERF: startTransition — diagnostic rendering is lower-priority than typing
+                            startTransition(() => {
                             setDiagnostics(prev => {
                                 const currentNorm = normalizePath(currentFilePath || '');
                                 const otherFileDiags = prev.filter(d => normalizePath(d.filePath || '') !== currentNorm);
@@ -1304,6 +1384,7 @@ export default function EditorPage({ params }) {
                                 });
                                 console.log('[page.jsx] Setting', normalizedDiags.length, 'diagnostics for', currentFilePath);
                                 return [...otherFileDiags, ...sameFileAi, ...normalizedDiags];
+                            });
                             });
 
                             // ─── Auto-heal: feed validated quick-fixes into self-healing ───
@@ -1411,7 +1492,7 @@ export default function EditorPage({ params }) {
                                 return;
                             }
 
-                            const currentEditorContent = editor ? editor.getValue() : (typeof currentContent === 'string' ? currentContent : '');
+                            const currentEditorContent = getLatestCurrentContent();
                             const currentEditorHash = computeContentHash(currentEditorContent);
 
                             if (result?.version !== undefined && result.version !== currentEditorHash) {
@@ -1507,6 +1588,8 @@ export default function EditorPage({ params }) {
                                 tier: 'ai',
                             }));
 
+                            // PERF: startTransition — AI diagnostic rendering is lower-priority than typing
+                            startTransition(() => {
                             setDiagnostics(prev => {
                                 const currentNorm = normalizePath(currentFilePath || '');
                                 const otherFileDiags = prev.filter(d => normalizePath(d.filePath || '') !== currentNorm);
@@ -1517,6 +1600,7 @@ export default function EditorPage({ params }) {
                                     return !isAi;
                                 });
                                 return [...otherFileDiags, ...sameFileNonAi, ...normalizedDiags];
+                            });
                             });
 
                             // ─── Auto-heal AI quick-fixes ──────────────────────────
@@ -1547,30 +1631,8 @@ export default function EditorPage({ params }) {
             }
         }
 
-        return () => {
-            if (proactiveTimeoutRef.current) {
-                clearTimeout(proactiveTimeoutRef.current);
-                proactiveTimeoutRef.current = null;
-            }
-            if (aiTimeoutRef.current) {
-                clearTimeout(aiTimeoutRef.current);
-                aiTimeoutRef.current = null;
-            }
-        };
-    }, [
-        currentContent,
-        activeFile,
-        hasLoadedInitialFile,
-        connectionMeta?.isConnected,
-        analyzeProactive,
-        getRelatedFilesForAnalysis,
-        slug,
-        analyzeUnified,
-        computeContentHash,
-        editorVersion,
-        editor,
-        healFromDiagnostics,
-    ]);
+        }; // end of triggerAnalysisRef.current function
+    }); // Runs on every render without deps so it captures fresh scope!
 
 
     // Track focused file and content changes for workspace analysis
@@ -1629,7 +1691,7 @@ export default function EditorPage({ params }) {
     }, [diagnostics, workspaceDiagnostics]);
 
     // Compute diagnostic summary from merged diagnostics
-    const diagnosticSummary = useMemo(() => {
+    const diagnosticSummaryRaw = useMemo(() => {
         const errors = mergedDiagnostics.filter(d => d.severity === 'error').length;
         const warnings = mergedDiagnostics.filter(d => d.severity === 'warning').length;
         return {
@@ -1640,6 +1702,10 @@ export default function EditorPage({ params }) {
             workspaceWarnings: workspaceSummary.warnings,
         };
     }, [mergedDiagnostics, workspaceSummary]);
+
+    // PERF: Defer the diagnostic summary so the StatusBar and ProblemsPanel
+    // re-render in a lower-priority concurrent lane, never blocking keystrokes.
+    const diagnosticSummary = useDeferredValue(diagnosticSummaryRaw);
 
     // NOTE: Completion requests are handled centrally by the Editor component
     // to avoid duplicate requests, races, and abort-related errors. If you need
@@ -1842,7 +1908,7 @@ export default function EditorPage({ params }) {
             }));
         }
 
-        const source = typeof latestCode === 'string' ? latestCode : (typeof currentContent === 'string' ? currentContent : '');
+        const source = typeof latestCode === 'string' ? latestCode : getLatestCurrentContent();
         // Use the full path to preserve directory structure in the worker
         const filename = activeFile?.path || activeFile?.name || 'main';
         // Ensure a terminal is visible when running so output is shown
@@ -1866,7 +1932,7 @@ export default function EditorPage({ params }) {
         const getContentForDependency = async (path) => {
             // If it's the active file, use the current editor content (which might be unsaved)
             if (path === activeFile.path) {
-                return typeof latestCode === 'string' ? latestCode : (typeof currentContent === 'string' ? currentContent : '');
+                return typeof latestCode === 'string' ? latestCode : getLatestCurrentContent();
             }
             // Check cache
             const cached = fileCache.get(path);
@@ -1976,7 +2042,7 @@ export default function EditorPage({ params }) {
                 setEmulatorForcedError(msg);
             }
         }
-    }, [activeFile, currentContent, appendBuildLog, dispatch, showTerminal, rawFiles, slug, compile, detectReactNativeProject, detectReactNativeInSource, runInGuiMode, emulatorSessionId, cancelMobileJob]);
+    }, [activeFile, appendBuildLog, dispatch, showTerminal, rawFiles, slug, compile, detectReactNativeProject, detectReactNativeInSource, runInGuiMode, emulatorSessionId, cancelMobileJob, getLatestCurrentContent]);
 
     const handleStop = useCallback(async () => {
         const activeSessionId = client?.getActiveSessionId?.();
@@ -2044,7 +2110,7 @@ export default function EditorPage({ params }) {
         }
 
         // Similar to handleRun but silent and doesn't force terminal open
-        let source = typeof latestCode === 'string' ? latestCode : (typeof currentContent === 'string' ? currentContent : '');
+        let source = typeof latestCode === 'string' ? latestCode : getLatestCurrentContent();
         const filename = activeFile?.path || activeFile?.name || 'main';
 
         // Note: CodeIntel re-index is triggered by saveFileContentThunk
@@ -2082,7 +2148,7 @@ export default function EditorPage({ params }) {
         }
 
         const getContentForDependency = async (path) => {
-            if (path === activeFile.path) return typeof latestCode === 'string' ? latestCode : (typeof currentContent === 'string' ? currentContent : '');
+            if (path === activeFile.path) return typeof latestCode === 'string' ? latestCode : getLatestCurrentContent();
             const cached = fileCache.get(path);
             if (cached !== undefined) return cached;
             return await api.fetchFileContent(slug, path);
@@ -2141,7 +2207,7 @@ export default function EditorPage({ params }) {
             if (msg.includes('HMR restart') || msg.includes('Cancelled')) return;
             console.error('[HMR] HMR re-run failed', err);
         }
-    }, [activeFile, currentContent, rawFiles, slug, compile, hmrEnabled, runInGuiMode, isGuiRunning, client]);
+    }, [activeFile, rawFiles, slug, compile, hmrEnabled, runInGuiMode, isGuiRunning, client, getLatestCurrentContent]);
 
     const handleEditorMount = useCallback((editorInstance) => {
         setEditor(editorInstance);
@@ -2158,7 +2224,7 @@ export default function EditorPage({ params }) {
         setChatVisible((v) => !v);
     }, []);
 
-    const handleUndo = () => {
+    const handleUndo = useCallback(() => {
         if (editor) {
             const currentValue = editor.getValue();
             // Prevent undo if no change since initial load
@@ -2166,19 +2232,19 @@ export default function EditorPage({ params }) {
                 editor.trigger('keyboard', 'undo', null);
             }
         }
-    };
+    }, [editor, initialContent]);
 
-    const handleRedo = () => {
+    const handleRedo = useCallback(() => {
         if (editor) {
             editor.trigger('keyboard', 'redo', null);
         }
-    };
+    }, [editor]);
 
-    const handleCopyLineUp = () => editor?.getAction('editor.action.copyLinesUpAction')?.run();
-    const handleCopyLineDown = () => editor?.getAction('editor.action.copyLinesDownAction')?.run();
-    const handleMoveLineUp = () => editor?.getAction('editor.action.moveLinesUpAction')?.run();
-    const handleMoveLineDown = () => editor?.getAction('editor.action.moveLinesDownAction')?.run();
-    const handleDuplicateSelection = () => editor?.getAction('editor.action.duplicateSelection')?.run();
+    const handleCopyLineUp = useCallback(() => editor?.getAction('editor.action.copyLinesUpAction')?.run(), [editor]);
+    const handleCopyLineDown = useCallback(() => editor?.getAction('editor.action.copyLinesDownAction')?.run(), [editor]);
+    const handleMoveLineUp = useCallback(() => editor?.getAction('editor.action.moveLinesUpAction')?.run(), [editor]);
+    const handleMoveLineDown = useCallback(() => editor?.getAction('editor.action.moveLinesDownAction')?.run(), [editor]);
+    const handleDuplicateSelection = useCallback(() => editor?.getAction('editor.action.duplicateSelection')?.run(), [editor]);
 
     const EditorPanelComponent = (
         <EditorPanel
@@ -2277,7 +2343,6 @@ export default function EditorPage({ params }) {
                         <SettingsPanelContent />
                     ) : sidebarView === 'ai-healing' ? (
                         <AIHealingPanel aiHealing={aiHealing} />
-                    ) : (
                     ) : sidebarView ? (
                         <div className="flex flex-col h-full min-h-0">
                             <div className="flex-1 min-h-0 overflow-y-auto">
@@ -2300,7 +2365,7 @@ export default function EditorPage({ params }) {
                 isVisible={chatVisible}
                 onClose={() => setChatVisible(false)}
                 activeFile={activeFile}
-                currentCode={currentContent}
+                getCurrentCode={getLatestCurrentContent}
                 editor={editor}
                 onSuggest={(s) => setLatestCompletion(s)}
                 onBusy={(b) => setAiBusy(Boolean(b))}
@@ -2311,7 +2376,14 @@ export default function EditorPage({ params }) {
         </ResizablePanel>
     );
 
-    // Floating emulator window (renders outside the panel layout)
+    const onSuggestCb = useCallback((s) => setLatestCompletion(s), []);
+    const onBusyCb = useCallback((b) => setAiBusy(Boolean(b)), []);
+    const onCloseProblemsCb = useCallback(() => setShowProblemsPanel(false), []);
+    const onOpenScmCb = useCallback(() => setSidebarView('scm'), []);
+    const onToggleTerminalCb = useCallback(() => dispatch(toggleTerminal()), [dispatch]);
+    const onProblemsClickCb = useCallback(() => setShowProblemsPanel(prev => !prev), []);
+
+    // ── Floating emulator window (renders outside the panel layout)
     // This is now independent of the ResizablePanelGroup structure
     const FloatingEmulator = showEmulatorPreview ? (
         <FloatingEmulatorWindow
@@ -2341,6 +2413,62 @@ export default function EditorPage({ params }) {
         />
     ) : null;
 
+    // ── Memoised editorProps (nested object in panelProps) ─────────────────────
+    const memoEditorProps = useMemo(() => ({
+        innerRef: setEditor,
+        slug,
+        showTerminal,
+        analyzeCode,
+        analyzeUnified,
+        lastResult,
+        isAnalyzing: isAnalyzingGateway,
+        connectionMeta,
+        latestCompletion,
+        completionClearSignal,
+        onRun: handleRun,
+        onSave: handleSave,
+        onToggleTerminal: onToggleTerminalCb,
+        onEditorMount: handleEditorMount,
+        analysisResult: lastResult,
+        diagnostics: mergedDiagnostics,
+        onAiDiagnosticsRecalibrated: handleAiDiagnosticsRecalibrated,
+        removeDiagnosticByLocation,
+        aiBusy,
+        onClearCompletion: handleClearLatestCompletion,
+        chatVisible,
+        collabHostId,
+    }), [
+        slug, showTerminal, analyzeCode, analyzeUnified, lastResult,
+        isAnalyzingGateway, connectionMeta, latestCompletion, completionClearSignal,
+        handleRun, handleSave, onToggleTerminalCb, handleEditorMount,
+        mergedDiagnostics, handleAiDiagnosticsRecalibrated, removeDiagnosticByLocation,
+        aiBusy, handleClearLatestCompletion, chatVisible, collabHostId,
+    ]);
+
+    // ── Memoised panelProps (the mega-object passed to DockableWorkspace) ──────
+    const memoPanelProps = useMemo(() => ({
+        editor,
+        activeFile,
+        diagnostics: mergedDiagnostics,
+        diagnosticSummary,
+        isAnalyzing: isAnalyzingProactive || isWorkspaceAnalyzing,
+        onSuggest: onSuggestCb,
+        onBusy: onBusyCb,
+        getCurrentCode: getLatestCurrentContent,
+        clearSignal: completionClearSignal,
+        initialPrompt: jumpstartPrompt,
+        initialAttachments: jumpstartAttachments,
+        onCloseProblems: onCloseProblemsCb,
+        onToggleOrientation: toggleTreeOrientation,
+        onOpenScm: onOpenScmCb,
+        editorProps: memoEditorProps,
+    }), [
+        editor, activeFile, mergedDiagnostics, diagnosticSummary,
+        isAnalyzingProactive, isWorkspaceAnalyzing, onSuggestCb, onBusyCb,
+        getLatestCurrentContent, completionClearSignal, jumpstartPrompt, jumpstartAttachments,
+        onCloseProblemsCb, toggleTreeOrientation, onOpenScmCb, memoEditorProps,
+    ]);
+
     if (workspaceMissing) {
         return <WorkspaceNotFoundModal slug={slug} message={workspaceMissingMessage} open={true} />;
     }
@@ -2367,7 +2495,7 @@ export default function EditorPage({ params }) {
                         onStop={handleStop}
                         onReload={handleRestart}
                         isRunning={isCompiling}
-                        onToggleTerminal={() => dispatch(toggleTerminal())}
+                        onToggleTerminal={onToggleTerminalCb}
                         onUndo={handleUndo}
                         onRedo={handleRedo}
                         onToggleChat={handleToggleChat}
@@ -2409,47 +2537,7 @@ export default function EditorPage({ params }) {
                                 <DockableWorkspace
                                     workspaceSlug={slug}
                                     defaultPreset="classic"
-                                    panelProps={{
-                                        editor,
-                                        activeFile,
-                                        currentCode: currentContent,
-                                        diagnostics: mergedDiagnostics,
-                                        diagnosticSummary,
-                                        isAnalyzing: isAnalyzingProactive || isWorkspaceAnalyzing,
-                                        onSuggest: (s) => setLatestCompletion(s),
-                                        onBusy: (b) => setAiBusy(Boolean(b)),
-                                        clearSignal: completionClearSignal,
-                                        initialPrompt: jumpstartPrompt,
-                                        initialAttachments: jumpstartAttachments,
-                                        onCloseProblems: () => setShowProblemsPanel(false),
-                                        onToggleOrientation: toggleTreeOrientation,
-                                        onOpenScm: () => setSidebarView('scm'),
-                                        aiHealing,
-                                        editorProps: {
-                                            innerRef: setEditor,
-                                            slug,
-                                            showTerminal,
-                                            analyzeCode,
-                                            analyzeUnified,
-                                            lastResult,
-                                            isAnalyzing: isAnalyzingGateway,
-                                            connectionMeta,
-                                            latestCompletion,
-                                            completionClearSignal,
-                                            onRun: handleRun,
-                                            onSave: handleSave,
-                                            onToggleTerminal: () => dispatch(toggleTerminal()),
-                                            onEditorMount: handleEditorMount,
-                                            analysisResult: lastResult,
-                                            diagnostics: mergedDiagnostics,
-                                            onAiDiagnosticsRecalibrated: handleAiDiagnosticsRecalibrated,
-                                            removeDiagnosticByLocation,
-                                            aiBusy,
-                                            onClearCompletion: handleClearLatestCompletion,
-                                            chatVisible,
-                                            collabHostId,
-                                        },
-                                    }}
+                                    panelProps={memoPanelProps}
                                 />
                             ) : (
                                 <ResizablePanelGroup
@@ -2609,7 +2697,7 @@ export default function EditorPage({ params }) {
                     slug={slug}
                     diagnosticSummary={diagnosticSummary}
                     isAnalyzing={isAnalyzingProactive || isWorkspaceAnalyzing}
-                    onProblemsClick={() => setShowProblemsPanel(prev => !prev)}
+                    onProblemsClick={onProblemsClickCb}
                     extensionStatusBarItems={extensionStatusBarItems}
                     vscodeServerState={vscodeServerState}
                 />

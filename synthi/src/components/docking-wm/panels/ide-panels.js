@@ -31,28 +31,6 @@ import {
 import { IDE_PANEL } from './panel-types';
 
 // ────────────────────────────────────────────────────────
-//  Panel mappings for the registry
-// ────────────────────────────────────────────────────────
-export const IDE_PANEL = Object.freeze({
-  EXPLORER:   'explorer',
-  SEARCH:     'search',
-  GIT:        'git',
-  EXTENSIONS: 'extensions',
-  EXTENSION_VIEW: 'extension-view',
-  EDITOR:     'editor',
-  TERMINAL:   'terminal',
-  CHAT:       'chat',
-  PROBLEMS:   'problems',
-  OUTPUT:     'output',
-  PREVIEW:    'preview',
-  SETTINGS:   'settings',
-  THEME_EDITOR: 'theme-editor',
-  PULL_REQUESTS: 'pullrequests',
-  COMMIT_HISTORY: 'commithistory',
-  AI_HEALING: 'ai-healing',
-});
-
-// ────────────────────────────────────────────────────────
 //  Panel definition objects
 // ────────────────────────────────────────────────────────
 

@@ -109,7 +109,12 @@ async function materialize(slug, repoPath, userId) {
       console.log(`[RepoCache] GCS download for ${label}: ${res.success} files`);
     } catch (e) {
       console.error(`[RepoCache] GCS materialise failed for ${label}:`, e.message);
-      // Continue anyway — the repo dir exists, callers can init/clone as needed
+      // If GCS download failed, ensure we don't leave a partial/corrupt state that looks "ready"
+      // to the fast-path check (existence of .git). Force removal of .git so future
+      // acquire calls retry the download.
+      try {
+        await fsp.rm(path.join(repoPath, '.git'), { recursive: true, force: true });
+      } catch (_) { /* ignore */ }
     }
   }
 

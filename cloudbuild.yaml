@@ -1,0 +1,286 @@
+# ─────────────────────────────────────────────────────────────────────────────
+#  Synthi IDE — Cloud Build CI/CD Pipeline
+# ─────────────────────────────────────────────────────────────────────────────
+#  Trigger: Push to main branch
+#  Steps:  Build (Kaniko, parallel) → Vulnerability Scan → Deploy (kubectl)
+#
+#  Substitutions (override via trigger config or --substitutions):
+#    _REGION:       Artifact Registry + GKE region    (default: europe-west10)
+#    _GKE_CLUSTER:  GKE cluster name
+#    _GKE_ZONE:     GKE cluster zone / location
+#
+#  Prerequisites:
+#    1. Artifact Registry repo:
+#         gcloud artifacts repositories create synthi \
+#           --repository-format=docker --location=europe-west10
+#    2. IAM for Cloud Build service account:
+#         roles/artifactregistry.writer
+#         roles/container.developer
+#         roles/iam.serviceAccountUser
+#    3. Cloud Build trigger:
+#         gcloud builds triggers create github \
+#           --name="synthi-deploy-main" \
+#           --repo-name="synthi-ide" --repo-owner="YOUR_ORG" \
+#           --branch-pattern="^main$" --build-config="cloudbuild.yaml"
+# ─────────────────────────────────────────────────────────────────────────────
+
+substitutions:
+  _REGION: europe-west10
+  _GKE_CLUSTER: synthi-beta-cluster
+  _GKE_ZONE: europe-west10-a
+  _REGISTRY: ${_REGION}-docker.pkg.dev/${PROJECT_ID}/synthi
+  _IMAGE_TAG: ${BUILD_ID}
+
+  # NEXT_PUBLIC_* build args baked into the frontend client bundle.
+  # Override these per environment via trigger substitutions.
+  _NEXT_PUBLIC_COLLAB_SERVER_URL: "https://beta.synthi.app/collab"
+  _NEXT_PUBLIC_YSWEET_URL: "https://beta.synthi.app/ysweet"
+  _NEXT_PUBLIC_COLLAB_PORT: "443"
+  _NEXT_PUBLIC_COMPILE_SIGNAL_URL: "wss://beta.synthi.app/signal"
+  _NEXT_PUBLIC_GATEWAY_WS_URL: "wss://beta.synthi.app/gateway/ws"
+  _NEXT_PUBLIC_CODE_INTEL_URL: "https://beta.synthi.app"
+  _NEXT_PUBLIC_AI_ENGINE_URL: "https://beta.synthi.app"
+
+options:
+  machineType: E2_HIGHCPU_8
+  logging: CLOUD_LOGGING_ONLY
+  dynamic_substitutions: true
+
+tags:
+  - synthi-ide
+  - main-deploy
+
+steps:
+  # ───────────────────────────────────────────────────────────────────────────
+  # BUILD — All 6 services in parallel via Kaniko (layer-cached)
+  # ───────────────────────────────────────────────────────────────────────────
+
+  # ── 0. Prepare Next.js environment ───────────────────────────────────────
+  - id: prepare-frontend-env
+    waitFor: ['-']
+    name: 'ubuntu'
+    entrypoint: 'bash'
+    env:
+      - 'NEXT_PUBLIC_COLLAB_SERVER_URL=${_NEXT_PUBLIC_COLLAB_SERVER_URL}'
+      - 'NEXT_PUBLIC_YSWEET_URL=${_NEXT_PUBLIC_YSWEET_URL}'
+      - 'NEXT_PUBLIC_COLLAB_PORT=${_NEXT_PUBLIC_COLLAB_PORT}'
+      - 'NEXT_PUBLIC_COMPILE_SIGNAL_URL=${_NEXT_PUBLIC_COMPILE_SIGNAL_URL}'
+      - 'NEXT_PUBLIC_GATEWAY_WS_URL=${_NEXT_PUBLIC_GATEWAY_WS_URL}'
+      - 'NEXT_PUBLIC_CODE_INTEL_URL=${_NEXT_PUBLIC_CODE_INTEL_URL}'
+      - 'NEXT_PUBLIC_AI_ENGINE_URL=${_NEXT_PUBLIC_AI_ENGINE_URL}'
+    args:
+      - '-c'
+      - |
+        cat <<EOF > synthi/.env.production
+        NEXT_PUBLIC_COLLAB_SERVER_URL=$$NEXT_PUBLIC_COLLAB_SERVER_URL
+        NEXT_PUBLIC_YSWEET_URL=$$NEXT_PUBLIC_YSWEET_URL
+        NEXT_PUBLIC_COLLAB_PORT=$$NEXT_PUBLIC_COLLAB_PORT
+        NEXT_PUBLIC_COMPILE_SIGNAL_URL=$$NEXT_PUBLIC_COMPILE_SIGNAL_URL
+        NEXT_PUBLIC_GATEWAY_WS_URL=$$NEXT_PUBLIC_GATEWAY_WS_URL
+        NEXT_PUBLIC_CODE_INTEL_URL=$$NEXT_PUBLIC_CODE_INTEL_URL
+        NEXT_PUBLIC_AI_ENGINE_URL=$$NEXT_PUBLIC_AI_ENGINE_URL
+        EOF
+
+  # ── 1. Frontend (Next.js) ────────────────────────────────────────────────
+  - id: build-frontend
+    waitFor: ['prepare-frontend-env']
+    name: gcr.io/kaniko-project/executor:latest
+    args:
+      - --dockerfile=synthi/Dockerfile
+      - --context=dir:///workspace/synthi
+      - --destination=${_REGISTRY}/synthi-frontend:${_IMAGE_TAG}
+      - --destination=${_REGISTRY}/synthi-frontend:latest
+      - --cache=true
+      - --cache-ttl=168h
+
+  # ── 2. Collab Server (Node.js) ──────────────────────────────────────────
+  - id: build-collab-server
+    waitFor: ['-']
+    name: gcr.io/kaniko-project/executor:latest
+    args:
+      - --dockerfile=backend/collab-server/Dockerfile
+      - --context=dir:///workspace/backend/collab-server
+      - --destination=${_REGISTRY}/synthi-collab-server:${_IMAGE_TAG}
+      - --destination=${_REGISTRY}/synthi-collab-server:latest
+      - --cache=true
+      - --cache-ttl=168h
+
+  # ── 3. AI Engine (Python FastAPI) ───────────────────────────────────────
+  - id: build-ai-engine
+    waitFor: ['-']
+    name: gcr.io/kaniko-project/executor:latest
+    args:
+      - --dockerfile=ai-backend/ai-engine/Dockerfile
+      - --context=dir:///workspace/ai-backend/ai-engine
+      - --destination=${_REGISTRY}/synthi-ai-engine:${_IMAGE_TAG}
+      - --destination=${_REGISTRY}/synthi-ai-engine:latest
+      - --cache=true
+      - --cache-ttl=168h
+
+  # ── 4. AI Gateway (Node.js WS proxy) ───────────────────────────────────
+  - id: build-ai-gateway
+    waitFor: ['-']
+    name: gcr.io/kaniko-project/executor:latest
+    args:
+      - --dockerfile=ai-backend/gateway/Dockerfile
+      - --context=dir:///workspace/ai-backend/gateway
+      - --destination=${_REGISTRY}/synthi-ai-gateway:${_IMAGE_TAG}
+      - --destination=${_REGISTRY}/synthi-ai-gateway:latest
+      - --cache=true
+      - --cache-ttl=168h
+
+  # ── 5. Signaling Server (Rust) ─────────────────────────────────────────
+  - id: build-signaling
+    waitFor: ['build-frontend']
+    name: gcr.io/kaniko-project/executor:latest
+    args:
+      - --dockerfile=backend/synthi-webrtc-compiler/signaling-server/Dockerfile
+      - --context=dir:///workspace/backend/synthi-webrtc-compiler/signaling-server
+      - --destination=${_REGISTRY}/synthi-signaling-server:${_IMAGE_TAG}
+      - --destination=${_REGISTRY}/synthi-signaling-server:latest
+      - --cache=true
+      - --cache-ttl=168h
+
+  # ── 6. Worker (Rust + GStreamer — large image, extended timeout) ────────
+  - id: build-worker
+    waitFor: ['build-signaling']
+    name: gcr.io/kaniko-project/executor:latest
+    args:
+      - --dockerfile=backend/synthi-webrtc-compiler/worker/Dockerfile
+      - --context=dir:///workspace/backend/synthi-webrtc-compiler/worker
+      - --destination=${_REGISTRY}/synthi-worker:${_IMAGE_TAG}
+      - --destination=${_REGISTRY}/synthi-worker:latest
+      - --cache=true
+      - --cache-ttl=168h
+    timeout: 1800s
+
+  # ── 7. Prisma Migration Image (lightweight, for K8s Job) ────────────────
+  - id: build-prisma-migrate
+    waitFor: ['-']
+    name: gcr.io/kaniko-project/executor:latest
+    args:
+      - --dockerfile=synthi/Dockerfile.migrate
+      - --context=dir:///workspace/synthi
+      - --destination=${_REGISTRY}/synthi-prisma-migrate:${_IMAGE_TAG}
+      - --destination=${_REGISTRY}/synthi-prisma-migrate:latest
+      - --cache=true
+      - --cache-ttl=168h
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # SCAN — Vulnerability scan on representative images
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - id: vulnerability-scan
+    name: gcr.io/cloud-builders/gcloud
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        echo "=== Vulnerability Scan ==="
+
+        for IMAGE in \
+          "${_REGISTRY}/synthi-frontend:${_IMAGE_TAG}" \
+          "${_REGISTRY}/synthi-collab-server:${_IMAGE_TAG}" \
+          "${_REGISTRY}/synthi-ai-engine:${_IMAGE_TAG}"
+        do
+          echo ""
+          echo "Scanning: $${IMAGE}"
+          SCAN_ID=$$(gcloud artifacts docker images scan "$${IMAGE}" \
+            --format='value(response.scan)' \
+            --project=${PROJECT_ID} 2>/dev/null) || { echo "  Scan unavailable, skipping"; continue; }
+
+          echo "  Scan ID: $${SCAN_ID}"
+          CRITICAL=$$(gcloud artifacts docker images list-vulnerabilities "$${SCAN_ID}" \
+            --format='value(vulnerability.effectiveSeverity)' \
+            --project=${PROJECT_ID} 2>/dev/null | grep -c CRITICAL || true)
+
+          echo "  Critical vulnerabilities: $${CRITICAL}"
+          if [ "$${CRITICAL}" -gt 0 ]; then
+            echo "  WARNING: Critical vulnerabilities found in $${IMAGE}"
+            gcloud artifacts docker images list-vulnerabilities "$${SCAN_ID}" \
+              --format='table(vulnerability.effectiveSeverity, vulnerability.shortDescription)' \
+              --project=${PROJECT_ID} 2>/dev/null | head -20
+          fi
+        done
+
+        echo ""
+        echo "=== Scan complete (informational — does not block deploy) ==="
+    waitFor:
+      - build-frontend
+      - build-collab-server
+      - build-ai-engine
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # DEPLOY — Rolling update on GKE
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - id: get-gke-credentials
+    name: gcr.io/cloud-builders/gcloud
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        gcloud container clusters get-credentials ${_GKE_CLUSTER} \
+          --zone=${_GKE_ZONE} \
+          --project=${PROJECT_ID}
+    waitFor:
+      - build-frontend
+      - build-collab-server
+      - build-ai-engine
+      - build-ai-gateway
+      - build-signaling
+      - build-worker
+
+  - id: deploy-to-gke
+    name: gcr.io/cloud-builders/kubectl
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        REGISTRY="${_REGISTRY}"
+        TAG="${_IMAGE_TAG}"
+        NS="synthi"
+
+        echo "=== Deploying tag: $${TAG} ==="
+
+        # Apply manifest changes first so Services, Ingress, ConfigMaps,
+        # BackendConfigs, and Deployment specs stay in sync with the images.
+        kubectl apply -k k8s/
+
+        # Update the worker image in ConfigMap before restarting collab-server.
+        # The dynamic spawner reads WORKER_IMAGE from its process env, so the
+        # collab rollout must happen after this patch.
+        kubectl patch configmap synthi-config -n $${NS} \
+          -p "{\"data\":{\"WORKER_IMAGE\":\"$${REGISTRY}/synthi-worker:$${TAG}\"}}"
+
+        # Update each Deployment's container image
+        kubectl set image deployment/frontend \
+          nextjs=$${REGISTRY}/synthi-frontend:$${TAG} -n $${NS}
+
+        kubectl set image deployment/collab-server \
+          collab=$${REGISTRY}/synthi-collab-server:$${TAG} -n $${NS}
+
+        kubectl set image deployment/ai-engine \
+          ai-engine=$${REGISTRY}/synthi-ai-engine:$${TAG} -n $${NS}
+
+        kubectl set image deployment/ai-gateway \
+          gateway=$${REGISTRY}/synthi-ai-gateway:$${TAG} -n $${NS}
+
+        kubectl set image deployment/signaling-server \
+          signaling=$${REGISTRY}/synthi-signaling-server:$${TAG} -n $${NS}
+
+        echo "=== Waiting for rollouts ==="
+        kubectl rollout status deployment/frontend -n $${NS} --timeout=300s
+        kubectl rollout status deployment/collab-server -n $${NS} --timeout=300s
+        kubectl rollout status deployment/ai-engine -n $${NS} --timeout=300s
+        kubectl rollout status deployment/ai-gateway -n $${NS} --timeout=300s
+        kubectl rollout status deployment/signaling-server -n $${NS} --timeout=300s
+
+        echo "=== Deploy complete ==="
+    waitFor:
+      - get-gke-credentials
+      - vulnerability-scan
+
+timeout: 3600s

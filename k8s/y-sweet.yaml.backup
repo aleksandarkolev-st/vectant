@@ -1,0 +1,106 @@
+# ─────────────────────────────────────────────────────────────────────────────
+#  Synthi IDE — Y-Sweet (Yrs/CRDT document server)
+# ─────────────────────────────────────────────────────────────────────────────
+#  Handles:
+#    - Yjs WebSocket relay (standard sync protocol)
+#    - CRDT document persistence to GCS
+#    - Horizontal scaling — each pod is stateless; GCS is the store
+#
+#  Docs: https://github.com/jamsocket/y-sweet
+#  Image: ghcr.io/jamsocket/y-sweet
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: y-sweet
+  namespace: synthi
+  labels:
+    app: y-sweet
+    app.kubernetes.io/part-of: synthi-ide
+spec:
+  replicas: 2    # Stateless — scale freely behind the Service
+  selector:
+    matchLabels:
+      app: y-sweet
+  template:
+    metadata:
+      labels:
+        app: y-sweet
+    spec:
+      securityContext:
+        #runAsNonRoot: true
+      containers:
+        - name: y-sweet
+          image: ghcr.io/jamsocket/y-sweet:latest
+          command: ['y-sweet']
+          args:
+            - serve
+            - --host=0.0.0.0
+            - --port=8080
+          ports:
+            - containerPort: 8080
+              name: http-ws
+          env:
+            # ── Storage ─────────────────────────────────────────────────────
+            # Y-Sweet persists CRDT state to a GCS bucket.
+            # Format: gcs://<bucket>/<prefix>
+            - name: Y_SWEET_STORE
+              value: "gcs://$(GCS_BUCKET_NAME)/ysweet"
+            - name: GCS_BUCKET_NAME
+              valueFrom:
+                configMapKeyRef:
+                  name: synthi-config
+                  key: GCS_BUCKET_NAME
+            # GCS auth via Workload Identity or service-account key
+            - name: GCP_CLIENT_EMAIL
+              valueFrom:
+                secretKeyRef:
+                  name: synthi-secrets
+                  key: GCP_CLIENT_EMAIL
+            - name: GCP_PRIVATE_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: synthi-secrets
+                  key: GCP_PRIVATE_KEY
+            # ── Auth ────────────────────────────────────────────────────────
+            - name: Y_SWEET_AUTH_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: synthi-secrets
+                  key: YSWEET_AUTH_KEY
+                  optional: true
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: "1"
+              memory: 512Mi
+          readinessProbe:
+            tcpSocket:
+                port: 8080
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+                port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 20
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: y-sweet
+  namespace: synthi
+  labels:
+    app: y-sweet
+    app.kubernetes.io/part-of: synthi-ide
+  annotations:
+    cloud.google.com/backend-config: '{"default": "ws-backend-config"}'
+spec:
+  selector:
+    app: y-sweet
+  ports:
+    - port: 8080
+      targetPort: 8080
+      name: http-ws
