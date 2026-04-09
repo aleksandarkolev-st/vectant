@@ -58,3 +58,6 @@ pub mod wave05_integration_tests;
 
 #[cfg(test)]
 pub mod wave06_integration_tests;
+
+#[cfg(test)]
+pub mod wave07_integration_tests;
