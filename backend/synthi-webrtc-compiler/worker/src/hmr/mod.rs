@@ -11,6 +11,7 @@ pub mod candidate;
 pub mod compile_enrichment;
 pub mod deterministic_compile;
 pub mod diagnostics;
+pub mod dynlib_swap;
 pub mod fast_refresh;
 pub mod health_check;
 pub mod hmr_eligibility;
