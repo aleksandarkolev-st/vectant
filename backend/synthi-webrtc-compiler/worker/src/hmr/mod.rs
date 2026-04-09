@@ -34,4 +34,5 @@ pub mod slot_manager;
 pub mod state_diff;
 pub mod state_manager;
 pub mod state_type_id;
+pub mod symbol_validation;
 pub mod telemetry;
