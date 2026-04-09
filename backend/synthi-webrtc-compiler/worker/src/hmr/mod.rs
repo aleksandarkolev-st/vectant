@@ -3,6 +3,7 @@ pub mod binary_state;
 pub mod build_manifest;
 pub mod diagnostics;
 pub mod fast_refresh;
+pub mod health_check;
 pub mod incremental_cache;
 pub mod lifecycle_machine;
 pub mod orchestrator;
