@@ -12,6 +12,8 @@ pub mod orchestrator;
 pub mod planner;
 pub mod planner_decision;
 pub mod planner_glue;
+#[cfg(test)]
+pub mod planner_integration_tests;
 pub mod preview_lifecycle;
 pub mod reload_manager;
 pub mod reload_protocol;
