@@ -41,6 +41,7 @@ pub mod incremental_cache;
 pub mod lifecycle_machine;
 pub mod loop_b_triggers;
 pub mod loop_classifier;
+pub mod managed_runtime_adapter;
 pub mod orchestrator;
 pub mod planner;
 pub mod planner_decision;
