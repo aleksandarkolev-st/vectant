@@ -1,3 +1,4 @@
+pub mod adapter_matrix;
 pub mod binary_state;
 pub mod build_manifest;
 pub mod diagnostics;
