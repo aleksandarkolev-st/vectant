@@ -17,6 +17,7 @@ pub mod candidate_watchdog;
 pub mod compile_enrichment;
 pub mod deterministic_compile;
 pub mod diagnostics;
+pub mod dirty_classifier;
 pub mod dynlib_swap;
 pub mod fast_refresh;
 pub mod health_check;
