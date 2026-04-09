@@ -4,6 +4,7 @@ pub mod adapter_matrix;
 pub mod binary_state;
 pub mod build_manifest;
 pub mod candidate;
+pub mod deterministic_compile;
 pub mod diagnostics;
 pub mod fast_refresh;
 pub mod health_check;
