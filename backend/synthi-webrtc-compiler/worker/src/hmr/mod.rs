@@ -67,6 +67,7 @@ pub mod process_swap_adapter;
 pub mod process_swap_drain;
 pub mod process_swap_handoff;
 pub mod process_swap_socket_handoff;
+pub mod process_swap_state_transfer;
 pub mod promotion_policy;
 pub mod rebuild_scope;
 pub mod reload_manager;
