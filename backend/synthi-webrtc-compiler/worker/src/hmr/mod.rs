@@ -37,6 +37,7 @@ pub mod planner_glue;
 pub mod planner_integration_tests;
 pub mod preview_lifecycle;
 pub mod promotion_policy;
+pub mod rebuild_scope;
 pub mod reload_manager;
 pub mod reload_protocol;
 pub mod rollback_notification;
