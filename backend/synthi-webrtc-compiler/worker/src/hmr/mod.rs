@@ -38,3 +38,6 @@ pub mod state_type_id;
 pub mod swap_rollback;
 pub mod symbol_validation;
 pub mod telemetry;
+
+#[cfg(test)]
+pub mod wave05_integration_tests;
