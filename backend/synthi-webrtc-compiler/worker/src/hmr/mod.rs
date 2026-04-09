@@ -7,6 +7,7 @@ pub mod ai_extraction_tests;
 pub mod ai_gate;
 pub mod ai_request_contract;
 pub mod ai_response_validator;
+pub mod ai_timeout_guardian;
 pub mod binary_state;
 pub mod build_manifest;
 pub mod cache_writer;
