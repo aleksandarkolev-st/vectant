@@ -34,6 +34,7 @@ pub mod dynlib_adapter;
 pub mod dynlib_abi_contract;
 pub mod dynlib_build_hooks;
 pub mod dynlib_crash_isolation;
+pub mod dynlib_metrics;
 pub mod dynlib_preload_validator;
 pub mod dynlib_reload;
 pub mod dynlib_state_bridge;
