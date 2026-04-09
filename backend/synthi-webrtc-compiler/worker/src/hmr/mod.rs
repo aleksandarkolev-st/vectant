@@ -15,6 +15,7 @@ pub mod dynlib_swap;
 pub mod fast_refresh;
 pub mod health_check;
 pub mod hmr_eligibility;
+pub mod hot_swap_coordinator;
 pub mod incremental_cache;
 pub mod lifecycle_machine;
 pub mod loop_b_triggers;
