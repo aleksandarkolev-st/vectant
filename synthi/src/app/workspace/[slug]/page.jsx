@@ -59,6 +59,11 @@ import { preCompileHeal, detectLanguage } from '@/services/preCompileHealer';
 import { resolveDependencies } from '@/utils/dependencyResolver';
 import { DraggableVideoWidget } from '@/components/DraggableVideoWidget';
 import { useHMR } from '@/hooks/useHMR';
+import { useRuntimeHealing } from '@/hooks/useRuntimeHealing';
+import { useRetryCompile } from '@/hooks/useRetryCompile';
+import { HMRStatusIndicator } from '@/components/HMRStatusIndicator';
+import { RuntimeHealingIndicator } from '@/components/healing/RuntimeHealingIndicator';
+import { installPreviewBridge } from '@/lib/preview-store-bridge';
 import ErrorOverlay from '@/components/ErrorOverlay';
 import { GitStatus } from '@/components/git/GitStatus';
 import { GitSummaryPanel } from '@/components/git/GitSummaryPanel';
@@ -144,6 +149,15 @@ export default function EditorPage({ params }) {
     const { analyzeCode, analyzeProactive, analyzeContainer, analyzeUnified, lastResult, isAnalyzing: isAnalyzingGateway, connectionMeta } = gateway;
     const { client, compile, mediaStream, cancelMobileJob, isCompiling, status: compilerStatus } = useCompiler();
     useHMR();
+    const healingState = useRuntimeHealing({ editorRef, gateway });
+    const { canRetry, retryCount, isRetrying, retry } = useRetryCompile({ compilerClient: client, autoRetry: true });
+
+    // Install preview-store bridge (routes window events → preview store)
+    useEffect(() => {
+        const cleanup = installPreviewBridge();
+        return cleanup;
+    }, []);
+
     const activeFile = useAppSelector(selectActiveFile);
 
     // ─── Self-Healing system ───────────────────────────────
@@ -2704,6 +2718,10 @@ export default function EditorPage({ params }) {
 
                 {/* Error Overlay */}
                 <ErrorOverlay />
+
+                {/* HMR Status + Runtime Healing indicators */}
+                <HMRStatusIndicator />
+                <RuntimeHealingIndicator healingState={healingState} />
 
                 {/* Floating Emulator Window - rendered outside panel layout */}
                 {FloatingEmulator}

@@ -86,6 +86,15 @@ function handleGuiEnd(_e) {
   resetPreviewStore();
 }
 
+function handleRetryCompile(_e) {
+  // Runtime healing dispatches synthi:retry-compile after applying a fix.
+  // Transition the preview store to COMPILE_REQUESTED so useRetryCompile
+  // and other subscribers see the state change and trigger a recompile.
+  transitionPreview(PreviewLifecycleState.COMPILE_REQUESTED, {
+    reason: 'runtime-healing',
+  });
+}
+
 /**
  * Install event listeners that bridge CompilerClient events → preview store.
  * Returns a cleanup function.
@@ -100,6 +109,7 @@ export function installPreviewBridge() {
   window.addEventListener('synthi:hmr-update', handleHmrUpdate);
   window.addEventListener('synthi:gui-start', handleGuiStart);
   window.addEventListener('synthi:gui-end', handleGuiEnd);
+  window.addEventListener('synthi:retry-compile', handleRetryCompile);
 
   return () => {
     window.removeEventListener('synthi:compile-diagnostics', handleCompileDiagnostics);
@@ -107,5 +117,6 @@ export function installPreviewBridge() {
     window.removeEventListener('synthi:hmr-update', handleHmrUpdate);
     window.removeEventListener('synthi:gui-start', handleGuiStart);
     window.removeEventListener('synthi:gui-end', handleGuiEnd);
+    window.removeEventListener('synthi:retry-compile', handleRetryCompile);
   };
 }

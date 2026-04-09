@@ -1,5 +1,6 @@
 use crate::compiler::builder::RebuildScope;
 use crate::compiler::context::CompileContext;
+use crate::compiler::error_parser::{parse_compiler_output, CompilerType};
 use crate::compiler::stages::ai_utils::calculate_hash;
 use crate::hmr::incremental_cache::IncrementalCache;
 use crate::infra::utils::system_command;
@@ -103,6 +104,27 @@ pub async fn compile_core(
                     // container logs — not just the data channel (which may be
                     // disconnected or its send may silently fail).
                     eprintln!("[CompileCore] g++ FAILED:\n{}", stderr);
+
+                    // Parse structured diagnostics from g++ JSON output
+                    let report = parse_compiler_output(&stderr, "core", CompilerType::Gcc, true);
+                    let diagnostics_json = report.to_json();
+                    let diag_payload = serde_json::json!({
+                        "sessionId": session_id.clone(),
+                        "type": "compile_diagnostics",
+                        "language": "cpp",
+                        "diagnostics": serde_json::from_str::<serde_json::Value>(&diagnostics_json).unwrap_or_default(),
+                        "error_count": report.error_count,
+                        "warning_count": report.warning_count,
+                        "stage": "compile_core"
+                    });
+                    if let Err(e) = ctx
+                        .log_dc
+                        .send_text(serde_json::to_string(&diag_payload).unwrap_or_default())
+                        .await
+                    {
+                        eprintln!("Failed to send diagnostics: {}", e);
+                    }
+
                     let payload = serde_json::json!({
                         "sessionId": session_id.clone(),
                         "status": "done",

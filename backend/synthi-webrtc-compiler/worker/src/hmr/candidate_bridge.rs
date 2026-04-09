@@ -7,7 +7,6 @@
 // each build completes.
 // ============================================================
 
-#![allow(dead_code)]
 
 use serde::{Deserialize, Serialize};
 

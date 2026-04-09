@@ -636,20 +636,22 @@ pub async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value>
     }
 
     // Level 3: Full AI Split
-    // The AI engine exposes /refactor/split (NOT /generate/split).
-    // It expects an AnalyzeAiRequest: { code, lang, mode?, ... }
-    // and returns { result: "<raw LLM JSON string>", lang }.
+    // The AI engine exposes /refactor/split/verified for verified splitting.
+    // It expects a VerifiedAiRequest: { code, lang, mode?, verify?, auto_repair?, ... }
+    // and returns { result: "<raw LLM JSON string>", lang, verified, ... }.
     // The LLM JSON inside "result" is: { core: {filename, content}, gui: {...}, shared: {...} }
     let client = reqwest::Client::new();
     let payload = serde_json::json!({
         "code": req.source,
         "lang": req.language,
-        "mode": "split"
+        "mode": "split",
+        "verify": true,
+        "auto_repair": true
     });
 
     let backend_url = get_ai_backend_url();
-    let url = format!("{}/refactor/split", backend_url);
-    eprintln!("[AI Split] Calling FULL AI split endpoint: {}", url);
+    let url = format!("{}/refactor/split/verified", backend_url);
+    eprintln!("[AI Split] Calling VERIFIED AI split endpoint: {}", url);
     let raw_response = client
         .post(&url)
         .json(&payload)

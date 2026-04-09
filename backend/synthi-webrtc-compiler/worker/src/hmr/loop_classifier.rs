@@ -7,7 +7,6 @@
 // architecture described in the HMR recovery plan.
 // ============================================================
 
-#![allow(dead_code)]
 
 use serde::{Deserialize, Serialize};
 

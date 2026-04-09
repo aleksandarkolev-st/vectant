@@ -6,7 +6,6 @@
 // language-specific or family-specific branches.
 // ============================================================
 
-#![allow(dead_code)]
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;

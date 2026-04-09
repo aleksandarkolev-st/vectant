@@ -6,7 +6,6 @@
 // steady-state hot path for adapted projects.
 // ============================================================
 
-#![allow(dead_code)]
 
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicU64, Ordering};

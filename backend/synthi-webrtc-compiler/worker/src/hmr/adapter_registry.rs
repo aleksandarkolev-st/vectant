@@ -6,7 +6,6 @@
 // receives a dyn Adapter.
 // ============================================================
 
-#![allow(dead_code)]
 
 use std::collections::HashMap;
 

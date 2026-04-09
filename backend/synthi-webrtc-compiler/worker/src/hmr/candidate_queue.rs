@@ -6,7 +6,6 @@
 // builds are queued and supersede any older pending candidates.
 // ============================================================
 
-#![allow(dead_code)]
 
 use std::collections::VecDeque;
 

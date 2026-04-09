@@ -7,7 +7,6 @@
 // accept a hot-reloaded module without being killed.
 // ============================================================
 
-#![allow(dead_code)]
 
 use serde::{Deserialize, Serialize};
 

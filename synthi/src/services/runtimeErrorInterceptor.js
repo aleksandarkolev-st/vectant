@@ -54,6 +54,7 @@ class RuntimeErrorInterceptor {
     
     // Bound event handlers (for cleanup)
     this._onCompileError = this._handleCompileError.bind(this);
+    this._onCompileDiagnostics = this._handleCompileDiagnostics.bind(this);
     this._onRequestAIFix = this._handleRequestAIFix.bind(this);
     this._onHMRStatus = this._handleHMRStatus.bind(this);
     
@@ -97,6 +98,7 @@ class RuntimeErrorInterceptor {
     if (typeof window === 'undefined') return;
     
     window.addEventListener('synthi:compile-error', this._onCompileError);
+    window.addEventListener('synthi:compile-diagnostics', this._onCompileDiagnostics);
     window.addEventListener('synthi:request-ai-fix', this._onRequestAIFix);
     window.addEventListener('synthi:hmr-status', this._onHMRStatus);
     
@@ -112,6 +114,7 @@ class RuntimeErrorInterceptor {
     if (typeof window === 'undefined') return;
     
     window.removeEventListener('synthi:compile-error', this._onCompileError);
+    window.removeEventListener('synthi:compile-diagnostics', this._onCompileDiagnostics);
     window.removeEventListener('synthi:request-ai-fix', this._onRequestAIFix);
     window.removeEventListener('synthi:hmr-status', this._onHMRStatus);
     
@@ -126,6 +129,23 @@ class RuntimeErrorInterceptor {
   }
 
   // ── Event Handlers ─────────────────────────────────────────────────
+
+  /**
+   * Handle compile-diagnostics events from compilerClient.
+   * Bridges to _handleCompileError by extracting error diagnostics.
+   */
+  _handleCompileDiagnostics(event) {
+    const detail = event.detail || {};
+    const diagnostics = detail.diagnostics || [];
+    const errorCount = detail.error_count || 0;
+    
+    if (errorCount === 0 && diagnostics.length === 0) return;
+    
+    // Bridge to the existing compile-error handler
+    this._handleCompileError(new CustomEvent('synthi:compile-error', {
+      detail: { diagnostics, module: detail.language || null },
+    }));
+  }
 
   /**
    * Handle compile-error events from the build worker.
@@ -167,7 +187,8 @@ class RuntimeErrorInterceptor {
   }
 
   /**
-   * Handle HMR status changes — specifically 'fail' and 'rejected'.
+   * Handle HMR status changes — 'applied' (success after healing),
+   * 'compile-error' (bridge to healing), 'fail', 'rejected'.
    */
   _handleHMRStatus(event) {
     const detail = event.detail || {};
@@ -187,6 +208,16 @@ class RuntimeErrorInterceptor {
         this._fileState.delete(filePath);
       }
       console.log('[RuntimeHealing] ✓ HMR applied after healing!');
+    }
+    
+    // If compile-error arrives via hmr-status, bridge to the compile error handler
+    if (status === 'compile-error') {
+      const diagnostics = data.diagnostics || [];
+      if (diagnostics.length > 0 || data.error_count > 0) {
+        this._handleCompileError(new CustomEvent('synthi:compile-error', {
+          detail: { diagnostics, module: data.language || null },
+        }));
+      }
     }
   }
 

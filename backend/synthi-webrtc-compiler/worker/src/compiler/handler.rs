@@ -21,6 +21,8 @@ use crate::compiler::stages::runner::handle_runner_execution;
 use crate::hmr::integration::HmrPipeline;
 use crate::hmr::loop_classifier::CompileLoop;
 use crate::hmr::build_manifest::{BuildManifest, BuildSlot, HealthcheckStrategy, SnapshotMode, PreviewPreservationMode};
+use crate::hmr::adapter_trait::AdapterReloadResult;
+use crate::hmr::planner_decision::ReloadDecision;
 
 pub async fn handle_compile_request(
     ctx: &CompileContext,
@@ -325,7 +327,7 @@ pub async fn handle_compile_request(
     );
 
     // Execute adapter reload and collect notifications
-    let (_reload_result, pipeline_notifications) = hmr_pipeline.execute_reload(
+    let (reload_result, pipeline_notifications) = hmr_pipeline.execute_reload(
         language,
         &build_manifest,
         &planner_output,
@@ -337,6 +339,27 @@ pub async fn handle_compile_request(
     for msg in &pipeline_notifications.messages {
         let _ = ctx.log_dc.send_text(msg.clone()).await;
     }
+
+    // If the planner chose an in-process reload and the adapter succeeded,
+    // skip the old runner restart path entirely — the reload is done.
+    let adapter_handled = match (&planner_output.decision, &reload_result) {
+        (decision, AdapterReloadResult::Success { state_preserved, reload_ms })
+            if decision.is_in_process() =>
+        {
+            eprintln!(
+                "[HMR] Adapter reload succeeded (in-process): state_preserved={}, reload_ms={}",
+                state_preserved, reload_ms
+            );
+            true
+        }
+        _ => {
+            eprintln!(
+                "[HMR] Adapter did not handle reload (decision={:?}, result={:?}), falling through to runner",
+                planner_output.decision, reload_result
+            );
+            false
+        }
+    };
 
     // ============================================================
     // PHASE 4: EXECUTION / HOT RELOAD
@@ -394,6 +417,12 @@ pub async fn handle_compile_request(
     // Check for `on_update` to determine if we can HMR or need restart
     let has_on_update =
         processed_core.contains("on_update") || processed_core.contains("core_on_update");
+
+    // If the adapter already handled the reload in-process, skip the runner path.
+    if adapter_handled {
+        eprintln!("[HMR] Skipping handle_runner_execution — adapter reload was authoritative");
+        return Ok(serde_json::json!({ "status": "ok", "hmr": "adapter_handled" }));
+    }
 
     handle_runner_execution(
         ctx,

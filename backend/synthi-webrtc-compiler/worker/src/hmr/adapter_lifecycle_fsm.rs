@@ -7,7 +7,6 @@
 // produces events for the telemetry pipeline.
 // ============================================================
 
-#![allow(dead_code)]
 
 use serde::{Deserialize, Serialize};
 

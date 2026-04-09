@@ -1,5 +1,6 @@
 use crate::compiler::builder::RebuildScope;
 use crate::compiler::context::CompileContext;
+use crate::compiler::error_parser::{parse_compiler_output, CompilerType};
 use crate::compiler::serialization_utils::calculate_hash;
 use crate::hmr::incremental_cache::IncrementalCache;
 use crate::infra::utils::system_command;
@@ -113,6 +114,24 @@ pub async fn compile_gui(
                 if !output.status.success() {
                     let stderr = String::from_utf8_lossy(&output.stderr);
                     eprintln!("[CompileGUI] g++ FAILED:\n{}", stderr);
+
+                    // Parse structured diagnostics from g++ JSON output
+                    let report = parse_compiler_output(&stderr, "gui", CompilerType::Gcc, true);
+                    let diagnostics_json = report.to_json();
+                    let diag_payload = serde_json::json!({
+                        "sessionId": session_id.clone(),
+                        "type": "compile_diagnostics",
+                        "language": "cpp",
+                        "diagnostics": serde_json::from_str::<serde_json::Value>(&diagnostics_json).unwrap_or_default(),
+                        "error_count": report.error_count,
+                        "warning_count": report.warning_count,
+                        "stage": "compile_gui"
+                    });
+                    let _ = ctx
+                        .log_dc
+                        .send_text(serde_json::to_string(&diag_payload).unwrap_or_default())
+                        .await;
+
                     let payload = serde_json::json!({
                         "sessionId": session_id.clone(),
                         "status": "done",
@@ -128,6 +147,23 @@ pub async fn compile_gui(
                 }
 
                 let gui_lib_path = gui_out.to_string_lossy().to_string();
+
+                // Update persistent cache on success
+                if let Ok(so_data) = tokio::fs::read(&gui_lib_path).await {
+                    let source_hash = calculate_hash(&content);
+                    let flags_hash = calculate_hash(&"-shared-fPIC-lSDL2");
+                    let headers_hash = 0u64;
+                    let _ = ctx
+                        .incremental_cache
+                        .put(
+                            gui_cache_key.clone(),
+                            source_hash,
+                            flags_hash,
+                            headers_hash,
+                            &so_data,
+                        )
+                        .await;
+                }
 
                 // ... (Widget Compilation Logic omitted for brevity but should be here) ...
 

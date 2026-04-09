@@ -1,6 +1,5 @@
 // Fast refresh is actively used by HmrOrchestrator for boundary checking
 // #![allow(dead_code)] - REMOVED: This module is now wired up
-#![allow(dead_code)]
 
 // ============================================================
 // FAST REFRESH BOUNDARY DETECTION MODULE
