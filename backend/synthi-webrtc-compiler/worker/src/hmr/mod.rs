@@ -51,6 +51,7 @@ pub mod lifecycle_machine;
 pub mod loop_b_triggers;
 pub mod loop_classifier;
 pub mod managed_agent_protocol;
+pub mod managed_classloader_strategy;
 pub mod managed_runtime_adapter;
 pub mod managed_runtime_hooks;
 pub mod orchestrator;
