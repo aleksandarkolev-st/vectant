@@ -31,6 +31,7 @@ pub mod diagnostics;
 pub mod dirty_classifier;
 pub mod dynlib_adapter;
 pub mod dynlib_build_hooks;
+pub mod dynlib_reload;
 pub mod dynlib_swap;
 pub mod fast_refresh;
 pub mod health_check;
