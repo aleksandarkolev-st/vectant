@@ -9,6 +9,7 @@ pub mod fast_refresh;
 pub mod health_check;
 pub mod incremental_cache;
 pub mod lifecycle_machine;
+pub mod loop_classifier;
 pub mod orchestrator;
 pub mod planner;
 pub mod planner_decision;
