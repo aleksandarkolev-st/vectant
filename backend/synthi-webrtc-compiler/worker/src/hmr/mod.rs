@@ -1,4 +1,5 @@
 pub mod binary_state;
+pub mod build_manifest;
 pub mod diagnostics;
 pub mod fast_refresh;
 pub mod incremental_cache;
