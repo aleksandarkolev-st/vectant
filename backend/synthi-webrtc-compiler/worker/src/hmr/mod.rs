@@ -30,6 +30,7 @@ pub mod reload_manager;
 pub mod reload_protocol;
 pub mod rollback_notification;
 pub mod rollout_flags;
+pub mod slot_manager;
 pub mod state_diff;
 pub mod state_manager;
 pub mod state_type_id;
