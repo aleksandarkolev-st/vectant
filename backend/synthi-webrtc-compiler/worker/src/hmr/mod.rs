@@ -2,6 +2,7 @@ pub mod abi_detect;
 pub mod adapted_project;
 pub mod adapter_matrix;
 pub mod ai_bypass;
+pub mod ai_cost_tracker;
 pub mod ai_fallback_chain;
 #[cfg(test)]
 pub mod ai_extraction_tests;
