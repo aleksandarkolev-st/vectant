@@ -37,6 +37,7 @@ pub mod dynlib_crash_isolation;
 pub mod dynlib_metrics;
 pub mod dynlib_preload_validator;
 pub mod dynlib_reload;
+pub mod dynlib_rollback;
 pub mod dynlib_state_bridge;
 pub mod dynlib_swap;
 pub mod dynlib_symbol_resolver;
