@@ -14,6 +14,7 @@ pub mod candidate_notification;
 pub mod candidate_queue;
 pub mod candidate_supersession;
 pub mod candidate_watchdog;
+pub mod changed_files;
 pub mod compile_enrichment;
 pub mod dependency_graph;
 pub mod deterministic_compile;
