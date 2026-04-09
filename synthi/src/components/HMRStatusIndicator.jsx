@@ -2,6 +2,8 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import { cn } from '@/lib/utils';
+import { PreviewLifecycleState } from '@/lib/preview-lifecycle';
+import { getPreviewState, subscribePreviewStore, isPreviewBusy, isPreviewError } from '@/lib/preview-store';
 
 /**
  * HMR Status Indicator
@@ -199,6 +201,53 @@ export function HMRStatusIndicator({ className }) {
             window.removeEventListener('synthi:hmr-status', handleHMRStatus);
         };
     }, [handleHMRStatus]);
+
+    // Subscribe to preview store for compiled-preview lifecycle states.
+    // This drives the indicator for native compiled previews alongside
+    // the legacy event-based status above.
+    useEffect(() => {
+        function deriveStatus(previewState) {
+            const s = previewState.state;
+            if (s === PreviewLifecycleState.COMPILING) {
+                setStatus('compiling');
+                setDetails({ module: previewState.language });
+                setVisible(true);
+            } else if (s === PreviewLifecycleState.COMPILE_FAILED) {
+                setStatus('compile-error');
+                setDetails(previewState.buildDiagnostics || {});
+                setVisible(true);
+            } else if (s === PreviewLifecycleState.RELOAD_APPLYING) {
+                setStatus('apply');
+                setDetails({ decision: previewState.plannerDecision });
+                setVisible(true);
+            } else if (s === PreviewLifecycleState.RELOAD_APPLIED) {
+                setStatus('applied');
+                setDetails({ state_preserved: true, ...(previewState.stateSummary || {}) });
+                setVisible(true);
+                setTimeout(() => { setVisible(false); setExpanded(false); }, 2000);
+            } else if (s === PreviewLifecycleState.RELOAD_ROLLED_BACK) {
+                setStatus('rejected');
+                setDetails({ reason: previewState.rollbackReason });
+                setVisible(true);
+            } else if (s === PreviewLifecycleState.CRASH_RECOVERED) {
+                setStatus('crash-recovered');
+                setDetails({});
+                setVisible(true);
+                setTimeout(() => { setVisible(false); setExpanded(false); }, 5000);
+            } else if (s === PreviewLifecycleState.CRASH_FATAL) {
+                setStatus('crash-fatal');
+                setDetails({});
+                setVisible(true);
+            } else if (s === PreviewLifecycleState.FULL_RESTART) {
+                setStatus('full-reload-required');
+                setDetails({});
+                setVisible(true);
+            }
+        }
+
+        deriveStatus(getPreviewState());
+        return subscribePreviewStore(deriveStatus);
+    }, []);
 
     const config = STATUS_CONFIGS[status] || STATUS_CONFIGS.idle;
     
