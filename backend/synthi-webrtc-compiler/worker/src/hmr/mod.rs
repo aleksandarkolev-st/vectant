@@ -50,6 +50,7 @@ pub mod planner_glue;
 #[cfg(test)]
 pub mod planner_integration_tests;
 pub mod preview_lifecycle;
+pub mod process_swap_adapter;
 pub mod promotion_policy;
 pub mod rebuild_scope;
 pub mod reload_manager;
