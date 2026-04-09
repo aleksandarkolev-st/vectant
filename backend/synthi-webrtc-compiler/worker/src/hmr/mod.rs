@@ -4,6 +4,7 @@ pub mod diagnostics;
 pub mod fast_refresh;
 pub mod incremental_cache;
 pub mod orchestrator;
+pub mod planner_decision;
 pub mod preview_lifecycle;
 pub mod reload_manager;
 pub mod reload_protocol;
