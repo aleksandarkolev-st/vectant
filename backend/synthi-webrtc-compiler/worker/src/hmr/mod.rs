@@ -112,3 +112,6 @@ pub mod wave10_integration_tests;
 
 #[cfg(test)]
 pub mod wave11_integration_tests;
+
+#[cfg(test)]
+pub mod wave12_integration_tests;
