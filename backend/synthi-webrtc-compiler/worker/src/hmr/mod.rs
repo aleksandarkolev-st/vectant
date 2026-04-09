@@ -51,6 +51,7 @@ pub mod state_manager;
 pub mod state_migration;
 pub mod state_restore_validator;
 pub mod state_serializer;
+pub mod state_size_limiter;
 pub mod state_snapshot;
 pub mod state_type_id;
 pub mod swap_rollback;
