@@ -5,6 +5,7 @@ pub mod ai_gate;
 pub mod binary_state;
 pub mod build_manifest;
 pub mod candidate;
+pub mod compile_enrichment;
 pub mod deterministic_compile;
 pub mod diagnostics;
 pub mod fast_refresh;
