@@ -3,6 +3,9 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { cn } from '@/lib/utils';
 import { X, ChevronDown, ChevronRight, AlertCircle, AlertTriangle, Info, Lightbulb, Copy, Check, RefreshCw, FileCode, Keyboard, Wand2 } from 'lucide-react';
+import { PreviewLifecycleState } from '@/lib/preview-lifecycle';
+import { getPreviewState, subscribePreviewStore } from '@/lib/preview-store';
+import { normalizeDiagnosticsPayload } from '@/lib/diagnostics-normalizer';
 
 /**
  * Error Overlay Component
@@ -548,6 +551,39 @@ export function ErrorOverlay({ className }) {
         };
     }, [handleCompileDiagnostics, handleHMRStatus, handleDirectError]);
     
+    // Subscribe to preview-store for compiled-preview diagnostics.
+    // Normalizes diagnostics through the unified schema before rendering.
+    useEffect(() => {
+        function onPreviewChange(previewState) {
+            if (previewState.state === PreviewLifecycleState.COMPILE_FAILED && previewState.buildDiagnostics) {
+                const normalized = normalizeDiagnosticsPayload(previewState.buildDiagnostics);
+                const errors = normalized.diagnostics.filter(d => d.severity === 'error');
+                if (errors.length > 0) {
+                    setDiagnostics(errors);
+                    setModule(normalized.module || 'unknown');
+                    setCrashInfo(null);
+                    setVisible(true);
+                    setExpandedIds(new Set([0]));
+                }
+            } else if (previewState.state === PreviewLifecycleState.CRASH_RECOVERED) {
+                setCrashInfo(previewState.reloadDiagnostics || {});
+                setDiagnostics([]);
+                setModule(previewState.language || 'unknown');
+                setVisible(true);
+            } else if (
+                previewState.state === PreviewLifecycleState.RELOAD_APPLIED ||
+                previewState.state === PreviewLifecycleState.IDLE
+            ) {
+                setVisible(false);
+                setDiagnostics([]);
+                setCrashInfo(null);
+            }
+        }
+
+        onPreviewChange(getPreviewState());
+        return subscribePreviewStore(onPreviewChange);
+    }, []);
+
     // Handle escape key to dismiss
     useEffect(() => {
         const handleKeyDown = (e) => {
