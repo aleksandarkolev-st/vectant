@@ -4,13 +4,46 @@
  * 
  * Implements the logic to receive updates, validate them, check for acceptance,
  * and apply them to the running application.
+ *
+ * IMPORTANT: This runtime handles browser-module HMR only (JS/CSS hot-swap
+ * in the browser). It does NOT own native compiled-preview lifecycle (Rust,
+ * C++, Java, etc.). Native preview lifecycle is managed by the preview-store
+ * and the Rust-side HMR orchestrator.
+ *
+ * Use `isNativePreviewActive()` to check whether the active preview is
+ * native-compiled. If true, this runtime should defer to the preview-store
+ * for state management and avoid issuing full-page reloads.
  */
+
+import { getPreviewState, isPreviewAlive } from '@/lib/preview-store';
+
+/**
+ * Returns true when a native compiled preview is active and this
+ * browser-module HMR runtime should NOT own lifecycle decisions.
+ */
+export function isNativePreviewActive() {
+    try {
+        const state = getPreviewState();
+        return isPreviewAlive(state.state);
+    } catch {
+        return false;
+    }
+}
+
 export class HMRRuntime {
     constructor(options = {}) {
         this.modules = new Map(); // moduleId -> { factory, exports, parents, children, hot }
         this.currentHash = options.initialHash || null;
         this.status = 'idle'; // idle, check, prepare, ready, dispose, apply, abort, fail
-        this.onReload = options.onReload || (() => window.location.reload());
+        this.onReload = options.onReload || (() => {
+            // Guard: do not full-page reload if a native preview is active.
+            // The native preview lifecycle (preview-store) owns the reload path.
+            if (isNativePreviewActive()) {
+                console.log('[HMRRuntime] Skipping full-page reload — native preview is active');
+                return;
+            }
+            window.location.reload();
+        });
         this.onStatusChange = options.onStatusChange || (() => {});
     }
 
