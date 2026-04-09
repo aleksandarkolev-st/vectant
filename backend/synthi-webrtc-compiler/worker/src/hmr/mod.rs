@@ -13,6 +13,7 @@ pub mod deterministic_compile;
 pub mod diagnostics;
 pub mod fast_refresh;
 pub mod health_check;
+pub mod hmr_eligibility;
 pub mod incremental_cache;
 pub mod lifecycle_machine;
 pub mod loop_b_triggers;
