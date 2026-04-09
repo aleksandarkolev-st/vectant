@@ -3,6 +3,7 @@ pub mod adapted_project;
 pub mod adapter_matrix;
 pub mod ai_bypass;
 pub mod ai_cache;
+pub mod ai_circuit_breaker;
 pub mod ai_cost_tracker;
 pub mod ai_fallback_chain;
 #[cfg(test)]
