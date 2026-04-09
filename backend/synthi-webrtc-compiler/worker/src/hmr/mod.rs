@@ -28,6 +28,7 @@ pub mod planner_glue;
 #[cfg(test)]
 pub mod planner_integration_tests;
 pub mod preview_lifecycle;
+pub mod promotion_policy;
 pub mod reload_manager;
 pub mod reload_protocol;
 pub mod rollback_notification;
