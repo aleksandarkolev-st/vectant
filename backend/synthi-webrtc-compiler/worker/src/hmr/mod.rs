@@ -4,6 +4,7 @@ pub mod build_manifest;
 pub mod diagnostics;
 pub mod fast_refresh;
 pub mod incremental_cache;
+pub mod lifecycle_machine;
 pub mod orchestrator;
 pub mod planner;
 pub mod planner_decision;
