@@ -1,6 +1,7 @@
 pub mod abi_detect;
 pub mod adapted_project;
 pub mod adapter_matrix;
+pub mod adapter_trait;
 pub mod ai_bypass;
 pub mod ai_cache;
 pub mod ai_circuit_breaker;
