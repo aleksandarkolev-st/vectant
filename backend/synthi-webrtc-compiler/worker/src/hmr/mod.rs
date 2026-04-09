@@ -8,6 +8,7 @@ pub mod ai_gate;
 pub mod binary_state;
 pub mod build_manifest;
 pub mod candidate;
+pub mod candidate_bridge;
 pub mod candidate_history;
 pub mod candidate_notification;
 pub mod candidate_queue;
