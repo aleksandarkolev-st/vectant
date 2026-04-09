@@ -154,6 +154,11 @@ impl RolloutFlags {
         Self::new(RolloutConfig::default())
     }
 
+    /// Alias for `default_flags()` — used by planner tests.
+    pub fn new_defaults() -> Self {
+        Self::default_flags()
+    }
+
     pub fn read(&self) -> std::sync::RwLockReadGuard<'_, RolloutConfig> {
         self.inner.read().unwrap()
     }
@@ -161,6 +166,37 @@ impl RolloutFlags {
     pub fn update(&self, new_config: RolloutConfig) {
         let mut guard = self.inner.write().unwrap();
         *guard = new_config;
+    }
+
+    /// Returns true when the global HMR kill switch is active.
+    pub fn is_hmr_killed(&self) -> bool {
+        self.inner.read().unwrap().global_kill_hmr
+    }
+
+    /// Returns true when the kill switch for a specific adapter family is active.
+    pub fn is_family_killed(&self, family: &AdapterFamily) -> bool {
+        let guard = self.inner.read().unwrap();
+        !guard.get_family(family).enabled
+    }
+
+    /// Returns the forced fallback decision string for a family, if one is set.
+    pub fn forced_fallback_for(&self, family: &AdapterFamily) -> Option<String> {
+        let guard = self.inner.read().unwrap();
+        let cfg = guard.get_family(family);
+        cfg.forced_fallback.as_ref().map(|d| match d {
+            ReloadDecision::ColdReload => "cold_reload".into(),
+            ReloadDecision::ProcessSwap => "process_swap".into(),
+            ReloadDecision::FullRestart => "full_restart".into(),
+            ReloadDecision::ManagedReload => "managed_reload".into(),
+            ReloadDecision::WarmReload => "warm_reload".into(),
+            ReloadDecision::RejectBuild => "reject_build".into(),
+        })
+    }
+
+    /// Set the global kill switch at runtime.
+    pub fn set_global_kill(&self, killed: bool) {
+        let mut guard = self.inner.write().unwrap();
+        guard.global_kill_hmr = killed;
     }
 }
 
