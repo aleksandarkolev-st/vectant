@@ -9,6 +9,7 @@ pub mod binary_state;
 pub mod build_manifest;
 pub mod candidate;
 pub mod candidate_queue;
+pub mod candidate_supersession;
 pub mod candidate_watchdog;
 pub mod compile_enrichment;
 pub mod deterministic_compile;
