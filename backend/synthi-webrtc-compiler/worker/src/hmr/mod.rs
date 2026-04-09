@@ -90,3 +90,6 @@ pub mod wave08_integration_tests;
 
 #[cfg(test)]
 pub mod wave09_integration_tests;
+
+#[cfg(test)]
+pub mod wave10_integration_tests;
