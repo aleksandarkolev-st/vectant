@@ -15,6 +15,7 @@ pub mod planner_glue;
 pub mod preview_lifecycle;
 pub mod reload_manager;
 pub mod reload_protocol;
+pub mod rollback_notification;
 pub mod rollout_flags;
 pub mod state_diff;
 pub mod state_manager;
