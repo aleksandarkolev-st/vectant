@@ -179,6 +179,14 @@ impl RolloutFlags {
         !guard.get_family(family).enabled
     }
 
+    /// String-based variant of `is_family_killed` for BuildManifest interop.
+    pub fn is_family_killed_str(&self, family_str: &str) -> bool {
+        match AdapterFamily::from_str(family_str) {
+            Some(family) => self.is_family_killed(&family),
+            None => true, // Unknown families are killed by default
+        }
+    }
+
     /// Returns the forced fallback decision string for a family, if one is set.
     pub fn forced_fallback_for(&self, family: &AdapterFamily) -> Option<String> {
         let guard = self.inner.read().unwrap();
@@ -191,6 +199,14 @@ impl RolloutFlags {
             ReloadDecision::WarmReload => "warm_reload".into(),
             ReloadDecision::RejectBuild => "reject_build".into(),
         })
+    }
+
+    /// String-based variant of `forced_fallback_for` for BuildManifest interop.
+    pub fn forced_fallback_for_str(&self, family_str: &str) -> Option<String> {
+        match AdapterFamily::from_str(family_str) {
+            Some(family) => self.forced_fallback_for(&family),
+            None => Some("full_restart".into()),
+        }
     }
 
     /// Set the global kill switch at runtime.

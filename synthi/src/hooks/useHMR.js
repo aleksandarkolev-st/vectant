@@ -1,5 +1,9 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { HMRRuntime } from '@/lib/hmr-runtime';
+import { subscribeAiLoopStatus, getAiLoopStatus, installAiStatusListener } from '@/lib/ai-loop-status';
+import { subscribeAdapterStatus, getAdapterStatus, handleAdapterStatusNotification } from '@/lib/adapter-status';
+import { subscribeRestoreStatus, getRestoreStatus, installRestoreListener } from '@/lib/state-restore-status';
+import { subscribeHealthPanel, getHealthPanel, updateAdapterHealth, setLifecycleState, setAiActive, pushError, setDisplayMode } from '@/lib/adapter-health-panel';
 
 /**
  * Enhanced HMR Hook
@@ -24,6 +28,12 @@ export function useHMR() {
     const [hmrHistory, setHmrHistory] = useState([]);
     // Track mounted state to prevent updates after unmount
     const isMountedRef = useRef(true);
+
+    // New subsystem states from HMR pipeline stores
+    const [aiLoopStatus, setAiLoopStatus] = useState(getAiLoopStatus);
+    const [adapterStatus, setAdapterStatus] = useState(getAdapterStatus);
+    const [restoreStatus, setRestoreStatus] = useState(getRestoreStatus);
+    const [healthPanel, setHealthPanel] = useState(getHealthPanel);
 
     // Dispatch HMR status event for UI components
     const dispatchHMRStatus = useCallback((statusData) => {
@@ -184,6 +194,18 @@ export function useHMR() {
                     } else if (statusData.status === 'widget-compile-error') {
                         // Individual widget failed to compile
                         dispatchHMRStatus(message);
+                    } else if (statusData.status === 'reload-planned') {
+                        // HMR planner decided reload strategy
+                        dispatchHMRStatus({
+                            ...message,
+                            data: {
+                                ...statusData,
+                                message: statusData.user_message || `Reload: ${statusData.decision} (${statusData.decision_reason})`
+                            }
+                        });
+                    } else if (statusData.status === 'ai-gated') {
+                        // AI gate blocked an AI call in Loop A
+                        dispatchHMRStatus(message);
                     }
                     
                     return; // Don't pass to runtime for these messages
@@ -195,10 +217,60 @@ export function useHMR() {
 
         window.addEventListener('synthi:hmr-update', handleHMRMessage);
 
+        // ── Subscribe to HMR pipeline stores ──
+        const unsubAi = subscribeAiLoopStatus((s) => {
+            if (isMountedRef.current) setAiLoopStatus(s);
+        });
+        const unsubAdapter = subscribeAdapterStatus((s) => {
+            if (isMountedRef.current) setAdapterStatus(s);
+        });
+        const unsubRestore = subscribeRestoreStatus((s) => {
+            if (isMountedRef.current) setRestoreStatus(s);
+        });
+        const unsubHealth = subscribeHealthPanel((s) => {
+            if (isMountedRef.current) setHealthPanel(s);
+        });
+
+        // Install window event listeners that feed the stores
+        const cleanupAiListener = installAiStatusListener();
+        const cleanupRestoreListener = installRestoreListener();
+
+        // Adapter status events: feed into the adapter-status store
+        const handleAdapterEvent = (e) => {
+            if (e.detail) handleAdapterStatusNotification(e.detail);
+        };
+        window.addEventListener('synthi:adapter-status', handleAdapterEvent);
+
+        // Adapter health events: feed into the health panel store
+        const handleHealthEvent = (e) => {
+            if (!e.detail) return;
+            const d = e.detail;
+            if (d.family) {
+                updateAdapterHealth(d.family, {
+                    active: d.active,
+                    health: d.health,
+                    reloads: d.reloads,
+                    lastMs: d.last_ms,
+                });
+            }
+            if (d.lifecycle_state) setLifecycleState(d.lifecycle_state);
+            if (d.ai_active != null) setAiActive(d.ai_active);
+            if (d.error) pushError(d.error);
+        };
+        window.addEventListener('synthi:adapter-health', handleHealthEvent);
+
         return () => {
             // SAFETY: Mark as unmounted to prevent state updates after cleanup
             isMountedRef.current = false;
             window.removeEventListener('synthi:hmr-update', handleHMRMessage);
+            window.removeEventListener('synthi:adapter-status', handleAdapterEvent);
+            window.removeEventListener('synthi:adapter-health', handleHealthEvent);
+            unsubAi();
+            unsubAdapter();
+            unsubRestore();
+            unsubHealth();
+            cleanupAiListener();
+            cleanupRestoreListener();
         };
     }, [dispatchHMRStatus]);
 
@@ -206,6 +278,11 @@ export function useHMR() {
         status,
         lastUpdate,
         hmrHistory,
-        runtime: runtimeRef.current
+        runtime: runtimeRef.current,
+        // HMR pipeline subsystem states
+        aiLoopStatus,
+        adapterStatus,
+        restoreStatus,
+        healthPanel,
     };
 }

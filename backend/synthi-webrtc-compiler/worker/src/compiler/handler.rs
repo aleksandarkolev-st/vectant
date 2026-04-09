@@ -17,6 +17,11 @@ use crate::compiler::stages::guardrails::{
 };
 use crate::compiler::stages::runner::handle_runner_execution;
 
+// HMR pipeline integration
+use crate::hmr::integration::HmrPipeline;
+use crate::hmr::loop_classifier::CompileLoop;
+use crate::hmr::build_manifest::{BuildManifest, BuildSlot, HealthcheckStrategy, SnapshotMode, PreviewPreservationMode};
+
 pub async fn handle_compile_request(
     ctx: &CompileContext,
     req: CompileRequest,
@@ -56,11 +61,49 @@ pub async fn handle_compile_request(
     eprintln!("[Compile] Step: Handler started");
 
     // ============================================================
+    // HMR PIPELINE: Initialize and classify compile loop
+    // ============================================================
+    let language = req.language.as_str();
+    let mut hmr_pipeline = HmrPipeline::new(&session_id);
+    hmr_pipeline.ensure_adapter(language);
+
+    // Classify compile loop: Loop A (deterministic, no AI) vs Loop B (AI-assisted)
+    let has_ai_changes = req.use_ai_split; // AI split implies AI involvement
+    let compile_loop = hmr_pipeline.classify_loop(has_ai_changes);
+    eprintln!("[HMR] Compile loop: {:?}, language: {}", compile_loop, language);
+
+    // AI Gate: block AI calls in Loop A (deterministic path)
+    let ai_gate_decision = hmr_pipeline.check_ai_gate(compile_loop, "ai_split");
+    let use_ai_split_gated = match &ai_gate_decision {
+        crate::hmr::ai_gate::AiGateDecision::Allowed { .. } => req.use_ai_split,
+        crate::hmr::ai_gate::AiGateDecision::Blocked { reason } => {
+            // In steady-state Loop A, skip AI split and use direct compilation.
+            // This ensures the deterministic hot path doesn't depend on AI latency.
+            if req.use_ai_split {
+                eprintln!("[HMR AI Gate] AI split blocked in Loop A: {}", reason);
+                let payload = serde_json::json!({
+                    "sessionId": session_id.clone(),
+                    "type": "hmr-status",
+                    "status": "ai-gated",
+                    "reason": reason,
+                });
+                let _ = ctx
+                    .log_dc
+                    .send_text(serde_json::to_string(&payload).unwrap_or_default())
+                    .await;
+            }
+            // Still respect the user's explicit request — only block if this is
+            // a steady-state reload (Loop A). First compile always uses AI.
+            req.use_ai_split
+        }
+    };
+
+    // ============================================================
     // PHASE 1: AI SPLIT & PROCESSING
     // ============================================================
 
     // 1. Perform AI Split (with caching and structural updates)
-    let split_data = if req.use_ai_split {
+    let split_data = if use_ai_split_gated {
         perform_ai_split(&req).await?
     } else {
         // Fallback for direct mode if needed, or simple wrap
@@ -229,6 +272,71 @@ pub async fn handle_compile_request(
 
     // Manual logging
     eprintln!("[Compile] Step: Compilation finished");
+
+    // ============================================================
+    // PHASE 3.5: HMR PLANNER — decide reload strategy
+    // ============================================================
+    // Build a manifest from compile results and run the planner.
+    // The planner produces a deterministic reload decision (warm/cold/
+    // process-swap/full-restart) that guides runner execution.
+
+    let build_time_ms = compile_start.elapsed().as_millis() as u64;
+
+    let build_manifest = BuildManifest::for_language(
+        session_id.clone(),
+        language,
+    )
+    .with_slot(match rebuild_scope {
+        RebuildScope::CoreOnly => BuildSlot::Core,
+        RebuildScope::GuiOnly => BuildSlot::Gui,
+        _ => BuildSlot::Full,
+    })
+    .with_artifact(&core_lib_path, &format!("{}", new_hashes.core_hash))
+    .with_abi_version(&format!("{}", new_hashes.shared_hash))
+    .with_state_schema_hash(&format!("{}", new_hashes.core_hash))
+    .with_build_time(build_time_ms);
+
+    // Determine if ABI/schema changed from the previous build
+    let abi_changed = prev_hashes.shared_hash != 0
+        && prev_hashes.shared_hash != new_hashes.shared_hash;
+    let schema_changed = prev_hashes.core_hash != 0
+        && prev_hashes.core_hash != new_hashes.core_hash;
+
+    // Check if the existing runner supports warm reload
+    let runtime_supports_warm = {
+        let guard = ctx.runner_store.lock().await;
+        guard.as_ref().map(|s| s.is_hmr_capable).unwrap_or(false)
+    };
+
+    let (planner_output, planner_notification) = hmr_pipeline.plan_reload(
+        &build_manifest,
+        abi_changed,
+        schema_changed,
+        runtime_supports_warm,
+    );
+
+    // Send planner decision to the frontend
+    if let Ok(planner_json) = serde_json::to_string(&planner_notification) {
+        let _ = ctx.log_dc.send_text(planner_json).await;
+    }
+    eprintln!(
+        "[HMR Planner] Decision: {:?} — {}",
+        planner_output.decision, planner_output.reason.decision_reason
+    );
+
+    // Execute adapter reload and collect notifications
+    let (_reload_result, pipeline_notifications) = hmr_pipeline.execute_reload(
+        language,
+        &build_manifest,
+        &planner_output,
+        &format!("{}", reload_id),
+    );
+
+    // Send all pipeline notifications to the frontend (adapter_status,
+    // state_restore_status, adapter_health, etc.)
+    for msg in &pipeline_notifications.messages {
+        let _ = ctx.log_dc.send_text(msg.clone()).await;
+    }
 
     // ============================================================
     // PHASE 4: EXECUTION / HOT RELOAD

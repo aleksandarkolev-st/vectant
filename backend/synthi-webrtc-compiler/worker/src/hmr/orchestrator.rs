@@ -49,6 +49,9 @@ use crate::runtime::plugin_contract::ModuleSlot;
 use crate::runtime::supervisor::{CrashSupervisor, RecoveryAction, SupervisorConfig};
 use crate::safety::boundary::{Boundary, BoundaryId, BoundaryManifest, ReloadPlan};
 use crate::safety::quiescence::{QuiescenceConfig, QuiescenceManager};
+
+// Integration with the full HMR pipeline (planner, adapters, AI gate, candidates)
+use crate::hmr::integration::HmrPipeline;
 // use crate::quiescence::{QuiescenceManager, QuiescenceConfig}; // DUP
 // use crate::reload_protocol::{ReloadOperation, ReloadConfig}; // DUP
 
@@ -266,6 +269,9 @@ pub struct HmrOrchestrator {
 
     // Current reload operation (v2.1 state machine)
     current_reload: Option<ReloadOperation>,
+
+    // HMR integration pipeline (adapters, planner, candidates, AI gate)
+    hmr_pipeline: Option<HmrPipeline>,
 }
 
 /// Orchestrator configuration
@@ -356,6 +362,8 @@ impl HmrOrchestrator {
             // Quiescence and state machine (v2.1)
             quiescence_manager: None, // Initialized on first use
             current_reload: None,
+            // HMR integration pipeline
+            hmr_pipeline: None,
         }
     }
 
@@ -399,6 +407,23 @@ impl HmrOrchestrator {
     /// Register a migration schema with downgrade path
     pub fn register_migration(&mut self, schema: MigrationSchema) -> Result<(), String> {
         self.state_manager.register_migration(schema)
+    }
+
+    // ============================================================
+    // HMR PIPELINE ACCESS
+    // ============================================================
+
+    /// Access the integration pipeline, creating it lazily on first use.
+    pub fn pipeline(&mut self, preview_id: &str) -> &mut HmrPipeline {
+        if self.hmr_pipeline.is_none() {
+            self.hmr_pipeline = Some(HmrPipeline::new(preview_id));
+        }
+        self.hmr_pipeline.as_mut().unwrap()
+    }
+
+    /// Returns a reference to the current pipeline (if initialized).
+    pub fn pipeline_ref(&self) -> Option<&HmrPipeline> {
+        self.hmr_pipeline.as_ref()
     }
 
     // ============================================================

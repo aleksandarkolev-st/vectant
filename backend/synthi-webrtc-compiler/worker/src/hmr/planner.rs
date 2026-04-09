@@ -9,8 +9,8 @@
 // same inputs → same outputs, every time.
 // ============================================================
 
-use crate::hmr::adapter_matrix::{AdapterFamily, AdapterMatrix, CapabilityTier};
-use crate::hmr::build_manifest::{BuildManifest, HealthcheckStrategy, SnapshotMode};
+use crate::hmr::adapter_matrix::AdapterMatrix;
+use crate::hmr::build_manifest::{BuildManifest, PreviewPreservationMode, HealthcheckStrategy, SnapshotMode};
 use crate::hmr::planner_decision::{
     FallbackStrategy, PlannerReasonBundle, ReloadDecision, StateStrategy,
 };
@@ -62,21 +62,21 @@ pub fn plan_reload(input: &PlannerInput) -> PlannerOutput {
     }
 
     let family = &input.manifest.adapter_family;
-    if input.rollout_flags.is_family_killed(family) {
+    if input.rollout_flags.is_family_killed_str(family) {
         return PlannerOutput {
             decision: ReloadDecision::FullRestart,
             reason: PlannerReasonBundle {
-                decision_reason: format!("Kill switch active for {:?}", family),
+                decision_reason: format!("Kill switch active for {}", family),
                 decision_code: "KILL_SWITCH_FAMILY".into(),
                 state_strategy: StateStrategy::DiscardAll,
                 fallback_strategy: FallbackStrategy::FullRestart,
-                user_message: Some(format!("HMR disabled for {:?} adapter", family)),
+                user_message: Some(format!("HMR disabled for {} adapter", family)),
             },
         };
     }
 
     // ── Forced fallback ──────────────────────────────────────
-    if let Some(forced) = input.rollout_flags.forced_fallback_for(family) {
+    if let Some(forced) = input.rollout_flags.forced_fallback_for_str(family) {
         let decision = match forced.as_str() {
             "cold_reload" => ReloadDecision::ColdReload,
             "process_swap" => ReloadDecision::ProcessSwap,
@@ -86,7 +86,7 @@ pub fn plan_reload(input: &PlannerInput) -> PlannerOutput {
         return PlannerOutput {
             decision,
             reason: PlannerReasonBundle {
-                decision_reason: format!("Forced fallback to {} for {:?}", forced, family),
+                decision_reason: format!("Forced fallback to {} for {}", forced, family),
                 decision_code: "FORCED_FALLBACK".into(),
                 state_strategy: StateStrategy::SnapshotRestore,
                 fallback_strategy: FallbackStrategy::FullRestart,
@@ -116,12 +116,12 @@ pub fn plan_reload(input: &PlannerInput) -> PlannerOutput {
     let tier = input.manifest.capability_tier;
 
     // ── Warm reload path ─────────────────────────────────────
-    if tier >= CapabilityTier::Tier2
+    if tier >= 2
         && !input.abi_changed
         && !input.schema_changed
         && input.runtime_supports_warm_reload
     {
-        let state_strategy = if input.manifest.snapshot_modes.contains(&SnapshotMode::DlsymInPlace) {
+        let state_strategy = if input.manifest.snapshot_modes.contains(&SnapshotMode::Binary) {
             StateStrategy::PreservePointer
         } else {
             StateStrategy::SnapshotRestore
@@ -154,7 +154,7 @@ pub fn plan_reload(input: &PlannerInput) -> PlannerOutput {
     }
 
     // ── Managed reload for managed runtimes ──────────────────
-    if *family == AdapterFamily::ManagedRuntime {
+    if family == "ManagedRuntime" || family == "managed_runtime" {
         return PlannerOutput {
             decision: ReloadDecision::ManagedReload,
             reason: PlannerReasonBundle {
@@ -168,7 +168,7 @@ pub fn plan_reload(input: &PlannerInput) -> PlannerOutput {
     }
 
     // ── ABI changed → process swap (dlopen family) ───────────
-    if input.abi_changed && *family == AdapterFamily::DynamicLibrary {
+    if input.abi_changed && (family == "DynamicLibrary" || family == "dynamic_library") {
         return PlannerOutput {
             decision: ReloadDecision::ProcessSwap,
             reason: PlannerReasonBundle {
@@ -182,7 +182,7 @@ pub fn plan_reload(input: &PlannerInput) -> PlannerOutput {
     }
 
     // ── Process swap family ──────────────────────────────────
-    if *family == AdapterFamily::ProcessSwap {
+    if family == "ProcessSwap" || family == "process_swap" {
         return PlannerOutput {
             decision: ReloadDecision::ProcessSwap,
             reason: PlannerReasonBundle {
@@ -211,34 +211,42 @@ pub fn plan_reload(input: &PlannerInput) -> PlannerOutput {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hmr::adapter_matrix::AdapterDescriptor;
     use crate::hmr::build_manifest::BuildSlot;
 
-    fn make_manifest(family: AdapterFamily, tier: CapabilityTier) -> BuildManifest {
+    fn make_manifest(family: &str, tier: u8) -> BuildManifest {
         BuildManifest {
             preview_id: "test".into(),
             language: "rust".into(),
-            adapter_family: family,
+            adapter_family: family.into(),
             capability_tier: tier,
-            slot: BuildSlot::Primary,
+            slot: BuildSlot::Core,
             artifact_path: "/tmp/test.so".into(),
             artifact_hash: "abc123".into(),
+            toolchain_fingerprint: "gcc-12".into(),
             abi_version: "1.0".into(),
-            state_schema_hash: Some("schema1".into()),
-            snapshot_modes: vec![SnapshotMode::DlsymInPlace],
+            state_schema_hash: "schema1".into(),
+            snapshot_modes: vec![SnapshotMode::Binary],
             capabilities: vec!["state_export".into()],
+            preview_preservation_mode: PreviewPreservationMode::KeepAlive,
+            dirty_unit_source: None,
             exported_symbols: vec!["init".into(), "update".into()],
             dependencies: vec![],
-            healthcheck_strategy: HealthcheckStrategy::SymbolProbe,
+            healthcheck_strategy: HealthcheckStrategy::SymbolCheck,
             rollout_flags: Default::default(),
             build_time_ms: 500,
-            extension: Default::default(),
+            translation_units: None,
+            dirty_units: None,
+            header_fingerprint: None,
+            source_map_metadata: None,
+            candidate_generation: None,
+            boundary_map_version: None,
+            provenance_id: None,
         }
     }
 
     #[test]
     fn warm_reload_when_eligible() {
-        let manifest = make_manifest(AdapterFamily::DynamicLibrary, CapabilityTier::Tier2);
+        let manifest = make_manifest("DynamicLibrary", 2);
         let matrix = AdapterMatrix::default_matrix();
         let flags = RolloutFlags::new_defaults();
 
@@ -260,7 +268,7 @@ mod tests {
 
     #[test]
     fn cold_reload_on_schema_change() {
-        let manifest = make_manifest(AdapterFamily::DynamicLibrary, CapabilityTier::Tier2);
+        let manifest = make_manifest("DynamicLibrary", 2);
         let matrix = AdapterMatrix::default_matrix();
         let flags = RolloutFlags::new_defaults();
 
@@ -282,7 +290,7 @@ mod tests {
 
     #[test]
     fn full_restart_on_kill_switch() {
-        let manifest = make_manifest(AdapterFamily::DynamicLibrary, CapabilityTier::Tier2);
+        let manifest = make_manifest("DynamicLibrary", 2);
         let matrix = AdapterMatrix::default_matrix();
         let flags = RolloutFlags::new_defaults();
         flags.set_global_kill(true);
@@ -305,7 +313,7 @@ mod tests {
 
     #[test]
     fn process_swap_on_abi_change() {
-        let manifest = make_manifest(AdapterFamily::DynamicLibrary, CapabilityTier::Tier2);
+        let manifest = make_manifest("DynamicLibrary", 2);
         let matrix = AdapterMatrix::default_matrix();
         let flags = RolloutFlags::new_defaults();
 
@@ -327,7 +335,7 @@ mod tests {
 
     #[test]
     fn consecutive_failures_force_restart() {
-        let manifest = make_manifest(AdapterFamily::DynamicLibrary, CapabilityTier::Tier2);
+        let manifest = make_manifest("DynamicLibrary", 2);
         let matrix = AdapterMatrix::default_matrix();
         let flags = RolloutFlags::new_defaults();
 

@@ -183,6 +183,70 @@ impl BuildManifest {
             provenance_id: None,
         }
     }
+
+    /// Shorthand constructor: infers adapter family from language.
+    pub fn for_language(
+        preview_id: impl Into<String>,
+        language: impl Into<String>,
+    ) -> Self {
+        let lang: String = language.into();
+        let (family, tier) = match lang.as_str() {
+            "c" | "cpp" | "rust" | "zig" => ("DynamicLibrary".to_string(), 2u8),
+            "java" | "kotlin" => ("ManagedRuntime".to_string(), 1),
+            "csharp" => ("ManagedRuntime".to_string(), 1),
+            "go" | "swift" => ("ProcessSwap".to_string(), 0),
+            _ => ("DynamicLibrary".to_string(), 0),
+        };
+        Self::new(preview_id, &lang, family, tier, BuildSlot::Full, "", "")
+    }
+
+    // ── Builder-style setters ──
+
+    pub fn with_slot(mut self, slot: BuildSlot) -> Self {
+        self.slot = slot;
+        self
+    }
+
+    pub fn with_artifact(mut self, path: &str, hash: &str) -> Self {
+        self.artifact_path = path.to_string();
+        self.artifact_hash = hash.to_string();
+        self
+    }
+
+    pub fn with_abi_version(mut self, version: &str) -> Self {
+        self.abi_version = version.to_string();
+        self
+    }
+
+    pub fn with_state_schema_hash(mut self, hash: &str) -> Self {
+        self.state_schema_hash = hash.to_string();
+        self
+    }
+
+    pub fn with_build_time(mut self, ms: u64) -> Self {
+        self.build_time_ms = ms;
+        self
+    }
+
+    pub fn with_exported_symbols(mut self, symbols: Vec<String>) -> Self {
+        self.exported_symbols = symbols;
+        self
+    }
+
+    pub fn with_snapshot_modes(mut self, modes: Vec<SnapshotMode>) -> Self {
+        self.snapshot_modes = modes;
+        self
+    }
+
+    pub fn with_capabilities(mut self, caps: Vec<String>) -> Self {
+        self.capabilities = caps;
+        self
+    }
+
+    pub fn with_dirty_units(mut self, units: Vec<String>) -> Self {
+        self.dirty_units = Some(units);
+        self
+    }
 }
 
 #[cfg(test)]

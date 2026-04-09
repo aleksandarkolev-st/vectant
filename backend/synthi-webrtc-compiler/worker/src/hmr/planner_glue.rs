@@ -78,8 +78,8 @@ fn decision_to_str(d: &ReloadDecision) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hmr::adapter_matrix::{AdapterFamily, AdapterMatrix, CapabilityTier};
-    use crate::hmr::build_manifest::{BuildSlot, HealthcheckStrategy, SnapshotMode};
+    use crate::hmr::adapter_matrix::AdapterMatrix;
+    use crate::hmr::build_manifest::{BuildSlot, HealthcheckStrategy, PreviewPreservationMode, SnapshotMode};
     use crate::hmr::rollout_flags::RolloutFlags;
 
     fn setup() -> (
@@ -100,21 +100,30 @@ mod tests {
         let manifest = BuildManifest {
             preview_id: "test-preview".into(),
             language: "rust".into(),
-            adapter_family: AdapterFamily::DynamicLibrary,
-            capability_tier: CapabilityTier::Tier2,
-            slot: BuildSlot::Primary,
+            adapter_family: "DynamicLibrary".into(),
+            capability_tier: 2,
+            slot: BuildSlot::Core,
             artifact_path: "/tmp/test.so".into(),
             artifact_hash: "abc".into(),
+            toolchain_fingerprint: "gcc-12".into(),
             abi_version: "1.0".into(),
-            state_schema_hash: Some("s1".into()),
-            snapshot_modes: vec![SnapshotMode::DlsymInPlace],
+            state_schema_hash: "s1".into(),
+            snapshot_modes: vec![SnapshotMode::Binary],
             capabilities: vec![],
+            preview_preservation_mode: PreviewPreservationMode::KeepAlive,
+            dirty_unit_source: None,
             exported_symbols: vec![],
             dependencies: vec![],
-            healthcheck_strategy: HealthcheckStrategy::SymbolProbe,
+            healthcheck_strategy: HealthcheckStrategy::SymbolCheck,
             rollout_flags: Default::default(),
             build_time_ms: 500,
-            extension: Default::default(),
+            translation_units: None,
+            dirty_units: None,
+            header_fingerprint: None,
+            source_map_metadata: None,
+            candidate_generation: None,
+            boundary_map_version: None,
+            provenance_id: None,
         };
 
         let matrix = AdapterMatrix::default_matrix();

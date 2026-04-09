@@ -18,6 +18,7 @@ use crate::infra::constants::GUI_TOOLS;
 use crate::infra::messages::CompileRequest;
 use crate::infra::observability::ReloadId;
 use crate::runtime::runner_state::RunnerState; // Aliasing if needed, or check definition
+use crate::hmr::integration::HmrPipeline;
 
 pub async fn handle_runner_execution(
     ctx: &CompileContext,
@@ -75,8 +76,11 @@ pub async fn handle_runner_execution(
         eprintln!("[Main] Existing runner: is_gui={}, gui_mode_same={}, resolution_same={}, has_on_update={}", 
             state.is_gui, gui_mode_same, resolution_same, has_on_update);
         
-        // Force false to always restart runner process but reuse Xvfb/GStreamer
-        false
+        // HMR enabled: reuse running process when GUI mode and resolution match.
+        // The HMR pipeline (planner → adapter → orchestrator) handles the reload
+        // decision and state preservation. Falls back to full restart if conditions
+        // aren't met.
+        gui_mode_same && resolution_same
     } else {
         false
     };

@@ -405,6 +405,30 @@ export class CompilerClient {
                     window.dispatchEvent(new CustomEvent('synthi:hmr-status', { detail: parsed }));
                 }
                 return;
+            } else if (parsed && parsed.type === 'adapter_status') {
+                // Adapter family status from HMR pipeline
+                if (typeof window !== 'undefined' && window.dispatchEvent) {
+                    window.dispatchEvent(new CustomEvent('synthi:adapter-status', { detail: parsed }));
+                }
+                return;
+            } else if (parsed && parsed.type === 'adapter_health') {
+                // Per-adapter health for the health panel
+                if (typeof window !== 'undefined' && window.dispatchEvent) {
+                    window.dispatchEvent(new CustomEvent('synthi:adapter-health', { detail: parsed }));
+                }
+                return;
+            } else if (parsed && parsed.type === 'state_restore_status') {
+                // State restore/migration progress
+                if (typeof window !== 'undefined' && window.dispatchEvent) {
+                    window.dispatchEvent(new CustomEvent('synthi:state-restore', { detail: parsed }));
+                }
+                return;
+            } else if (parsed && parsed.type === 'ai_status') {
+                // AI loop status (circuit breaker, cost, fallback)
+                if (typeof window !== 'undefined' && window.dispatchEvent) {
+                    window.dispatchEvent(new CustomEvent('synthi:ai-status', { detail: parsed }));
+                }
+                return;
             }
         } catch (e) {
             // ignore

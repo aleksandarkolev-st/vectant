@@ -30,6 +30,16 @@ impl AdapterFamily {
             Self::ProcessSwap => CapabilityTier::Tier1,
         }
     }
+
+    /// Parse from a string representation (case-insensitive, supports multiple formats).
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s.to_lowercase().replace('-', "_").as_str() {
+            "dynamic_library" | "dynamiclibrary" | "dynlib" => Some(Self::DynamicLibrary),
+            "managed_runtime" | "managedruntime" | "managed" => Some(Self::ManagedRuntime),
+            "process_swap" | "processswap" | "procswap" => Some(Self::ProcessSwap),
+            _ => None,
+        }
+    }
 }
 
 /// Capability tier — declares the best reload mode available.
