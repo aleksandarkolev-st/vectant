@@ -165,7 +165,16 @@ export const saveFileContentThunk = createAsyncThunk(
         // No git-status refresh here — there was no disk write, so nothing
         // changed from git's perspective.  Out-of-band changes (terminal edits,
         // Yjs flush) are caught by the FS-watcher-based refresh instead.
-        if (normalizeTrailing(contentToSave) === normalizeTrailing(state.savedContent)) {
+        //
+        // IMPORTANT: use _preSaveSavedContent as the baseline, NOT savedContent.
+        // The `pending` reducer optimistically sets savedContent = currentContent
+        // before this async function runs.  Reading savedContent here would
+        // always produce a false "no change" match and skip the network write.
+        // _preSaveSavedContent holds the real pre-optimistic value.
+        const savedBaseline = state._preSaveSavedContent !== undefined
+            ? state._preSaveSavedContent
+            : state.savedContent;
+        if (normalizeTrailing(contentToSave) === normalizeTrailing(savedBaseline)) {
             return contentToSave; // fulfilled reducer marks as saved
         }
 
