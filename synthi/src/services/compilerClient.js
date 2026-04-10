@@ -1235,13 +1235,20 @@ export class CompilerClient {
         this._clearSpawnerHeartbeat();
         this._registeredSignalingSessionId = null;
 
-        if (this.ws) { this.ws.close(); }
-        if (this.pc) { this.pc.close(); }
+        // Null out this.ws BEFORE closing so the onclose handler sees a stale
+        // socket and skips its cleanup path (status broadcast + readyPromise
+        // teardown). Without this, onclose fires DISCONNECTED while we are in
+        // the middle of reconnecting, which races with the auto-reconnect timer
+        // in useCompiler and can produce a second overlapping connect() call.
+        const wsToClose = this.ws;
+        const pcToClose = this.pc;
+        this.ws = null;
+        this.pc = null;
+        if (wsToClose) { try { wsToClose.close(); } catch (_) {} }
+        if (pcToClose) { try { pcToClose.close(); } catch (_) {} }
 
         await new Promise(r => setTimeout(r, 500));
 
-        this.ws = null;
-        this.pc = null;
         this.compileChannel = null;
         this.buildLogChannel = null;
         this.terminalChannel = null;
@@ -1284,19 +1291,20 @@ export class CompilerClient {
         this._clearSpawnerHeartbeat();
         this._registeredSignalingSessionId = null;
 
-        if (this.ws) {
-            this.ws.close();
-        }
-        if (this.pc) {
-            this.pc.close();
-        }
-        
+        // Null out this.ws/pc BEFORE closing so onclose sees a stale socket
+        // and skips the DISCONNECTED broadcast + readyPromise teardown that
+        // would race with the reconnect we're about to initiate ourselves.
+        const wsToClose = this.ws;
+        const pcToClose = this.pc;
+        this.ws = null;
+        this.pc = null;
+        if (wsToClose) { try { wsToClose.close(); } catch (_) {} }
+        if (pcToClose) { try { pcToClose.close(); } catch (_) {} }
+
         // Wait for close events to propagate and backend to cleanup
         await new Promise(r => setTimeout(r, 1000));
 
         // Reset connection state but keep listeners
-        this.ws = null;
-        this.pc = null;
         this.compileChannel = null;
         this.buildLogChannel = null;
         this.terminalChannel = null;
@@ -1305,10 +1313,10 @@ export class CompilerClient {
         this.fileSyncChannel = null;
         this.readyPromise = null;
         this._setStatus(CompilerStatus.IDLE);
-        
+
         // Clear streaming state
         this.currentStreams = [];
-        
+
         return this.connect();
     }
 
