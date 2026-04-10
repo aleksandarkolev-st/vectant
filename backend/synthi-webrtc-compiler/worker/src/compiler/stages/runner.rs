@@ -642,7 +642,12 @@ pub async fn handle_runner_execution(
                 }
             }
 
-            // Signal the frontend to show the GUI widget
+        }
+
+        // Signal the frontend to show/update the GUI widget.
+        // Must be sent on both full-restart and HMR reloads so the
+        // window always opens regardless of whether the runner was reused.
+        if req.is_gui {
             let gui_start = serde_json::json!({
                 "type": "run-gui-start",
                 "sessionId": session_id,
