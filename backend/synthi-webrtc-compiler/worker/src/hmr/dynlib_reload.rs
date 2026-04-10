@@ -93,13 +93,14 @@ pub fn orchestrate_dynlib_reload(
     });
 
     if !artifact_valid {
+        let total_ms = steps.iter().map(|s| s.duration_ms).sum();
         return DynLibReloadReport {
             reload_id: reload_id.into(),
             module_id: module_id.into(),
             target_slot,
             steps,
             final_health: AdapterHealth::Faulted,
-            total_ms: steps.iter().map(|s| s.duration_ms).sum(),
+            total_ms,
             state_preserved: false,
             rolled_back: false,
         };
@@ -132,13 +133,14 @@ pub fn orchestrate_dynlib_reload(
             note: "rolled back to previous slot".into(),
         });
         rolled_back = true;
+        let total_ms = steps.iter().map(|s| s.duration_ms).sum();
         return DynLibReloadReport {
             reload_id: reload_id.into(),
             module_id: module_id.into(),
             target_slot,
             steps,
             final_health: AdapterHealth::Faulted,
-            total_ms: steps.iter().map(|s| s.duration_ms).sum(),
+            total_ms,
             state_preserved: false,
             rolled_back,
         };
