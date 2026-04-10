@@ -41,6 +41,17 @@ pub async fn handle_runner_execution(
 ) -> Result<()> {
     // Unified Runner Logic
     if modules_to_load.is_empty() {
+        // Nothing to load — still resolve the frontend's compile() promise.
+        let done_payload = serde_json::json!({
+            "sessionId": session_id,
+            "status": "done",
+            "success": true,
+            "stage": "runner",
+        });
+        let _ = ctx
+            .log_dc
+            .send_text(serde_json::to_string(&done_payload).unwrap_or_default())
+            .await;
         return Ok(());
     }
 

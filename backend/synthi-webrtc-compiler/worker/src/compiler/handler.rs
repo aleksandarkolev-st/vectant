@@ -692,6 +692,19 @@ pub async fn handle_compile_request(
             let _ = ctx.log_dc.send_text(msg).await;
         }
         eprintln!("[HMR] Skipping handle_runner_execution — adapter reload was authoritative");
+        // Resolve the frontend's compile() promise so the IDE doesn't stay stuck
+        // in "Compiling..." when the adapter handled the reload without going through
+        // handle_runner_execution (which is where build-status: done is normally sent).
+        let done_payload = serde_json::json!({
+            "sessionId": session_id.clone(),
+            "status": "done",
+            "success": true,
+            "stage": "adapter",
+        });
+        let _ = ctx
+            .log_dc
+            .send_text(serde_json::to_string(&done_payload).unwrap_or_default())
+            .await;
         return Ok(serde_json::json!({ "status": "ok", "hmr": "adapter_handled" }));
     }
 
