@@ -305,6 +305,15 @@ pub async fn handle_compile_request(
     // PHASE 3: COMPILATION
     // ============================================================
 
+    // Unique timestamp for .so filenames (seconds since epoch as i64)
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
+
+    // Unique ID for this reload in the HMR pipeline
+    let reload_id = format!("r-{}", timestamp);
+
     // Manual logging
     eprintln!("[Compile] Step: Starting compilation");
 
