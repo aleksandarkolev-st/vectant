@@ -54,11 +54,7 @@ pub fn detect_abi_changes(
     let abi_changed = prev.abi_version != current.abi_version;
 
     // 2. Compare state schema hashes
-    let schema_changed = match (&prev.state_schema_hash, &current.state_schema_hash) {
-        (Some(old), Some(new)) => old != new,
-        (Some(_), None) | (None, Some(_)) => true,
-        (None, None) => false,
-    };
+    let schema_changed = prev.state_schema_hash != current.state_schema_hash;
 
     // 3. Compute symbol diff
     let prev_syms: std::collections::HashSet<&str> =
@@ -98,38 +94,46 @@ pub fn detect_abi_changes(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hmr::adapter_matrix::{AdapterFamily, CapabilityTier};
-    use crate::hmr::build_manifest::{BuildSlot, HealthcheckStrategy};
+    use crate::hmr::build_manifest::{BuildSlot, HealthcheckStrategy, PreviewPreservationMode};
 
     fn make(
         abi: &str,
-        schema: Option<&str>,
+        schema: &str,
         symbols: Vec<&str>,
     ) -> BuildManifest {
         BuildManifest {
             preview_id: "p1".into(),
             language: "rust".into(),
-            adapter_family: AdapterFamily::DynamicLibrary,
-            capability_tier: CapabilityTier::Tier2,
-            slot: BuildSlot::Primary,
+            adapter_family: "DynamicLibrary".into(),
+            capability_tier: 2,
+            slot: BuildSlot::Core,
             artifact_path: "/tmp/t.so".into(),
             artifact_hash: "h".into(),
+            toolchain_fingerprint: String::new(),
             abi_version: abi.into(),
-            state_schema_hash: schema.map(|s| s.into()),
+            state_schema_hash: schema.into(),
             snapshot_modes: vec![],
             capabilities: vec![],
+            preview_preservation_mode: PreviewPreservationMode::Restart,
+            dirty_unit_source: None,
             exported_symbols: symbols.into_iter().map(|s| s.into()).collect(),
             dependencies: vec![],
-            healthcheck_strategy: HealthcheckStrategy::SymbolProbe,
+            healthcheck_strategy: HealthcheckStrategy::SymbolCheck,
             rollout_flags: Default::default(),
             build_time_ms: 0,
-            extension: Default::default(),
+            translation_units: None,
+            dirty_units: None,
+            header_fingerprint: None,
+            source_map_metadata: None,
+            candidate_generation: None,
+            boundary_map_version: None,
+            provenance_id: None,
         }
     }
 
     #[test]
     fn no_previous() {
-        let current = make("1.0", Some("s1"), vec!["init"]);
+        let current = make("1.0", "s1", vec!["init"]);
         let result = detect_abi_changes(None, &current);
         assert!(!result.abi_changed);
         assert!(!result.schema_changed);
@@ -137,8 +141,8 @@ mod tests {
 
     #[test]
     fn same_abi() {
-        let prev = make("1.0", Some("s1"), vec!["init", "update"]);
-        let curr = make("1.0", Some("s1"), vec!["init", "update"]);
+        let prev = make("1.0", "s1", vec!["init", "update"]);
+        let curr = make("1.0", "s1", vec!["init", "update"]);
         let result = detect_abi_changes(Some(&prev), &curr);
         assert!(!result.abi_changed);
         assert!(!result.schema_changed);
@@ -146,8 +150,8 @@ mod tests {
 
     #[test]
     fn abi_version_changed() {
-        let prev = make("1.0", Some("s1"), vec!["init"]);
-        let curr = make("2.0", Some("s1"), vec!["init"]);
+        let prev = make("1.0", "s1", vec!["init"]);
+        let curr = make("2.0", "s1", vec!["init"]);
         let result = detect_abi_changes(Some(&prev), &curr);
         assert!(result.abi_changed);
         assert!(!result.schema_changed);
@@ -155,8 +159,8 @@ mod tests {
 
     #[test]
     fn schema_changed() {
-        let prev = make("1.0", Some("s1"), vec!["init"]);
-        let curr = make("1.0", Some("s2"), vec!["init"]);
+        let prev = make("1.0", "s1", vec!["init"]);
+        let curr = make("1.0", "s2", vec!["init"]);
         let result = detect_abi_changes(Some(&prev), &curr);
         assert!(!result.abi_changed);
         assert!(result.schema_changed);
@@ -164,8 +168,8 @@ mod tests {
 
     #[test]
     fn symbol_removed() {
-        let prev = make("1.0", Some("s1"), vec!["init", "old_fn"]);
-        let curr = make("1.0", Some("s1"), vec!["init"]);
+        let prev = make("1.0", "s1", vec!["init", "old_fn"]);
+        let curr = make("1.0", "s1", vec!["init"]);
         let result = detect_abi_changes(Some(&prev), &curr);
         assert!(result.abi_changed);
         assert_eq!(result.removed_symbols, vec!["old_fn"]);
@@ -173,8 +177,8 @@ mod tests {
 
     #[test]
     fn symbol_added() {
-        let prev = make("1.0", Some("s1"), vec!["init"]);
-        let curr = make("1.0", Some("s1"), vec!["init", "new_fn"]);
+        let prev = make("1.0", "s1", vec!["init"]);
+        let curr = make("1.0", "s1", vec!["init", "new_fn"]);
         let result = detect_abi_changes(Some(&prev), &curr);
         assert!(result.abi_changed);
         assert_eq!(result.added_symbols, vec!["new_fn"]);

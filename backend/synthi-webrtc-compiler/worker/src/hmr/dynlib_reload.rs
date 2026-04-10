@@ -12,7 +12,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::hmr::adapter_trait::AdapterHealth;
 use crate::hmr::build_manifest::BuildManifest;
-use crate::hmr::slot_manager::SlotId;
+use crate::hmr::build_manifest::BuildSlot;
+use crate::hmr::slot_manager::LibSlot;
 
 /// Phases in a dynlib reload sequence.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -41,7 +42,7 @@ pub struct ReloadStep {
 pub struct DynLibReloadReport {
     pub reload_id: String,
     pub module_id: String,
-    pub target_slot: SlotId,
+    pub target_slot: LibSlot,
     pub steps: Vec<ReloadStep>,
     pub final_health: AdapterHealth,
     pub total_ms: u64,
@@ -58,13 +59,13 @@ pub fn orchestrate_dynlib_reload(
     reload_id: &str,
     module_id: &str,
     manifest: &BuildManifest,
-    active_slot: SlotId,
+    active_slot: LibSlot,
     has_state: bool,
 ) -> DynLibReloadReport {
     let mut steps = Vec::new();
     let target_slot = match active_slot {
-        SlotId::Primary => SlotId::Standby,
-        SlotId::Standby => SlotId::Primary,
+        LibSlot::Primary => LibSlot::Standby,
+        LibSlot::Standby => LibSlot::Primary,
     };
     let mut rolled_back = false;
     let mut state_preserved = false;
@@ -78,7 +79,7 @@ pub fn orchestrate_dynlib_reload(
     });
 
     // Phase 2: Validate artifact
-    let artifact_valid = manifest.artifact_path.is_some()
+    let artifact_valid = !manifest.artifact_path.is_empty()
         && !manifest.artifact_hash.is_empty();
     steps.push(ReloadStep {
         phase: DynLibReloadPhase::ValidateArtifact,
@@ -193,15 +194,7 @@ mod tests {
     use super::*;
 
     fn test_manifest() -> BuildManifest {
-        BuildManifest {
-            build_id: "b-1".into(),
-            module_id: "mod_a".into(),
-            artifact_path: Some("libmod_a.so".into()),
-            artifact_hash: "abc123".into(),
-            build_ms: 1000,
-            compiler_version: "1.0".into(),
-            warnings: vec![],
-        }
+        BuildManifest::new("test", "cpp", "DynamicLibrary", 3, BuildSlot::Full, "libmod_a.so", "abc123")
     }
 
     #[test]
@@ -210,21 +203,21 @@ mod tests {
             "r-1",
             "mod_a",
             &test_manifest(),
-            SlotId::Primary,
+            LibSlot::Primary,
             true,
         );
         assert!(!report.rolled_back);
         assert!(report.state_preserved);
         assert_eq!(report.final_health, AdapterHealth::Healthy);
-        assert_eq!(report.target_slot, SlotId::Standby);
+        assert_eq!(report.target_slot, LibSlot::Standby);
         assert!(report.steps.len() >= 6);
     }
 
     #[test]
     fn no_artifact_fails_early() {
         let mut m = test_manifest();
-        m.artifact_path = None;
-        let report = orchestrate_dynlib_reload("r-2", "mod_a", &m, SlotId::Primary, false);
+        m.artifact_path = String::new();
+        let report = orchestrate_dynlib_reload("r-2", "mod_a", &m, LibSlot::Primary, false);
         assert_eq!(report.final_health, AdapterHealth::Faulted);
         assert!(report.steps.len() <= 3);
     }

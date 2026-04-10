@@ -187,18 +187,16 @@ impl Adapter for ProcessSwapAdapter {
             };
         }
 
-        let artifact = match &req.build_manifest.artifact_path {
-            Some(p) => p.clone(),
-            None => {
-                return AdapterReloadResult::Failed {
-                    error: "no artifact_path".into(),
-                    recoverable: true,
-                }
-            }
-        };
+        let artifact = &req.build_manifest.artifact_path;
+        if artifact.is_empty() {
+            return AdapterReloadResult::Failed {
+                error: "no artifact_path".into(),
+                recoverable: true,
+            };
+        }
 
         // Spawn new process
-        if let Err(e) = self.spawn_new(&artifact) {
+        if let Err(e) = self.spawn_new(artifact) {
             self.phase = SwapPhase::Faulted;
             self.health = AdapterHealth::Faulted;
             return AdapterReloadResult::Failed {
@@ -250,18 +248,10 @@ impl Adapter for ProcessSwapAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hmr::build_manifest::BuildManifest;
+    use crate::hmr::build_manifest::{BuildManifest, BuildSlot};
 
     fn test_manifest(artifact: &str) -> BuildManifest {
-        BuildManifest {
-            build_id: "b-1".into(),
-            module_id: "app".into(),
-            artifact_path: Some(artifact.into()),
-            artifact_hash: "ghi789".into(),
-            build_ms: 3000,
-            compiler_version: "go1.22".into(),
-            warnings: vec![],
-        }
+        BuildManifest::new("p1", "go", "process_swap", 1, BuildSlot::Full, artifact, "ghi789")
     }
 
     #[test]

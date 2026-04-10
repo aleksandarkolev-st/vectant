@@ -154,13 +154,14 @@ pub fn execute_handoff(
     });
 
     if !transfer_ok {
+        let total_ms = steps.iter().map(|s| s.duration_ms).sum();
         return HandoffReport {
             module_id: module_id.into(),
             old_pid,
             new_pid,
             steps,
             envelope_bytes,
-            total_ms: steps.iter().map(|s| s.duration_ms).sum(),
+            total_ms,
             success: false,
         };
     }
@@ -189,13 +190,14 @@ pub fn execute_handoff(
         note: format!("pid {} retired", old_pid),
     });
 
+    let total_ms = steps.iter().map(|s| s.duration_ms).sum();
     HandoffReport {
         module_id: module_id.into(),
         old_pid,
         new_pid,
         steps,
         envelope_bytes,
-        total_ms: steps.iter().map(|s| s.duration_ms).sum(),
+        total_ms,
         success: true,
     }
 }

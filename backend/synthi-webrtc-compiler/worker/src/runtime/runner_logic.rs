@@ -263,7 +263,7 @@ pub unsafe fn process_load_command(
                     if let Some(ref json_str) = ss.json {
                         if let Ok(json_val) = serde_json::from_str::<serde_json::Value>(json_str) {
                             use crate::hmr::state_manager::SchemaVersion;
-                            let schema_v = SchemaVersion { major: 1, minor: 0 };
+                            let schema_v = SchemaVersion { major: 1, minor: 0, patch: 0 };
                             let cp_result = orchestrator.capture_checkpoint(
                                 name, &json_val, schema_v, 1, 0,
                             );
@@ -388,7 +388,7 @@ pub unsafe fn process_load_command(
                 // This gives a richer decision: direct restore, migrate, or discard.
                 let restore_outcome = {
                     use crate::hmr::state_manager::SchemaVersion;
-                    let target_schema = SchemaVersion { major: 1, minor: 0 };
+                    let target_schema = SchemaVersion { major: 1, minor: 0, patch: 0 };
                     orchestrator.orchestrate_state_restore(
                         name,
                         target_schema,

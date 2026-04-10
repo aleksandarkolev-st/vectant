@@ -242,7 +242,7 @@ fn walk(dir: &Path, depth: usize, out: &mut Vec<Manifest>) {
 
     // Track what we find in this directory so we can pick the right npm variant.
     let mut has_package_json = false;
-    let mut has_package_lock = false;
+    let mut _has_package_lock = false;
     let mut has_yarn_lock = false;
     let mut has_pnpm_lock = false;
 
@@ -265,7 +265,7 @@ fn walk(dir: &Path, depth: usize, out: &mut Vec<Manifest>) {
         // Check for manifest files
         match name_str.as_ref() {
             "package.json" => has_package_json = true,
-            "package-lock.json" => has_package_lock = true,
+            "package-lock.json" => _has_package_lock = true,
             "yarn.lock" => has_yarn_lock = true,
             "pnpm-lock.yaml" => has_pnpm_lock = true,
             "requirements.txt" => out.push(Manifest {

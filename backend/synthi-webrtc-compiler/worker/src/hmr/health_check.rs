@@ -70,7 +70,7 @@ pub struct HealthCheckConfig {
 impl Default for HealthCheckConfig {
     fn default() -> Self {
         Self {
-            strategy: HealthcheckStrategy::SymbolProbe,
+            strategy: HealthcheckStrategy::SymbolCheck,
             timeout: Duration::from_secs(5),
             max_retries: 1,
             retry_delay: Duration::from_millis(200),
@@ -82,7 +82,7 @@ impl HealthCheckConfig {
     /// Config appropriate for dlopen / symbol probe checks.
     pub fn for_symbol_probe() -> Self {
         Self {
-            strategy: HealthcheckStrategy::SymbolProbe,
+            strategy: HealthcheckStrategy::SymbolCheck,
             timeout: Duration::from_secs(2),
             max_retries: 0,
             retry_delay: Duration::from_millis(0),
@@ -92,7 +92,7 @@ impl HealthCheckConfig {
     /// Config appropriate for TCP/HTTP health probes.
     pub fn for_http_probe() -> Self {
         Self {
-            strategy: HealthcheckStrategy::HttpProbe,
+            strategy: HealthcheckStrategy::FirstTick,
             timeout: Duration::from_secs(10),
             max_retries: 2,
             retry_delay: Duration::from_millis(500),
@@ -102,7 +102,7 @@ impl HealthCheckConfig {
     /// Config appropriate for process exit-code checks.
     pub fn for_exit_code() -> Self {
         Self {
-            strategy: HealthcheckStrategy::ExitCodeCheck,
+            strategy: HealthcheckStrategy::StartupSequence,
             timeout: Duration::from_secs(5),
             max_retries: 0,
             retry_delay: Duration::from_millis(0),
@@ -148,7 +148,7 @@ mod tests {
     fn config_defaults() {
         let cfg = HealthCheckConfig::default();
         assert_eq!(cfg.timeout, Duration::from_secs(5));
-        assert!(matches!(cfg.strategy, HealthcheckStrategy::SymbolProbe));
+        assert!(matches!(cfg.strategy, HealthcheckStrategy::SymbolCheck));
     }
 
     #[test]

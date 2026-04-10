@@ -42,7 +42,7 @@ pub fn scope_to_planner(input: &ScopePlannerInput) -> ScopePlannerOutput {
     match input.scope.scope {
         RebuildScope::None => ScopePlannerOutput {
             decision: ReloadDecision::RejectBuild,
-            state_strategy: StateStrategy::Discard,
+            state_strategy: StateStrategy::Reset,
             reason: "no rebuild needed".into(),
         },
 
@@ -51,19 +51,19 @@ pub fn scope_to_planner(input: &ScopePlannerInput) -> ScopePlannerOutput {
             if input.abi_changed {
                 ScopePlannerOutput {
                     decision: ReloadDecision::ColdReload,
-                    state_strategy: StateStrategy::SnapshotRestore,
+                    state_strategy: StateStrategy::Migrate,
                     reason: "GUI change with ABI break → cold reload".into(),
                 }
             } else if input.has_snapshot {
                 ScopePlannerOutput {
                     decision: ReloadDecision::WarmReload,
-                    state_strategy: StateStrategy::PreservePointer,
+                    state_strategy: StateStrategy::Preserve,
                     reason: "GUI-only change, no ABI break → warm reload".into(),
                 }
             } else {
                 ScopePlannerOutput {
                     decision: ReloadDecision::ColdReload,
-                    state_strategy: StateStrategy::Discard,
+                    state_strategy: StateStrategy::Reset,
                     reason: "GUI-only but no snapshot → cold reload".into(),
                 }
             }
@@ -74,13 +74,13 @@ pub fn scope_to_planner(input: &ScopePlannerInput) -> ScopePlannerOutput {
             if input.has_snapshot && !input.abi_changed {
                 ScopePlannerOutput {
                     decision: ReloadDecision::ColdReload,
-                    state_strategy: StateStrategy::SnapshotRestore,
+                    state_strategy: StateStrategy::Migrate,
                     reason: "core change, snapshot available → cold reload with restore".into(),
                 }
             } else {
                 ScopePlannerOutput {
                     decision: ReloadDecision::ManagedReload,
-                    state_strategy: StateStrategy::Discard,
+                    state_strategy: StateStrategy::Reset,
                     reason: "core change, no snapshot → managed reload".into(),
                 }
             }
@@ -91,13 +91,13 @@ pub fn scope_to_planner(input: &ScopePlannerInput) -> ScopePlannerOutput {
             if input.abi_changed {
                 ScopePlannerOutput {
                     decision: ReloadDecision::ProcessSwap,
-                    state_strategy: StateStrategy::SnapshotRestore,
+                    state_strategy: StateStrategy::Migrate,
                     reason: "both changed + ABI break → process swap".into(),
                 }
             } else {
                 ScopePlannerOutput {
                     decision: ReloadDecision::ColdReload,
-                    state_strategy: StateStrategy::SnapshotRestore,
+                    state_strategy: StateStrategy::Migrate,
                     reason: "both changed, no ABI break → cold reload".into(),
                 }
             }
@@ -105,7 +105,7 @@ pub fn scope_to_planner(input: &ScopePlannerInput) -> ScopePlannerOutput {
 
         RebuildScope::FullReload => ScopePlannerOutput {
             decision: ReloadDecision::FullRestart,
-            state_strategy: StateStrategy::Discard,
+            state_strategy: StateStrategy::Reset,
             reason: "full reload required (config/build change)".into(),
         },
     }

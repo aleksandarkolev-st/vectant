@@ -52,11 +52,12 @@ pub fn plan_reload(input: &PlannerInput) -> PlannerOutput {
         return PlannerOutput {
             decision: ReloadDecision::FullRestart,
             reason: PlannerReasonBundle {
+                decision: ReloadDecision::FullRestart,
                 decision_reason: "Global HMR kill switch is active".into(),
                 decision_code: "KILL_SWITCH_GLOBAL".into(),
-                state_strategy: StateStrategy::DiscardAll,
+                state_strategy: StateStrategy::Reset,
                 fallback_strategy: FallbackStrategy::FullRestart,
-                user_message: Some("HMR disabled by administrator".into()),
+                user_message: "HMR disabled by administrator".into(),
             },
         };
     }
@@ -66,11 +67,12 @@ pub fn plan_reload(input: &PlannerInput) -> PlannerOutput {
         return PlannerOutput {
             decision: ReloadDecision::FullRestart,
             reason: PlannerReasonBundle {
+                decision: ReloadDecision::FullRestart,
                 decision_reason: format!("Kill switch active for {}", family),
                 decision_code: "KILL_SWITCH_FAMILY".into(),
-                state_strategy: StateStrategy::DiscardAll,
+                state_strategy: StateStrategy::Reset,
                 fallback_strategy: FallbackStrategy::FullRestart,
-                user_message: Some(format!("HMR disabled for {} adapter", family)),
+                user_message: format!("HMR disabled for {} adapter", family),
             },
         };
     }
@@ -86,11 +88,12 @@ pub fn plan_reload(input: &PlannerInput) -> PlannerOutput {
         return PlannerOutput {
             decision,
             reason: PlannerReasonBundle {
+                decision,
                 decision_reason: format!("Forced fallback to {} for {}", forced, family),
                 decision_code: "FORCED_FALLBACK".into(),
-                state_strategy: StateStrategy::SnapshotRestore,
+                state_strategy: StateStrategy::Migrate,
                 fallback_strategy: FallbackStrategy::FullRestart,
-                user_message: None,
+                user_message: String::new(),
             },
         };
     }
@@ -100,14 +103,15 @@ pub fn plan_reload(input: &PlannerInput) -> PlannerOutput {
         return PlannerOutput {
             decision: ReloadDecision::FullRestart,
             reason: PlannerReasonBundle {
+                decision: ReloadDecision::FullRestart,
                 decision_reason: format!(
                     "{} consecutive failures — forcing full restart",
                     input.consecutive_failures
                 ),
                 decision_code: "CONSECUTIVE_FAILURES".into(),
-                state_strategy: StateStrategy::DiscardAll,
+                state_strategy: StateStrategy::Reset,
                 fallback_strategy: FallbackStrategy::FullRestart,
-                user_message: Some("Multiple reload failures, restarting preview".into()),
+                user_message: "Multiple reload failures, restarting preview".into(),
             },
         };
     }
@@ -122,19 +126,20 @@ pub fn plan_reload(input: &PlannerInput) -> PlannerOutput {
         && input.runtime_supports_warm_reload
     {
         let state_strategy = if input.manifest.snapshot_modes.contains(&SnapshotMode::Binary) {
-            StateStrategy::PreservePointer
+            StateStrategy::Preserve
         } else {
-            StateStrategy::SnapshotRestore
+            StateStrategy::Migrate
         };
 
         return PlannerOutput {
             decision: ReloadDecision::WarmReload,
             reason: PlannerReasonBundle {
+                decision: ReloadDecision::WarmReload,
                 decision_reason: "ABI + schema stable, warm reload eligible".into(),
                 decision_code: "WARM_ELIGIBLE".into(),
                 state_strategy,
                 fallback_strategy: FallbackStrategy::ColdReload,
-                user_message: None,
+                user_message: String::new(),
             },
         };
     }
@@ -144,11 +149,12 @@ pub fn plan_reload(input: &PlannerInput) -> PlannerOutput {
         return PlannerOutput {
             decision: ReloadDecision::ColdReload,
             reason: PlannerReasonBundle {
+                decision: ReloadDecision::ColdReload,
                 decision_reason: "Schema changed — cold reload with state migration".into(),
                 decision_code: "SCHEMA_CHANGED".into(),
-                state_strategy: StateStrategy::SnapshotRestore,
+                state_strategy: StateStrategy::Migrate,
                 fallback_strategy: FallbackStrategy::ProcessSwap,
-                user_message: Some("State schema changed, migrating state".into()),
+                user_message: "State schema changed, migrating state".into(),
             },
         };
     }
@@ -158,11 +164,12 @@ pub fn plan_reload(input: &PlannerInput) -> PlannerOutput {
         return PlannerOutput {
             decision: ReloadDecision::ManagedReload,
             reason: PlannerReasonBundle {
+                decision: ReloadDecision::ManagedReload,
                 decision_reason: "Managed runtime — using managed reload".into(),
                 decision_code: "MANAGED_RUNTIME".into(),
-                state_strategy: StateStrategy::SnapshotRestore,
+                state_strategy: StateStrategy::Migrate,
                 fallback_strategy: FallbackStrategy::FullRestart,
-                user_message: None,
+                user_message: String::new(),
             },
         };
     }
@@ -172,11 +179,12 @@ pub fn plan_reload(input: &PlannerInput) -> PlannerOutput {
         return PlannerOutput {
             decision: ReloadDecision::ProcessSwap,
             reason: PlannerReasonBundle {
+                decision: ReloadDecision::ProcessSwap,
                 decision_reason: "ABI changed — process swap required".into(),
                 decision_code: "ABI_CHANGED".into(),
-                state_strategy: StateStrategy::SnapshotRestore,
+                state_strategy: StateStrategy::Migrate,
                 fallback_strategy: FallbackStrategy::FullRestart,
-                user_message: Some("ABI changed, swapping process".into()),
+                user_message: "ABI changed, swapping process".into(),
             },
         };
     }
@@ -186,11 +194,12 @@ pub fn plan_reload(input: &PlannerInput) -> PlannerOutput {
         return PlannerOutput {
             decision: ReloadDecision::ProcessSwap,
             reason: PlannerReasonBundle {
+                decision: ReloadDecision::ProcessSwap,
                 decision_reason: "Process swap adapter family".into(),
                 decision_code: "PROCESS_SWAP_FAMILY".into(),
-                state_strategy: StateStrategy::SnapshotRestore,
+                state_strategy: StateStrategy::Migrate,
                 fallback_strategy: FallbackStrategy::FullRestart,
-                user_message: None,
+                user_message: String::new(),
             },
         };
     }
@@ -199,11 +208,12 @@ pub fn plan_reload(input: &PlannerInput) -> PlannerOutput {
     PlannerOutput {
         decision: ReloadDecision::ColdReload,
         reason: PlannerReasonBundle {
+            decision: ReloadDecision::ColdReload,
             decision_reason: "Default fallback — cold reload".into(),
             decision_code: "DEFAULT_COLD".into(),
-            state_strategy: StateStrategy::SnapshotRestore,
+            state_strategy: StateStrategy::Migrate,
             fallback_strategy: FallbackStrategy::FullRestart,
-            user_message: None,
+            user_message: String::new(),
         },
     }
 }

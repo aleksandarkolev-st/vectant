@@ -96,7 +96,7 @@ pub fn evaluate_promotion(
                     };
                 }
             }
-            Some(HealthCheckResult::Pass) | Some(HealthCheckResult::Skip { .. }) => {
+            Some(HealthCheckResult::Skipped) => {
                 // Acceptable
             }
             Some(HealthCheckResult::Timeout { .. }) => {
@@ -142,35 +142,43 @@ pub fn evaluate_promotion(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hmr::adapter_matrix::{AdapterFamily, CapabilityTier};
-    use crate::hmr::build_manifest::{BuildManifest, BuildSlot, HealthcheckStrategy};
+    use crate::hmr::build_manifest::{BuildManifest, BuildSlot, HealthcheckStrategy, PreviewPreservationMode};
     use crate::hmr::planner_decision::{ReloadDecision, StateStrategy};
 
     fn validated_candidate() -> Candidate {
         let manifest = BuildManifest {
             preview_id: "p1".into(),
             language: "rust".into(),
-            adapter_family: AdapterFamily::DynamicLibrary,
-            capability_tier: CapabilityTier::Tier2,
-            slot: BuildSlot::Primary,
+            adapter_family: "DynamicLibrary".into(),
+            capability_tier: 2,
+            slot: BuildSlot::Core,
             artifact_path: "/tmp/test.so".into(),
             artifact_hash: "hash1".into(),
+            toolchain_fingerprint: String::new(),
             abi_version: "1.0".into(),
-            state_schema_hash: None,
+            state_schema_hash: String::new(),
             snapshot_modes: vec![],
             capabilities: vec![],
+            preview_preservation_mode: PreviewPreservationMode::Restart,
+            dirty_unit_source: None,
             exported_symbols: vec![],
             dependencies: vec![],
-            healthcheck_strategy: HealthcheckStrategy::SymbolProbe,
+            healthcheck_strategy: HealthcheckStrategy::SymbolCheck,
             rollout_flags: Default::default(),
             build_time_ms: 100,
-            extension: Default::default(),
+            translation_units: None,
+            dirty_units: None,
+            header_fingerprint: None,
+            source_map_metadata: None,
+            candidate_generation: None,
+            boundary_map_version: None,
+            provenance_id: None,
         };
         let mut c = Candidate::new(
             manifest,
             1,
             ReloadDecision::WarmReload,
-            StateStrategy::PreservePointer,
+            StateStrategy::Preserve,
         );
         c.begin_load();
         c.begin_health_check();
@@ -202,27 +210,36 @@ mod tests {
         let manifest = BuildManifest {
             preview_id: "p1".into(),
             language: "rust".into(),
-            adapter_family: AdapterFamily::DynamicLibrary,
-            capability_tier: CapabilityTier::Tier2,
-            slot: BuildSlot::Primary,
+            adapter_family: "DynamicLibrary".into(),
+            capability_tier: 2,
+            slot: BuildSlot::Core,
             artifact_path: "/tmp/test.so".into(),
             artifact_hash: "hash1".into(),
+            toolchain_fingerprint: String::new(),
             abi_version: "1.0".into(),
-            state_schema_hash: None,
+            state_schema_hash: String::new(),
             snapshot_modes: vec![],
             capabilities: vec![],
+            preview_preservation_mode: PreviewPreservationMode::Restart,
+            dirty_unit_source: None,
             exported_symbols: vec![],
             dependencies: vec![],
-            healthcheck_strategy: HealthcheckStrategy::SymbolProbe,
+            healthcheck_strategy: HealthcheckStrategy::SymbolCheck,
             rollout_flags: Default::default(),
             build_time_ms: 100,
-            extension: Default::default(),
+            translation_units: None,
+            dirty_units: None,
+            header_fingerprint: None,
+            source_map_metadata: None,
+            candidate_generation: None,
+            boundary_map_version: None,
+            provenance_id: None,
         };
         let c = Candidate::new(
             manifest,
             1,
             ReloadDecision::WarmReload,
-            StateStrategy::PreservePointer,
+            StateStrategy::Preserve,
         );
         match evaluate_promotion(&c, &PromotionPolicy::default(), 400) {
             PromotionVerdict::Reject { reason } => {

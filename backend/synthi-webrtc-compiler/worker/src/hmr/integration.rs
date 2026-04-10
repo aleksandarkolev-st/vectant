@@ -304,8 +304,8 @@ impl HmrPipeline {
 
         // Emit state restore "started" notification with strategy
         let restore_strategy = match planner_output.reason.state_strategy {
-            StateStrategy::PreservePointer => "direct",
-            StateStrategy::SnapshotRestore => "migrate",
+            StateStrategy::Preserve => "direct",
+            StateStrategy::Migrate => "migrate",
             _ => "unknown",
         };
         notifications.push_json(&StateRestoreNotification {
@@ -330,7 +330,7 @@ impl HmrPipeline {
             build_manifest: manifest.clone(),
             preserve_state: matches!(
                 planner_output.reason.state_strategy,
-                StateStrategy::PreservePointer | StateStrategy::SnapshotRestore
+                StateStrategy::Preserve | StateStrategy::Migrate
             ),
             timeout_ms: 5000,
         };
@@ -673,11 +673,12 @@ mod tests {
             &PlannerOutput {
                 decision: ReloadDecision::WarmReload,
                 reason: crate::hmr::planner_decision::PlannerReasonBundle {
+                    decision: ReloadDecision::WarmReload,
                     decision_reason: "test".into(),
                     decision_code: "TEST".into(),
-                    state_strategy: StateStrategy::SnapshotRestore,
+                    state_strategy: StateStrategy::Migrate,
                     fallback_strategy: crate::hmr::planner_decision::FallbackStrategy::ColdReload,
-                    user_message: None,
+                    user_message: String::new(),
                 },
             },
             "reload-1",
@@ -714,11 +715,12 @@ mod tests {
         let planner_output = PlannerOutput {
             decision: ReloadDecision::WarmReload,
             reason: crate::hmr::planner_decision::PlannerReasonBundle {
+                decision: ReloadDecision::WarmReload,
                 decision_reason: "test".into(),
                 decision_code: "TEST".into(),
-                state_strategy: StateStrategy::SnapshotRestore,
+                state_strategy: StateStrategy::Migrate,
                 fallback_strategy: crate::hmr::planner_decision::FallbackStrategy::ColdReload,
-                user_message: None,
+                user_message: String::new(),
             },
         };
 

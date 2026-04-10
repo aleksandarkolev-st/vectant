@@ -14,8 +14,8 @@ use crate::hmr::adapter_matrix::{AdapterFamily, CapabilityTier};
 use crate::hmr::adapter_trait::{
     Adapter, AdapterHealth, AdapterInfo, AdapterReloadRequest, AdapterReloadResult,
 };
-use crate::hmr::slot_manager::{SlotId, SlotState};
-use crate::hmr::symbol_validation::SymbolSet;
+use crate::hmr::slot_manager::LibSlot;
+use crate::hmr::symbol_validation::SymbolValidationResult;
 
 /// Configuration for the dynlib adapter.
 #[derive(Debug, Clone)]
@@ -56,11 +56,11 @@ pub struct DynLibAdapter {
     config: DynLibAdapterConfig,
     phase: DynLibPhase,
     /// Current active slot.
-    active_slot: Option<SlotId>,
+    active_slot: Option<LibSlot>,
     /// Path of the currently loaded artifact.
     active_artifact: Option<String>,
     /// Expected symbol set for ABI validation.
-    expected_symbols: Option<SymbolSet>,
+    expected_symbols: Option<SymbolValidationResult>,
     /// Snapshot of the last exported state.
     last_snapshot: Option<Vec<u8>>,
     /// Health after last reload.
@@ -84,7 +84,7 @@ impl DynLibAdapter {
     }
 
     /// Set the expected symbols for ABI validation.
-    pub fn set_expected_symbols(&mut self, symbols: SymbolSet) {
+    pub fn set_expected_symbols(&mut self, symbols: SymbolValidationResult) {
         self.expected_symbols = Some(symbols);
     }
 
@@ -128,8 +128,8 @@ impl DynLibAdapter {
 
         // Swap slots: toggle primary/standby
         let new_slot = match self.active_slot {
-            Some(SlotId::Primary) => SlotId::Standby,
-            _ => SlotId::Primary,
+            Some(LibSlot::Primary) => LibSlot::Standby,
+            _ => LibSlot::Primary,
         };
 
         // Record swap
@@ -165,7 +165,7 @@ impl Adapter for DynLibAdapter {
             return Err(format!("cannot initialize from phase {:?}", self.phase));
         }
         self.phase = DynLibPhase::Ready;
-        self.active_slot = Some(SlotId::Primary);
+        self.active_slot = Some(LibSlot::Primary);
         self.health = AdapterHealth::Unknown;
         Ok(())
     }
@@ -187,16 +187,15 @@ impl Adapter for DynLibAdapter {
         }
 
         // Extract artifact path from build manifest
-        let artifact = if let Some(path) = &req.build_manifest.artifact_path {
-            path.clone()
-        } else {
+        let artifact = &req.build_manifest.artifact_path;
+        if artifact.is_empty() {
             return AdapterReloadResult::Failed {
                 error: "no artifact_path in build manifest".into(),
                 recoverable: true,
             };
-        };
+        }
 
-        match self.perform_swap(&artifact) {
+        match self.perform_swap(artifact) {
             Ok(ms) => AdapterReloadResult::Success {
                 reload_ms: ms,
                 state_preserved: req.preserve_state && self.last_snapshot.is_some(),
@@ -233,18 +232,10 @@ impl Adapter for DynLibAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hmr::build_manifest::BuildManifest;
+    use crate::hmr::build_manifest::{BuildManifest, BuildSlot};
 
     fn test_manifest(artifact: &str) -> BuildManifest {
-        BuildManifest {
-            build_id: "b-1".into(),
-            module_id: "mod_a".into(),
-            artifact_path: Some(artifact.into()),
-            artifact_hash: "abc123".into(),
-            build_ms: 1000,
-            compiler_version: "1.0".into(),
-            warnings: vec![],
-        }
+        BuildManifest::new("test", "cpp", "DynamicLibrary", 3, BuildSlot::Full, artifact, "abc123")
     }
 
     #[test]

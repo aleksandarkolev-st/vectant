@@ -57,7 +57,7 @@ pub fn execute_planner_and_transition(
         decision: decision_str.to_string(),
         decision_code: output.reason.decision_code.clone(),
         decision_reason: output.reason.decision_reason.clone(),
-        user_message: output.reason.user_message.clone(),
+        user_message: if output.reason.user_message.is_empty() { None } else { Some(output.reason.user_message.clone()) },
         preview_id: lifecycle.preview_id().to_string(),
     };
 

@@ -167,17 +167,15 @@ impl Adapter for ManagedRuntimeAdapter {
             };
         }
 
-        let artifact = match &req.build_manifest.artifact_path {
-            Some(p) => p.clone(),
-            None => {
-                return AdapterReloadResult::Failed {
-                    error: "no artifact_path in build manifest".into(),
-                    recoverable: true,
-                }
-            }
-        };
+        let artifact = &req.build_manifest.artifact_path;
+        if artifact.is_empty() {
+            return AdapterReloadResult::Failed {
+                error: "no artifact_path in build manifest".into(),
+                recoverable: true,
+            };
+        }
 
-        match self.send_reload(&artifact) {
+        match self.send_reload(artifact) {
             Ok(ms) => AdapterReloadResult::Success {
                 reload_ms: ms,
                 state_preserved: req.preserve_state && self.last_snapshot.is_some(),
@@ -212,18 +210,10 @@ impl Adapter for ManagedRuntimeAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hmr::build_manifest::BuildManifest;
+    use crate::hmr::build_manifest::{BuildManifest, BuildSlot};
 
     fn jvm_manifest(artifact: &str) -> BuildManifest {
-        BuildManifest {
-            build_id: "b-1".into(),
-            module_id: "app".into(),
-            artifact_path: Some(artifact.into()),
-            artifact_hash: "def456".into(),
-            build_ms: 2000,
-            compiler_version: "javac 17".into(),
-            warnings: vec![],
-        }
+        BuildManifest::new("p1", "java", "managed_runtime", 1, BuildSlot::Full, artifact, "def456")
     }
 
     #[test]

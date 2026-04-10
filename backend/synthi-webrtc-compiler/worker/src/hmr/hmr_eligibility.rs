@@ -10,7 +10,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::hmr::adapter_matrix::{AdapterFamily, CapabilityTier};
+use crate::hmr::adapter_matrix::AdapterFamily;
 use crate::hmr::build_manifest::BuildManifest;
 use crate::hmr::rollout_flags::RolloutFlags;
 
@@ -104,19 +104,19 @@ pub fn check_hmr_eligibility(input: &EligibilityInput) -> HmrEligibility {
         return HmrEligibility::blocked("HMR globally killed via rollout flag");
     }
 
-    let family = input.manifest.adapter_family;
+    let family_str = &input.manifest.adapter_family;
     let tier = input.manifest.capability_tier;
 
     // 4. Per-family kill switch
-    if input.rollout_flags.is_family_killed(&family) {
+    if input.rollout_flags.is_family_killed_str(family_str) {
         return HmrEligibility::blocked(format!(
-            "HMR killed for adapter family {:?}",
-            family
+            "HMR killed for adapter family {}",
+            family_str
         ));
     }
 
     // 5. Tier0 = no HMR
-    if tier == CapabilityTier::Tier0 {
+    if tier == 0 {
         return HmrEligibility::blocked("Tier0 capability: no hot reload support");
     }
 
@@ -129,16 +129,19 @@ pub fn check_hmr_eligibility(input: &EligibilityInput) -> HmrEligibility {
     }
 
     // 7. on_update required for warm reload with DynamicLibrary
-    if family == AdapterFamily::DynamicLibrary && !input.has_on_update {
-        return HmrEligibility::blocked(
-            "no on_update export — dynamic library warm reload requires it",
-        );
+    if family_str == "DynamicLibrary" || family_str == "dynamic_library" {
+        if !input.has_on_update {
+            return HmrEligibility::blocked(
+                "no on_update export — dynamic library warm reload requires it",
+            );
+        }
     }
 
     // 8. All checks pass
+    let family = AdapterFamily::from_str(family_str);
     let mut enablers = vec![
-        format!("adapter_family={:?}", family),
-        format!("capability_tier={:?}", tier),
+        format!("adapter_family={}", family_str),
+        format!("capability_tier={}", tier),
     ];
     if input.has_on_update {
         enablers.push("has_on_update=true".into());
@@ -147,41 +150,25 @@ pub fn check_hmr_eligibility(input: &EligibilityInput) -> HmrEligibility {
         enablers.push("gui_mode_same=true, resolution_same=true".into());
     }
 
-    HmrEligibility::ok(family, enablers)
+    match family {
+        Some(f) => HmrEligibility::ok(f, enablers),
+        None => HmrEligibility::blocked(format!("unknown adapter family: {}", family_str)),
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hmr::adapter_matrix::{AdapterFamily, CapabilityTier};
-    use crate::hmr::build_manifest::{BuildManifest, BuildSlot, HealthcheckStrategy};
+    use crate::hmr::build_manifest::{BuildManifest, BuildSlot};
     use crate::hmr::rollout_flags::RolloutFlags;
 
-    fn test_manifest(family: AdapterFamily, tier: CapabilityTier) -> BuildManifest {
-        BuildManifest {
-            preview_id: "p1".into(),
-            language: "rust".into(),
-            adapter_family: family,
-            capability_tier: tier,
-            slot: BuildSlot::Primary,
-            artifact_path: "/tmp/t.so".into(),
-            artifact_hash: "h".into(),
-            abi_version: "1.0".into(),
-            state_schema_hash: None,
-            snapshot_modes: vec![],
-            capabilities: vec![],
-            exported_symbols: vec![],
-            dependencies: vec![],
-            healthcheck_strategy: HealthcheckStrategy::SymbolProbe,
-            rollout_flags: Default::default(),
-            build_time_ms: 0,
-            extension: Default::default(),
-        }
+    fn test_manifest(family: &str, tier: u8) -> BuildManifest {
+        BuildManifest::new("p1", "rust", family, tier, BuildSlot::Core, "/tmp/t.so", "h")
     }
 
     #[test]
     fn eligible_gui_with_on_update() {
-        let manifest = test_manifest(AdapterFamily::DynamicLibrary, CapabilityTier::Tier2);
+        let manifest = test_manifest("DynamicLibrary", 2);
         let flags = RolloutFlags::new_defaults();
         let input = EligibilityInput {
             is_gui: true,
@@ -199,7 +186,7 @@ mod tests {
 
     #[test]
     fn blocked_no_runner() {
-        let manifest = test_manifest(AdapterFamily::DynamicLibrary, CapabilityTier::Tier2);
+        let manifest = test_manifest("DynamicLibrary", 2);
         let flags = RolloutFlags::new_defaults();
         let input = EligibilityInput {
             is_gui: false,
@@ -216,7 +203,7 @@ mod tests {
 
     #[test]
     fn blocked_blocking_app() {
-        let manifest = test_manifest(AdapterFamily::DynamicLibrary, CapabilityTier::Tier2);
+        let manifest = test_manifest("DynamicLibrary", 2);
         let flags = RolloutFlags::new_defaults();
         let input = EligibilityInput {
             is_gui: false,
@@ -233,7 +220,7 @@ mod tests {
 
     #[test]
     fn blocked_tier0() {
-        let manifest = test_manifest(AdapterFamily::DynamicLibrary, CapabilityTier::Tier0);
+        let manifest = test_manifest("DynamicLibrary", 0);
         let flags = RolloutFlags::new_defaults();
         let input = EligibilityInput {
             is_gui: true,
@@ -250,7 +237,7 @@ mod tests {
 
     #[test]
     fn blocked_resolution_change() {
-        let manifest = test_manifest(AdapterFamily::DynamicLibrary, CapabilityTier::Tier2);
+        let manifest = test_manifest("DynamicLibrary", 2);
         let flags = RolloutFlags::new_defaults();
         let input = EligibilityInput {
             is_gui: true,
@@ -267,7 +254,7 @@ mod tests {
 
     #[test]
     fn blocked_no_on_update_for_dynlib() {
-        let manifest = test_manifest(AdapterFamily::DynamicLibrary, CapabilityTier::Tier2);
+        let manifest = test_manifest("DynamicLibrary", 2);
         let flags = RolloutFlags::new_defaults();
         let input = EligibilityInput {
             is_gui: true,
@@ -284,7 +271,7 @@ mod tests {
 
     #[test]
     fn managed_runtime_allows_no_on_update() {
-        let manifest = test_manifest(AdapterFamily::ManagedRuntime, CapabilityTier::Tier1);
+        let manifest = test_manifest("ManagedRuntime", 1);
         let flags = RolloutFlags::new_defaults();
         let input = EligibilityInput {
             is_gui: false,
