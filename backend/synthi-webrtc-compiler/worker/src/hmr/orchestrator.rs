@@ -51,6 +51,11 @@ use crate::safety::quiescence::{QuiescenceConfig, QuiescenceManager};
 
 // Integration with the full HMR pipeline (planner, adapters, AI gate, candidates)
 use crate::hmr::integration::HmrPipeline;
+use crate::hmr::state_checkpoint::{CheckpointManager, CheckpointPolicy, CheckpointResult};
+use crate::hmr::state_restore_orchestrator::{orchestrate_restore, RestoreOutcome, RestoreStrategy};
+use crate::hmr::state_restore_validator::RestoreTarget;
+use crate::hmr::state_migration::MigrationRegistry;
+use crate::hmr::state_snapshot::SnapshotReason;
 // use crate::quiescence::{QuiescenceManager, QuiescenceConfig}; // DUP
 // use crate::reload_protocol::{ReloadOperation, ReloadConfig}; // DUP
 
@@ -271,6 +276,12 @@ pub struct HmrOrchestrator {
 
     // HMR integration pipeline (adapters, planner, candidates, AI gate)
     hmr_pipeline: Option<HmrPipeline>,
+
+    // Checkpoint manager for state snapshots before reloads
+    pub checkpoint_manager: CheckpointManager,
+
+    // Migration registry for schema migrations
+    pub migration_registry: MigrationRegistry,
 }
 
 /// Orchestrator configuration
@@ -363,6 +374,10 @@ impl HmrOrchestrator {
             current_reload: None,
             // HMR integration pipeline
             hmr_pipeline: None,
+            // Checkpoint manager for state snapshots
+            checkpoint_manager: CheckpointManager::new(CheckpointPolicy::default()),
+            // Migration registry for schema migrations
+            migration_registry: MigrationRegistry::new(),
         }
     }
 
@@ -724,6 +739,67 @@ impl HmrOrchestrator {
                 .error
                 .unwrap_or_else(|| "Migration failed".to_string()))
         }
+    }
+
+    // ============================================================
+    // CHECKPOINT-BASED STATE CAPTURE & RESTORE
+    // ============================================================
+    // Uses CheckpointManager + state_restore_orchestrator instead of
+    // the older inline save/restore path.
+    // ============================================================
+
+    /// Capture a checkpoint for a module before a warm reload.
+    ///
+    /// Returns the checkpoint result for logging/notification.
+    pub fn capture_checkpoint(
+        &mut self,
+        module_id: &str,
+        state: &serde_json::Value,
+        schema_version: SchemaVersion,
+        abi_version: u32,
+        source_hash: u64,
+    ) -> CheckpointResult {
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+
+        self.checkpoint_manager.capture(
+            module_id,
+            state,
+            schema_version,
+            abi_version,
+            source_hash,
+            now_ms,
+            SnapshotReason::PreReload,
+        )
+    }
+
+    /// Restore state for a module using the state restore orchestrator.
+    ///
+    /// This replaces the older inline diff_and_migrate_json path with the
+    /// richer decision layer: direct restore, migrate, or discard.
+    pub fn orchestrate_state_restore(
+        &self,
+        module_id: &str,
+        target_schema: SchemaVersion,
+        target_abi: u32,
+        target_source_hash: u64,
+        required_fields: Vec<String>,
+    ) -> Option<RestoreOutcome> {
+        let snapshot = self.checkpoint_manager.latest(module_id)?;
+
+        let target = RestoreTarget {
+            module_id: module_id.to_string(),
+            schema_version: target_schema,
+            abi_version: target_abi,
+            source_hash: target_source_hash,
+            required_fields,
+            max_state_bytes: 1024 * 1024, // 1 MB
+            layout_hash: None,
+        };
+
+        Some(orchestrate_restore(snapshot, &target, &self.migration_registry))
     }
 
     // ============================================================

@@ -1274,7 +1274,7 @@ export class CompilerClient {
         return this.connect();
     }
 
-    async compile({ filename, source, language, files = [], isGui = false, width, height, onLog, useAiSplit = false, target = null, projectRoot = null, slug = null, sessionId: providedSessionId = null } = {}) {
+    async compile({ filename, source, language, files = [], isGui = false, width, height, onLog, useAiSplit = false, userRequestedAi = false, userRequestedDeterministic = false, target = null, projectRoot = null, slug = null, sessionId: providedSessionId = null } = {}) {
         // Auto-detect React Native from source if no target specified and file is JS/JSX/TSX
         const ext = (filename || '').split('.').pop().toLowerCase();
         const isJsxFile = ['js', 'jsx', 'tsx', 'ts'].includes(ext);
@@ -1558,6 +1558,8 @@ export class CompilerClient {
                     height: height,
                     supports_h265: this.supportsH265,
                     use_ai_split: useAiSplit,
+                    user_requested_ai: userRequestedAi,
+                    user_requested_deterministic: userRequestedDeterministic,
                     target: effectiveTarget,
                     project_root: projectRoot,
                     slug: slug || this.slug

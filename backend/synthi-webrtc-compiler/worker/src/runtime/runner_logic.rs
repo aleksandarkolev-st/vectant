@@ -258,6 +258,23 @@ pub unsafe fn process_load_command(
                 saved_state =
                     Some(orchestrator.save_module_state(module_slot, &old_lib, state_to_save));
 
+                // Capture a checkpoint through CheckpointManager for richer restore
+                if let Some(ref ss) = saved_state {
+                    if let Some(ref json_str) = ss.json {
+                        if let Ok(json_val) = serde_json::from_str::<serde_json::Value>(json_str) {
+                            use crate::hmr::state_manager::SchemaVersion;
+                            let schema_v = SchemaVersion { major: 1, minor: 0 };
+                            let cp_result = orchestrator.capture_checkpoint(
+                                name, &json_val, schema_v, 1, 0,
+                            );
+                            eprintln!(
+                                "[Runner] [HMR] Checkpoint capture result: {:?}",
+                                cp_result
+                            );
+                        }
+                    }
+                }
+
                 if let Some(ref ss) = saved_state {
                     if ss.was_binary {
                         eprintln!(
@@ -367,44 +384,81 @@ pub unsafe fn process_load_command(
             // ============================================================
 
             if let Some(ref ss) = saved_state {
-                // Get template JSON for field-level diffing (if JSON path needed)
-                let template_json = orchestrator.get_template_json(module_slot, &new_lib);
+                // ── Try checkpoint-based restore via state_restore_orchestrator ──
+                // This gives a richer decision: direct restore, migrate, or discard.
+                let restore_outcome = {
+                    use crate::hmr::state_manager::SchemaVersion;
+                    let target_schema = SchemaVersion { major: 1, minor: 0 };
+                    orchestrator.orchestrate_state_restore(
+                        name,
+                        target_schema,
+                        1,  // abi_version
+                        0,  // source_hash
+                        vec![],  // required_fields (discover from template)
+                    )
+                };
 
-                // Use orchestrator to load state
-                let loaded = orchestrator.load_module_state(
-                    module_slot,
-                    &new_lib,
-                    ss,
-                    template_json.as_deref(),
-                );
-
-                if !loaded.state_ptr.is_null() {
-                    new_state = loaded.state_ptr;
-
-                    // Report migration results
-                    if let Some(ref migration) = loaded.migration_result {
-                        let report = format!(
-                            "preserved={}, reset={}, new={}",
-                            migration.preserved_fields.len(),
-                            migration.reset_fields.len(),
-                            migration.new_fields.len()
-                        );
-                        eprintln!("[Runner] [HMR] State migrated via orchestrator: {}", report);
-
-                        let status = HmrStatus::state_migrated(
-                            name,
-                            migration.preserved_fields.len(),
-                            migration.reset_fields.len(),
-                            migration.new_fields.len(),
-                        );
-                        eprintln!("[Runner] [HMR-STATUS] {}", status.to_json());
-                    } else if loaded.was_binary {
-                        let status = HmrStatus::state_migrated(name, 0, 0, 0);
-                        eprintln!("[Runner] [HMR-STATUS] {}", status.to_json());
-                        eprintln!("[Runner] [HMR] Binary state restored successfully");
+                let used_checkpoint_restore = if let Some(ref outcome) = restore_outcome {
+                    use crate::hmr::state_restore_orchestrator::RestoreStrategy;
+                    match &outcome.strategy {
+                        RestoreStrategy::Direct => {
+                            eprintln!("[Runner] [HMR] Checkpoint restore: Direct (no migration needed)");
+                            // Still use the orchestrator's load path for the actual pointer
+                            false // fall through to load_module_state below
+                        }
+                        RestoreStrategy::Migrate { steps } => {
+                            eprintln!("[Runner] [HMR] Checkpoint restore: Migrate ({} steps)", steps);
+                            false // migration is handled by load_module_state
+                        }
+                        RestoreStrategy::Discard { reason } => {
+                            eprintln!("[Runner] [HMR] Checkpoint restore: Discard ({})", reason);
+                            true // skip load_module_state; fresh init
+                        }
                     }
                 } else {
-                    eprintln!("[Runner] [HMR] Orchestrator load returned NULL - fresh init");
+                    false
+                };
+
+                if !used_checkpoint_restore {
+                    // Get template JSON for field-level diffing (if JSON path needed)
+                    let template_json = orchestrator.get_template_json(module_slot, &new_lib);
+
+                    // Use orchestrator to load state
+                    let loaded = orchestrator.load_module_state(
+                        module_slot,
+                        &new_lib,
+                        ss,
+                        template_json.as_deref(),
+                    );
+
+                    if !loaded.state_ptr.is_null() {
+                        new_state = loaded.state_ptr;
+
+                        // Report migration results
+                        if let Some(ref migration) = loaded.migration_result {
+                            let report = format!(
+                                "preserved={}, reset={}, new={}",
+                                migration.preserved_fields.len(),
+                                migration.reset_fields.len(),
+                                migration.new_fields.len()
+                            );
+                            eprintln!("[Runner] [HMR] State migrated via orchestrator: {}", report);
+
+                            let status = HmrStatus::state_migrated(
+                                name,
+                                migration.preserved_fields.len(),
+                                migration.reset_fields.len(),
+                                migration.new_fields.len(),
+                            );
+                            eprintln!("[Runner] [HMR-STATUS] {}", status.to_json());
+                        } else if loaded.was_binary {
+                            let status = HmrStatus::state_migrated(name, 0, 0, 0);
+                            eprintln!("[Runner] [HMR-STATUS] {}", status.to_json());
+                            eprintln!("[Runner] [HMR] Binary state restored successfully");
+                        }
+                    } else {
+                        eprintln!("[Runner] [HMR] Orchestrator load returned NULL - fresh init");
+                    }
                 }
             }
 

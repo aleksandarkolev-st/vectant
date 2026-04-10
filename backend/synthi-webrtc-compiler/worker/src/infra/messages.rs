@@ -55,6 +55,12 @@ pub struct CompileRequest {
     // Checking previous read_file output: yes, `use_ai_split` is there.
     #[serde(default)]
     pub use_ai_split: bool,
+    /// Explicit user request for AI-assisted compilation (Loop B).
+    #[serde(default)]
+    pub user_requested_ai: bool,
+    /// Explicit user request for deterministic compilation (Loop A).
+    #[serde(default)]
+    pub user_requested_deterministic: bool,
     /// Target platform for execution: "native" (default), "react-native-emulator", etc.
     #[serde(default)]
     pub target: Option<String>,

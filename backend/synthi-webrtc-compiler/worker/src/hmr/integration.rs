@@ -94,6 +94,14 @@ pub struct StateRestoreNotification {
     pub error: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fallback: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub strategy: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub warnings: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lost_fields: Option<Vec<String>>,
 }
 
 /// Adapter health notification for the health panel.
@@ -279,7 +287,27 @@ impl HmrPipeline {
             let _ = fsm.apply(LifecycleEvent::BeginReload, now_ms);
         }
 
-        // Emit state restore "started" notification
+        // Emit snapshot_capturing phase notification
+        notifications.push_json(&StateRestoreNotification {
+            msg_type: "state_restore_status",
+            restore_type: "snapshot_capturing".into(),
+            module: Some(manifest.slot_name()),
+            preserved_fields: None,
+            reset_fields: None,
+            error: None,
+            fallback: None,
+            strategy: None,
+            duration_ms: None,
+            warnings: None,
+            lost_fields: None,
+        });
+
+        // Emit state restore "started" notification with strategy
+        let restore_strategy = match planner_output.reason.state_strategy {
+            StateStrategy::PreservePointer => "direct",
+            StateStrategy::SnapshotRestore => "migrate",
+            _ => "unknown",
+        };
         notifications.push_json(&StateRestoreNotification {
             msg_type: "state_restore_status",
             restore_type: "restore_started".into(),
@@ -288,6 +316,10 @@ impl HmrPipeline {
             reset_fields: None,
             error: None,
             fallback: None,
+            strategy: Some(restore_strategy.to_string()),
+            duration_ms: None,
+            warnings: None,
+            lost_fields: None,
         });
 
         // Dispatch to the adapter
@@ -315,7 +347,7 @@ impl HmrPipeline {
 
         // Update counters based on result
         match &result {
-            AdapterReloadResult::Success { state_preserved, .. } => {
+            AdapterReloadResult::Success { state_preserved, reload_ms } => {
                 *self.reload_counts.entry(language.to_string()).or_insert(0) += 1;
                 self.consecutive_failures = 0;
 
@@ -324,15 +356,24 @@ impl HmrPipeline {
                     let _ = fsm.apply(LifecycleEvent::ReloadComplete, now_ms + elapsed_ms);
                 }
 
-                // State restore complete notification
+                // State restore complete notification with real strategy and duration
+                let strategy_str = if *state_preserved {
+                    restore_strategy.to_string()
+                } else {
+                    "discard".to_string()
+                };
                 notifications.push_json(&StateRestoreNotification {
                     msg_type: "state_restore_status",
                     restore_type: "restore_complete".into(),
                     module: Some(manifest.slot_name()),
-                    preserved_fields: None,
-                    reset_fields: None,
+                    preserved_fields: None, // filled by runner when available
+                    reset_fields: None,     // filled by runner when available
                     error: None,
                     fallback: if *state_preserved { None } else { Some("state_discarded".into()) },
+                    strategy: Some(strategy_str),
+                    duration_ms: Some(*reload_ms),
+                    warnings: None,
+                    lost_fields: None,
                 });
             }
             AdapterReloadResult::Failed { error, .. } => {
@@ -351,6 +392,10 @@ impl HmrPipeline {
                     reset_fields: None,
                     error: Some(error.clone()),
                     fallback: None,
+                    strategy: None,
+                    duration_ms: Some(elapsed_ms),
+                    warnings: None,
+                    lost_fields: None,
                 });
             }
             AdapterReloadResult::Unsupported { reason } => {
@@ -364,6 +409,10 @@ impl HmrPipeline {
                     reset_fields: None,
                     error: Some(reason.clone()),
                     fallback: Some("full_restart".into()),
+                    strategy: None,
+                    duration_ms: Some(elapsed_ms),
+                    warnings: None,
+                    lost_fields: None,
                 });
             }
         }
@@ -421,6 +470,35 @@ impl HmrPipeline {
         self.prev_manifest = Some(manifest.clone());
 
         (result, notifications)
+    }
+
+    /// Build a state_restore_status notification with real field data.
+    ///
+    /// Called from the runner after the orchestrator's hot_reload returns
+    /// an HmrResult with actual preserved/reset field lists.
+    pub fn build_restore_complete_notification(
+        module: &str,
+        strategy: &str,
+        preserved_fields: Vec<String>,
+        reset_fields: Vec<String>,
+        lost_fields: Vec<String>,
+        duration_ms: u64,
+        warnings: Vec<String>,
+    ) -> String {
+        let notification = StateRestoreNotification {
+            msg_type: "state_restore_status",
+            restore_type: "restore_complete".into(),
+            module: Some(module.to_string()),
+            preserved_fields: Some(preserved_fields),
+            reset_fields: Some(reset_fields),
+            error: None,
+            fallback: None,
+            strategy: Some(strategy.to_string()),
+            duration_ms: Some(duration_ms),
+            warnings: if warnings.is_empty() { None } else { Some(warnings) },
+            lost_fields: if lost_fields.is_empty() { None } else { Some(lost_fields) },
+        };
+        serde_json::to_string(&notification).unwrap_or_default()
     }
 
     /// Tick the candidate bridge (called periodically or after events).

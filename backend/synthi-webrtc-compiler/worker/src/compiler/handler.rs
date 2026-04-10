@@ -19,7 +19,14 @@ use crate::compiler::stages::runner::handle_runner_execution;
 
 // HMR pipeline integration
 use crate::hmr::integration::HmrPipeline;
-use crate::hmr::loop_classifier::CompileLoop;
+use crate::hmr::loop_classifier::{classify_loop, CompileLoop, LoopClassifierInput};
+use crate::hmr::adapted_project::{detect_adapted_project, is_split_fresh};
+use crate::hmr::compile_enrichment::CompileEnrichment;
+use crate::hmr::ai_bypass::{check_ai_bypass, AiBypassResult, SplitCache};
+use crate::hmr::deterministic_compile::{
+    determine_deterministic_scope, validate_deterministic_input, DeterministicCompileInput,
+    DeterministicRebuildScope,
+};
 use crate::hmr::build_manifest::{BuildManifest, BuildSlot, HealthcheckStrategy, SnapshotMode, PreviewPreservationMode};
 use crate::hmr::adapter_trait::AdapterReloadResult;
 use crate::hmr::planner_decision::ReloadDecision;
@@ -69,51 +76,132 @@ pub async fn handle_compile_request(
     let mut hmr_pipeline = HmrPipeline::new(&session_id);
     hmr_pipeline.ensure_adapter(language);
 
-    // Classify compile loop: Loop A (deterministic, no AI) vs Loop B (AI-assisted)
-    let has_ai_changes = req.use_ai_split; // AI split implies AI involvement
-    let compile_loop = hmr_pipeline.classify_loop(has_ai_changes);
-    eprintln!("[HMR] Compile loop: {:?}, language: {}", compile_loop, language);
+    // ── Compute source hash ──
+    let source_hash_value = hash_content(&req.source);
+    let source_hash_str = format!("{}", source_hash_value);
 
-    // AI Gate: block AI calls in Loop A (deterministic path)
-    let ai_gate_decision = hmr_pipeline.check_ai_gate(compile_loop, "ai_split");
-    let use_ai_split_gated = match &ai_gate_decision {
-        crate::hmr::ai_gate::AiGateDecision::Allowed { .. } => req.use_ai_split,
-        crate::hmr::ai_gate::AiGateDecision::Blocked { reason } => {
-            // In steady-state Loop A, skip AI split and use direct compilation.
-            // This ensures the deterministic hot path doesn't depend on AI latency.
-            if req.use_ai_split {
-                eprintln!("[HMR AI Gate] AI split blocked in Loop A: {}", reason);
-                let payload = serde_json::json!({
-                    "sessionId": session_id.clone(),
-                    "type": "hmr-status",
-                    "status": "ai-gated",
-                    "reason": reason,
-                });
-                let _ = ctx
-                    .log_dc
-                    .send_text(serde_json::to_string(&payload).unwrap_or_default())
-                    .await;
+    // ── Detect adapted-project status ──
+    let mut adapted_status = detect_adapted_project(&ctx.workspace_path);
+
+    // Try to read persisted split hash from sidecar
+    let sidecar_path = ctx.workspace_path.join(".synthi_split_meta.json");
+    if adapted_status.is_adapted {
+        if let Ok(meta_raw) = tokio::fs::read_to_string(&sidecar_path).await {
+            if let Ok(meta) = serde_json::from_str::<serde_json::Value>(&meta_raw) {
+                if let Some(h) = meta.get("split_hash").and_then(|v| v.as_str()) {
+                    adapted_status = adapted_status.with_split_hash(h.to_string());
+                }
             }
-            // Still respect the user's explicit request — only block if this is
-            // a steady-state reload (Loop A). First compile always uses AI.
-            req.use_ai_split
         }
+    }
+
+    // ── Build LoopClassifierInput with rich context ──
+    let classifier_input = LoopClassifierInput {
+        adapted_status: &adapted_status,
+        current_source_hash: Some(&source_hash_str),
+        rollout_flags: &hmr_pipeline.rollout_flags,
+        consecutive_failures: hmr_pipeline.consecutive_failures,
+        failure_rescue_threshold: 2,
+        user_requested_ai: req.user_requested_ai,
+        user_requested_deterministic: req.user_requested_deterministic,
     };
 
+    let classification = classify_loop(&classifier_input);
+    let compile_loop = classification.loop_type;
+
+    // ── Build CompileEnrichment ──
+    let enrichment = CompileEnrichment::from_classification(
+        classification.clone(),
+        adapted_status.clone(),
+        Some(source_hash_str.clone()),
+    );
+
+    eprintln!(
+        "[HMR] Compile loop: {:?} (reason: {:?}), language: {}",
+        compile_loop, classification.reason, language
+    );
+
+    // ── AI bypass gate ──
+    let split_cache = SplitCache::new(64);
+    let ai_bypass_result = check_ai_bypass(
+        &hmr_pipeline.ai_gate,
+        &split_cache,
+        compile_loop,
+        &source_hash_str,
+    );
+
     // ============================================================
-    // PHASE 1: AI SPLIT & PROCESSING
+    // PHASE 1: AI SPLIT & PROCESSING (routed through ai_bypass)
     // ============================================================
 
-    // 1. Perform AI Split (with caching and structural updates)
-    let split_data = if use_ai_split_gated {
-        perform_ai_split(&req).await?
-    } else {
-        // Fallback for direct mode if needed, or simple wrap
-        serde_json::json!({
-            "shared": { "content": "", "filename": "shared.h" },
-            "core": { "content": req.source.clone(), "filename": "core.cpp" },
-            "gui": { "content": "", "filename": "gui.cpp" }
-        })
+    let split_data = match ai_bypass_result {
+        AiBypassResult::Proceed => {
+            // Loop B: AI call allowed — perform the split
+            eprintln!("[HMR] AI bypass: Proceed → calling perform_ai_split");
+            let result = perform_ai_split(&req).await?;
+
+            // Persist split freshness sidecar after successful AI split
+            let meta = serde_json::json!({ "split_hash": source_hash_str });
+            let _ = tokio::fs::write(&sidecar_path, serde_json::to_string(&meta).unwrap_or_default()).await;
+
+            // Cache the result for future Loop A lookups
+            split_cache.put(crate::hmr::ai_bypass::CachedSplitResult {
+                source_hash: source_hash_str.clone(),
+                core_code: result.get("core").and_then(|c| c["content"].as_str()).unwrap_or("").to_string(),
+                gui_code: result.get("gui").and_then(|g| g["content"].as_str()).unwrap_or("").to_string(),
+                shared_code: result.get("shared").and_then(|s| s["content"].as_str()).map(|s| s.to_string()),
+                language: req.language.clone(),
+                cached_at: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs(),
+            });
+
+            result
+        }
+        AiBypassResult::UseCached(cached) => {
+            // Loop A with cached split: reuse previous AI result
+            eprintln!("[HMR] AI bypass: UseCached → reusing cached split");
+            serde_json::json!({
+                "shared": { "content": cached.shared_code.unwrap_or_default(), "filename": "shared.h" },
+                "core": { "content": cached.core_code, "filename": "core.cpp" },
+                "gui": { "content": cached.gui_code, "filename": "gui.cpp" }
+            })
+        }
+        AiBypassResult::FallbackDeterministic => {
+            // Loop A, no cache: read existing adapted files from disk
+            if enrichment.adapted_status.is_adapted {
+                eprintln!("[HMR] AI bypass: FallbackDeterministic → reading adapted files from disk");
+                let core_content = if let Some(ref p) = enrichment.adapted_status.core_path {
+                    tokio::fs::read_to_string(p).await.unwrap_or_default()
+                } else {
+                    String::new()
+                };
+                let gui_content = if let Some(ref p) = enrichment.adapted_status.gui_path {
+                    tokio::fs::read_to_string(p).await.unwrap_or_default()
+                } else {
+                    String::new()
+                };
+                let shared_content = if let Some(ref p) = enrichment.adapted_status.shared_path {
+                    tokio::fs::read_to_string(p).await.unwrap_or_default()
+                } else {
+                    String::new()
+                };
+                serde_json::json!({
+                    "shared": { "content": shared_content, "filename": "shared.h" },
+                    "core": { "content": core_content, "filename": "core.cpp" },
+                    "gui": { "content": gui_content, "filename": "gui.cpp" }
+                })
+            } else {
+                // Not adapted and no cache — wrap source as single core module
+                eprintln!("[HMR] AI bypass: FallbackDeterministic → no adapted project, wrapping source");
+                serde_json::json!({
+                    "shared": { "content": "", "filename": "shared.h" },
+                    "core": { "content": req.source.clone(), "filename": "core.cpp" },
+                    "gui": { "content": "", "filename": "gui.cpp" }
+                })
+            }
+        }
     };
 
     // 2. Extract raw content
@@ -132,13 +220,13 @@ pub async fn handle_compile_request(
 
     // 3. Apply Guardrails
     let processed_shared = apply_shared_guardrails(shared_raw);
-    // Allow GUI in core if we are NOT using AI split (legacy/direct mode)
-    let allow_gui_in_core = !req.use_ai_split;
+    // Allow GUI in core if we are on the deterministic path (no AI split)
+    let allow_gui_in_core = enrichment.is_deterministic();
     let processed_core = apply_core_guardrails(core_raw, &processed_shared, allow_gui_in_core);
     let processed_gui = apply_gui_guardrails(gui_raw, &processed_shared);
 
     // ============================================================
-    // PHASE 2: REBUILD SCOPE DETERMINATION
+    // PHASE 2: REBUILD SCOPE DETERMINATION (deterministic_compile coordinator)
     // ============================================================
 
     let mut new_hashes = ModuleHashes::new();
@@ -160,24 +248,56 @@ pub async fn handle_compile_request(
         }
     };
 
-    let rebuild_scope = if prev_hashes.shared_hash == 0
-        && prev_hashes.core_hash == 0
-        && prev_hashes.gui_hash == 0
-    {
-        eprintln!("[Handler] First build - Full Rebuild");
-        RebuildScope::Both
-    } else if prev_hashes.shared_hash != new_hashes.shared_hash {
-        eprintln!("[Handler] Shared header changed - Full Rebuild");
-        RebuildScope::Both
-    } else if prev_hashes.core_hash != new_hashes.core_hash {
-        eprintln!("[Handler] Core changed - Core Rebuild");
-        RebuildScope::CoreOnly
-    } else if prev_hashes.gui_hash != new_hashes.gui_hash {
-        eprintln!("[Handler] GUI changed - GUI Rebuild");
-        RebuildScope::GuiOnly
+    // Route scope determination through deterministic_compile on Loop A
+    let rebuild_scope = if enrichment.is_deterministic() && enrichment.adapted_status.is_adapted {
+        // Loop A: use deterministic_compile as the scope coordinator
+        let det_input = DeterministicCompileInput {
+            adapted: enrichment.adapted_status.clone(),
+            language: req.language.clone(),
+            workspace_dir: ctx.workspace_path.clone(),
+            output_dir: output_dir.clone(),
+            compiler_flags: vec![],
+            use_cache: enrichment.use_incremental_cache,
+            preview_id: session_id.clone(),
+        };
+
+        if let Err(e) = validate_deterministic_input(&det_input) {
+            eprintln!("[Handler] Deterministic validation failed: {}, falling back to hash scope", e);
+            // Fallback to hash-based scope
+            hash_based_rebuild_scope(&prev_hashes, &new_hashes)
+        } else {
+            let prev_core_h = if prev_hashes.core_hash != 0 { Some(format!("{}", prev_hashes.core_hash)) } else { None };
+            let prev_gui_h = if prev_hashes.gui_hash != 0 { Some(format!("{}", prev_hashes.gui_hash)) } else { None };
+            let det_scope = determine_deterministic_scope(
+                &det_input,
+                prev_core_h.as_deref(),
+                prev_gui_h.as_deref(),
+                &format!("{}", new_hashes.core_hash),
+                &format!("{}", new_hashes.gui_hash),
+            );
+            // Map DeterministicRebuildScope → RebuildScope
+            match det_scope {
+                DeterministicRebuildScope::None => {
+                    eprintln!("[Handler] Deterministic: No changes detected");
+                    RebuildScope::None
+                }
+                DeterministicRebuildScope::CoreOnly => {
+                    eprintln!("[Handler] Deterministic: Core rebuild");
+                    RebuildScope::CoreOnly
+                }
+                DeterministicRebuildScope::GuiOnly => {
+                    eprintln!("[Handler] Deterministic: GUI rebuild");
+                    RebuildScope::GuiOnly
+                }
+                DeterministicRebuildScope::Both => {
+                    eprintln!("[Handler] Deterministic: Full rebuild");
+                    RebuildScope::Both
+                }
+            }
+        }
     } else {
-        eprintln!("[Handler] No code changes detected");
-        RebuildScope::None
+        // Loop B or non-adapted: use hash-based scope
+        hash_based_rebuild_scope(&prev_hashes, &new_hashes)
     };
 
     // Notify frontend
@@ -284,6 +404,50 @@ pub async fn handle_compile_request(
 
     let build_time_ms = compile_start.elapsed().as_millis() as u64;
 
+    // ── Compute dirty_units from rebuild scope ──
+    let dirty_units: Vec<String> = match rebuild_scope {
+        RebuildScope::CoreOnly => vec!["core".to_string()],
+        RebuildScope::GuiOnly => vec!["gui".to_string()],
+        RebuildScope::Both | RebuildScope::FullReload => vec!["core".to_string(), "gui".to_string()],
+        RebuildScope::None => vec![],
+    };
+
+    // ── Discover exported symbols from compiled artifact ──
+    let exported_symbols = discover_exported_symbols(&core_lib_path).await;
+
+    // ── Determine capabilities from exported symbols ──
+    let capabilities: Vec<String> = {
+        let mut caps = Vec::new();
+        if exported_symbols.iter().any(|s| s.contains("on_update") || s.contains("core_on_update")) {
+            caps.push("hmr_state_update".to_string());
+        }
+        if exported_symbols.iter().any(|s| s.contains("hmr_get_state_json")) {
+            caps.push("json_state".to_string());
+        }
+        if exported_symbols.iter().any(|s| s.contains("hmr_save_state_binary") || s.contains("on_save_state_binary")) {
+            caps.push("binary_state".to_string());
+        }
+        if exported_symbols.iter().any(|s| s.contains("gui_on_render")) {
+            caps.push("gui_render".to_string());
+        }
+        caps
+    };
+
+    // ── Snapshot modes from capabilities ──
+    let snapshot_modes = {
+        let mut modes = vec![];
+        if capabilities.contains(&"binary_state".to_string()) {
+            modes.push(SnapshotMode::Binary);
+        }
+        if capabilities.contains(&"json_state".to_string()) {
+            modes.push(SnapshotMode::Json);
+        }
+        if modes.is_empty() {
+            modes.push(SnapshotMode::None);
+        }
+        modes
+    };
+
     let build_manifest = BuildManifest::for_language(
         session_id.clone(),
         language,
@@ -296,7 +460,11 @@ pub async fn handle_compile_request(
     .with_artifact(&core_lib_path, &format!("{}", new_hashes.core_hash))
     .with_abi_version(&format!("{}", new_hashes.shared_hash))
     .with_state_schema_hash(&format!("{}", new_hashes.core_hash))
-    .with_build_time(build_time_ms);
+    .with_build_time(build_time_ms)
+    .with_dirty_units(dirty_units)
+    .with_exported_symbols(exported_symbols)
+    .with_capabilities(capabilities)
+    .with_snapshot_modes(snapshot_modes);
 
     // Determine if ABI/schema changed from the previous build
     let abi_changed = prev_hashes.shared_hash != 0
@@ -368,10 +536,10 @@ pub async fn handle_compile_request(
     // Determine modules to load
     let mut modules_to_load = Vec::new();
 
-    // When NOT using AI split and the source is a standard main() app
+    // When on the deterministic path (no AI split) and the source is a standard main() app
     // (no core_on_load/core_on_update exports), load as a single "main" module.
     // The runner's "main" slot accepts entrypoint() which guardrails add for main() apps.
-    let is_blocking_main_app = !req.use_ai_split
+    let is_blocking_main_app = enrichment.is_deterministic()
         && !processed_core.contains("core_on_load")
         && !processed_core.contains("core_on_update")
         && (processed_core.contains("int main(") || processed_core.contains("entrypoint"));
@@ -429,7 +597,7 @@ pub async fn handle_compile_request(
         &req,
         modules_to_load,
         has_on_update,
-        req.use_ai_split,
+        enrichment.use_ai_split,
         new_hashes,
         core_lib_path,
         gui_lib_path,
@@ -442,4 +610,60 @@ pub async fn handle_compile_request(
     .await?;
 
     Ok(serde_json::json!({ "status": "ok" }))
+}
+
+// ============================================================
+// HELPER: hash-based rebuild scope (fallback for Loop B)
+// ============================================================
+fn hash_based_rebuild_scope(prev_hashes: &ModuleHashes, new_hashes: &ModuleHashes) -> RebuildScope {
+    if prev_hashes.shared_hash == 0
+        && prev_hashes.core_hash == 0
+        && prev_hashes.gui_hash == 0
+    {
+        eprintln!("[Handler] First build - Full Rebuild");
+        RebuildScope::Both
+    } else if prev_hashes.shared_hash != new_hashes.shared_hash {
+        eprintln!("[Handler] Shared header changed - Full Rebuild");
+        RebuildScope::Both
+    } else if prev_hashes.core_hash != new_hashes.core_hash {
+        eprintln!("[Handler] Core changed - Core Rebuild");
+        RebuildScope::CoreOnly
+    } else if prev_hashes.gui_hash != new_hashes.gui_hash {
+        eprintln!("[Handler] GUI changed - GUI Rebuild");
+        RebuildScope::GuiOnly
+    } else {
+        eprintln!("[Handler] No code changes detected");
+        RebuildScope::None
+    }
+}
+
+// ============================================================
+// HELPER: discover exported symbols from compiled .so
+// ============================================================
+async fn discover_exported_symbols(lib_path: &str) -> Vec<String> {
+    // Try to read the ELF symtab via nm; fall back to empty if unavailable.
+    let output = tokio::process::Command::new("nm")
+        .args(["-D", "--defined-only", "--format=posix", lib_path])
+        .output()
+        .await;
+
+    match output {
+        Ok(o) if o.status.success() => {
+            String::from_utf8_lossy(&o.stdout)
+                .lines()
+                .filter_map(|line| {
+                    // POSIX format: "symbol_name T addr size"
+                    let name = line.split_whitespace().next()?;
+                    // Only keep T (text/code) symbols
+                    let sym_type = line.split_whitespace().nth(1)?;
+                    if sym_type == "T" {
+                        Some(name.to_string())
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        }
+        _ => vec![],
+    }
 }
