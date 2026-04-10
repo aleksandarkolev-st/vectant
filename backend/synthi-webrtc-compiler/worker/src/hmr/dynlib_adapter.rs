@@ -15,7 +15,9 @@ use crate::hmr::adapter_trait::{
     Adapter, AdapterHealth, AdapterInfo, AdapterReloadRequest, AdapterReloadResult,
 };
 use crate::hmr::slot_manager::LibSlot;
-use crate::hmr::symbol_validation::SymbolValidationResult;
+use crate::hmr::symbol_validation::{
+    validate_core_symbols, validate_gui_symbols, SymbolValidationResult,
+};
 
 /// Configuration for the dynlib adapter.
 #[derive(Debug, Clone)]
@@ -99,13 +101,17 @@ impl DynLibAdapter {
         }
     }
 
-    /// Validate that the artifact has the required symbols.
-    fn validate_artifact(&self, artifact_path: &str) -> Result<(), String> {
+    /// Validate that the artifact has the required shape for a dynlib swap.
+    fn validate_artifact(&mut self, req: &AdapterReloadRequest) -> Result<(), String> {
+        let artifact_path = &req.build_manifest.artifact_path;
+
         if !self.config.validate_symbols {
             return Ok(());
         }
+
         // In production this would dlopen and check symbols.
-        // Here we validate the path is non-empty and looks like a lib.
+        // Here we validate the path is non-empty and looks like a lib, then
+        // consume the exported-symbol manifest when the compiler produced one.
         if artifact_path.is_empty() {
             return Err("empty artifact path".into());
         }
@@ -116,15 +122,36 @@ impl DynLibAdapter {
                 artifact_path
             ));
         }
+
+        if !req.build_manifest.exported_symbols.is_empty() {
+            let validation = match req.module_id.as_str() {
+                "core" => Some(validate_core_symbols(&req.build_manifest.exported_symbols)),
+                "gui" => Some(validate_gui_symbols(&req.build_manifest.exported_symbols)),
+                _ => None,
+            };
+
+            if let Some(validation) = validation {
+                self.expected_symbols = Some(validation.clone());
+                if !validation.valid {
+                    return Err(format!(
+                        "artifact '{}' missing required symbols: {}",
+                        artifact_path,
+                        validation.missing_required.join(", ")
+                    ));
+                }
+            }
+        }
+
         Ok(())
     }
 
     /// Internal swap logic (placeholder for actual dlopen).
-    fn perform_swap(&mut self, artifact_path: &str) -> Result<u64, String> {
+    fn perform_swap(&mut self, req: &AdapterReloadRequest) -> Result<u64, String> {
+        let artifact_path = &req.build_manifest.artifact_path;
         self.phase = DynLibPhase::Swapping;
 
         // Validate
-        self.validate_artifact(artifact_path)?;
+        self.validate_artifact(req)?;
 
         // Swap slots: toggle primary/standby
         let new_slot = match self.active_slot {
@@ -195,7 +222,7 @@ impl Adapter for DynLibAdapter {
             };
         }
 
-        match self.perform_swap(artifact) {
+        match self.perform_swap(req) {
             Ok(ms) => AdapterReloadResult::Success {
                 reload_ms: ms,
                 state_preserved: req.preserve_state && self.last_snapshot.is_some(),

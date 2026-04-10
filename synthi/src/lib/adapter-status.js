@@ -30,6 +30,27 @@ const INITIAL_STATE = {
 let state = { ...INITIAL_STATE };
 const listeners = new Set();
 
+export function normalizeAdapterFamily(family) {
+  if (family == null) return 'none';
+
+  const normalized = String(family).trim().toLowerCase().replace(/[-\s]/g, '_');
+  switch (normalized) {
+    case 'dynamiclibrary':
+    case 'dynamic_library':
+    case 'dynlib':
+      return 'dynlib';
+    case 'managedruntime':
+    case 'managed_runtime':
+    case 'managed':
+      return 'managed_runtime';
+    case 'processswap':
+    case 'process_swap':
+      return 'process_swap';
+    default:
+      return family;
+  }
+}
+
 function notify() {
   listeners.forEach((fn) => fn(state));
 }
@@ -61,7 +82,7 @@ export function handleAdapterStatusNotification(payload) {
   if (!payload || typeof payload !== 'object') return;
 
   if (payload.adapter_family != null) {
-    state.adapterFamily = payload.adapter_family;
+    state.adapterFamily = normalizeAdapterFamily(payload.adapter_family);
   }
   if (payload.language != null) {
     state.language = payload.language;
@@ -89,13 +110,6 @@ export function handleAdapterStatusNotification(payload) {
   }
 
   notify();
-
-  // Also fire a DOM event for non-React consumers.
-  if (typeof window !== 'undefined') {
-    window.dispatchEvent(
-      new CustomEvent('synthi:adapter-status', { detail: getAdapterStatus() })
-    );
-  }
 }
 
 /** Reset to initial state (used on disconnect). */

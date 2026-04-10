@@ -10,7 +10,6 @@
 #![allow(dead_code)]
 
 use crate::hmr::adapter_matrix::{AdapterFamily, CapabilityTier};
-use crate::hmr::build_manifest::BuildManifest;
 use crate::hmr::planner_decision::{ReloadDecision, StateStrategy};
 use crate::hmr::rebuild_scope::{RebuildScope, ScopeResult};
 

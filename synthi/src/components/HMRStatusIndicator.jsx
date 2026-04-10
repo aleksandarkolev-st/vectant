@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { cn } from '@/lib/utils';
 import { PreviewLifecycleState } from '@/lib/preview-lifecycle';
 import { getPreviewState, subscribePreviewStore, isPreviewBusy, isPreviewError } from '@/lib/preview-store';
@@ -122,6 +122,12 @@ const STATUS_CONFIGS = {
         text: 'Applying...',
         show: true,
     },
+    'reload-planned': {
+        color: 'bg-[#0ea5a4]',
+        text: 'Reload Planned',
+        show: true,
+        autoHide: 3000,
+    },
     'full-reload-required': {
         color: 'bg-[#f97316]',
         text: 'Full Reload Required',
@@ -160,11 +166,27 @@ const STATUS_CONFIGS = {
     },
 };
 
-export function HMRStatusIndicator({ className }) {
+export function HMRStatusIndicator({ className, pipelineState = null }) {
     const [status, setStatus] = useState('idle');
     const [details, setDetails] = useState(null);
     const [visible, setVisible] = useState(false);
     const [expanded, setExpanded] = useState(false);
+    const hideTimerRef = useRef(null);
+
+    const scheduleAutoHide = useCallback((delay) => {
+        if (hideTimerRef.current) {
+            clearTimeout(hideTimerRef.current);
+        }
+        if (!delay) {
+            hideTimerRef.current = null;
+            return;
+        }
+        hideTimerRef.current = setTimeout(() => {
+            setVisible(false);
+            setExpanded(false);
+            hideTimerRef.current = null;
+        }, delay);
+    }, []);
 
     const handleHMRStatus = useCallback((event) => {
         const data = event.detail?.data || event.detail;
@@ -177,13 +199,8 @@ export function HMRStatusIndicator({ className }) {
         setVisible(true);
         
         const config = STATUS_CONFIGS[statusKey] || STATUS_CONFIGS.idle;
-        if (config.autoHide) {
-            setTimeout(() => {
-                setVisible(false);
-                setExpanded(false);
-            }, config.autoHide);
-        }
-    }, []);
+        scheduleAutoHide(config.autoHide);
+    }, [scheduleAutoHide]);
 
     useEffect(() => {
         // Listen for HMR status events from the compiler
@@ -202,6 +219,14 @@ export function HMRStatusIndicator({ className }) {
         };
     }, [handleHMRStatus]);
 
+    useEffect(() => {
+        return () => {
+            if (hideTimerRef.current) {
+                clearTimeout(hideTimerRef.current);
+            }
+        };
+    }, []);
+
     // Subscribe to preview store for compiled-preview lifecycle states.
     // This drives the indicator for native compiled previews alongside
     // the legacy event-based status above.
@@ -216,38 +241,51 @@ export function HMRStatusIndicator({ className }) {
                 setStatus('compile-error');
                 setDetails(previewState.buildDiagnostics || {});
                 setVisible(true);
+                scheduleAutoHide(null);
+            } else if (s === PreviewLifecycleState.RELOAD_PLANNED) {
+                setStatus('reload-planned');
+                setDetails({
+                    decision: previewState.plannerDecision,
+                    reasonBundle: previewState.reasonBundle || null,
+                });
+                setVisible(true);
+                scheduleAutoHide(STATUS_CONFIGS['reload-planned'].autoHide);
             } else if (s === PreviewLifecycleState.RELOAD_APPLYING) {
                 setStatus('apply');
                 setDetails({ decision: previewState.plannerDecision });
                 setVisible(true);
+                scheduleAutoHide(null);
             } else if (s === PreviewLifecycleState.RELOAD_APPLIED) {
                 setStatus('applied');
                 setDetails({ state_preserved: true, ...(previewState.stateSummary || {}) });
                 setVisible(true);
-                setTimeout(() => { setVisible(false); setExpanded(false); }, 2000);
+                scheduleAutoHide(2000);
             } else if (s === PreviewLifecycleState.RELOAD_ROLLED_BACK) {
                 setStatus('rejected');
                 setDetails({ reason: previewState.rollbackReason });
                 setVisible(true);
+                scheduleAutoHide(STATUS_CONFIGS.rejected.autoHide);
             } else if (s === PreviewLifecycleState.CRASH_RECOVERED) {
                 setStatus('crash-recovered');
                 setDetails({});
                 setVisible(true);
-                setTimeout(() => { setVisible(false); setExpanded(false); }, 5000);
+                scheduleAutoHide(5000);
             } else if (s === PreviewLifecycleState.CRASH_FATAL) {
                 setStatus('crash-fatal');
                 setDetails({});
                 setVisible(true);
+                scheduleAutoHide(null);
             } else if (s === PreviewLifecycleState.FULL_RESTART) {
                 setStatus('full-reload-required');
                 setDetails({});
                 setVisible(true);
+                scheduleAutoHide(STATUS_CONFIGS['full-reload-required'].autoHide);
             }
         }
 
         deriveStatus(getPreviewState());
         return subscribePreviewStore(deriveStatus);
-    }, []);
+    }, [scheduleAutoHide]);
 
     const config = STATUS_CONFIGS[status] || STATUS_CONFIGS.idle;
     
@@ -265,6 +303,21 @@ export function HMRStatusIndicator({ className }) {
     if (!visible || !config.show) {
         return null;
     }
+
+    const pipelineDetails = pipelineState ? {
+        adapterFamily: pipelineState.adapterStatus?.adapterFamily,
+        adapterHealth: pipelineState.adapterStatus?.health,
+        restorePhase: pipelineState.restoreStatus?.phase,
+        restoreStrategy: pipelineState.restoreStatus?.strategy,
+        candidatePhase: pipelineState.candidateState?.phase,
+        candidateGeneration: pipelineState.candidateState?.generation,
+        aiCircuitState: pipelineState.aiLoopStatus?.circuitState,
+        aiRequestPhase: pipelineState.aiLoopStatus?.requestPhase,
+        overallHealth: pipelineState.healthPanel?.overallHealth,
+        healthErrors: pipelineState.healthPanel?.errors || [],
+        historyCount: pipelineState.hmrHistory?.length || 0,
+        lastUpdateAt: pipelineState.lastUpdate?.timestamp || null,
+    } : null;
 
     return (
         <div 
@@ -295,6 +348,9 @@ export function HMRStatusIndicator({ className }) {
                     {details.reason && (
                         <div>Reason: <span className="text-[#a1a1aa]">{details.reason}</span></div>
                     )}
+                    {details.reasonBundle?.decision_reason && (
+                        <div>Planner: <span className="text-[#a1a1aa]">{details.reasonBundle.decision_reason}</span></div>
+                    )}
                     {details.message && (
                         <div>{details.message}</div>
                     )}
@@ -311,6 +367,30 @@ export function HMRStatusIndicator({ className }) {
                                 {details.state_preserved ? "Preserved" : "Reset"}
                             </span>
                         </div>
+                    )}
+                    {pipelineDetails?.adapterFamily && pipelineDetails.adapterFamily !== 'none' && (
+                        <div>Adapter: <span className="text-[#a1a1aa]">{pipelineDetails.adapterFamily} ({pipelineDetails.adapterHealth || 'unknown'})</span></div>
+                    )}
+                    {pipelineDetails?.restorePhase && pipelineDetails.restorePhase !== 'idle' && (
+                        <div>Restore: <span className="text-[#a1a1aa]">{pipelineDetails.restorePhase}{pipelineDetails.restoreStrategy ? ` (${pipelineDetails.restoreStrategy})` : ''}</span></div>
+                    )}
+                    {pipelineDetails?.candidatePhase && pipelineDetails.candidateGeneration > 0 && (
+                        <div>Candidate: <span className="text-[#a1a1aa]">g{pipelineDetails.candidateGeneration} {pipelineDetails.candidatePhase}</span></div>
+                    )}
+                    {pipelineDetails?.aiRequestPhase && pipelineDetails.aiRequestPhase !== 'idle' && (
+                        <div>AI Loop: <span className="text-[#a1a1aa]">{pipelineDetails.aiCircuitState || 'closed'} / {pipelineDetails.aiRequestPhase}</span></div>
+                    )}
+                    {pipelineDetails?.overallHealth && pipelineDetails.overallHealth !== 'unknown' && (
+                        <div>Health: <span className="text-[#a1a1aa]">{pipelineDetails.overallHealth}</span></div>
+                    )}
+                    {pipelineDetails?.historyCount > 0 && (
+                        <div>Updates: <span className="text-[#a1a1aa]">{pipelineDetails.historyCount}</span></div>
+                    )}
+                    {pipelineDetails?.lastUpdateAt && (
+                        <div>Last Update: <span className="text-[#a1a1aa]">{new Date(pipelineDetails.lastUpdateAt).toLocaleTimeString()}</span></div>
+                    )}
+                    {pipelineDetails?.healthErrors?.length > 0 && (
+                        <div className="text-[#ef4444]">{pipelineDetails.healthErrors[pipelineDetails.healthErrors.length - 1]}</div>
                     )}
                 </div>
             )}

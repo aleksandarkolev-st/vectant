@@ -10,13 +10,11 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::hmr::candidate::{Candidate, CandidateState};
-use crate::hmr::candidate_history::{CandidateHistory, HistoryEntry};
+use crate::hmr::candidate::CandidateState;
 use crate::hmr::candidate_notification::CandidateNotification;
 use crate::hmr::candidate_queue::CandidateQueue;
-use crate::hmr::candidate_supersession::{should_supersede, SupersessionPolicy, SupersessionVerdict};
+use crate::hmr::candidate_supersession::SupersessionPolicy;
 use crate::hmr::candidate_watchdog::{check_candidate_timeout, CandidateTimeouts, WatchdogAction};
-use crate::hmr::health_check::HealthCheckResult;
 use crate::hmr::promotion_policy::{evaluate_promotion, PromotionPolicy, PromotionVerdict};
 
 /// Actions the bridge wants the caller to perform.
@@ -61,7 +59,7 @@ impl Default for BridgeConfig {
 pub fn bridge_tick(
     queue: &CandidateQueue,
     config: &BridgeConfig,
-    current_time_ms: u64,
+    _current_time_ms: u64,
 ) -> (BridgeAction, Vec<CandidateNotification>) {
     let mut notifications = Vec::new();
 

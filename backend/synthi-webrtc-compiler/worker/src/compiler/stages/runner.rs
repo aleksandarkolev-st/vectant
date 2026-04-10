@@ -16,9 +16,17 @@ use crate::compiler::builder::ModuleHashes;
 use crate::compiler::context::CompileContext;
 use crate::infra::constants::GUI_TOOLS;
 use crate::infra::messages::CompileRequest;
-use crate::infra::observability::ReloadId;
 use crate::runtime::runner_state::RunnerState; // Aliasing if needed, or check definition
-use crate::hmr::integration::HmrPipeline;
+
+fn extract_structured_runner_message(line: &str) -> Option<&str> {
+    let trimmed = line.trim();
+    if trimmed.starts_with('{') && trimmed.ends_with('}') {
+        return Some(trimmed);
+    }
+
+    const PREFIX: &str = "[Runner] [HMR-STATUS] ";
+    line.find(PREFIX).map(|idx| &line[idx + PREFIX.len()..])
+}
 
 pub async fn handle_runner_execution(
     ctx: &CompileContext,
@@ -29,10 +37,6 @@ pub async fn handle_runner_execution(
     new_hashes: ModuleHashes,
     core_lib_path: String,
     gui_lib_path: String,
-    _timestamp: i64,
-    _compile_start: std::time::Instant,
-    _reload_id: ReloadId,
-    _module_id: String,
     session_id: Option<String>,
 ) -> Result<()> {
     // Unified Runner Logic
@@ -142,7 +146,6 @@ pub async fn handle_runner_execution(
         let mut xvfb_process: Option<tokio::process::Child> = reused_xvfb;
         let mut gst_pipeline: Option<gst::Pipeline> = reused_pipeline;
         let sdl_tx_opt: Option<mpsc::UnboundedSender<String>> = reused_sdl_tx;
-        let _video_src_opt: Option<gst_app::AppSrc> = None;
 
         if req.is_gui {
             let width = req_width;
@@ -214,7 +217,7 @@ pub async fn handle_runner_execution(
                 // as Xvfb — it will be killed when Xvfb is killed. Setting
                 // kill_on_drop(true) + `let _ = spawn()` would immediately drop the
                 // Child handle, killing the WM within milliseconds of starting.
-                let _wm_child = wm_cmd
+                wm_cmd
                     .spawn()
                     .context("Failed to spawn matchbox-window-manager")?;
 
@@ -236,8 +239,6 @@ pub async fn handle_runner_execution(
                 let mut selected_mime_type = "video/H264".to_owned();
                 let mut encoder_idx = 0;
                 let mut pipeline = None;
-                let _width = req_width;
-                let _height = req_height;
 
                 while encoder_idx < encoders.len() {
                     let (encoder, payloader, mime_type) = encoders[encoder_idx];
@@ -496,6 +497,14 @@ pub async fn handle_runner_execution(
                     Some(l) => {
                         eprintln!("[Runner Stderr] {}", l);
                         let _ = log_tx_clone2.send(l.clone());
+
+                        if let Some(structured) = extract_structured_runner_message(&l) {
+                            if serde_json::from_str::<serde_json::Value>(structured).is_ok() {
+                                let _ = ctx_clone2.log_dc.send_text(structured.to_string()).await;
+                                continue;
+                            }
+                        }
+
                         // Send to frontend
                         let payload = serde_json::json!({
                            "sessionId": session_id_clone2,

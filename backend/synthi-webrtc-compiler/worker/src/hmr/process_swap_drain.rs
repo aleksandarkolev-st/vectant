@@ -6,9 +6,10 @@
 // process-swap reload.
 // ============================================================
 
-#![allow(dead_code)]
-
 use serde::{Deserialize, Serialize};
+use std::process::Child;
+use std::thread;
+use std::time::Instant;
 
 /// Drain configuration.
 #[derive(Debug, Clone)]
@@ -47,6 +48,8 @@ pub struct DrainSnapshot {
 pub enum DrainOutcome {
     /// All requests finished within timeout.
     Completed,
+    /// Drain is still in progress and should be re-evaluated.
+    InProgress,
     /// Timeout reached, some requests still in-flight.
     TimedOut,
     /// Force-killed after timeout.
@@ -96,7 +99,7 @@ pub fn evaluate_drain(
 
     // Still draining — not yet timed out.
     DrainResult {
-        outcome: DrainOutcome::Completed, // optimistic; caller retries
+        outcome: DrainOutcome::InProgress,
         initial_in_flight: snapshot.initial_in_flight,
         remaining_in_flight: snapshot.current_in_flight,
         total_drain_ms: snapshot.elapsed_ms,
@@ -109,6 +112,68 @@ pub fn estimate_drain_time_ms(in_flight: u32, avg_request_ms: f64) -> u64 {
         return 0;
     }
     (in_flight as f64 * avg_request_ms) as u64
+}
+
+pub fn drain_child_process(child: &mut Child, config: &DrainConfig) -> Result<DrainResult, String> {
+    let started = Instant::now();
+    let initial_in_flight = match child.try_wait() {
+        Ok(Some(_)) => 0,
+        Ok(None) => 1,
+        Err(error) => {
+            return Err(format!("failed to inspect child process during drain: {}", error));
+        }
+    };
+
+    if initial_in_flight == 0 {
+        return Ok(DrainResult {
+            outcome: DrainOutcome::Completed,
+            initial_in_flight: 0,
+            remaining_in_flight: 0,
+            total_drain_ms: 0,
+        });
+    }
+
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => {
+                return Ok(DrainResult {
+                    outcome: DrainOutcome::Completed,
+                    initial_in_flight,
+                    remaining_in_flight: 0,
+                    total_drain_ms: started.elapsed().as_millis() as u64,
+                });
+            }
+            Ok(None) => {}
+            Err(error) => {
+                return Err(format!("failed while waiting for child drain: {}", error));
+            }
+        }
+
+        let elapsed_ms = started.elapsed().as_millis() as u64;
+        if elapsed_ms >= config.drain_timeout_ms {
+            if config.force_kill_after_timeout {
+                child
+                    .kill()
+                    .map_err(|error| format!("failed to kill drained child process: {}", error))?;
+                let _ = child.wait();
+                return Ok(DrainResult {
+                    outcome: DrainOutcome::ForceKilled,
+                    initial_in_flight,
+                    remaining_in_flight: 1,
+                    total_drain_ms: elapsed_ms,
+                });
+            }
+
+            return Ok(DrainResult {
+                outcome: DrainOutcome::TimedOut,
+                initial_in_flight,
+                remaining_in_flight: 1,
+                total_drain_ms: elapsed_ms,
+            });
+        }
+
+        thread::sleep(std::time::Duration::from_millis(config.poll_interval_ms.max(1)));
+    }
 }
 
 #[cfg(test)]
@@ -159,5 +224,17 @@ mod tests {
     fn estimate_drain_time() {
         assert_eq!(estimate_drain_time_ms(10, 50.0), 500);
         assert_eq!(estimate_drain_time_ms(0, 50.0), 0);
+    }
+
+    #[test]
+    fn reports_in_progress_before_timeout() {
+        let snapshot = DrainSnapshot {
+            initial_in_flight: 4,
+            current_in_flight: 2,
+            elapsed_ms: 250,
+        };
+        let result = evaluate_drain(&snapshot, &DrainConfig::default());
+        assert_eq!(result.outcome, DrainOutcome::InProgress);
+        assert_eq!(result.remaining_in_flight, 2);
     }
 }

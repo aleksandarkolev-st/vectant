@@ -52,7 +52,7 @@ use crate::safety::quiescence::{QuiescenceConfig, QuiescenceManager};
 // Integration with the full HMR pipeline (planner, adapters, AI gate, candidates)
 use crate::hmr::integration::HmrPipeline;
 use crate::hmr::state_checkpoint::{CheckpointManager, CheckpointPolicy, CheckpointResult};
-use crate::hmr::state_restore_orchestrator::{orchestrate_restore, RestoreOutcome, RestoreStrategy};
+use crate::hmr::state_restore_orchestrator::{orchestrate_restore, RestoreOutcome};
 use crate::hmr::state_restore_validator::RestoreTarget;
 use crate::hmr::state_migration::MigrationRegistry;
 use crate::hmr::state_snapshot::SnapshotReason;
@@ -391,6 +391,15 @@ impl HmrOrchestrator {
         slot: ModuleSlot,
         manifest: BoundaryManifest,
     ) -> Result<(), String> {
+        if manifest.boundaries.len() > self.config.max_boundaries_per_module {
+            return Err(format!(
+                "module {:?} declares {} boundaries, exceeding configured max {}",
+                slot,
+                manifest.boundaries.len(),
+                self.config.max_boundaries_per_module
+            ));
+        }
+
         // Validate manifest
         manifest.validate()?;
 
@@ -602,11 +611,11 @@ impl HmrOrchestrator {
                 result.duration_ms = start.elapsed().as_millis() as u64;
 
                 match migrated {
-                    MigratedState::Binary(_bytes, schema_result) => {
+                    MigratedState::Binary(bytes, schema_result) => {
                         result = result.with_migration(&schema_result);
                         self.stats.binary_migrations += 1;
                         self.stats.total_preserved_fields += schema_result.preserved.len() as u64;
-                        metrics_tracker.record_snapshot(start.elapsed(), _bytes.len());
+                        metrics_tracker.record_snapshot(start.elapsed(), bytes.len());
                     }
                     MigratedState::Json(json_result) => {
                         result = result.with_json_migration(&json_result);
@@ -702,8 +711,6 @@ impl HmrOrchestrator {
             old_bytes,
             new_field_names,
             &new_defaults,
-            1, // from_version
-            1, // to_version
         )?;
 
         Ok(MigratedState::Binary(new_bytes, result))

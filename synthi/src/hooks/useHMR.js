@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
-import { HMRRuntime } from '@/lib/hmr-runtime';
+import { HMRRuntime, isNativePreviewActive } from '@/lib/hmr-runtime';
 import { subscribeAiLoopStatus, getAiLoopStatus, installAiStatusListener } from '@/lib/ai-loop-status';
-import { subscribeAdapterStatus, getAdapterStatus, handleAdapterStatusNotification } from '@/lib/adapter-status';
+import { subscribeAdapterStatus, getAdapterStatus, handleAdapterStatusNotification, normalizeAdapterFamily } from '@/lib/adapter-status';
 import { subscribeRestoreStatus, getRestoreStatus, installRestoreListener } from '@/lib/state-restore-status';
-import { subscribeHealthPanel, getHealthPanel, updateAdapterHealth, setLifecycleState, setAiActive, pushError, setDisplayMode } from '@/lib/adapter-health-panel';
+import { subscribeCandidateTracker, getCurrentCandidate, installCandidateListener } from '@/lib/candidate-tracker';
+import { subscribeHealthPanel, getHealthPanel, updateAdapterHealth, setLifecycleState, setAiActive, pushError } from '@/lib/adapter-health-panel';
 
 /**
  * Enhanced HMR Hook
@@ -33,6 +34,7 @@ export function useHMR() {
     const [aiLoopStatus, setAiLoopStatus] = useState(getAiLoopStatus);
     const [adapterStatus, setAdapterStatus] = useState(getAdapterStatus);
     const [restoreStatus, setRestoreStatus] = useState(getRestoreStatus);
+    const [candidateState, setCandidateState] = useState(getCurrentCandidate);
     const [healthPanel, setHealthPanel] = useState(getHealthPanel);
 
     // Dispatch HMR status event for UI components
@@ -65,6 +67,10 @@ export function useHMR() {
                 },
                 onReload: () => {
                     console.log('[HMR] Reload requested');
+                    if (isNativePreviewActive()) {
+                        console.log('[HMR] Native preview is active; skipping browser reload');
+                        return;
+                    }
                     // Dispatch reload status before actually reloading
                     dispatchHMRStatus({
                         type: 'hmr-status',
@@ -227,6 +233,9 @@ export function useHMR() {
         const unsubRestore = subscribeRestoreStatus((s) => {
             if (isMountedRef.current) setRestoreStatus(s);
         });
+        const unsubCandidate = subscribeCandidateTracker((s) => {
+            if (isMountedRef.current) setCandidateState(s);
+        });
         const unsubHealth = subscribeHealthPanel((s) => {
             if (isMountedRef.current) setHealthPanel(s);
         });
@@ -234,19 +243,22 @@ export function useHMR() {
         // Install window event listeners that feed the stores
         const cleanupAiListener = installAiStatusListener();
         const cleanupRestoreListener = installRestoreListener();
+        const cleanupCandidateListener = installCandidateListener();
 
         // Adapter status events: feed into the adapter-status store
         const handleAdapterEvent = (e) => {
-            if (e.detail) handleAdapterStatusNotification(e.detail);
+            const payload = e.detail?.data || e.detail;
+            if (payload) handleAdapterStatusNotification(payload);
         };
         window.addEventListener('synthi:adapter-status', handleAdapterEvent);
 
         // Adapter health events: feed into the health panel store
         const handleHealthEvent = (e) => {
-            if (!e.detail) return;
-            const d = e.detail;
-            if (d.family) {
-                updateAdapterHealth(d.family, {
+            const d = e.detail?.data || e.detail;
+            if (!d) return;
+            const family = normalizeAdapterFamily(d.family);
+            if (family && family !== 'none') {
+                updateAdapterHealth(family, {
                     active: d.active,
                     health: d.health,
                     reloads: d.reloads,
@@ -268,9 +280,11 @@ export function useHMR() {
             unsubAi();
             unsubAdapter();
             unsubRestore();
+            unsubCandidate();
             unsubHealth();
             cleanupAiListener();
             cleanupRestoreListener();
+            cleanupCandidateListener();
         };
     }, [dispatchHMRStatus]);
 
@@ -283,6 +297,7 @@ export function useHMR() {
         aiLoopStatus,
         adapterStatus,
         restoreStatus,
+        candidateState,
         healthPanel,
     };
 }

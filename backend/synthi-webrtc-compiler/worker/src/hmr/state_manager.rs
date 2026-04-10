@@ -1,5 +1,5 @@
-// State manager is now actively used via HmrOrchestrator
-// #![allow(dead_code)] - REMOVED: This module is now wired up
+// State manager is actively used via HmrOrchestrator, but it still contains
+// experimental helpers beyond the currently authoritative reload path.
 #![allow(dead_code)]
 
 // ============================================================
@@ -566,8 +566,6 @@ impl StateManager {
         old_bytes: &[u8],
         new_field_names: &[String],
         new_defaults: &crate::hmr::binary_state::MsgPackState,
-        _from_version: u32,
-        _to_version: u32,
     ) -> Result<(Vec<u8>, crate::hmr::binary_state::SchemaMigrationResult), String> {
         let start = std::time::Instant::now();
 

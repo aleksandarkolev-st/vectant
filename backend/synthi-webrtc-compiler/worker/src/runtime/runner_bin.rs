@@ -41,7 +41,6 @@ use worker::runtime::supervisor;
 
 // safety / hardening
 use worker::runtime::process_isolation;
-use worker::safety::enhanced_fingerprint;
 // use worker::safety::strict_contract;
 
 // public protocol + infra
@@ -56,21 +55,12 @@ use worker::safety::enhanced_fingerprint;
 
 use worker::safety::hardened_ipc::{read_frame_validated, write_frame_with_checksum, IpcConfig};
 
-use worker::compiler::plugin_contract::ModuleSlot as CompilerModuleSlot;
 use worker::runtime::plugin_contract::{
     ModuleSlot,
     // HotApi, HotGetApiFn, RunnerApi, CORE_STATE_MAGIC, GUI_STATE_MAGIC, LOG_ERROR,
     // LOG_INFO, LOG_WARN, MAX_STATE_ALIGNMENT, RUNNER_API_VERSION, SYNTHI_CORE_ABI_VERSION,
     // SYNTHI_GUI_ABI_VERSION,
 };
-
-fn to_compiler_slot(slot: ModuleSlot) -> CompilerModuleSlot {
-    match slot {
-        ModuleSlot::Core => CompilerModuleSlot::Core,
-        ModuleSlot::Gui => CompilerModuleSlot::Gui,
-        ModuleSlot::Main => CompilerModuleSlot::Main,
-    }
-}
 use capability::HmrStatus; // Removed detect_capabilities
 
 use crash_recovery::{
@@ -122,14 +112,6 @@ use worker::runtime::legacy_module_state::{AppState, ModuleState};
 // hot_reload_v2 moved to hot_reload/v2.rs
 
 // Helper functions moved to hot_reload/v2.rs
-
-// Host context for passing window/renderer to plugins
-// Now actively used when creating SynthiHostContextV1
-#[repr(C)]
-struct HostContext {
-    window: *mut c_void,
-    renderer: *mut c_void,
-}
 
 // Command enum to handle both legacy text commands and binary IPC messages
 #[derive(Debug)]
@@ -875,7 +857,6 @@ fn main() {
                             &session_id_cstring,
                             &kv_api,
                             loader_enabled,
-                            supervisor_enabled,
                         );
                     }
                 }

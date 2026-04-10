@@ -18,23 +18,25 @@
 //   6. Status notifications are emitted for the frontend
 // ============================================================
 
-use std::collections::HashMap;
-use std::sync::Arc;
+use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
-use crate::hmr::adapter_matrix::{AdapterFamily, AdapterMatrix, CapabilityTier};
+use crate::hmr::adapter_matrix::{AdapterFamily, AdapterMatrix};
 use crate::hmr::adapter_registry::{create_adapter_for_language, AdapterRegistry};
 use crate::hmr::adapter_trait::{AdapterHealth, AdapterReloadRequest, AdapterReloadResult};
-use crate::hmr::adapter_lifecycle_fsm::{AdapterLifecycleFsm, AdapterLifecycleState, LifecycleEvent};
+use crate::hmr::adapter_lifecycle_fsm::{AdapterLifecycleFsm, LifecycleEvent};
 use crate::hmr::ai_gate::{AiGate, AiGateDecision};
 use crate::hmr::build_manifest::BuildManifest;
+use crate::hmr::candidate::CandidateState;
 use crate::hmr::candidate_bridge::{bridge_tick, BridgeAction, BridgeConfig};
+use crate::hmr::candidate_notification::CandidateNotification;
 use crate::hmr::candidate_queue::CandidateQueue;
+use crate::hmr::candidate_supersession::{should_supersede, SupersessionVerdict};
+use crate::hmr::health_check::HealthCheckResult;
 use crate::hmr::lifecycle_machine::LifecycleStateMachine;
 use crate::hmr::loop_classifier::CompileLoop;
-use crate::hmr::orchestrator::{HmrOrchestrator, HmrResult, HmrStatus};
-use crate::hmr::planner::{plan_reload, PlannerInput, PlannerOutput};
-use crate::hmr::planner_decision::{ReloadDecision, StateStrategy};
+use crate::hmr::planner::{PlannerInput, PlannerOutput};
+use crate::hmr::planner_decision::StateStrategy;
 use crate::hmr::planner_glue::{execute_planner_and_transition, PlannerNotification};
 use crate::hmr::rollout_flags::RolloutFlags;
 use crate::hmr::telemetry::HmrTelemetry;
@@ -142,6 +144,10 @@ impl PipelineNotifications {
             self.messages.push(json);
         }
     }
+
+    fn extend(&mut self, other: PipelineNotifications) {
+        self.messages.extend(other.messages);
+    }
 }
 
 // â”€â”€ The HMR Pipeline â”€â”€
@@ -165,6 +171,8 @@ pub struct HmrPipeline {
     pub telemetry: HmrTelemetry,
     /// Adapter lifecycle FSMs per language.
     pub adapter_fsms: HashMap<String, AdapterLifecycleFsm>,
+    /// Languages whose adapters were initialized successfully.
+    initialized_adapters: HashSet<String>,
     /// Candidate queue for build-to-load pipeline.
     pub candidate_queue: CandidateQueue,
     /// Candidate bridge config.
@@ -193,6 +201,7 @@ impl HmrPipeline {
             lifecycle: LifecycleStateMachine::new(preview_id),
             telemetry: HmrTelemetry::new(),
             adapter_fsms: HashMap::new(),
+            initialized_adapters: HashSet::new(),
             candidate_queue: CandidateQueue::new(preview_id),
             bridge_config: BridgeConfig::default(),
             reload_counts: HashMap::new(),
@@ -209,17 +218,133 @@ impl HmrPipeline {
                 self.adapter_registry.register(language, adapter);
             }
         }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+
         if !self.adapter_fsms.contains_key(language) {
             let mut fsm = AdapterLifecycleFsm::new();
-            // Drive FSM to Ready state: Created → Initializing → Ready
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_millis() as u64;
             let _ = fsm.apply(LifecycleEvent::Initialize, now);
-            let _ = fsm.apply(LifecycleEvent::InitializeComplete, now);
             self.adapter_fsms.insert(language.to_string(), fsm);
         }
+
+        if !self.initialized_adapters.contains(language) {
+            let init_result = self
+                .adapter_registry
+                .get_mut(language)
+                .map(|adapter| adapter.initialize())
+                .unwrap_or_else(|| Err(format!("No adapter registered for language '{}'", language)));
+
+            match init_result {
+                Ok(()) => {
+                    self.initialized_adapters.insert(language.to_string());
+                    if let Some(fsm) = self.adapter_fsms.get_mut(language) {
+                        let _ = fsm.apply(LifecycleEvent::InitializeComplete, now);
+                    }
+                }
+                Err(error) => {
+                    eprintln!(
+                        "[HMR Integration] Failed to initialize adapter for {}: {}",
+                        language, error
+                    );
+                }
+            }
+        }
+    }
+
+    pub fn enqueue_candidate(
+        &mut self,
+        manifest: &BuildManifest,
+        planner_output: &PlannerOutput,
+    ) -> PipelineNotifications {
+        let mut notifications = PipelineNotifications::new();
+
+        if let Some(active) = self.candidate_queue.active() {
+            match should_supersede(
+                active,
+                &manifest.artifact_hash,
+                &self.bridge_config.supersession_policy,
+            ) {
+                SupersessionVerdict::Duplicate => {
+                    return notifications;
+                }
+                SupersessionVerdict::Supersede => {
+                    if let Some(active_candidate) = self.candidate_queue.active_mut() {
+                        active_candidate.discard();
+                    }
+                    if let Some(summary) = self.candidate_queue.complete_active() {
+                        notifications.push_json(&CandidateNotification::Discarded {
+                            preview_id: summary.preview_id,
+                            generation: summary.generation,
+                            reason: "superseded_by_newer_candidate".into(),
+                        });
+                    }
+                }
+                SupersessionVerdict::LetFinish => {}
+            }
+        }
+
+        let generation = self.candidate_queue.enqueue(
+            manifest.clone(),
+            planner_output.decision,
+            planner_output.reason.state_strategy,
+        );
+
+        notifications.push_json(&CandidateNotification::Enqueued {
+            preview_id: manifest.preview_id.clone(),
+            generation,
+            artifact_hash: manifest.artifact_hash.clone(),
+        });
+
+        notifications
+    }
+
+    pub fn validate_active_candidate(&mut self, total_reload_ms: u64) -> PipelineNotifications {
+        let mut notifications = PipelineNotifications::new();
+
+        if let Some(active) = self.candidate_queue.active_mut() {
+            if active.state == CandidateState::Loading {
+                active.begin_health_check();
+                notifications.push_json(&CandidateNotification::HealthCheckStarted {
+                    preview_id: active.id.preview_id.clone(),
+                    generation: active.id.generation,
+                });
+            }
+
+            let result = HealthCheckResult::Healthy {
+                latency_ms: total_reload_ms,
+            };
+            active.record_health(result.clone());
+            notifications.push_json(&CandidateNotification::HealthCheckCompleted {
+                preview_id: active.id.preview_id.clone(),
+                generation: active.id.generation,
+                result,
+            });
+        }
+
+        notifications.extend(self.tick_candidates(current_time_ms()));
+        notifications
+    }
+
+    pub fn reject_active_candidate(&mut self, reason: impl Into<String>) -> PipelineNotifications {
+        let mut notifications = PipelineNotifications::new();
+        let reason = reason.into();
+
+        if let Some(active) = self.candidate_queue.active_mut() {
+            active.rollback(reason.clone());
+        }
+
+        if let Some(summary) = self.candidate_queue.complete_active() {
+            notifications.push_json(&CandidateNotification::RolledBack {
+                preview_id: summary.preview_id,
+                generation: summary.generation,
+                reason,
+            });
+        }
+
+        notifications.extend(self.tick_candidates(current_time_ms()));
+        notifications
     }
 
     /// Classify whether this compile is Loop A (deterministic) or Loop B (AI-assisted).
@@ -344,6 +469,11 @@ impl HmrPipeline {
         };
 
         let elapsed_ms = start.elapsed().as_millis() as u64;
+        let adapter_family = self
+            .adapter_registry
+            .get_info(language)
+            .map(|info| info.family);
+        let dynlib_preflight_only = matches!(adapter_family, Some(AdapterFamily::DynamicLibrary));
 
         // Update counters based on result
         match &result {
@@ -357,24 +487,26 @@ impl HmrPipeline {
                 }
 
                 // State restore complete notification with real strategy and duration
-                let strategy_str = if *state_preserved {
-                    restore_strategy.to_string()
-                } else {
-                    "discard".to_string()
-                };
-                notifications.push_json(&StateRestoreNotification {
-                    msg_type: "state_restore_status",
-                    restore_type: "restore_complete".into(),
-                    module: Some(manifest.slot_name()),
-                    preserved_fields: None, // filled by runner when available
-                    reset_fields: None,     // filled by runner when available
-                    error: None,
-                    fallback: if *state_preserved { None } else { Some("state_discarded".into()) },
-                    strategy: Some(strategy_str),
-                    duration_ms: Some(*reload_ms),
-                    warnings: None,
-                    lost_fields: None,
-                });
+                if !dynlib_preflight_only {
+                    let strategy_str = if *state_preserved {
+                        restore_strategy.to_string()
+                    } else {
+                        "discard".to_string()
+                    };
+                    notifications.push_json(&StateRestoreNotification {
+                        msg_type: "state_restore_status",
+                        restore_type: "restore_complete".into(),
+                        module: Some(manifest.slot_name()),
+                        preserved_fields: None, // filled by runner when available
+                        reset_fields: None,     // filled by runner when available
+                        error: None,
+                        fallback: if *state_preserved { None } else { Some("state_discarded".into()) },
+                        strategy: Some(strategy_str),
+                        duration_ms: Some(*reload_ms),
+                        warnings: None,
+                        lost_fields: None,
+                    });
+                }
             }
             AdapterReloadResult::Failed { error, .. } => {
                 *self.failure_counts.entry(language.to_string()).or_insert(0) += 1;
@@ -442,7 +574,9 @@ impl HmrPipeline {
             last_reload_ms: Some(elapsed_ms),
             active_slot: None,
             state_preserved: match &result {
-                AdapterReloadResult::Success { state_preserved, .. } => Some(*state_preserved),
+                AdapterReloadResult::Success { state_preserved, .. } if !dynlib_preflight_only => {
+                    Some(*state_preserved)
+                }
                 _ => None,
             },
         });
@@ -505,31 +639,88 @@ impl HmrPipeline {
     pub fn tick_candidates(&mut self, current_time_ms: u64) -> PipelineNotifications {
         let mut notifications = PipelineNotifications::new();
 
-        let (action, bridge_notifications) = bridge_tick(
-            &self.candidate_queue,
-            &self.bridge_config,
-            current_time_ms,
-        );
+        for _ in 0..4 {
+            let (action, bridge_notifications) = bridge_tick(
+                &self.candidate_queue,
+                &self.bridge_config,
+                current_time_ms,
+            );
 
-        // Convert bridge notifications to frontend messages
-        for n in bridge_notifications {
-            if let Ok(json) = serde_json::to_string(&n) {
-                notifications.messages.push(json);
+            for notification in bridge_notifications {
+                notifications.push_json(&notification);
             }
-        }
 
-        // Handle bridge actions
-        match action {
-            BridgeAction::Promote { generation } => {
-                eprintln!("[HMR Integration] Candidate gen {} promoted to active", generation);
+            let mut mutated = false;
+            match action {
+                BridgeAction::BeginLoad { .. } => {
+                    if let Some(active) = self.candidate_queue.activate_next() {
+                        notifications.push_json(&CandidateNotification::Loading {
+                            preview_id: active.id.preview_id.clone(),
+                            generation: active.id.generation,
+                        });
+                        mutated = true;
+                    }
+                }
+                BridgeAction::Promote { generation } => {
+                    if let Some(active) = self.candidate_queue.active_mut() {
+                        if active.id.generation == generation {
+                            active.promote();
+                            mutated = true;
+                        }
+                    }
+
+                    if mutated {
+                        if let Some(summary) = self.candidate_queue.complete_active() {
+                            notifications.push_json(&CandidateNotification::Promoted {
+                                preview_id: summary.preview_id,
+                                generation: summary.generation,
+                                total_reload_ms: summary.age_ms,
+                            });
+                        }
+                    }
+                }
+                BridgeAction::Rollback { generation, reason } => {
+                    if let Some(active) = self.candidate_queue.active_mut() {
+                        if active.id.generation == generation {
+                            active.rollback(reason.clone());
+                            mutated = true;
+                        }
+                    }
+
+                    if mutated {
+                        if let Some(summary) = self.candidate_queue.complete_active() {
+                            notifications.push_json(&CandidateNotification::RolledBack {
+                                preview_id: summary.preview_id,
+                                generation: summary.generation,
+                                reason,
+                            });
+                        }
+                    }
+                }
+                BridgeAction::Discard { generation, reason } => {
+                    if let Some(active) = self.candidate_queue.active_mut() {
+                        if active.id.generation == generation {
+                            active.discard();
+                            mutated = true;
+                        }
+                    }
+
+                    if mutated {
+                        if let Some(summary) = self.candidate_queue.complete_active() {
+                            notifications.push_json(&CandidateNotification::Discarded {
+                                preview_id: summary.preview_id,
+                                generation: summary.generation,
+                                reason,
+                            });
+                        }
+                    }
+                }
+                BridgeAction::Idle | BridgeAction::BeginHealthCheck { .. } => {}
             }
-            BridgeAction::Rollback { generation, reason } => {
-                eprintln!("[HMR Integration] Candidate gen {} rolled back: {}", generation, reason);
+
+            if !mutated {
+                break;
             }
-            BridgeAction::Discard { generation, reason } => {
-                eprintln!("[HMR Integration] Candidate gen {} discarded: {}", generation, reason);
-            }
-            _ => {}
         }
 
         notifications
@@ -567,7 +758,7 @@ impl HmrPipeline {
     pub fn all_adapter_health(&self) -> Vec<(String, AdapterHealth)> {
         let mut result = Vec::new();
         for lang in self.adapter_registry.languages() {
-            if let Some(adapter) = self.adapter_registry.get_info(lang) {
+            if self.adapter_registry.get_info(lang).is_some() {
                 let health = self
                     .adapter_fsms
                     .get(lang)
@@ -593,6 +784,13 @@ impl BuildManifest {
             crate::hmr::build_manifest::BuildSlot::Custom(name) => name.clone(),
         }
     }
+}
+
+fn current_time_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
 }
 
 #[cfg(test)]

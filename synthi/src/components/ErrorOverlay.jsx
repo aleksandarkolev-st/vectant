@@ -529,27 +529,31 @@ export function ErrorOverlay({ className }) {
             handleCompileDiagnostics({ detail: data });
         }
     }, [handleCompileDiagnostics]);
+
+    const handleBuildLog = useCallback((event) => {
+        try {
+            const parsed = typeof event.detail === 'string'
+                ? JSON.parse(event.detail)
+                : event.detail;
+            if (parsed?.type === 'compile-diagnostics') {
+                handleCompileDiagnostics({ detail: parsed });
+            }
+        } catch {}
+    }, [handleCompileDiagnostics]);
     
     useEffect(() => {
         window.addEventListener('synthi:compile-diagnostics', handleCompileDiagnostics);
         window.addEventListener('synthi:hmr-status', handleHMRStatus);
         window.addEventListener('synthi:error', handleDirectError);
-        window.addEventListener('synthi:build-log', (e) => {
-            // Check if build log contains diagnostics JSON
-            try {
-                const parsed = JSON.parse(e.detail);
-                if (parsed.type === 'compile-diagnostics') {
-                    handleCompileDiagnostics({ detail: parsed });
-                }
-            } catch {}
-        });
+        window.addEventListener('synthi:build-log', handleBuildLog);
         
         return () => {
             window.removeEventListener('synthi:compile-diagnostics', handleCompileDiagnostics);
             window.removeEventListener('synthi:hmr-status', handleHMRStatus);
             window.removeEventListener('synthi:error', handleDirectError);
+            window.removeEventListener('synthi:build-log', handleBuildLog);
         };
-    }, [handleCompileDiagnostics, handleHMRStatus, handleDirectError]);
+    }, [handleBuildLog, handleCompileDiagnostics, handleHMRStatus, handleDirectError]);
     
     // Subscribe to preview-store for compiled-preview diagnostics.
     // Normalizes diagnostics through the unified schema before rendering.

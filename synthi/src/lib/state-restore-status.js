@@ -91,18 +91,23 @@ export function resetRestoreStatus() {
 export function handleRestoreNotification(notification) {
   if (!notification || !notification.type) return;
 
-  switch (notification.type) {
+  const restoreType = notification.type === 'state_restore_status'
+    ? notification.restore_type || notification.type
+    : notification.type;
+  const moduleId = notification.module || notification.module_id || null;
+
+  switch (restoreType) {
     case 'snapshot_capturing':
       updateRestoreStatus({
         phase: 'capturing',
-        moduleId: notification.module_id || null,
+        moduleId,
       });
       break;
 
     case 'restore_started':
       updateRestoreStatus({
         phase: 'restoring',
-        moduleId: notification.module_id || null,
+        moduleId,
         strategy: notification.strategy || null,
       });
       break;
@@ -110,7 +115,7 @@ export function handleRestoreNotification(notification) {
     case 'migration_started':
       updateRestoreStatus({
         phase: 'migrating',
-        moduleId: notification.module_id || null,
+        moduleId,
         strategy: 'migrate',
       });
       break;
@@ -118,7 +123,7 @@ export function handleRestoreNotification(notification) {
     case 'restore_complete':
       updateRestoreStatus({
         phase: 'restored',
-        moduleId: notification.module_id || null,
+        moduleId,
         strategy: notification.strategy || 'direct',
         warnings: notification.warnings || [],
         lostFields: notification.lost_fields || [],
@@ -129,7 +134,7 @@ export function handleRestoreNotification(notification) {
     case 'restore_discarded':
       updateRestoreStatus({
         phase: 'discarded',
-        moduleId: notification.module_id || null,
+        moduleId,
         strategy: 'discard',
         warnings: notification.reasons || [],
       });
@@ -138,7 +143,7 @@ export function handleRestoreNotification(notification) {
     case 'restore_error':
       updateRestoreStatus({
         phase: 'error',
-        moduleId: notification.module_id || null,
+        moduleId,
         warnings: [notification.error || 'unknown error'],
       });
       break;
@@ -155,8 +160,9 @@ export function handleRestoreNotification(notification) {
 export function installRestoreListener() {
   /** @param {CustomEvent} e */
   function handler(e) {
-    if (e.detail) {
-      handleRestoreNotification(e.detail);
+    const payload = e.detail?.data || e.detail;
+    if (payload) {
+      handleRestoreNotification(payload);
     }
   }
   window.addEventListener('synthi:state-restore', handler);

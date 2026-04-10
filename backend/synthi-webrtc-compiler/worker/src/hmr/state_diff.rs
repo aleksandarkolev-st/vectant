@@ -1,5 +1,5 @@
-// State diff is actively used by StateManager for HMR state migration
-// #![allow(dead_code)] - REMOVED: This module is now wired up
+// State diff is actively used by StateManager for HMR state migration, but it
+// still carries auxiliary migration helpers outside the main runner path.
 #![allow(dead_code)]
 
 // ============================================================
@@ -700,7 +700,7 @@ pub unsafe fn atomic_state_swap(
     }
 
     // Create migration guard to block on_update calls
-    let _guard = MigrationGuard::new();
+    let migration_guard = MigrationGuard::new();
 
     // Memory barrier before copy
     std::sync::atomic::fence(Ordering::SeqCst);
@@ -711,7 +711,9 @@ pub unsafe fn atomic_state_swap(
     // Memory barrier after copy
     std::sync::atomic::fence(Ordering::SeqCst);
 
-    Ok(())
+    let result = Ok(());
+    drop(migration_guard);
+    result
     // Guard drops here, clearing the migration flag
 }
 

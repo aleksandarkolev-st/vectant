@@ -84,7 +84,12 @@ export function updateAiLoopStatus(update) {
 export function handleAiStatusNotification(notification) {
   if (!notification || !notification.type) return;
 
-  switch (notification.type) {
+  const eventType = notification.type === 'ai_status'
+    ? notification.ai_type || notification.type
+    : notification.type;
+
+  switch (eventType) {
+    case 'request_started':
     case 'ai_request_started':
       updateAiLoopStatus({
         requestPhase: 'pending',
@@ -92,6 +97,7 @@ export function handleAiStatusNotification(notification) {
       });
       break;
 
+    case 'request_success':
     case 'ai_request_success':
       updateAiLoopStatus({
         requestPhase: 'success',
@@ -103,6 +109,8 @@ export function handleAiStatusNotification(notification) {
       });
       break;
 
+    case 'request_failed':
+    case 'failed':
     case 'ai_request_failed':
       updateAiLoopStatus({
         requestPhase: 'failed',
@@ -110,6 +118,8 @@ export function handleAiStatusNotification(notification) {
       });
       break;
 
+    case 'request_timeout':
+    case 'timeout':
     case 'ai_request_timeout':
       updateAiLoopStatus({
         requestPhase: 'timeout',
@@ -117,12 +127,14 @@ export function handleAiStatusNotification(notification) {
       });
       break;
 
+    case 'circuit_changed':
     case 'ai_circuit_changed':
       updateAiLoopStatus({
         circuitState: notification.state || 'closed',
       });
       break;
 
+    case 'fallback_progress':
     case 'ai_fallback_progress':
       updateAiLoopStatus({
         currentFallbackLevel: notification.level || null,
@@ -130,6 +142,7 @@ export function handleAiStatusNotification(notification) {
       });
       break;
 
+    case 'blocked':
     case 'ai_blocked':
       updateAiLoopStatus({
         requestPhase: 'blocked',
@@ -149,8 +162,9 @@ export function handleAiStatusNotification(notification) {
 export function installAiStatusListener() {
   /** @param {CustomEvent} e */
   function handler(e) {
-    if (e.detail) {
-      handleAiStatusNotification(e.detail);
+    const payload = e.detail?.data || e.detail;
+    if (payload) {
+      handleAiStatusNotification(payload);
     }
   }
   window.addEventListener('synthi:ai-status', handler);

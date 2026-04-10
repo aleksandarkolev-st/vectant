@@ -1,4 +1,5 @@
 use crate::hmr::orchestrator::{HmrOrchestrator, SavedState};
+use crate::hmr::integration::HmrPipeline;
 use crate::runtime::capability::{detect_capabilities, HmrCapability, HmrStatus};
 use crate::runtime::legacy_module_state::{AppState, ModuleState};
 use crate::runtime::loader::{LoadResult, ModuleLoader};
@@ -13,19 +14,10 @@ use crate::runtime::hot_reload::v2::{get_module_abi_version, validate_state_magi
 use crate::runtime::runner::validator;
 
 // Host KV
-use crate::compiler::plugin_contract::ModuleSlot as CompilerModuleSlot;
 use crate::infra::host_kv::{
     module_slot_to_u32, read_schema_table, HostKvApiV1, HostKvSchemaEvent, SynthiHostContextV1,
     KV_STORE,
 };
-
-fn to_compiler_slot(slot: ModuleSlot) -> CompilerModuleSlot {
-    match slot {
-        ModuleSlot::Core => CompilerModuleSlot::Core,
-        ModuleSlot::Gui => CompilerModuleSlot::Gui,
-        ModuleSlot::Main => CompilerModuleSlot::Main,
-    }
-}
 
 pub unsafe fn process_load_command(
     name: &str,
@@ -40,7 +32,6 @@ pub unsafe fn process_load_command(
     session_id_cstring: &Option<CString>,
     kv_api: &HostKvApiV1,
     loader_enabled: bool,
-    _supervisor_enabled: bool, // Passed but maybe not used in load logic?
 ) {
     eprintln!("[Runner] Loading module '{}' from {}", name, path);
 
@@ -76,7 +67,7 @@ pub unsafe fn process_load_command(
     // This catches symbol mismatches and ABI version errors early.
     if loader_enabled {
         let slot = ModuleSlot::from_str(name);
-        if let Some(_slot) = slot {
+        if slot.is_some() {
             // Generate a simple hash for tracking (real hash from file)
             let content_hash = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
 
@@ -451,14 +442,55 @@ pub unsafe fn process_load_command(
                                 migration.new_fields.len(),
                             );
                             eprintln!("[Runner] [HMR-STATUS] {}", status.to_json());
+                            eprintln!(
+                                "{}",
+                                HmrPipeline::build_restore_complete_notification(
+                                    name,
+                                    "migrate",
+                                    migration.preserved_fields.clone(),
+                                    migration.reset_fields.clone(),
+                                    Vec::new(),
+                                    0,
+                                    Vec::new(),
+                                )
+                            );
                         } else if loaded.was_binary {
                             let status = HmrStatus::state_migrated(name, 0, 0, 0);
                             eprintln!("[Runner] [HMR-STATUS] {}", status.to_json());
                             eprintln!("[Runner] [HMR] Binary state restored successfully");
+                            eprintln!(
+                                "{}",
+                                HmrPipeline::build_restore_complete_notification(
+                                    name,
+                                    "direct",
+                                    Vec::new(),
+                                    Vec::new(),
+                                    Vec::new(),
+                                    0,
+                                    Vec::new(),
+                                )
+                            );
                         }
                     } else {
                         eprintln!("[Runner] [HMR] Orchestrator load returned NULL - fresh init");
+                        let notification = serde_json::json!({
+                            "type": "state_restore_status",
+                            "restore_type": "restore_error",
+                            "module": name,
+                            "error": "state_restore_returned_null"
+                        });
+                        eprintln!("{}", notification.to_string());
                     }
+                }
+
+                if used_checkpoint_restore {
+                    let notification = serde_json::json!({
+                        "type": "state_restore_status",
+                        "restore_type": "restore_discarded",
+                        "module": name,
+                        "reasons": ["checkpoint_restore_discarded"]
+                    });
+                    eprintln!("{}", notification.to_string());
                 }
             }
 
@@ -484,12 +516,10 @@ pub unsafe fn process_load_command(
             // ============================================================
             // This allows the module to write to KV during on_load
             // ============================================================
-            let mut has_host_kv_support = false;
-
-            if let Some(ref sid) = session_id {
+            let has_host_kv_support = if let Some(ref sid) = session_id {
                 // Read schema table from module
                 let schemas = read_schema_table(&new_lib, module_slot);
-                has_host_kv_support = !schemas.is_empty();
+                let has_support = !schemas.is_empty();
 
                 if !schemas.is_empty() {
                     eprintln!(
@@ -545,15 +575,16 @@ pub unsafe fn process_load_command(
                         name
                     );
                 }
+                has_support
             } else {
-                has_host_kv_support = false;
                 // Check if module tries to use Host KV without session set
                 let schemas = read_schema_table(&new_lib, module_slot);
                 if !schemas.is_empty() {
                     eprintln!("[Runner] [HOST-KV] WARNING: Module '{}' exports schema table but no session set! Host KV will not work.", name);
                     eprintln!("[Runner] [HOST-KV] Call 'set_session <session_id>' before loading modules that use Host KV.");
                 }
-            }
+                false
+            };
 
             // ============================================================
             // Initialize module - prefer *_on_load_host if available
@@ -868,7 +899,7 @@ pub unsafe fn process_load_command(
             // ============================================================
             // STRUCTURED HMR STATUS FEEDBACK
             // ============================================================
-            if let Ok(ref _report) = capability_report {
+            if capability_report.is_ok() {
                 let status = HmrStatus::Applied {
                     module: name.to_string(),
                     capability: hmr_capability.description().to_string(),

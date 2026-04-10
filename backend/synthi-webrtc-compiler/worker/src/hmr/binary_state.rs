@@ -195,16 +195,11 @@ impl<'a> StateWriter for SliceWriter<'a> {
 /// Can work with CountingWriter (for size) or SliceWriter (for write)
 pub struct MsgPackSerializer<W: StateWriter> {
     writer: W,
-    /// Use stable field names/ids for encoding (not position-dependent)
-    use_stable_keys: bool,
 }
 
 impl<W: StateWriter> MsgPackSerializer<W> {
     pub fn new(writer: W) -> Self {
-        Self {
-            writer,
-            use_stable_keys: true, // Always use stable keys to avoid ABI churn
-        }
+        Self { writer }
     }
 
     pub fn into_writer(self) -> W {

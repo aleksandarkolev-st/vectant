@@ -12,7 +12,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::hmr::adapter_trait::AdapterHealth;
 use crate::hmr::build_manifest::BuildManifest;
-use crate::hmr::build_manifest::BuildSlot;
 use crate::hmr::slot_manager::LibSlot;
 
 /// Phases in a dynlib reload sequence.

@@ -10,7 +10,7 @@
 use std::collections::VecDeque;
 
 use crate::hmr::build_manifest::BuildManifest;
-use crate::hmr::candidate::{Candidate, CandidateState, CandidateSummary};
+use crate::hmr::candidate::{Candidate, CandidateSummary};
 use crate::hmr::planner_decision::{ReloadDecision, StateStrategy};
 
 /// Maximum pending candidates before oldest are discarded.
@@ -42,12 +42,20 @@ impl CandidateQueue {
     /// Supersedes any older pending candidates.
     pub fn enqueue(
         &mut self,
-        manifest: BuildManifest,
+        mut manifest: BuildManifest,
         decision: ReloadDecision,
         state_strategy: StateStrategy,
     ) -> u64 {
         self.generation += 1;
         let gen = self.generation;
+
+        if manifest.preview_id != self.preview_id {
+            eprintln!(
+                "[CandidateQueue] Preview mismatch (manifest={}, queue={}) - normalizing to queue preview",
+                manifest.preview_id, self.preview_id
+            );
+            manifest.preview_id = self.preview_id.clone();
+        }
 
         let candidate = Candidate::new(manifest, gen, decision, state_strategy);
 
@@ -125,6 +133,11 @@ impl CandidateQueue {
     /// Current generation counter.
     pub fn generation(&self) -> u64 {
         self.generation
+    }
+
+    /// Preview session that owns this queue.
+    pub fn preview_id(&self) -> &str {
+        &self.preview_id
     }
 
     /// Completed candidate history (newest last).

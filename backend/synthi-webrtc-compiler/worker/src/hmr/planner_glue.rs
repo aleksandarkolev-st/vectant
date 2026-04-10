@@ -7,7 +7,6 @@
 // a pure planner decision to the runtime.
 // ============================================================
 
-use crate::hmr::build_manifest::BuildManifest;
 use crate::hmr::lifecycle_machine::LifecycleStateMachine;
 use crate::hmr::planner::{plan_reload, PlannerInput, PlannerOutput};
 use crate::hmr::planner_decision::ReloadDecision;
@@ -46,10 +45,7 @@ pub fn execute_planner_and_transition(
 
     // Start a reload telemetry span
     let decision_str = decision_to_str(&output.decision);
-    let _span = telemetry.start_reload(
-        lifecycle.preview_id(),
-        decision_str,
-    );
+    telemetry.start_reload(lifecycle.preview_id(), decision_str);
 
     let notification = PlannerNotification {
         msg_type: "hmr-status",

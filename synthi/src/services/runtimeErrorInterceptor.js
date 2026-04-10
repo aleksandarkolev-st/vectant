@@ -29,6 +29,7 @@ const MAX_HEAL_ATTEMPTS = 3;       // Max consecutive heal attempts per file
 const HEAL_COOLDOWN_MS = 2000;     // Minimum time between heal attempts
 const AUTO_HEAL_DELAY_MS = 800;    // Delay before auto-healing (debounce rapid errors)
 const ATTEMPT_RESET_MS = 30000;    // Reset attempt counter after this idle period
+const HMR_FAILURE_REPORT_COOLDOWN_MS = 5000;
 
 // ── State ──────────────────────────────────────────────────────────────
 
@@ -48,6 +49,10 @@ class RuntimeErrorInterceptor {
     // Per-file healing state
     /** @type {Map<string, { attempts: number, lastAttempt: number, timer: any }>} */
     this._fileState = new Map();
+
+    // Best-effort dedupe for agentic HMR-failure observability.
+    /** @type {Map<string, number>} */
+    this._hmrFailureReports = new Map();
     
     // Currently active healing request (only one at a time)
     this._activeRequest = null;
@@ -218,6 +223,15 @@ class RuntimeErrorInterceptor {
           detail: { diagnostics, module: data.language || null },
         }));
       }
+    }
+
+    if (
+      status === 'rejected'
+      || status === 'fail'
+      || status === 'crash-fatal'
+      || status === 'full-reload-required'
+    ) {
+      this._reportHmrFailure(data);
     }
   }
 
@@ -451,6 +465,45 @@ class RuntimeErrorInterceptor {
       css: 'css', html: 'html', json: 'json', yaml: 'yaml',
     };
     return map[ext] || ext || 'plaintext';
+  }
+
+  _resolveHmrFailurePath(statusData) {
+    if (statusData?.filePath) return statusData.filePath;
+    if (statusData?.file_path) return statusData.file_path;
+    if (this._state.filePath) return this._state.filePath;
+
+    const editor = this._getEditor?.();
+    const model = editor?.getModel?.();
+    const editorPath = model?.uri?.path;
+    if (editorPath) return editorPath;
+
+    return statusData?.module || statusData?.module_id || 'unknown';
+  }
+
+  _reportHmrFailure(statusData) {
+    if (!this._gateway?.agenticRecordHmrFailure) {
+      return;
+    }
+
+    const filePath = this._resolveHmrFailurePath(statusData);
+    const status = statusData?.status || 'unknown';
+    const reportKey = `${status}:${filePath}`;
+    const now = Date.now();
+    const lastReportAt = this._hmrFailureReports.get(reportKey) || 0;
+
+    if (now - lastReportAt < HMR_FAILURE_REPORT_COOLDOWN_MS) {
+      return;
+    }
+
+    this._hmrFailureReports.set(reportKey, now);
+
+    void this._gateway.agenticRecordHmrFailure({ filePath }).catch((err) => {
+      console.warn('[RuntimeHealing] Failed to record HMR failure', {
+        filePath,
+        status,
+        error: err?.message || err,
+      });
+    });
   }
 
   _dispatch(eventName, detail) {

@@ -6,10 +6,8 @@
 // rollback paths, and version gap detection.
 // ============================================================
 
-#![allow(dead_code)]
-
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use crate::hmr::state_manager::SchemaVersion;
 
@@ -54,16 +52,12 @@ pub struct MigrationPath {
 #[derive(Debug, Clone)]
 pub enum MigrationPathError {
     NoPath { from: SchemaVersion, to: SchemaVersion },
-    IrreversibleStep { at: SchemaVersion },
-    CyclicPath,
 }
 
 impl std::fmt::Display for MigrationPathError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::NoPath { from, to } => write!(f, "no migration path from {} to {}", from, to),
-            Self::IrreversibleStep { at } => write!(f, "irreversible step at version {}", at),
-            Self::CyclicPath => write!(f, "cyclic migration path detected"),
         }
     }
 }
@@ -74,8 +68,6 @@ pub struct MigrationRegistry {
     forward: HashMap<(SchemaVersion, SchemaVersion), MigrationStep>,
     /// Reverse migrations: (to, from) → step (auto-derived if reversible).
     reverse: HashMap<(SchemaVersion, SchemaVersion), MigrationStep>,
-    /// All known versions.
-    versions: Vec<SchemaVersion>,
 }
 
 impl MigrationRegistry {
@@ -83,7 +75,6 @@ impl MigrationRegistry {
         Self {
             forward: HashMap::new(),
             reverse: HashMap::new(),
-            versions: Vec::new(),
         }
     }
 
@@ -91,14 +82,6 @@ impl MigrationRegistry {
     pub fn register(&mut self, step: MigrationStep) {
         let from = step.from;
         let to = step.to;
-
-        // Track versions
-        if !self.versions.contains(&from) {
-            self.versions.push(from);
-        }
-        if !self.versions.contains(&to) {
-            self.versions.push(to);
-        }
 
         // If reversible, auto-derive reverse step
         if step.reversible {
@@ -134,11 +117,11 @@ impl MigrationRegistry {
         }
 
         // BFS over forward edges
-        let mut queue: Vec<(SchemaVersion, Vec<MigrationStep>)> = vec![(from, vec![])];
-        let mut visited: std::collections::HashSet<SchemaVersion> = std::collections::HashSet::new();
+        let mut queue: VecDeque<(SchemaVersion, Vec<MigrationStep>)> = VecDeque::from([(from, vec![])]);
+        let mut visited: HashSet<SchemaVersion> = HashSet::new();
         visited.insert(from);
 
-        while let Some((current, path)) = queue.pop() {
+        while let Some((current, path)) = queue.pop_front() {
             // Find all forward steps from current
             for ((f, t), step) in &self.forward {
                 if *f == current && !visited.contains(t) {
@@ -156,7 +139,7 @@ impl MigrationRegistry {
                     }
 
                     visited.insert(*t);
-                    queue.push((*t, new_path));
+                    queue.push_back((*t, new_path));
                 }
             }
         }
@@ -180,11 +163,11 @@ impl MigrationRegistry {
         }
 
         // BFS over reverse edges
-        let mut queue: Vec<(SchemaVersion, Vec<MigrationStep>)> = vec![(from, vec![])];
-        let mut visited: std::collections::HashSet<SchemaVersion> = std::collections::HashSet::new();
+        let mut queue: VecDeque<(SchemaVersion, Vec<MigrationStep>)> = VecDeque::from([(from, vec![])]);
+        let mut visited: HashSet<SchemaVersion> = HashSet::new();
         visited.insert(from);
 
-        while let Some((current, path)) = queue.pop() {
+        while let Some((current, path)) = queue.pop_front() {
             for ((f, t), step) in &self.reverse {
                 if *f == current && !visited.contains(t) {
                     let mut new_path = path.clone();
@@ -200,7 +183,7 @@ impl MigrationRegistry {
                     }
 
                     visited.insert(*t);
-                    queue.push((*t, new_path));
+                    queue.push_back((*t, new_path));
                 }
             }
         }

@@ -10,7 +10,7 @@
 // ============================================================
 
 use crate::hmr::adapter_matrix::AdapterMatrix;
-use crate::hmr::build_manifest::{BuildManifest, PreviewPreservationMode, HealthcheckStrategy, SnapshotMode};
+use crate::hmr::build_manifest::{BuildManifest, SnapshotMode};
 use crate::hmr::planner_decision::{
     FallbackStrategy, PlannerReasonBundle, ReloadDecision, StateStrategy,
 };

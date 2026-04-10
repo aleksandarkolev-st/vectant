@@ -9,7 +9,6 @@
 #![allow(dead_code)]
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 
 /// Describes how the managed host accepts reloaded code.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

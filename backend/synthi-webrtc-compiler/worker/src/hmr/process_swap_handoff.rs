@@ -9,6 +9,9 @@
 #![allow(dead_code)]
 
 use serde::{Deserialize, Serialize};
+use std::fs;
+use std::io::{Read, Write};
+use std::path::Path;
 
 /// Envelope format for IPC state transfer.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -62,6 +65,46 @@ impl HandoffEnvelope {
         }
         Ok(())
     }
+}
+
+pub fn write_envelope<W: Write>(writer: &mut W, envelope: &HandoffEnvelope) -> Result<usize, String> {
+    let encoded = rmp_serde::to_vec(envelope)
+        .map_err(|error| format!("failed to serialize handoff envelope: {}", error))?;
+    writer
+        .write_all(&encoded)
+        .map_err(|error| format!("failed to write handoff envelope: {}", error))?;
+    writer
+        .flush()
+        .map_err(|error| format!("failed to flush handoff envelope: {}", error))?;
+    Ok(encoded.len())
+}
+
+pub fn read_envelope<R: Read>(reader: &mut R) -> Result<HandoffEnvelope, String> {
+    let mut encoded = Vec::new();
+    reader
+        .read_to_end(&mut encoded)
+        .map_err(|error| format!("failed to read handoff envelope: {}", error))?;
+    let envelope: HandoffEnvelope = rmp_serde::from_slice(&encoded)
+        .map_err(|error| format!("failed to decode handoff envelope: {}", error))?;
+    envelope.validate()?;
+    Ok(envelope)
+}
+
+pub fn write_envelope_to_path(envelope: &HandoffEnvelope, path: &Path) -> Result<usize, String> {
+    let encoded = rmp_serde::to_vec(envelope)
+        .map_err(|error| format!("failed to serialize handoff envelope: {}", error))?;
+    fs::write(path, &encoded)
+        .map_err(|error| format!("failed to persist handoff envelope to {:?}: {}", path, error))?;
+    Ok(encoded.len())
+}
+
+pub fn read_envelope_from_path(path: &Path) -> Result<HandoffEnvelope, String> {
+    let encoded = fs::read(path)
+        .map_err(|error| format!("failed to read handoff envelope from {:?}: {}", path, error))?;
+    let envelope: HandoffEnvelope = rmp_serde::from_slice(&encoded)
+        .map_err(|error| format!("failed to decode handoff envelope: {}", error))?;
+    envelope.validate()?;
+    Ok(envelope)
 }
 
 /// The handoff phases from the old process's perspective.

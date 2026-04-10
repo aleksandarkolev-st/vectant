@@ -81,7 +81,7 @@ impl CandidateHistory {
     }
 
     /// Entries for a specific preview session.
-    pub fn for_preview<'a>(&'a self, preview_id: &'a str) -> impl Iterator<Item = &HistoryEntry> + 'a {
+    pub fn for_preview<'a>(&'a self, preview_id: &'a str) -> impl Iterator<Item = &'a HistoryEntry> + 'a {
         self.entries
             .iter()
             .filter(move |e| e.summary.preview_id == preview_id)

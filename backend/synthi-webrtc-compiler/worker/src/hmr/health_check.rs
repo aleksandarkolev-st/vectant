@@ -48,7 +48,7 @@ impl HealthCheckResult {
     pub fn failure_reason(&self) -> Option<&str> {
         match self {
             HealthCheckResult::Unhealthy { reason, .. } => Some(reason),
-            HealthCheckResult::Timeout { timeout_ms } => None, // caller can format
+            HealthCheckResult::Timeout { timeout_ms: _ } => None, // caller can format
             _ => None,
         }
     }

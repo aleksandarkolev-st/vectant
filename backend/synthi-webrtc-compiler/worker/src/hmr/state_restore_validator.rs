@@ -10,7 +10,6 @@
 #![allow(dead_code)]
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 
 use crate::hmr::state_manager::SchemaVersion;
 use crate::hmr::state_snapshot::StateSnapshot;

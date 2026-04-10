@@ -1,12 +1,10 @@
 use anyhow::Result;
-use chrono::Utc;
 
 use crate::compiler::builder::{
     hash_content, hash_shared_header_semantic, ModuleHashes, RebuildScope,
 };
 use crate::compiler::context::CompileContext;
 use crate::infra::messages::CompileRequest;
-use crate::infra::observability::{ReloadId, ReloadMetricsTracker};
 
 // Import our new modular stages
 use crate::compiler::stages::ai_utils::perform_ai_split;
@@ -17,19 +15,16 @@ use crate::compiler::stages::guardrails::{
 };
 use crate::compiler::stages::runner::handle_runner_execution;
 
-// HMR pipeline integration
-use crate::hmr::integration::HmrPipeline;
-use crate::hmr::loop_classifier::{classify_loop, CompileLoop, LoopClassifierInput};
-use crate::hmr::adapted_project::{detect_adapted_project, is_split_fresh};
+use crate::hmr::loop_classifier::{classify_loop, LoopClassifierInput};
+use crate::hmr::adapted_project::detect_adapted_project;
 use crate::hmr::compile_enrichment::CompileEnrichment;
 use crate::hmr::ai_bypass::{check_ai_bypass, AiBypassResult, SplitCache};
 use crate::hmr::deterministic_compile::{
     determine_deterministic_scope, validate_deterministic_input, DeterministicCompileInput,
     DeterministicRebuildScope,
 };
-use crate::hmr::build_manifest::{BuildManifest, BuildSlot, HealthcheckStrategy, SnapshotMode, PreviewPreservationMode};
+use crate::hmr::build_manifest::{BuildManifest, BuildSlot, SnapshotMode};
 use crate::hmr::adapter_trait::AdapterReloadResult;
-use crate::hmr::planner_decision::ReloadDecision;
 
 pub async fn handle_compile_request(
     ctx: &CompileContext,
@@ -42,8 +37,6 @@ pub async fn handle_compile_request(
     }
 
     let compile_start = std::time::Instant::now();
-    let timestamp = Utc::now().timestamp_millis();
-    let _app_id = format!("app_{}", timestamp);
 
     // Directory setup
     let output_dir = ctx.workspace_path.join("build");
@@ -51,20 +44,7 @@ pub async fn handle_compile_request(
         tokio::fs::create_dir_all(&output_dir).await?;
     }
 
-    // Platform detection (WSL/Linux compat)
-    let _is_wsl = {
-        if let Ok(content) = std::fs::read_to_string("/proc/version") {
-            content.to_lowercase().contains("microsoft")
-        } else {
-            false
-        }
-    };
     let ext = "so";
-
-    // Initialize metrics
-    let reload_id = ReloadId::new();
-    // Use start explicitly
-    let _tracker = ReloadMetricsTracker::start(reload_id, "compile_request".to_string());
 
     // Manual logging instead of record_step for now
     eprintln!("[Compile] Step: Handler started");
@@ -73,8 +53,12 @@ pub async fn handle_compile_request(
     // HMR PIPELINE: Initialize and classify compile loop
     // ============================================================
     let language = req.language.as_str();
-    let mut hmr_pipeline = HmrPipeline::new(&session_id);
-    hmr_pipeline.ensure_adapter(language);
+    let (rollout_flags, consecutive_failures) = {
+        let mut orchestrator = ctx.hmr_orchestrator.lock().await;
+        let pipeline = orchestrator.pipeline(&session_id);
+        pipeline.ensure_adapter(language);
+        (pipeline.rollout_flags.clone(), pipeline.consecutive_failures)
+    };
 
     // ── Compute source hash ──
     let source_hash_value = hash_content(&req.source);
@@ -99,8 +83,8 @@ pub async fn handle_compile_request(
     let classifier_input = LoopClassifierInput {
         adapted_status: &adapted_status,
         current_source_hash: Some(&source_hash_str),
-        rollout_flags: &hmr_pipeline.rollout_flags,
-        consecutive_failures: hmr_pipeline.consecutive_failures,
+        rollout_flags: &rollout_flags,
+        consecutive_failures,
         failure_rescue_threshold: 2,
         user_requested_ai: req.user_requested_ai,
         user_requested_deterministic: req.user_requested_deterministic,
@@ -123,12 +107,11 @@ pub async fn handle_compile_request(
 
     // ── AI bypass gate ──
     let split_cache = SplitCache::new(64);
-    let ai_bypass_result = check_ai_bypass(
-        &hmr_pipeline.ai_gate,
-        &split_cache,
-        compile_loop,
-        &source_hash_str,
-    );
+    let ai_bypass_result = {
+        let mut orchestrator = ctx.hmr_orchestrator.lock().await;
+        let pipeline = orchestrator.pipeline(&session_id);
+        check_ai_bypass(&pipeline.ai_gate, &split_cache, compile_loop, &source_hash_str)
+    };
 
     // ============================================================
     // PHASE 1: AI SPLIT & PROCESSING (routed through ai_bypass)
@@ -412,8 +395,61 @@ pub async fn handle_compile_request(
         RebuildScope::None => vec![],
     };
 
-    // ── Discover exported symbols from compiled artifact ──
-    let exported_symbols = discover_exported_symbols(&core_lib_path).await;
+    let build_slot = match rebuild_scope {
+        RebuildScope::CoreOnly => BuildSlot::Core,
+        RebuildScope::GuiOnly => BuildSlot::Gui,
+        _ => BuildSlot::Full,
+    };
+
+    let manifest_artifact_path = match rebuild_scope {
+        RebuildScope::GuiOnly => gui_lib_path.clone(),
+        _ if !core_lib_path.is_empty() => core_lib_path.clone(),
+        _ => gui_lib_path.clone(),
+    };
+
+    let manifest_artifact_hash = match rebuild_scope {
+        RebuildScope::CoreOnly => format!("{}", new_hashes.core_hash),
+        RebuildScope::GuiOnly => format!("{}", new_hashes.gui_hash),
+        _ => combined_hash(&[
+            new_hashes.shared_hash,
+            new_hashes.core_hash,
+            new_hashes.gui_hash,
+        ]),
+    };
+
+    let manifest_state_schema_hash = match rebuild_scope {
+        RebuildScope::CoreOnly => format!("{}", new_hashes.core_hash),
+        RebuildScope::GuiOnly => format!("{}", new_hashes.gui_hash),
+        _ => combined_hash(&[new_hashes.core_hash, new_hashes.gui_hash]),
+    };
+
+    let prev_state_schema_hash = match rebuild_scope {
+        RebuildScope::CoreOnly if prev_hashes.core_hash != 0 => {
+            Some(format!("{}", prev_hashes.core_hash))
+        }
+        RebuildScope::GuiOnly if prev_hashes.gui_hash != 0 => {
+            Some(format!("{}", prev_hashes.gui_hash))
+        }
+        _ if prev_hashes.core_hash != 0 || prev_hashes.gui_hash != 0 => {
+            Some(combined_hash(&[prev_hashes.core_hash, prev_hashes.gui_hash]))
+        }
+        _ => None,
+    };
+
+    // ── Discover exported symbols from the artifact(s) behind this manifest ──
+    let exported_symbols = match rebuild_scope {
+        RebuildScope::GuiOnly => discover_exported_symbols(&gui_lib_path).await,
+        RebuildScope::Both | RebuildScope::FullReload => {
+            let mut symbols = discover_exported_symbols(&core_lib_path).await;
+            if !gui_lib_path.is_empty() {
+                symbols.extend(discover_exported_symbols(&gui_lib_path).await);
+            }
+            symbols.sort();
+            symbols.dedup();
+            symbols
+        }
+        _ => discover_exported_symbols(&core_lib_path).await,
+    };
 
     // ── Determine capabilities from exported symbols ──
     let capabilities: Vec<String> = {
@@ -452,14 +488,10 @@ pub async fn handle_compile_request(
         session_id.clone(),
         language,
     )
-    .with_slot(match rebuild_scope {
-        RebuildScope::CoreOnly => BuildSlot::Core,
-        RebuildScope::GuiOnly => BuildSlot::Gui,
-        _ => BuildSlot::Full,
-    })
-    .with_artifact(&core_lib_path, &format!("{}", new_hashes.core_hash))
+    .with_slot(build_slot)
+    .with_artifact(&manifest_artifact_path, &manifest_artifact_hash)
     .with_abi_version(&format!("{}", new_hashes.shared_hash))
-    .with_state_schema_hash(&format!("{}", new_hashes.core_hash))
+    .with_state_schema_hash(&manifest_state_schema_hash)
     .with_build_time(build_time_ms)
     .with_dirty_units(dirty_units)
     .with_exported_symbols(exported_symbols)
@@ -469,8 +501,10 @@ pub async fn handle_compile_request(
     // Determine if ABI/schema changed from the previous build
     let abi_changed = prev_hashes.shared_hash != 0
         && prev_hashes.shared_hash != new_hashes.shared_hash;
-    let schema_changed = prev_hashes.core_hash != 0
-        && prev_hashes.core_hash != new_hashes.core_hash;
+    let schema_changed = prev_state_schema_hash
+        .as_deref()
+        .map(|previous| previous != build_manifest.state_schema_hash)
+        .unwrap_or(false);
 
     // Check if the existing runner supports warm reload
     let runtime_supports_warm = {
@@ -478,12 +512,32 @@ pub async fn handle_compile_request(
         guard.as_ref().map(|s| s.is_hmr_capable).unwrap_or(false)
     };
 
-    let (planner_output, planner_notification) = hmr_pipeline.plan_reload(
-        &build_manifest,
-        abi_changed,
-        schema_changed,
-        runtime_supports_warm,
-    );
+    let (planner_output, planner_notification, reload_result, pipeline_messages) = {
+        let mut orchestrator = ctx.hmr_orchestrator.lock().await;
+        let pipeline = orchestrator.pipeline(&session_id);
+
+        let (planner_output, planner_notification) = pipeline.plan_reload(
+            &build_manifest,
+            abi_changed,
+            schema_changed,
+            runtime_supports_warm,
+        );
+
+        let mut notifications = pipeline.enqueue_candidate(&build_manifest, &planner_output);
+        notifications
+            .messages
+            .extend(pipeline.tick_candidates(current_time_ms()).messages);
+
+        let (reload_result, execute_notifications) = pipeline.execute_reload(
+            language,
+            &build_manifest,
+            &planner_output,
+            &format!("{}", reload_id),
+        );
+        notifications.messages.extend(execute_notifications.messages);
+
+        (planner_output, planner_notification, reload_result, notifications.messages)
+    };
 
     // Send planner decision to the frontend
     if let Ok(planner_json) = serde_json::to_string(&planner_notification) {
@@ -495,30 +549,56 @@ pub async fn handle_compile_request(
     );
 
     // Execute adapter reload and collect notifications
-    let (reload_result, pipeline_notifications) = hmr_pipeline.execute_reload(
-        language,
-        &build_manifest,
-        &planner_output,
-        &format!("{}", reload_id),
-    );
-
     // Send all pipeline notifications to the frontend (adapter_status,
     // state_restore_status, adapter_health, etc.)
-    for msg in &pipeline_notifications.messages {
+    for msg in &pipeline_messages {
         let _ = ctx.log_dc.send_text(msg.clone()).await;
     }
 
     // If the planner chose an in-process reload and the adapter succeeded,
     // skip the old runner restart path entirely — the reload is done.
+    let dynlib_family = matches!(
+        build_manifest.adapter_family.as_str(),
+        "DynamicLibrary" | "dynamic_library" | "dynlib"
+    );
     let adapter_handled = match (&planner_output.decision, &reload_result) {
-        (decision, AdapterReloadResult::Success { state_preserved, reload_ms })
-            if decision.is_in_process() =>
-        {
+        (
+            crate::hmr::planner_decision::ReloadDecision::ProcessSwap,
+            AdapterReloadResult::Success { state_preserved, reload_ms },
+        ) if !dynlib_family => {
             eprintln!(
-                "[HMR] Adapter reload succeeded (in-process): state_preserved={}, reload_ms={}",
+                "[HMR] Process-swap reload completed authoritatively: state_preserved={}, reload_ms={}",
                 state_preserved, reload_ms
             );
             true
+        }
+        (
+            crate::hmr::planner_decision::ReloadDecision::ProcessSwap,
+            AdapterReloadResult::Success { state_preserved, reload_ms },
+        ) => {
+            eprintln!(
+                "[HMR] Dynlib adapter preflight reached a process-swap plan (state_preserved={}, reload_ms={}); delegating actual reload to runner",
+                state_preserved, reload_ms
+            );
+            false
+        }
+        (decision, AdapterReloadResult::Success { state_preserved, reload_ms })
+            if decision.is_in_process() && !dynlib_family =>
+        {
+            eprintln!(
+                "[HMR] Adapter reload completed authoritatively: state_preserved={}, reload_ms={}",
+                state_preserved, reload_ms
+            );
+            true
+        }
+        (decision, AdapterReloadResult::Success { state_preserved, reload_ms })
+            if decision.is_in_process() && dynlib_family =>
+        {
+            eprintln!(
+                "[HMR] Dynlib adapter preflight succeeded (state_preserved={}, reload_ms={}), delegating actual swap to runner",
+                state_preserved, reload_ms
+            );
+            false
         }
         _ => {
             eprintln!(
@@ -588,11 +668,26 @@ pub async fn handle_compile_request(
 
     // If the adapter already handled the reload in-process, skip the runner path.
     if adapter_handled {
+        let authoritative_reload_ms = match &reload_result {
+            AdapterReloadResult::Success { reload_ms, .. } => *reload_ms,
+            _ => compile_start.elapsed().as_millis() as u64,
+        };
+        let candidate_messages = {
+            let mut orchestrator = ctx.hmr_orchestrator.lock().await;
+            orchestrator
+                .pipeline(&session_id)
+                .validate_active_candidate(authoritative_reload_ms)
+                .messages
+        };
+        for msg in candidate_messages {
+            let _ = ctx.log_dc.send_text(msg).await;
+        }
         eprintln!("[HMR] Skipping handle_runner_execution — adapter reload was authoritative");
         return Ok(serde_json::json!({ "status": "ok", "hmr": "adapter_handled" }));
     }
 
-    handle_runner_execution(
+    let runtime_reload_start = std::time::Instant::now();
+    let runner_result = handle_runner_execution(
         ctx,
         &req,
         modules_to_load,
@@ -601,15 +696,54 @@ pub async fn handle_compile_request(
         new_hashes,
         core_lib_path,
         gui_lib_path,
-        timestamp,
-        compile_start,
-        reload_id,
-        "main".to_string(),
         Some(session_id.clone()),
     )
-    .await?;
+    .await;
+
+    match runner_result {
+        Ok(()) => {
+            let candidate_messages = {
+                let mut orchestrator = ctx.hmr_orchestrator.lock().await;
+                orchestrator
+                    .pipeline(&session_id)
+                    .validate_active_candidate(runtime_reload_start.elapsed().as_millis() as u64)
+                    .messages
+            };
+            for msg in candidate_messages {
+                let _ = ctx.log_dc.send_text(msg).await;
+            }
+        }
+        Err(error) => {
+            let candidate_messages = {
+                let mut orchestrator = ctx.hmr_orchestrator.lock().await;
+                orchestrator
+                    .pipeline(&session_id)
+                    .reject_active_candidate(error.to_string())
+                    .messages
+            };
+            for msg in candidate_messages {
+                let _ = ctx.log_dc.send_text(msg).await;
+            }
+            return Err(error);
+        }
+    }
 
     Ok(serde_json::json!({ "status": "ok" }))
+}
+
+fn current_time_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
+fn combined_hash(parts: &[u64]) -> String {
+    parts
+        .iter()
+        .map(|part| format!("{:016x}", part))
+        .collect::<Vec<_>>()
+        .join(":")
 }
 
 // ============================================================

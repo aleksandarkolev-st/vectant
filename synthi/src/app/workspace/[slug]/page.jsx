@@ -148,7 +148,7 @@ export default function EditorPage({ params }) {
     const gateway = useAnalyzerGateway();
     const { analyzeCode, analyzeProactive, analyzeContainer, analyzeUnified, lastResult, isAnalyzing: isAnalyzingGateway, connectionMeta } = gateway;
     const { client, compile, mediaStream, cancelMobileJob, isCompiling, status: compilerStatus } = useCompiler();
-    useHMR();
+    const hmrState = useHMR();
     const healingState = useRuntimeHealing({ editorRef, gateway });
     const { canRetry, retryCount, isRetrying, retry } = useRetryCompile({ compilerClient: client, autoRetry: true });
 
@@ -2720,7 +2720,7 @@ export default function EditorPage({ params }) {
                 <ErrorOverlay />
 
                 {/* HMR Status + Runtime Healing indicators */}
-                <HMRStatusIndicator />
+                <HMRStatusIndicator pipelineState={hmrState} />
                 <RuntimeHealingIndicator healingState={healingState} />
 
                 {/* Floating Emulator Window - rendered outside panel layout */}

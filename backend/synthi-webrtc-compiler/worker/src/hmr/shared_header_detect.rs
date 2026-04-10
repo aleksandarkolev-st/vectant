@@ -10,8 +10,6 @@
 
 #![allow(dead_code)]
 
-use std::collections::HashSet;
-
 use crate::hmr::dependency_graph::DependencyGraph;
 use crate::hmr::dirty_classifier::FileClass;
 use crate::hmr::rebuild_scope::RebuildScope;

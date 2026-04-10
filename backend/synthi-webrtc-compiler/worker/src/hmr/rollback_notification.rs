@@ -8,7 +8,6 @@
 use serde::Serialize;
 
 use crate::hmr::candidate::{Candidate, CandidateState};
-use crate::hmr::health_check::HealthCheckResult;
 
 /// Notification sent to the frontend when a reload is rolled back.
 #[derive(Debug, Clone, Serialize)]

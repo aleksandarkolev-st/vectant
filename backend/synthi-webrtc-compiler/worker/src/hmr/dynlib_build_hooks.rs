@@ -145,15 +145,24 @@ pub fn post_build_hook(
     artifact_path: &str,
     max_artifact_bytes: u64,
 ) -> Result<PostBuildResult, String> {
-    // In production, this would stat the file and check symbols.
-    // Placeholder validation:
     if artifact_path.is_empty() {
         return Err("empty artifact path".into());
     }
 
+    let artifact_bytes = std::fs::metadata(artifact_path)
+        .map_err(|e| format!("failed to stat artifact '{}': {}", artifact_path, e))?
+        .len();
+
+    if artifact_bytes > max_artifact_bytes {
+        return Err(format!(
+            "artifact '{}' exceeds size limit: {} > {} bytes",
+            artifact_path, artifact_bytes, max_artifact_bytes
+        ));
+    }
+
     Ok(PostBuildResult {
         artifact_path: artifact_path.to_string(),
-        artifact_bytes: 0, // would be fs::metadata().len()
+        artifact_bytes,
         symbols_valid: true,
         artifact_hash: format!("sha256:{}", artifact_path.len()),
     })

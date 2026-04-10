@@ -429,6 +429,20 @@ export class CompilerClient {
                     window.dispatchEvent(new CustomEvent('synthi:ai-status', { detail: parsed }));
                 }
                 return;
+            } else if (parsed && parsed.event && (
+                parsed.event === 'Enqueued' ||
+                parsed.event === 'Loading' ||
+                parsed.event === 'HealthCheckStarted' ||
+                parsed.event === 'HealthCheckCompleted' ||
+                parsed.event === 'Promoted' ||
+                parsed.event === 'RolledBack' ||
+                parsed.event === 'Discarded' ||
+                parsed.event === 'PromotionDecision'
+            )) {
+                if (typeof window !== 'undefined' && window.dispatchEvent) {
+                    window.dispatchEvent(new CustomEvent('synthi:candidate-update', { detail: parsed }));
+                }
+                return;
             }
         } catch (e) {
             // ignore
@@ -1817,7 +1831,7 @@ export const compileWithWorker = async (params) => {
     return client.compile(params);
 };
 
-export const cancelMobileJob = (sessionId) => {
+export const cancelMobileJob = (sessionId, options) => {
     const client = getCompilerClient();
-    client.cancelMobileJob(sessionId);
+    return client.cancelMobileJob(sessionId, options);
 };
