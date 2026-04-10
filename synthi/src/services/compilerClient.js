@@ -7,6 +7,27 @@ const SIGNAL_URL = process.env.NEXT_PUBLIC_COMPILE_SIGNAL_URL
 const WORKER_SPAWNER_HEARTBEAT_MS = 60_000;
 const USER_ID_STORAGE_KEY = 'synthi-user-id';
 
+function shouldUseWorkspaceSpawner() {
+    const override = process.env.NEXT_PUBLIC_ENABLE_WORKSPACE_SPAWNER;
+    if (override != null) {
+        const normalized = String(override).trim().toLowerCase();
+        return normalized === '1' || normalized === 'true' || normalized === 'yes' || normalized === 'on';
+    }
+
+    try {
+        const collabUrl = new URL(getCollabHttpBaseUrl());
+        const signalHttpUrl = new URL(
+            SIGNAL_URL
+                .replace(/^ws:/, 'http:')
+                .replace(/^wss:/, 'https:')
+        );
+        const localHosts = new Set(['localhost', '127.0.0.1']);
+        return !(localHosts.has(collabUrl.hostname) && localHosts.has(signalHttpUrl.hostname));
+    } catch (_) {
+        return true;
+    }
+}
+
 function getCollabHttpBaseUrl() {
     const envUrl = process.env.NEXT_PUBLIC_COLLAB_SERVER_URL;
     if (envUrl) {
@@ -67,6 +88,7 @@ export const CompilerStatus = {
 export class CompilerClient {
     constructor(url = SIGNAL_URL) {
         this.url = url;
+        this.useWorkspaceSpawner = shouldUseWorkspaceSpawner();
         this.ws = null;
         this.pc = null;
         this.pendingCompilationMap = new Map(); // session_id -> { resolve, reject }
@@ -156,7 +178,7 @@ export class CompilerClient {
         const response = await fetch(`${getCollabHttpBaseUrl()}/api/spawner/ensure`, {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
-            credentials: 'include',
+            credentials: 'omit',
             body: JSON.stringify({
                 session_id: sessionId,
                 user_id: this._getCompilerUserId() || sessionId,
@@ -183,7 +205,7 @@ export class CompilerClient {
             await fetch(`${getCollabHttpBaseUrl()}/api/spawner/touch`, {
                 method: 'POST',
                 headers: { 'content-type': 'application/json' },
-                credentials: 'include',
+                credentials: 'omit',
                 keepalive: true,
                 body: JSON.stringify({ session_id: sessionId }),
             });
@@ -706,7 +728,7 @@ export class CompilerClient {
             };
 
             const signalingSessionId = this._getSignalingSessionId();
-            if (signalingSessionId) {
+            if (signalingSessionId && this.useWorkspaceSpawner) {
                 try {
                     await this._ensureWorkerPod(signalingSessionId);
                 } catch (e) {
@@ -845,8 +867,10 @@ export class CompilerClient {
                     session_id: signalingSessionId,
                 }));
                 this._registeredSignalingSessionId = signalingSessionId || null;
-                void this._touchWorkerPod(signalingSessionId);
-                this._startSpawnerHeartbeat(signalingSessionId);
+                if (this.useWorkspaceSpawner) {
+                    void this._touchWorkerPod(signalingSessionId);
+                    this._startSpawnerHeartbeat(signalingSessionId);
+                }
                 this.compileChannel = this.pc.createDataChannel('compile', { ordered: true });
                 // Terminal channel for stdin forwarding
                 this.terminalChannel = this.pc.createDataChannel('terminal', { ordered: true });

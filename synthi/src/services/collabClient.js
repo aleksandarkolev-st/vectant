@@ -474,11 +474,12 @@ class CollabClient {
       this.serverUrl = 'ws://localhost:1234';
     }
 
-    // Y-Sweet CRDT server URL — WebSocket connections for document editing
-    // go directly to Y-Sweet (not through the collab server).
-    const ySweetRaw = (typeof process !== 'undefined' && process.env?.NEXT_PUBLIC_YSWEET_URL)
-      || 'http://localhost:8080';
-    this.ySweetWsUrl = ySweetRaw.replace(/^http:/, 'ws:').replace(/^https:/, 'wss:');
+    // Document CRDT sync goes through the collab server's Yjs relay.
+    // The browser must connect to /yjs so the server can route upgrades.
+    const collabWsBase = this.serverUrl.replace(/\/$/, '');
+    this.docSyncUrl = collabWsBase.endsWith('/yjs')
+      ? collabWsBase
+      : `${collabWsBase}/yjs`;
 
     this.docs = new Map(); // key -> lightweight bridge-managed entry
     this.identity = { userId: null, sessionId: null, hostId: null };
@@ -489,9 +490,9 @@ class CollabClient {
     this._connectionStatus = 'disconnected';
     this._statusListeners = new Set();
 
-    // Configure the bridge with our server URL
+    // Configure the bridge with the document sync WebSocket endpoint.
     if (typeof window !== 'undefined') {
-      bridge.configure(this.serverUrl);
+      bridge.configure(this.docSyncUrl);
 
       // Global bridge handlers for connection status aggregation
       this._unsubGlobalStatus = bridge.onGlobalStatus((_key, _status, _wsconnected, _wsconnecting) => {

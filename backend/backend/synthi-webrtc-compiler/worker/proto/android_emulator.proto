@@ -1,0 +1,7 @@
+syntax = "proto3";
+
+// TODO: Replace this placeholder with the Android Emulator gRPC protos.
+// This file only exists to validate the build pipeline and module layout.
+package synthi.emulator.v1;
+
+message Placeholder {}

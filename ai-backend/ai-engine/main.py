@@ -60,6 +60,19 @@ from provenance import (
     ProvenanceTracker, get_provenance_tracker,
     ChangeType, VerificationStatus as ProvVerificationStatus, track_ai_call
 )
+
+# Map verifier status strings to provenance status strings
+_VERIFIER_TO_PROV_STATUS = {
+    "pass": "passed",
+    "warn": "warned",
+    "fail": "failed",
+    "repaired": "repaired",
+}
+
+def _map_verification_status(verifier_status) -> ProvVerificationStatus:
+    raw = verifier_status.value if hasattr(verifier_status, 'value') else str(verifier_status)
+    mapped = _VERIFIER_TO_PROV_STATUS.get(raw, raw)
+    return ProvVerificationStatus(mapped)
 # Proactive Analysis imports
 from analyzer.proactive import (
     ProactiveAnalyzer,
@@ -1266,7 +1279,7 @@ async def analyze_code_ai_verified(req: VerifiedAiRequest):
         # Update provenance with verification
         tracker.update_verification(
             provenance_id,
-            status=ProvVerificationStatus(verification_result.status.value),
+            status=_map_verification_status(verification_result.status),
             violations=[v.message for v in verification_result.violations],
             original_hash=verification_result.original_hash,
             verified_hash=verification_result.verified_hash,
@@ -1383,7 +1396,7 @@ async def refactor_split_verified(req: VerifiedAiRequest):
             
             tracker.update_verification(
                 provenance_id,
-                status=ProvVerificationStatus(verification_result.status.value),
+                status=_map_verification_status(verification_result.status),
                 violations=[v.message for v in verification_result.violations],
                 original_hash=verification_result.original_hash,
                 verified_hash=verification_result.verified_hash,

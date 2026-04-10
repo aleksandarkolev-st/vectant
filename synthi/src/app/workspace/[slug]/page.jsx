@@ -47,6 +47,7 @@ import { useHealingUndo } from '@/hooks/useHealingUndo';
 import { HealingToast } from '@/components/healing/HealingToast';
 import { PreCompileHealToast } from '@/components/healing/PreCompileHealToast';
 import { AIHealingPanel } from '@/components/healing/AIHealingPanel';
+import { clearAIFixes, clearPendingFixes, setAIEnabled, setHealingEnabled, setRequireConfirmation } from '@/redux/healingSlice';
 import { useWorkspaceAnalysis } from '@/hooks/useWorkspaceAnalysis';
 import { useCompiler } from '@/hooks/useCompiler';
 import { useCodeIntelIndex } from '@/hooks/useCodeIntelIndex';
@@ -92,6 +93,7 @@ import { DockableWorkspace } from '@/components/docking-wm/DockableWorkspace';
 // Feature flag: set to true to enable the new docking layout.
 // When false, the existing rigid ResizablePanelGroup layout is used.
 const USE_DOCKING_WM = true;
+const AUTO_FIX_ISSUES_ENABLED = false;
 
 export default function EditorPage({ params }) {
     const dispatch = useAppDispatch();
@@ -149,8 +151,16 @@ export default function EditorPage({ params }) {
     const { analyzeCode, analyzeProactive, analyzeContainer, analyzeUnified, lastResult, isAnalyzing: isAnalyzingGateway, connectionMeta } = gateway;
     const { client, compile, mediaStream, cancelMobileJob, isCompiling, status: compilerStatus } = useCompiler();
     const hmrState = useHMR();
-    const healingState = useRuntimeHealing({ editorRef, gateway });
+    const healingState = useRuntimeHealing({ editorRef, gateway, autoHeal: false });
     const { canRetry, retryCount, isRetrying, retry } = useRetryCompile({ compilerClient: client, autoRetry: true });
+
+    useEffect(() => {
+        dispatch(setHealingEnabled(false));
+        dispatch(setRequireConfirmation(true));
+        dispatch(clearPendingFixes());
+        dispatch(setAIEnabled(false));
+        dispatch(clearAIFixes());
+    }, [dispatch]);
 
     // Install preview-store bridge (routes window events → preview store)
     useEffect(() => {
@@ -1410,7 +1420,7 @@ export default function EditorPage({ params }) {
                             const fixableDiags = normalizedDiags.filter(
                                 (d) => d.fixes?.length > 0 && d.fixes.some((f) => f.replacementText != null)
                             );
-                            if (fixableDiags.length > 0) {
+                            if (AUTO_FIX_ISSUES_ENABLED && fixableDiags.length > 0) {
                                 // Defer slightly so React can flush the new diagnostics to
                                 // the ProblemsPanel first (visual feedback + undo tracking).
                                 setTimeout(() => healFromDiagnostics(fixableDiags), 60);
@@ -1621,7 +1631,7 @@ export default function EditorPage({ params }) {
                             const fixableAiDiags = normalizedDiags.filter(
                                 (d) => d.fixes?.length > 0 && d.fixes.some((f) => f.replacementText != null)
                             );
-                            if (fixableAiDiags.length > 0) {
+                            if (AUTO_FIX_ISSUES_ENABLED && fixableAiDiags.length > 0) {
                                 setTimeout(() => healFromDiagnostics(fixableAiDiags), 60);
                             }
 
