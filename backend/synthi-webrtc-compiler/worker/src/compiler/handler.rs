@@ -153,9 +153,20 @@ pub async fn handle_compile_request(
             })
         }
         AiBypassResult::FallbackDeterministic => {
-            // Loop A, no cache: read existing adapted files from disk
-            if enrichment.adapted_status.is_adapted {
-                debug_log!("[HMR] AI bypass: FallbackDeterministic → reading adapted files from disk");
+            // Loop A, no cache: read existing adapted files from disk.
+            // This only works when the user is editing a SPLIT file directly
+            // (core.cpp, gui.cpp, shared.h) because syncFile writes the new
+            // content to disk.  If the user is editing the original source
+            // (e.g. main.cpp), the split files on disk are stale — the user's
+            // edits haven't been propagated.  In that case, fall through to
+            // AI re-split so the changes are reflected.
+            let is_editing_split_file = {
+                let fname = req.filename.to_lowercase();
+                fname.contains("core.") || fname.contains("gui.") || fname.contains("shared.")
+            };
+
+            if enrichment.adapted_status.is_adapted && is_editing_split_file {
+                debug_log!("[HMR] AI bypass: FallbackDeterministic → reading adapted files from disk (user editing split file)");
                 let core_content = if let Some(ref p) = enrichment.adapted_status.core_path {
                     tokio::fs::read_to_string(p).await.unwrap_or_default()
                 } else {
@@ -176,6 +187,17 @@ pub async fn handle_compile_request(
                     "core": { "content": core_content, "filename": "core.cpp" },
                     "gui": { "content": gui_content, "filename": "gui.cpp" }
                 })
+            } else if enrichment.adapted_status.is_adapted {
+                // User is editing original source (main.cpp) — split files are stale.
+                // Re-run AI split to propagate the user's changes.
+                debug_log!("[HMR] AI bypass: FallbackDeterministic → user editing original source '{}', re-running AI split", req.filename);
+                let result = perform_ai_split(&req).await?;
+
+                // Update the sidecar so subsequent compiles know the split is fresh
+                let meta = serde_json::json!({ "split_hash": source_hash_str });
+                let _ = tokio::fs::write(&sidecar_path, serde_json::to_string(&meta).unwrap_or_default()).await;
+
+                result
             } else {
                 // Not adapted and no cache — wrap source as single core module
                 debug_log!("[HMR] AI bypass: FallbackDeterministic → no adapted project, wrapping source");
