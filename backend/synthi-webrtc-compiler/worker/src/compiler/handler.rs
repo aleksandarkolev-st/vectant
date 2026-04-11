@@ -394,11 +394,21 @@ pub async fn handle_compile_request(
         .unwrap_or("");
 
     // 3. Apply Guardrails
+    // Each guardrail that modifies content = a prompt failure.  Log so we
+    // can track prompt quality and eventually remove guardrails.
     let processed_shared = apply_shared_guardrails(shared_raw);
-    // Allow GUI in core if we are on the deterministic path (no AI split)
+    if processed_shared != shared_raw {
+        debug_log!("[Guardrail] shared.h was modified by guardrails — prompt produced incorrect output");
+    }
     let allow_gui_in_core = enrichment.is_deterministic();
     let processed_core = apply_core_guardrails(core_raw, &processed_shared, allow_gui_in_core);
+    if processed_core != core_raw {
+        debug_log!("[Guardrail] core.cpp was modified by guardrails — prompt produced incorrect output");
+    }
     let processed_gui = apply_gui_guardrails(gui_raw, &processed_shared);
+    if processed_gui != gui_raw {
+        debug_log!("[Guardrail] gui.cpp was modified by guardrails — prompt produced incorrect output");
+    }
 
     // ============================================================
     // PHASE 2: REBUILD SCOPE DETERMINATION (deterministic_compile coordinator)

@@ -6,6 +6,9 @@ use regex::Regex;
 // These functions apply all guardrails to source content BEFORE
 // hash computation, ensuring rebuild scope decisions are based
 // on the actual compiled content.
+//
+// Each guardrail represents a failure of the AI prompt.  When a
+// guardrail fires, it logs the event so prompt quality can be tracked.
 
 /// Apply guardrails to shared.h content
 pub fn apply_shared_guardrails(content: &str) -> String {

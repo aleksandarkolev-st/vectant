@@ -749,6 +749,8 @@ extern "C" unsigned char* core_on_save_state_binary(void* state_ptr, size_t* out
     if (!state_ptr || !out_size) return NULL;
     AppState* state = (AppState*)state_ptr;
     *out_size = sizeof(AppState);
+    // NOTE: malloc is OK here for a TEMPORARY serialization buffer.
+    // malloc is FORBIDDEN for allocating AppState — use static storage.
     unsigned char* buf = (unsigned char*)malloc(*out_size);
     if (buf) memcpy(buf, state, *out_size);
     return buf;  // Caller (runner) will free this
@@ -824,6 +826,8 @@ extern "C" unsigned char* gui_on_save_state_binary(void* state_ptr, size_t* out_
     if (!state_ptr || !out_size) return NULL;
     AppState* state = (AppState*)state_ptr;
     *out_size = sizeof(AppState);
+    // NOTE: malloc is OK here for a TEMPORARY serialization buffer.
+    // malloc is FORBIDDEN for allocating AppState — use static storage.
     unsigned char* buf = (unsigned char*)malloc(*out_size);
     if (buf) memcpy(buf, state, *out_size);
     return buf;  // Caller (runner) will free this
@@ -1038,10 +1042,11 @@ extern "C" void on_unload(void* state_ptr) {
 **GUI.CPP PATTERN (RUNNER-COMPATIBLE):**
 
 ```cpp
-// gui.cpp - Rendering only, receives CORE STATE from runner
-// IMPORTANT: In split mode, the runner passes core's state to gui_on_render.
-// Core owns: x, y, dx, paused, running, renderer (set via on_load)
-// GUI just reads core's state and renders it.
+// gui.cpp - Rendering only
+// gui_on_render receives CORE's AppState (not a separate GUI state).
+// The runner passes core's state pointer to gui_on_render every frame.
+// GUI reads core's state (x, y, renderer, etc.) and renders it.
+// There is NO separate GUI state — both modules share one AppState.
 #include "shared.h"
 #include <SDL2/SDL.h>
 
@@ -1828,6 +1833,8 @@ extern "C" unsigned char* core_on_save_state_binary(void* state_ptr, size_t* out
     if (!state_ptr || !out_size) return NULL;
     AppState* state = (AppState*)state_ptr;
     *out_size = sizeof(AppState);
+    // NOTE: malloc is OK here for a TEMPORARY serialization buffer.
+    // malloc is FORBIDDEN for allocating AppState — use static storage.
     unsigned char* buf = (unsigned char*)malloc(*out_size);
     if (buf) memcpy(buf, state, *out_size);
     return buf;  // Caller (runner) will free this
@@ -2017,47 +2024,18 @@ struct AppState {
     HGLRC hglrc;    // OpenGL context (if using)
 };
 
-8.3 X11/Xlib Usage
+8.3 X11 → SDL2 CONVERSION (MANDATORY)
 
-    **CRITICAL WARNING**: X11 code is DISCOURAGED. The Runner uses SDL2. X11 code will cause event loop conflicts.
-    
-    **ABSOLUTE PROHIBITIONS FOR X11**:
-    - DO NOT call `XOpenDisplay()` or `XCreateWindow()` - the Runner owns the display
-    - DO NOT poll events with `XPending()` or `XNextEvent()` - the Runner handles events  
-    - DO NOT create your own event loop - this WILL cause freezing
-    
-    If the user's original code uses X11 and you MUST preserve it:
+    ALL X11 code MUST be converted to SDL2. Do NOT preserve X11 calls.
 
-        Never forward-declare or typedef X11 types. Do NOT emit lines like struct Display;, struct Window;, typedef void Display;, typedef void GC;, etc. Rely on the official definitions from <X11/Xlib.h>.
-
-        Always include the right headers whenever you reference X11 symbols: at minimum <X11/Xlib.h> and <X11/Xutil.h>; add <X11/Xlocale.h> and <X11/keysym.h> if you use XIM/XIC or KeySym helpers.
-
-        Do not place X11 typedefs in shared.h (they clash with system headers). Keep X11-specific types inside the file that uses them, but if AppState stores X11 handles, shared.h must include the X11 headers so the types resolve.
-
-        When declaring fields, use the real typedefs (e.g., Display* dpy;, Window win;, GC gc;, Pixmap back;, Atom wm_delete;, XIM xim;, XIC xic;) — not struct Display*.
-
-        Preserve the exact field names already present in the user code (e.g., dpy, win, gc, back, wm_delete, xim, xic, wa_width, wa_height, wa_depth, etc.). Do not rename them.
-
-        Remember: the host passes an SDL renderer via window_ptr; do not treat it as an X11 Display or Window unless the user code explicitly expects that.
-
-        Do not write “simulated” or “placeholder” logic. The Synthi Runner loads core.so and gui.so independently and calls their exported functions directly.
-
-8.4 XVFB / HEADLESS ARCHITECTURE (DEPRECATED - SDL2 PREFERRED)
-
-   **WARNING**: The old Xvfb approach has been superseded by SDL2-based rendering.
-   
-   **DO NOT** generate X11/Xlib code unless the user's source code explicitly uses X11 APIs.
-   
-   If the user code does NOT contain X11 calls (XOpenDisplay, XCreateWindow, etc.):
-   - Use SDL2 rendering via the `state->renderer` passed by the Runner
-   - Do NOT create any X11 Display or Window
-   - Do NOT poll X11 events
-   
-   If the user code DOES contain X11 calls:
-   - You may preserve those calls but be aware of potential conflicts with the SDL2 Runner
-   - The user is responsible for ensuring compatibility
-   
-   **DEFAULT BEHAVIOR**: Assume SDL2 rendering unless proven otherwise.
+    - XFillRectangle → SDL_RenderFillRect
+    - XDrawRectangle → SDL_RenderDrawRect
+    - XSetForeground → SDL_SetRenderDrawColor
+    - XDrawString → draw_text helper (bitmap renderer)
+    - XOpenDisplay/XCreateWindow → REMOVE (runner owns window)
+    - XPending/XNextEvent → REMOVE (runner dispatches events via on_event)
+    - X11 types (Display*, Window, GC, Atom, XIM, XIC) → REMOVE from AppState
+    - #include <X11/...> → REMOVE entirely
 
 9. COMPILATION REQUIREMENTS (C/C++)
 9.2 Flags Explanation
@@ -2446,11 +2424,11 @@ static const SynthiHostContextV1* g_gui_host_ctx = NULL;
 extern "C" void* gui_on_load_host(void* prev_state, const SynthiHostContextV1* host_ctx) {
     g_gui_host_ctx = host_ctx;
     
-    GuiState* state = (GuiState*)prev_state;
-    if (!state) {
-        state = (GuiState*)malloc(sizeof(GuiState));
-        // CRITICAL: DO NOT USE MEMSET!
-        // memset(state, 0, sizeof(GuiState)); <-- THIS IS FORBIDDEN
+    // Use static storage — NEVER malloc for state
+    static GuiState gui_state = {0};
+    GuiState* state = prev_state ? (GuiState*)prev_state : &gui_state;
+    if (!prev_state) {
+        // Initialize fields individually — NEVER memset
         
         state->magic = 0x60108EEF;
         state->struct_size = sizeof(GuiState);
@@ -2542,6 +2520,53 @@ If generating Host KV code, verify:
 - [ ] `*_on_load()` fallback still exists for compatibility
 - [ ] Host context pointer is stored for later use
 - [ ] `host_free()` is called after `get_bytes()`
+
+# ══════════════════════════════════════════════════════════════
+# HARD RULES — VIOLATION = BUILD FAILURE
+# Check EVERY rule below before outputting. Fix violations inline.
+# These are the 10 most common AI mistakes. Do NOT make them.
+# ══════════════════════════════════════════════════════════════
+
+1. NO malloc/new/calloc for AppState or GuiState. Use: `static AppState app_state = {0};`
+2. NO memset/bzero on state. Initialize fields individually: `state->x = 0;`
+3. NO SDL_RenderPresent() — the runner calls it after gui_on_render returns.
+4. NO `#include <X11/...>` — convert ALL X11 to SDL2. No exceptions.
+5. NO AppState struct definition in core.cpp or gui.cpp — ONLY in shared.h.
+6. NO free(state) or delete state — the runner manages state lifetime.
+7. NO bare `renderer` variable — always `state->renderer` or `app_state.renderer`.
+8. gui_on_load MUST have 3 params: `(void* prev_state, void* window_ptr, void* core_api_ptr)`.
+9. NO `struct SDL_Event;` — SDL_Event is a union, use `#include <SDL2/SDL.h>` instead.
+10. `#include "shared.h"` MUST be the FIRST include in core.cpp and gui.cpp.
+
+# ══════════════════════════════════════════════════════════════
+# SELF-CHECK — verify before outputting
+# ══════════════════════════════════════════════════════════════
+
+Before generating your JSON output, mentally verify each file:
+
+core.cpp:
+  ✓ Has `static AppState app_state = {0};` (NOT malloc/new)
+  ✓ Has `#include "shared.h"` as first include
+  ✓ Does NOT contain SDL_RenderPresent
+  ✓ Does NOT contain any #include <X11/...>
+  ✓ Does NOT define AppState struct
+  ✓ Does NOT call gui_render, gui_initialize, gui_on_update, gui_cleanup
+
+gui.cpp:
+  ✓ Has `#include "shared.h"` as first include
+  ✓ Does NOT define AppState struct (uses the one from shared.h)
+  ✓ All SDL calls use `state->renderer` (NOT bare `renderer`)
+  ✓ Does NOT contain SDL_RenderPresent
+  ✓ gui_on_load has exactly 3 parameters
+  ✓ gui_on_render casts: `AppState* state = (AppState*)state_ptr;`
+
+shared.h:
+  ✓ AppState defined exactly once with magic, struct_size, abi_version, renderer
+  ✓ Has #pragma once or include guard
+  ✓ Does NOT contain `struct SDL_Event;`
+  ✓ Does NOT contain X11 types
+
+If ANY check fails, fix it in your output before returning the JSON.
 """
 
 # Keywords that indicate the user WANTS code changes
