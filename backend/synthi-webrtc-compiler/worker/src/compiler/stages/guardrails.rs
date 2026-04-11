@@ -44,8 +44,8 @@ fn apply_core_user_adapters(content: &str) -> String {
 
 /// Apply guardrails to shared.h content
 pub fn apply_shared_guardrails(content: &str) -> String {
-    if std::env::var("SYNTHI_SKIP_GUARDRAILS").is_ok() {
-        return content.to_string();
+    if std::env::var("SYNTHI_ENABLE_GUARDRAILS").is_err() {
+        return content.to_string(); // Guardrails off by default — AI self-heals
     }
     let mut result = content.to_string();
 
@@ -114,11 +114,10 @@ pub fn apply_shared_guardrails(content: &str) -> String {
 
 /// Apply guardrails to core.cpp content (requires processed shared.h for context)
 ///
-/// Set SYNTHI_SKIP_GUARDRAILS=1 to bypass AI-fix guardrails (relies on AI
-/// self-verification + compile-heal loop instead).  User-code adapters
-/// (main→entrypoint) still apply.
+/// Guardrails off by default — AI self-heals via compile→error→fix loop.
+/// Set SYNTHI_ENABLE_GUARDRAILS=1 to re-enable legacy regex guardrails.
 pub fn apply_core_guardrails(content: &str, _shared_content: &str, allow_gui: bool) -> String {
-    if std::env::var("SYNTHI_SKIP_GUARDRAILS").is_ok() {
+    if std::env::var("SYNTHI_ENABLE_GUARDRAILS").is_err() {
         // Skip AI-fix guardrails — only apply user-code adapters
         return apply_core_user_adapters(content);
     }
@@ -543,7 +542,7 @@ typedef struct HostKvApiV1 {
 
 /// Apply guardrails to gui.cpp content (requires processed shared.h for context)
 pub fn apply_gui_guardrails(content: &str, shared_content: &str) -> String {
-    if std::env::var("SYNTHI_SKIP_GUARDRAILS").is_ok() {
+    if std::env::var("SYNTHI_ENABLE_GUARDRAILS").is_err() {
         return content.to_string();
     }
     let mut result = content.to_string();
