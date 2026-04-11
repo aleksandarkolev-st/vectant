@@ -1588,7 +1588,21 @@ export class CompilerClient {
                             this._sessionTargets.delete(sessionId);
                             // Surface the actual error details from the backend instead of a generic message.
                             // The worker sends `error`, `message`, and `stage` fields alongside success:false.
-                            const detail = parsed.error || parsed.message || 'The compilation process returned an error status.';
+                            // `error` may be a string (stderr text) or an object/array (structured g++ JSON) —
+                            // coerce to string for the exception message.
+                            let detail = parsed.error || parsed.message || 'The compilation process returned an error status.';
+                            if (typeof detail !== 'string') {
+                                // Structured error (e.g. g++ JSON diagnostics array) — extract human-readable messages
+                                try {
+                                    if (Array.isArray(detail)) {
+                                        detail = detail.map(d => d.message || JSON.stringify(d)).join('; ');
+                                    } else {
+                                        detail = detail.message || JSON.stringify(detail);
+                                    }
+                                } catch (_) {
+                                    detail = String(detail);
+                                }
+                            }
                             const stage = parsed.stage ? `[${parsed.stage}]` : '';
                             reject(new SynthiException('Compilation failed', `${stage} ${detail}`.trim()));
                         }
