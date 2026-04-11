@@ -128,38 +128,24 @@ pub fn classify_loop(input: &LoopClassifierInput) -> LoopClassification {
         };
     }
 
-    // 5-7. Adaptation status
-    // For non-adapted projects (single-file programs), use Loop A with
-    // deterministic wrapping.  The FallbackDeterministic path in handler.rs
-    // wraps the source as a single core module without calling AI, which
-    // is equivalent to a direct recompile.  Loop B (AI split) is only
-    // needed when the user explicitly requests it or during failure rescue.
+    // 5. Not adapted → Loop B (first compile needs AI split to create modules)
     if !input.adapted_status.is_adapted {
         return LoopClassification {
-            loop_type: CompileLoop::LoopA,
+            loop_type: CompileLoop::LoopB,
             reason: LoopReason::NotAdapted,
         };
     }
 
-    // Adapted; check freshness
-    let is_fresh = match (
-        &input.adapted_status.split_hash,
-        input.current_source_hash,
-    ) {
-        (Some(split_hash), Some(source_hash)) => split_hash == source_hash,
-        _ => true, // No hash info → assume fresh
-    };
-
-    if is_fresh {
-        LoopClassification {
-            loop_type: CompileLoop::LoopA,
-            reason: LoopReason::AdaptedProjectFresh,
-        }
-    } else {
-        LoopClassification {
-            loop_type: CompileLoop::LoopB,
-            reason: LoopReason::AdaptedProjectStale,
-        }
+    // 6-7. Adapted → always Loop A.
+    // Once the AI has split the project into core/gui modules, subsequent
+    // edits use the deterministic path which reads the adapted files from
+    // disk and uses hash-based scope detection to recompile only what
+    // changed (CoreOnly/GuiOnly/Both/None).  The split is NOT re-run on
+    // every edit — that would defeat HMR entirely.  AI re-split only
+    // happens via explicit user request (step 3) or failure rescue (step 4).
+    LoopClassification {
+        loop_type: CompileLoop::LoopA,
+        reason: LoopReason::AdaptedProjectFresh,
     }
 }
 
