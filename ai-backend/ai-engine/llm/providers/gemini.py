@@ -41,7 +41,7 @@ class GeminiProvider(AiProvider):
 
     def __init__(self) -> None:
         super().__init__(name="gemini")
-        self.model_name = os.getenv("SYNTHI_GEMINI_MODEL", "gemini-2.5-flash")
+        self.model_name = os.getenv("SYNTHI_GEMINI_MODEL", "gemini-3.0-flash")
         # Keep generation parameters centralized so they can be passed into each stream request.
         self.generation_config = genai.GenerationConfig(
             temperature=0.2,

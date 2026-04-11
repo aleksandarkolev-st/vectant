@@ -1606,7 +1606,7 @@ async def refactor_delta(req: StructuralUpdateRequest):
                 "cpp",
                 None,
                 mode="delta",
-                model=req.model or "gemini-2.5-flash",
+                model=req.model or "gemini-3.0-flash",
                 api_key=req.api_key,
             )
             
@@ -1645,7 +1645,7 @@ async def refactor_delta(req: StructuralUpdateRequest):
                 "cpp",
                 None,
                 mode="delta",
-                model=req.model or "gemini-2.5-flash",
+                model=req.model or "gemini-3.0-flash",
                 api_key=req.api_key,
             )
             
@@ -1759,7 +1759,7 @@ Return ONLY: {{"{req.target_module}": "...updated file content..."}}"""
             "cpp",
             None,
             mode="delta",
-            model=req.model or "gemini-2.5-flash",
+            model=req.model or "gemini-3.0-flash",
             api_key=req.api_key,
         )
 
