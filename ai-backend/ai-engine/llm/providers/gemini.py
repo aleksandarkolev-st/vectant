@@ -103,7 +103,7 @@ class GeminiProvider(AiProvider):
             # Delta mode: structural addition/deletion prompt already fully formed.
             # Do NOT wrap in build_prompt() — it adds analysis framing that makes
             # Gemini return prose instead of pure JSON.
-            full_prompt = (prompt or '') + "\n\nRespond with ONLY the JSON object. No explanation."
+            full_prompt = code + "\n\nRespond with ONLY the JSON object. No explanation."
         else:
             # Backwards-compat: some clients include the instructive string in `prompt`.
             if prompt and 'Respond only with the updated full file contents' in prompt:
