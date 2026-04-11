@@ -130,7 +130,10 @@ class GeminiProvider(AiProvider):
             async def _stream_gemini():
                 nonlocal first_token_time, total_tokens
                 print(f"[Gemini] Starting stream for mode={mode_lower}, prompt_len={len(full_prompt)} chars")
-                resp = await client.generate_content_async(full_prompt, stream=True)
+                resp = await client.generate_content_async(
+                    full_prompt, stream=True,
+                    request_options={"timeout": 60},
+                )
                 print(f"[Gemini] Stream created, waiting for chunks...")
                 _chunks = []
                 _feedback = None
