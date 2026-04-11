@@ -1,4 +1,5 @@
 use anyhow::Result;
+use crate::debug_log;
 
 use crate::compiler::builder::{
     hash_content, hash_shared_header_semantic, ModuleHashes, RebuildScope,
