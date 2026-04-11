@@ -666,9 +666,9 @@ pub async fn handle_compile_request(
     };
 
     // ── Validate required HMR entry points ──
-    // Catch missing symbols at compile time (clear error) instead of at
-    // runner dlopen time (cryptic crash / silent failure).
-    {
+    // Only check for core entry points when core was actually compiled.
+    // GUI-only rebuilds won't have on_load (it's in core.so).
+    if rebuild_scope != RebuildScope::GuiOnly {
         let has_on_load = exported_symbols.iter().any(|s| {
             s == "on_load" || s == "core_on_load" || s == "on_load_host" || s == "core_on_load_host"
         });
