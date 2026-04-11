@@ -109,7 +109,7 @@ pub async fn compile_gui(
                     let diagnostics_json = report.to_json();
                     let diag_payload = serde_json::json!({
                         "sessionId": session_id.clone(),
-                        "type": "compile_diagnostics",
+                        "type": "compile-diagnostics",
                         "language": "cpp",
                         "diagnostics": serde_json::from_str::<serde_json::Value>(&diagnostics_json).unwrap_or_default(),
                         "error_count": report.error_count,
