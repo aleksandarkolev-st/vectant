@@ -41,14 +41,14 @@ class GeminiProvider(AiProvider):
 
     def __init__(self) -> None:
         super().__init__(name="gemini")
-        self.model_name = os.getenv("SYNTHI_GEMINI_MODEL", "gemini-3.0-flash")
+        self.model_name = os.getenv("SYNTHI_GEMINI_MODEL", "gemini-3-flash-preview")
         # Keep generation parameters centralized so they can be passed into each stream request.
         self.generation_config = genai.GenerationConfig(
             temperature=0.2,
             top_p=0.8,
             top_k=40,
             # Increase output allowance to support larger returned patches or full-file outputs.
-            # Note: input/context window size is determined by the model selection (e.g. gemini-2.5-flash-lite).
+            # Note: input/context window size is determined by the model selection (e.g. gemini-gemini-3-flash-preview).
             max_output_tokens=131072,
         )
 

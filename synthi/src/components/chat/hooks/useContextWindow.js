@@ -20,7 +20,7 @@ import { useCallback, useMemo, useRef } from 'react';
 /**
  * Maps model name prefixes to their full input context window size (tokens).
  * When the model name starts with a key, the corresponding window is used.
- * Ordered most-specific first so "gemini-2.5-flash-lite" matches before "gemini".
+ * Ordered most-specific first so "gemini-gemini-3-flash-preview" matches before "gemini".
  */
 const MODEL_CONTEXT_WINDOWS = [
     // Gemini family
