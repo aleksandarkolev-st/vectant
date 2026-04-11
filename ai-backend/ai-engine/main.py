@@ -3231,4 +3231,6 @@ if __name__ == "__main__":
     else:
         import uvicorn
         # Bind to 0.0.0.0 to allow access from WSL/Containers
-        uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+        workers = int(os.environ.get("UVICORN_WORKERS", "2"))
+        reload = workers == 1  # reload only works with 1 worker
+        uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=reload, workers=workers, timeout_keep_alive=120)
