@@ -657,14 +657,31 @@ pub async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value>
     let split_url = format!("{}/refactor/split", backend_url);
 
     eprintln!("[AI Split] Calling VERIFIED AI split endpoint: {}", verified_url);
-    let raw_response = match client
-        .post(&verified_url)
-        .json(&payload)
-        .timeout(std::time::Duration::from_secs(90))
-        .send()
-        .await
-    {
-        Ok(resp) => resp.json::<serde_json::Value>().await?,
+    let verified_result: Result<serde_json::Value, anyhow::Error> = async {
+        let resp = client
+            .post(&verified_url)
+            .json(&payload)
+            .timeout(std::time::Duration::from_secs(90))
+            .send()
+            .await?
+            .error_for_status()?;
+        Ok(resp.json::<serde_json::Value>().await?)
+    }.await;
+
+    let raw_response = match verified_result {
+        Ok(json) if json.get("result").and_then(|r| r.as_str()).is_some() => json,
+        Ok(json) => {
+            eprintln!("[AI Split] Verified returned no result field: {:?}, trying unverified",
+                json.to_string().chars().take(200).collect::<String>());
+            client
+                .post(&split_url)
+                .json(&payload)
+                .timeout(std::time::Duration::from_secs(90))
+                .send()
+                .await?
+                .json::<serde_json::Value>()
+                .await?
+        }
         Err(e) => {
             eprintln!("[AI Split] Verified endpoint failed ({}), trying unverified", e);
             client
