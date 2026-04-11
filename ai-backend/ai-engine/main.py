@@ -1404,20 +1404,30 @@ async def refactor_split_verified(req: VerifiedAiRequest):
             )
             
             if not verification_result.passed:
-                tracker.mark_rejected(provenance_id, "Split verification failed")
+                # Return the split result as a string even when verification finds issues.
+                # The worker expects "result" to be a raw LLM string (same as /refactor/split),
+                # and "result: null" causes the worker to bail completely, hanging the IDE on
+                # "Compiling...". Bracket-balance warnings are often false positives for split
+                # output (each file is a partial compile unit). The real compiler will catch
+                # genuine syntax errors.
+                tracker.mark_rejected(provenance_id, "Split verification failed (forwarding result anyway)")
                 return {
-                    "result": None,
+                    "result": result_str,
                     "lang": req.lang,
+                    "verified": False,
                     "verification": verification_result.to_dict(),
                     "provenance_id": provenance_id,
-                    "error": "Split output failed verification",
                 }
-        
+
         tracker.mark_accepted(provenance_id)
-        
+
         return {
-            "result": split_result,
+            # Return the raw JSON string so the worker can parse it the same way it handles
+            # the /refactor/split response. Returning a parsed dict causes the worker's
+            # "result.as_str()" check to fail and bail with "unexpected response format".
+            "result": result_str,
             "lang": req.lang,
+            "verified": True,
             "verification": verification_result.to_dict() if req.verify else None,
             "provenance_id": provenance_id,
         }

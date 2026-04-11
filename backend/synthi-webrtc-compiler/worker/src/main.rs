@@ -5599,7 +5599,20 @@ async fn handle_compile(
         .session_id
         .clone()
         .unwrap_or_else(|| "default_session".to_string());
-    let _ = crate::compiler::handler::handle_compile_request(&ctx, req, session_id).await?;
+    if let Err(e) = crate::compiler::handler::handle_compile_request(&ctx, req, session_id.clone()).await {
+        eprintln!("[Main] handle_compile_request error for {}: {:?}", session_id, e);
+        // Resolve the frontend compile() promise as a failure so the IDE doesn't
+        // hang on "Compiling..." forever when the pipeline returns an error
+        // (e.g. AI split timeout, verifier bail-out, missing tooling).
+        let payload = serde_json::json!({
+            "sessionId": session_id,
+            "status": "done",
+            "success": false,
+            "message": format!("Compile pipeline error: {}", e),
+        });
+        let _ = ctx.log_dc.send_text(serde_json::to_string(&payload).unwrap_or_default()).await;
+        return Err(e);
+    }
 
     Ok(())
 }
