@@ -580,4 +580,3 @@ def format_heal_prompt(module: str, code: str, errors: str, shared: str) -> str:
         errors=errors,
         shared=shared,
     )
-    )
