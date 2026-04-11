@@ -47,7 +47,7 @@ pub async fn handle_compile_request(
     let ext = "so";
 
     // Manual logging instead of record_step for now
-    eprintln!("[Compile] Step: Handler started");
+    debug_log!("[Compile] Step: Handler started");
 
     // ============================================================
     // HMR PIPELINE: Initialize and classify compile loop
@@ -100,7 +100,7 @@ pub async fn handle_compile_request(
         Some(source_hash_str.clone()),
     );
 
-    eprintln!(
+    debug_log!(
         "[HMR] Compile loop: {:?} (reason: {:?}), language: {}",
         compile_loop, classification.reason, language
     );
@@ -120,7 +120,7 @@ pub async fn handle_compile_request(
     let split_data = match ai_bypass_result {
         AiBypassResult::Proceed => {
             // Loop B: AI call allowed — perform the split
-            eprintln!("[HMR] AI bypass: Proceed → calling perform_ai_split");
+            debug_log!("[HMR] AI bypass: Proceed → calling perform_ai_split");
             let result = perform_ai_split(&req).await?;
 
             // Persist split freshness sidecar after successful AI split
@@ -144,7 +144,7 @@ pub async fn handle_compile_request(
         }
         AiBypassResult::UseCached(cached) => {
             // Loop A with cached split: reuse previous AI result
-            eprintln!("[HMR] AI bypass: UseCached → reusing cached split");
+            debug_log!("[HMR] AI bypass: UseCached → reusing cached split");
             serde_json::json!({
                 "shared": { "content": cached.shared_code.unwrap_or_default(), "filename": "shared.h" },
                 "core": { "content": cached.core_code, "filename": "core.cpp" },
@@ -154,7 +154,7 @@ pub async fn handle_compile_request(
         AiBypassResult::FallbackDeterministic => {
             // Loop A, no cache: read existing adapted files from disk
             if enrichment.adapted_status.is_adapted {
-                eprintln!("[HMR] AI bypass: FallbackDeterministic → reading adapted files from disk");
+                debug_log!("[HMR] AI bypass: FallbackDeterministic → reading adapted files from disk");
                 let core_content = if let Some(ref p) = enrichment.adapted_status.core_path {
                     tokio::fs::read_to_string(p).await.unwrap_or_default()
                 } else {
@@ -177,7 +177,7 @@ pub async fn handle_compile_request(
                 })
             } else {
                 // Not adapted and no cache — wrap source as single core module
-                eprintln!("[HMR] AI bypass: FallbackDeterministic → no adapted project, wrapping source");
+                debug_log!("[HMR] AI bypass: FallbackDeterministic → no adapted project, wrapping source");
                 serde_json::json!({
                     "shared": { "content": "", "filename": "shared.h" },
                     "core": { "content": req.source.clone(), "filename": "core.cpp" },
@@ -261,19 +261,19 @@ pub async fn handle_compile_request(
             // Map DeterministicRebuildScope → RebuildScope
             match det_scope {
                 DeterministicRebuildScope::None => {
-                    eprintln!("[Handler] Deterministic: No changes detected");
+                    debug_log!("[Handler] Deterministic: No changes detected");
                     RebuildScope::None
                 }
                 DeterministicRebuildScope::CoreOnly => {
-                    eprintln!("[Handler] Deterministic: Core rebuild");
+                    debug_log!("[Handler] Deterministic: Core rebuild");
                     RebuildScope::CoreOnly
                 }
                 DeterministicRebuildScope::GuiOnly => {
-                    eprintln!("[Handler] Deterministic: GUI rebuild");
+                    debug_log!("[Handler] Deterministic: GUI rebuild");
                     RebuildScope::GuiOnly
                 }
                 DeterministicRebuildScope::Both => {
-                    eprintln!("[Handler] Deterministic: Full rebuild");
+                    debug_log!("[Handler] Deterministic: Full rebuild");
                     RebuildScope::Both
                 }
             }
@@ -315,7 +315,7 @@ pub async fn handle_compile_request(
     let reload_id = format!("r-{}", timestamp);
 
     // Manual logging
-    eprintln!("[Compile] Step: Starting compilation");
+    debug_log!("[Compile] Step: Starting compilation");
 
     // Validate: bail early if AI split produced empty core content.
     // Without this guard, an empty .cpp is compiled into a .so with no
@@ -326,7 +326,7 @@ pub async fn handle_compile_request(
         && processed_core.trim().is_empty()
     {
         let msg = "AI split returned empty core module content. Cannot compile.";
-        eprintln!("[Handler] {}", msg);
+        debug_log!("[Handler] {}", msg);
         let payload = serde_json::json!({
             "sessionId": session_id.clone(),
             "type": "stderr",
@@ -385,7 +385,7 @@ pub async fn handle_compile_request(
     let gui_lib_path = gui_lib_path_opt.unwrap_or(prev_gui_path.unwrap_or_default());
 
     // Manual logging
-    eprintln!("[Compile] Step: Compilation finished");
+    debug_log!("[Compile] Step: Compilation finished");
 
     // ============================================================
     // PHASE 3.5: HMR PLANNER — decide reload strategy
@@ -552,7 +552,7 @@ pub async fn handle_compile_request(
     if let Ok(planner_json) = serde_json::to_string(&planner_notification) {
         let _ = ctx.log_dc.send_text(planner_json).await;
     }
-    eprintln!(
+    debug_log!(
         "[HMR Planner] Decision: {:?} — {}",
         planner_output.decision, planner_output.reason.decision_reason
     );
@@ -575,7 +575,7 @@ pub async fn handle_compile_request(
             crate::hmr::planner_decision::ReloadDecision::ProcessSwap,
             AdapterReloadResult::Success { state_preserved, reload_ms },
         ) if !dynlib_family => {
-            eprintln!(
+            debug_log!(
                 "[HMR] Process-swap reload completed authoritatively: state_preserved={}, reload_ms={}",
                 state_preserved, reload_ms
             );
@@ -585,7 +585,7 @@ pub async fn handle_compile_request(
             crate::hmr::planner_decision::ReloadDecision::ProcessSwap,
             AdapterReloadResult::Success { state_preserved, reload_ms },
         ) => {
-            eprintln!(
+            debug_log!(
                 "[HMR] Dynlib adapter preflight reached a process-swap plan (state_preserved={}, reload_ms={}); delegating actual reload to runner",
                 state_preserved, reload_ms
             );
@@ -594,7 +594,7 @@ pub async fn handle_compile_request(
         (decision, AdapterReloadResult::Success { state_preserved, reload_ms })
             if decision.is_in_process() && !dynlib_family =>
         {
-            eprintln!(
+            debug_log!(
                 "[HMR] Adapter reload completed authoritatively: state_preserved={}, reload_ms={}",
                 state_preserved, reload_ms
             );
@@ -603,14 +603,14 @@ pub async fn handle_compile_request(
         (decision, AdapterReloadResult::Success { state_preserved, reload_ms })
             if decision.is_in_process() && dynlib_family =>
         {
-            eprintln!(
+            debug_log!(
                 "[HMR] Dynlib adapter preflight succeeded (state_preserved={}, reload_ms={}), delegating actual swap to runner",
                 state_preserved, reload_ms
             );
             false
         }
         _ => {
-            eprintln!(
+            debug_log!(
                 "[HMR] Adapter did not handle reload (decision={:?}, result={:?}), falling through to runner",
                 planner_output.decision, reload_result
             );
@@ -691,7 +691,7 @@ pub async fn handle_compile_request(
         for msg in candidate_messages {
             let _ = ctx.log_dc.send_text(msg).await;
         }
-        eprintln!("[HMR] Skipping handle_runner_execution — adapter reload was authoritative");
+        debug_log!("[HMR] Skipping handle_runner_execution — adapter reload was authoritative");
         // Resolve the frontend's compile() promise so the IDE doesn't stay stuck
         // in "Compiling..." when the adapter handled the reload without going through
         // handle_runner_execution (which is where build-status: done is normally sent).
@@ -776,19 +776,19 @@ fn hash_based_rebuild_scope(prev_hashes: &ModuleHashes, new_hashes: &ModuleHashe
         && prev_hashes.core_hash == 0
         && prev_hashes.gui_hash == 0
     {
-        eprintln!("[Handler] First build - Full Rebuild");
+        debug_log!("[Handler] First build - Full Rebuild");
         RebuildScope::Both
     } else if prev_hashes.shared_hash != new_hashes.shared_hash {
-        eprintln!("[Handler] Shared header changed - Full Rebuild");
+        debug_log!("[Handler] Shared header changed - Full Rebuild");
         RebuildScope::Both
     } else if prev_hashes.core_hash != new_hashes.core_hash {
-        eprintln!("[Handler] Core changed - Core Rebuild");
+        debug_log!("[Handler] Core changed - Core Rebuild");
         RebuildScope::CoreOnly
     } else if prev_hashes.gui_hash != new_hashes.gui_hash {
-        eprintln!("[Handler] GUI changed - GUI Rebuild");
+        debug_log!("[Handler] GUI changed - GUI Rebuild");
         RebuildScope::GuiOnly
     } else {
-        eprintln!("[Handler] No code changes detected");
+        debug_log!("[Handler] No code changes detected");
         RebuildScope::None
     }
 }

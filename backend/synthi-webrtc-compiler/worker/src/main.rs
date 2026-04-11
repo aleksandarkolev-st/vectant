@@ -117,6 +117,9 @@ use worker::infra::storage;
 use worker::infra::watcher;
 use worker::safety::security;
 
+// Re-use the debug_log! macro and verbose flag from the library crate.
+use worker::verbose_enabled;
+
 fn get_ai_backend_url() -> String {
     if let Ok(url) = std::env::var("AI_BACKEND_URL") {
         return url;
@@ -144,7 +147,7 @@ async fn fetch_turn_credentials() -> Vec<webrtc::ice_transport::ice_server::RTCI
     let collab_url = match env::var("COLLAB_SERVER_URL") {
         Ok(u) => u.trim_end_matches('/').to_string(),
         Err(_) => {
-            eprintln!("[ICE] COLLAB_SERVER_URL not set — using default STUN");
+            debug_log!("[ICE] COLLAB_SERVER_URL not set — using default STUN");
             return vec![webrtc::ice_transport::ice_server::RTCIceServer {
                 urls: vec!["stun:stun.l.google.com:19302".to_string()],
                 ..Default::default()
@@ -188,7 +191,7 @@ async fn fetch_turn_credentials() -> Vec<webrtc::ice_transport::ice_server::RTCI
                             ..Default::default()
                         });
                     }
-                    eprintln!("[ICE] Fetched {} ICE server(s) from collab-server", servers.len());
+                    debug_log!("[ICE] Fetched {} ICE server(s) from collab-server", servers.len());
                     servers
                 }
                 Err(e) => {
@@ -201,7 +204,7 @@ async fn fetch_turn_credentials() -> Vec<webrtc::ice_transport::ice_server::RTCI
             }
         }
         Ok(resp) => {
-            eprintln!("[ICE] TURN endpoint returned {} — using default STUN", resp.status());
+            debug_log!("[ICE] TURN endpoint returned {} — using default STUN", resp.status());
             vec![webrtc::ice_transport::ice_server::RTCIceServer {
                 urls: vec!["stun:stun.l.google.com:19302".to_string()],
                 ..Default::default()
@@ -353,7 +356,7 @@ async fn dc_send_with_backpressure(
         tokio::time::sleep(std::time::Duration::from_millis(DC_BACKPRESSURE_POLL_MS)).await;
         waited += 1;
         if waited % 100 == 0 {
-            eprintln!(
+            debug_log!(
                 "[{}] backpressure: waited {}ms for DC buffer to drain (buffered={})",
                 label,
                 waited as u64 * DC_BACKPRESSURE_POLL_MS,
@@ -362,7 +365,7 @@ async fn dc_send_with_backpressure(
         }
         // Safety valve: after 10s of waiting, give up
         if waited > 1000 {
-            eprintln!(
+            debug_log!(
                 "[{}] backpressure timeout after 10s, attempting send anyway",
                 label
             );
@@ -378,13 +381,13 @@ async fn dc_send_with_backpressure(
             Err(e) => {
                 retries += 1;
                 if retries > DC_SEND_MAX_RETRIES {
-                    eprintln!(
+                    debug_log!(
                         "[{}] send failed after {} retries: {}",
                         label, DC_SEND_MAX_RETRIES, e
                     );
                     return Err(anyhow::anyhow!("{}", e));
                 }
-                eprintln!(
+                debug_log!(
                     "[{}] send error (retry {}/{}): {}",
                     label, retries, DC_SEND_MAX_RETRIES, e
                 );
@@ -407,7 +410,7 @@ async fn dc_send_text_with_backpressure(
         tokio::time::sleep(std::time::Duration::from_millis(DC_BACKPRESSURE_POLL_MS)).await;
         waited += 1;
         if waited > 1000 {
-            eprintln!(
+            debug_log!(
                 "[{}] backpressure timeout after 10s, attempting send_text anyway",
                 label
             );
@@ -422,13 +425,13 @@ async fn dc_send_text_with_backpressure(
             Err(e) => {
                 retries += 1;
                 if retries > DC_SEND_MAX_RETRIES {
-                    eprintln!(
+                    debug_log!(
                         "[{}] send_text failed after {} retries: {}",
                         label, DC_SEND_MAX_RETRIES, e
                     );
                     return Err(anyhow::anyhow!("{}", e));
                 }
-                eprintln!(
+                debug_log!(
                     "[{}] send_text error (retry {}/{}): {}",
                     label, retries, DC_SEND_MAX_RETRIES, e
                 );
@@ -441,10 +444,10 @@ async fn dc_send_text_with_backpressure(
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    eprintln!("=== WORKER BUILD 2026-02-06-LSP-DEBUG ===");
-    eprintln!("[Worker] Starting up (PID: {})", std::process::id());
-    println!("Worker starting...");
-    println!("Operating System: {}", std::env::consts::OS);
+    debug_log!("=== WORKER BUILD 2026-02-06-LSP-DEBUG ===");
+    debug_log!("[Worker] Starting up (PID: {})", std::process::id());
+    debug_log!("Worker starting...");
+    debug_log!("Operating System: {}", std::env::consts::OS);
 
     // v2.1: Print security audit at startup (requirement #9)
     if std::env::var("SYNTHI_SECURITY_AUDIT")
@@ -455,7 +458,7 @@ async fn main() -> Result<()> {
     } else {
         // Brief security notice
         let audit = security::audit_security();
-        eprintln!("[Security] Status: {} enforced, {} partial, {} stub (set SYNTHI_SECURITY_AUDIT=1 for details)",
+        debug_log!("[Security] Status: {} enforced, {} partial, {} stub (set SYNTHI_SECURITY_AUDIT=1 for details)",
             audit.enforced_count, audit.partial_count, audit.stub_count);
     }
 
@@ -517,7 +520,7 @@ async fn main() -> Result<()> {
     let isolation_manager = Arc::new(tokio::sync::Mutex::new(IsolationManager::new(
         isolation_model,
     )));
-    eprintln!("[HMR v2.1] Isolation model: {:?}", isolation_model);
+    debug_log!("[HMR v2.1] Isolation model: {:?}", isolation_model);
 
     // Initialize restart controller with backoff (requirement #8)
     let known_good_dir = std::env::temp_dir().join("synthi_known_good");
@@ -528,11 +531,11 @@ async fn main() -> Result<()> {
         backoff_config,
         known_good_store,
     )));
-    eprintln!("[HMR v2.1] Restart controller initialized with backoff/fallback");
+    debug_log!("[HMR v2.1] Restart controller initialized with backoff/fallback");
 
     // Initialize hardened IPC config (requirement #4)
     let ipc_config = Arc::new(IpcConfig::default());
-    eprintln!(
+    debug_log!(
         "[HMR v2.1] IPC config: max_frame_size={}MB, read_timeout={}s",
         ipc_config.max_frame_size / (1024 * 1024),
         ipc_config.read_timeout.as_secs()
@@ -552,7 +555,7 @@ async fn main() -> Result<()> {
     let hmr_orchestrator = Arc::new(tokio::sync::Mutex::new(HmrOrchestrator::with_config(
         orchestrator_config,
     )));
-    eprintln!(
+    debug_log!(
         "[HMR v2.1] Orchestrator initialized (binary_state={}, strict_abi={})",
         true,
         std::env::var("SYNTHI_STRICT_ABI")
@@ -562,7 +565,7 @@ async fn main() -> Result<()> {
 
     // Initialize quiescence config (requirement #6)
     let _quiescence_config = QuiescenceConfig::default();
-    eprintln!("[HMR v2.1] Quiescence protocol ready");
+    debug_log!("[HMR v2.1] Quiescence protocol ready");
 
     structured_logger.log(&LogEntry::new(
         LogLevel::Info,
@@ -579,20 +582,20 @@ async fn main() -> Result<()> {
     android::ensure_android_sdk_env();
     android::log_android_env_diagnostics("startup");
 
-    println!("=== WORKER ENV DIAGNOSTIC (post-bootstrap) ===");
-    println!(
+    debug_log!("=== WORKER ENV DIAGNOSTIC (post-bootstrap) ===");
+    debug_log!(
         "CARGO_MANIFEST_DIR = {:?}",
         std::env::var("CARGO_MANIFEST_DIR")
     );
-    println!("HOME = {:?}", std::env::var("HOME"));
-    println!("PATH = {:?}", std::env::var("PATH"));
-    println!("ANDROID_SDK_ROOT = {:?}", std::env::var("ANDROID_SDK_ROOT"));
-    println!("ANDROID_HOME = {:?}", std::env::var("ANDROID_HOME"));
-    println!("===========================================");
+    debug_log!("HOME = {:?}", std::env::var("HOME"));
+    debug_log!("PATH = {:?}", std::env::var("PATH"));
+    debug_log!("ANDROID_SDK_ROOT = {:?}", std::env::var("ANDROID_SDK_ROOT"));
+    debug_log!("ANDROID_HOME = {:?}", std::env::var("ANDROID_HOME"));
+    debug_log!("===========================================");
 
-    eprintln!("[Worker] Initializing GStreamer...");
+    debug_log!("[Worker] Initializing GStreamer...");
     match gst::init() {
-        Ok(_) => eprintln!("[Worker] GStreamer initialized successfully"),
+        Ok(_) => debug_log!("[Worker] GStreamer initialized successfully"),
         Err(e) => {
             eprintln!("[Worker] FATAL: GStreamer initialization failed: {}", e);
             // We want to return the error to fail specifically
@@ -600,15 +603,15 @@ async fn main() -> Result<()> {
         }
     }
 
-    eprintln!("[Worker] Verifying tooling...");
+    debug_log!("[Worker] Verifying tooling...");
     verify_tooling().await?;
     let signaling_url = get_signaling_url();
     // SESSION_ID scopes this worker to a single browser peer in the
     // session-multiplexed signaling server.  Unset → "__legacy__" compat mode.
     let session_id = env::var("SESSION_ID").ok();
-    println!("Connecting to signaling server at: {}", signaling_url);
+    debug_log!("Connecting to signaling server at: {}", signaling_url);
     if let Some(ref sid) = session_id {
-        println!("Session ID: {sid}");
+        debug_log!("Session ID: {sid}");
     }
     let (ws_stream, _) = connect_async(&signaling_url).await?;
     let (mut ws_write, mut ws_read) = ws_stream.split();
@@ -670,7 +673,7 @@ async fn main() -> Result<()> {
             .await
             .expect("Failed to initialize incremental compile cache"),
     );
-    eprintln!("[Cache] Initialized content-addressable compile cache");
+    debug_log!("[Cache] Initialized content-addressable compile cache");
 
     // Speculative compilation cache for preemptive builds
     let speculative_cache: Arc<Mutex<SpeculativeCache>> =
@@ -747,14 +750,14 @@ async fn main() -> Result<()> {
                         scope,
                         timestamp: _timestamp,
                     } => {
-                        eprintln!(
+                        debug_log!(
                             "[Build] Starting speculative compile for scope '{}': {:?}",
                             scope, paths
                         );
 
                         // Check cancellation flag periodically during compile
                         if build_cancel_flag.load(Ordering::SeqCst) {
-                            eprintln!("[Build] Speculative compile cancelled before start");
+                            debug_log!("[Build] Speculative compile cancelled before start");
                             continue;
                         }
 
@@ -771,7 +774,7 @@ async fn main() -> Result<()> {
 
                             // Check for cancellation between files
                             if build_cancel_flag.load(Ordering::SeqCst) {
-                                eprintln!(
+                                debug_log!(
                                     "[Build] Speculative compile cancelled during compilation"
                                 );
                                 break;
@@ -791,7 +794,7 @@ async fn main() -> Result<()> {
 
                                 // Store in speculative cache (blocking mutex)
                                 // Note: In production, use a lock-free structure
-                                eprintln!(
+                                debug_log!(
                                     "[Build] Speculative compile complete in {}ms, cached",
                                     start.elapsed().as_millis()
                                 );
@@ -800,12 +803,12 @@ async fn main() -> Result<()> {
                     }
 
                     PreemptiveMessage::CancelSpeculative { reason } => {
-                        eprintln!("[Build] Speculative compile cancelled: {}", reason);
+                        debug_log!("[Build] Speculative compile cancelled: {}", reason);
                         // Cancel flag is already set by watcher
                     }
 
                     PreemptiveMessage::CommitSpeculative { paths, scope } => {
-                        eprintln!(
+                        debug_log!(
                             "[Build] Committing speculative compile for scope '{}': {:?}",
                             scope, paths
                         );
@@ -827,7 +830,7 @@ async fn main() -> Result<()> {
 
                     PreemptiveMessage::Changed { scope, paths } => {
                         // Standard (non-speculative) change - compile immediately
-                        eprintln!(
+                        debug_log!(
                             "[Build] Standard compile for scope '{}': {:?}",
                             scope, paths
                         );
@@ -915,7 +918,7 @@ async fn main() -> Result<()> {
                     };
 
                     if fingerprint_changed {
-                        eprintln!(
+                        debug_log!(
                             "[WebRTC-signal] Detected new peer fingerprint, recreating PeerConnection for fresh browser session"
                         );
                         if let Err(e) = pc.close().await {
@@ -951,7 +954,7 @@ async fn main() -> Result<()> {
                                 current_remote_fingerprint = None;
                             }
                             Err(e) => {
-                                eprintln!(
+                                debug_log!(
                                     "[WebRTC-signal] CRITICAL ERROR: Failed to re-create peer connection: {:?}",
                                     e
                                 );
@@ -960,7 +963,7 @@ async fn main() -> Result<()> {
                         }
                     }
 
-                    eprintln!(
+                    debug_log!(
                         "[WebRTC-signal] Received offer (type={:?}), current state={:?}",
                         sdp_type,
                         pc.signaling_state()
@@ -971,12 +974,12 @@ async fn main() -> Result<()> {
                     pc.set_remote_description(desc).await?;
                     let answer = pc.create_answer(None).await?;
                     pc.set_local_description(answer.clone()).await?;
-                    eprintln!(
+                    debug_log!(
                         "[WebRTC-signal] Sending answer, new state={:?}",
                         pc.signaling_state()
                     );
                     if let Some(pos) = answer.sdp.find("transport-wide-cc") {
-                        eprintln!("[WebRTC-signal] TWCC found in Answer SDP at index {}", pos);
+                        debug_log!("[WebRTC-signal] TWCC found in Answer SDP at index {}", pos);
                     } else {
                         eprintln!("[WebRTC-signal] WARNING: TWCC missing from Answer SDP!");
                     }
@@ -999,7 +1002,7 @@ async fn main() -> Result<()> {
                 }
             }
             "reset" => {
-                eprintln!(
+                debug_log!(
                     "[WebRTC-signal] Received reset command, clearing WebRTC state (SOFT RESET)..."
                 );
 
@@ -1013,7 +1016,7 @@ async fn main() -> Result<()> {
                 {
                     let mut guard = runner_store.lock().await;
                     if guard.is_some() {
-                        eprintln!("[WebRTC-signal] Dropping old RunnerState...");
+                        debug_log!("[WebRTC-signal] Dropping old RunnerState...");
                         *guard = None;
                     }
                 }
@@ -1035,7 +1038,7 @@ async fn main() -> Result<()> {
                 {
                     let mut guard = vscode_server_kill_tx.lock().await;
                     if let Some((tx, _)) = guard.take() {
-                        eprintln!(
+                        debug_log!(
                             "[WebRTC-signal] Killing vscode-server-manager process during reset..."
                         );
                         let _ = tx.send(());
@@ -1066,7 +1069,7 @@ async fn main() -> Result<()> {
                         )
                         .await?;
                         pc = new_pc;
-                        eprintln!("[WebRTC-signal] Soft reset complete. New PeerConnection ready.");
+                        debug_log!("[WebRTC-signal] Soft reset complete. New PeerConnection ready.");
                     }
                     Err(e) => {
                         eprintln!("[WebRTC-signal] CRITICAL ERROR: Failed to re-create peer connection: {:?}", e);
@@ -1225,7 +1228,7 @@ async fn create_peer(
                     ))
                     .await
                 {
-                    Ok(_) => eprintln!("[WebRTC] Attached placeholder video track"),
+                    Ok(_) => debug_log!("[WebRTC] Attached placeholder video track"),
                     Err(e) => {
                         eprintln!("[WebRTC] Failed to attach placeholder video track: {:?}", e)
                     }
@@ -1238,7 +1241,7 @@ async fn create_peer(
                     ))
                     .await
                 {
-                    Ok(_) => eprintln!("[WebRTC] Attached placeholder audio track"),
+                    Ok(_) => debug_log!("[WebRTC] Attached placeholder audio track"),
                     Err(e) => {
                         eprintln!("[WebRTC] Failed to attach placeholder audio track: {:?}", e)
                     }
@@ -1270,7 +1273,7 @@ async fn create_peer(
     }
 
     pc.on_peer_connection_state_change(Box::new(move |s: RTCPeerConnectionState| {
-        println!("Peer Connection State: {s:?}");
+        debug_log!("Peer Connection State: {s:?}");
         async {}.boxed()
     }));
 
@@ -1348,7 +1351,7 @@ async fn wire_peer_channels(
         let vscode_server_kill_tx_outer = vscode_server_kill_tx_for_callback.clone();
         async move {
             let label = dc.label();
-            eprintln!("[on_data_channel] Received data channel: label='{}', id={}", label, dc.id());
+            debug_log!("[on_data_channel] Received data channel: label='{}', id={}", label, dc.id());
                 if label == "compile" {
                     // Clone terminal store out of the FnMut closure into a local
                     // that can be moved into the async block below without
@@ -1373,12 +1376,12 @@ async fn wire_peer_channels(
                         let ipc_config = ipc_config_outer.clone();
                         async move {
                             if msg.is_string {
-                                eprintln!("[Main] Received message on 'compile' channel. Length: {}", msg.data.len());
+                                debug_log!("[Main] Received message on 'compile' channel. Length: {}", msg.data.len());
                                 // Try to parse as a CancelBuildRequest first
                                 if let Ok(cancel_req) = serde_json::from_slice::<CancelBuildRequest>(&msg.data) {
                                     if cancel_req.msg_type == "cancel-build" {
                                         let target_session = cancel_req.session_id.clone();
-                                        eprintln!(
+                                        debug_log!(
                                             "[Main] Received cancel-build for session: {:?}",
                                             target_session
                                         );
@@ -1430,7 +1433,7 @@ async fn wire_peer_channels(
                                                 });
                                                 let _ = log.send_text(serde_json::to_string(&payload).unwrap_or_default()).await;
                                             } else {
-                                                eprintln!("[Main] Build cancelled by user (session {})", sid);
+                                                debug_log!("[Main] Build cancelled by user (session {})", sid);
                                             }
                                         }
                                         return;
@@ -1440,7 +1443,7 @@ async fn wire_peer_channels(
                                 // Try to parse as a CancelMobileJobRequest next
                                 if let Ok(cancel_req) = serde_json::from_slice::<CancelMobileJobRequest>(&msg.data) {
                                     if cancel_req.msg_type == "cancel-mobile-job" {
-                                        eprintln!("[Main] Received cancel-mobile-job for session: {}", cancel_req.session_id);
+                                        debug_log!("[Main] Received cancel-mobile-job for session: {}", cancel_req.session_id);
                                         // Mark the session as cancelled
                                         crate::android::webrtc::input::cancel_session(&cancel_req.session_id);
                                         // Also unregister the input session
@@ -1451,11 +1454,11 @@ async fn wire_peer_channels(
                                 
                                 // Try to parse as a CompileRequest
                                 if let Ok(req) = serde_json::from_slice::<CompileRequest>(&msg.data) {
-                                    eprintln!("[Main] Received CompileRequest: is_gui={}, use_ai_split={}, lang={}, target={:?}", 
+                                    debug_log!("[Main] Received CompileRequest: is_gui={}, use_ai_split={}, lang={}, target={:?}", 
                                         req.is_gui, req.use_ai_split, req.language, req.target);
                                     let log_dc = { store.lock().await.clone() };
                                     if let Some(log) = log_dc {
-                                        eprintln!("[Main] Found active build-log channel, proceeding with build...");
+                                        debug_log!("[Main] Found active build-log channel, proceeding with build...");
                                         // Check if this is a mobile emulator target
                                         if let Some(ref target) = req.target {
                                             if target == "react-native-emulator" {
@@ -1483,13 +1486,13 @@ async fn wire_peer_channels(
 
                                                         if force_redownload && local_dir.exists() {
                                                             if let Err(e) = std::fs::remove_dir_all(&local_dir) {
-                                                                eprintln!(
+                                                                debug_log!(
                                                                     "[Mobile] Failed to clear existing workspace {}: {}",
                                                                     local_dir.display(),
                                                                     e
                                                                 );
                                                             } else {
-                                                                eprintln!(
+                                                                debug_log!(
                                                                     "[Mobile] Cleared existing workspace {} (force redownload)",
                                                                     local_dir.display()
                                                                 );
@@ -1498,7 +1501,7 @@ async fn wire_peer_channels(
 
                                                         match storage::download(&s, None).await {
                                                             Ok(path) => {
-                                                                eprintln!("[Mobile] Workspace ready at: {}", path.display());
+                                                                debug_log!("[Mobile] Workspace ready at: {}", path.display());
                                                                 path
                                                             },
                                                             Err(e) => {
@@ -1514,7 +1517,7 @@ async fn wire_peer_channels(
                                                             }
                                                         }
                                                     } else {
-                                                        eprintln!("[Mobile] No slug provided, cannot download workspace");
+                                                        debug_log!("[Mobile] No slug provided, cannot download workspace");
                                                         let payload = serde_json::json!({
                                                             "sessionId": session_id,
                                                             "type": "mobile-status",
@@ -1560,7 +1563,7 @@ async fn wire_peer_channels(
 
                                                         if force_redownload && local_dir.exists() {
                                                             if let Err(e) = std::fs::remove_dir_all(&local_dir) {
-                                                                eprintln!(
+                                                                debug_log!(
                                                                     "[Flutter] Failed to clear existing workspace {}: {}",
                                                                     local_dir.display(),
                                                                     e
@@ -1570,7 +1573,7 @@ async fn wire_peer_channels(
 
                                                         match storage::download(&s, None).await {
                                                             Ok(path) => {
-                                                                eprintln!("[Flutter] Workspace ready at: {}", path.display());
+                                                                debug_log!("[Flutter] Workspace ready at: {}", path.display());
                                                                 path
                                                             },
                                                             Err(e) => {
@@ -1586,7 +1589,7 @@ async fn wire_peer_channels(
                                                             }
                                                         }
                                                     } else {
-                                                        eprintln!("[Flutter] No slug provided, cannot download workspace");
+                                                        debug_log!("[Flutter] No slug provided, cannot download workspace");
                                                         let payload = serde_json::json!({
                                                             "sessionId": session_id,
                                                             "type": "mobile-status",
@@ -1688,7 +1691,7 @@ async fn wire_peer_channels(
                             if msg.is_string {
                                 // diagnostic log
                                 if let Ok(_s) = String::from_utf8(msg.data.to_vec()) {
-                                    // println!("[worker] terminal msg: {}", s);
+                                    // debug_log!("[worker] terminal msg: {}", s);
                                 }
                                 if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&msg.data) {
                                     if let Some(t) = v.get("type").and_then(|x| x.as_str()) {
@@ -1699,7 +1702,7 @@ async fn wire_peer_channels(
                                                     if let Some(sender) = guard.get(sid) {
                                                         let _ = sender.send(d.to_string());
                                                     } else {
-                                                        println!("[worker] no stdin sender for session {}", sid);
+                                                        debug_log!("[worker] no stdin sender for session {}", sid);
                                                     }
                                                 }
                                             }
@@ -1711,7 +1714,7 @@ async fn wire_peer_channels(
                                                     // (runner may not have an SDL sender registered)
                                                     if let Some(typ) = evt.get("type").and_then(|x| x.as_str()) {
                                                         if typ == "stop-runner" {
-                                                            println!("[worker] stop-runner requested for session {}", sid);
+                                                            debug_log!("[worker] stop-runner requested for session {}", sid);
                                                             // Take and destroy runner state
                                                             let mut rg = runner_store_term.lock().await;
                                                             if let Some(mut state) = rg.take() {
@@ -1719,18 +1722,18 @@ async fn wire_peer_channels(
                                                                 // to avoid capture-from-dead-display crashes
                                                                 if let Some(ref pipeline) = state.gst_pipeline {
                                                                     let _ = pipeline.set_state(gst::State::Null);
-                                                                    println!("[worker] GStreamer pipeline stopped");
+                                                                    debug_log!("[worker] GStreamer pipeline stopped");
                                                                 }
                                                                 state.gst_pipeline = None;
                                                                 // Kill the runner process
                                                                 if let Some(ref mut child) = state.process {
                                                                     let _ = child.kill().await;
-                                                                    println!("[worker] runner process killed");
+                                                                    debug_log!("[worker] runner process killed");
                                                                 }
                                                                 // Kill Xvfb (safe now that GStreamer is stopped)
                                                                 if let Some(ref mut xvfb) = state.xvfb_process {
                                                                     let _ = xvfb.kill().await;
-                                                                    println!("[worker] Xvfb killed");
+                                                                    debug_log!("[worker] Xvfb killed");
                                                                 }
                                                                 // Drop the sdl_tx sender to close the xdotool channel
                                                                 state.sdl_tx = None;
@@ -1813,7 +1816,7 @@ async fn wire_peer_channels(
                                                         // (this fires on every mouse/key event)
                                                         let mut warned = x11_warned.lock().await;
                                                         if warned.insert(sid.to_string()) {
-                                                            println!("[worker] no x11 sender for session {} (further warnings suppressed)", sid);
+                                                            debug_log!("[worker] no x11 sender for session {} (further warnings suppressed)", sid);
                                                         }
                                                     }
                                                 }
@@ -1854,11 +1857,11 @@ async fn wire_peer_channels(
                     .boxed()
                 }));
 
-                println!("[on_data_channel] LSP branch matched: lang='{}', spawning handler task...", lang);
+                debug_log!("[on_data_channel] LSP branch matched: lang='{}', spawning handler task...", lang);
                 tokio::spawn(async move {
                     // Try to download the workspace files
                     let slug_to_use = slug_opt.as_deref().unwrap_or("test-workspace");
-                    println!("LSP Request: lang={}, slug={}", lang, slug_to_use);
+                    debug_log!("LSP Request: lang={}, slug={}", lang, slug_to_use);
 
                     let workspace_path = match storage::download(slug_to_use, None).await {
                         Ok(path) => {
@@ -1871,12 +1874,12 @@ async fn wire_peer_channels(
                             } else {
                                 path
                             };
-                            println!("Successfully downloaded workspace to: {}", abs_path.display());
+                            debug_log!("Successfully downloaded workspace to: {}", abs_path.display());
                             abs_path
                         },
                         Err(e) => {
                             eprintln!("Failed to download workspace: {}", e);
-                            println!("Falling back to temp workspace: {}", workspace_path_for_lsp.display());
+                            debug_log!("Falling back to temp workspace: {}", workspace_path_for_lsp.display());
                             workspace_path_for_lsp.as_ref().clone()
                         }
                     };
@@ -1907,7 +1910,7 @@ async fn wire_peer_channels(
                         lsp_res
                     };
                     match lsp_result {
-                        Ok(bin) => println!("[LSP] Server binary ready: {}", bin),
+                        Ok(bin) => debug_log!("[LSP] Server binary ready: {}", bin),
                         Err(ref e) => eprintln!("[LSP] Server install warning: {}", e),
                     }
 
@@ -1927,18 +1930,18 @@ async fn wire_peer_channels(
                     let (rust_sysroot_src, rust_sysroot): (Option<String>, Option<String>) = if lang == "rust" {
                         let (src, root) = find_rust_sysroot_info();
                         match &src {
-                            Some(p) => println!("[LSP] Detected rust sysroot_src for injection: {}", p),
+                            Some(p) => debug_log!("[LSP] Detected rust sysroot_src for injection: {}", p),
                             None => println!("[LSP] WARNING: rust-src not found — Vec:: completions may not work"),
                         }
                         if let Some(ref r) = root {
-                            println!("[LSP] Detected rust sysroot root: {}", r);
+                            debug_log!("[LSP] Detected rust sysroot root: {}", r);
                         }
                         (src, root)
                     } else {
                         (None, None)
                     };
 
-                    println!("Starting LSP for language: {}", lang);
+                    debug_log!("Starting LSP for language: {}", lang);
                     let mut cmd = match lang.as_str() {
                         "cpp" | "c" => {
                             // Create compile_flags.txt to enforce C++17
@@ -1959,7 +1962,7 @@ async fn wire_peer_channels(
                                 if let Ok(mut f) = std::fs::File::create(&clang_tidy_path) {
                                     use std::io::Write;
                                     let _ = f.write_all(b"Checks: '-misc-include-cleaner'\n");
-                                    println!("[LSP-CONFIG] Created .clang-tidy (disabled include-cleaner)");
+                                    debug_log!("[LSP-CONFIG] Created .clang-tidy (disabled include-cleaner)");
                                 }
                             }
 
@@ -2124,7 +2127,7 @@ async fn wire_peer_channels(
                                             c.arg("language-server");
                                             c.arg("--protocol=lsp");
                                             c.env("PATH", &dart_path);
-                                            println!("[LSP] Using dart binary at: {}", candidate);
+                                            debug_log!("[LSP] Using dart binary at: {}", candidate);
                                             break;
                                         }
                                     }
@@ -2218,7 +2221,7 @@ async fn wire_peer_channels(
                             c
                         },
                         _ => {
-                            println!("Unsupported language for LSP: {}", lang);
+                            debug_log!("Unsupported language for LSP: {}", lang);
                             return;
                         }
                     };
@@ -2251,7 +2254,7 @@ async fn wire_peer_channels(
                             .await
                     };
                     if !matches!(pre_check, Ok(s) if s.success()) {
-                        eprintln!("[LSP] Pre-spawn check: {} is not executable or not found — attempting chmod fix", binary_name);
+                        debug_log!("[LSP] Pre-spawn check: {} is not executable or not found — attempting chmod fix", binary_name);
                         // Try to fix permissions on well-known install locations
                         let fix_cmd = format!(
                             "BIN=$(which {bin} 2>/dev/null || echo /usr/local/bin/{bin}); \
@@ -2354,7 +2357,7 @@ async fn wire_peer_channels(
                                                         uri.push('/');
                                                     }
                                                     guard.client_root_uri = Some(uri.clone());
-                                                    println!("Captured client root URI: {}", uri);
+                                                    debug_log!("Captured client root URI: {}", uri);
                                                 } else if let Some(folders) = params.get("workspaceFolders").and_then(|f| f.as_array()) {
                                                     if let Some(first) = folders.first() {
                                                         if let Some(uri_str) = first.get("uri").and_then(|s| s.as_str()) {
@@ -2363,14 +2366,14 @@ async fn wire_peer_channels(
                                                                 uri.push('/');
                                                             }
                                                             guard.client_root_uri = Some(uri.clone());
-                                                            println!("Captured client root URI from folders: {}", uri);
+                                                            debug_log!("Captured client root URI from folders: {}", uri);
                                                         }
                                                     }
                                                 }
                                             }
 
                                             if guard.client_root_uri.is_none() {
-                                                println!("Client root URI not found in initialize, defaulting to file:///");
+                                                debug_log!("Client root URI not found in initialize, defaulting to file:///");
                                                 guard.client_root_uri = Some("file:///".to_string());
                                             }
 
@@ -2422,7 +2425,7 @@ async fn wire_peer_channels(
                                                                 }
                                                             }
                                                         }
-                                                        println!("[LSP] Injected cargo.sysrootSrc={}, cargo.sysroot={:?}", src_path, sysroot_root);
+                                                        debug_log!("[LSP] Injected cargo.sysrootSrc={}, cargo.sysroot={:?}", src_path, sysroot_root);
 
                                                         // 2. Inject linkedProjects with inline project.
                                                         //    Skip when Cargo.toml has real [dependencies].
@@ -2448,7 +2451,7 @@ async fn wire_peer_channels(
                                                                 .unwrap_or(false);
 
                                                         if has_real_deps {
-                                                            println!("[LSP] Cargo.toml has [dependencies] — using cargo discovery, skipping linkedProjects");
+                                                            debug_log!("[LSP] Cargo.toml has [dependencies] — using cargo discovery, skipping linkedProjects");
                                                         } else {
                                                             let mut rs_crates: Vec<serde_json::Value> = Vec::new();
                                                             if let Ok(entries) = std::fs::read_dir(&workspace_path) {
@@ -2502,12 +2505,12 @@ async fn wire_peer_channels(
                                                                 "linkedProjects".to_string(),
                                                                 serde_json::json!([project_json]),
                                                             );
-                                                            println!("[LSP] Injected linkedProjects with {} crate(s), sysroot_src={}, sysroot={:?}", num_crates, src_path, sysroot_root);
+                                                            debug_log!("[LSP] Injected linkedProjects with {} crate(s), sysroot_src={}, sysroot={:?}", num_crates, src_path, sysroot_root);
                                                         }
 
                                                         // Log the full initializationOptions for debugging
                                                         if let Ok(opts_json) = serde_json::to_string_pretty(&serde_json::Value::Object(opts.clone())) {
-                                                            println!("[LSP] Full initializationOptions for RA:\n{}", opts_json);
+                                                            debug_log!("[LSP] Full initializationOptions for RA:\n{}", opts_json);
                                                         }
                                                     }
                                                 }
@@ -2571,7 +2574,7 @@ async fn wire_peer_channels(
                                                                 None => false, // first change for this URI, always accept
                                                             };
                                                             if is_out_of_order {
-                                                                eprintln!("[LSP] Rejecting out-of-order didChange for {} (version {} <= {:?}), triggering full resync from disk", uri, incoming_version, last_version);
+                                                                debug_log!("[LSP] Rejecting out-of-order didChange for {} (version {} <= {:?}), triggering full resync from disk", uri, incoming_version, last_version);
                                                                 // Do NOT forward stale message. Read current disk
                                                                 // content and send a synthetic full-text didChange
                                                                 // so the server re-syncs to the true file state.
@@ -2813,7 +2816,7 @@ async fn wire_peer_channels(
                                                     if let Some(result) = json_val.get_mut("result") {
                                                         if let Some(caps) = result.get_mut("capabilities") {
                                                             if let Some(sync) = caps.get("textDocumentSync") {
-                                                                println!("[LSP] Server textDocumentSync capability (original): {}", sync);
+                                                                debug_log!("[LSP] Server textDocumentSync capability (original): {}", sync);
                                                             }
                                                             // Override to Full(1)
                                                             caps.as_object_mut().map(|m| {
@@ -2823,7 +2826,7 @@ async fn wire_peer_channels(
                                                                     "save": { "includeText": true }
                                                                 }));
                                                             });
-                                                            println!("[LSP] Forced textDocumentSync to Full(1)");
+                                                            debug_log!("[LSP] Forced textDocumentSync to Full(1)");
                                                         }
                                                     }
 
@@ -2913,9 +2916,9 @@ async fn wire_peer_channels(
                             };
                             eprintln!("Failed to spawn LSP for {}: {}", lang, e);
                             if !binary_hint.is_empty() {
-                                eprintln!("[LSP] Hint: {}", binary_hint);
+                                debug_log!("[LSP] Hint: {}", binary_hint);
                             }
-                            eprintln!("[LSP] Current PATH: {}", path_info);
+                            debug_log!("[LSP] Current PATH: {}", path_info);
                             // Send an LSP-shaped error response back so the frontend
                             // doesn't hang forever waiting for `initialize` to respond.
                             let error_response = serde_json::json!({
@@ -2993,7 +2996,7 @@ async fn wire_peer_channels(
                                     // Sanitize: prevent path traversal
                                     let rel = rel_path.trim_start_matches('/');
                                     if rel.contains("..") {
-                                        eprintln!("[file-sync] Rejected path traversal: {}", rel);
+                                        debug_log!("[file-sync] Rejected path traversal: {}", rel);
                                         return;
                                     }
                                     let file_path = base.join(rel);
@@ -3001,8 +3004,8 @@ async fn wire_peer_channels(
                                         let _ = tokio::fs::create_dir_all(parent).await;
                                     }
                                     match tokio::fs::write(&file_path, content).await {
-                                        Ok(()) => println!("[file-sync] ✓ write {}", rel),
-                                        Err(e) => eprintln!("[file-sync] ✗ write {}: {}", rel, e),
+                                        Ok(()) => debug_log!("[file-sync] ✓ write {}", rel),
+                                        Err(e) => debug_log!("[file-sync] ✗ write {}: {}", rel, e),
                                     }
                                 }
                             }
@@ -3013,13 +3016,13 @@ async fn wire_peer_channels(
                                     let file_path = base.join(rel);
                                     if file_path.is_dir() {
                                         match tokio::fs::remove_dir_all(&file_path).await {
-                                            Ok(()) => println!("[file-sync] ✓ rmdir {}", rel),
-                                            Err(e) => eprintln!("[file-sync] ✗ rmdir {}: {}", rel, e),
+                                            Ok(()) => debug_log!("[file-sync] ✓ rmdir {}", rel),
+                                            Err(e) => debug_log!("[file-sync] ✗ rmdir {}: {}", rel, e),
                                         }
                                     } else {
                                         match tokio::fs::remove_file(&file_path).await {
-                                            Ok(()) => println!("[file-sync] ✓ delete {}", rel),
-                                            Err(e) => eprintln!("[file-sync] ✗ delete {}: {}", rel, e),
+                                            Ok(()) => debug_log!("[file-sync] ✓ delete {}", rel),
+                                            Err(e) => debug_log!("[file-sync] ✗ delete {}: {}", rel, e),
                                         }
                                     }
                                 }
@@ -3038,8 +3041,8 @@ async fn wire_peer_channels(
                                         let _ = tokio::fs::create_dir_all(parent).await;
                                     }
                                     match tokio::fs::rename(&from_path, &to_path).await {
-                                        Ok(()) => println!("[file-sync] ✓ rename {} → {}", from, to),
-                                        Err(e) => eprintln!("[file-sync] ✗ rename {} → {}: {}", from, to, e),
+                                        Ok(()) => debug_log!("[file-sync] ✓ rename {} → {}", from, to),
+                                        Err(e) => debug_log!("[file-sync] ✗ rename {} → {}: {}", from, to, e),
                                     }
                                 }
                             }
@@ -3049,13 +3052,13 @@ async fn wire_peer_channels(
                                     if rel.contains("..") { return; }
                                     let dir_path = base.join(rel);
                                     match tokio::fs::create_dir_all(&dir_path).await {
-                                        Ok(()) => println!("[file-sync] ✓ mkdir {}", rel),
-                                        Err(e) => eprintln!("[file-sync] ✗ mkdir {}: {}", rel, e),
+                                        Ok(()) => debug_log!("[file-sync] ✓ mkdir {}", rel),
+                                        Err(e) => debug_log!("[file-sync] ✗ mkdir {}: {}", rel, e),
                                     }
                                 }
                             }
                             _ => {
-                                eprintln!("[file-sync] Unknown op: {}", op);
+                                debug_log!("[file-sync] Unknown op: {}", op);
                             }
                         }
                     }
@@ -3088,7 +3091,7 @@ async fn wire_peer_channels(
             // a deprecation error so it knows to use vscode-server instead.
             else if label.starts_with("ext-host") {
                 let dc_clone = dc.clone();
-                eprintln!(
+                debug_log!(
                     "[ext-host] DEPRECATED: ext-host DataChannel requested — \
                      use vscode-server DC instead.  Sending deprecation error."
                 );
@@ -3124,7 +3127,7 @@ async fn wire_peer_channels(
                     if let Some((_tx, spawned_at)) = guard.as_ref() {
                         let age = spawned_at.elapsed();
                         if age < std::time::Duration::from_secs(10) {
-                            println!(
+                            debug_log!(
                                 "[vscode-server] Ignoring duplicate DC (current process only {}ms old)",
                                 age.as_millis()
                             );
@@ -3138,7 +3141,7 @@ async fn wire_peer_channels(
                 {
                     let mut guard = vscode_server_kill_tx_outer.lock().await;
                     if let Some((old_tx, _)) = guard.take() {
-                        println!("[vscode-server] Killing previous vscode-server-manager process");
+                        debug_log!("[vscode-server] Killing previous vscode-server-manager process");
                         let _ = old_tx.send(());
                     }
                 }
@@ -3158,13 +3161,13 @@ async fn wire_peer_channels(
                     async move { let _ = tx.send(msg); }.boxed()
                 }));
 
-                println!("[on_data_channel] vscode-server branch matched, spawning vscode-server-manager.js...");
+                debug_log!("[on_data_channel] vscode-server branch matched, spawning vscode-server-manager.js...");
 
                 // Signal when DC opens
                 let (dc_open_tx, dc_open_rx) = tokio::sync::oneshot::channel::<()>();
                 let dc_open_tx = std::sync::Mutex::new(Some(dc_open_tx));
                 dc.on_open(Box::new(move || {
-                    println!("[vscode-server] DataChannel is now open");
+                    debug_log!("[vscode-server] DataChannel is now open");
                     if let Some(tx) = dc_open_tx.lock().unwrap().take() {
                         let _ = tx.send(());
                     }
@@ -3192,7 +3195,7 @@ async fn wire_peer_channels(
                         match found {
                             Some(p) => p,
                             None => {
-                                eprintln!("[vscode-server] vscode-server-manager.js not found");
+                                debug_log!("[vscode-server] vscode-server-manager.js not found");
                                 let err = serde_json::json!({
                                     "id": 0, "type": "event", "method": "error",
                                     "args": ["vscode-server-manager.js not found on worker"],
@@ -3204,7 +3207,7 @@ async fn wire_peer_channels(
                         }
                     };
 
-                    println!("[vscode-server] Using script: {}", manager_script.display());
+                    debug_log!("[vscode-server] Using script: {}", manager_script.display());
 
                     let mut cmd = Command::new("node");
                     cmd.arg(&manager_script);
@@ -3242,11 +3245,11 @@ async fn wire_peer_channels(
                                     std::time::Duration::from_secs(15),
                                     dc_open_rx,
                                 ).await {
-                                    Err(_) => { eprintln!("[vscode-server] Timed out waiting for DC open"); return; }
-                                    Ok(Err(_)) => { eprintln!("[vscode-server] DC open signal dropped"); return; }
+                                    Err(_) => { debug_log!("[vscode-server] Timed out waiting for DC open"); return; }
+                                    Ok(Err(_)) => { debug_log!("[vscode-server] DC open signal dropped"); return; }
                                     Ok(Ok(())) => {}
                                 }
-                                println!("[vscode-server] DC open, starting stdout→DC forwarding");
+                                debug_log!("[vscode-server] DC open, starting stdout→DC forwarding");
                                 let mut reader = BufReader::new(stdout);
                                 let mut line = String::new();
                                 loop {
@@ -3265,7 +3268,7 @@ async fn wire_peer_channels(
                                                     .duration_since(std::time::UNIX_EPOCH)
                                                     .unwrap().as_nanos() % 0xFFFFFFFF) as u32;
                                                 let chunks = make_chunks(data_bytes, msg_id);
-                                                println!("[vscode-server] Chunking large message: {} bytes → {} chunks", data_bytes.len(), chunks.len());
+                                                debug_log!("[vscode-server] Chunking large message: {} bytes → {} chunks", data_bytes.len(), chunks.len());
                                                 for chunk in chunks {
                                                     let data = Bytes::from(chunk);
                                                     if let Err(e) = dc_send_with_backpressure(&dc_out, &data, "vscode-server").await {
@@ -3284,7 +3287,7 @@ async fn wire_peer_channels(
                                         Err(e) => { eprintln!("[vscode-server] stdout read error: {}", e); break; }
                                     }
                                 }
-                                println!("[vscode-server] stdout reader exited");
+                                debug_log!("[vscode-server] stdout reader exited");
                             });
 
                             // stderr → logs
@@ -3303,16 +3306,16 @@ async fn wire_peer_channels(
 
                             let _ = tokio::select! {
                                 status = child.wait() => {
-                                    println!("[vscode-server] Manager process exited: {:?}", status);
+                                    debug_log!("[vscode-server] Manager process exited: {:?}", status);
                                     status
                                 }
                                 _ = kill_rx.recv() => {
-                                    println!("[vscode-server] Received kill signal, terminating manager");
+                                    debug_log!("[vscode-server] Received kill signal, terminating manager");
                                     let _ = child.kill().await;
                                     child.wait().await
                                 }
                             };
-                            println!("[vscode-server] Manager process cleanup complete");
+                            debug_log!("[vscode-server] Manager process cleanup complete");
                         }
                         Err(e) => {
                             eprintln!("[vscode-server] Failed to spawn Node.js: {}", e);
@@ -3353,7 +3356,7 @@ async fn wire_peer_channels(
                 let (dc_open_tx, dc_open_rx) = tokio::sync::oneshot::channel::<()>();
                 let dc_open_tx = std::sync::Mutex::new(Some(dc_open_tx));
                 dc.on_open(Box::new(move || {
-                    println!("[vscode-ws-tunnel] DataChannel opened, port={}", port);
+                    debug_log!("[vscode-ws-tunnel] DataChannel opened, port={}", port);
                     if let Some(tx) = dc_open_tx.lock().unwrap().take() {
                         let _ = tx.send(());
                     }
@@ -3363,7 +3366,7 @@ async fn wire_peer_channels(
                 tokio::spawn(async move {
                     // Wait for DC open
                     if dc_open_rx.await.is_err() {
-                        eprintln!("[vscode-ws-tunnel] DC open signal dropped");
+                        debug_log!("[vscode-ws-tunnel] DC open signal dropped");
                         return;
                     }
 
@@ -3382,7 +3385,7 @@ async fn wire_peer_channels(
                             return;
                         }
                     };
-                    println!("[vscode-ws-tunnel] TCP connected to {}", addr);
+                    debug_log!("[vscode-ws-tunnel] TCP connected to {}", addr);
 
                     let (tcp_read, mut tcp_write) = tcp_stream.into_split();
 
@@ -3391,7 +3394,7 @@ async fn wire_peer_channels(
                         while let Some(msg) = incoming_rx.recv().await {
                             if tcp_write.write_all(&msg.data).await.is_err() { break; }
                         }
-                        println!("[vscode-ws-tunnel] DC→TCP forwarder exited");
+                        debug_log!("[vscode-ws-tunnel] DC→TCP forwarder exited");
                     });
 
                     // TCP → DC: forward TCP data back to DataChannel
@@ -3412,7 +3415,7 @@ async fn wire_peer_channels(
                                 }
                             }
                         }
-                        println!("[vscode-ws-tunnel] TCP→DC forwarder exited");
+                        debug_log!("[vscode-ws-tunnel] TCP→DC forwarder exited");
                     });
 
                     // Wait for either direction to finish
@@ -3420,7 +3423,7 @@ async fn wire_peer_channels(
                         _ = dc_to_tcp => {}
                         _ = tcp_to_dc => {}
                     }
-                    println!("[vscode-ws-tunnel] Tunnel closed for port {}", port);
+                    debug_log!("[vscode-ws-tunnel] Tunnel closed for port {}", port);
                 });
             }
         }
@@ -3618,7 +3621,7 @@ fn apply_shared_guardrails(content: &str) -> String {
             "gui_on_load(void* prev_state, void* window_ptr)",
             "gui_on_load(void* prev_state, void* window_ptr, void* core_api_ptr)",
         );
-        eprintln!("[Guardrail] Fixed gui_on_load declaration in shared.h: added missing core_api_ptr parameter");
+        debug_log!("[Guardrail] Fixed gui_on_load declaration in shared.h: added missing core_api_ptr parameter");
     }
 
     result
@@ -4440,7 +4443,7 @@ fn try_local_deletion_patch(
                     new_shared = new_shared
                         .replace(&field_pattern, &format!("// REMOVED: {}", field_pattern));
                     any_changes = true;
-                    eprintln!("[LocalPatch] Removed field {} from shared.h", var_name);
+                    debug_log!("[LocalPatch] Removed field {} from shared.h", var_name);
                 }
 
                 // Comment out references in core.cpp - collect lines to replace first
@@ -4491,7 +4494,7 @@ fn try_local_deletion_patch(
         shared["content"] = serde_json::Value::String(new_shared);
     }
 
-    eprintln!("[LocalPatch] Applied local deletion patch - no AI call needed");
+    debug_log!("[LocalPatch] Applied local deletion patch - no AI call needed");
     Some(result)
 }
 
@@ -4572,7 +4575,7 @@ fn detect_gui_modifications(old_source: &str, new_source: &str) -> Option<String
         return None;
     }
 
-    eprintln!(
+    debug_log!(
         "[AI Split] Detected {} GUI modifications",
         modifications.len()
     );
@@ -4747,7 +4750,7 @@ async fn perform_structural_ai_update(
     let backend_url = get_ai_backend_url();
     let url = format!("{}/refactor/delta", backend_url);
 
-    eprintln!("[AI Split] Calling fast delta endpoint: {}", url);
+    debug_log!("[AI Split] Calling fast delta endpoint: {}", url);
 
     let res = client
         .post(&url)
@@ -4763,7 +4766,7 @@ async fn perform_structural_ai_update(
     if let Some(result) = res.get("result") {
         if result.is_object() && result.get("core").is_some() {
             let elapsed = start_time.elapsed();
-            eprintln!("[AI Split] Delta injection completed in {:?}", elapsed);
+            debug_log!("[AI Split] Delta injection completed in {:?}", elapsed);
             return Ok(result.clone());
         }
     }
@@ -4821,7 +4824,7 @@ async fn perform_structural_ai_update(
         Ok(v) => v,
         Err(e) => {
             eprintln!("[AI Split] JSON parse error in structural update: {}", e);
-            eprintln!(
+            debug_log!(
                 "[AI Split] Attempted to parse: {}...",
                 &json_only.chars().take(500).collect::<String>()
             );
@@ -4830,7 +4833,7 @@ async fn perform_structural_ai_update(
     };
 
     let elapsed = start_time.elapsed();
-    eprintln!("[AI Split] Structural update completed in {:?}", elapsed);
+    debug_log!("[AI Split] Structural update completed in {:?}", elapsed);
 
     Ok(updated_data)
 }
@@ -4872,7 +4875,7 @@ async fn perform_delta_deletion(
     let backend_url = get_ai_backend_url();
     let url = format!("{}/refactor/delta", backend_url);
 
-    eprintln!("[AI Split] Calling delta deletion endpoint: {}", url);
+    debug_log!("[AI Split] Calling delta deletion endpoint: {}", url);
 
     let res = client
         .post(&url)
@@ -4887,7 +4890,7 @@ async fn perform_delta_deletion(
     if let Some(result) = res.get("result") {
         if result.is_object() && result.get("core").is_some() {
             let elapsed = start_time.elapsed();
-            eprintln!("[AI Split] Delta deletion completed in {:?}", elapsed);
+            debug_log!("[AI Split] Delta deletion completed in {:?}", elapsed);
             return Ok(result.clone());
         }
     }
@@ -4942,7 +4945,7 @@ async fn perform_incremental_ai_update(
     let backend_url = get_ai_backend_url();
     let url = format!("{}/refactor/structural", backend_url);
 
-    eprintln!("[AI Split] Calling fast incremental endpoint: {}", url);
+    debug_log!("[AI Split] Calling fast incremental endpoint: {}", url);
 
     let res = client
         .post(&url)
@@ -4980,7 +4983,7 @@ async fn perform_incremental_ai_update(
     let updated_data: serde_json::Value = serde_json::from_str(clean_json)?;
 
     let elapsed = start_time.elapsed();
-    eprintln!("[AI Split] Incremental update completed in {:?}", elapsed);
+    debug_log!("[AI Split] Incremental update completed in {:?}", elapsed);
 
     Ok(updated_data)
 }
@@ -5127,7 +5130,7 @@ async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value> {
     {
         let cache = get_ai_split_cache().lock().await;
         if let Some(cached) = cache.get(&source_hash) {
-            eprintln!("[AI Split] Cache HIT (exact match) - instant return");
+            debug_log!("[AI Split] Cache HIT (exact match) - instant return");
             return Ok(cached.result.clone());
         }
     }
@@ -5146,7 +5149,7 @@ async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value> {
 
         // Check if any changes are semantic (colors, etc.) that need AI re-processing
         if has_semantic_string_changes(&old_strings, &new_strings) {
-            eprintln!("[AI Split] Structural match but SEMANTIC change detected - using incremental AI update");
+            debug_log!("[AI Split] Structural match but SEMANTIC change detected - using incremental AI update");
 
             // Level 2.5: Incremental AI update (faster than full regen)
             // Ask AI to just update the specific changes, not regenerate everything
@@ -5167,11 +5170,11 @@ async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value> {
                             let mut structural_cache = get_ai_split_structural_cache().lock().await;
                             structural_cache.insert(structural_hash, cached_entry);
                         }
-                        eprintln!("[AI Split] Incremental update complete - fast semantic HMR!");
+                        debug_log!("[AI Split] Incremental update complete - fast semantic HMR!");
                         return Ok(updated_result);
                     }
                     Err(e) => {
-                        eprintln!(
+                        debug_log!(
                             "[AI Split] Incremental update failed: {} - falling back to full regen",
                             e
                         );
@@ -5180,7 +5183,7 @@ async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value> {
                 }
             }
         } else {
-            eprintln!("[AI Split] Cache HIT (structural match) - patching strings...");
+            debug_log!("[AI Split] Cache HIT (structural match) - patching strings...");
 
             // Patch the cached result with new strings
             let (patched_result, did_patch) =
@@ -5190,7 +5193,7 @@ async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value> {
             // Fall back to AI call
             let strings_differ = old_strings != new_strings;
             if strings_differ && !did_patch {
-                eprintln!(
+                debug_log!(
                     "[AI Split] String patching FAILED (strings not found in output) - calling AI"
                 );
                 // Fall through to Level 3 (AI call)
@@ -5207,7 +5210,7 @@ async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value> {
                     );
                 }
 
-                eprintln!("[AI Split] String patching complete - fast HMR!");
+                debug_log!("[AI Split] String patching complete - fast HMR!");
                 return Ok(patched_result);
             }
         }
@@ -5223,7 +5226,7 @@ async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value> {
     if let Some(cached) = any_cached_for_deletion {
         let deletions = detect_structural_deletions(&cached.original_source, &req.source);
         if !deletions.is_empty() {
-            eprintln!(
+            debug_log!(
                 "[AI Split] Detected {} deleted lines - attempting local patch",
                 deletions.len()
             );
@@ -5242,7 +5245,7 @@ async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value> {
                     let mut structural_cache = get_ai_split_structural_cache().lock().await;
                     structural_cache.insert(structural_hash, cached_entry);
                 }
-                eprintln!("[AI Split] Local deletion patch applied - instant HMR!");
+                debug_log!("[AI Split] Local deletion patch applied - instant HMR!");
                 return Ok(patched_result);
             } else {
                 eprintln!("[AI Split] Local deletion patch failed - will try AI delta deletion");
@@ -5269,11 +5272,11 @@ async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value> {
                             let mut structural_cache = get_ai_split_structural_cache().lock().await;
                             structural_cache.insert(structural_hash, cached_entry);
                         }
-                        eprintln!("[AI Split] Delta deletion complete - fast HMR!");
+                        debug_log!("[AI Split] Delta deletion complete - fast HMR!");
                         return Ok(updated_result);
                     }
                     Err(e) => {
-                        eprintln!(
+                        debug_log!(
                             "[AI Split] Delta deletion failed: {} - will try other paths",
                             e
                         );
@@ -5297,11 +5300,11 @@ async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value> {
         if let Some(structural_changes) =
             detect_structural_additions(&cached.original_source, &req.source)
         {
-            eprintln!("[AI Split] ╔═══════════════════════════════════════════════════════════╗");
-            eprintln!("[AI Split] ║  DELTA CHANGE DETECTED - Using fast incremental path     ║");
-            eprintln!("[AI Split] ╚═══════════════════════════════════════════════════════════╝");
-            eprintln!("[AI Split] Delta type: Structural ADDITION (new element/button)");
-            eprintln!(
+            debug_log!("[AI Split] ╔═══════════════════════════════════════════════════════════╗");
+            debug_log!("[AI Split] ║  DELTA CHANGE DETECTED - Using fast incremental path     ║");
+            debug_log!("[AI Split] ╚═══════════════════════════════════════════════════════════╝");
+            debug_log!("[AI Split] Delta type: Structural ADDITION (new element/button)");
+            debug_log!(
                 "[AI Split] X11 code to translate:\n{}",
                 structural_changes
                     .lines()
@@ -5309,7 +5312,7 @@ async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value> {
                     .collect::<Vec<_>>()
                     .join("\n")
             );
-            eprintln!("[AI Split] NOTE: Runner will NOT restart - HMR will hot-reload the modules");
+            debug_log!("[AI Split] NOTE: Runner will NOT restart - HMR will hot-reload the modules");
 
             match perform_structural_ai_update(
                 &cached.result,
@@ -5334,11 +5337,11 @@ async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value> {
                         let mut structural_cache = get_ai_split_structural_cache().lock().await;
                         structural_cache.insert(structural_hash, cached_entry);
                     }
-                    eprintln!("[AI Split] ✓ Delta injection complete - fast HMR for new elements!");
+                    debug_log!("[AI Split] ✓ Delta injection complete - fast HMR for new elements!");
                     return Ok(updated_result);
                 }
                 Err(e) => {
-                    eprintln!(
+                    debug_log!(
                         "[AI Split] ✗ Structural update failed: {} - falling back to full regen",
                         e
                     );
@@ -5351,11 +5354,11 @@ async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value> {
         else if let Some(gui_changes) =
             detect_gui_modifications(&cached.original_source, &req.source)
         {
-            eprintln!("[AI Split] ╔═══════════════════════════════════════════════════════════╗");
-            eprintln!("[AI Split] ║  GUI MODIFICATION DETECTED - Using fast delta path       ║");
-            eprintln!("[AI Split] ╚═══════════════════════════════════════════════════════════╝");
-            eprintln!("[AI Split] Delta type: GUI MODIFICATION (position/color/size change)");
-            eprintln!(
+            debug_log!("[AI Split] ╔═══════════════════════════════════════════════════════════╗");
+            debug_log!("[AI Split] ║  GUI MODIFICATION DETECTED - Using fast delta path       ║");
+            debug_log!("[AI Split] ╚═══════════════════════════════════════════════════════════╝");
+            debug_log!("[AI Split] Delta type: GUI MODIFICATION (position/color/size change)");
+            debug_log!(
                 "[AI Split] Modified GUI code:\n{}",
                 gui_changes.lines().take(5).collect::<Vec<_>>().join("\n")
             );
@@ -5382,7 +5385,7 @@ async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value> {
                         let mut structural_cache = get_ai_split_structural_cache().lock().await;
                         structural_cache.insert(structural_hash, cached_entry);
                     }
-                    eprintln!("[AI Split] ✓ GUI modification delta complete - fast HMR!");
+                    debug_log!("[AI Split] ✓ GUI modification delta complete - fast HMR!");
                     return Ok(updated_result);
                 }
                 Err(e) => {
@@ -5393,7 +5396,7 @@ async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value> {
     }
 
     // Level 3: Cache miss - call AI backend (full regeneration)
-    eprintln!("[AI Split] Cache MISS (no incremental path) - calling AI backend for full split...");
+    debug_log!("[AI Split] Cache MISS (no incremental path) - calling AI backend for full split...");
     let start_time = std::time::Instant::now();
 
     let client = reqwest::Client::new();
@@ -5447,17 +5450,17 @@ async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value> {
             if e.to_string().contains("EOF") {
                 let repaired = format!("{}\"}}", clean_json);
                 if let Ok(v) = serde_json::from_str(&repaired) {
-                    println!("Successfully repaired truncated JSON response.");
+                    debug_log!("Successfully repaired truncated JSON response.");
                     v
                 } else {
                     // Try just closing brace if it wasn't in a string
                     let repaired_brace = format!("{}}}", clean_json);
                     if let Ok(v) = serde_json::from_str(&repaired_brace) {
-                        println!("Successfully repaired truncated JSON response (brace only).");
+                        debug_log!("Successfully repaired truncated JSON response (brace only).");
                         v
                     } else {
-                        println!("Failed to parse AI response: {}", e);
-                        println!("Raw content: {}", clean_json);
+                        debug_log!("Failed to parse AI response: {}", e);
+                        debug_log!("Raw content: {}", clean_json);
                         let snippet: String = clean_json.chars().take(1000).collect();
                         return Err(anyhow::anyhow!(
                             "JSON Parse Error: {}. \nRaw content snippet: {}...",
@@ -5467,8 +5470,8 @@ async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value> {
                     }
                 }
             } else {
-                println!("Failed to parse AI response: {}", e);
-                println!("Raw content: {}", clean_json);
+                debug_log!("Failed to parse AI response: {}", e);
+                debug_log!("Raw content: {}", clean_json);
                 let snippet: String = clean_json.chars().take(1000).collect();
                 return Err(anyhow::anyhow!(
                     "JSON Parse Error: {}. \nRaw content snippet: {}...",
@@ -5481,7 +5484,7 @@ async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value> {
 
     // Cache the result for future requests
     let elapsed = start_time.elapsed();
-    eprintln!("[AI Split] Completed in {:?}", elapsed);
+    debug_log!("[AI Split] Completed in {:?}", elapsed);
 
     let cached_entry = CachedSplit {
         result: split_data.clone(),
@@ -5719,12 +5722,12 @@ fn find_rust_sysroot_info() -> (Option<String>, Option<String>) {
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
         .unwrap_or_default();
 
-    println!(
+    debug_log!(
         "[LSP] RA sysroot (with CARGO_HOME/bin in PATH): {}",
         sysroot
     );
     if !system_sysroot.is_empty() && system_sysroot != sysroot {
-        println!("[LSP] System sysroot (default PATH): {} — MISMATCH! This is likely the cause of missing Vec:: completions", system_sysroot);
+        debug_log!("[LSP] System sysroot (default PATH): {} — MISMATCH! This is likely the cause of missing Vec:: completions", system_sysroot);
     }
 
     // Check candidate locations in priority order
@@ -5793,7 +5796,7 @@ fn ensure_lsp_config(workspace: &std::path::Path, lang: &str) {
 }
 "#,
                     );
-                    println!("[LSP-CONFIG] Created jsconfig.json for standalone JS workspace");
+                    debug_log!("[LSP-CONFIG] Created jsconfig.json for standalone JS workspace");
                 }
             }
         }
@@ -5818,7 +5821,7 @@ fn ensure_lsp_config(workspace: &std::path::Path, lang: &str) {
 }
 "#,
                     );
-                    println!("[LSP-CONFIG] Created tsconfig.json for standalone TS workspace");
+                    debug_log!("[LSP-CONFIG] Created tsconfig.json for standalone TS workspace");
                 }
             }
         }
@@ -5828,7 +5831,7 @@ fn ensure_lsp_config(workspace: &std::path::Path, lang: &str) {
             if !go_mod.exists() {
                 if let Ok(mut f) = std::fs::File::create(&go_mod) {
                     let _ = f.write_all(b"module synthi-workspace\n\ngo 1.21\n");
-                    println!("[LSP-CONFIG] Created go.mod for standalone Go workspace");
+                    debug_log!("[LSP-CONFIG] Created go.mod for standalone Go workspace");
                 }
             }
         }
@@ -5942,7 +5945,7 @@ path = "{}"
                                 bin_name, rs_file
                             );
                         }
-                        println!("[LSP-CONFIG] Created Cargo.toml with {} bin targets for standalone Rust workspace", rs_files.len());
+                        debug_log!("[LSP-CONFIG] Created Cargo.toml with {} bin targets for standalone Rust workspace", rs_files.len());
                     }
                     true
                 } else {
@@ -5957,7 +5960,7 @@ path = "{}"
                 // Only run if we created the Cargo.toml or there's no Cargo.lock.
                 let cargo_lock = workspace.join("Cargo.lock");
                 if created_toml || !cargo_lock.exists() {
-                    println!("[LSP-CONFIG] Running cargo metadata to warm RA cache...");
+                    debug_log!("[LSP-CONFIG] Running cargo metadata to warm RA cache...");
 
                     if cfg!(target_os = "windows") {
                         // Run inside WSL where rust-analyzer lives.
@@ -5980,11 +5983,11 @@ path = "{}"
                             .stderr(std::process::Stdio::piped())
                             .status();
                         match meta_status {
-                            Ok(s) if s.success() => println!(
+                            Ok(s) if s.success() => debug_log!(
                                 "[LSP-CONFIG] cargo metadata (WSL) succeeded — Cargo.lock ready"
                             ),
                             Ok(s) => {
-                                eprintln!("[LSP-CONFIG] cargo metadata (WSL) exited with {}", s)
+                                debug_log!("[LSP-CONFIG] cargo metadata (WSL) exited with {}", s)
                             }
                             Err(e) => eprintln!("[LSP-CONFIG] cargo metadata (WSL) failed: {}", e),
                         }
@@ -6007,9 +6010,9 @@ path = "{}"
                             .status();
                         match meta_status {
                             Ok(s) if s.success() => {
-                                println!("[LSP-CONFIG] cargo metadata succeeded — Cargo.lock ready")
+                                debug_log!("[LSP-CONFIG] cargo metadata succeeded — Cargo.lock ready")
                             }
-                            Ok(s) => eprintln!("[LSP-CONFIG] cargo metadata exited with {}", s),
+                            Ok(s) => debug_log!("[LSP-CONFIG] cargo metadata exited with {}", s),
                             Err(e) => eprintln!("[LSP-CONFIG] cargo metadata failed: {}", e),
                         }
                     }
@@ -6133,13 +6136,13 @@ path = "{}"
                             }
 
                             if found.is_none() {
-                                println!("[LSP-CONFIG] rust-src not found at any known location, RA will have no stdlib completions");
+                                debug_log!("[LSP-CONFIG] rust-src not found at any known location, RA will have no stdlib completions");
                                 let candidates_display = [
                                     format!("{}/lib/rustlib/src/rust/library", sysroot),
                                     "/usr/src/rustc-*/library".to_string(),
                                     format!("{}/lib/rustlib/src/rust", sysroot),
                                 ];
-                                println!("[LSP-CONFIG] Searched: {:?}", candidates_display);
+                                debug_log!("[LSP-CONFIG] Searched: {:?}", candidates_display);
                             }
                         }
                         found
@@ -6183,7 +6186,7 @@ path = "{}"
                             sysroot_line,
                             crates.join(",\n")
                         );
-                        println!("[LSP-CONFIG] Created rust-project.json for standalone Rust workspace (no cargo)");
+                        debug_log!("[LSP-CONFIG] Created rust-project.json for standalone Rust workspace (no cargo)");
                     }
                 }
             }
@@ -6195,7 +6198,7 @@ path = "{}"
                     let _ = f.write_all(
                         b"name: synthi_workspace\nenvironment:\n  sdk: '>=3.0.0 <4.0.0'\n",
                     );
-                    println!("[LSP-CONFIG] Created pubspec.yaml for standalone Dart workspace");
+                    debug_log!("[LSP-CONFIG] Created pubspec.yaml for standalone Dart workspace");
 
                     // Run 'dart pub get' so the Dart analysis server can resolve packages.
                     // Use the extended PATH that includes well-known Dart SDK locations.
@@ -6209,9 +6212,9 @@ path = "{}"
                         .stderr(std::process::Stdio::piped())
                         .status();
                     match pub_result {
-                        Ok(s) if s.success() => println!("[LSP-CONFIG] dart pub get succeeded"),
+                        Ok(s) if s.success() => debug_log!("[LSP-CONFIG] dart pub get succeeded"),
                         Ok(s) => {
-                            eprintln!("[LSP-CONFIG] dart pub get exited with code {:?}", s.code())
+                            debug_log!("[LSP-CONFIG] dart pub get exited with code {:?}", s.code())
                         }
                         Err(e) => {
                             // Try well-known paths if dart is not on PATH
@@ -6223,7 +6226,7 @@ path = "{}"
                                         .stdout(std::process::Stdio::piped())
                                         .stderr(std::process::Stdio::piped())
                                         .status();
-                                    println!("[LSP-CONFIG] Ran dart pub get via {}", candidate);
+                                    debug_log!("[LSP-CONFIG] Ran dart pub get via {}", candidate);
                                     break;
                                 }
                             }
@@ -6247,7 +6250,7 @@ path = "{}"
 }
 "#,
                     );
-                    println!("[LSP-CONFIG] Created .luarc.json for standalone Lua workspace");
+                    debug_log!("[LSP-CONFIG] Created .luarc.json for standalone Lua workspace");
                 }
             }
         }
@@ -6259,10 +6262,10 @@ path = "{}"
                 // Check root level too
                 let root_schema = workspace.join("schema.prisma");
                 if root_schema.exists() {
-                    println!("[LSP-CONFIG] Prisma schema found at root level");
+                    debug_log!("[LSP-CONFIG] Prisma schema found at root level");
                 }
             } else {
-                println!("[LSP-CONFIG] Prisma schema found at prisma/schema.prisma");
+                debug_log!("[LSP-CONFIG] Prisma schema found at prisma/schema.prisma");
             }
         }
         "json" | "jsonc" => {
@@ -6318,14 +6321,14 @@ fn apply_build_directives(content: &str, cmd: &mut Command) {
                         }
                     }
                     Ok(out) => {
-                        println!(
+                        debug_log!(
                             "pkg-config failed for {}: {}",
                             pkgs_str,
                             String::from_utf8_lossy(&out.stderr)
                         );
                     }
                     Err(e) => {
-                        println!("Failed to run pkg-config: {}", e);
+                        debug_log!("Failed to run pkg-config: {}", e);
                     }
                 }
             }
