@@ -87,41 +87,73 @@ pub async fn compile_core(
                 eprintln!("[CompileCore] g++ finished with status: {}", output.status);
 
                 if !output.status.success() {
-                    let stderr = String::from_utf8_lossy(&output.stderr);
-                    // CRITICAL: Log to worker output so errors are visible in
-                    // container logs — not just the data channel (which may be
-                    // disconnected or its send may silently fail).
-                    eprintln!("[CompileCore] g++ FAILED:\n{}", stderr);
+                    let stderr_str = String::from_utf8_lossy(&output.stderr).to_string();
+                    eprintln!("[CompileCore] g++ FAILED:\n{}", stderr_str);
 
-                    // Parse structured diagnostics from g++ JSON output
-                    let report = parse_compiler_output(&stderr, "core", CompilerType::Gcc, true);
-                    let diagnostics_json = report.to_json();
-                    let diag_payload = serde_json::json!({
-                        "sessionId": session_id.clone(),
-                        "type": "compile-diagnostics",
-                        "language": "cpp",
-                        "diagnostics": serde_json::from_str::<serde_json::Value>(&diagnostics_json).unwrap_or_default(),
-                        "error_count": report.error_count,
-                        "warning_count": report.warning_count,
-                        "stage": "compile_core"
-                    });
-                    if let Err(e) = ctx
-                        .log_dc
-                        .send_text(serde_json::to_string(&diag_payload).unwrap_or_default())
-                        .await
-                    {
-                        eprintln!("Failed to send diagnostics: {}", e);
+                    // ── AI Heal Loop: let the AI fix its own compile errors ──
+                    let shared_for_heal = tokio::fs::read_to_string(dir_path.join("shared.h")).await.unwrap_or_default();
+                    let mut heal_content = content.to_string();
+                    let mut heal_stderr = stderr_str.clone();
+                    let mut healed = false;
+
+                    for attempt in 0..2 {
+                        eprintln!("[CompileCore] AI heal attempt {} for core", attempt + 1);
+                        match crate::compiler::stages::ai_utils::perform_ai_heal(
+                            "core", &heal_content, &heal_stderr, &shared_for_heal,
+                        ).await {
+                            Ok(fixed) => {
+                                tokio::fs::write(dir_path.join(fname), &fixed).await?;
+                                let mut retry_cmd = system_command("g++");
+                                retry_cmd.arg("-shared").arg("-fPIC")
+                                    .arg("-D_POSIX_C_SOURCE=199309L").arg("-g").arg("-gdwarf-4")
+                                    .arg("-fno-omit-frame-pointer").arg("-fdiagnostics-format=json")
+                                    .arg(fname).arg("-I.").arg("-o").arg(&core_out)
+                                    .arg("-ldl").arg("-pthread").arg("-rdynamic");
+                                retry_cmd.current_dir(dir_path);
+                                retry_cmd.kill_on_drop(true);
+                                if let Ok(retry_child) = retry_cmd.spawn() {
+                                    if let Ok(Ok(retry_out)) = timeout(Duration::from_secs(30), retry_child.wait_with_output()).await {
+                                        if retry_out.status.success() {
+                                            eprintln!("[CompileCore] AI heal succeeded on attempt {}", attempt + 1);
+                                            healed = true;
+                                            break;
+                                        }
+                                        heal_stderr = String::from_utf8_lossy(&retry_out.stderr).to_string();
+                                        heal_content = fixed;
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                eprintln!("[CompileCore] AI heal failed: {}", e);
+                                break;
+                            }
+                        }
                     }
 
-                    // Return Err so the pipeline sends a single authoritative
-                    // {status:"done", success:false} with the real error text.
-                    // The diagnostics above are already sent separately for the overlay.
-                    let truncated = if stderr.len() > 500 {
-                        format!("{}…", &stderr[..500])
-                    } else {
-                        stderr.to_string()
-                    };
-                    anyhow::bail!("Core compilation failed: {}", truncated);
+                    if !healed {
+                        // Send diagnostics and fail
+                        let report = parse_compiler_output(&heal_stderr, "core", CompilerType::Gcc, true);
+                        let diagnostics_json = report.to_json();
+                        let diag_payload = serde_json::json!({
+                            "sessionId": session_id.clone(),
+                            "type": "compile-diagnostics",
+                            "language": "cpp",
+                            "diagnostics": serde_json::from_str::<serde_json::Value>(&diagnostics_json).unwrap_or_default(),
+                            "error_count": report.error_count,
+                            "warning_count": report.warning_count,
+                            "stage": "compile_core"
+                        });
+                        let _ = ctx.log_dc
+                            .send_text(serde_json::to_string(&diag_payload).unwrap_or_default())
+                            .await;
+
+                        let truncated = if heal_stderr.len() > 500 {
+                            format!("{}…", &heal_stderr[..500])
+                        } else {
+                            heal_stderr.clone()
+                        };
+                        anyhow::bail!("Core compilation failed: {}", truncated);
+                    }
                 }
 
                 let path = core_out.to_string_lossy().to_string();

@@ -101,34 +101,73 @@ pub async fn compile_gui(
                 eprintln!("[CompileGUI] g++ finished with status: {}", output.status);
 
                 if !output.status.success() {
-                    let stderr = String::from_utf8_lossy(&output.stderr);
-                    eprintln!("[CompileGUI] g++ FAILED:\n{}", stderr);
+                    let stderr_str = String::from_utf8_lossy(&output.stderr).to_string();
+                    eprintln!("[CompileGUI] g++ FAILED:\n{}", stderr_str);
 
-                    // Parse structured diagnostics from g++ JSON output
-                    let report = parse_compiler_output(&stderr, "gui", CompilerType::Gcc, true);
-                    let diagnostics_json = report.to_json();
-                    let diag_payload = serde_json::json!({
-                        "sessionId": session_id.clone(),
-                        "type": "compile-diagnostics",
-                        "language": "cpp",
-                        "diagnostics": serde_json::from_str::<serde_json::Value>(&diagnostics_json).unwrap_or_default(),
-                        "error_count": report.error_count,
-                        "warning_count": report.warning_count,
-                        "stage": "compile_gui"
-                    });
-                    let _ = ctx
-                        .log_dc
-                        .send_text(serde_json::to_string(&diag_payload).unwrap_or_default())
-                        .await;
+                    // ── AI Heal Loop ──
+                    let shared_for_heal = tokio::fs::read_to_string(dir_path.join("shared.h")).await.unwrap_or_default();
+                    let mut heal_content = content.clone();
+                    let mut heal_stderr = stderr_str.clone();
+                    let mut healed = false;
 
-                    // Return Err so the pipeline sends a single authoritative
-                    // {status:"done", success:false} with the real error text.
-                    let truncated = if stderr.len() > 500 {
-                        format!("{}…", &stderr[..500])
-                    } else {
-                        stderr.to_string()
-                    };
-                    anyhow::bail!("GUI compilation failed: {}", truncated);
+                    for attempt in 0..2 {
+                        eprintln!("[CompileGUI] AI heal attempt {} for gui", attempt + 1);
+                        match crate::compiler::stages::ai_utils::perform_ai_heal(
+                            "gui", &heal_content, &heal_stderr, &shared_for_heal,
+                        ).await {
+                            Ok(fixed) => {
+                                tokio::fs::write(dir_path.join(fname), &fixed).await?;
+                                let mut retry_cmd = system_command("g++");
+                                retry_cmd.arg("-shared").arg("-fPIC")
+                                    .arg("-D_POSIX_C_SOURCE=199309L").arg("-g").arg("-gdwarf-4")
+                                    .arg("-fno-omit-frame-pointer").arg("-fdiagnostics-format=json")
+                                    .arg(fname).arg("-I.").arg("-o").arg(&gui_out)
+                                    .arg("-ldl").arg("-rdynamic");
+                                if req_is_gui { retry_cmd.arg("-lSDL2"); }
+                                retry_cmd.current_dir(dir_path);
+                                retry_cmd.kill_on_drop(true);
+                                if let Ok(retry_child) = retry_cmd.spawn() {
+                                    if let Ok(Ok(retry_out)) = timeout(Duration::from_secs(30), retry_child.wait_with_output()).await {
+                                        if retry_out.status.success() {
+                                            eprintln!("[CompileGUI] AI heal succeeded on attempt {}", attempt + 1);
+                                            healed = true;
+                                            break;
+                                        }
+                                        heal_stderr = String::from_utf8_lossy(&retry_out.stderr).to_string();
+                                        heal_content = fixed;
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                eprintln!("[CompileGUI] AI heal failed: {}", e);
+                                break;
+                            }
+                        }
+                    }
+
+                    if !healed {
+                        let report = parse_compiler_output(&heal_stderr, "gui", CompilerType::Gcc, true);
+                        let diagnostics_json = report.to_json();
+                        let diag_payload = serde_json::json!({
+                            "sessionId": session_id.clone(),
+                            "type": "compile-diagnostics",
+                            "language": "cpp",
+                            "diagnostics": serde_json::from_str::<serde_json::Value>(&diagnostics_json).unwrap_or_default(),
+                            "error_count": report.error_count,
+                            "warning_count": report.warning_count,
+                            "stage": "compile_gui"
+                        });
+                        let _ = ctx.log_dc
+                            .send_text(serde_json::to_string(&diag_payload).unwrap_or_default())
+                            .await;
+
+                        let truncated = if heal_stderr.len() > 500 {
+                            format!("{}…", &heal_stderr[..500])
+                        } else {
+                            heal_stderr.clone()
+                        };
+                        anyhow::bail!("GUI compilation failed: {}", truncated);
+                    }
                 }
 
                 let gui_lib_path = gui_out.to_string_lossy().to_string();

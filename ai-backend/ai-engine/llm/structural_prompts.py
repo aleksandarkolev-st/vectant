@@ -533,3 +533,51 @@ def format_diff_patch_prompt(diff: str, core: str, gui: str, shared: str) -> str
         gui=gui,
         shared=shared,
     )
+
+
+# ============================================================
+# HEAL PROMPT: Fix compilation errors in AI-generated modules
+# ============================================================
+# The AI split produced code that doesn't compile. Instead of
+# regex guardrails, we send the error back to the AI to fix.
+# This prompt is tiny (~200 tokens context) so it's fast.
+# ============================================================
+
+HEAL_PROMPT = """Fix this C++ compilation error. Return ONLY the complete fixed file content.
+
+MODULE: {module}
+
+COMPILER ERRORS:
+{errors}
+
+CURRENT CODE:
+```cpp
+{code}
+```
+
+SHARED HEADER (for type reference):
+```cpp
+{shared}
+```
+
+RULES:
+- Fix ONLY the error(s) listed above
+- Do NOT change any other code
+- Do NOT add new features or refactor
+- Do NOT use malloc/new/calloc for AppState — use static storage
+- Do NOT call SDL_RenderPresent — the runner handles it
+- Do NOT include X11 headers — use SDL2 only
+- Return the COMPLETE file content, not a partial diff
+
+Return ONLY the fixed C++ code. No explanation, no markdown fences."""
+
+
+def format_heal_prompt(module: str, code: str, errors: str, shared: str) -> str:
+    """Format the heal prompt for a compilation error fix."""
+    return HEAL_PROMPT.format(
+        module=module,
+        code=code,
+        errors=errors,
+        shared=shared,
+    )
+    )

@@ -10,8 +10,43 @@ use regex::Regex;
 // Each guardrail represents a failure of the AI prompt.  When a
 // guardrail fires, it logs the event so prompt quality can be tracked.
 
+/// User-code adapters only (no AI-fix guardrails).
+/// Wraps main() → plugin format so user code runs in the runner.
+fn apply_core_user_adapters(content: &str) -> String {
+    let mut result = content.to_string();
+
+    // Only apply main()→plugin adapter (user code adaptation, not AI fix)
+    if !result.contains("core_on_load") && !result.contains("on_load") {
+        let re_main_no_args = Regex::new(r"\bint\s+main\s*\(\s*(void)?\s*\)").unwrap();
+        let re_main_args = Regex::new(r"\bint\s+main\s*\(").unwrap();
+
+        let mut handled = false;
+        if re_main_no_args.is_match(&result) {
+            result = re_main_no_args.replace(&result, "int user_main()").to_string();
+            result.push_str("\n\n#include <pthread.h>\nint user_main();\nextern \"C\" {\n");
+            result.push_str("    static void* main_thread_func(void* arg) { user_main(); return NULL; }\n");
+            handled = true;
+        } else if re_main_args.is_match(&result) {
+            result = re_main_args.replace(&result, "int user_main(").to_string();
+            result.push_str("\n\n#include <pthread.h>\nint user_main(int argc, char** argv);\nextern \"C\" {\n");
+            result.push_str("    static void* main_thread_func(void* arg) { char* app_name = (char*)\"app\"; char* argv[] = {app_name, NULL}; user_main(1, argv); return NULL; }\n");
+            handled = true;
+        }
+        if handled {
+            result.push_str("    void* core_on_load(void* prev_state, void* api) { pthread_t thread; pthread_create(&thread, NULL, main_thread_func, NULL); pthread_detach(thread); return NULL; }\n");
+            result.push_str("    void core_on_update(void* state, float dt) {}\n");
+            result.push_str("}\n");
+        }
+    }
+
+    result
+}
+
 /// Apply guardrails to shared.h content
 pub fn apply_shared_guardrails(content: &str) -> String {
+    if std::env::var("SYNTHI_SKIP_GUARDRAILS").is_ok() {
+        return content.to_string();
+    }
     let mut result = content.to_string();
 
     // Guardrails: AI sometimes typedefs X11 types to void, which conflicts with Xlib headers.
@@ -78,7 +113,15 @@ pub fn apply_shared_guardrails(content: &str) -> String {
 }
 
 /// Apply guardrails to core.cpp content (requires processed shared.h for context)
+///
+/// Set SYNTHI_SKIP_GUARDRAILS=1 to bypass AI-fix guardrails (relies on AI
+/// self-verification + compile-heal loop instead).  User-code adapters
+/// (main→entrypoint) still apply.
 pub fn apply_core_guardrails(content: &str, _shared_content: &str, allow_gui: bool) -> String {
+    if std::env::var("SYNTHI_SKIP_GUARDRAILS").is_ok() {
+        // Skip AI-fix guardrails — only apply user-code adapters
+        return apply_core_user_adapters(content);
+    }
     let mut result = content.to_string();
 
     // Fix common AI mistakes in core.cpp before compilation.
@@ -500,6 +543,9 @@ typedef struct HostKvApiV1 {
 
 /// Apply guardrails to gui.cpp content (requires processed shared.h for context)
 pub fn apply_gui_guardrails(content: &str, shared_content: &str) -> String {
+    if std::env::var("SYNTHI_SKIP_GUARDRAILS").is_ok() {
+        return content.to_string();
+    }
     let mut result = content.to_string();
 
     // Detect if shared.h has full struct definitions

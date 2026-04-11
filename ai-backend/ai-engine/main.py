@@ -43,6 +43,7 @@ from llm.structural_prompts import (
     format_delta_addition_prompt,
     format_delta_deletion_prompt,
     format_diff_patch_prompt,
+    format_heal_prompt,
     inject_delta_into_code,
     apply_deletion_delta,
 )
@@ -1796,6 +1797,66 @@ Return ONLY: {{"{req.target_module}": "...updated file content..."}}"""
         raise HTTPException(status_code=400, detail=f"Failed to parse AI patch response: {e}")
     except Exception as e:
         print(f"[DiffPatch] Error: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+class HealRequest(BaseModel):
+    """Request for AI-powered compilation error healing."""
+    module_name: str          # "core", "gui", or "shared"
+    module_content: str       # the broken code
+    error_messages: str       # g++ stderr / JSON diagnostics
+    shared_content: str = ""  # context: shared.h
+
+
+@app.post("/refactor/heal")
+async def refactor_heal(req: HealRequest):
+    """
+    Fix a compilation error in AI-generated module code.
+
+    The AI split produced code that doesn't compile. Instead of regex
+    guardrails, we send the g++ error + the broken code to the AI and
+    let it fix the specific error. Fast (~1-2s) because context is tiny.
+    """
+    start_time = time.time()
+
+    provider = get_provider(provider_name='gemini', use_custom=False)
+
+    prompt = format_heal_prompt(
+        module=req.module_name,
+        code=req.module_content,
+        errors=req.error_messages,
+        shared=req.shared_content,
+    )
+
+    try:
+        ai_response = await provider.ask_llm(
+            prompt,
+            "cpp",
+            None,
+            mode="delta",
+            model="gemini-3-flash-preview",
+        )
+
+        # Strip markdown fences if present
+        result = ai_response.strip()
+        if result.startswith("```cpp"):
+            result = result[6:]
+        elif result.startswith("```"):
+            result = result[3:]
+        if result.endswith("```"):
+            result = result[:-3]
+        result = result.strip()
+
+        elapsed = time.time() - start_time
+        print(f"[Heal] {req.module_name} fixed in {elapsed:.2f}s")
+
+        return {
+            "result": {"content": result},
+            "elapsed_seconds": elapsed,
+        }
+
+    except Exception as e:
+        print(f"[Heal] Error: {e}")
         raise HTTPException(status_code=400, detail=str(e))
 
 

@@ -834,3 +834,52 @@ pub async fn perform_targeted_delta_patch(
 
     Ok(patched.to_string())
 }
+
+/// Ask the AI to fix a compilation error in a module.
+///
+/// Sends the broken code + g++ error messages to `/refactor/heal`.
+/// The AI returns the complete fixed file (~1-2s).
+pub async fn perform_ai_heal(
+    module_name: &str,
+    module_content: &str,
+    error_messages: &str,
+    shared_content: &str,
+) -> Result<String> {
+    let client = reqwest::Client::new();
+    let backend_url = get_ai_backend_url();
+    let url = format!("{}/refactor/heal", backend_url);
+
+    eprintln!(
+        "[AI Heal] {} module, {} bytes code, {} bytes errors",
+        module_name,
+        module_content.len(),
+        error_messages.len()
+    );
+
+    let payload = serde_json::json!({
+        "module_name": module_name,
+        "module_content": module_content,
+        "error_messages": error_messages,
+        "shared_content": shared_content,
+    });
+
+    let res = client
+        .post(&url)
+        .json(&payload)
+        .timeout(std::time::Duration::from_secs(15))
+        .send()
+        .await?
+        .json::<serde_json::Value>()
+        .await?;
+
+    let elapsed = res.get("elapsed_seconds").and_then(|v| v.as_f64()).unwrap_or(0.0);
+    eprintln!("[AI Heal] {} completed in {:.2}s", module_name, elapsed);
+
+    let content = res
+        .get("result")
+        .and_then(|r| r.get("content"))
+        .and_then(|c| c.as_str())
+        .ok_or_else(|| anyhow::anyhow!("No content in heal response"))?;
+
+    Ok(content.to_string())
+}
