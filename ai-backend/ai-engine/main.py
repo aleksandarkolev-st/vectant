@@ -42,6 +42,7 @@ from llm.prompts import SPLIT_GUI_PROMPT
 from llm.structural_prompts import (
     format_delta_addition_prompt,
     format_delta_deletion_prompt,
+    format_diff_patch_prompt,
     inject_delta_into_code,
     apply_deletion_delta,
 )
@@ -1700,6 +1701,84 @@ async def refactor_structural(req: StructuralUpdateRequest):
     """
     # Redirect to delta endpoint
     return await refactor_delta(req)
+
+
+class DiffPatchRequest(BaseModel):
+    """Request for AI-powered diff patching of split modules."""
+    diff: str              # Unified diff of the user's source changes
+    core_content: str      # Current core.cpp
+    gui_content: str       # Current gui.cpp
+    shared_content: str    # Current shared.h
+    model: Optional[str] = None
+    api_key: Optional[str] = None
+
+
+@app.post("/refactor/diff_patch")
+async def refactor_diff_patch(req: DiffPatchRequest):
+    """
+    Apply a source diff to split module files using AI.
+
+    Given a unified diff of main.cpp changes + the current split files,
+    the AI patches only the affected modules.  Much faster than a full
+    re-split because the context is smaller and the AI only modifies
+    the changed parts.
+    """
+    start_time = time.time()
+
+    # Use Gemini Flash for speed (~2-3s)
+    provider = get_provider(provider_name='gemini', use_custom=bool(req.api_key))
+
+    prompt = format_diff_patch_prompt(
+        req.diff,
+        req.core_content,
+        req.gui_content,
+        req.shared_content,
+    )
+
+    try:
+        ai_response = await provider.ask_llm(
+            prompt,
+            "cpp",
+            None,
+            mode="delta",
+            model=req.model or "gemini-2.5-flash-lite",
+            api_key=req.api_key,
+        )
+
+        print(f"[DiffPatch] AI response:\n{ai_response[:500]}")
+
+        # Parse JSON from response
+        result_str = ai_response.strip()
+        if "```json" in result_str:
+            result_str = result_str.split("```json")[1].split("```")[0].strip()
+        elif "```" in result_str:
+            result_str = result_str.split("```")[1].split("```")[0].strip()
+
+        patched = json.loads(result_str)
+
+        # Build the result: only include files that the AI returned
+        result = {}
+        if "core" in patched:
+            result["core"] = {"content": patched["core"], "filename": "core.cpp"}
+        if "gui" in patched:
+            result["gui"] = {"content": patched["gui"], "filename": "gui.cpp"}
+        if "shared" in patched:
+            result["shared"] = {"content": patched["shared"], "filename": "shared.h"}
+
+        elapsed = time.time() - start_time
+        print(f"[DiffPatch] completed in {elapsed:.2f}s, patched: {list(result.keys())}")
+
+        return {
+            "result": result,
+            "elapsed_seconds": elapsed,
+        }
+
+    except json.JSONDecodeError as e:
+        print(f"[DiffPatch] JSON parse error: {e}")
+        raise HTTPException(status_code=400, detail=f"Failed to parse AI patch response: {e}")
+    except Exception as e:
+        print(f"[DiffPatch] Error: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 # =============================================================================

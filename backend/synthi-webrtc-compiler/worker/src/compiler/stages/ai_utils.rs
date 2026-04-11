@@ -749,3 +749,44 @@ pub async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value>
 
     Ok(res)
 }
+
+/// Call the AI diff-patch endpoint to apply a source diff to split modules.
+///
+/// Takes a unified diff of the user's source changes + current split file
+/// contents, sends them to the AI, and returns a JSON value with updated
+/// module contents for only the files that changed.
+pub async fn perform_ai_diff_patch(
+    diff: &str,
+    core_content: &str,
+    gui_content: &str,
+    shared_content: &str,
+) -> Result<serde_json::Value> {
+    let client = reqwest::Client::new();
+    let backend_url = get_ai_backend_url();
+    let url = format!("{}/refactor/diff_patch", backend_url);
+
+    eprintln!("[AI DiffPatch] Calling {} with diff ({} bytes)", url, diff.len());
+
+    let payload = serde_json::json!({
+        "diff": diff,
+        "core_content": core_content,
+        "gui_content": gui_content,
+        "shared_content": shared_content,
+    });
+
+    let res = client
+        .post(&url)
+        .json(&payload)
+        .timeout(std::time::Duration::from_secs(15))
+        .send()
+        .await?
+        .json::<serde_json::Value>()
+        .await?;
+
+    // The endpoint returns {"result": {"core": {...}, "gui": {...}, ...}}
+    let result = res.get("result").cloned().unwrap_or(serde_json::json!({}));
+    let elapsed = res.get("elapsed_seconds").and_then(|v| v.as_f64()).unwrap_or(0.0);
+    eprintln!("[AI DiffPatch] Completed in {:.2}s", elapsed);
+
+    Ok(result)
+}

@@ -8,7 +8,7 @@ use crate::compiler::context::CompileContext;
 use crate::infra::messages::CompileRequest;
 
 // Import our new modular stages
-use crate::compiler::stages::ai_utils::perform_ai_split;
+use crate::compiler::stages::ai_utils::{perform_ai_split, perform_ai_diff_patch};
 use crate::compiler::stages::compile_core::compile_core;
 use crate::compiler::stages::compile_gui::compile_gui;
 use crate::compiler::stages::guardrails::{
@@ -206,67 +206,79 @@ pub async fn handle_compile_request(
                 };
 
                 if let Some(old_source) = original_source {
-                    use crate::hmr::diff_patcher::patch_split_files;
-                    let patch = patch_split_files(
-                        &old_source,
-                        &req.source,
-                        &core_content,
-                        &gui_content,
-                        &shared_content,
-                    );
+                    // Build a simple unified diff for the AI
+                    let diff = build_simple_diff(&old_source, &req.source);
 
-                    if patch.has_changes() {
-                        let patched_core = patch.core.as_deref().unwrap_or(&core_content);
-                        let patched_gui = patch.gui.as_deref().unwrap_or(&gui_content);
-                        let patched_shared = patch.shared.as_deref().unwrap_or(&shared_content);
-
-                        debug_log!(
-                            "[HMR] Diff-patch applied: core={} gui={} shared={} unmatched={}",
-                            patch.core.is_some(), patch.gui.is_some(),
-                            patch.shared.is_some(), patch.unmatched_count
-                        );
-
-                        // Write patched files back to disk so subsequent compiles see them
-                        if let Some(ref p) = enrichment.adapted_status.core_path {
-                            let _ = tokio::fs::write(p, patched_core).await;
-                        }
-                        if let Some(ref p) = enrichment.adapted_status.gui_path {
-                            let _ = tokio::fs::write(p, patched_gui).await;
-                        }
-                        if let Some(ref p) = enrichment.adapted_status.shared_path {
-                            let _ = tokio::fs::write(p, patched_shared).await;
-                        }
-
-                        // Update sidecar with new source baseline
-                        let meta = serde_json::json!({
-                            "split_hash": source_hash_str,
-                            "original_source": req.source,
-                        });
-                        let _ = tokio::fs::write(&sidecar_path, serde_json::to_string(&meta).unwrap_or_default()).await;
-
-                        serde_json::json!({
-                            "shared": { "content": patched_shared, "filename": "shared.h" },
-                            "core": { "content": patched_core, "filename": "core.cpp" },
-                            "gui": { "content": patched_gui, "filename": "gui.cpp" }
-                        })
-                    } else if patch.unmatched_count > 0 {
-                        // Changes couldn't be mapped — need AI re-split
-                        debug_log!("[HMR] Diff-patch failed ({} unmatched), falling back to AI split", patch.unmatched_count);
-                        let result = perform_ai_split(&req).await?;
-                        let meta = serde_json::json!({
-                            "split_hash": source_hash_str,
-                            "original_source": req.source,
-                        });
-                        let _ = tokio::fs::write(&sidecar_path, serde_json::to_string(&meta).unwrap_or_default()).await;
-                        result
-                    } else {
-                        // No diff at all — use existing split files
+                    if diff.is_empty() {
+                        // No actual changes — use existing split files
                         debug_log!("[HMR] FallbackDeterministic → no diff detected");
                         serde_json::json!({
                             "shared": { "content": shared_content, "filename": "shared.h" },
                             "core": { "content": core_content, "filename": "core.cpp" },
                             "gui": { "content": gui_content, "filename": "gui.cpp" }
                         })
+                    } else {
+                        // Ask AI to patch the diff into the split files (~2-3s)
+                        debug_log!("[HMR] AI diff-patch: {} bytes of diff", diff.len());
+                        match perform_ai_diff_patch(&diff, &core_content, &gui_content, &shared_content).await {
+                            Ok(patched) => {
+                                // Merge patched files with existing content
+                                let final_core = patched.get("core")
+                                    .and_then(|v| v.get("content").or(Some(v)))
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or(&core_content);
+                                let final_gui = patched.get("gui")
+                                    .and_then(|v| v.get("content").or(Some(v)))
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or(&gui_content);
+                                let final_shared = patched.get("shared")
+                                    .and_then(|v| v.get("content").or(Some(v)))
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or(&shared_content);
+
+                                debug_log!(
+                                    "[HMR] AI diff-patch applied: core={} gui={} shared={}",
+                                    patched.get("core").is_some(),
+                                    patched.get("gui").is_some(),
+                                    patched.get("shared").is_some(),
+                                );
+
+                                // Write patched files back to disk
+                                if let Some(ref p) = enrichment.adapted_status.core_path {
+                                    let _ = tokio::fs::write(p, final_core).await;
+                                }
+                                if let Some(ref p) = enrichment.adapted_status.gui_path {
+                                    let _ = tokio::fs::write(p, final_gui).await;
+                                }
+                                if let Some(ref p) = enrichment.adapted_status.shared_path {
+                                    let _ = tokio::fs::write(p, final_shared).await;
+                                }
+
+                                // Update sidecar baseline
+                                let meta = serde_json::json!({
+                                    "split_hash": source_hash_str,
+                                    "original_source": req.source,
+                                });
+                                let _ = tokio::fs::write(&sidecar_path, serde_json::to_string(&meta).unwrap_or_default()).await;
+
+                                serde_json::json!({
+                                    "shared": { "content": final_shared, "filename": "shared.h" },
+                                    "core": { "content": final_core, "filename": "core.cpp" },
+                                    "gui": { "content": final_gui, "filename": "gui.cpp" }
+                                })
+                            }
+                            Err(e) => {
+                                // AI diff-patch failed — fall back to full AI re-split
+                                debug_log!("[HMR] AI diff-patch failed: {}, falling back to full split", e);
+                                let result = perform_ai_split(&req).await?;
+                                let meta = serde_json::json!({
+                                    "split_hash": source_hash_str,
+                                    "original_source": req.source,
+                                });
+                                let _ = tokio::fs::write(&sidecar_path, serde_json::to_string(&meta).unwrap_or_default()).await;
+                                result
+                            }
+                        }
                     }
                 } else {
                     // No original source saved — need AI re-split
@@ -956,4 +968,45 @@ async fn discover_exported_symbols(lib_path: &str) -> Vec<String> {
         }
         _ => vec![],
     }
+}
+
+/// Build a simple unified-diff-style string from two sources.
+/// Not a proper unified diff — just shows changed/added/removed lines
+/// with +/- prefixes so the AI can see what changed.
+fn build_simple_diff(old: &str, new: &str) -> String {
+    let old_lines: Vec<&str> = old.lines().collect();
+    let new_lines: Vec<&str> = new.lines().collect();
+
+    if old_lines == new_lines {
+        return String::new();
+    }
+
+    let mut diff = String::new();
+    let mut oi = 0;
+    let mut ni = 0;
+
+    while oi < old_lines.len() && ni < new_lines.len() {
+        if old_lines[oi] == new_lines[ni] {
+            // Context line
+            diff.push_str(&format!(" {}\n", old_lines[oi]));
+            oi += 1;
+            ni += 1;
+        } else {
+            // Changed line
+            diff.push_str(&format!("-{}\n", old_lines[oi]));
+            diff.push_str(&format!("+{}\n", new_lines[ni]));
+            oi += 1;
+            ni += 1;
+        }
+    }
+    while oi < old_lines.len() {
+        diff.push_str(&format!("-{}\n", old_lines[oi]));
+        oi += 1;
+    }
+    while ni < new_lines.len() {
+        diff.push_str(&format!("+{}\n", new_lines[ni]));
+        ni += 1;
+    }
+
+    diff
 }
