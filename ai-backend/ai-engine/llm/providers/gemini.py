@@ -168,9 +168,7 @@ class GeminiProvider(AiProvider):
                 print(f"[Gemini] Stream complete: {len(_chunks)} chunks, {total_tokens} tokens, {time.time() - start_time:.2f}s")
                 return _chunks, _feedback
 
-            # Serialize Gemini calls — concurrent requests cause rate-limit/quota errors
-            async with _gemini_semaphore:
-                # Non-streaming first — more reliable than streaming which often hangs
+            # Non-streaming — more reliable than streaming which hangs on this model
                 print(f"[Gemini] Calling API for mode={mode_lower}, prompt_len={len(full_prompt)} chars")
                 try:
                     resp = await asyncio.wait_for(
