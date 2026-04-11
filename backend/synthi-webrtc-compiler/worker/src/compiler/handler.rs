@@ -206,79 +206,97 @@ pub async fn handle_compile_request(
                 };
 
                 if let Some(old_source) = original_source {
-                    // Build a simple unified diff for the AI
                     let diff = build_simple_diff(&old_source, &req.source);
 
                     if diff.is_empty() {
-                        // No actual changes — use existing split files
-                        debug_log!("[HMR] FallbackDeterministic → no diff detected");
+                        debug_log!("[HMR] No diff detected");
                         serde_json::json!({
                             "shared": { "content": shared_content, "filename": "shared.h" },
                             "core": { "content": core_content, "filename": "core.cpp" },
                             "gui": { "content": gui_content, "filename": "gui.cpp" }
                         })
                     } else {
-                        // Ask AI to patch the diff into the split files (~2-3s)
-                        debug_log!("[HMR] AI diff-patch: {} bytes of diff", diff.len());
-                        match perform_ai_diff_patch(&diff, &core_content, &gui_content, &shared_content).await {
-                            Ok(patched) => {
-                                // Merge patched files with existing content
-                                let final_core = patched.get("core")
-                                    .and_then(|v| v.get("content").or(Some(v)))
-                                    .and_then(|v| v.as_str())
-                                    .unwrap_or(&core_content);
-                                let final_gui = patched.get("gui")
-                                    .and_then(|v| v.get("content").or(Some(v)))
-                                    .and_then(|v| v.as_str())
-                                    .unwrap_or(&gui_content);
-                                let final_shared = patched.get("shared")
-                                    .and_then(|v| v.get("content").or(Some(v)))
-                                    .and_then(|v| v.as_str())
-                                    .unwrap_or(&shared_content);
+                        // ── Tiered patching: instant regex first, AI fallback ──
+                        // Tier 1: Instant regex patcher (~0ms). Handles value
+                        //         changes (colors, speeds, positions) which are
+                        //         ~90% of edit-test-cycle changes.
+                        // Tier 2: AI diff-patch (~2-3s). Handles structural
+                        //         changes (new functions, new state fields).
+                        // Tier 3: Full AI re-split (~18-45s). Last resort.
+                        use crate::hmr::diff_patcher::patch_split_files;
+                        let patch = patch_split_files(
+                            &old_source, &req.source,
+                            &core_content, &gui_content, &shared_content,
+                        );
 
-                                debug_log!(
-                                    "[HMR] AI diff-patch applied: core={} gui={} shared={}",
-                                    patched.get("core").is_some(),
-                                    patched.get("gui").is_some(),
-                                    patched.get("shared").is_some(),
-                                );
-
-                                // Write patched files back to disk
-                                if let Some(ref p) = enrichment.adapted_status.core_path {
-                                    let _ = tokio::fs::write(p, final_core).await;
+                        let (final_core, final_gui, final_shared) =
+                            if patch.has_changes() && patch.unmatched_count == 0 {
+                                // Tier 1 success — instant
+                                debug_log!("[HMR] Instant patch: core={} gui={} shared={} (0ms)",
+                                    patch.core.is_some(), patch.gui.is_some(), patch.shared.is_some());
+                                (
+                                    patch.core.unwrap_or_else(|| core_content.clone()),
+                                    patch.gui.unwrap_or_else(|| gui_content.clone()),
+                                    patch.shared.unwrap_or_else(|| shared_content.clone()),
+                                )
+                            } else if patch.unmatched_count > 0 {
+                                // Tier 2 — AI diff-patch for unmatched changes
+                                debug_log!("[HMR] {} unmatched lines, calling AI diff-patch", patch.unmatched_count);
+                                match perform_ai_diff_patch(&diff, &core_content, &gui_content, &shared_content).await {
+                                    Ok(patched) => {
+                                        let c = patched.get("core")
+                                            .and_then(|v| v.get("content").or(Some(v)))
+                                            .and_then(|v| v.as_str())
+                                            .unwrap_or(&core_content).to_string();
+                                        let g = patched.get("gui")
+                                            .and_then(|v| v.get("content").or(Some(v)))
+                                            .and_then(|v| v.as_str())
+                                            .unwrap_or(&gui_content).to_string();
+                                        let s = patched.get("shared")
+                                            .and_then(|v| v.get("content").or(Some(v)))
+                                            .and_then(|v| v.as_str())
+                                            .unwrap_or(&shared_content).to_string();
+                                        (c, g, s)
+                                    }
+                                    Err(e) => {
+                                        // Tier 3 — full re-split
+                                        debug_log!("[HMR] AI diff-patch failed: {}, full re-split", e);
+                                        let result = perform_ai_split(&req).await?;
+                                        let meta = serde_json::json!({
+                                            "split_hash": source_hash_str,
+                                            "original_source": req.source,
+                                        });
+                                        let _ = tokio::fs::write(&sidecar_path, serde_json::to_string(&meta).unwrap_or_default()).await;
+                                        // Early return with full split result
+                                        return Ok(result);
+                                    }
                                 }
-                                if let Some(ref p) = enrichment.adapted_status.gui_path {
-                                    let _ = tokio::fs::write(p, final_gui).await;
-                                }
-                                if let Some(ref p) = enrichment.adapted_status.shared_path {
-                                    let _ = tokio::fs::write(p, final_shared).await;
-                                }
+                            } else {
+                                // No changes detected by patcher
+                                (core_content.clone(), gui_content.clone(), shared_content.clone())
+                            };
 
-                                // Update sidecar baseline
-                                let meta = serde_json::json!({
-                                    "split_hash": source_hash_str,
-                                    "original_source": req.source,
-                                });
-                                let _ = tokio::fs::write(&sidecar_path, serde_json::to_string(&meta).unwrap_or_default()).await;
-
-                                serde_json::json!({
-                                    "shared": { "content": final_shared, "filename": "shared.h" },
-                                    "core": { "content": final_core, "filename": "core.cpp" },
-                                    "gui": { "content": final_gui, "filename": "gui.cpp" }
-                                })
-                            }
-                            Err(e) => {
-                                // AI diff-patch failed — fall back to full AI re-split
-                                debug_log!("[HMR] AI diff-patch failed: {}, falling back to full split", e);
-                                let result = perform_ai_split(&req).await?;
-                                let meta = serde_json::json!({
-                                    "split_hash": source_hash_str,
-                                    "original_source": req.source,
-                                });
-                                let _ = tokio::fs::write(&sidecar_path, serde_json::to_string(&meta).unwrap_or_default()).await;
-                                result
-                            }
+                        // Write patched files to disk + update sidecar
+                        if let Some(ref p) = enrichment.adapted_status.core_path {
+                            let _ = tokio::fs::write(p, &final_core).await;
                         }
+                        if let Some(ref p) = enrichment.adapted_status.gui_path {
+                            let _ = tokio::fs::write(p, &final_gui).await;
+                        }
+                        if let Some(ref p) = enrichment.adapted_status.shared_path {
+                            let _ = tokio::fs::write(p, &final_shared).await;
+                        }
+                        let meta = serde_json::json!({
+                            "split_hash": source_hash_str,
+                            "original_source": req.source,
+                        });
+                        let _ = tokio::fs::write(&sidecar_path, serde_json::to_string(&meta).unwrap_or_default()).await;
+
+                        serde_json::json!({
+                            "shared": { "content": final_shared, "filename": "shared.h" },
+                            "core": { "content": final_core, "filename": "core.cpp" },
+                            "gui": { "content": final_gui, "filename": "gui.cpp" }
+                        })
                     }
                 } else {
                     // No original source saved — need AI re-split
