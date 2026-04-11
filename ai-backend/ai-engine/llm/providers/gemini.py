@@ -1,3 +1,4 @@
+import asyncio
 import os
 import time
 from typing import Any, Mapping, Optional, Sequence, Dict
@@ -124,45 +125,44 @@ class GeminiProvider(AiProvider):
             
             # Stream tokens from the Gemini API, accumulating text so the AI chat window
             # can display the final suggestion as a plain string.
-            response = await client.generate_content_async(full_prompt, stream=True)
+            # Wrapped in asyncio.wait_for to prevent hanging the single-worker server
+            # if Gemini stalls — frees the worker for the next request.
+            async def _stream_gemini():
+                nonlocal first_token_time, total_tokens
+                resp = await client.generate_content_async(full_prompt, stream=True)
+                _chunks = []
+                _feedback = None
+                async for chunk in resp:
+                    if first_token_time is None:
+                        first_token_time = time.time()
+                    if getattr(chunk, "prompt_feedback", None):
+                        _feedback = chunk.prompt_feedback
+                    try:
+                        candidates = getattr(chunk, "candidates", None)
+                        if candidates and len(candidates) > 0:
+                            candidate = candidates[0]
+                            content = getattr(candidate, "content", None)
+                            if content:
+                                parts = getattr(content, "parts", None)
+                                if parts:
+                                    for part in parts:
+                                        part_text = getattr(part, "text", None)
+                                        if part_text:
+                                            _chunks.append(part_text)
+                                            total_tokens += _count_tokens(part_text)
+                                    continue
+                        text = chunk.text
+                        if text:
+                            _chunks.append(text)
+                            total_tokens += _count_tokens(text)
+                    except (ValueError, AttributeError):
+                        pass
+                return _chunks, _feedback
 
-            chunks = []
-            prompt_feedback = None
-            async for chunk in response:
-                # Track TTFT
-                if first_token_time is None:
-                    first_token_time = time.time()
-                
-                if getattr(chunk, "prompt_feedback", None):
-                    prompt_feedback = chunk.prompt_feedback
-                
-                # Safely extract text from chunk - accessing .text throws if no valid parts
-                # This can happen when finish_reason is STOP (1) but no content was generated
-                try:
-                    # Check for candidates with content first (safer approach)
-                    candidates = getattr(chunk, "candidates", None)
-                    if candidates and len(candidates) > 0:
-                        candidate = candidates[0]
-                        content = getattr(candidate, "content", None)
-                        if content:
-                            parts = getattr(content, "parts", None)
-                            if parts:
-                                for part in parts:
-                                    part_text = getattr(part, "text", None)
-                                    if part_text:
-                                        chunks.append(part_text)
-                                        total_tokens += _count_tokens(part_text)
-                                continue
-                    
-                    # Fallback: try the .text accessor
-                    text = chunk.text
-                    if text:
-                        chunks.append(text)
-                        total_tokens += _count_tokens(text)
-                except (ValueError, AttributeError):
-                    # .text accessor throws ValueError if no valid parts
-                    # This is expected when finish_reason is STOP without content
-                    pass
+            try:
+                chunks, prompt_feedback = await asyncio.wait_for(_stream_gemini(), timeout=55.0)
+            except asyncio.TimeoutError:
+                raise TimeoutError("Gemini streaming timed out after 55s")
 
             combined = "".join(chunks).strip()
             

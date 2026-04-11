@@ -650,16 +650,33 @@ pub async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value>
     });
 
     let backend_url = get_ai_backend_url();
-    let url = format!("{}/refactor/split/verified", backend_url);
-    eprintln!("[AI Split] Calling VERIFIED AI split endpoint: {}", url);
-    let raw_response = client
-        .post(&url)
+
+    // Try verified endpoint first; fall back to unverified if it times out.
+    // Both return {"result": "<json>", "lang": "..."} — same parser handles both.
+    let verified_url = format!("{}/refactor/split/verified", backend_url);
+    let split_url = format!("{}/refactor/split", backend_url);
+
+    eprintln!("[AI Split] Calling VERIFIED AI split endpoint: {}", verified_url);
+    let raw_response = match client
+        .post(&verified_url)
         .json(&payload)
-        .timeout(std::time::Duration::from_secs(60))
+        .timeout(std::time::Duration::from_secs(90))
         .send()
-        .await?
-        .json::<serde_json::Value>()
-        .await?;
+        .await
+    {
+        Ok(resp) => resp.json::<serde_json::Value>().await?,
+        Err(e) => {
+            eprintln!("[AI Split] Verified endpoint failed ({}), trying unverified", e);
+            client
+                .post(&split_url)
+                .json(&payload)
+                .timeout(std::time::Duration::from_secs(90))
+                .send()
+                .await?
+                .json::<serde_json::Value>()
+                .await?
+        }
+    };
 
     // Parse the response: extract "result" string and parse the LLM JSON within it.
     // The AI engine wraps the LLM output as { "result": "<json string>", "lang": "cpp" }.
