@@ -1317,6 +1317,12 @@ function _handlePreloadMessage(msg) {
       preloadRegisteredTreeViews.add(msg.viewId);
       _skippedTreeRefreshLogged.delete(msg.viewId);
       sendEvent('registerTreeView', msg.viewId, msg.extensionId);
+      // Immediately request tree data so the UI populates as soon as the
+      // provider is available — don't wait for timed provider discovery.
+      setTimeout(() => {
+        process.stderr.write(`[preload-bridge] Auto-refreshing tree data for newly registered provider: ${msg.viewId}\n`);
+        sendToPreloadClients({ action: 'refreshTreeData', viewId: msg.viewId });
+      }, 200);
       break;
     }
 
