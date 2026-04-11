@@ -77,10 +77,12 @@ pub async fn handle_runner_execution(
     let mut video_track_opt: Option<Arc<TrackLocalStaticRTP>> = None;
     let mut audio_track_opt: Option<Arc<TrackLocalStaticRTP>> = None;
 
-    // Determine if we have an existing runner that can handle HMR
+    // Determine if we have an existing runner that can handle HMR.
+    // "Blocking" apps (no on_update callback) can't do in-process HMR,
+    // but we still reuse Xvfb/GStreamer/tracks by falling through to
+    // the restart-with-reuse path (can_reuse=true) below.
     let existing_runner_can_hmr = if is_blocking_app {
-        // Hard policy: blocking apps require full restart
-        debug_log!("[Policy] Hard policy: blocking app requires full restart, HMR disabled");
+        debug_log!("[Policy] Blocking app (no on_update) — will restart runner but reuse display/pipeline");
         false
     } else if let Some(state) = guard.as_ref() {
         // Can do HMR if:

@@ -129,9 +129,14 @@ pub fn classify_loop(input: &LoopClassifierInput) -> LoopClassification {
     }
 
     // 5-7. Adaptation status
+    // For non-adapted projects (single-file programs), use Loop A with
+    // deterministic wrapping.  The FallbackDeterministic path in handler.rs
+    // wraps the source as a single core module without calling AI, which
+    // is equivalent to a direct recompile.  Loop B (AI split) is only
+    // needed when the user explicitly requests it or during failure rescue.
     if !input.adapted_status.is_adapted {
         return LoopClassification {
-            loop_type: CompileLoop::LoopB,
+            loop_type: CompileLoop::LoopA,
             reason: LoopReason::NotAdapted,
         };
     }
