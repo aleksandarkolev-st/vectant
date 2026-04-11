@@ -447,6 +447,9 @@ fn main() {
     let mut loaded_paths: HashMap<String, String> = HashMap::new();
     // Independent swap: Track state per module
     let mut module_states: HashMap<String, ModuleState> = HashMap::new();
+    // Flicker prevention: skip render for one frame after a module load
+    // so the new module's on_load has executed before on_render is called.
+    let mut skip_render_frames: u32 = 0;
 
     // ============================================================
     // MODULE LOADER WITH ABI VALIDATION
@@ -860,6 +863,9 @@ fn main() {
                             loader_enabled,
                         );
                     }
+                    // Skip render for 1 frame to let on_load initialize state
+                    // before on_render uses it — prevents flicker
+                    skip_render_frames = 1;
                 }
                 "unload" => {
                     if parts.len() == 2 {
@@ -1057,7 +1063,13 @@ fn main() {
         // a click that corrupted module state would cause an unprotected
         // on_render to SIGSEGV, killing the runner process ("app disappears
         // when user clicks a button").
-        if let Some(lib) = modules.get("gui") {
+        //
+        // Flicker prevention: after a module load, skip rendering for one
+        // frame so on_load has time to initialize state.  The previous
+        // frame stays visible on the X11 framebuffer (ximagesrc captures it).
+        if skip_render_frames > 0 {
+            skip_render_frames -= 1;
+        } else if let Some(lib) = modules.get("gui") {
             unsafe {
                 // Try new symbol first, then legacy
                 let render_func: Option<Symbol<unsafe extern "C" fn(*mut c_void)>> = lib

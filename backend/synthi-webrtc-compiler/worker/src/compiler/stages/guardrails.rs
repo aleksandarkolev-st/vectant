@@ -822,27 +822,5 @@ pub fn apply_gui_guardrails(content: &str, shared_content: &str) -> String {
     // If a user's code exports real gui_on_save_state / gui_on_load_from_json,
     // those will be used for genuine cross-schema migration.
 
-    // ── Flicker prevention ──────────────────────────────────────
-    // During HMR swap, there can be one frame where gui_on_render
-    // runs with uninitialized state (magic == 0).  Inject a guard
-    // at the top of gui_on_render to skip rendering in that case.
-    if result.contains("gui_on_render") && !result.contains("SYNTHI_RENDER_GUARD") {
-        let guard = "    // SYNTHI_RENDER_GUARD: skip render if state not ready\n    \
-                     if (!state_ptr) return;\n    \
-                     AppState* state = (AppState*)state_ptr;\n    \
-                     if (state->magic != 0xDEAD) return;\n";
-        // Find the opening brace of gui_on_render
-        if let Some(sig_pos) = result.find("gui_on_render") {
-            if let Some(brace_pos) = result[sig_pos..].find('{') {
-                let insert_pos = sig_pos + brace_pos + 1;
-                // Only inject if there isn't already a magic check
-                let next_50 = &result[insert_pos..std::cmp::min(insert_pos + 100, result.len())];
-                if !next_50.contains("magic") {
-                    result.insert_str(insert_pos, &format!("\n{}", guard));
-                }
-            }
-        }
-    }
-
     result
 }
