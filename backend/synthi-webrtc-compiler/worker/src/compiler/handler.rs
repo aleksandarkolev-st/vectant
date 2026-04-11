@@ -362,8 +362,8 @@ pub async fn handle_compile_request(
     )
     .await?;
 
-    let core_lib_path =
-        core_lib_path_opt.ok_or_else(|| anyhow::anyhow!("Core compilation failed"))?;
+    let core_lib_path = core_lib_path_opt
+        .ok_or_else(|| anyhow::anyhow!("Core compilation produced no output (no core module in split data or scope is GUI-only)"))?;
 
     // Compile GUI
     let gui_lib_path_opt = compile_gui(

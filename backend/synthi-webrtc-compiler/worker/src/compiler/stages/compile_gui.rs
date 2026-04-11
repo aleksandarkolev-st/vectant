@@ -94,18 +94,7 @@ pub async fn compile_gui(
                     Err(_) => {
                         // child is dropped and killed due to kill_on_drop(true)
                         eprintln!("[CompileGUI] Timed out waiting for g++");
-                        let payload = serde_json::json!({
-                            "sessionId": session_id.clone(),
-                            "status": "done",
-                            "success": false,
-                            "stage": "compile_gui",
-                            "error": "Compilation timed out after 30s"
-                        });
-                        let _ = ctx
-                            .log_dc
-                            .send_text(serde_json::to_string(&payload).unwrap_or_default())
-                            .await;
-                        return Ok(None);
+                        anyhow::bail!("GUI compilation timed out after 30s");
                     }
                 };
 
@@ -132,18 +121,14 @@ pub async fn compile_gui(
                         .send_text(serde_json::to_string(&diag_payload).unwrap_or_default())
                         .await;
 
-                    let payload = serde_json::json!({
-                        "sessionId": session_id.clone(),
-                        "status": "done",
-                        "success": false,
-                        "stage": "compile_gui",
-                        "error": stderr
-                    });
-                    let _ = ctx
-                        .log_dc
-                        .send_text(serde_json::to_string(&payload).unwrap_or_default())
-                        .await;
-                    return Ok(None);
+                    // Return Err so the pipeline sends a single authoritative
+                    // {status:"done", success:false} with the real error text.
+                    let truncated = if stderr.len() > 500 {
+                        format!("{}…", &stderr[..500])
+                    } else {
+                        stderr.to_string()
+                    };
+                    anyhow::bail!("GUI compilation failed: {}", truncated);
                 }
 
                 let gui_lib_path = gui_out.to_string_lossy().to_string();

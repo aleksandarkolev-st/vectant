@@ -5604,11 +5604,14 @@ async fn handle_compile(
         // Resolve the frontend compile() promise as a failure so the IDE doesn't
         // hang on "Compiling..." forever when the pipeline returns an error
         // (e.g. AI split timeout, verifier bail-out, missing tooling).
+        let error_str = format!("{}", e);
         let payload = serde_json::json!({
             "sessionId": session_id,
             "status": "done",
             "success": false,
+            "error": error_str,
             "message": format!("Compile pipeline error: {}", e),
+            "stage": "pipeline",
         });
         let _ = ctx.log_dc.send_text(serde_json::to_string(&payload).unwrap_or_default()).await;
         return Err(e);

@@ -78,21 +78,9 @@ pub async fn compile_core(
                     Err(_) => {
                         // child is dropped and killed due to kill_on_drop(true)
                         eprintln!("[CompileCore] Timed out waiting for g++");
-                        let payload = serde_json::json!({
-                            "sessionId": session_id.clone(),
-                            "status": "done",
-                            "success": false,
-                            "stage": "compile_core",
-                            "error": "Compilation timed out after 30s"
-                        });
-                        if let Err(e) = ctx
-                            .log_dc
-                            .send_text(serde_json::to_string(&payload).unwrap_or_default())
-                            .await
-                        {
-                            eprintln!("Failed to send compiler error: {}", e);
-                        }
-                        return Ok(None);
+                        // Return Err so the pipeline sends a single authoritative
+                        // {status:"done", success:false} with the real error text.
+                        anyhow::bail!("Core compilation timed out after 30s");
                     }
                 };
 
@@ -125,21 +113,15 @@ pub async fn compile_core(
                         eprintln!("Failed to send diagnostics: {}", e);
                     }
 
-                    let payload = serde_json::json!({
-                        "sessionId": session_id.clone(),
-                        "status": "done",
-                        "success": false,
-                        "stage": "compile_core",
-                        "error": stderr
-                    });
-                    if let Err(e) = ctx
-                        .log_dc
-                        .send_text(serde_json::to_string(&payload).unwrap_or_default())
-                        .await
-                    {
-                        eprintln!("Failed to send compiler error: {}", e);
-                    }
-                    return Ok(None);
+                    // Return Err so the pipeline sends a single authoritative
+                    // {status:"done", success:false} with the real error text.
+                    // The diagnostics above are already sent separately for the overlay.
+                    let truncated = if stderr.len() > 500 {
+                        format!("{}…", &stderr[..500])
+                    } else {
+                        stderr.to_string()
+                    };
+                    anyhow::bail!("Core compilation failed: {}", truncated);
                 }
 
                 let path = core_out.to_string_lossy().to_string();

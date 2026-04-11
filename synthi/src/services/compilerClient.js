@@ -1586,7 +1586,11 @@ export class CompilerClient {
                             resolve(parsed);
                         } else {
                             this._sessionTargets.delete(sessionId);
-                            reject(new SynthiException('Compilation failed', 'The compilation process returned an error status.'));
+                            // Surface the actual error details from the backend instead of a generic message.
+                            // The worker sends `error`, `message`, and `stage` fields alongside success:false.
+                            const detail = parsed.error || parsed.message || 'The compilation process returned an error status.';
+                            const stage = parsed.stage ? `[${parsed.stage}]` : '';
+                            reject(new SynthiException('Compilation failed', `${stage} ${detail}`.trim()));
                         }
                         return;
                     }
