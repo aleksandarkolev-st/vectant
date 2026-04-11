@@ -8,7 +8,7 @@ use crate::compiler::context::CompileContext;
 use crate::infra::messages::CompileRequest;
 
 // Import our new modular stages
-use crate::compiler::stages::ai_utils::{perform_ai_split, perform_ai_diff_patch};
+use crate::compiler::stages::ai_utils::{perform_ai_split, perform_ai_diff_patch, perform_targeted_delta_patch};
 use crate::compiler::stages::compile_core::compile_core;
 use crate::compiler::stages::compile_gui::compile_gui;
 use crate::compiler::stages::guardrails::{
@@ -216,50 +216,111 @@ pub async fn handle_compile_request(
                             "gui": { "content": gui_content, "filename": "gui.cpp" }
                         })
                     } else {
-                        // ── Tiered patching: instant regex first, AI fallback ──
-                        // Tier 1: Instant regex patcher (~0ms). Handles value
-                        //         changes (colors, speeds, positions) which are
-                        //         ~90% of edit-test-cycle changes.
-                        // Tier 2: AI diff-patch (~2-3s). Handles structural
-                        //         changes (new functions, new state fields).
-                        // Tier 3: Full AI re-split (~18-45s). Last resort.
+                        // ── Tiered patching with background classification ──
+                        //
+                        // Tier 1: VALUE_CHANGE → instant regex patcher (0ms)
+                        // Tier 2: EXPR/ADD/DEL → targeted AI on ONE module (~1-2s)
+                        // Tier 3: STRUCTURAL → full AI re-split (last resort)
+                        //
+                        // The background classifier (edit_classifier.rs) already
+                        // ran when file-sync received the edit.  Read its cached
+                        // result to skip re-analysis.
+                        use crate::hmr::edit_classifier::{take_cached_classification, EditKind, EditTarget};
                         use crate::hmr::diff_patcher::patch_split_files;
-                        let patch = patch_split_files(
-                            &old_source, &req.source,
-                            &core_content, &gui_content, &shared_content,
-                        );
 
-                        let (final_core, final_gui, final_shared) =
-                            if patch.has_changes() && patch.unmatched_count == 0 {
-                                // Tier 1 success — instant
-                                debug_log!("[HMR] Instant patch: core={} gui={} shared={} (0ms)",
-                                    patch.core.is_some(), patch.gui.is_some(), patch.shared.is_some());
+                        let cached_class = take_cached_classification(&req.filename);
+                        let is_value_only = cached_class.as_ref().map(|c| c.is_value_only).unwrap_or(false);
+
+                        let (final_core, final_gui, final_shared) = if is_value_only {
+                            // Tier 1: pure value change — instant regex
+                            let patch = patch_split_files(
+                                &old_source, &req.source,
+                                &core_content, &gui_content, &shared_content,
+                            );
+                            if patch.has_changes() {
+                                debug_log!("[HMR] Tier 1: instant value patch (0ms)");
                                 (
                                     patch.core.unwrap_or_else(|| core_content.clone()),
                                     patch.gui.unwrap_or_else(|| gui_content.clone()),
                                     patch.shared.unwrap_or_else(|| shared_content.clone()),
                                 )
-                            } else if patch.unmatched_count > 0 {
-                                // Tier 2 — AI diff-patch for unmatched changes
-                                debug_log!("[HMR] {} unmatched lines, calling AI diff-patch", patch.unmatched_count);
+                            } else {
+                                (core_content.clone(), gui_content.clone(), shared_content.clone())
+                            }
+                        } else if let Some(ref classification) = cached_class {
+                            // Tier 2: targeted AI on affected module(s) only
+                            // Build a tiny diff from just the classified hunks
+                            let mut target_diffs: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+                            for hunk in &classification.hunks {
+                                if hunk.kind == EditKind::ValueChange { continue; } // handled by regex
+                                let module_name = match hunk.target {
+                                    EditTarget::Core => "core",
+                                    EditTarget::Gui => "gui",
+                                    EditTarget::Shared => "shared",
+                                    EditTarget::Unknown => "core", // default
+                                };
+                                target_diffs.entry(module_name.to_string())
+                                    .or_default()
+                                    .push_str(&hunk.diff_text());
+                            }
+
+                            // First apply any value changes via regex (instant)
+                            let patch = patch_split_files(
+                                &old_source, &req.source,
+                                &core_content, &gui_content, &shared_content,
+                            );
+                            let mut c = patch.core.unwrap_or_else(|| core_content.clone());
+                            let mut g = patch.gui.unwrap_or_else(|| gui_content.clone());
+                            let mut s = patch.shared.unwrap_or_else(|| shared_content.clone());
+
+                            // Then apply targeted AI for non-value hunks
+                            for (module, diff_text) in &target_diffs {
+                                let module_content = match module.as_str() {
+                                    "core" => &c,
+                                    "gui" => &g,
+                                    "shared" => &s,
+                                    _ => continue,
+                                };
+                                debug_log!("[HMR] Tier 2: AI patch {} ({} bytes diff)", module, diff_text.len());
+                                match perform_targeted_delta_patch(&diff_text, module, module_content).await {
+                                    Ok(patched_content) => {
+                                        match module.as_str() {
+                                            "core" => c = patched_content,
+                                            "gui" => g = patched_content,
+                                            "shared" => s = patched_content,
+                                            _ => {}
+                                        }
+                                    }
+                                    Err(e) => {
+                                        debug_log!("[HMR] Tier 2 failed for {}: {}", module, e);
+                                        // Fall through — partial success is OK
+                                    }
+                                }
+                            }
+                            (c, g, s)
+                        } else {
+                            // No cached classification — try regex, fall back to AI
+                            let patch = patch_split_files(
+                                &old_source, &req.source,
+                                &core_content, &gui_content, &shared_content,
+                            );
+                            if patch.has_changes() && patch.unmatched_count == 0 {
+                                debug_log!("[HMR] No cached class, regex patch succeeded");
+                                (
+                                    patch.core.unwrap_or_else(|| core_content.clone()),
+                                    patch.gui.unwrap_or_else(|| gui_content.clone()),
+                                    patch.shared.unwrap_or_else(|| shared_content.clone()),
+                                )
+                            } else {
+                                debug_log!("[HMR] No cached class, falling back to AI diff-patch");
                                 match perform_ai_diff_patch(&diff, &core_content, &gui_content, &shared_content).await {
                                     Ok(patched) => {
-                                        let c = patched.get("core")
-                                            .and_then(|v| v.get("content").or(Some(v)))
-                                            .and_then(|v| v.as_str())
-                                            .unwrap_or(&core_content).to_string();
-                                        let g = patched.get("gui")
-                                            .and_then(|v| v.get("content").or(Some(v)))
-                                            .and_then(|v| v.as_str())
-                                            .unwrap_or(&gui_content).to_string();
-                                        let s = patched.get("shared")
-                                            .and_then(|v| v.get("content").or(Some(v)))
-                                            .and_then(|v| v.as_str())
-                                            .unwrap_or(&shared_content).to_string();
+                                        let c = patched.get("core").and_then(|v| v.get("content").or(Some(v))).and_then(|v| v.as_str()).unwrap_or(&core_content).to_string();
+                                        let g = patched.get("gui").and_then(|v| v.get("content").or(Some(v))).and_then(|v| v.as_str()).unwrap_or(&gui_content).to_string();
+                                        let s = patched.get("shared").and_then(|v| v.get("content").or(Some(v))).and_then(|v| v.as_str()).unwrap_or(&shared_content).to_string();
                                         (c, g, s)
                                     }
                                     Err(e) => {
-                                        // Tier 3 — full re-split
                                         debug_log!("[HMR] AI diff-patch failed: {}, full re-split", e);
                                         let result = perform_ai_split(&req).await?;
                                         let meta = serde_json::json!({
@@ -267,14 +328,11 @@ pub async fn handle_compile_request(
                                             "original_source": req.source,
                                         });
                                         let _ = tokio::fs::write(&sidecar_path, serde_json::to_string(&meta).unwrap_or_default()).await;
-                                        // Early return with full split result
                                         return Ok(result);
                                     }
                                 }
-                            } else {
-                                // No changes detected by patcher
-                                (core_content.clone(), gui_content.clone(), shared_content.clone())
-                            };
+                            }
+                        };
 
                         // Write patched files to disk + update sidecar
                         if let Some(ref p) = enrichment.adapted_status.core_path {

@@ -790,3 +790,47 @@ pub async fn perform_ai_diff_patch(
 
     Ok(result)
 }
+
+/// Targeted delta patch: send only ONE module + a small diff hunk to the AI.
+/// Much faster than sending all 3 modules (~1-2s vs ~22s).
+pub async fn perform_targeted_delta_patch(
+    diff_hunk: &str,
+    module_name: &str,
+    module_content: &str,
+) -> Result<String> {
+    let client = reqwest::Client::new();
+    let backend_url = get_ai_backend_url();
+    let url = format!("{}/refactor/diff_patch", backend_url);
+
+    eprintln!(
+        "[AI TargetedPatch] {} module, {} bytes diff",
+        module_name, diff_hunk.len()
+    );
+
+    let payload = serde_json::json!({
+        "diff": diff_hunk,
+        "target_module": module_name,
+        "module_content": module_content,
+    });
+
+    let res = client
+        .post(&url)
+        .json(&payload)
+        .timeout(std::time::Duration::from_secs(10))
+        .send()
+        .await?
+        .json::<serde_json::Value>()
+        .await?;
+
+    let elapsed = res.get("elapsed_seconds").and_then(|v| v.as_f64()).unwrap_or(0.0);
+    eprintln!("[AI TargetedPatch] {} completed in {:.2}s", module_name, elapsed);
+
+    // Extract the patched module content
+    let result = res.get("result").cloned().unwrap_or(serde_json::json!({}));
+    let patched = result.get(module_name)
+        .and_then(|v| v.get("content").or(Some(v)))
+        .and_then(|v| v.as_str())
+        .unwrap_or(module_content);
+
+    Ok(patched.to_string())
+}

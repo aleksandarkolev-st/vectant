@@ -1,0 +1,427 @@
+// ============================================================
+// EDIT CLASSIFIER
+// ============================================================
+// Background diff classifier that runs on every file-sync write.
+// Classifies each changed hunk by kind (value change, addition,
+// deletion, expression change, structural) and target module
+// (core, gui, shared).  Results are cached so the compile handler
+// can dispatch instantly without re-analyzing.
+//
+// This is pure Rust, no AI, runs in <1ms.
+// ============================================================
+
+use std::collections::HashMap;
+use std::sync::Mutex;
+
+// ── Public types ────────────────────────────────────────────
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EditTarget {
+    Core,
+    Gui,
+    Shared,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EditKind {
+    ValueChange,
+    ExpressionChange,
+    Addition,
+    Deletion,
+    Structural,
+}
+
+#[derive(Debug, Clone)]
+pub struct ClassifiedHunk {
+    pub kind: EditKind,
+    pub target: EditTarget,
+    pub old_lines: Vec<String>,
+    pub new_lines: Vec<String>,
+}
+
+impl ClassifiedHunk {
+    /// Build a minimal diff string for this hunk (for AI context).
+    pub fn diff_text(&self) -> String {
+        let mut out = String::new();
+        for l in &self.old_lines {
+            out.push_str(&format!("-{}\n", l));
+        }
+        for l in &self.new_lines {
+            out.push_str(&format!("+{}\n", l));
+        }
+        out
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct EditClassification {
+    pub hunks: Vec<ClassifiedHunk>,
+    pub is_value_only: bool,
+}
+
+// ── Global cache ────────────────────────────────────────────
+
+lazy_static::lazy_static! {
+    static ref CLASSIFICATION_CACHE: Mutex<HashMap<String, EditClassification>> =
+        Mutex::new(HashMap::new());
+}
+
+/// Cache a classification result for a file path.
+pub fn cache_classification(path: &str, classification: EditClassification) {
+    if let Ok(mut cache) = CLASSIFICATION_CACHE.lock() {
+        cache.insert(path.to_string(), classification);
+    }
+}
+
+/// Take (and remove) a cached classification for a file path.
+pub fn take_cached_classification(path: &str) -> Option<EditClassification> {
+    if let Ok(mut cache) = CLASSIFICATION_CACHE.lock() {
+        cache.remove(path)
+    } else {
+        None
+    }
+}
+
+// ── Classifier ──────────────────────────────────────────────
+
+/// Classify the diff between old and new source into labeled hunks.
+pub fn classify_edit(old_source: &str, new_source: &str) -> EditClassification {
+    let old_lines: Vec<&str> = old_source.lines().collect();
+    let new_lines: Vec<&str> = new_source.lines().collect();
+
+    let raw_hunks = extract_hunks(&old_lines, &new_lines);
+
+    let mut hunks = Vec::new();
+    let mut all_value = true;
+
+    for raw in raw_hunks {
+        let kind = classify_kind(&raw.old_lines, &raw.new_lines);
+        let target = classify_target(&raw.old_lines, &raw.new_lines);
+
+        if kind != EditKind::ValueChange {
+            all_value = false;
+        }
+
+        hunks.push(ClassifiedHunk {
+            kind,
+            target,
+            old_lines: raw.old_lines.iter().map(|s| s.to_string()).collect(),
+            new_lines: raw.new_lines.iter().map(|s| s.to_string()).collect(),
+        });
+    }
+
+    EditClassification {
+        is_value_only: all_value && !hunks.is_empty(),
+        hunks,
+    }
+}
+
+// ── Kind classification ─────────────────────────────────────
+
+fn classify_kind(old: &[&str], new: &[&str]) -> EditKind {
+    if old.is_empty() && !new.is_empty() {
+        return EditKind::Addition;
+    }
+    if !old.is_empty() && new.is_empty() {
+        return EditKind::Deletion;
+    }
+
+    // Check if only number/string literals changed
+    if old.len() == new.len() {
+        let mut all_value = true;
+        for (o, n) in old.iter().zip(new.iter()) {
+            if !is_value_only_change(o, n) {
+                all_value = false;
+                break;
+            }
+        }
+        if all_value {
+            return EditKind::ValueChange;
+        }
+
+        // Same number of lines but different structure → expression change
+        return EditKind::ExpressionChange;
+    }
+
+    // Different line counts with both additions and removals → structural
+    EditKind::Structural
+}
+
+/// Check if two lines differ only in number or string literals.
+fn is_value_only_change(old: &str, new: &str) -> bool {
+    let old_stripped = strip_literals(old);
+    let new_stripped = strip_literals(new);
+    old_stripped == new_stripped
+}
+
+/// Replace all number and string literals with placeholders.
+fn strip_literals(line: &str) -> String {
+    let mut result = String::with_capacity(line.len());
+    let chars: Vec<char> = line.chars().collect();
+    let mut i = 0;
+
+    while i < chars.len() {
+        // String literal
+        if chars[i] == '"' {
+            result.push_str("\"STR\"");
+            i += 1;
+            while i < chars.len() && chars[i] != '"' {
+                if chars[i] == '\\' { i += 1; }
+                i += 1;
+            }
+            if i < chars.len() { i += 1; } // skip closing "
+            continue;
+        }
+
+        // Number literal (int or float)
+        if chars[i].is_ascii_digit()
+            || (chars[i] == '-'
+                && i + 1 < chars.len()
+                && chars[i + 1].is_ascii_digit()
+                && (i == 0 || !chars[i.wrapping_sub(1)].is_ascii_alphanumeric()))
+        {
+            result.push_str("NUM");
+            if chars[i] == '-' { i += 1; }
+            while i < chars.len() && (chars[i].is_ascii_digit() || chars[i] == '.') {
+                i += 1;
+            }
+            if i < chars.len() && (chars[i] == 'f' || chars[i] == 'F') {
+                i += 1;
+            }
+            continue;
+        }
+
+        result.push(chars[i]);
+        i += 1;
+    }
+    result
+}
+
+// ── Target classification ───────────────────────────────────
+
+fn classify_target(old: &[&str], new: &[&str]) -> EditTarget {
+    // Check all lines (both old and new) for module hints
+    let all_lines: Vec<&&str> = old.iter().chain(new.iter()).collect();
+
+    let mut gui_score = 0i32;
+    let mut shared_score = 0i32;
+    let mut core_score = 0i32;
+
+    for line in &all_lines {
+        let trimmed = line.trim();
+
+        // GUI indicators
+        if contains_any(trimmed, &[
+            "SDL_Render", "SDL_SetRenderDrawColor", "SDL_RenderFillRect",
+            "SDL_RenderDrawRect", "SDL_RenderDrawLine", "SDL_RenderDrawPoint",
+            "SDL_RenderCopy", "SDL_RenderClear", "SDL_CreateTexture",
+            "draw_text", "DrawText",
+        ]) {
+            gui_score += 3;
+        }
+
+        // Shared indicators (type/struct declarations)
+        if trimmed.starts_with("struct ") || trimmed.starts_with("typedef ")
+            || trimmed.starts_with("enum ") || trimmed.starts_with("#define ")
+        {
+            shared_score += 3;
+        }
+
+        // Core indicators (state updates, logic)
+        if contains_any(trimmed, &["+=", "-=", "*=", "/="])
+            && !contains_any(trimmed, &["SDL_", "Render"])
+        {
+            core_score += 1;
+        }
+    }
+
+    if gui_score > shared_score && gui_score > core_score {
+        EditTarget::Gui
+    } else if shared_score > gui_score && shared_score > core_score {
+        EditTarget::Shared
+    } else if core_score > 0 {
+        EditTarget::Core
+    } else if gui_score > 0 {
+        EditTarget::Gui
+    } else {
+        EditTarget::Unknown
+    }
+}
+
+fn contains_any(haystack: &str, needles: &[&str]) -> bool {
+    needles.iter().any(|n| haystack.contains(n))
+}
+
+// ── Hunk extraction ─────────────────────────────────────────
+
+struct RawHunk<'a> {
+    old_lines: Vec<&'a str>,
+    new_lines: Vec<&'a str>,
+}
+
+/// Extract contiguous hunks of changed lines.
+fn extract_hunks<'a>(old: &[&'a str], new: &[&'a str]) -> Vec<RawHunk<'a>> {
+    let mut hunks = Vec::new();
+    let mut oi = 0;
+    let mut ni = 0;
+
+    while oi < old.len() || ni < new.len() {
+        // Skip matching lines
+        if oi < old.len() && ni < new.len() && old[oi].trim() == new[ni].trim() {
+            oi += 1;
+            ni += 1;
+            continue;
+        }
+
+        // Collect a hunk of differing lines
+        let mut hunk_old = Vec::new();
+        let mut hunk_new = Vec::new();
+
+        // Look ahead to find where they sync up again
+        while oi < old.len() || ni < new.len() {
+            if oi < old.len() && ni < new.len() && old[oi].trim() == new[ni].trim() {
+                break;
+            }
+
+            let old_ahead = (1..=5).find(|&skip| {
+                oi + skip < old.len()
+                    && ni < new.len()
+                    && old[oi + skip].trim() == new[ni].trim()
+            });
+            let new_ahead = (1..=5).find(|&skip| {
+                ni + skip < new.len()
+                    && oi < old.len()
+                    && old[oi].trim() == new[ni + skip].trim()
+            });
+
+            match (old_ahead, new_ahead) {
+                (Some(skip), None) | (Some(skip), Some(_)) if old_ahead <= new_ahead => {
+                    for _ in 0..skip {
+                        if oi < old.len() {
+                            hunk_old.push(old[oi]);
+                            oi += 1;
+                        }
+                    }
+                }
+                (None, Some(skip)) | (_, Some(skip)) => {
+                    for _ in 0..skip {
+                        if ni < new.len() {
+                            hunk_new.push(new[ni]);
+                            ni += 1;
+                        }
+                    }
+                }
+                _ => {
+                    if oi < old.len() {
+                        hunk_old.push(old[oi]);
+                        oi += 1;
+                    }
+                    if ni < new.len() {
+                        hunk_new.push(new[ni]);
+                        ni += 1;
+                    }
+                }
+            }
+        }
+
+        if !hunk_old.is_empty() || !hunk_new.is_empty() {
+            hunks.push(RawHunk {
+                old_lines: hunk_old,
+                new_lines: hunk_new,
+            });
+        }
+    }
+
+    hunks
+}
+
+// ── Tests ───────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn value_change_detected() {
+        let old = "    SDL_SetRenderDrawColor(ren, 0, 120, 255, 255);";
+        let new = "    SDL_SetRenderDrawColor(ren, 255, 0, 0, 255);";
+        let c = classify_edit(old, new);
+        assert!(c.is_value_only);
+        assert_eq!(c.hunks.len(), 1);
+        assert_eq!(c.hunks[0].kind, EditKind::ValueChange);
+        assert_eq!(c.hunks[0].target, EditTarget::Gui);
+    }
+
+    #[test]
+    fn speed_change_is_value() {
+        let old = "    float vx = 3;";
+        let new = "    float vx = 8;";
+        let c = classify_edit(old, new);
+        assert!(c.is_value_only);
+        assert_eq!(c.hunks[0].kind, EditKind::ValueChange);
+    }
+
+    #[test]
+    fn expression_change_detected() {
+        let old = "    x += vx;";
+        let new = "    x += vx * 2;";
+        let c = classify_edit(old, new);
+        assert!(!c.is_value_only);
+        assert_eq!(c.hunks[0].kind, EditKind::ExpressionChange);
+        assert_eq!(c.hunks[0].target, EditTarget::Core);
+    }
+
+    #[test]
+    fn addition_detected() {
+        let old = "    line1;\n    line2;";
+        let new = "    line1;\n    SDL_RenderDrawRect(ren, &r);\n    line2;";
+        let c = classify_edit(old, new);
+        assert!(!c.is_value_only);
+        assert!(c.hunks.iter().any(|h| h.kind == EditKind::Addition));
+        assert!(c.hunks.iter().any(|h| h.target == EditTarget::Gui));
+    }
+
+    #[test]
+    fn deletion_detected() {
+        let old = "    line1;\n    SDL_RenderFillRect(ren, &r);\n    line2;";
+        let new = "    line1;\n    line2;";
+        let c = classify_edit(old, new);
+        assert!(c.hunks.iter().any(|h| h.kind == EditKind::Deletion));
+    }
+
+    #[test]
+    fn strip_literals_normalizes() {
+        assert_eq!(
+            strip_literals("SDL_SetRenderDrawColor(r, 0, 120, 255, 255);"),
+            strip_literals("SDL_SetRenderDrawColor(r, 255, 0, 0, 255);")
+        );
+        assert_ne!(
+            strip_literals("x += vx;"),
+            strip_literals("x += vx * 2;")
+        );
+    }
+
+    #[test]
+    fn gui_target_from_sdl_calls() {
+        assert_eq!(
+            classify_target(&[], &["    SDL_RenderFillRect(ren, &r);"]),
+            EditTarget::Gui
+        );
+    }
+
+    #[test]
+    fn core_target_from_logic() {
+        assert_eq!(
+            classify_target(&["    x += vx;"], &["    x += vx * 2;"]),
+            EditTarget::Core
+        );
+    }
+
+    #[test]
+    fn no_changes_empty() {
+        let c = classify_edit("same line", "same line");
+        assert!(c.hunks.is_empty());
+        assert!(!c.is_value_only); // no hunks = not value-only
+    }
+}

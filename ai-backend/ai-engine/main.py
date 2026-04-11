@@ -1706,9 +1706,13 @@ async def refactor_structural(req: StructuralUpdateRequest):
 class DiffPatchRequest(BaseModel):
     """Request for AI-powered diff patching of split modules."""
     diff: str              # Unified diff of the user's source changes
-    core_content: str      # Current core.cpp
-    gui_content: str       # Current gui.cpp
-    shared_content: str    # Current shared.h
+    # Full mode: all 3 modules
+    core_content: str = ""
+    gui_content: str = ""
+    shared_content: str = ""
+    # Targeted mode: single module (much faster)
+    target_module: Optional[str] = None   # "core", "gui", or "shared"
+    module_content: Optional[str] = None  # content of the targeted module
     model: Optional[str] = None
     api_key: Optional[str] = None
 
@@ -1718,22 +1722,36 @@ async def refactor_diff_patch(req: DiffPatchRequest):
     """
     Apply a source diff to split module files using AI.
 
-    Given a unified diff of main.cpp changes + the current split files,
-    the AI patches only the affected modules.  Much faster than a full
-    re-split because the context is smaller and the AI only modifies
-    the changed parts.
+    Two modes:
+    - Targeted: req.target_module + req.module_content set → patch ONE module (~1-2s)
+    - Full: all 3 module contents set → patch any/all modules (~2-3s)
     """
     start_time = time.time()
 
-    # Use Gemini Flash for speed (~2-3s)
     provider = get_provider(provider_name='gemini', use_custom=bool(req.api_key))
 
-    prompt = format_diff_patch_prompt(
-        req.diff,
-        req.core_content,
-        req.gui_content,
-        req.shared_content,
-    )
+    # Targeted single-module mode — much smaller context, much faster
+    if req.target_module and req.module_content:
+        prompt = f"""Apply this diff to {req.target_module}.cpp. Return ONLY the complete updated file content as a JSON object.
+
+DIFF:
+```
+{req.diff}
+```
+
+CURRENT {req.target_module}.cpp:
+```cpp
+{req.module_content}
+```
+
+Return ONLY: {{"{req.target_module}": "...updated file content..."}}"""
+    else:
+        prompt = format_diff_patch_prompt(
+            req.diff,
+            req.core_content,
+            req.gui_content,
+            req.shared_content,
+        )
 
     try:
         ai_response = await provider.ask_llm(

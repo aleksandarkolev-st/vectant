@@ -1157,6 +1157,27 @@ export class CompilerClient {
     }
 
     /**
+     * Send an edit delta to the worker for background classification.
+     * The worker diffs old vs new content and caches the classification
+     * so the compile handler can dispatch instantly on save.
+     * @param {string} relPath  Workspace-relative path
+     * @param {string} content  Full new file content
+     */
+    sendEditDelta(relPath, content) {
+        if (!this.fileSyncChannel || this.fileSyncChannel.readyState !== 'open') return;
+        try {
+            this.fileSyncChannel.send(JSON.stringify({
+                op: 'edit_delta',
+                path: relPath,
+                content,
+                slug: this.slug || '',
+            }));
+        } catch (e) {
+            // Best-effort — classification is an optimization, not critical
+        }
+    }
+
+    /**
      * Delete a file or directory on the worker's disk.
      * @param {string} relPath  Workspace-relative path
      */
