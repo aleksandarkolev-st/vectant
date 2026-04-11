@@ -168,11 +168,26 @@ class GeminiProvider(AiProvider):
 
             try:
                 chunks, prompt_feedback = await asyncio.wait_for(_stream_gemini(), timeout=120.0)
-            except asyncio.TimeoutError:
+                combined = "".join(chunks).strip()
+            except (asyncio.TimeoutError, Exception) as stream_err:
                 elapsed = time.time() - start_time
-                raise TimeoutError(f"Gemini streaming timed out after {elapsed:.0f}s (first_token={'yes' if first_token_time else 'no'})")
-
-            combined = "".join(chunks).strip()
+                print(f"[Gemini] Streaming failed after {elapsed:.1f}s: {type(stream_err).__name__}: {stream_err}")
+                # Fallback: non-streaming call (handles rate limits differently)
+                print(f"[Gemini] Retrying with non-streaming API...")
+                try:
+                    resp = await asyncio.wait_for(
+                        client.generate_content_async(
+                            full_prompt, stream=False,
+                            request_options={"timeout": 90},
+                        ),
+                        timeout=90.0,
+                    )
+                    combined = resp.text.strip()
+                    total_tokens = _count_tokens(combined)
+                    print(f"[Gemini] Non-streaming succeeded: {total_tokens} tokens, {time.time() - start_time:.2f}s")
+                except Exception as fallback_err:
+                    print(f"[Gemini] Non-streaming also failed: {type(fallback_err).__name__}: {fallback_err}")
+                    raise fallback_err
             
             # Record metrics
             end_time = time.time()
