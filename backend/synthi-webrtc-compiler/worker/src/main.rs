@@ -14,6 +14,7 @@ use worker::hmr;
 use worker::infra;
 use worker::runtime;
 use worker::safety;
+use worker::debug_log;
 
 use anyhow::{Context, Result};
 use bytes::Bytes;
