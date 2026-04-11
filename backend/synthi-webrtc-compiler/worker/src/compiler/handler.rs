@@ -248,33 +248,29 @@ pub async fn handle_compile_request(
                                 (core_content.clone(), gui_content.clone(), shared_content.clone())
                             }
                         } else if let Some(ref classification) = cached_class {
-                            // Tier 2: targeted AI on affected module(s) only
-                            // Build a tiny diff from just the classified hunks
+                            // Tier 2: targeted AI on the ONE module the classifier identified
                             let mut target_diffs: std::collections::HashMap<String, String> = std::collections::HashMap::new();
                             for hunk in &classification.hunks {
-                                if hunk.kind == EditKind::ValueChange { continue; } // handled by regex
+                                if hunk.kind == EditKind::ValueChange { continue; }
                                 let module_name = match hunk.target {
                                     EditTarget::Core => "core",
                                     EditTarget::Gui => "gui",
                                     EditTarget::Shared => "shared",
-                                    EditTarget::Unknown => "core", // default
+                                    EditTarget::Unknown => "core",
                                 };
                                 target_diffs.entry(module_name.to_string())
                                     .or_default()
                                     .push_str(&hunk.diff_text());
                             }
 
-                            // First apply any value changes via regex (instant)
-                            let patch = patch_split_files(
-                                &old_source, &req.source,
-                                &core_content, &gui_content, &shared_content,
-                            );
-                            let mut c = patch.core.unwrap_or_else(|| core_content.clone());
-                            let mut g = patch.gui.unwrap_or_else(|| gui_content.clone());
-                            let mut s = patch.shared.unwrap_or_else(|| shared_content.clone());
+                            // Start with unchanged module contents
+                            let mut c = core_content.clone();
+                            let mut g = gui_content.clone();
+                            let mut s = shared_content.clone();
 
-                            // Then apply targeted AI for non-value hunks
+                            // AI patches only the module(s) with actual changes
                             for (module, diff_text) in &target_diffs {
+                                if diff_text.trim().is_empty() { continue; }
                                 let module_content = match module.as_str() {
                                     "core" => &c,
                                     "gui" => &g,
@@ -293,7 +289,6 @@ pub async fn handle_compile_request(
                                     }
                                     Err(e) => {
                                         debug_log!("[HMR] Tier 2 failed for {}: {}", module, e);
-                                        // Fall through — partial success is OK
                                     }
                                 }
                             }
