@@ -252,12 +252,15 @@ pub async fn handle_compile_request(
         } else {
             let prev_core_h = if prev_hashes.core_hash != 0 { Some(format!("{}", prev_hashes.core_hash)) } else { None };
             let prev_gui_h = if prev_hashes.gui_hash != 0 { Some(format!("{}", prev_hashes.gui_hash)) } else { None };
+            let prev_shared_h = if prev_hashes.shared_hash != 0 { Some(format!("{}", prev_hashes.shared_hash)) } else { None };
             let det_scope = determine_deterministic_scope(
                 &det_input,
                 prev_core_h.as_deref(),
                 prev_gui_h.as_deref(),
+                prev_shared_h.as_deref(),
                 &format!("{}", new_hashes.core_hash),
                 &format!("{}", new_hashes.gui_hash),
+                &format!("{}", new_hashes.shared_hash),
             );
             // Map DeterministicRebuildScope → RebuildScope
             match det_scope {
@@ -460,6 +463,33 @@ pub async fn handle_compile_request(
         }
         _ => discover_exported_symbols(&core_lib_path).await,
     };
+
+    // ── Validate required HMR entry points ──
+    // Catch missing symbols at compile time (clear error) instead of at
+    // runner dlopen time (cryptic crash / silent failure).
+    {
+        let has_on_load = exported_symbols.iter().any(|s| {
+            s == "on_load" || s == "core_on_load" || s == "on_load_host" || s == "core_on_load_host"
+        });
+        if !has_on_load && !exported_symbols.is_empty() {
+            let sym_list = exported_symbols.join(", ");
+            let msg = format!(
+                "Compiled .so is missing a required entry point (on_load / core_on_load). Exported symbols: [{}]",
+                sym_list
+            );
+            debug_log!("[Handler] Symbol validation failed: {}", msg);
+            let payload = serde_json::json!({
+                "sessionId": session_id.clone(),
+                "type": "stderr",
+                "line": format!("[HMR Error] {}\n", msg)
+            });
+            let _ = ctx
+                .log_dc
+                .send_text(serde_json::to_string(&payload).unwrap_or_default())
+                .await;
+            anyhow::bail!(msg);
+        }
+    }
 
     // ── Determine capabilities from exported symbols ──
     let capabilities: Vec<String> = {

@@ -165,8 +165,10 @@ mod tests {
             &input,
             Some("core_v1"),
             Some("gui_v1"),
+            Some("shared_v1"),
             "core_v2",
             "gui_v1",
+            "shared_v1",
         );
         assert_eq!(scope, DeterministicRebuildScope::CoreOnly);
     }
