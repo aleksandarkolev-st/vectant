@@ -699,6 +699,30 @@ pub fn apply_gui_guardrails(content: &str, shared_content: &str) -> String {
         result = re_calloc.replace_all(&result, "AppState* state = (prev_state) ? (AppState*)prev_state : &gui_app_state; // [Guardrail] Fixed calloc->static").to_string();
     }
 
+    // FIX: Deduplicate AppState* state declarations within the same function.
+    // The AI sometimes declares it in gui_on_render AND the heap→static transform
+    // adds another in gui_on_load. When both are in the same compilation unit,
+    // g++ sees a redeclaration error.  Remove all but the first occurrence.
+    {
+        let mut seen_first = false;
+        let re_state_decl = Regex::new(r"(?m)^(\s*)AppState\*\s+state\s*=").unwrap();
+        let lines: Vec<&str> = result.lines().collect();
+        let mut deduped = Vec::with_capacity(lines.len());
+        for line in &lines {
+            if re_state_decl.is_match(line) {
+                if seen_first {
+                    // Convert duplicate to a cast-assign (state = ...) instead of redeclaring
+                    let fixed = re_state_decl.replace(line, "${1}state =").to_string();
+                    deduped.push(fixed);
+                    continue;
+                }
+                seen_first = true;
+            }
+            deduped.push(line.to_string());
+        }
+        result = deduped.join("\n");
+    }
+
     // FIX: free(state) / delete state crashes on reload
     if result.contains("free(state)") {
         result = result.replace(
