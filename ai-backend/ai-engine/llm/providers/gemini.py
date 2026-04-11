@@ -99,6 +99,11 @@ class GeminiProvider(AiProvider):
             # Do NOT wrap in build_prompt() — that adds general-analysis framing
             # which causes the LLM to emit explanation prose before the JSON.
             full_prompt = (prompt or '') + f"\n\nHere is the code to split (language: {lang}):\n```{lang}\n{code}\n```\n\nRespond with ONLY the JSON object. No explanation."
+        elif mode_lower == 'delta':
+            # Delta mode: structural addition/deletion prompt already fully formed.
+            # Do NOT wrap in build_prompt() — it adds analysis framing that makes
+            # Gemini return prose instead of pure JSON.
+            full_prompt = (prompt or '') + "\n\nRespond with ONLY the JSON object. No explanation."
         else:
             # Backwards-compat: some clients include the instructive string in `prompt`.
             if prompt and 'Respond only with the updated full file contents' in prompt:
@@ -211,7 +216,7 @@ class GeminiProvider(AiProvider):
                     is_timeout=is_timeout,
                     error_type=type(e).__name__,
                 )
-            return f"LLM error: {type(e).__name__}: {e}"
+            raise
 
     def __repr__(self) -> str:
         return f"<GeminiProvider model={self.model_name} client={'set' if self._client else 'none'}>"
