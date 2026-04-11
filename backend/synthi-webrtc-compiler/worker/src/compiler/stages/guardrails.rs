@@ -702,24 +702,44 @@ pub fn apply_gui_guardrails(content: &str, shared_content: &str) -> String {
         result = re_calloc.replace_all(&result, "AppState* state = (prev_state) ? (AppState*)prev_state : &gui_app_state; // [Guardrail] Fixed calloc->static").to_string();
     }
 
-    // FIX: Deduplicate AppState* state declarations within the same function.
-    // The AI sometimes declares it in gui_on_render AND the heap→static transform
-    // adds another in gui_on_load. When both are in the same compilation unit,
-    // g++ sees a redeclaration error.  Remove all but the first occurrence.
+    // FIX: Deduplicate AppState* state declarations within the SAME function.
+    // The AI sometimes declares it twice in one function (e.g., gui_on_load has
+    // malloc→static guardrail AND the AI's own declaration).  Only dedup within
+    // the same brace-level scope — different functions need their own locals.
     {
-        let mut seen_first = false;
         let re_state_decl = Regex::new(r"(?m)^(\s*)AppState\*\s+state\s*=").unwrap();
         let lines: Vec<&str> = result.lines().collect();
         let mut deduped = Vec::with_capacity(lines.len());
+        let mut brace_depth: i32 = 0;
+        let mut decl_at_depth: Option<i32> = None; // depth where first decl was seen
+
         for line in &lines {
+            // Track brace depth to detect function boundaries
+            for ch in line.chars() {
+                match ch {
+                    '{' => brace_depth += 1,
+                    '}' => {
+                        brace_depth -= 1;
+                        // If we leave the scope where the decl was, reset
+                        if let Some(d) = decl_at_depth {
+                            if brace_depth < d {
+                                decl_at_depth = None;
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
             if re_state_decl.is_match(line) {
-                if seen_first {
-                    // Convert duplicate to a cast-assign (state = ...) instead of redeclaring
+                if decl_at_depth == Some(brace_depth) {
+                    // Duplicate in SAME scope — convert to assignment
                     let fixed = re_state_decl.replace(line, "${1}state =").to_string();
                     deduped.push(fixed);
                     continue;
                 }
-                seen_first = true;
+                // First declaration at this scope depth
+                decl_at_depth = Some(brace_depth);
             }
             deduped.push(line.to_string());
         }
