@@ -165,17 +165,9 @@ pub async fn handle_runner_execution(
             if xvfb_process.is_none() {
                 for tool in GUI_TOOLS {
                     if Command::new(tool).arg("--version").output().await.is_err() {
-                        let msg = format!("Error: GUI tool '{}' is missing. GUI apps require Linux/WSL with xdotool, Xvfb, and matchbox-window-manager installed.\n", tool);
-                        let payload = serde_json::json!({
-                        "sessionId": session_id.clone(),
-                        "type": "stderr",
-                        "line": msg
-                        });
-                        let _ = ctx
-                            .log_dc
-                            .send_text(serde_json::to_string(&payload).unwrap_or_default())
-                            .await;
-                        return Ok(());
+                        let msg = format!("GUI tool '{}' is missing. GUI apps require Linux/WSL with xdotool, Xvfb, and matchbox-window-manager installed.", tool);
+                        eprintln!("[Runner] {}", msg);
+                        anyhow::bail!(msg);
                     }
                 }
 
@@ -313,17 +305,9 @@ pub async fn handle_runner_execution(
                 }
 
                 if pipeline.is_none() {
-                    let msg = "Error: Failed to initialize any video encoder. Please check GStreamer installation.";
-                    let payload = serde_json::json!({
-                       "sessionId": session_id.clone(),
-                       "type": "stderr",
-                       "line": msg
-                    });
-                    let _ = ctx
-                        .log_dc
-                        .send_text(serde_json::to_string(&payload).unwrap_or_default())
-                        .await;
-                    return Ok(());
+                    let msg = "Failed to initialize any video encoder (tried nvh264enc, vaapih264enc, x264enc, vp8enc). Check GStreamer installation.";
+                    eprintln!("[Runner] {}", msg);
+                    anyhow::bail!(msg);
                 }
 
                 let (v_tx, mut v_rx) = mpsc::unbounded_channel::<Vec<u8>>();
@@ -692,6 +676,7 @@ pub async fn handle_runner_execution(
 
             if process_alive {
                 let mut stdin = stdin_arc.lock().await;
+                let mut send_failed = false;
 
                 // Send set_session first (required for Host KV support).
                 // The runner needs the session ID before any module load
@@ -699,23 +684,39 @@ pub async fn handle_runner_execution(
                 if let Some(ref sid) = session_id {
                     let session_cmd = format!("set_session {}\n", sid);
                     eprintln!("[Main] Sending session to runner: {}", session_cmd.trim());
-                    let _ = stdin.write_all(session_cmd.as_bytes()).await;
-                }
-
-                // Send all load commands back-to-back (no sleep between them)
-                for (name, path) in &modules_to_load {
-                    let cmd = format!("load {} {}\n", name, path);
-                    println!("[Main] Sending command to runner: {}", cmd.trim());
-                    if let Err(e) = stdin.write_all(cmd.as_bytes()).await {
-                        eprintln!("Failed to write to runner stdin: {}", e);
-                        break;
+                    if let Err(e) = stdin.write_all(session_cmd.as_bytes()).await {
+                        eprintln!("[Main] Failed to write set_session to runner stdin: {}", e);
+                        send_failed = true;
                     }
                 }
 
-                // Single flush pushes all commands at once
-                if let Err(e) = stdin.flush().await {
-                    eprintln!("Failed to flush runner stdin: {}", e);
+                if !send_failed {
+                    // Send all load commands back-to-back (no sleep between them)
+                    for (name, path) in &modules_to_load {
+                        let cmd = format!("load {} {}\n", name, path);
+                        println!("[Main] Sending command to runner: {}", cmd.trim());
+                        if let Err(e) = stdin.write_all(cmd.as_bytes()).await {
+                            eprintln!("[Main] Failed to write to runner stdin: {}", e);
+                            send_failed = true;
+                            break;
+                        }
+                    }
                 }
+
+                if !send_failed {
+                    // Single flush pushes all commands at once
+                    if let Err(e) = stdin.flush().await {
+                        eprintln!("[Main] Failed to flush runner stdin: {}", e);
+                        send_failed = true;
+                    }
+                }
+
+                if send_failed {
+                    // Runner process likely crashed - report error to frontend
+                    anyhow::bail!("Runner process stdin write failed (process may have crashed)");
+                }
+            } else {
+                anyhow::bail!("Runner process exited before module loading could begin");
             }
         }
 
