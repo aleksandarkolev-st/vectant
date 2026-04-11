@@ -661,7 +661,7 @@ pub async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value>
         let resp = client
             .post(&verified_url)
             .json(&payload)
-            .timeout(std::time::Duration::from_secs(90))
+            .timeout(std::time::Duration::from_secs(150))
             .send()
             .await?
             .error_for_status()?;
@@ -676,7 +676,7 @@ pub async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value>
             client
                 .post(&split_url)
                 .json(&payload)
-                .timeout(std::time::Duration::from_secs(90))
+                .timeout(std::time::Duration::from_secs(150))
                 .send()
                 .await?
                 .json::<serde_json::Value>()
@@ -687,7 +687,7 @@ pub async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value>
             let resp = client
                 .post(&split_url)
                 .json(&payload)
-                .timeout(std::time::Duration::from_secs(90))
+                .timeout(std::time::Duration::from_secs(150))
                 .send()
                 .await?
                 .error_for_status()?;

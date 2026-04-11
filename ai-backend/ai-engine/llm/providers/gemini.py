@@ -170,24 +170,19 @@ class GeminiProvider(AiProvider):
 
             # Serialize Gemini calls — concurrent requests cause rate-limit/quota errors
             async with _gemini_semaphore:
+                # Non-streaming first — more reliable than streaming which often hangs
+                print(f"[Gemini] Calling API for mode={mode_lower}, prompt_len={len(full_prompt)} chars")
                 try:
-                    chunks, prompt_feedback = await asyncio.wait_for(_stream_gemini(), timeout=120.0)
-                    combined = "".join(chunks).strip()
-                except (asyncio.TimeoutError, Exception) as stream_err:
-                    elapsed = time.time() - start_time
-                    print(f"[Gemini] Streaming failed after {elapsed:.1f}s: {type(stream_err).__name__}: {stream_err}")
-                    print(f"[Gemini] Retrying with non-streaming API...")
-                    try:
-                        resp = await asyncio.wait_for(
-                            client.generate_content_async(full_prompt, stream=False),
-                            timeout=90.0,
-                        )
-                        combined = resp.text.strip()
-                        total_tokens = _count_tokens(combined)
-                        print(f"[Gemini] Non-streaming succeeded: {total_tokens} tokens, {time.time() - start_time:.2f}s")
-                    except Exception as fallback_err:
-                        print(f"[Gemini] Non-streaming also failed: {type(fallback_err).__name__}: {fallback_err}")
-                        raise fallback_err
+                    resp = await asyncio.wait_for(
+                        client.generate_content_async(full_prompt, stream=False),
+                        timeout=120.0,
+                    )
+                    combined = resp.text.strip()
+                    total_tokens = _count_tokens(combined)
+                    print(f"[Gemini] Succeeded: {total_tokens} tokens, {time.time() - start_time:.2f}s")
+                except Exception as err:
+                    print(f"[Gemini] Failed: {type(err).__name__}: {err}")
+                    raise
             
             # Record metrics
             end_time = time.time()
