@@ -227,8 +227,9 @@ pub async fn handle_runner_execution(
                 println!("Xvfb and Window Manager started.");
             }
 
-            tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
-            tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+            // Wait for Xvfb and window manager to be fully ready before
+            // starting GStreamer capture (ximagesrc needs a live X display).
+            tokio::time::sleep(tokio::time::Duration::from_millis(700)).await;
 
             if gst_pipeline.is_none() {
                 // Start GStreamer Pipeline
