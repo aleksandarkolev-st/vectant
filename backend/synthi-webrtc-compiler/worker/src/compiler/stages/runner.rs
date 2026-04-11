@@ -58,14 +58,12 @@ pub async fn handle_runner_execution(
 
     let mut guard = ctx.runner_store.lock().await;
 
-    // Check if we need to restart due to GUI mode change or blocking app
-    let is_blocking_app = !has_on_update;
     let req_width = req.width.unwrap_or(800);
     let req_height = req.height.unwrap_or(600);
 
     debug_log!(
-        "[Main] Restart check: is_gui={}, has_on_update={}, is_blocking_app={}, use_ai_split={}",
-        req.is_gui, has_on_update, is_blocking_app, use_ai_split
+        "[Main] Restart check: is_gui={}, has_on_update={}, use_ai_split={}",
+        req.is_gui, has_on_update, use_ai_split
     );
 
     // Reuse Xvfb/GStreamer if possible
@@ -78,26 +76,18 @@ pub async fn handle_runner_execution(
     let mut audio_track_opt: Option<Arc<TrackLocalStaticRTP>> = None;
 
     // Determine if we have an existing runner that can handle HMR.
-    // "Blocking" apps (no on_update callback) can't do in-process HMR,
-    // but we still reuse Xvfb/GStreamer/tracks by falling through to
-    // the restart-with-reuse path (can_reuse=true) below.
-    let existing_runner_can_hmr = if is_blocking_app {
-        debug_log!("[Policy] Blocking app (no on_update) — will restart runner but reuse display/pipeline");
-        false
-    } else if let Some(state) = guard.as_ref() {
-        // Can do HMR if:
-        // 1. GUI mode is the same
-        // 2. Resolution is the same
-        // 3. The app supports HMR (has_on_update is true) - already checked above
+    // The runner process supports hot-loading modules via stdin `load`
+    // commands regardless of whether the user's code exports on_update.
+    // The on_update callback is optional — it just lets user code react
+    // to the swap (e.g. migrate state).  Without it, the new module is
+    // loaded and the next render frame picks up the new symbols.
+    let existing_runner_can_hmr = if let Some(state) = guard.as_ref() {
         let gui_mode_same = state.is_gui == req.is_gui;
         let resolution_same = state.width == req_width && state.height == req_height;
-        debug_log!("[Main] Existing runner: is_gui={}, gui_mode_same={}, resolution_same={}, has_on_update={}", 
+        debug_log!("[Main] Existing runner: is_gui={}, gui_mode_same={}, resolution_same={}, has_on_update={}",
             state.is_gui, gui_mode_same, resolution_same, has_on_update);
-        
+
         // HMR enabled: reuse running process when GUI mode and resolution match.
-        // The HMR pipeline (planner → adapter → orchestrator) handles the reload
-        // decision and state preservation. Falls back to full restart if conditions
-        // aren't met.
         gui_mode_same && resolution_same
     } else {
         false
@@ -115,8 +105,8 @@ pub async fn handle_runner_execution(
         // We have an existing runner but can't do HMR - need to restart
         let gui_mode_changed = state.is_gui != req.is_gui;
         debug_log!(
-            "[Main] Restarting runner: gui_mode_changed={}, is_blocking_app={}, use_ai_split={}",
-            gui_mode_changed, is_blocking_app, use_ai_split
+            "[Main] Restarting runner: gui_mode_changed={}, use_ai_split={}",
+            gui_mode_changed, use_ai_split
         );
 
         // If resolution matches and is_gui matches, we can reuse Xvfb/GStreamer
