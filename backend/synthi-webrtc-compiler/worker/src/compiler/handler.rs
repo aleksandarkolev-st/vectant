@@ -124,8 +124,11 @@ pub async fn handle_compile_request(
             debug_log!("[HMR] AI bypass: Proceed → calling perform_ai_split");
             let result = perform_ai_split(&req).await?;
 
-            // Persist split freshness sidecar after successful AI split
-            let meta = serde_json::json!({ "split_hash": source_hash_str });
+            // Persist split freshness sidecar + original source for diff-patching
+            let meta = serde_json::json!({
+                "split_hash": source_hash_str,
+                "original_source": req.source,
+            });
             let _ = tokio::fs::write(&sidecar_path, serde_json::to_string(&meta).unwrap_or_default()).await;
 
             // Cache the result for future Loop A lookups
@@ -154,49 +157,131 @@ pub async fn handle_compile_request(
         }
         AiBypassResult::FallbackDeterministic => {
             // Loop A, no cache: read existing adapted files from disk.
-            //
-            // Two cases:
-            // 1. User is editing a SPLIT file (core.cpp, gui.cpp, shared.h):
-            //    syncFile already wrote the new content to disk → read it,
-            //    hash-compare, compile only what changed.  This is true HMR.
-            //
-            // 2. User is editing the ORIGINAL source (main.cpp):
-            //    Split files on disk are stale.  We can't re-run AI on every
-            //    keystroke (too slow, error-prone).  Instead, compile the
-            //    user's source directly as a single core module.  The runner
-            //    loads it as "main" slot via the entrypoint() guardrail.
-            //    Not state-preserving HMR, but fast and reliable.
             let is_editing_split_file = {
                 let fname = req.filename.to_lowercase();
                 fname.contains("core.") || fname.contains("gui.") || fname.contains("shared.")
             };
 
+            // Always read the current split files from disk
+            let core_content = if let Some(ref p) = enrichment.adapted_status.core_path {
+                tokio::fs::read_to_string(p).await.unwrap_or_default()
+            } else {
+                String::new()
+            };
+            let gui_content = if let Some(ref p) = enrichment.adapted_status.gui_path {
+                tokio::fs::read_to_string(p).await.unwrap_or_default()
+            } else {
+                String::new()
+            };
+            let shared_content = if let Some(ref p) = enrichment.adapted_status.shared_path {
+                tokio::fs::read_to_string(p).await.unwrap_or_default()
+            } else {
+                String::new()
+            };
+
             if enrichment.adapted_status.is_adapted && is_editing_split_file {
-                debug_log!("[HMR] FallbackDeterministic → reading split files from disk (editing {})", req.filename);
-                let core_content = if let Some(ref p) = enrichment.adapted_status.core_path {
-                    tokio::fs::read_to_string(p).await.unwrap_or_default()
-                } else {
-                    String::new()
-                };
-                let gui_content = if let Some(ref p) = enrichment.adapted_status.gui_path {
-                    tokio::fs::read_to_string(p).await.unwrap_or_default()
-                } else {
-                    String::new()
-                };
-                let shared_content = if let Some(ref p) = enrichment.adapted_status.shared_path {
-                    tokio::fs::read_to_string(p).await.unwrap_or_default()
-                } else {
-                    String::new()
-                };
+                // User is editing a split file directly — syncFile already
+                // wrote the new content to disk.  Just use it.
+                debug_log!("[HMR] FallbackDeterministic → split file edit ({})", req.filename);
                 serde_json::json!({
                     "shared": { "content": shared_content, "filename": "shared.h" },
                     "core": { "content": core_content, "filename": "core.cpp" },
                     "gui": { "content": gui_content, "filename": "gui.cpp" }
                 })
+            } else if enrichment.adapted_status.is_adapted {
+                // User is editing original source (main.cpp).  Diff-patch the
+                // changes into the split files without re-running AI.
+                //
+                // Read the original source saved at AI-split time.  Diff it
+                // against the user's new source, then transplant each changed
+                // line into the right split file (core/gui/shared).
+                let original_source = {
+                    if let Ok(meta_raw) = tokio::fs::read_to_string(&sidecar_path).await {
+                        serde_json::from_str::<serde_json::Value>(&meta_raw)
+                            .ok()
+                            .and_then(|v| v.get("original_source").and_then(|s| s.as_str()).map(|s| s.to_string()))
+                    } else {
+                        None
+                    }
+                };
+
+                if let Some(old_source) = original_source {
+                    use crate::hmr::diff_patcher::patch_split_files;
+                    let patch = patch_split_files(
+                        &old_source,
+                        &req.source,
+                        &core_content,
+                        &gui_content,
+                        &shared_content,
+                    );
+
+                    if patch.has_changes() {
+                        let patched_core = patch.core.as_deref().unwrap_or(&core_content);
+                        let patched_gui = patch.gui.as_deref().unwrap_or(&gui_content);
+                        let patched_shared = patch.shared.as_deref().unwrap_or(&shared_content);
+
+                        debug_log!(
+                            "[HMR] Diff-patch applied: core={} gui={} shared={} unmatched={}",
+                            patch.core.is_some(), patch.gui.is_some(),
+                            patch.shared.is_some(), patch.unmatched_count
+                        );
+
+                        // Write patched files back to disk so subsequent compiles see them
+                        if let Some(ref p) = enrichment.adapted_status.core_path {
+                            let _ = tokio::fs::write(p, patched_core).await;
+                        }
+                        if let Some(ref p) = enrichment.adapted_status.gui_path {
+                            let _ = tokio::fs::write(p, patched_gui).await;
+                        }
+                        if let Some(ref p) = enrichment.adapted_status.shared_path {
+                            let _ = tokio::fs::write(p, patched_shared).await;
+                        }
+
+                        // Update sidecar with new source baseline
+                        let meta = serde_json::json!({
+                            "split_hash": source_hash_str,
+                            "original_source": req.source,
+                        });
+                        let _ = tokio::fs::write(&sidecar_path, serde_json::to_string(&meta).unwrap_or_default()).await;
+
+                        serde_json::json!({
+                            "shared": { "content": patched_shared, "filename": "shared.h" },
+                            "core": { "content": patched_core, "filename": "core.cpp" },
+                            "gui": { "content": patched_gui, "filename": "gui.cpp" }
+                        })
+                    } else if patch.unmatched_count > 0 {
+                        // Changes couldn't be mapped — need AI re-split
+                        debug_log!("[HMR] Diff-patch failed ({} unmatched), falling back to AI split", patch.unmatched_count);
+                        let result = perform_ai_split(&req).await?;
+                        let meta = serde_json::json!({
+                            "split_hash": source_hash_str,
+                            "original_source": req.source,
+                        });
+                        let _ = tokio::fs::write(&sidecar_path, serde_json::to_string(&meta).unwrap_or_default()).await;
+                        result
+                    } else {
+                        // No diff at all — use existing split files
+                        debug_log!("[HMR] FallbackDeterministic → no diff detected");
+                        serde_json::json!({
+                            "shared": { "content": shared_content, "filename": "shared.h" },
+                            "core": { "content": core_content, "filename": "core.cpp" },
+                            "gui": { "content": gui_content, "filename": "gui.cpp" }
+                        })
+                    }
+                } else {
+                    // No original source saved — need AI re-split
+                    debug_log!("[HMR] No original source baseline, falling back to AI split");
+                    let result = perform_ai_split(&req).await?;
+                    let meta = serde_json::json!({
+                        "split_hash": source_hash_str,
+                        "original_source": req.source,
+                    });
+                    let _ = tokio::fs::write(&sidecar_path, serde_json::to_string(&meta).unwrap_or_default()).await;
+                    result
+                }
             } else {
-                // Editing original source OR not adapted: compile source directly
-                // as a single core module (no AI, no split).
-                debug_log!("[HMR] FallbackDeterministic → compiling '{}' as single module (no AI)", req.filename);
+                // Not adapted: wrap source as single core module
+                debug_log!("[HMR] FallbackDeterministic → not adapted, wrapping as single module");
                 serde_json::json!({
                     "shared": { "content": "", "filename": "shared.h" },
                     "core": { "content": req.source.clone(), "filename": "core.cpp" },
