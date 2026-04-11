@@ -129,12 +129,15 @@ class GeminiProvider(AiProvider):
             # if Gemini stalls — frees the worker for the next request.
             async def _stream_gemini():
                 nonlocal first_token_time, total_tokens
+                print(f"[Gemini] Starting stream for mode={mode_lower}, prompt_len={len(full_prompt)} chars")
                 resp = await client.generate_content_async(full_prompt, stream=True)
+                print(f"[Gemini] Stream created, waiting for chunks...")
                 _chunks = []
                 _feedback = None
                 async for chunk in resp:
                     if first_token_time is None:
                         first_token_time = time.time()
+                        print(f"[Gemini] First token at {first_token_time - start_time:.2f}s")
                     if getattr(chunk, "prompt_feedback", None):
                         _feedback = chunk.prompt_feedback
                     try:
@@ -157,12 +160,14 @@ class GeminiProvider(AiProvider):
                             total_tokens += _count_tokens(text)
                     except (ValueError, AttributeError):
                         pass
+                print(f"[Gemini] Stream complete: {len(_chunks)} chunks, {total_tokens} tokens, {time.time() - start_time:.2f}s")
                 return _chunks, _feedback
 
             try:
-                chunks, prompt_feedback = await asyncio.wait_for(_stream_gemini(), timeout=55.0)
+                chunks, prompt_feedback = await asyncio.wait_for(_stream_gemini(), timeout=120.0)
             except asyncio.TimeoutError:
-                raise TimeoutError("Gemini streaming timed out after 55s")
+                elapsed = time.time() - start_time
+                raise TimeoutError(f"Gemini streaming timed out after {elapsed:.0f}s (first_token={'yes' if first_token_time else 'no'})")
 
             combined = "".join(chunks).strip()
             

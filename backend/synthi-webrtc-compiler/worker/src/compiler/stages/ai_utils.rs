@@ -684,14 +684,14 @@ pub async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value>
         }
         Err(e) => {
             eprintln!("[AI Split] Verified endpoint failed ({}), trying unverified", e);
-            client
+            let resp = client
                 .post(&split_url)
                 .json(&payload)
                 .timeout(std::time::Duration::from_secs(90))
                 .send()
                 .await?
-                .json::<serde_json::Value>()
-                .await?
+                .error_for_status()?;
+            resp.json::<serde_json::Value>().await?
         }
     };
 
