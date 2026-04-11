@@ -130,10 +130,7 @@ class GeminiProvider(AiProvider):
             async def _stream_gemini():
                 nonlocal first_token_time, total_tokens
                 print(f"[Gemini] Starting stream for mode={mode_lower}, prompt_len={len(full_prompt)} chars")
-                resp = await client.generate_content_async(
-                    full_prompt, stream=True,
-                    request_options={"timeout": 60},
-                )
+                resp = await client.generate_content_async(full_prompt, stream=True)
                 print(f"[Gemini] Stream created, waiting for chunks...")
                 _chunks = []
                 _feedback = None
@@ -176,10 +173,7 @@ class GeminiProvider(AiProvider):
                 print(f"[Gemini] Retrying with non-streaming API...")
                 try:
                     resp = await asyncio.wait_for(
-                        client.generate_content_async(
-                            full_prompt, stream=False,
-                            request_options={"timeout": 90},
-                        ),
+                        client.generate_content_async(full_prompt, stream=False),
                         timeout=90.0,
                     )
                     combined = resp.text.strip()
