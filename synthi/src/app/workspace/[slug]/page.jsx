@@ -590,9 +590,14 @@ export default function EditorPage({ params }) {
                         setWorkspaceMissing(false);
                         setWorkspaceMissingMessage('');
 
-                        // Trigger full workspace analysis on initialization
+                        // Initial full workspace analysis — DISABLED by default.
+                        // Was firing /analyze/workspace with include_ai=true on every
+                        // project open, triggering the AI Predictor → Gemini mode=analyze
+                        // calls that saturated the Python backend.
+                        // Gated behind window.SYNTHI_ENABLE_PROACTIVE for opt-in.
+                        const proactiveEnabled = typeof window !== 'undefined' && !!window.SYNTHI_ENABLE_PROACTIVE;
                         const { files } = result.payload;
-                        if (files && files.length > 0) {
+                        if (proactiveEnabled && files && files.length > 0) {
                             (async () => {
                                 try {
                                     // Helper to flatten tree
