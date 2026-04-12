@@ -2567,6 +2567,86 @@ shared.h:
   ✓ Does NOT contain X11 types
 
 If ANY check fails, fix it in your output before returning the JSON.
+
+# ══════════════════════════════════════════════════════════════
+# ARCHITECTURE CACHE EMISSION (for downstream diff_patch calls)
+# ══════════════════════════════════════════════════════════════
+
+After your JSON split output, emit a SECOND block wrapped in these EXACT XML
+tags (not markdown horizontal rules, not ---ARCHITECTURE---):
+
+<synthi_arch_cache>
+# Architecture
+...markdown doc...
+</synthi_arch_cache>
+
+The block is a plain-markdown description of the split you just produced. It
+will be cached and re-injected into every subsequent diff_patch call so that
+small edits (the user adds a button, tweaks a value, etc.) do not have to
+re-derive the architecture from scratch.
+
+## Required sections (in order)
+
+1. `## Language & Framework` — one line naming the language + any windowing
+   library (e.g. "C++ with SDL2", "Rust with winit+wgpu", "Python with pygame").
+
+2. `## Module Contract` — a short bulleted list naming each split file and
+   what it's responsible for. Example:
+     - **core.cpp**: logic + state mutation
+     - **gui.cpp**: rendering + event handling
+     - **shared.h**: AppState struct + shared types
+
+3. `## State Access Pattern` — a fenced code block showing exactly how
+   lifecycle functions in THIS split cast `state_ptr` back to the concrete
+   state type. Copy the idiom verbatim from your split output — do not
+   invent it. Example:
+   ```cpp
+   AppState* state = (AppState*)state_ptr;
+   ```
+
+4. `## Lifecycle Functions Exported by Each Module` — under a `### <file>`
+   heading for each split file, list the `extern "C"` (or equivalent)
+   functions you exported, each with a one-line description.
+
+5. `## Variable Mapping` — a markdown table: `| Original | Split location | Notes |`.
+   **STRICT RULE — READ CAREFULLY**: only include entries for variables that
+   were EXPLICITLY RENAMED during the split. Do NOT guess, abbreviate, or
+   hallucinate mappings. If `frame_counter` in the original source stayed as
+   `state->frame_counter` in the split, DO NOT add it to the table — only
+   include it if its name actually changed (e.g. `r → state->renderer`).
+   An EMPTY or sparse mapping table is correct and preferred over a wrong
+   one; every row must be a literal, verifiable transformation present in
+   both the source and the split. Writing a wrong row will corrupt every
+   future diff_patch for this project. An empty table is a valid output.
+
+6. `## Where User Code Goes` — a bulleted mapping from "what kind of code the
+   user might add" to "which split function body it belongs in". Example:
+     - **Rendering code** (SDL_*) → `gui_on_render`
+     - **State updates / logic** → `core_on_update`
+     - **New struct fields** → `AppState` in `shared.h`
+
+7. `## Forbidden Patterns` — a short list of things the user must NOT add to
+   the split modules (bare file-scope statements, redeclaring state variables,
+   second `main()`, duplicate includes the runtime already provides).
+
+## Output format
+
+The entire output is:
+
+```
+<your JSON split block, just like today>
+
+<synthi_arch_cache>
+# Architecture
+
+## Language & Framework
+...
+</synthi_arch_cache>
+```
+
+The `<synthi_arch_cache>` tag MUST come AFTER the JSON. If you forget the
+tag entirely, the server falls back to the generic prompt — no crash, but
+every subsequent edit pays the re-discovery cost.
 """
 
 # Keywords that indicate the user WANTS code changes

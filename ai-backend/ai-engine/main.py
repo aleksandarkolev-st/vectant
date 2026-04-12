@@ -1,7 +1,8 @@
 # PROTOTYPING AI ENGINE WITH PYTHON, LATER SWITCH TO RUST
 from __future__ import annotations
 
-from typing import List, Optional, Union
+from typing import List, Optional, Union, Tuple
+import re
 import requests
 import json
 import sys
@@ -75,6 +76,56 @@ def _map_verification_status(verifier_status) -> ProvVerificationStatus:
     raw = verifier_status.value if hasattr(verifier_status, 'value') else str(verifier_status)
     mapped = _VERIFIER_TO_PROV_STATUS.get(raw, raw)
     return ProvVerificationStatus(mapped)
+
+
+# ══════════════════════════════════════════════════════════════
+# Architecture cache extraction (for /refactor/split/verified)
+# ══════════════════════════════════════════════════════════════
+#
+# The split model emits a markdown architecture doc wrapped in
+# <synthi_arch_cache>...</synthi_arch_cache> tags AFTER the JSON
+# split block. We extract it before parsing the JSON so that:
+#   1. The JSON parser never sees the architecture trailer.
+#   2. The architecture string can be returned alongside the result
+#      and cached by the Rust worker in the split sidecar.
+#
+# XML tags are used instead of `---ARCHITECTURE---` because `---` is
+# valid markdown for horizontal rules and collides with pro-model
+# prose / user source comments. XML open/close pairs fail cleanly if
+# the model truncates — unmatched closing tag → no match → fallback.
+
+_ARCH_TAG_RE = re.compile(
+    r"""
+    (?:^|\n)                                   # start of line
+    \s*                                        # optional leading whitespace
+    (?:```[a-zA-Z]*\s*\n)?                      # optional opening code fence
+    <\s*synthi_arch_cache\s*>\s*\n?            # <synthi_arch_cache>
+    (?P<body>.*?)                              # the architecture doc
+    \n?\s*<\s*/\s*synthi_arch_cache\s*>        # </synthi_arch_cache>
+    """,
+    re.IGNORECASE | re.VERBOSE | re.DOTALL,
+)
+
+
+def extract_architecture(ai_response: str) -> Tuple[str, str]:
+    """Split the raw LLM response into (json_part, architecture_md).
+
+    Returns `(response, "")` if the architecture tags are not found — the
+    caller then falls back to the generic prompt with no regression.
+    Never raises.
+    """
+    if not isinstance(ai_response, str) or not ai_response:
+        return ai_response or "", ""
+    match = _ARCH_TAG_RE.search(ai_response)
+    if not match:
+        return ai_response, ""
+    # The JSON lives BEFORE the <synthi_arch_cache> tag.
+    json_part = ai_response[: match.start()].rstrip()
+    # Strip any trailing code fence the model might have wrapped around
+    # the whole tail block.
+    json_part = re.sub(r"\n?```\s*$", "", json_part).rstrip()
+    arch_part = (match.group("body") or "").strip()
+    return json_part, arch_part
 # Proactive Analysis imports
 from analyzer.proactive import (
     ProactiveAnalyzer,
@@ -1384,22 +1435,33 @@ async def refactor_split_verified(req: VerifiedAiRequest):
 
     # Parse and verify split result
     try:
+        # First, peel off the architecture cache block (if present). The split
+        # prompt asks the model to emit <synthi_arch_cache>...</synthi_arch_cache>
+        # AFTER the JSON. Extracting it first means the JSON parser never sees
+        # the trailer, and the architecture string flows through to the Rust
+        # worker for sidecar storage.
+        json_only_response, architecture_md = extract_architecture(ai_suggestion)
+        if architecture_md:
+            logger.info(f"[split/verified] architecture cache captured ({len(architecture_md)} chars)")
+        else:
+            logger.info("[split/verified] no architecture cache in response (fallback to generic)")
+
         # Clean up markdown if present
-        result_str = ai_suggestion
+        result_str = json_only_response
         if "```json" in result_str:
             result_str = result_str.split("```json")[1].split("```")[0].strip()
         elif "```" in result_str:
             result_str = result_str.split("```")[1].split("```")[0].strip()
-        
+
         split_result = json.loads(result_str)
-        
+
         if req.verify:
             verification_result = verifier.verify_split_result(
                 split_result,
                 original_code=req.code,
                 lang=req.lang,
             )
-            
+
             tracker.update_verification(
                 provenance_id,
                 status=_map_verification_status(verification_result.status),
@@ -1408,7 +1470,7 @@ async def refactor_split_verified(req: VerifiedAiRequest):
                 verified_hash=verification_result.verified_hash,
                 duration_ms=verification_result.duration_ms,
             )
-            
+
             if not verification_result.passed:
                 # Return the split result as a string even when verification finds issues.
                 # The worker expects "result" to be a raw LLM string (same as /refactor/split),
@@ -1419,6 +1481,7 @@ async def refactor_split_verified(req: VerifiedAiRequest):
                 tracker.mark_rejected(provenance_id, "Split verification failed (forwarding result anyway)")
                 return {
                     "result": result_str,
+                    "architecture": architecture_md,
                     "lang": req.lang,
                     "verified": False,
                     "verification": verification_result.to_dict(),
@@ -1432,12 +1495,16 @@ async def refactor_split_verified(req: VerifiedAiRequest):
             # the /refactor/split response. Returning a parsed dict causes the worker's
             # "result.as_str()" check to fail and bail with "unexpected response format".
             "result": result_str,
+            # Architecture cache (markdown, may be empty string if the model
+            # forgot to emit the <synthi_arch_cache> block). Worker stores it
+            # in the split sidecar and re-injects into diff_patch calls.
+            "architecture": architecture_md,
             "lang": req.lang,
             "verified": True,
             "verification": verification_result.to_dict() if req.verify else None,
             "provenance_id": provenance_id,
         }
-        
+
     except json.JSONDecodeError as e:
         tracker.mark_rejected(provenance_id, f"Invalid JSON: {e}")
         return {
@@ -1718,8 +1785,128 @@ class DiffPatchRequest(BaseModel):
     # Targeted mode: single module (much faster)
     target_module: Optional[str] = None   # "core", "gui", or "shared"
     module_content: Optional[str] = None  # content of the targeted module
+    # Cached split architecture doc (markdown) — captured at initial
+    # /refactor/split/verified time and re-injected here so the model
+    # does not have to re-derive the module contract on every edit.
+    # Empty string → fall back to the generic prompt (no regression).
+    architecture: Optional[str] = None
     model: Optional[str] = None
     api_key: Optional[str] = None
+
+
+# ══════════════════════════════════════════════════════════════
+# Diff-patch prompt builder (targeted mode)
+# ══════════════════════════════════════════════════════════════
+#
+# The prompt is assembled in a specific order to exploit the LLM's
+# attention bias ("lost in the middle" — models attend most to
+# start + end of the context window):
+#
+#   1. Role + task statement                         ← top
+#   2. Generic CRITICAL RULES (file scope, etc.)
+#   3. ARCHITECTURE section (cached markdown blob)   ← middle (long)
+#   4. CURRENT file content to patch
+#   5. PRIORITY RULE                                 ← bottom (recency boost)
+#   6. DIFF (user's raw source changes)              ← last thing before generation
+#   7. Output format instruction
+#
+# Putting the PRIORITY RULE immediately above the DIFF ensures it is
+# the LAST instruction the model reads before generating output. This
+# matters because the architecture cache is a HINT and can be stale
+# (user renamed a variable mid-session) — the priority rule reminds
+# the model to treat the diff as ground truth.
+
+_DIFF_PATCH_ARCH_HEADER = (
+    "ARCHITECTURE (cached from the initial split — describes how this\n"
+    "project's split modules are organized):"
+)
+
+_DIFF_PATCH_PRIORITY_RULE = """PRIORITY RULE (read this carefully):
+The ARCHITECTURE section above was captured at initial split time. It
+describes how the ORIGINAL source's variables were relocated into the
+split modules. It is a HINT, not ground truth.
+
+If the user's DIFF (below) explicitly:
+  - renames a variable (e.g. changes `r` to `main_renderer`)
+  - redefines a type
+  - restructures a function
+  - introduces new fields or functions
+...then the DIFF is authoritative. Follow the diff. Do NOT apply stale
+mappings to references that no longer match the original form. The
+cached mapping only applies to references that remain UNCHANGED from
+the original source."""
+
+
+def _build_targeted_diff_patch_prompt(req: DiffPatchRequest) -> str:
+    """Assemble the targeted-mode diff_patch prompt.
+
+    When `req.architecture` is empty, the ARCHITECTURE + PRIORITY_RULE
+    blocks are omitted and the prompt degrades to the generic form —
+    no regression for pre-migration sidecars that don't have a
+    cached architecture yet.
+    """
+    parts: List[str] = [
+        "You are applying a patch to a SPLIT module in a multi-module project.",
+        "Return ONLY the complete updated file content as a JSON object.",
+        "",
+        "CRITICAL RULES — these apply to any language/framework:",
+        "",
+        f"1. The target file ({req.target_module}) is a SPLIT module, NOT a standalone program.",
+        "   It may not have a main entrypoint, and it exports specific lifecycle functions",
+        "   (e.g. *_on_load, *_on_update, *_on_render, etc.). STUDY the current file below",
+        "   to identify its existing function signatures — those are your template.",
+        "",
+        "2. The diff comes from the user's ORIGINAL source file, which may use raw",
+        "   idioms (local variables, inline entrypoint, direct API references). You must",
+        "   ADAPT those references to fit the split module's existing structure:",
+        "     - Local variables in the original source usually live on a shared state",
+        "       object in the split module. Look at the existing code to see how state is",
+        "       accessed (e.g. a cast like `State* s = (State*)state_ptr;`) and follow",
+        "       the same pattern.",
+        "     - API handles (renderer, window, audio, etc.) are typically stored on the",
+        "       state object — use the same field names the existing code uses.",
+        "",
+        "3. MERGE the diff into the appropriate existing function body. Do NOT:",
+        "     - Paste the diff verbatim at file scope (would cause \"expected declaration\"",
+        "       errors in C/C++ or top-level errors in Python/JS/Rust).",
+        "     - Redeclare variables that already exist in the split module.",
+        "     - Add a new main() / entrypoint / redundant imports.",
+        "     - Create new top-level functions unless the existing file's convention",
+        "       calls for it.",
+        "",
+        "4. Preserve all existing code in the module that isn't touched by the diff.",
+        "   Keep all existing exports, includes, helpers, and comments.",
+        "",
+    ]
+
+    arch = (req.architecture or "").strip()
+    if arch:
+        parts += [_DIFF_PATCH_ARCH_HEADER, "", arch, ""]
+
+    parts += [
+        f"CURRENT {req.target_module} file content (the split module you must patch):",
+        "```",
+        req.module_content or "",
+        "```",
+        "",
+    ]
+
+    if arch:
+        # Priority rule sits AFTER the architecture + module content and
+        # immediately before the diff — last thing the model reads before
+        # generating. Mitigates the "lost in the middle" effect.
+        parts += [_DIFF_PATCH_PRIORITY_RULE, ""]
+
+    parts += [
+        "DIFF (from user's source — use as INTENT, apply the priority rule above):",
+        "```",
+        req.diff,
+        "```",
+        "",
+        f'Return ONLY valid JSON: {{"{req.target_module}": "<complete updated file content as a string>"}}',
+        "No markdown fences, no explanation.",
+    ]
+    return "\n".join(parts)
 
 
 @app.post("/refactor/diff_patch")
@@ -1737,49 +1924,9 @@ async def refactor_diff_patch(req: DiffPatchRequest):
 
     # Targeted single-module mode — much smaller context, much faster
     if req.target_module and req.module_content:
-        prompt = f"""You are applying a patch to a SPLIT module in a multi-module project.
-Return ONLY the complete updated file content as a JSON object.
-
-CRITICAL RULES — these apply to any language/framework:
-
-1. The target file ({req.target_module}) is a SPLIT module, NOT a standalone program.
-   It may not have a main entrypoint, and it exports specific lifecycle functions
-   (e.g. *_on_load, *_on_update, *_on_render, etc.). STUDY the current file below
-   to identify its existing function signatures — those are your template.
-
-2. The diff below comes from the user's ORIGINAL source file, which may use raw
-   idioms (local variables, inline entrypoint, direct API references). You must
-   ADAPT those references to fit the split module's existing structure:
-     - Local variables in the original source usually live on a shared state
-       object in the split module. Look at the existing code to see how state is
-       accessed (e.g. a cast like `State* s = (State*)state_ptr;`) and follow
-       the same pattern.
-     - API handles (renderer, window, audio, etc.) are typically stored on the
-       state object — use the same field names the existing code uses.
-
-3. MERGE the diff into the appropriate existing function body. Do NOT:
-     - Paste the diff verbatim at file scope (would cause "expected declaration"
-       errors in C/C++ or top-level errors in Python/JS/Rust).
-     - Redeclare variables that already exist in the split module.
-     - Add a new main() / entrypoint / redundant imports.
-     - Create new top-level functions unless the existing file's convention
-       calls for it.
-
-4. Preserve all existing code in the module that isn't touched by the diff.
-   Keep all existing exports, includes, helpers, and comments.
-
-DIFF (from user's source — use these as the INTENT, not the literal destination):
-```
-{req.diff}
-```
-
-CURRENT {req.target_module} file content (the split module you must patch):
-```
-{req.module_content}
-```
-
-Return ONLY valid JSON: {{"{req.target_module}": "<complete updated file content as a string>"}}
-No markdown fences, no explanation."""
+        prompt = _build_targeted_diff_patch_prompt(req)
+        if req.architecture and req.architecture.strip():
+            print(f"[DiffPatch] architecture hint ({len(req.architecture)} chars) injected into prompt")
     else:
         prompt = format_diff_patch_prompt(
             req.diff,

@@ -758,7 +758,7 @@ pub async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value>
     } else if raw_response.get("core").is_some() {
         // Direct structured response (no wrapper) — use as-is
         eprintln!("[AI Split] Response already in structured format (no wrapper)");
-        raw_response
+        raw_response.clone()
     } else {
         eprintln!(
             "[AI Split] Unexpected response format: {}",
@@ -766,6 +766,32 @@ pub async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value>
         );
         anyhow::bail!("AI split returned unexpected response format");
     };
+
+    // Extract the architecture cache from the Python wrapper (alongside
+    // the `result` field) and embed it into `res` as `_synthi_architecture`.
+    // This is piggybacking on the existing JSON Value so that:
+    //   - `perform_ai_split`'s signature does not need to change
+    //   - the in-memory split cache automatically retains the architecture
+    //   - handler.rs can read it from `split_data["_synthi_architecture"]`
+    //     and persist it in the sidecar for later diff_patch calls.
+    //
+    // The Python response wrapper is `{result: "...", architecture: "...", ...}`.
+    // The architecture is a plain markdown string (may be empty if the split
+    // model forgot to emit the <synthi_arch_cache> XML block).
+    let mut res = res;
+    if let Some(arch) = raw_response.get("architecture").and_then(|v| v.as_str()) {
+        if !arch.is_empty() {
+            eprintln!("[AI Split] architecture cache captured ({} chars)", arch.len());
+            if let Some(obj) = res.as_object_mut() {
+                obj.insert(
+                    "_synthi_architecture".to_string(),
+                    serde_json::Value::String(arch.to_string()),
+                );
+            }
+        } else {
+            eprintln!("[AI Split] no architecture in response (fallback to generic)");
+        }
+    }
 
     // Cache result
     let cached_entry = CachedSplit {
@@ -827,24 +853,33 @@ pub async fn perform_ai_diff_patch(
 
 /// Targeted delta patch: send only ONE module + a small diff hunk to the AI.
 /// Much faster than sending all 3 modules (~1-2s vs ~22s).
+///
+/// `architecture` is the cached split-architecture markdown doc captured at
+/// initial split time. Passing `Some(arch)` injects it into the prompt as
+/// a hint so the model does not re-derive the module contract on every
+/// edit. Passing `None` (or `Some("")`) falls back to the generic prompt.
 pub async fn perform_targeted_delta_patch(
     diff_hunk: &str,
     module_name: &str,
     module_content: &str,
+    architecture: Option<&str>,
 ) -> Result<String> {
     let client = reqwest::Client::new();
     let backend_url = get_ai_backend_url();
     let url = format!("{}/refactor/diff_patch", backend_url);
 
     eprintln!(
-        "[AI TargetedPatch] {} module, {} bytes diff",
-        module_name, diff_hunk.len()
+        "[AI TargetedPatch] {} module, {} bytes diff, arch={} chars",
+        module_name,
+        diff_hunk.len(),
+        architecture.map(|s| s.len()).unwrap_or(0)
     );
 
     let payload = serde_json::json!({
         "diff": diff_hunk,
         "target_module": module_name,
         "module_content": module_content,
+        "architecture": architecture.unwrap_or(""),
     });
 
     let res = client

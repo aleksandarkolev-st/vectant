@@ -124,10 +124,19 @@ pub async fn handle_compile_request(
             debug_log!("[HMR] AI bypass: Proceed → calling perform_ai_split");
             let result = perform_ai_split(&req).await?;
 
-            // Persist split freshness sidecar + original source for diff-patching
+            // Persist split freshness sidecar + original source + architecture
+            // cache for diff-patching. The architecture is a markdown doc
+            // emitted by the split model (may be an empty string if the model
+            // forgot to emit the <synthi_arch_cache> block — fallback path
+            // in Python will degrade to the generic diff_patch prompt).
+            let architecture_md = result
+                .get("_synthi_architecture")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
             let meta = serde_json::json!({
                 "split_hash": source_hash_str,
                 "original_source": req.source,
+                "architecture": architecture_md,
             });
             let _ = tokio::fs::write(&sidecar_path, serde_json::to_string(&meta).unwrap_or_default()).await;
 
@@ -195,13 +204,28 @@ pub async fn handle_compile_request(
                 // Read the original source saved at AI-split time.  Diff it
                 // against the user's new source, then transplant each changed
                 // line into the right split file (core/gui/shared).
-                let original_source = {
+                // Read both `original_source` (diff baseline) and `architecture`
+                // (cached split doc — may be empty on pre-migration sidecars)
+                // from the same sidecar file in one pass.
+                let (original_source, architecture_md) = {
                     if let Ok(meta_raw) = tokio::fs::read_to_string(&sidecar_path).await {
-                        serde_json::from_str::<serde_json::Value>(&meta_raw)
-                            .ok()
-                            .and_then(|v| v.get("original_source").and_then(|s| s.as_str()).map(|s| s.to_string()))
+                        match serde_json::from_str::<serde_json::Value>(&meta_raw) {
+                            Ok(meta) => {
+                                let src = meta
+                                    .get("original_source")
+                                    .and_then(|s| s.as_str())
+                                    .map(|s| s.to_string());
+                                let arch = meta
+                                    .get("architecture")
+                                    .and_then(|s| s.as_str())
+                                    .unwrap_or("")
+                                    .to_string();
+                                (src, arch)
+                            }
+                            Err(_) => (None, String::new()),
+                        }
                     } else {
-                        None
+                        (None, String::new())
                     }
                 };
 
@@ -286,8 +310,18 @@ pub async fn handle_compile_request(
                                     "shared" => &s,
                                     _ => continue,
                                 };
-                                debug_log!("[HMR] Tier 2: AI patch {} ({} bytes diff)", module, diff_text.len());
-                                match perform_targeted_delta_patch(&diff_text, module, module_content).await {
+                                debug_log!(
+                                    "[HMR] Tier 2: AI patch {} ({} bytes diff, arch={} chars)",
+                                    module,
+                                    diff_text.len(),
+                                    architecture_md.len()
+                                );
+                                let arch_hint: Option<&str> = if architecture_md.is_empty() {
+                                    None
+                                } else {
+                                    Some(architecture_md.as_str())
+                                };
+                                match perform_targeted_delta_patch(&diff_text, module, module_content, arch_hint).await {
                                     Ok(patched_content) => {
                                         match module.as_str() {
                                             "core" => c = patched_content,
@@ -327,9 +361,14 @@ pub async fn handle_compile_request(
                                     Err(e) => {
                                         debug_log!("[HMR] AI diff-patch failed: {}, full re-split", e);
                                         let result = perform_ai_split(&req).await?;
+                                        let fresh_arch = result
+                                            .get("_synthi_architecture")
+                                            .and_then(|v| v.as_str())
+                                            .unwrap_or("");
                                         let meta = serde_json::json!({
                                             "split_hash": source_hash_str,
                                             "original_source": req.source,
+                                            "architecture": fresh_arch,
                                         });
                                         let _ = tokio::fs::write(&sidecar_path, serde_json::to_string(&meta).unwrap_or_default()).await;
                                         return Ok(result);
@@ -338,7 +377,10 @@ pub async fn handle_compile_request(
                             }
                         };
 
-                        // Write patched files to disk + update sidecar
+                        // Write patched files to disk + update sidecar. Preserve
+                        // the existing architecture cache — this is a diff-patch
+                        // apply, not a re-split, so the architecture is still
+                        // valid (same split modules, same contract).
                         if let Some(ref p) = enrichment.adapted_status.core_path {
                             let _ = tokio::fs::write(p, &final_core).await;
                         }
@@ -351,6 +393,7 @@ pub async fn handle_compile_request(
                         let meta = serde_json::json!({
                             "split_hash": source_hash_str,
                             "original_source": req.source,
+                            "architecture": architecture_md,
                         });
                         let _ = tokio::fs::write(&sidecar_path, serde_json::to_string(&meta).unwrap_or_default()).await;
 
@@ -364,9 +407,14 @@ pub async fn handle_compile_request(
                     // No original source saved — need AI re-split
                     debug_log!("[HMR] No original source baseline, falling back to AI split");
                     let result = perform_ai_split(&req).await?;
+                    let fresh_arch = result
+                        .get("_synthi_architecture")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
                     let meta = serde_json::json!({
                         "split_hash": source_hash_str,
                         "original_source": req.source,
+                        "architecture": fresh_arch,
                     });
                     let _ = tokio::fs::write(&sidecar_path, serde_json::to_string(&meta).unwrap_or_default()).await;
                     result
