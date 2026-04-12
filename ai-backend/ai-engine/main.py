@@ -1764,9 +1764,12 @@ Return ONLY: {{"{req.target_module}": "...updated file content..."}}"""
             "cpp",
             None,
             mode="delta",
-            # Lite model for diff patches — small context, simple transform,
-            # needs to be fast. 3-flash-preview was taking 28s+ for these.
-            model=req.model or "gemini-3.1-flash-lite-preview",
+            # Pro for diff patches — lite was producing broken output
+            # (dropping user refs like `r`/`win` into wrong scopes after
+            # the split transform), triggering heal cycles that made the
+            # overall edit slower than just using pro once. Pro is ~4-5s
+            # correct on first try vs lite 3s wrong + 3.5s heal.
+            model=req.model or "gemini-3.1-pro-preview",
             api_key=req.api_key,
         )
 
