@@ -27,7 +27,7 @@ import time
 import urllib.error
 import urllib.request
 
-MODEL = os.environ.get("SYNTHI_GEMINI_MODEL", "gemini-3-flash-preview")
+MODEL = os.environ.get("SYNTHI_GEMINI_MODEL", "gemini-3.1-flash-lite-preview")
 API_KEY = os.environ.get("GEMINI_API_KEY")
 
 if not API_KEY:

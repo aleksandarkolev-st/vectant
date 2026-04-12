@@ -400,7 +400,7 @@ class GeminiReranker:
     def __init__(
         self,
         api_key: Optional[str] = None,
-        model: str = "gemini-gemini-3-flash-preview",
+        model: str = "gemini-3.1-flash-lite-preview",
         timeout_ms: int = 6000,
     ):
         self.api_key = api_key

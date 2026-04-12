@@ -80,7 +80,7 @@ class BudgetEnforcer:
     def __init__(
         self,
         config: Optional[ContextConfig] = None,
-        target_model: str = "gemini-gemini-3-flash-preview",
+        target_model: str = "gemini-3.1-flash-lite-preview",
     ):
         self.config = config or ContextConfig()
         self.token_counter = TokenCounter(target_model)

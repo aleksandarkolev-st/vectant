@@ -230,7 +230,7 @@ export async function POST(request) {
     try {
       const stream = await withTimeout(
         ai.models.generateContentStream({
-          model: 'gemini-gemini-3-flash-preview',
+          model: 'gemini-3.1-flash-lite-preview',
           contents: prompt,
           generationConfig: {
             maxOutputTokens: AI_COMPLETION_MAX_OUTPUT_TOKENS,
@@ -247,7 +247,7 @@ export async function POST(request) {
       // Fallback to non-streaming if streaming fails
       const response = await withTimeout(
         ai.models.generateContent({
-          model: 'gemini-gemini-3-flash-preview',
+          model: 'gemini-3.1-flash-lite-preview',
           contents: prompt,
           generationConfig: {
             maxOutputTokens: AI_COMPLETION_MAX_OUTPUT_TOKENS,

@@ -1607,10 +1607,10 @@ async def refactor_delta(req: StructuralUpdateRequest):
                 "cpp",
                 None,
                 mode="delta",
-                model=req.model or "gemini-3-flash-preview",
+                model=req.model or "gemini-3.1-flash-lite-preview",
                 api_key=req.api_key,
             )
-            
+
             print(f"[Delta] SDL2 translation:\n{ai_response}")
             
             # Parse the delta JSON from AI response
@@ -1646,10 +1646,10 @@ async def refactor_delta(req: StructuralUpdateRequest):
                 "cpp",
                 None,
                 mode="delta",
-                model=req.model or "gemini-3-flash-preview",
+                model=req.model or "gemini-3.1-flash-lite-preview",
                 api_key=req.api_key,
             )
-            
+
             delta = _parse_delta_json(ai_response)
             
             if req.cached_result:
@@ -1884,7 +1884,7 @@ async def refactor_heal(req: HealRequest):
             "cpp",
             None,
             mode="delta",
-            model="gemini-3-flash-preview",
+            model="gemini-3.1-flash-lite-preview",
         )
 
         # Strip markdown fences if present

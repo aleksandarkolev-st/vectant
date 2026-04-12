@@ -109,11 +109,12 @@ const UPSTREAM_TIMEOUT_MS = 45_000;
 
 /**
  * Maps model name prefixes to their maximum output token limit.
- * Ordered most-specific first so e.g. "gemini-gemini-3-flash-preview" matches before "gemini".
+ * Ordered most-specific first so e.g. "gemini-3.1-flash-lite-preview" matches before "gemini".
  * Values sourced from each provider's official model documentation.
  */
 const MODEL_MAX_OUTPUT_TOKENS = [
     // Gemini family
+    ['gemini-3.1-flash-lite', 65_536],
     ['gemini-3-flash',       65_536],
     ['gemini-2.5-pro',       65_536],
     ['gemini-2.5-flash',     65_536],
