@@ -210,7 +210,10 @@ export default function EditorPage({ params }) {
         filePath: activeFilePath,
         language: activeLanguage,
         workspaceRoot: slug,
-        analyzeOnSave: true,     // auto-trigger on Ctrl+S
+        // DISABLED: was auto-firing /heal/ai/analyze on every Ctrl+S,
+        // piling up Gemini calls on the single Python worker.
+        // Re-enable with window.SYNTHI_ENABLE_PROACTIVE.
+        analyzeOnSave: typeof window !== 'undefined' && !!window.SYNTHI_ENABLE_PROACTIVE,
         mode: 'ai',
         selfEditFlagRef,
     });
@@ -218,11 +221,15 @@ export default function EditorPage({ params }) {
     // Keyboard shortcuts: Ctrl+Shift+I (analyze), Y (apply safe), N (dismiss), M (toggle mode)
     useAIHealingKeyboard({ aiHealing });
 
-    // Auto-analyze after 4s of inactivity (background, non-intrusive)
+    // Auto-analyze after 4s of inactivity (background, non-intrusive).
+    // TEMPORARILY DISABLED: every fire was calling /heal/ai/analyze → Gemini,
+    // saturating the Python backend and starving /refactor/split/verified.
+    // Gated behind window.SYNTHI_ENABLE_PROACTIVE (same flag as analyze/unified).
+    const proactiveEnabled = typeof window !== 'undefined' && !!window.SYNTHI_ENABLE_PROACTIVE;
     useAIAutoAnalysis({
         editorRef,
         analyzeCallback: aiHealing.analyze,
-        enabled: !!editor && !!activeFile,
+        enabled: proactiveEnabled && !!editor && !!activeFile,
         debounceMs: 4000,
     });
 
