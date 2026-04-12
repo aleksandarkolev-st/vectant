@@ -1737,19 +1737,66 @@ async def refactor_diff_patch(req: DiffPatchRequest):
 
     # Targeted single-module mode — much smaller context, much faster
     if req.target_module and req.module_content:
+        # Module-specific architecture guidance. The AI must understand
+        # the split structure or it will place user code at file scope.
+        if req.target_module == "gui":
+            arch_hint = (
+                "gui.cpp is a SPLIT module, NOT a standalone SDL program.\n"
+                "It exports functions like:\n"
+                "  extern \"C\" void gui_on_render(void* state_ptr) { ... }\n"
+                "  extern \"C\" void gui_on_load(void* prev_state, void* window, void* core_api) { ... }\n"
+                "Inside gui_on_render you cast: AppState* state = (AppState*)state_ptr;\n"
+                "Then you access the renderer via state->renderer (NOT a local `r`).\n"
+                "Any rendering code (SDL_Rect, SDL_SetRenderDrawColor, SDL_RenderFillRect,\n"
+                "SDL_RenderClear, etc.) MUST live inside gui_on_render's function body.\n"
+                "Any user variable like `frame`, `running`, button positions, etc. must be\n"
+                "accessed via state-> (e.g. state->frame) — they live on AppState in shared.h.\n"
+                "DO NOT place bare statements at file scope. DO NOT redeclare `r`/`win`.\n"
+                "DO NOT add a main() function. DO NOT include <SDL2/SDL.h> at file scope\n"
+                "if it's already included."
+            )
+        elif req.target_module == "core":
+            arch_hint = (
+                "core.cpp is a SPLIT module, NOT a standalone program.\n"
+                "It exports functions like:\n"
+                "  extern \"C\" void core_on_load(void* prev_state) { ... }\n"
+                "  extern \"C\" void core_on_update(void* state_ptr) { ... }\n"
+                "Inside core_on_update you cast: AppState* state = (AppState*)state_ptr;\n"
+                "All logic/state updates (counters, physics, input handling) live in\n"
+                "core_on_update. Access fields via state-> (e.g. state->frame++).\n"
+                "DO NOT place bare statements at file scope. DO NOT add a main()."
+            )
+        elif req.target_module == "shared":
+            arch_hint = (
+                "shared.h is a header defining AppState, shared types, and function\n"
+                "prototypes used by both core.cpp and gui.cpp. No function bodies here."
+            )
+        else:
+            arch_hint = ""
+
         prompt = f"""Apply this diff to {req.target_module}.cpp. Return ONLY the complete updated file content as a JSON object.
 
-DIFF:
+ARCHITECTURE:
+{arch_hint}
+
+IMPORTANT: The diff comes from the user's ORIGINAL source file (e.g. main.cpp),
+which uses raw SDL idioms (local `r` renderer, local `frame` counter, etc.).
+You must ADAPT those references to fit the split-module architecture above.
+Do NOT copy the diff verbatim at the end of the file — MERGE it into the
+correct function body and rewrite variable references to use state->.
+
+DIFF (from user's main.cpp):
 ```
 {req.diff}
 ```
 
-CURRENT {req.target_module}.cpp:
+CURRENT {req.target_module}.cpp (the split module you must patch):
 ```cpp
 {req.module_content}
 ```
 
-Return ONLY: {{"{req.target_module}": "...updated file content..."}}"""
+Return ONLY valid JSON: {{"{req.target_module}": "<complete updated file content as a string>"}}
+No markdown fences, no explanation."""
     else:
         prompt = format_diff_patch_prompt(
             req.diff,
