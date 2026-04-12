@@ -1040,7 +1040,15 @@ export default function EditorPage({ params }) {
     useEffect(() => {
         triggerAnalysisRef.current = () => {
         if (!activeFile || !hasLoadedInitialFile || !slug) return;
-        
+
+        // TEMPORARY: proactive analysis (analyze/unified) is disabled because
+        // it was called on every keystroke and saturated the Python AI backend,
+        // starving the split/compile endpoints. Re-enable by setting
+        // window.SYNTHI_ENABLE_PROACTIVE = true in DevTools.
+        if (typeof window !== 'undefined' && !window.SYNTHI_ENABLE_PROACTIVE) {
+            return;
+        }
+
         // Clear timeouts exactly as we did before
         if (proactiveTimeoutRef.current) {
             clearTimeout(proactiveTimeoutRef.current);
