@@ -1117,7 +1117,9 @@ async def refactor_split(req: AnalyzeAiRequest):
             mode="split",
             files=req.files,
             focus=req.focus,
-            model=req.model,
+            # Split needs stronger reasoning — 88K prompt, structured
+            # JSON output, must not drift. Pro model by default.
+            model=req.model or "gemini-3.1-pro-preview",
             api_key=req.api_key,
         )
         print(f"--- AI SPLIT OUTPUT START ---\n{ai_suggestion}\n--- AI SPLIT OUTPUT END ---")
@@ -1359,10 +1361,12 @@ async def refactor_split_verified(req: VerifiedAiRequest):
             mode="split",
             files=req.files,
             focus=req.focus,
-            model=req.model,
+            # Split needs stronger reasoning — 88K prompt, structured
+            # JSON output, must not drift. Pro model by default.
+            model=req.model or "gemini-3.1-pro-preview",
             api_key=req.api_key,
         )
-        
+
         latency_ms = (time.time() - start_time) * 1000
         tracker.update_model_info(
             provenance_id,
