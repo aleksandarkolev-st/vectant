@@ -97,7 +97,8 @@ pub fn classify_edit(old_source: &str, new_source: &str) -> EditClassification {
 
     for raw in raw_hunks {
         let kind = classify_kind(&raw.old_lines, &raw.new_lines);
-        let target = classify_target(&raw.old_lines, &raw.new_lines);
+        // Target starts as Unknown; filled in by classify_edit_with_ai for non-value edits.
+        let target = EditTarget::Unknown;
 
         if kind != EditKind::ValueChange {
             all_value = false;
@@ -115,6 +116,49 @@ pub fn classify_edit(old_source: &str, new_source: &str) -> EditClassification {
         is_value_only: all_value && !hunks.is_empty(),
         hunks,
     }
+}
+
+/// Async variant: runs sync classification then asks the AI to classify the target module.
+/// Skips the AI call for value-only edits (Tier 1 regex patcher handles them).
+pub async fn classify_edit_with_ai(old_source: &str, new_source: &str, lang: &str) -> EditClassification {
+    let mut classification = classify_edit(old_source, new_source);
+
+    if classification.is_value_only || classification.hunks.is_empty() {
+        return classification;
+    }
+
+    // Build a combined diff from all non-value hunks.
+    let diff_text: String = classification.hunks.iter()
+        .filter(|h| h.kind != EditKind::ValueChange)
+        .map(|h| h.diff_text())
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    if diff_text.trim().is_empty() {
+        return classification;
+    }
+
+    match crate::compiler::stages::ai_utils::perform_ai_classify_edit(&diff_text, lang).await {
+        Ok(target_str) => {
+            let target = match target_str.as_str() {
+                "core" => EditTarget::Core,
+                "gui" => EditTarget::Gui,
+                "shared" => EditTarget::Shared,
+                _ => EditTarget::Unknown,
+            };
+            eprintln!("[classify] AI classified as: {:?}", target);
+            for hunk in classification.hunks.iter_mut() {
+                if hunk.kind != EditKind::ValueChange {
+                    hunk.target = target;
+                }
+            }
+        }
+        Err(e) => {
+            eprintln!("[classify] AI classification failed: {}, hunks stay Unknown", e);
+        }
+    }
+
+    classification
 }
 
 // ── Kind classification ─────────────────────────────────────
@@ -196,61 +240,6 @@ fn strip_literals(line: &str) -> String {
         i += 1;
     }
     result
-}
-
-// ── Target classification ───────────────────────────────────
-
-fn classify_target(old: &[&str], new: &[&str]) -> EditTarget {
-    // Check all lines (both old and new) for module hints
-    let all_lines: Vec<&&str> = old.iter().chain(new.iter()).collect();
-
-    let mut gui_score = 0i32;
-    let mut shared_score = 0i32;
-    let mut core_score = 0i32;
-
-    for line in &all_lines {
-        let trimmed = line.trim();
-
-        // GUI indicators
-        if contains_any(trimmed, &[
-            "SDL_Render", "SDL_SetRenderDrawColor", "SDL_RenderFillRect",
-            "SDL_RenderDrawRect", "SDL_RenderDrawLine", "SDL_RenderDrawPoint",
-            "SDL_RenderCopy", "SDL_RenderClear", "SDL_CreateTexture",
-            "draw_text", "DrawText",
-        ]) {
-            gui_score += 3;
-        }
-
-        // Shared indicators (type/struct declarations)
-        if trimmed.starts_with("struct ") || trimmed.starts_with("typedef ")
-            || trimmed.starts_with("enum ") || trimmed.starts_with("#define ")
-        {
-            shared_score += 3;
-        }
-
-        // Core indicators (state updates, logic)
-        if contains_any(trimmed, &["+=", "-=", "*=", "/="])
-            && !contains_any(trimmed, &["SDL_", "Render"])
-        {
-            core_score += 1;
-        }
-    }
-
-    if gui_score > shared_score && gui_score > core_score {
-        EditTarget::Gui
-    } else if shared_score > gui_score && shared_score > core_score {
-        EditTarget::Shared
-    } else if core_score > 0 {
-        EditTarget::Core
-    } else if gui_score > 0 {
-        EditTarget::Gui
-    } else {
-        EditTarget::Unknown
-    }
-}
-
-fn contains_any(haystack: &str, needles: &[&str]) -> bool {
-    needles.iter().any(|n| haystack.contains(n))
 }
 
 // ── Hunk extraction ─────────────────────────────────────────
@@ -399,22 +388,6 @@ mod tests {
         assert_ne!(
             strip_literals("x += vx;"),
             strip_literals("x += vx * 2;")
-        );
-    }
-
-    #[test]
-    fn gui_target_from_sdl_calls() {
-        assert_eq!(
-            classify_target(&[], &["    SDL_RenderFillRect(ren, &r);"]),
-            EditTarget::Gui
-        );
-    }
-
-    #[test]
-    fn core_target_from_logic() {
-        assert_eq!(
-            classify_target(&["    x += vx;"], &["    x += vx * 2;"]),
-            EditTarget::Core
         );
     }
 

@@ -917,3 +917,27 @@ pub async fn perform_ai_heal(
 
     Ok(content.to_string())
 }
+
+/// Classify which module a code diff belongs to using AI.
+/// Returns "core", "gui", "shared", or "unknown".
+pub async fn perform_ai_classify_edit(diff: &str, lang: &str) -> Result<String> {
+    let client = reqwest::Client::new();
+    let backend_url = get_ai_backend_url();
+    let url = format!("{}/classify/edit", backend_url);
+
+    let payload = serde_json::json!({ "diff": diff, "lang": lang });
+
+    let res = client
+        .post(&url)
+        .json(&payload)
+        .timeout(std::time::Duration::from_secs(10))
+        .send()
+        .await?
+        .json::<serde_json::Value>()
+        .await?;
+
+    Ok(res.get("target")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown")
+        .to_string())
+}

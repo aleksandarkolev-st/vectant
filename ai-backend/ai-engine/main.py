@@ -1800,6 +1800,52 @@ Return ONLY: {{"{req.target_module}": "...updated file content..."}}"""
         raise HTTPException(status_code=400, detail=str(e))
 
 
+class ClassifyEditRequest(BaseModel):
+    """Request to classify which module an edit diff belongs to."""
+    diff: str
+    lang: str = "cpp"
+
+
+@app.post("/classify/edit")
+async def classify_edit_endpoint(req: ClassifyEditRequest):
+    """Classify which module (core/gui/shared) a diff targets. Tiny prompt, ~1s."""
+    start_time = time.time()
+    provider = get_provider(provider_name='gemini')
+    prompt = f"""Given this code diff, identify which module it belongs to in a core/gui/shared split architecture:
+
+- **core**: pure logic, state updates, computation (no rendering, no UI, no SDL)
+- **gui**: rendering, SDL calls, window/event handling, UI code
+- **shared**: struct/typedef/enum definitions used by both core and gui
+
+DIFF:
+```
+{req.diff}
+```
+
+Respond with ONLY a JSON object like {{"target": "gui"}}. Valid values: "core", "gui", "shared". No explanation."""
+
+    try:
+        ai_response = await provider.ask_llm(
+            prompt, req.lang, None, mode="delta",
+            model="gemini-3-flash-preview",
+        )
+        result_str = ai_response.strip()
+        if "```json" in result_str:
+            result_str = result_str.split("```json")[1].split("```")[0].strip()
+        elif "```" in result_str:
+            result_str = result_str.split("```")[1].split("```")[0].strip()
+        parsed = json.loads(result_str)
+        target = parsed.get("target", "unknown")
+        if target not in ("core", "gui", "shared"):
+            target = "unknown"
+        elapsed = time.time() - start_time
+        print(f"[Classify] {target} ({elapsed:.2f}s)")
+        return {"target": target, "elapsed_seconds": elapsed}
+    except Exception as e:
+        print(f"[Classify] Error: {e}")
+        return {"target": "unknown", "error": str(e)}
+
+
 class HealRequest(BaseModel):
     """Request for AI-powered compilation error healing."""
     module_name: str          # "core", "gui", or "shared"

@@ -256,7 +256,10 @@ pub async fn handle_compile_request(
                                     EditTarget::Core => "core",
                                     EditTarget::Gui => "gui",
                                     EditTarget::Shared => "shared",
-                                    EditTarget::Unknown => "core",
+                                    EditTarget::Unknown => {
+                                        debug_log!("[HMR] Tier 2 hunk has Unknown target, skipping");
+                                        continue;
+                                    }
                                 };
                                 target_diffs.entry(module_name.to_string())
                                     .or_default()
