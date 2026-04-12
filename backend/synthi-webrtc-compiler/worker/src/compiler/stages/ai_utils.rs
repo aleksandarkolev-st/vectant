@@ -927,10 +927,12 @@ pub async fn perform_ai_classify_edit(diff: &str, lang: &str) -> Result<String> 
 
     let payload = serde_json::json!({ "diff": diff, "lang": lang });
 
+    // 30s allows for the occasional cold-start latency spike on Gemini lite.
+    // Typical classify should return in <2s with gemini-3.1-flash-lite-preview.
     let res = client
         .post(&url)
         .json(&payload)
-        .timeout(std::time::Duration::from_secs(10))
+        .timeout(std::time::Duration::from_secs(30))
         .send()
         .await?
         .json::<serde_json::Value>()

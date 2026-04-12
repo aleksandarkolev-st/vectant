@@ -1760,7 +1760,9 @@ Return ONLY: {{"{req.target_module}": "...updated file content..."}}"""
             "cpp",
             None,
             mode="delta",
-            model=req.model or "gemini-3-flash-preview",
+            # Lite model for diff patches — small context, simple transform,
+            # needs to be fast. 3-flash-preview was taking 28s+ for these.
+            model=req.model or "gemini-3.1-flash-lite-preview",
             api_key=req.api_key,
         )
 
@@ -1827,7 +1829,9 @@ Respond with ONLY a JSON object like {{"target": "gui"}}. Valid values: "core", 
     try:
         ai_response = await provider.ask_llm(
             prompt, req.lang, None, mode="delta",
-            model="gemini-3-flash-preview",
+            # Lite model for classification — tiny prompt, one-word answer.
+            # Should be <2s with the lite variant.
+            model="gemini-3.1-flash-lite-preview",
         )
         result_str = ai_response.strip()
         if "```json" in result_str:
