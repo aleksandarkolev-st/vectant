@@ -127,60 +127,20 @@ class GeminiProvider(AiProvider):
             start_time = time.time()
             first_token_time = None
             total_tokens = 0
-            
-            # Stream tokens from the Gemini API, accumulating text so the AI chat window
-            # can display the final suggestion as a plain string.
-            # Wrapped in asyncio.wait_for to prevent hanging the single-worker server
-            # if Gemini stalls — frees the worker for the next request.
-            async def _stream_gemini():
-                nonlocal first_token_time, total_tokens
-                print(f"[Gemini] Starting stream for mode={mode_lower}, prompt_len={len(full_prompt)} chars")
-                resp = await client.generate_content_async(full_prompt, stream=True)
-                print(f"[Gemini] Stream created, waiting for chunks...")
-                _chunks = []
-                _feedback = None
-                async for chunk in resp:
-                    if first_token_time is None:
-                        first_token_time = time.time()
-                        print(f"[Gemini] First token at {first_token_time - start_time:.2f}s")
-                    if getattr(chunk, "prompt_feedback", None):
-                        _feedback = chunk.prompt_feedback
-                    try:
-                        candidates = getattr(chunk, "candidates", None)
-                        if candidates and len(candidates) > 0:
-                            candidate = candidates[0]
-                            content = getattr(candidate, "content", None)
-                            if content:
-                                parts = getattr(content, "parts", None)
-                                if parts:
-                                    for part in parts:
-                                        part_text = getattr(part, "text", None)
-                                        if part_text:
-                                            _chunks.append(part_text)
-                                            total_tokens += _count_tokens(part_text)
-                                    continue
-                        text = chunk.text
-                        if text:
-                            _chunks.append(text)
-                            total_tokens += _count_tokens(text)
-                    except (ValueError, AttributeError):
-                        pass
-                print(f"[Gemini] Stream complete: {len(_chunks)} chunks, {total_tokens} tokens, {time.time() - start_time:.2f}s")
-                return _chunks, _feedback
 
             # Non-streaming — more reliable than streaming which hangs on this model
-                print(f"[Gemini] Calling API for mode={mode_lower}, prompt_len={len(full_prompt)} chars")
-                try:
-                    resp = await asyncio.wait_for(
-                        client.generate_content_async(full_prompt, stream=False),
-                        timeout=120.0,
-                    )
-                    combined = resp.text.strip()
-                    total_tokens = _count_tokens(combined)
-                    print(f"[Gemini] Succeeded: {total_tokens} tokens, {time.time() - start_time:.2f}s")
-                except Exception as err:
-                    print(f"[Gemini] Failed: {type(err).__name__}: {err}")
-                    raise
+            print(f"[Gemini] Calling API for mode={mode_lower}, prompt_len={len(full_prompt)} chars")
+            try:
+                resp = await asyncio.wait_for(
+                    client.generate_content_async(full_prompt, stream=False),
+                    timeout=120.0,
+                )
+                combined = resp.text.strip()
+                total_tokens = _count_tokens(combined)
+                print(f"[Gemini] Succeeded: {total_tokens} tokens, {time.time() - start_time:.2f}s")
+            except Exception as err:
+                print(f"[Gemini] Failed: {type(err).__name__}: {err}")
+                raise
             
             # Record metrics
             end_time = time.time()
