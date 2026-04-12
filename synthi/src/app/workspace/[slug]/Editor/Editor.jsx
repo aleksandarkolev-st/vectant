@@ -3003,9 +3003,7 @@ const EditorPanel = ({
             const source = (d.source || '').toString().toLowerCase();
             return tier !== 'ai' && !source.includes('ai');
         });
-        
-        console.log(`[Editor] Filtering diagnostics for "${currentFilePath}": ${proactiveDiagnostics.length} total -> ${currentFileDiagnostics.length} for current file`);
-        
+
         // Convert proactive diagnostics format to markers
             const proactiveMarkers = nonAiDiagnostics.map(diag => {
                 const location = diag.location || {};

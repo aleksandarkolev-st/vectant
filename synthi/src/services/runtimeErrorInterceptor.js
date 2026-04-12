@@ -88,11 +88,16 @@ class RuntimeErrorInterceptor {
    * @param {boolean} [opts.autoHeal=true] — auto-heal on compile errors
    */
   init({ gateway, getEditor, autoHeal = true }) {
+    const firstInit = !this._initialized;
     this._gateway = gateway;
     this._getEditor = getEditor;
     this._autoHeal = autoHeal;
-    
-    console.log('[RuntimeHealing] Interceptor initialized', { autoHeal });
+    this._initialized = true;
+    // Only log on first init — this function gets called by multiple hooks
+    // on every render, flooding the console with identical messages.
+    if (firstInit) {
+      console.log('[RuntimeHealing] Interceptor initialized', { autoHeal });
+    }
   }
 
   /**
