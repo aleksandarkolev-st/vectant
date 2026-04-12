@@ -3002,24 +3002,6 @@ async fn wire_peer_channels(
                                     }
                                     let file_path = base.join(rel);
 
-                                    // ── Background edit classification ──
-                                    // Before overwriting the file, read old content
-                                    // and classify what changed.  The classification
-                                    // is cached for the compile handler to use later.
-                                    if op == "edit_delta" || rel.ends_with(".cpp") || rel.ends_with(".c") || rel.ends_with(".h") {
-                                        if let Ok(old_content) = tokio::fs::read_to_string(&file_path).await {
-                                            if old_content != content {
-                                                use worker::hmr::edit_classifier::{classify_edit_with_ai, cache_classification};
-                                                let classification = classify_edit_with_ai(&old_content, content, "cpp").await;
-                                                debug_log!(
-                                                    "[file-sync] Classified edit for {}: {} hunks, value_only={}",
-                                                    rel, classification.hunks.len(), classification.is_value_only
-                                                );
-                                                cache_classification(rel, classification);
-                                            }
-                                        }
-                                    }
-
                                     if let Some(parent) = file_path.parent() {
                                         let _ = tokio::fs::create_dir_all(parent).await;
                                     }

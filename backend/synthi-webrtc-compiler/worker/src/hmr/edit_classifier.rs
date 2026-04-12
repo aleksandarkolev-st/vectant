@@ -1,17 +1,16 @@
 // ============================================================
 // EDIT CLASSIFIER
 // ============================================================
-// Background diff classifier that runs on every file-sync write.
-// Classifies each changed hunk by kind (value change, addition,
-// deletion, expression change, structural) and target module
-// (core, gui, shared).  Results are cached so the compile handler
-// can dispatch instantly without re-analyzing.
+// Classifies each changed hunk in a diff by kind (value change,
+// addition, deletion, expression change, structural). The target
+// module (core, gui, shared) is filled in by classify_edit_with_ai
+// via an AI call to the /classify/edit endpoint.
 //
-// This is pure Rust, no AI, runs in <1ms.
+// Kind classification is pure Rust, <1ms.
+// Target classification (AI) runs on-demand from the compile handler,
+// NOT on every keystroke — calling it per-edit saturated the single
+// Python worker with concurrent Gemini calls.
 // ============================================================
-
-use std::collections::HashMap;
-use std::sync::Mutex;
 
 // ── Public types ────────────────────────────────────────────
 
@@ -58,29 +57,6 @@ impl ClassifiedHunk {
 pub struct EditClassification {
     pub hunks: Vec<ClassifiedHunk>,
     pub is_value_only: bool,
-}
-
-// ── Global cache ────────────────────────────────────────────
-
-lazy_static::lazy_static! {
-    static ref CLASSIFICATION_CACHE: Mutex<HashMap<String, EditClassification>> =
-        Mutex::new(HashMap::new());
-}
-
-/// Cache a classification result for a file path.
-pub fn cache_classification(path: &str, classification: EditClassification) {
-    if let Ok(mut cache) = CLASSIFICATION_CACHE.lock() {
-        cache.insert(path.to_string(), classification);
-    }
-}
-
-/// Take (and remove) a cached classification for a file path.
-pub fn take_cached_classification(path: &str) -> Option<EditClassification> {
-    if let Ok(mut cache) = CLASSIFICATION_CACHE.lock() {
-        cache.remove(path)
-    } else {
-        None
-    }
 }
 
 // ── Classifier ──────────────────────────────────────────────

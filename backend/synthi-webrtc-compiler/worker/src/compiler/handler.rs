@@ -216,20 +216,26 @@ pub async fn handle_compile_request(
                             "gui": { "content": gui_content, "filename": "gui.cpp" }
                         })
                     } else {
-                        // ── Tiered patching with background classification ──
+                        // ── Tiered patching with on-demand classification ──
                         //
                         // Tier 1: VALUE_CHANGE → instant regex patcher (0ms)
                         // Tier 2: EXPR/ADD/DEL → targeted AI on ONE module (~1-2s)
                         // Tier 3: STRUCTURAL → full AI re-split (last resort)
                         //
-                        // The background classifier (edit_classifier.rs) already
-                        // ran when file-sync received the edit.  Read its cached
-                        // result to skip re-analysis.
-                        use crate::hmr::edit_classifier::{take_cached_classification, EditKind, EditTarget};
+                        // Classification runs HERE (synchronously, ~1s) rather than
+                        // in file-sync.  Classifying on every keystroke saturated
+                        // the single Python worker with concurrent Gemini calls;
+                        // classifying once per compile is sustainable.
+                        use crate::hmr::edit_classifier::{classify_edit_with_ai, EditKind, EditTarget};
                         use crate::hmr::diff_patcher::patch_split_files;
 
-                        let cached_class = take_cached_classification(&req.filename);
-                        let is_value_only = cached_class.as_ref().map(|c| c.is_value_only).unwrap_or(false);
+                        let classification = classify_edit_with_ai(&old_source, &req.source, "cpp").await;
+                        debug_log!(
+                            "[HMR] Classified edit: {} hunks, value_only={}",
+                            classification.hunks.len(), classification.is_value_only
+                        );
+                        let is_value_only = classification.is_value_only;
+                        let cached_class: Option<&crate::hmr::edit_classifier::EditClassification> = Some(&classification);
 
                         let (final_core, final_gui, final_shared) = if is_value_only {
                             // Tier 1: pure value change — instant regex
@@ -247,7 +253,7 @@ pub async fn handle_compile_request(
                             } else {
                                 (core_content.clone(), gui_content.clone(), shared_content.clone())
                             }
-                        } else if let Some(ref classification) = cached_class {
+                        } else if let Some(classification) = cached_class {
                             // Tier 2: targeted AI on the ONE module the classifier identified
                             let mut target_diffs: std::collections::HashMap<String, String> = std::collections::HashMap::new();
                             for hunk in &classification.hunks {
