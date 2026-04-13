@@ -40,11 +40,7 @@ from analyzer import supported_languages
 
 from llm.providers import get_provider
 from llm.prompts import SPLIT_GUI_PROMPT
-from llm.structural_prompts import (
-    format_delta_deletion_prompt,
-    format_heal_prompt,
-    apply_deletion_delta,
-)
+from llm.structural_prompts import format_heal_prompt
 
 # New imports for enhanced architecture
 from job_queue import (
@@ -1623,118 +1619,38 @@ async def get_provenance_stats():
 
 
 # ============================================================
-# FAST STRUCTURAL UPDATE ENDPOINTS (for HMR)
+# /refactor/delta and /refactor/structural were REMOVED.
 # ============================================================
-
-class StructuralUpdateRequest(BaseModel):
-    """Request for fast structural updates (add/remove elements)."""
-    update_type: str  # "addition", "deletion"
-    changes_description: str = ""  # What changed (for addition/deletion)
-    core_content: str
-    gui_content: str
-    shared_content: str
-    # Existing cached split result to inject delta into
-    cached_result: Optional[dict] = None
-    model: Optional[str] = None
-    api_key: Optional[str] = None
-
-
-@app.post("/refactor/delta")
-async def refactor_delta(req: StructuralUpdateRequest):
-    """
-    Delta-based code deletion endpoint for fast HMR.
-
-    NOTE: The `update_type == "addition"` branch was removed. It used the
-    `DELTA_ADDITION_PROMPT` that literally instructed the model to
-    "Translate this X11 code snippet to SDL2" and then performed
-    string-match injection with hardcoded markers
-    (`} AppState;`, `app_state.running = 1;`, `SDL_RenderPresent`,
-    `SDL_MOUSEBUTTONDOWN`). It was SDL-specific and silently dropped
-    half its injections. Additions now flow through the language-agnostic
-    architecture-cache-aware diff_patch pipeline in `/refactor/diff_patch`.
-    """
-    start_time = time.time()
-
-    # Always use Gemini for delta operations (fast and efficient)
-    provider = get_provider(provider_name='gemini', use_custom=bool(req.api_key))
-
-    try:
-        if req.update_type == "addition":
-            raise HTTPException(
-                status_code=410,
-                detail=(
-                    "update_type='addition' was removed. The SDL-hardcoded "
-                    "X11→SDL2 translation path is gone. Use /refactor/diff_patch "
-                    "(with the cached architecture from /refactor/split/verified) "
-                    "for language-agnostic edit routing."
-                ),
-            )
-
-        if req.update_type == "deletion":
-            # Generate deletion prompt
-            prompt = format_delta_deletion_prompt(req.changes_description)
-            
-            ai_response = await provider.ask_llm(
-                prompt,
-                "cpp",
-                None,
-                mode="delta",
-                model=req.model or "gemini-3.1-flash-lite-preview",
-                api_key=req.api_key,
-            )
-
-            delta = _parse_delta_json(ai_response)
-            
-            if req.cached_result:
-                updated_result = apply_deletion_delta(req.cached_result, delta)
-                elapsed = time.time() - start_time
-                print(f"[Delta Deletion] completed in {elapsed:.2f}s")
-                
-                return {
-                    "result": updated_result,
-                    "delta": delta,
-                    "update_type": "deletion",
-                    "elapsed_seconds": elapsed
-                }
-            else:
-                elapsed = time.time() - start_time
-                return {
-                    "delta": delta,
-                    "update_type": "deletion",
-                    "elapsed_seconds": elapsed
-                }
-        else:
-            raise HTTPException(status_code=400, detail=f"Unknown update_type: {req.update_type}. Use 'addition' or 'deletion'.")
-            
-    except json.JSONDecodeError as e:
-        print(f"[Delta] JSON parse error: {e}")
-        raise HTTPException(status_code=400, detail=f"Failed to parse AI delta response: {e}")
-    except Exception as e:
-        print(f"[Delta] Error: {e}")
-        raise HTTPException(status_code=400, detail=str(e))
-
-
-def _parse_delta_json(ai_response: str) -> dict:
-    """Parse JSON from AI response, handling markdown code blocks."""
-    result_str = ai_response.strip()
-    
-    # Clean up markdown if present
-    if "```json" in result_str:
-        result_str = result_str.split("```json")[1].split("```")[0].strip()
-    elif "```" in result_str:
-        result_str = result_str.split("```")[1].split("```")[0].strip()
-    
-    return json.loads(result_str)
-
-
-@app.post("/refactor/structural")
-async def refactor_structural(req: StructuralUpdateRequest):
-    """
-    Legacy structural update endpoint - redirects to delta-based approach.
-    Kept for backwards compatibility.
-    """
-    # Redirect to delta endpoint
-    return await refactor_delta(req)
+#
+# Both endpoints were SDL-hardcoded string-match delta paths:
+#
+# - /refactor/delta update_type="addition" used DELTA_ADDITION_PROMPT
+#   which literally told the model to "Translate this X11 code snippet
+#   to SDL2" and then spliced the result into the cached split using
+#   hardcoded markers (`} AppState;`, `app_state.running = 1;`,
+#   `SDL_RenderPresent`, `SDL_MOUSEBUTTONDOWN`). Silently failed half
+#   its injections.
+#
+# - /refactor/delta update_type="deletion" used DELTA_DELETION_PROMPT
+#   + apply_deletion_delta to comment out "matching patterns" with
+#   `// REMOVED:` prefixes. On Tier 3 fallback, this path corrupted
+#   the split by applying deletions to stale baselines while leaving
+#   the user's actual additions missing — compile would succeed but
+#   the edit never reached the running binary.
+#
+# - /refactor/structural was a back-compat redirect to /refactor/delta.
+#
+# All edit kinds — additions, deletions, expression changes, value
+# changes — now flow through:
+#
+#   Tier 1 (handler.rs): pure Rust regex value patcher for value-only
+#     edits, 0 AI calls.
+#   Tier 2 (handler.rs): /refactor/diff_patch with the cached architecture
+#     doc injected into the prompt. The model decides which modules to
+#     patch based on the arch doc's "Where User Code Goes" section.
+#   Tier 3 (handler.rs): if Tier 2 fails, fall through to
+#     /refactor/split/verified for a full re-split. No cheap cache levels
+#     in perform_ai_split — they were removed too.
 
 
 class DiffPatchRequest(BaseModel):

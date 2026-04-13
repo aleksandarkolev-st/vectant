@@ -1,38 +1,27 @@
 use crate::infra::messages::CompileRequest;
 use crate::infra::utils::get_wsl_host_ip;
 use anyhow::Result;
-use regex::Regex;
 use reqwest;
 use serde_json;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::sync::OnceLock;
 
-use super::guardrails::{is_semantic_string, patch_strings_in_cached_result};
-
-// Cache for AI split results to avoid redundant API calls
+// Cache for AI split results to avoid redundant API calls.
+// Keyed by exact source hash — the structural cache that used to back
+// Level 2 / 2.6 shortcuts was removed with those levels.
 #[derive(Clone)]
 struct CachedSplit {
     result: serde_json::Value,
-    original_source: String, // Store original source for string extraction
+    original_source: String,
 }
 
 static AI_SPLIT_CACHE: OnceLock<tokio::sync::Mutex<std::collections::HashMap<u64, CachedSplit>>> =
     OnceLock::new();
-// Secondary cache keyed by structural hash for string-patching hits
-static AI_SPLIT_STRUCTURAL_CACHE: OnceLock<
-    tokio::sync::Mutex<std::collections::HashMap<u64, CachedSplit>>,
-> = OnceLock::new();
 
 fn get_ai_split_cache() -> &'static tokio::sync::Mutex<std::collections::HashMap<u64, CachedSplit>>
 {
     AI_SPLIT_CACHE.get_or_init(|| tokio::sync::Mutex::new(std::collections::HashMap::new()))
-}
-
-fn get_ai_split_structural_cache(
-) -> &'static tokio::sync::Mutex<std::collections::HashMap<u64, CachedSplit>> {
-    AI_SPLIT_STRUCTURAL_CACHE
-        .get_or_init(|| tokio::sync::Mutex::new(std::collections::HashMap::new()))
 }
 
 pub fn calculate_hash<T: Hash>(t: &T) -> u64 {
@@ -51,392 +40,6 @@ fn get_ai_backend_url() -> String {
     "http://localhost:8000".to_string()
 }
 
-// Extract string literals from source (helper)
-fn extract_string_literals(source: &str) -> Vec<String> {
-    let mut strings = Vec::new();
-    let mut chars = source.chars().peekable();
-    let mut in_string = false;
-    let mut in_char = false;
-    let mut in_line_comment = false;
-    let mut in_block_comment = false;
-    let mut escape_next = false;
-    let mut current_string = String::new();
-
-    while let Some(c) = chars.next() {
-        if escape_next {
-            if in_string {
-                current_string.push('\\');
-                current_string.push(c);
-            }
-            escape_next = false;
-            continue;
-        }
-
-        if in_line_comment {
-            if c == '\n' {
-                in_line_comment = false;
-            }
-            continue;
-        }
-
-        if in_block_comment {
-            if c == '*' && chars.peek() == Some(&'/') {
-                chars.next();
-                in_block_comment = false;
-            }
-            continue;
-        }
-
-        if in_string {
-            if c == '\\' {
-                escape_next = true;
-            } else if c == '"' {
-                strings.push(current_string.clone());
-                current_string.clear();
-                in_string = false;
-            } else {
-                current_string.push(c);
-            }
-            continue;
-        }
-
-        if in_char {
-            if c == '\\' {
-                escape_next = true;
-            } else if c == '\'' {
-                in_char = false;
-            }
-            continue;
-        }
-
-        // Detect start of constructs
-        if c == '/' {
-            if chars.peek() == Some(&'/') {
-                chars.next();
-                in_line_comment = true;
-                continue;
-            }
-            if chars.peek() == Some(&'*') {
-                chars.next();
-                in_block_comment = true;
-                continue;
-            }
-        }
-        if c == '"' {
-            in_string = true;
-            continue;
-        }
-        if c == '\'' {
-            in_char = true;
-            continue;
-        }
-    }
-    strings
-}
-
-fn extract_structural_signature(source: &str) -> String {
-    let mut result = String::with_capacity(source.len());
-    let mut chars = source.chars().peekable();
-    let mut in_string = false;
-    let mut in_char = false;
-    let mut in_line_comment = false;
-    let mut in_block_comment = false;
-    let mut escape_next = false;
-
-    while let Some(c) = chars.next() {
-        if escape_next {
-            escape_next = false;
-            continue;
-        }
-        if in_line_comment {
-            if c == '\n' {
-                in_line_comment = false;
-                result.push('\n');
-            }
-            continue;
-        }
-        if in_block_comment {
-            if c == '*' && chars.peek() == Some(&'/') {
-                chars.next();
-                in_block_comment = false;
-            }
-            continue;
-        }
-        if in_string {
-            if c == '\\' {
-                escape_next = true;
-            } else if c == '"' {
-                in_string = false;
-                result.push_str("\"__STR__\"");
-            }
-            continue;
-        }
-        if in_char {
-            if c == '\\' {
-                escape_next = true;
-            } else if c == '\'' {
-                in_char = false;
-                result.push_str("'_'");
-            }
-            continue;
-        }
-
-        if c == '/' {
-            if chars.peek() == Some(&'/') {
-                chars.next();
-                in_line_comment = true;
-                continue;
-            } else if chars.peek() == Some(&'*') {
-                chars.next();
-                in_block_comment = true;
-                continue;
-            }
-        }
-        if c == '"' {
-            in_string = true;
-            continue;
-        }
-        if c == '\'' {
-            in_char = true;
-            continue;
-        }
-        if c.is_ascii_digit() {
-            while chars
-                .peek()
-                .map(|ch| {
-                    ch.is_ascii_digit()
-                        || *ch == '.'
-                        || *ch == 'x'
-                        || *ch == 'X'
-                        || *ch == 'u'
-                        || *ch == 'U'
-                        || *ch == 'l'
-                        || *ch == 'L'
-                })
-                .unwrap_or(false)
-            {
-                chars.next();
-            }
-            result.push_str("0");
-            continue;
-        }
-        result.push(c);
-    }
-    result
-}
-
-fn has_semantic_string_changes(old_strings: &[String], new_strings: &[String]) -> bool {
-    for (old, new) in old_strings.iter().zip(new_strings.iter()) {
-        if old != new {
-            if is_semantic_string(old) || is_semantic_string(new) {
-                return true;
-            }
-        }
-    }
-    false
-}
-
-fn collect_string_changes(old_strings: &[String], new_strings: &[String]) -> Vec<(String, String)> {
-    let mut changes = Vec::new();
-    for (old, new) in old_strings.iter().zip(new_strings.iter()) {
-        if old != new {
-            changes.push((old.clone(), new.clone()));
-        }
-    }
-    changes
-}
-
-async fn perform_incremental_ai_update(
-    cached_result: &serde_json::Value,
-    changes: &[(String, String)],
-    _language: &str,
-) -> Result<serde_json::Value> {
-    let start_time = std::time::Instant::now();
-    let core_content = cached_result
-        .get("core")
-        .and_then(|c| c.get("content"))
-        .and_then(|c| c.as_str())
-        .unwrap_or("");
-    let gui_content = cached_result
-        .get("gui")
-        .and_then(|g| g.get("content"))
-        .and_then(|c| c.as_str())
-        .unwrap_or("");
-    let shared_content = cached_result
-        .get("shared")
-        .and_then(|s| s.get("content"))
-        .and_then(|c| c.as_str())
-        .unwrap_or("");
-
-    let changes_json: Vec<serde_json::Value> = changes
-        .iter()
-        .map(|(old, new)| serde_json::json!([old, new]))
-        .collect();
-    let client = reqwest::Client::new();
-    let payload = serde_json::json!({
-        "update_type": "incremental",
-        "changes": changes_json,
-        "core_content": core_content,
-        "gui_content": gui_content,
-        "shared_content": shared_content
-    });
-
-    let backend_url = get_ai_backend_url();
-    let url = format!("{}/refactor/structural", backend_url);
-    eprintln!("[AI Split] Calling fast incremental endpoint: {}", url);
-
-    let res = client
-        .post(&url)
-        .json(&payload)
-        .timeout(std::time::Duration::from_secs(20))
-        .send()
-        .await?
-        .json::<serde_json::Value>()
-        .await?;
-    let result_str = res["result"]
-        .as_str()
-        .ok_or(anyhow::anyhow!("No result from AI"))?;
-    // Clean markdown (omitted heavy logic for brevity, assuming backend returns clean or simple clean)
-    // For now simple clean:
-    let clean_json = result_str
-        .trim()
-        .trim_start_matches("```json")
-        .trim_start_matches("```")
-        .trim_end_matches("```")
-        .trim();
-    let updated_data: serde_json::Value = serde_json::from_str(clean_json)?;
-    eprintln!(
-        "[AI Split] Incremental update completed in {:?}",
-        start_time.elapsed()
-    );
-    Ok(updated_data)
-}
-
-fn detect_structural_deletions(old_source: &str, new_source: &str) -> Vec<String> {
-    let old_lines: Vec<&str> = old_source.lines().collect();
-    let new_lines: Vec<&str> = new_source.lines().collect();
-    let mut deletions = Vec::new();
-    for old_line in &old_lines {
-        let trimmed = old_line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        if !new_lines.iter().any(|new_line| new_line.trim() == trimmed) {
-            deletions.push(trimmed.to_string());
-        }
-    }
-    deletions
-}
-
-fn try_local_deletion_patch(
-    cached_result: &serde_json::Value,
-    deletions: &[String],
-) -> Option<serde_json::Value> {
-    if deletions.is_empty() {
-        return None;
-    }
-    let core_content = cached_result
-        .get("core")
-        .and_then(|c| c.get("content"))
-        .and_then(|c| c.as_str())
-        .unwrap_or("");
-    let gui_content = cached_result
-        .get("gui")
-        .and_then(|g| g.get("content"))
-        .and_then(|c| c.as_str())
-        .unwrap_or("");
-    let shared_content = cached_result
-        .get("shared")
-        .and_then(|s| s.get("content"))
-        .and_then(|c| c.as_str())
-        .unwrap_or("");
-
-    let new_core = core_content.to_string();
-    let new_gui = gui_content.to_string();
-    let mut new_shared = shared_content.to_string();
-    let mut any_changes = false;
-
-    // Simple deletion logic (shortened for brevity but functional)
-    for deletion in deletions {
-        if deletion.len() < 3 {
-            continue;
-        }
-        if deletion.contains("button") || deletion.contains("btn") {
-            let btn_pattern = Regex::new(r"(\w+_btn_\w+|btn\d*_\w+)").unwrap();
-            for cap in btn_pattern.captures_iter(deletion) {
-                let var_name = &cap[1];
-                let field_pattern = format!("int {};", var_name);
-                if new_shared.contains(&field_pattern) {
-                    new_shared = new_shared
-                        .replace(&field_pattern, &format!("// REMOVED: {}", field_pattern));
-                    any_changes = true;
-                }
-            }
-        }
-    }
-
-    if !any_changes {
-        return None;
-    }
-    let mut result = cached_result.clone();
-    if let Some(core) = result.get_mut("core") {
-        core["content"] = serde_json::Value::String(new_core);
-    }
-    if let Some(gui) = result.get_mut("gui") {
-        gui["content"] = serde_json::Value::String(new_gui);
-    }
-    if let Some(shared) = result.get_mut("shared") {
-        shared["content"] = serde_json::Value::String(new_shared);
-    }
-    Some(result)
-}
-
-async fn perform_delta_deletion(
-    cached_result: &serde_json::Value,
-    deletion_description: &str,
-) -> Result<serde_json::Value> {
-    let core_content = cached_result
-        .get("core")
-        .and_then(|c| c.get("content"))
-        .and_then(|c| c.as_str())
-        .unwrap_or("");
-    let gui_content = cached_result
-        .get("gui")
-        .and_then(|g| g.get("content"))
-        .and_then(|c| c.as_str())
-        .unwrap_or("");
-    let shared_content = cached_result
-        .get("shared")
-        .and_then(|s| s.get("content"))
-        .and_then(|c| c.as_str())
-        .unwrap_or("");
-
-    let client = reqwest::Client::new();
-    let payload = serde_json::json!({
-        "update_type": "deletion",
-        "changes_description": deletion_description,
-        "core_content": core_content,
-        "gui_content": gui_content,
-        "shared_content": shared_content,
-        "cached_result": cached_result
-    });
-    let backend_url = get_ai_backend_url();
-    let url = format!("{}/refactor/delta", backend_url);
-    let res = client
-        .post(&url)
-        .json(&payload)
-        .timeout(std::time::Duration::from_secs(20))
-        .send()
-        .await?
-        .json::<serde_json::Value>()
-        .await?;
-    if let Some(result) = res.get("result") {
-        return Ok(result.clone());
-    }
-    Err(anyhow::anyhow!(
-        "No valid result from delta deletion endpoint"
-    ))
-}
 
 // NOTE: `detect_structural_additions` and `perform_structural_ai_update`
 // were removed together with the `Level 2.75` shortcut in `perform_ai_split`.
@@ -447,15 +50,20 @@ async fn perform_delta_deletion(
 // architecture hint) now handles the same case language-agnostically.
 
 pub async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value> {
-    // Level 1: Full source hash -> instant cache hit
+    // Level 1: Full source hash → instant cache hit.
+    // No other cache levels — Level 2 (structural match + string patching),
+    // Level 2.6 (local deletion), and Level 2.75 (structural addition) all
+    // got removed. They were SDL-hardcoded /refactor/delta shortcuts from
+    // when perform_ai_split was the only HMR path and full splits took 18s.
+    // Now the common HMR path is handler.rs Tier 2 diff_patch with the
+    // architecture cache, which handles all edit kinds language-agnostically.
+    // perform_ai_split is only called for first-compile splits and Tier 3
+    // fallbacks — both of those want correct full splits, not cheap deltas.
     let source_hash = calculate_hash(&req.source);
-    let structural_sig = extract_structural_signature(&req.source);
-    let structural_hash = calculate_hash(&structural_sig);
 
     eprintln!(
-        "[AI Split] ENTER (src_hash={}, struct_hash={}, src_len={})",
+        "[AI Split] ENTER (src_hash={}, src_len={})",
         source_hash,
-        structural_hash,
         req.source.len()
     );
 
@@ -466,119 +74,6 @@ pub async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value>
             return Ok(cached.result.clone());
         }
         eprintln!("[AI Split] Level 1 MISS (cache entries: {})", cache.len());
-    }
-
-    // Level 2: Structural match
-    let structural_cache_result = {
-        let structural_cache = get_ai_split_structural_cache().lock().await;
-        eprintln!(
-            "[AI Split] Level 2 lookup (structural_cache entries: {})",
-            structural_cache.len()
-        );
-        structural_cache.get(&structural_hash).cloned()
-    };
-
-    if let Some(cached) = structural_cache_result {
-        eprintln!("[AI Split] Level 2 candidate found (structural match)");
-        let old_strings = extract_string_literals(&cached.original_source);
-        let new_strings = extract_string_literals(&req.source);
-
-        if has_semantic_string_changes(&old_strings, &new_strings) {
-            let changes = collect_string_changes(&old_strings, &new_strings);
-            if !changes.is_empty() {
-                eprintln!("[AI Split] Level 2 semantic string changes ({} changes) → incremental AI update", changes.len());
-                if let Ok(updated) =
-                    perform_incremental_ai_update(&cached.result, &changes, &req.language).await
-                {
-                    let cached_entry = CachedSplit {
-                        result: updated.clone(),
-                        original_source: req.source.clone(),
-                    };
-                    get_ai_split_cache()
-                        .lock()
-                        .await
-                        .insert(source_hash, cached_entry.clone());
-                    get_ai_split_structural_cache()
-                        .lock()
-                        .await
-                        .insert(structural_hash, cached_entry);
-                    eprintln!("[AI Split] Level 2 incremental update SUCCESS (returning)");
-                    return Ok(updated);
-                }
-                eprintln!("[AI Split] Level 2 incremental update FAILED (falling through)");
-            }
-        } else {
-            let (patched_result, did_patch) =
-                patch_strings_in_cached_result(&cached.result, &old_strings, &new_strings);
-            if old_strings != new_strings && !did_patch {
-                eprintln!("[AI Split] Level 2 string-patch FAILED (falling through to AI)");
-            } else {
-                eprintln!("[AI Split] Level 2 string-patch SUCCESS (did_patch={}, returning)", did_patch);
-                get_ai_split_cache().lock().await.insert(
-                    source_hash,
-                    CachedSplit {
-                        result: patched_result.clone(),
-                        original_source: req.source.clone(),
-                    },
-                );
-                return Ok(patched_result);
-            }
-        }
-    } else {
-        eprintln!("[AI Split] Level 2 MISS (no structural match)");
-    }
-
-    // Level 2.6: Local deletion
-    let any_cached = get_ai_split_structural_cache()
-        .lock()
-        .await
-        .values()
-        .next()
-        .cloned();
-    if let Some(cached) = any_cached {
-        eprintln!("[AI Split] Level 2.6 checking deletions (first cached entry used as baseline)");
-        let deletions = detect_structural_deletions(&cached.original_source, &req.source);
-        if !deletions.is_empty() {
-            eprintln!("[AI Split] Level 2.6 {} deletion(s) detected", deletions.len());
-            if let Some(patched) = try_local_deletion_patch(&cached.result, &deletions) {
-                let cached_entry = CachedSplit {
-                    result: patched.clone(),
-                    original_source: req.source.clone(),
-                };
-                get_ai_split_cache()
-                    .lock()
-                    .await
-                    .insert(source_hash, cached_entry.clone());
-                get_ai_split_structural_cache()
-                    .lock()
-                    .await
-                    .insert(structural_hash, cached_entry);
-                eprintln!("[AI Split] Level 2.6 local deletion patch SUCCESS (returning)");
-                return Ok(patched);
-            }
-            eprintln!("[AI Split] Level 2.6 local patch failed → calling /refactor/delta deletion");
-            if let Ok(updated) =
-                perform_delta_deletion(&cached.result, deletions.join("\n").as_str()).await
-            {
-                eprintln!("[AI Split] Level 2.6 AI deletion SUCCESS (returning)");
-                return Ok(updated);
-            }
-            eprintln!("[AI Split] Level 2.6 AI deletion FAILED (falling through to Level 3)");
-        } else {
-            eprintln!("[AI Split] Level 2.6 no deletions detected");
-        }
-
-        // NOTE: Level 2.75 "structural addition" path was removed.
-        // It called /refactor/delta with a prompt literally named
-        // "Translate this X11 code snippet to SDL2" and used string-match
-        // injection points (`} AppState;`, `app_state.running = 1;`,
-        // `SDL_RenderPresent`, `SDL_MOUSEBUTTONDOWN`) that silently failed
-        // on half the injection targets. It was SDL-hardcoded and
-        // made obsolete by the architecture-cache-aware Tier 2 diff_patch
-        // pipeline in handler.rs. Additions now flow through Tier 2
-        // (FallbackDeterministic → classify → targeted diff_patch) or,
-        // if the classifier decides a full re-split is needed, through
-        // Level 3 below.
     }
 
     // Level 3: Full AI Split
@@ -740,7 +235,7 @@ pub async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value>
         }
     }
 
-    // Cache result
+    // Cache result (Level 1 only — the structural cache is gone).
     let cached_entry = CachedSplit {
         result: res.clone(),
         original_source: req.source.clone(),
@@ -748,11 +243,7 @@ pub async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value>
     get_ai_split_cache()
         .lock()
         .await
-        .insert(source_hash, cached_entry.clone());
-    get_ai_split_structural_cache()
-        .lock()
-        .await
-        .insert(structural_hash, cached_entry);
+        .insert(source_hash, cached_entry);
 
     Ok(res)
 }

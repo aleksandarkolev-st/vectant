@@ -433,64 +433,13 @@ pub fn apply_core_guardrails(content: &str, _shared_content: &str, allow_gui: bo
     result
 }
 
-/// Patch string literals in cached JSON result with new strings from source
-/// Returns (patched_result, did_patch_anything)
-pub fn patch_strings_in_cached_result(
-    cached: &serde_json::Value,
-    old_strings: &[String],
-    new_strings: &[String],
-) -> (serde_json::Value, bool) {
-    // Only patch if we have a reasonable mapping
-    if old_strings.is_empty() || new_strings.is_empty() {
-        return (cached.clone(), false);
-    }
-
-    let mut result = cached.clone();
-    let mut any_patches_applied = false;
-
-    // Patch each file's content in the split result
-    for key in &["core", "gui", "shared"] {
-        if let Some(file_obj) = result.get_mut(key) {
-            if let Some(content) = file_obj.get_mut("content") {
-                if let Some(content_str) = content.as_str() {
-                    let mut patched = content_str.to_string();
-
-                    // Replace old strings with new strings where they differ
-                    // Match by position in the string list (assuming order is preserved)
-                    for (old, new) in old_strings.iter().zip(new_strings.iter()) {
-                        if old != new && !old.is_empty() {
-                            // Use format with quotes to avoid partial matches
-                            let old_quoted = format!("\"{}\"", old);
-                            let new_quoted = format!("\"{}\"", new);
-                            if patched.contains(&old_quoted) {
-                                patched = patched.replace(&old_quoted, &new_quoted);
-                                any_patches_applied = true;
-                            }
-                        }
-                    }
-
-                    *content = serde_json::Value::String(patched);
-                }
-            }
-        }
-    }
-
-    (result, any_patches_applied)
-}
-
-/// Check if a string looks like a semantic value that AI transforms (not just copies)
-/// These include: color names, font names, file paths, etc.
-pub fn is_semantic_string(s: &str) -> bool {
-    // X11/CSS color names
-    let color_names = [
-        "black", "white", "red", "green", "blue", "yellow", "cyan", "magenta", "orange", "purple",
-        "pink", "brown", "gray", "grey", "navy", "teal", "lime", "aqua", "maroon", "olive",
-        "silver", "fuchsia",
-    ];
-
-    let lower = s.to_lowercase();
-    color_names.iter().any(|c| lower == *c)
-}
+// NOTE: `patch_strings_in_cached_result` and `is_semantic_string` were
+// removed together with the Level 2 structural-match cache shortcut in
+// `perform_ai_split`. They implemented SDL/CSS-color-specific string
+// diffing that was only ever called from that dead cache level. All
+// edit kinds now flow through handler.rs Tier 1 (regex value patcher,
+// pure Rust) or Tier 2 (/refactor/diff_patch with arch hint, one AI
+// call), language-agnostically.
 
 /// Get the Host KV header definitions
 fn get_hostkv_header() -> &'static str {
