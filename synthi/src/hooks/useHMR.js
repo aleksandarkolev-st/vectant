@@ -1,5 +1,10 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
-import { HMRRuntime } from '@/lib/hmr-runtime';
+import { HMRRuntime, isNativePreviewActive } from '@/lib/hmr-runtime';
+import { subscribeAiLoopStatus, getAiLoopStatus, installAiStatusListener } from '@/lib/ai-loop-status';
+import { subscribeAdapterStatus, getAdapterStatus, handleAdapterStatusNotification, normalizeAdapterFamily } from '@/lib/adapter-status';
+import { subscribeRestoreStatus, getRestoreStatus, installRestoreListener } from '@/lib/state-restore-status';
+import { subscribeCandidateTracker, getCurrentCandidate, installCandidateListener } from '@/lib/candidate-tracker';
+import { subscribeHealthPanel, getHealthPanel, updateAdapterHealth, setLifecycleState, setAiActive, pushError } from '@/lib/adapter-health-panel';
 
 /**
  * Enhanced HMR Hook
@@ -24,6 +29,13 @@ export function useHMR() {
     const [hmrHistory, setHmrHistory] = useState([]);
     // Track mounted state to prevent updates after unmount
     const isMountedRef = useRef(true);
+
+    // New subsystem states from HMR pipeline stores
+    const [aiLoopStatus, setAiLoopStatus] = useState(getAiLoopStatus);
+    const [adapterStatus, setAdapterStatus] = useState(getAdapterStatus);
+    const [restoreStatus, setRestoreStatus] = useState(getRestoreStatus);
+    const [candidateState, setCandidateState] = useState(getCurrentCandidate);
+    const [healthPanel, setHealthPanel] = useState(getHealthPanel);
 
     // Dispatch HMR status event for UI components
     const dispatchHMRStatus = useCallback((statusData) => {
@@ -55,6 +67,10 @@ export function useHMR() {
                 },
                 onReload: () => {
                     console.log('[HMR] Reload requested');
+                    if (isNativePreviewActive()) {
+                        console.log('[HMR] Native preview is active; skipping browser reload');
+                        return;
+                    }
                     // Dispatch reload status before actually reloading
                     dispatchHMRStatus({
                         type: 'hmr-status',
@@ -95,9 +111,14 @@ export function useHMR() {
                     });
                 }
                 
-                // Handle hmr-status messages specially for UI feedback
-                if (message.type === 'hmr-status') {
-                    const statusData = message.data || {};
+                // Handle hmr-status messages specially for UI feedback.
+                // Messages arrive in two shapes depending on source:
+                //   1. {type:'hmr-status', data:{status:'applied'}} (from onStatusChange callback)
+                //   2. {type:'hmr-status', status:'reload-planned', ...} (from planner/worker)
+                //   3. {status:'applied', ...} (direct status object from runner stderr)
+                // Normalize to extract the status string consistently.
+                if (message.type === 'hmr-status' || (message.status && !message.type)) {
+                    const statusData = message.data || message;
                     
                     // Map backend status to UI status
                     if (statusData.status === 'applied') {
@@ -184,6 +205,18 @@ export function useHMR() {
                     } else if (statusData.status === 'widget-compile-error') {
                         // Individual widget failed to compile
                         dispatchHMRStatus(message);
+                    } else if (statusData.status === 'reload-planned') {
+                        // HMR planner decided reload strategy
+                        dispatchHMRStatus({
+                            ...message,
+                            data: {
+                                ...statusData,
+                                message: statusData.user_message || `Reload: ${statusData.decision} (${statusData.decision_reason})`
+                            }
+                        });
+                    } else if (statusData.status === 'ai-gated') {
+                        // AI gate blocked an AI call in Loop A
+                        dispatchHMRStatus(message);
                     }
                     
                     return; // Don't pass to runtime for these messages
@@ -194,11 +227,71 @@ export function useHMR() {
         };
 
         window.addEventListener('synthi:hmr-update', handleHMRMessage);
+        window.addEventListener('synthi:hmr-status', handleHMRMessage);
+
+        // ── Subscribe to HMR pipeline stores ──
+        const unsubAi = subscribeAiLoopStatus((s) => {
+            if (isMountedRef.current) setAiLoopStatus(s);
+        });
+        const unsubAdapter = subscribeAdapterStatus((s) => {
+            if (isMountedRef.current) setAdapterStatus(s);
+        });
+        const unsubRestore = subscribeRestoreStatus((s) => {
+            if (isMountedRef.current) setRestoreStatus(s);
+        });
+        const unsubCandidate = subscribeCandidateTracker((s) => {
+            if (isMountedRef.current) setCandidateState(s);
+        });
+        const unsubHealth = subscribeHealthPanel((s) => {
+            if (isMountedRef.current) setHealthPanel(s);
+        });
+
+        // Install window event listeners that feed the stores
+        const cleanupAiListener = installAiStatusListener();
+        const cleanupRestoreListener = installRestoreListener();
+        const cleanupCandidateListener = installCandidateListener();
+
+        // Adapter status events: feed into the adapter-status store
+        const handleAdapterEvent = (e) => {
+            const payload = e.detail?.data || e.detail;
+            if (payload) handleAdapterStatusNotification(payload);
+        };
+        window.addEventListener('synthi:adapter-status', handleAdapterEvent);
+
+        // Adapter health events: feed into the health panel store
+        const handleHealthEvent = (e) => {
+            const d = e.detail?.data || e.detail;
+            if (!d) return;
+            const family = normalizeAdapterFamily(d.family);
+            if (family && family !== 'none') {
+                updateAdapterHealth(family, {
+                    active: d.active,
+                    health: d.health,
+                    reloads: d.reloads,
+                    lastMs: d.last_ms,
+                });
+            }
+            if (d.lifecycle_state) setLifecycleState(d.lifecycle_state);
+            if (d.ai_active != null) setAiActive(d.ai_active);
+            if (d.error) pushError(d.error);
+        };
+        window.addEventListener('synthi:adapter-health', handleHealthEvent);
 
         return () => {
             // SAFETY: Mark as unmounted to prevent state updates after cleanup
             isMountedRef.current = false;
             window.removeEventListener('synthi:hmr-update', handleHMRMessage);
+            window.removeEventListener('synthi:hmr-status', handleHMRMessage);
+            window.removeEventListener('synthi:adapter-status', handleAdapterEvent);
+            window.removeEventListener('synthi:adapter-health', handleHealthEvent);
+            unsubAi();
+            unsubAdapter();
+            unsubRestore();
+            unsubCandidate();
+            unsubHealth();
+            cleanupAiListener();
+            cleanupRestoreListener();
+            cleanupCandidateListener();
         };
     }, [dispatchHMRStatus]);
 
@@ -206,6 +299,12 @@ export function useHMR() {
         status,
         lastUpdate,
         hmrHistory,
-        runtime: runtimeRef.current
+        runtime: runtimeRef.current,
+        // HMR pipeline subsystem states
+        aiLoopStatus,
+        adapterStatus,
+        restoreStatus,
+        candidateState,
+        healthPanel,
     };
 }

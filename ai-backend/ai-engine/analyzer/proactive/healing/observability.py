@@ -21,7 +21,7 @@ import logging
 import math
 import re
 import time
-from collections import deque
+from collections import defaultdict, deque
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Callable, Deque, Dict, List, Optional, Tuple

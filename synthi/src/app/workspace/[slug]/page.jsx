@@ -47,6 +47,7 @@ import { useHealingUndo } from '@/hooks/useHealingUndo';
 import { HealingToast } from '@/components/healing/HealingToast';
 import { PreCompileHealToast } from '@/components/healing/PreCompileHealToast';
 import { AIHealingPanel } from '@/components/healing/AIHealingPanel';
+import { clearAIFixes, clearPendingFixes, setAIEnabled, setHealingEnabled, setRequireConfirmation } from '@/redux/healingSlice';
 import { useWorkspaceAnalysis } from '@/hooks/useWorkspaceAnalysis';
 import { useCompiler } from '@/hooks/useCompiler';
 import { useCodeIntelIndex } from '@/hooks/useCodeIntelIndex';
@@ -59,6 +60,11 @@ import { preCompileHeal, detectLanguage } from '@/services/preCompileHealer';
 import { resolveDependencies } from '@/utils/dependencyResolver';
 import { DraggableVideoWidget } from '@/components/DraggableVideoWidget';
 import { useHMR } from '@/hooks/useHMR';
+import { useRuntimeHealing } from '@/hooks/useRuntimeHealing';
+import { useRetryCompile } from '@/hooks/useRetryCompile';
+import { HMRStatusIndicator } from '@/components/HMRStatusIndicator';
+import { RuntimeHealingIndicator } from '@/components/healing/RuntimeHealingIndicator';
+import { installPreviewBridge } from '@/lib/preview-store-bridge';
 import ErrorOverlay from '@/components/ErrorOverlay';
 import { GitStatus } from '@/components/git/GitStatus';
 import { GitSummaryPanel } from '@/components/git/GitSummaryPanel';
@@ -87,6 +93,7 @@ import { DockableWorkspace } from '@/components/docking-wm/DockableWorkspace';
 // Feature flag: set to true to enable the new docking layout.
 // When false, the existing rigid ResizablePanelGroup layout is used.
 const USE_DOCKING_WM = true;
+const AUTO_FIX_ISSUES_ENABLED = false;
 
 export default function EditorPage({ params }) {
     const dispatch = useAppDispatch();
@@ -143,7 +150,24 @@ export default function EditorPage({ params }) {
     const gateway = useAnalyzerGateway();
     const { analyzeCode, analyzeProactive, analyzeContainer, analyzeUnified, lastResult, isAnalyzing: isAnalyzingGateway, connectionMeta } = gateway;
     const { client, compile, mediaStream, cancelMobileJob, isCompiling, status: compilerStatus } = useCompiler();
-    useHMR();
+    const hmrState = useHMR();
+    const healingState = useRuntimeHealing({ editorRef, gateway, autoHeal: false });
+    const { canRetry, retryCount, isRetrying, retry } = useRetryCompile({ compilerClient: client, autoRetry: true });
+
+    useEffect(() => {
+        dispatch(setHealingEnabled(false));
+        dispatch(setRequireConfirmation(true));
+        dispatch(clearPendingFixes());
+        dispatch(setAIEnabled(false));
+        dispatch(clearAIFixes());
+    }, [dispatch]);
+
+    // Install preview-store bridge (routes window events → preview store)
+    useEffect(() => {
+        const cleanup = installPreviewBridge();
+        return cleanup;
+    }, []);
+
     const activeFile = useAppSelector(selectActiveFile);
 
     // ─── Self-Healing system ───────────────────────────────
@@ -186,7 +210,10 @@ export default function EditorPage({ params }) {
         filePath: activeFilePath,
         language: activeLanguage,
         workspaceRoot: slug,
-        analyzeOnSave: true,     // auto-trigger on Ctrl+S
+        // DISABLED: was auto-firing /heal/ai/analyze on every Ctrl+S,
+        // piling up Gemini calls on the single Python worker.
+        // Re-enable with window.SYNTHI_ENABLE_PROACTIVE.
+        analyzeOnSave: typeof window !== 'undefined' && !!window.SYNTHI_ENABLE_PROACTIVE,
         mode: 'ai',
         selfEditFlagRef,
     });
@@ -194,11 +221,15 @@ export default function EditorPage({ params }) {
     // Keyboard shortcuts: Ctrl+Shift+I (analyze), Y (apply safe), N (dismiss), M (toggle mode)
     useAIHealingKeyboard({ aiHealing });
 
-    // Auto-analyze after 4s of inactivity (background, non-intrusive)
+    // Auto-analyze after 4s of inactivity (background, non-intrusive).
+    // TEMPORARILY DISABLED: every fire was calling /heal/ai/analyze → Gemini,
+    // saturating the Python backend and starving /refactor/split/verified.
+    // Gated behind window.SYNTHI_ENABLE_PROACTIVE (same flag as analyze/unified).
+    const proactiveEnabled = typeof window !== 'undefined' && !!window.SYNTHI_ENABLE_PROACTIVE;
     useAIAutoAnalysis({
         editorRef,
         analyzeCallback: aiHealing.analyze,
-        enabled: !!editor && !!activeFile,
+        enabled: proactiveEnabled && !!editor && !!activeFile,
         debounceMs: 4000,
     });
 
@@ -559,9 +590,14 @@ export default function EditorPage({ params }) {
                         setWorkspaceMissing(false);
                         setWorkspaceMissingMessage('');
 
-                        // Trigger full workspace analysis on initialization
+                        // Initial full workspace analysis — DISABLED by default.
+                        // Was firing /analyze/workspace with include_ai=true on every
+                        // project open, triggering the AI Predictor → Gemini mode=analyze
+                        // calls that saturated the Python backend.
+                        // Gated behind window.SYNTHI_ENABLE_PROACTIVE for opt-in.
+                        const proactiveEnabled = typeof window !== 'undefined' && !!window.SYNTHI_ENABLE_PROACTIVE;
                         const { files } = result.payload;
-                        if (files && files.length > 0) {
+                        if (proactiveEnabled && files && files.length > 0) {
                             (async () => {
                                 try {
                                     // Helper to flatten tree
@@ -1016,7 +1052,15 @@ export default function EditorPage({ params }) {
     useEffect(() => {
         triggerAnalysisRef.current = () => {
         if (!activeFile || !hasLoadedInitialFile || !slug) return;
-        
+
+        // TEMPORARY: proactive analysis (analyze/unified) is disabled because
+        // it was called on every keystroke and saturated the Python AI backend,
+        // starving the split/compile endpoints. Re-enable by setting
+        // window.SYNTHI_ENABLE_PROACTIVE = true in DevTools.
+        if (typeof window !== 'undefined' && !window.SYNTHI_ENABLE_PROACTIVE) {
+            return;
+        }
+
         // Clear timeouts exactly as we did before
         if (proactiveTimeoutRef.current) {
             clearTimeout(proactiveTimeoutRef.current);
@@ -1396,7 +1440,7 @@ export default function EditorPage({ params }) {
                             const fixableDiags = normalizedDiags.filter(
                                 (d) => d.fixes?.length > 0 && d.fixes.some((f) => f.replacementText != null)
                             );
-                            if (fixableDiags.length > 0) {
+                            if (AUTO_FIX_ISSUES_ENABLED && fixableDiags.length > 0) {
                                 // Defer slightly so React can flush the new diagnostics to
                                 // the ProblemsPanel first (visual feedback + undo tracking).
                                 setTimeout(() => healFromDiagnostics(fixableDiags), 60);
@@ -1607,7 +1651,7 @@ export default function EditorPage({ params }) {
                             const fixableAiDiags = normalizedDiags.filter(
                                 (d) => d.fixes?.length > 0 && d.fixes.some((f) => f.replacementText != null)
                             );
-                            if (fixableAiDiags.length > 0) {
+                            if (AUTO_FIX_ISSUES_ENABLED && fixableAiDiags.length > 0) {
                                 setTimeout(() => healFromDiagnostics(fixableAiDiags), 60);
                             }
 
@@ -2704,6 +2748,10 @@ export default function EditorPage({ params }) {
 
                 {/* Error Overlay */}
                 <ErrorOverlay />
+
+                {/* HMR Status + Runtime Healing indicators */}
+                <HMRStatusIndicator pipelineState={hmrState} />
+                <RuntimeHealingIndicator healingState={healingState} />
 
                 {/* Floating Emulator Window - rendered outside panel layout */}
                 {FloatingEmulator}

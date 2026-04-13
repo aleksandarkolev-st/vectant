@@ -1,0 +1,7 @@
+target
+.git
+*.md
+*.txt
+*.log
+examples/
+.vscode

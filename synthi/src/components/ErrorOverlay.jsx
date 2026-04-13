@@ -3,6 +3,9 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { cn } from '@/lib/utils';
 import { X, ChevronDown, ChevronRight, AlertCircle, AlertTriangle, Info, Lightbulb, Copy, Check, RefreshCw, FileCode, Keyboard, Wand2 } from 'lucide-react';
+import { PreviewLifecycleState } from '@/lib/preview-lifecycle';
+import { getPreviewState, subscribePreviewStore } from '@/lib/preview-store';
+import { normalizeDiagnosticsPayload } from '@/lib/diagnostics-normalizer';
 
 /**
  * Error Overlay Component
@@ -526,28 +529,65 @@ export function ErrorOverlay({ className }) {
             handleCompileDiagnostics({ detail: data });
         }
     }, [handleCompileDiagnostics]);
+
+    const handleBuildLog = useCallback((event) => {
+        try {
+            const parsed = typeof event.detail === 'string'
+                ? JSON.parse(event.detail)
+                : event.detail;
+            if (parsed?.type === 'compile-diagnostics') {
+                handleCompileDiagnostics({ detail: parsed });
+            }
+        } catch {}
+    }, [handleCompileDiagnostics]);
     
     useEffect(() => {
         window.addEventListener('synthi:compile-diagnostics', handleCompileDiagnostics);
         window.addEventListener('synthi:hmr-status', handleHMRStatus);
         window.addEventListener('synthi:error', handleDirectError);
-        window.addEventListener('synthi:build-log', (e) => {
-            // Check if build log contains diagnostics JSON
-            try {
-                const parsed = JSON.parse(e.detail);
-                if (parsed.type === 'compile-diagnostics') {
-                    handleCompileDiagnostics({ detail: parsed });
-                }
-            } catch {}
-        });
+        window.addEventListener('synthi:build-log', handleBuildLog);
         
         return () => {
             window.removeEventListener('synthi:compile-diagnostics', handleCompileDiagnostics);
             window.removeEventListener('synthi:hmr-status', handleHMRStatus);
             window.removeEventListener('synthi:error', handleDirectError);
+            window.removeEventListener('synthi:build-log', handleBuildLog);
         };
-    }, [handleCompileDiagnostics, handleHMRStatus, handleDirectError]);
+    }, [handleBuildLog, handleCompileDiagnostics, handleHMRStatus, handleDirectError]);
     
+    // Subscribe to preview-store for compiled-preview diagnostics.
+    // Normalizes diagnostics through the unified schema before rendering.
+    useEffect(() => {
+        function onPreviewChange(previewState) {
+            if (previewState.state === PreviewLifecycleState.COMPILE_FAILED && previewState.buildDiagnostics) {
+                const normalized = normalizeDiagnosticsPayload(previewState.buildDiagnostics);
+                const errors = normalized.diagnostics.filter(d => d.severity === 'error');
+                if (errors.length > 0) {
+                    setDiagnostics(errors);
+                    setModule(normalized.module || 'unknown');
+                    setCrashInfo(null);
+                    setVisible(true);
+                    setExpandedIds(new Set([0]));
+                }
+            } else if (previewState.state === PreviewLifecycleState.CRASH_RECOVERED) {
+                setCrashInfo(previewState.reloadDiagnostics || {});
+                setDiagnostics([]);
+                setModule(previewState.language || 'unknown');
+                setVisible(true);
+            } else if (
+                previewState.state === PreviewLifecycleState.RELOAD_APPLIED ||
+                previewState.state === PreviewLifecycleState.IDLE
+            ) {
+                setVisible(false);
+                setDiagnostics([]);
+                setCrashInfo(null);
+            }
+        }
+
+        onPreviewChange(getPreviewState());
+        return subscribePreviewStore(onPreviewChange);
+    }, []);
+
     // Handle escape key to dismiss
     useEffect(() => {
         const handleKeyDown = (e) => {

@@ -54,7 +54,7 @@ function flatten(nodes, expandedSet, level, ancestorHasNext, uiActionState) {
       uiActionState.target &&
       item.path === uiActionState.target.path;
 
-    if (item.isFolder && (isExpanded || isCreationTarget) && item.children?.length) {
+    if (item.isFolder && (isExpanded || isCreationTarget) && (item.children?.length || isCreationTarget)) {
       const childRows = flatten(
         item.children,
         expandedSet,

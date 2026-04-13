@@ -1,0 +1,3 @@
+# Ignore build artifacts for the Rust projects in this folder
+**/target/
+**/.env

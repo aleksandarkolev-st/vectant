@@ -39,6 +39,14 @@ const crypto = require('crypto');
 // Configuration
 // ============================================================================
 
+/** Enable verbose debug logging (set SYNTHI_VSCODE_VERBOSE=1 to enable) */
+const VERBOSE_LOGS = process.env.SYNTHI_VSCODE_VERBOSE === '1';
+
+/** Debug log helper — only writes when verbose logging is enabled */
+function debugLog(msg) {
+  if (VERBOSE_LOGS) debugLog(msg);
+}
+
 /** Where to store the VS Code Server binary and data */
 const VSCODE_SERVER_DIR = process.env.SYNTHI_VSCODE_SERVER_DIR
   || path.join(os.homedir(), '.synthi', 'vscode-server');
@@ -340,17 +348,17 @@ function _defaultWorkspaceDirForSlug(slug) {
 
 process.stdout.on('error', (err) => {
   if (err.code === 'EPIPE') {
-    process.stderr.write('[vscode-server-manager] stdout EPIPE — parent pipe closed, exiting gracefully\n');
+    debugLog('[vscode-server-manager] stdout EPIPE — parent pipe closed, exiting gracefully\n');
     process.exit(0);
   }
 });
 
 process.on('uncaughtException', (err) => {
   if (err.code === 'EPIPE') {
-    process.stderr.write('[vscode-server-manager] uncaught EPIPE, exiting gracefully\n');
+    debugLog('[vscode-server-manager] uncaught EPIPE, exiting gracefully\n');
     process.exit(0);
   }
-  process.stderr.write(`[vscode-server-manager] uncaught exception: ${err.message}\n`);
+  debugLog(`[vscode-server-manager] uncaught exception: ${err.message}\n`);
   process.exit(1);
 });
 
@@ -456,7 +464,7 @@ async function sendResponseStreamed(id, result) {
 
   // End
   send({ id, type: 'response', stream: 'end', generation: GENERATION });
-  process.stderr.write(`[vscode-server-manager] Streamed response ${id}: ${body.length} bytes in ${total} chunks\n`);
+  debugLog(`[vscode-server-manager] Streamed response ${id}: ${body.length} bytes in ${total} chunks\n`);
 }
 
 /**
@@ -489,7 +497,7 @@ async function _sendWsEventStreamed(tunnelId, payload, isBinary) {
   }
 
   sendEvent('ws:data:end', tunnelId);
-  process.stderr.write(`[vscode-server-manager] Streamed WS event tunnel ${tunnelId}: ${payload.length} chars in ${total} chunks\n`);
+  debugLog(`[vscode-server-manager] Streamed WS event tunnel ${tunnelId}: ${payload.length} chars in ${total} chunks\n`);
 }
 
 function sendResponse(id, result, error = null) {
@@ -541,7 +549,7 @@ function extractDeviceCodeFromUrl(value) {
 
 function emitAuthDeviceCode(code, source, metadata = {}) {
   if (!code) return;
-  process.stderr.write(`[auth-device] code=${code} source=${source}\n`);
+  debugLog(`[auth-device] code=${code} source=${source}\n`);
   const providerId = typeof metadata.providerId === 'string' ? metadata.providerId : 'github';
   _pendingAuthDeviceCodeByProvider.delete(providerId);
   sendEvent('authDeviceCode', { code, source, ...metadata });
@@ -628,7 +636,7 @@ function _startGithubDeviceTokenPolling(deviceCode, scopes, intervalSec = 5, tri
     const elapsed = Date.now() - active.startedAt;
     if (elapsed > 10 * 60 * 1000) {
       _pendingGithubFlows.delete(flowKey);
-      process.stderr.write(`[auth-device] github poll timeout (${trigger})\n`);
+      debugLog(`[auth-device] github poll timeout (${trigger})\n`);
       return;
     }
 
@@ -669,7 +677,7 @@ function _startGithubDeviceTokenPolling(deviceCode, scopes, intervalSec = 5, tri
             if (userPayload.login) {
               accountId = String(userPayload.id || userPayload.login);
               accountLabel = String(userPayload.login);
-              process.stderr.write(`[auth-device] github user: ${accountLabel} (id=${accountId})\n`);
+              debugLog(`[auth-device] github user: ${accountLabel} (id=${accountId})\n`);
             }
           } else {
             process.stderr.write(`[auth-device] github user fetch failed: status=${userResponse.status}\n`);
@@ -689,7 +697,7 @@ function _startGithubDeviceTokenPolling(deviceCode, scopes, intervalSec = 5, tri
         };
         _upsertAuthSession('github', session);
         _pendingGithubFlows.delete(flowKey);
-        process.stderr.write(`[auth-device] github session established (${trigger}) user=${accountLabel}\n`);
+        debugLog(`[auth-device] github session established (${trigger}) user=${accountLabel}\n`);
         _emitAuthSessionChanged('github', [session.id], [], []);
 
         // Notify the Extension Host preload that a session is now available
@@ -783,7 +791,7 @@ async function _startGithubDeviceFlow(scopes, trigger, options = {}) {
   const forceStart = !!(options && options.forceStart);
   const pendingFlow = _pendingGithubFlows.get(dedupeKey);
   if (pendingFlow) {
-    process.stderr.write(`[auth-device] github device flow already pending (${trigger})\n`);
+    debugLog(`[auth-device] github device flow already pending (${trigger})\n`);
     if (pendingFlow.userCode) {
       emitAuthDeviceCode(pendingFlow.userCode, `github-device-flow:pending:${trigger}`, {
         providerId: 'github',
@@ -798,7 +806,7 @@ async function _startGithubDeviceFlow(scopes, trigger, options = {}) {
   const now = Date.now();
   const dedupeWindowMs = forceStart ? 1200 : 15000;
   if (_lastGithubDeviceFlow.key === dedupeKey && (now - _lastGithubDeviceFlow.ts) < dedupeWindowMs) {
-    process.stderr.write(`[auth-device] github device flow deduped (${trigger})\n`);
+    debugLog(`[auth-device] github device flow deduped (${trigger})\n`);
     return;
   }
   _lastGithubDeviceFlow.key = dedupeKey;
@@ -810,7 +818,7 @@ async function _startGithubDeviceFlow(scopes, trigger, options = {}) {
     scope: normalizedScopes.join(' '),
   });
 
-  process.stderr.write(`[auth-device] requesting github device code (trigger=${trigger}, scopes=${JSON.stringify(normalizedScopes)})\n`);
+  debugLog(`[auth-device] requesting github device code (trigger=${trigger}, scopes=${JSON.stringify(normalizedScopes)})\n`);
 
   try {
     const response = await fetch('https://github.com/login/device/code', {
@@ -887,20 +895,20 @@ function scheduleMissingAuthDeviceCodeNotice(providerId, scopes) {
     if (!current || current !== startedAt) return;
 
     if (pid.toLowerCase() === 'github' && _pendingGithubFlows.has(githubFlowKey)) {
-      process.stderr.write('[auth-device] suppressing missing-code notice: github flow pending\n');
+      debugLog('[auth-device] suppressing missing-code notice: github flow pending\n');
       return;
     }
 
     if (pid.toLowerCase() === 'github') {
       const matched = _listAuthSessions('github').find(session => _sessionMatchesScopes(session, normalizedScopes));
       if (matched) {
-        process.stderr.write('[auth-device] suppressing missing-code notice: github session already available\n');
+        debugLog('[auth-device] suppressing missing-code notice: github session already available\n');
         return;
       }
     }
 
     _pendingAuthDeviceCodeByProvider.delete(pid);
-    process.stderr.write(`[auth-device] missing code after authSessionRequest provider=${pid}\n`);
+    debugLog(`[auth-device] missing code after authSessionRequest provider=${pid}\n`);
     sendEvent('authDeviceCodeMissing', {
       providerId: pid,
       scopes: Array.isArray(scopes) ? scopes : [],
@@ -980,7 +988,7 @@ function _captureProviderFromRpc(methodName, args) {
   if (inferredTreeId) {
     if (!rpcObservedTreeViews.has(inferredTreeId)) {
       rpcObservedTreeViews.add(inferredTreeId);
-      process.stderr.write(`[rpc-fallback] Tree provider observed via EH RPC: ${inferredTreeId} (${methodName})\n`);
+      debugLog(`[rpc-fallback] Tree provider observed via EH RPC: ${inferredTreeId} (${methodName})\n`);
       sendEvent('registerTreeView', inferredTreeId, 'rpc-fallback');
       sendEvent('providerList', Array.from(rpcObservedTreeViews), Array.from(rpcObservedWebviewViews));
     }
@@ -989,7 +997,7 @@ function _captureProviderFromRpc(methodName, args) {
   if (inferredWebviewId) {
     if (!rpcObservedWebviewViews.has(inferredWebviewId)) {
       rpcObservedWebviewViews.add(inferredWebviewId);
-      process.stderr.write(`[rpc-fallback] Webview provider observed via EH RPC: ${inferredWebviewId} (${methodName})\n`);
+      debugLog(`[rpc-fallback] Webview provider observed via EH RPC: ${inferredWebviewId} (${methodName})\n`);
       sendEvent('createWebview', inferredWebviewId, inferredWebviewId, inferredWebviewId, { extensionId: 'rpc-fallback' });
       sendEvent('providerList', Array.from(rpcObservedTreeViews), Array.from(rpcObservedWebviewViews));
     }
@@ -1081,14 +1089,14 @@ const _deferredWebviewResolutions = [];
 let _providerDiscoveryStarted = false;
 function _startProviderDiscovery(trigger) {
   if (_providerDiscoveryStarted) {
-    process.stderr.write(`[preload-bridge] Provider discovery already started, skipping duplicate trigger: ${trigger}\n`);
+    debugLog(`[preload-bridge] Provider discovery already started, skipping duplicate trigger: ${trigger}\n`);
     return;
   }
   _providerDiscoveryStarted = true;
   const retryDelays = [500, 3000, 8000, 20000];
   for (const delay of retryDelays) {
     const timer = setTimeout(() => {
-      process.stderr.write(`[preload-bridge] Provider discovery (${delay / 1000}s after ${trigger})\n`);
+      debugLog(`[preload-bridge] Provider discovery (${delay / 1000}s after ${trigger})\n`);
       sendToPreloadClients({ action: 'listProviders' });
       if (preloadRegisteredTreeViews.size > 0) {
         sendToPreloadClients({ action: 'refreshAllTrees' });
@@ -1132,12 +1140,12 @@ function _startProviderDiscovery(trigger) {
 function _markBootstrapReadyFallback(reason) {
   if (_bootstrapStateReceived) return;
   _bootstrapStateReceived = true;
-  process.stderr.write(`[preload-bridge] Synthetic bootstrap ready via ${reason}\n`);
+  debugLog(`[preload-bridge] Synthetic bootstrap ready via ${reason}\n`);
   sendEvent('bootstrapState', true, `fallback:${reason}`);
   _startProviderDiscovery(`fallback:${reason}`);
 
   if (_deferredWebviewResolutions.length > 0) {
-    process.stderr.write(`[preload-bridge] Flushing ${_deferredWebviewResolutions.length} deferred webview resolutions (fallback)\n`);
+    debugLog(`[preload-bridge] Flushing ${_deferredWebviewResolutions.length} deferred webview resolutions (fallback)\n`);
     const deferred = [..._deferredWebviewResolutions];
     _deferredWebviewResolutions.length = 0;
     for (const viewType of deferred) {
@@ -1175,7 +1183,7 @@ function _emitMergedFallbackProviders(reason) {
   if (emitKey === _lastFallbackProviderEmitKey) return;
   _lastFallbackProviderEmitKey = emitKey;
 
-  process.stderr.write(`[fallback-providers] Emitting merged providers (${reason}): ${mergedTreeViews.length} trees, ${mergedWebviews.length} webviews\n`);
+  debugLog(`[fallback-providers] Emitting merged providers (${reason}): ${mergedTreeViews.length} trees, ${mergedWebviews.length} webviews\n`);
 
   // Emit tree registrations so UI can render containers immediately.
   for (const viewId of mergedTreeViews) {
@@ -1229,7 +1237,7 @@ function startPreloadBridge() {
     }
 
     const server = net.createServer((socket) => {
-      process.stderr.write(`[preload-bridge] Client connected from Extension Host (total: ${preloadClients.size + 1})\n`);
+      debugLog(`[preload-bridge] Client connected from Extension Host (total: ${preloadClients.size + 1})\n`);
       preloadClients.add(socket);
 
       // Notify anyone waiting for a preload client
@@ -1258,7 +1266,7 @@ function startPreloadBridge() {
       });
 
       socket.on('close', () => {
-        process.stderr.write(`[preload-bridge] Client disconnected\n`);
+        debugLog(`[preload-bridge] Client disconnected\n`);
         preloadClients.delete(socket);
       });
 
@@ -1271,7 +1279,7 @@ function startPreloadBridge() {
     server.listen(0, '127.0.0.1', () => {
       preloadBridgePort = server.address().port;
       preloadBridgeServer = server;
-      process.stderr.write(`[preload-bridge] TCP bridge listening on port ${preloadBridgePort}\n`);
+      debugLog(`[preload-bridge] TCP bridge listening on port ${preloadBridgePort}\n`);
       resolve(preloadBridgePort);
     });
 
@@ -1297,7 +1305,7 @@ function stopPreloadBridge() {
     try { preloadBridgeServer.close(); } catch (_) {}
     preloadBridgeServer = null;
     preloadBridgePort = null;
-    process.stderr.write(`[preload-bridge] TCP bridge stopped\n`);
+    debugLog(`[preload-bridge] TCP bridge stopped\n`);
   }
 }
 
@@ -1313,16 +1321,22 @@ function _handlePreloadMessage(msg) {
   switch (msg.type) {
     case 'treeProvider': {
       // A tree data provider was registered
-      process.stderr.write(`[preload-bridge] Tree provider registered: ${msg.viewId} (ext: ${msg.extensionId})\n`);
+      debugLog(`[preload-bridge] Tree provider registered: ${msg.viewId} (ext: ${msg.extensionId})\n`);
       preloadRegisteredTreeViews.add(msg.viewId);
       _skippedTreeRefreshLogged.delete(msg.viewId);
       sendEvent('registerTreeView', msg.viewId, msg.extensionId);
+      // Immediately request tree data so the UI populates as soon as the
+      // provider is available — don't wait for timed provider discovery.
+      setTimeout(() => {
+        debugLog(`[preload-bridge] Auto-refreshing tree data for newly registered provider: ${msg.viewId}\n`);
+        sendToPreloadClients({ action: 'refreshTreeData', viewId: msg.viewId });
+      }, 200);
       break;
     }
 
     case 'treeData': {
       // Tree data resolved for a view
-      process.stderr.write(`[preload-bridge] Tree data for ${msg.viewId}: ${(msg.data || []).length} items\n`);
+      debugLog(`[preload-bridge] Tree data for ${msg.viewId}: ${(msg.data || []).length} items\n`);
       preloadTreeCache.set(msg.viewId, msg.data);
       sendEvent('treeData', msg.viewId, msg.data);
       break;
@@ -1330,7 +1344,7 @@ function _handlePreloadMessage(msg) {
 
     case 'webviewProvider': {
       // A webview view provider was registered
-      process.stderr.write(`[preload-bridge] Webview provider registered: ${msg.viewType} (ext: ${msg.extensionId})\n`);
+      debugLog(`[preload-bridge] Webview provider registered: ${msg.viewType} (ext: ${msg.extensionId})\n`);
       preloadRegisteredWebviewViews.add(msg.viewType);
       _skippedWebviewResolveLogged.delete(msg.viewType);
       sendEvent('createWebview', msg.viewType, msg.viewType, msg.viewType, { extensionId: msg.extensionId });
@@ -1338,7 +1352,7 @@ function _handlePreloadMessage(msg) {
       // meaning resolveWebviewView is never called naturally.  We trigger
       // it ourselves so the extension generates its HTML content.
       setTimeout(() => {
-        process.stderr.write(`[preload-bridge] Auto-resolving webview view: ${msg.viewType}\n`);
+        debugLog(`[preload-bridge] Auto-resolving webview view: ${msg.viewType}\n`);
         if (preloadRegisteredWebviewViews.has(msg.viewType)) {
           sendToPreloadClients({ action: 'resolveWebviewView', viewType: msg.viewType });
         }
@@ -1348,14 +1362,14 @@ function _handlePreloadMessage(msg) {
 
     case 'webviewHtml': {
       // Webview HTML content updated
-      process.stderr.write(`[preload-bridge] Webview HTML for ${msg.viewType}: ${(msg.html || '').length} chars\n`);
+      debugLog(`[preload-bridge] Webview HTML for ${msg.viewType}: ${(msg.html || '').length} chars\n`);
       sendEvent('updateWebview', msg.viewType, msg.html);
       break;
     }
 
     case 'webviewPanel': {
       // A webview panel was created
-      process.stderr.write(`[preload-bridge] Webview panel: ${msg.viewId} (type: ${msg.viewType})\n`);
+      debugLog(`[preload-bridge] Webview panel: ${msg.viewId} (type: ${msg.viewType})\n`);
       sendEvent('createWebview', msg.viewId, msg.viewType, msg.title, { extensionId: msg.extensionId });
       break;
     }
@@ -1368,7 +1382,7 @@ function _handlePreloadMessage(msg) {
 
     case 'command': {
       // A command was registered
-      process.stderr.write(`[preload-bridge] Command registered: ${msg.commandId} (ext: ${msg.extensionId})\n`);
+      debugLog(`[preload-bridge] Command registered: ${msg.commandId} (ext: ${msg.extensionId})\n`);
       if (msg.commandId) preloadRegisteredCommands.add(msg.commandId);
       sendEvent('registerCommand', msg.commandId, msg.extensionId);
       break;
@@ -1393,7 +1407,7 @@ function _handlePreloadMessage(msg) {
 
     case 'hello': {
       // Preload client connected and identified itself
-      process.stderr.write(`[preload-bridge] Hello from Extension Host (pid: ${msg.pid}, ppid: ${msg.ppid})\n`);
+      debugLog(`[preload-bridge] Hello from Extension Host (pid: ${msg.pid}, ppid: ${msg.ppid})\n`);
 
       // Auto-scan extension manifests for UI contribution metadata.
       // This only reads package.json files — it does NOT load or activate
@@ -1405,7 +1419,7 @@ function _handlePreloadMessage(msg) {
           process.stderr.write(`[preload-bridge] Auto-load UI extensions failed: ${err.message}\n`);
         });
       } else {
-        process.stderr.write(`[preload-bridge] Auto-scan already completed for this session — skipping duplicate run\n`);
+        debugLog(`[preload-bridge] Auto-scan already completed for this session — skipping duplicate run\n`);
       }
 
       // DO NOT request providers here.  Extensions haven't activated yet
@@ -1421,7 +1435,7 @@ function _handlePreloadMessage(msg) {
       // interception fails in ESM mode), start requesting providers after
       // a timeout.  With the api:'vscode' init data fix, bootstrap should
       // complete within 5-10s; 20s gives ample margin.
-      process.stderr.write(`[preload-bridge] Waiting for bootstrapState before requesting providers\n`);
+      debugLog(`[preload-bridge] Waiting for bootstrapState before requesting providers\n`);
       const _bootstrapFallbackTimer = setTimeout(() => {
         if (!_bootstrapStateReceived) {
           process.stderr.write(`[preload-bridge] WARNING: bootstrapState not received after 20s — requesting providers as fallback\n`);
@@ -1440,7 +1454,7 @@ function _handlePreloadMessage(msg) {
       const complete = msg.complete;
       const method = msg.method || 'unknown';
       const wrappedCount = msg.wrappedCount || 0;
-      process.stderr.write(`[preload-bridge] Bootstrap state: complete=${complete}, method=${method}, wrapped=${wrappedCount}\n`);
+      debugLog(`[preload-bridge] Bootstrap state: complete=${complete}, method=${method}, wrapped=${wrappedCount}\n`);
 
       if (complete) {
         const firstBootstrap = !_bootstrapStateReceived;
@@ -1454,7 +1468,7 @@ function _handlePreloadMessage(msg) {
         // Flush deferred webview resolution requests now that extensions are activating.
         // Add a small delay to give providers time to register after activation.
         if (_deferredWebviewResolutions.length > 0) {
-          process.stderr.write(`[preload-bridge] Flushing ${_deferredWebviewResolutions.length} deferred webview resolutions\n`);
+          debugLog(`[preload-bridge] Flushing ${_deferredWebviewResolutions.length} deferred webview resolutions\n`);
           const deferred = [..._deferredWebviewResolutions];
           _deferredWebviewResolutions.length = 0;
           for (const viewType of deferred) {
@@ -1476,7 +1490,7 @@ function _handlePreloadMessage(msg) {
 
     case 'ipcState': {
       // IPC state report from the preload script
-      process.stderr.write(`[preload-bridge] IPC state: readySent=${msg.readySent}, socketReceived=${msg.socketReceived}, socketType=${msg.socketType}\n`);
+      debugLog(`[preload-bridge] IPC state: readySent=${msg.readySent}, socketReceived=${msg.socketReceived}, socketType=${msg.socketType}\n`);
       if (!msg.socketReceived) {
         process.stderr.write(`[preload-bridge] WARNING: Extension Host did not receive client socket — EH initialization may be stalled\n`);
       }
@@ -1501,7 +1515,7 @@ function _handlePreloadMessage(msg) {
       for (const viewType of (msg.webviews || [])) preloadRegisteredWebviewViews.add(viewType);
       const treeCount = mergedTreeViews.length;
       const webviewCount = mergedWebviews.length;
-      process.stderr.write(`[preload-bridge] Provider list: ${treeCount} trees, ${webviewCount} webviews\n`);
+      debugLog(`[preload-bridge] Provider list: ${treeCount} trees, ${webviewCount} webviews\n`);
 
       // Emit registrations for any manifest-known webviews not yet seen
       // from runtime, so the browser creates WebviewPanelEmbed slots.
@@ -1517,7 +1531,7 @@ function _handlePreloadMessage(msg) {
 
     case 'ehExit': {
       // Extension Host process is exiting
-      process.stderr.write(`[preload-bridge] Extension Host exiting: code=${msg.code}, uptime=${msg.uptime}s, api=${msg.apiIntercepted}, trees=${msg.treeProviders}, webviews=${msg.webviewProviders}\n`);
+      debugLog(`[preload-bridge] Extension Host exiting: code=${msg.code}, uptime=${msg.uptime}s, api=${msg.apiIntercepted}, trees=${msg.treeProviders}, webviews=${msg.webviewProviders}\n`);
       sendEvent('ehProcessExit', msg.code, msg.uptime, msg.apiIntercepted);
       break;
     }
@@ -1526,7 +1540,7 @@ function _handlePreloadMessage(msg) {
       // Uncaught exception or unhandled rejection in Extension Host
       process.stderr.write(`[preload-bridge] Extension Host error: ${msg.error}${msg.rejection ? ' (unhandled rejection)' : ''}\n`);
       if (msg.stack) {
-        process.stderr.write(`[preload-bridge]   ${msg.stack.split('\n').slice(0, 3).join('\n  ')}\n`);
+        debugLog(`[preload-bridge]   ${msg.stack.split('\n').slice(0, 3).join('\n  ')}\n`);
       }
       sendEvent('ehError', msg.error, msg.rejection || false);
       break;
@@ -1537,7 +1551,7 @@ function _handlePreloadMessage(msg) {
       // Forward it to the frontend so it can call window.open().
       const url = msg.url;
       if (url) {
-        process.stderr.write(`[preload-bridge] openExternal: ${url}\n`);
+        debugLog(`[preload-bridge] openExternal: ${url}\n`);
         sendEvent('openExternal', url);
         const deviceCode = extractDeviceCodeFromText(url) || extractDeviceCodeFromUrl(url);
         if (deviceCode) {
@@ -1550,7 +1564,7 @@ function _handlePreloadMessage(msg) {
     case 'uriHandlerRegistered': {
       const extensionId = msg.extensionId || 'unknown';
       preloadRegisteredUriHandlers.add(String(extensionId));
-      process.stderr.write(`[preload-bridge] URI handler registered: ${extensionId}\n`);
+      debugLog(`[preload-bridge] URI handler registered: ${extensionId}\n`);
       sendEvent('uriHandlerRegistered', { extensionId });
       break;
     }
@@ -1569,7 +1583,7 @@ function _handlePreloadMessage(msg) {
       // Extension requested an authentication session that requires user
       // interaction. Forward to the frontend so it can show appropriate UI.
       const { providerId, scopes, createIfNone, forceNewSession } = msg;
-      process.stderr.write(`[preload-bridge] authSessionRequest: provider=${providerId} scopes=${JSON.stringify(scopes)} createIfNone=${createIfNone}\n`);
+      debugLog(`[preload-bridge] authSessionRequest: provider=${providerId} scopes=${JSON.stringify(scopes)} createIfNone=${createIfNone}\n`);
       const normalizedProviderId = String(providerId || '').toLowerCase();
       const normalizedScopes = Array.isArray(scopes) ? scopes : [];
 
@@ -1577,7 +1591,7 @@ function _handlePreloadMessage(msg) {
       // device flow and frontend notification if the session is cached.
       const existingSession = _listAuthSessions(normalizedProviderId).find(session => _sessionMatchesScopes(session, normalizedScopes));
       if (existingSession && !forceNewSession) {
-        process.stderr.write(`[preload-bridge] authSessionRequest: session already exists for ${normalizedProviderId}, skipping device flow\n`);
+        debugLog(`[preload-bridge] authSessionRequest: session already exists for ${normalizedProviderId}, skipping device flow\n`);
         // Notify the preload that a session is already available so it
         // can short-circuit further authSessionRequest messages
         sendToPreloadClients({
@@ -1603,7 +1617,7 @@ function _handlePreloadMessage(msg) {
       const dedupeKey = JSON.stringify({ providerId, scopes: scopes || [], createIfNone: !!createIfNone, forceNewSession: !!forceNewSession });
       const now = Date.now();
       if (_lastAuthSessionRequest.key === dedupeKey && (now - _lastAuthSessionRequest.ts) < 1500) {
-        process.stderr.write('[preload-bridge] authSessionRequest deduped\n');
+        debugLog('[preload-bridge] authSessionRequest deduped\n');
         break;
       }
       _lastAuthSessionRequest.key = dedupeKey;
@@ -1617,7 +1631,7 @@ function _handlePreloadMessage(msg) {
       // Extension wants to write text to the clipboard via the API wrapper.
       const text = msg.text;
       if (text) {
-        process.stderr.write(`[preload-bridge] clipboardWrite: ${String(text).slice(0, 50)}\n`);
+        debugLog(`[preload-bridge] clipboardWrite: ${String(text).slice(0, 50)}\n`);
         sendEvent('clipboardWrite', String(text));
         const deviceCode = extractDeviceCodeFromText(text);
         if (deviceCode) {
@@ -1629,12 +1643,12 @@ function _handlePreloadMessage(msg) {
 
     case 'asExternalUri': {
       // Extension called env.asExternalUri — log for diagnostics.
-      process.stderr.write(`[preload-bridge] asExternalUri: ${msg.url}\n`);
+      debugLog(`[preload-bridge] asExternalUri: ${msg.url}\n`);
       break;
     }
 
     default:
-      process.stderr.write(`[preload-bridge] Unknown message type: ${msg.type}\n`);
+      debugLog(`[preload-bridge] Unknown message type: ${msg.type}\n`);
   }
 }
 
@@ -1767,11 +1781,11 @@ function findServerBinary() {
 async function ensureServerBinary() {
   const existing = findServerBinary();
   if (existing) {
-    process.stderr.write(`[vscode-server-manager] Found server binary: ${existing}\n`);
+    debugLog(`[vscode-server-manager] Found server binary: ${existing}\n`);
     return existing;
   }
 
-  process.stderr.write('[vscode-server-manager] VS Code Server not found, installing code-server...\n');
+  debugLog('[vscode-server-manager] VS Code Server not found, installing code-server...\n');
   sendEvent('serverStatus', 'downloading');
 
   // Create install directory
@@ -1848,7 +1862,7 @@ async function downloadCodeServerWindows(binDir) {
   const zipPath = path.join(VSCODE_SERVER_DIR, 'code-server.zip');
 
   // Download the zip
-  process.stderr.write(`[vscode-server-manager] Downloading ${winAsset.browser_download_url}\n`);
+  debugLog(`[vscode-server-manager] Downloading ${winAsset.browser_download_url}\n`);
   await downloadFile(winAsset.browser_download_url, zipPath);
 
   // Extract (use PowerShell on Windows)
@@ -2033,12 +2047,12 @@ function _patchExtensionHostForPreload(serverBinaryPath, preloadPath, bridgePort
         // Also remove trailing newline
         const afterBlock = content[endOfBlock] === '\n' ? endOfBlock + 1 : endOfBlock;
         content = content.slice(0, beginIdx) + content.slice(afterBlock);
-        process.stderr.write(`[vscode-server-manager] Removed stale preload injection from: ${candidate}\n`);
+        debugLog(`[vscode-server-manager] Removed stale preload injection from: ${candidate}\n`);
       }
 
       // Inject at the very top of the file
       fs.writeFileSync(candidate, injection + content);
-      process.stderr.write(`[vscode-server-manager] Patched extensionHostProcess.js (bridge port ${bridgePort}): ${candidate}\n`);
+      debugLog(`[vscode-server-manager] Patched extensionHostProcess.js (bridge port ${bridgePort}): ${candidate}\n`);
 
       // Also patch bootstrap-fork.js for early ODP trap + early preload load
       _patchBootstrapFork(rootCandidates, bridgePort, preloadPath);
@@ -2050,8 +2064,8 @@ function _patchExtensionHostForPreload(serverBinaryPath, preloadPath, bridgePort
   }
 
   process.stderr.write(`[vscode-server-manager] WARNING: Could not find extensionHostProcess.js to patch\n`);
-  process.stderr.write(`[vscode-server-manager]   Searched roots: ${[...rootCandidates].join(', ')}\n`);
-  process.stderr.write(`[vscode-server-manager]   Candidates tried: ${candidates.length}\n`);
+  debugLog(`[vscode-server-manager]   Searched roots: ${[...rootCandidates].join(', ')}\n`);
+  debugLog(`[vscode-server-manager]   Candidates tried: ${candidates.length}\n`);
   return false;
 }
 
@@ -2126,7 +2140,7 @@ function _patchBootstrapFork(rootCandidates, bridgePort, preloadPath) {
     `      } else if (__synthiCR && typeof __synthiCR.then === 'function') {`,
     `        __synthiCR.then((__rq) => { try { __rq(__synthiPreloadPath); } catch (_e2) { process.stderr.write('[ext-host-preload:bootstrap] Early preload async require failed: ' + _e2.message + '\\n'); } });`,
     `      } else {`,
-    `        process.stderr.write('[ext-host-preload:bootstrap] Early preload loader unavailable\\n');`,
+    `        debugLog('[ext-host-preload:bootstrap] Early preload loader unavailable\\n');`,
     `      }`,
     `    }`,
     `    catch (_e) { process.stderr.write('[ext-host-preload:bootstrap] Early preload require failed: ' + _e.message + '\\n'); }`,
@@ -2137,10 +2151,10 @@ function _patchBootstrapFork(rootCandidates, bridgePort, preloadPath) {
     `  Object.defineProperty = function(target, prop, descriptor) {`,
     `    if (target === globalThis && _odpCount < 50) {`,
     `      _odpCount++;`,
-    `      process.stderr.write(_PREFIX + ' ODP: globalThis.' + String(prop) + ' type=' + typeof (descriptor && descriptor.value) + '\\n');`,
+    `      debugLog(_PREFIX + ' ODP: globalThis.' + String(prop) + ' type=' + typeof (descriptor && descriptor.value) + '\\n');`,
     `    }`,
     `    if (target === globalThis && typeof prop === 'string' && prop.includes('VSCODE') && prop.includes('IMPORT') && descriptor && typeof descriptor.value === 'function') {`,
-    `      process.stderr.write(_PREFIX + ' INTERCEPTED: globalThis.' + prop + ' — wrapping API factory\\n');`,
+    `      debugLog(_PREFIX + ' INTERCEPTED: globalThis.' + prop + ' — wrapping API factory\\n');`,
     `      const origFn = descriptor.value;`,
     `      const wrappedFn = function() {`,
     `        const result = origFn.apply(this, arguments);`,
@@ -2152,7 +2166,7 @@ function _patchBootstrapFork(rootCandidates, bridgePort, preloadPath) {
     `    }`,
     `    return _origODP.call(this, target, prop, descriptor);`,
     `  };`,
-    `  process.stderr.write(_PREFIX + ' Early ODP trap installed\\n');`,
+    `  debugLog(_PREFIX + ' Early ODP trap installed\\n');`,
     `})();`,
     BOOTSTRAP_END,
     '',
@@ -2171,12 +2185,12 @@ function _patchBootstrapFork(rootCandidates, bridgePort, preloadPath) {
         const endOfBlock = endIdx + BOOTSTRAP_END.length;
         const afterBlock = content[endOfBlock] === '\n' ? endOfBlock + 1 : endOfBlock;
         content = content.slice(0, beginIdx) + content.slice(afterBlock);
-        process.stderr.write(`[vscode-server-manager] Removed stale bootstrap injection from: ${candidate}\n`);
+        debugLog(`[vscode-server-manager] Removed stale bootstrap injection from: ${candidate}\n`);
       }
 
       // Inject at the very top
       fs.writeFileSync(candidate, bootstrapInjection + content);
-      process.stderr.write(`[vscode-server-manager] Patched bootstrap-fork.js: ${candidate}\n`);
+      debugLog(`[vscode-server-manager] Patched bootstrap-fork.js: ${candidate}\n`);
       return true;
     } catch (e) {
       process.stderr.write(`[vscode-server-manager] Failed to patch bootstrap-fork.js ${candidate}: ${e.message}\n`);
@@ -2224,7 +2238,7 @@ async function startServer(slug, options = {}) {
       || _defaultWorkspaceDirForSlug(slug);
     const resolvedWorkspaceDir = _resolveGitWorkspaceRoot(workspaceDir);
     if (resolvedWorkspaceDir !== workspaceDir) {
-      process.stderr.write(`[vscode-server-manager] Workspace remapped to git root: ${workspaceDir} -> ${resolvedWorkspaceDir}\n`);
+      debugLog(`[vscode-server-manager] Workspace remapped to git root: ${workspaceDir} -> ${resolvedWorkspaceDir}\n`);
       workspaceDir = resolvedWorkspaceDir;
     }
     fs.mkdirSync(workspaceDir, { recursive: true });
@@ -2264,7 +2278,7 @@ async function startServer(slug, options = {}) {
     let bridgePort = 0;
     try {
       bridgePort = await startPreloadBridge();
-      process.stderr.write(`[vscode-server-manager] Preload bridge ready on port ${bridgePort}\n`);
+      debugLog(`[vscode-server-manager] Preload bridge ready on port ${bridgePort}\n`);
     } catch (bridgeErr) {
       process.stderr.write(`[vscode-server-manager] Preload bridge start failed (non-fatal): ${bridgeErr.message}\n`);
     }
@@ -2296,12 +2310,12 @@ async function startServer(slug, options = {}) {
     // auto-install anything; we just discover what's already on disk.
     try {
       const extResult = await _discoverInstalledExtensions();
-      process.stderr.write(`[vscode-server-manager] Extension discovery: ${extResult.present.length} present, ${extResult.broken.length} broken\n`);
+      debugLog(`[vscode-server-manager] Extension discovery: ${extResult.present.length} present, ${extResult.broken.length} broken\n`);
     } catch (extErr) {
       process.stderr.write(`[vscode-server-manager] Extension discovery failed (non-fatal): ${extErr.message}\n`);
     }
 
-    process.stderr.write(`[vscode-server-manager] Starting: ${binary} ${args.join(' ')}\n`);
+    debugLog(`[vscode-server-manager] Starting: ${binary} ${args.join(' ')}\n`);
 
     serverProcess = spawn(binary, args, {
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -2327,7 +2341,7 @@ async function startServer(slug, options = {}) {
     serverProcess.stdout.on('data', (data) => {
       const line = data.toString().trim();
       if (line) {
-        process.stderr.write(`[vscode-server] ${line}\n`);
+        debugLog(`[vscode-server] ${line}\n`);
         sendEvent('serverLog', line);
       }
     });
@@ -2335,13 +2349,13 @@ async function startServer(slug, options = {}) {
     serverProcess.stderr.on('data', (data) => {
       const line = data.toString().trim();
       if (line) {
-        process.stderr.write(`[vscode-server:err] ${line}\n`);
+        debugLog(`[vscode-server:err] ${line}\n`);
         sendEvent('serverLog', line);
       }
     });
 
     serverProcess.on('exit', (code, signal) => {
-      process.stderr.write(`[vscode-server-manager] Server exited: code=${code} signal=${signal}\n`);
+      debugLog(`[vscode-server-manager] Server exited: code=${code} signal=${signal}\n`);
       serverState = 'stopped';
       serverProcess = null;
       sendEvent('serverStatus', 'stopped', code, signal);
@@ -2349,7 +2363,7 @@ async function startServer(slug, options = {}) {
       // Auto-restart if crashed unexpectedly
       if (code !== 0 && code !== null && restartAttempts < MAX_RESTART_ATTEMPTS) {
         restartAttempts++;
-        process.stderr.write(`[vscode-server-manager] Auto-restarting (attempt ${restartAttempts}/${MAX_RESTART_ATTEMPTS})\n`);
+        debugLog(`[vscode-server-manager] Auto-restarting (attempt ${restartAttempts}/${MAX_RESTART_ATTEMPTS})\n`);
         startServer(slug, options).catch(err => {
           process.stderr.write(`[vscode-server-manager] Restart failed: ${err.message}\n`);
           sendEvent('serverStatus', 'error', err.message);
@@ -2375,7 +2389,7 @@ async function startServer(slug, options = {}) {
       process.stderr.write(`[vscode-server-manager] EH trigger failed (non-fatal): ${err.message}\n`);
     });
 
-    process.stderr.write(`[vscode-server-manager] Server ready on port ${port}\n`);
+    debugLog(`[vscode-server-manager] Server ready on port ${port}\n`);
 
     // ── Delayed startup summary ──
     // After 15s, log a comprehensive one-shot summary of the entire
@@ -2403,7 +2417,7 @@ async function startServer(slug, options = {}) {
         `  Workspace:  ${currentWorkspaceDir || '(none)'} slug=${currentSlug || '(none)'}`,
         `${'='.repeat(60)}\n`,
       ];
-      process.stderr.write(lines.join('\n'));
+      debugLog(lines.join('\n'));
     }, 15000);
     if (_startupSummaryTimer.unref) _startupSummaryTimer.unref();
 
@@ -2455,13 +2469,13 @@ async function _triggerExtensionHostStartup(port, token) {
       } catch (_) {}
     }
   } catch (_) {}
-  process.stderr.write(`[vscode-server-manager] VS Code commit for EH trigger: ${vsCodeCommit}\n`);
+  debugLog(`[vscode-server-manager] VS Code commit for EH trigger: ${vsCodeCommit}\n`);
 
   // ── Step 1: Load the workspace page (may bootstrap session) ────────
   await new Promise((resolve) => {
     const req = http.get(`http://127.0.0.1:${port}/`, (res) => {
       res.resume(); // Drain
-      process.stderr.write(`[vscode-server-manager] Workspace page loaded (status: ${res.statusCode})\n`);
+      debugLog(`[vscode-server-manager] Workspace page loaded (status: ${res.statusCode})\n`);
       resolve();
     });
     req.on('error', () => resolve());
@@ -2489,7 +2503,7 @@ async function _triggerExtensionHostStartup(port, token) {
     });
 
     req.on('upgrade', (_res, socket, head) => {
-      process.stderr.write(`[vscode-server-manager] WebSocket upgrade ok, sending VS Code protocol handshake\n`);
+      debugLog(`[vscode-server-manager] WebSocket upgrade ok, sending VS Code protocol handshake\n`);
 
       socket.unref();
       socket.setKeepAlive(true, 30000);
@@ -2676,14 +2690,14 @@ async function _triggerExtensionHostStartup(port, token) {
       function _doSendInitData(reason) {
         if (initDataSent) return; // already sent
         initDataSent = true;
-        process.stderr.write(`[vscode-server-manager] Sending init data (reason: ${reason})\n`);
+        debugLog(`[vscode-server-manager] Sending init data (reason: ${reason})\n`);
         _sendExtensionHostInitData(sendWSFrame, makeRegularMsg, port).then((initMeta) => {
           if (initMeta && Array.isArray(initMeta.allExtensions) && Array.isArray(initMeta.myExtensionIds)) {
             lastInitAllExtensions = initMeta.allExtensions;
             lastInitMyExtensions = initMeta.myExtensionIds;
-            process.stderr.write(`[vscode-server-manager] Captured init extension metadata: all=${lastInitAllExtensions.length}, mine=${lastInitMyExtensions.length}\n`);
+            debugLog(`[vscode-server-manager] Captured init extension metadata: all=${lastInitAllExtensions.length}, mine=${lastInitMyExtensions.length}\n`);
           }
-          process.stderr.write(`[vscode-server-manager] Extension Host init data sent successfully\n`);
+          debugLog(`[vscode-server-manager] Extension Host init data sent successfully\n`);
 
           // Start protocol KeepAlive: the EH's PersistentProtocol
           // expects periodic KeepAlive (type 9) messages from the
@@ -2806,24 +2820,24 @@ async function _triggerExtensionHostStartup(port, token) {
             if (pending.acked && pending.ackIsSuccess) {
               if (!pending.waitingLateReplyWindow) {
                 pending.waitingLateReplyWindow = true;
-                process.stderr.write(`[vscode-server-manager] RPC ${pending.method} (reqId=${reqId}, rpcId=${pending.rpcId}) acknowledged; waiting 15s for late reply\n`);
+                debugLog(`[vscode-server-manager] RPC ${pending.method} (reqId=${reqId}, rpcId=${pending.rpcId}) acknowledged; waiting 15s for late reply\n`);
                 replyTimer = setTimeout(() => {
                   const latePending = pendingOutgoingRpc.get(reqId);
                   if (!latePending) return;
                   latePending.clearTimer();
                   pendingOutgoingRpc.delete(reqId);
-                  process.stderr.write(`[vscode-server-manager] RPC ${latePending.method} (reqId=${reqId}, rpcId=${latePending.rpcId}) completed with ACK-only semantics\n`);
+                  debugLog(`[vscode-server-manager] RPC ${latePending.method} (reqId=${reqId}, rpcId=${latePending.rpcId}) completed with ACK-only semantics\n`);
                 }, 15000);
                 if (replyTimer.unref) replyTimer.unref();
                 return;
               }
 
               pendingOutgoingRpc.delete(reqId);
-              process.stderr.write(`[vscode-server-manager] RPC ${pending.method} (reqId=${reqId}, rpcId=${pending.rpcId}) finalized with ACK-only semantics\n`);
+              debugLog(`[vscode-server-manager] RPC ${pending.method} (reqId=${reqId}, rpcId=${pending.rpcId}) finalized with ACK-only semantics\n`);
               return;
             }
 
-            process.stderr.write(`[vscode-server-manager] RPC ${pending.method} (reqId=${reqId}, rpcId=${pending.rpcId}) has no reply after ${timeoutMs}ms\n`);
+            debugLog(`[vscode-server-manager] RPC ${pending.method} (reqId=${reqId}, rpcId=${pending.rpcId}) has no reply after ${timeoutMs}ms\n`);
             pendingOutgoingRpc.delete(reqId);
             if (pending.acked) {
               if (pending.onSuccess && !pending.ackSuccessNotified) {
@@ -2836,7 +2850,7 @@ async function _triggerExtensionHostStartup(port, token) {
           if (replyTimer.unref) replyTimer.unref();
 
           sendWSFrame(makeRegularMsg(rpcBuf));
-          process.stderr.write(`[vscode-server-manager] Sent RPC ${method} (reqId=${reqId}, rpcId=${rpcId})\n`);
+          debugLog(`[vscode-server-manager] Sent RPC ${method} (reqId=${reqId}, rpcId=${rpcId})\n`);
           return reqId;
         } catch (e) {
           const pending = pendingOutgoingRpc.get(reqId);
@@ -2912,7 +2926,7 @@ async function _triggerExtensionHostStartup(port, token) {
               workspaceInitSucceeded = true;
               workspaceInitSent = true;
               workspaceInitInFlight = false;
-              process.stderr.write(`[vscode-server-manager] Sent ExtHost $initializeWorkspace on rpcId=${rpcId}\n`);
+              debugLog(`[vscode-server-manager] Sent ExtHost $initializeWorkspace on rpcId=${rpcId}\n`);
             },
             onError: () => {
               setTimeout(() => tryNext(), 15);
@@ -2976,7 +2990,7 @@ async function _triggerExtensionHostStartup(port, token) {
               configurationInitSucceeded = true;
               configurationInitSent = true;
               configurationInitInFlight = false;
-              process.stderr.write(`[vscode-server-manager] Sent ExtHost $initializeConfiguration on rpcId=${rpcId}\n`);
+              debugLog(`[vscode-server-manager] Sent ExtHost $initializeConfiguration on rpcId=${rpcId}\n`);
             },
             onError: (reason) => {
               if (typeof reason === 'string' && reason.includes('Unknown method')) {
@@ -3008,7 +3022,7 @@ async function _triggerExtensionHostStartup(port, token) {
       function _sendStartExtensionHost() {
         const delta = _buildStartExtensionDelta();
         _sendEHRpcRequest(EXTHOST_EXTENSION_SERVICE_RPC_ID, '$startExtensionHost', [delta]);
-        process.stderr.write(`[vscode-server-manager] $startExtensionHost sent — extensions should now activate!\n`);
+        debugLog(`[vscode-server-manager] $startExtensionHost sent — extensions should now activate!\n`);
       }
 
       function _tryStartExtensionHostNextRpcId() {
@@ -3023,7 +3037,7 @@ async function _triggerExtensionHostStartup(port, token) {
             onSuccess: () => {
               startRpcInFlight = false;
               startExtensionHostSucceeded = true;
-              process.stderr.write(`[vscode-server-manager] $startExtensionHost accepted on discovered rpcId=${rpcId}\n`);
+              debugLog(`[vscode-server-manager] $startExtensionHost accepted on discovered rpcId=${rpcId}\n`);
               setTimeout(() => _sendActivateByEvent('*', 0, rpcId), 200);
               setTimeout(() => _sendDirectActivateForInitExtensions('post-start', rpcId), 500);
             },
@@ -3032,7 +3046,7 @@ async function _triggerExtensionHostStartup(port, token) {
               const reasonText = String(reason || '').toLowerCase();
               if (reasonText.includes('already started')) {
                 startExtensionHostSucceeded = true;
-                process.stderr.write(`[vscode-server-manager] $startExtensionHost already active on discovered rpcId=${rpcId}; continuing activation\n`);
+                debugLog(`[vscode-server-manager] $startExtensionHost already active on discovered rpcId=${rpcId}; continuing activation\n`);
                 setTimeout(() => _sendActivateByEvent('*', 0, rpcId), 200);
                 setTimeout(() => _sendDirectActivateForInitExtensions('post-start', rpcId), 500);
                 return;
@@ -3044,7 +3058,7 @@ async function _triggerExtensionHostStartup(port, token) {
           return;
         }
         if (startRpcAttemptIndex >= EXTHOST_EXTENSION_SERVICE_RPC_ID_CANDIDATES.length) {
-          process.stderr.write(`[vscode-server-manager] Exhausted ExtHostExtensionService rpcId candidates; startup may be incomplete\n`);
+          debugLog(`[vscode-server-manager] Exhausted ExtHostExtensionService rpcId candidates; startup may be incomplete\n`);
           return;
         }
 
@@ -3058,7 +3072,7 @@ async function _triggerExtensionHostStartup(port, token) {
           onSuccess: () => {
             startRpcInFlight = false;
             startExtensionHostSucceeded = true;
-            process.stderr.write(`[vscode-server-manager] $startExtensionHost accepted on rpcId=${rpcId}\n`);
+            debugLog(`[vscode-server-manager] $startExtensionHost accepted on rpcId=${rpcId}\n`);
             setTimeout(() => _sendActivateByEvent('*', 0, rpcId), 200);
             setTimeout(() => _sendDirectActivateForInitExtensions('post-start', rpcId), 500);
           },
@@ -3067,7 +3081,7 @@ async function _triggerExtensionHostStartup(port, token) {
             const reasonText = String(reason || '').toLowerCase();
             if (reasonText.includes('already started')) {
               startExtensionHostSucceeded = true;
-              process.stderr.write(`[vscode-server-manager] $startExtensionHost already active on rpcId=${rpcId}; continuing activation\n`);
+              debugLog(`[vscode-server-manager] $startExtensionHost already active on rpcId=${rpcId}; continuing activation\n`);
               setTimeout(() => _sendActivateByEvent('*', 0, rpcId), 200);
               setTimeout(() => _sendDirectActivateForInitExtensions('post-start', rpcId), 500);
               return;
@@ -3097,7 +3111,7 @@ async function _triggerExtensionHostStartup(port, token) {
         );
 
         if (!startExtensionHostSucceeded) {
-          process.stderr.write(`[vscode-server-manager] Activation nudge (${reason}): startExtensionHost not confirmed, retrying start sequence\n`);
+          debugLog(`[vscode-server-manager] Activation nudge (${reason}): startExtensionHost not confirmed, retrying start sequence\n`);
           _sendWorkspaceInitializeToExtHost();
           _sendConfigurationInitializeToExtHost();
           _tryStartExtensionHostNextRpcId();
@@ -3105,7 +3119,7 @@ async function _triggerExtensionHostStartup(port, token) {
         }
 
         if (!hasAnyProviderSignals) {
-          process.stderr.write(`[vscode-server-manager] Activation nudge (${reason}): no providers observed yet, re-sending $activateByEvent('*')\n`);
+          debugLog(`[vscode-server-manager] Activation nudge (${reason}): no providers observed yet, re-sending $activateByEvent('*')\n`);
           _sendActivateByEvent('*', 0, rpcId);
           _sendDirectActivateForInitExtensions(`nudge:${reason}`, rpcId);
         }
@@ -3154,7 +3168,7 @@ async function _triggerExtensionHostStartup(port, token) {
           return;
         }
 
-        process.stderr.write(`[vscode-server-manager] Direct activation fallback (${reason}): activating ${lastInitMyExtensions.length} extension(s) by id\n`);
+        debugLog(`[vscode-server-manager] Direct activation fallback (${reason}): activating ${lastInitMyExtensions.length} extension(s) by id\n`);
         for (const ext of lastInitMyExtensions) {
           const extId = typeof ext === 'string' ? ext : ext?.value;
           _sendActivateById(extId, rpcIdOverride);
@@ -3196,7 +3210,7 @@ async function _triggerExtensionHostStartup(port, token) {
                 if (payload === probeValue) {
                   discoveredExtHostExtensionServiceRpcId = candidate;
                   lastStartRpcId = candidate;
-                  process.stderr.write(`[vscode-server-manager] Resolved ExtHostExtensionService rpcId=${candidate} via $test_latency\n`);
+                  debugLog(`[vscode-server-manager] Resolved ExtHostExtensionService rpcId=${candidate} via $test_latency\n`);
                   discoverExtHostRpcPromise = null;
                   resolve(candidate);
                   return;
@@ -3287,7 +3301,7 @@ async function _triggerExtensionHostStartup(port, token) {
         if (methodName && methodName !== '$logExtensionHostMessage'
             && methodName !== '$fireCommandActivationEvent') {
           const argsPreview = rpcArgs ? JSON.stringify(rpcArgs).slice(0, 150) : '';
-          process.stderr.write(`[vscode-server-manager] EH RPC: ${methodName} ${argsPreview}\n`);
+          debugLog(`[vscode-server-manager] EH RPC: ${methodName} ${argsPreview}\n`);
         }
 
         // Decode $logExtensionHostMessage for diagnostics
@@ -3303,7 +3317,7 @@ async function _triggerExtensionHostStartup(port, token) {
               const text = entry.arguments || '';
               const fromPreload = typeof text === 'string' && text.includes('[ext-host-preload]');
               const normalizedSev = fromPreload && sev === 'error' ? 'log' : sev;
-              process.stderr.write(`[vscode-server-manager] EH ${normalizedSev}: ${text}\n`);
+              debugLog(`[vscode-server-manager] EH ${normalizedSev}: ${text}\n`);
             }
           } catch (_) {}
         }
@@ -3413,7 +3427,7 @@ async function _triggerExtensionHostStartup(port, token) {
           try {
             const uriComponents = rpcArgs && rpcArgs[0];
             if (uriComponents && typeof uriComponents === 'object') {
-              process.stderr.write(`[vscode-server-manager] $asExternalUri: ${uriComponents.scheme}://${uriComponents.authority || ''}${uriComponents.path || ''}\n`);
+              debugLog(`[vscode-server-manager] $asExternalUri: ${uriComponents.scheme}://${uriComponents.authority || ''}${uriComponents.path || ''}\n`);
               // Return the same UriComponents — VS Code calls URI.from(result)
               const json = Buffer.from(JSON.stringify(uriComponents), 'utf8');
               replyRpc = Buffer.alloc(5 + 4 + json.length);
@@ -3422,7 +3436,7 @@ async function _triggerExtensionHostStartup(port, token) {
               replyRpc.writeUInt32BE(json.length, 5);
               json.copy(replyRpc, 9);
             } else if (typeof uriComponents === 'string') {
-              process.stderr.write(`[vscode-server-manager] $asExternalUri (string): ${uriComponents}\n`);
+              debugLog(`[vscode-server-manager] $asExternalUri (string): ${uriComponents}\n`);
               const json = Buffer.from(JSON.stringify(uriComponents), 'utf8');
               replyRpc = Buffer.alloc(5 + 4 + json.length);
               replyRpc[0] = 9; // ReplyOKJSON
@@ -3459,7 +3473,7 @@ async function _triggerExtensionHostStartup(port, token) {
               uriStr = `${scheme}://${authority}${path}${query}${fragment}`;
             }
             if (uriStr) {
-              process.stderr.write(`[vscode-server-manager] $openUri: ${uriStr}\n`);
+              debugLog(`[vscode-server-manager] $openUri: ${uriStr}\n`);
               sendEvent('openExternal', uriStr);
               const deviceCode = extractDeviceCodeFromText(uriStr) || extractDeviceCodeFromUrl(uriStr);
               if (deviceCode) {
@@ -3479,12 +3493,12 @@ async function _triggerExtensionHostStartup(port, token) {
 
         } else if (methodName === '$getSession' || methodName === '$getSessions') {
           // Authentication provider session request.
-          process.stderr.write(`[vscode-server-manager] Auth: ${methodName} ${JSON.stringify(rpcArgs).slice(0, 200)}\n`);
+          debugLog(`[vscode-server-manager] Auth: ${methodName} ${JSON.stringify(rpcArgs).slice(0, 200)}\n`);
           const authReq = _extractAuthRequestFromRpcArgs(rpcArgs);
           const providerId = String(authReq.providerId || '').toLowerCase();
           const sessions = _listAuthSessions(providerId);
           const matchedSession = sessions.find(session => _sessionMatchesScopes(session, authReq.scopes)) || null;
-          process.stderr.write(`[auth-session] ${methodName} provider=${providerId || 'unknown'} scopes=${JSON.stringify(authReq.scopes || [])} matched=${matchedSession ? 'yes' : 'no'} total=${sessions.length}\n`);
+          debugLog(`[auth-session] ${methodName} provider=${providerId || 'unknown'} scopes=${JSON.stringify(authReq.scopes || [])} matched=${matchedSession ? 'yes' : 'no'} total=${sessions.length}\n`);
 
           let deferredGetSessionReply = false;
           if (
@@ -3503,9 +3517,9 @@ async function _triggerExtensionHostStartup(port, token) {
             (async () => {
               const session = await _waitForAuthSession(providerId, Array.isArray(authReq.scopes) ? authReq.scopes : [], 120000);
               if (session) {
-                process.stderr.write(`[auth-session] $getSession deferred reply: session found for ${providerId}\n`);
+                debugLog(`[auth-session] $getSession deferred reply: session found for ${providerId}\n`);
               } else {
-                process.stderr.write(`[auth-session] $getSession deferred reply: timeout waiting for ${providerId} session\n`);
+                debugLog(`[auth-session] $getSession deferred reply: timeout waiting for ${providerId} session\n`);
               }
               _sendJsonReply(reqId, session || null);
             })();
@@ -3541,7 +3555,7 @@ async function _triggerExtensionHostStartup(port, token) {
               replyRpc.writeUInt32BE(json.length, 5);
               json.copy(replyRpc, 9);
             } else {
-              process.stderr.write(`[vscode-server-manager] Auth: $createSession provider=${providerId} scopes=${JSON.stringify(scopes)}\n`);
+              debugLog(`[vscode-server-manager] Auth: $createSession provider=${providerId} scopes=${JSON.stringify(scopes)}\n`);
               sendEvent('authSessionRequest', {
                 providerId,
                 scopes: Array.isArray(scopes) ? scopes : [],
@@ -3558,7 +3572,7 @@ async function _triggerExtensionHostStartup(port, token) {
                 (async () => {
                   const session = await _waitForAuthSession(normalizedProviderId, Array.isArray(scopes) ? scopes : [], 120000);
                   if (!session) {
-                    process.stderr.write('[auth-session] $createSession timeout waiting for github session\n');
+                    debugLog('[auth-session] $createSession timeout waiting for github session\n');
                   }
                   _sendJsonReply(reqId, session || null);
                 })();
@@ -3642,7 +3656,7 @@ async function _triggerExtensionHostStartup(port, token) {
 
         } else if (methodName === '$getPassword' || methodName === '$findCredentials') {
           // Secret storage read (persisted locally by manager)
-          process.stderr.write(`[vscode-server-manager] Credential read: ${methodName}\n`);
+          debugLog(`[vscode-server-manager] Credential read: ${methodName}\n`);
           let payload = null;
           try {
             const service = rpcArgs && rpcArgs[0];
@@ -3664,7 +3678,7 @@ async function _triggerExtensionHostStartup(port, token) {
 
         } else if (methodName === '$setPassword' || methodName === '$deletePassword') {
           // Secret storage write/delete persisted in manager-local store
-          process.stderr.write(`[vscode-server-manager] Credential write: ${methodName}\n`);
+          debugLog(`[vscode-server-manager] Credential write: ${methodName}\n`);
           try {
             const service = rpcArgs && rpcArgs[0];
             const account = rpcArgs && rpcArgs[1];
@@ -3702,7 +3716,7 @@ async function _triggerExtensionHostStartup(port, token) {
             const options = rpcArgs && rpcArgs[2];
             const commands = rpcArgs && rpcArgs[3];
             const sevLabel = severity === 3 ? 'error' : severity === 2 ? 'warning' : 'info';
-            process.stderr.write(`[vscode-server-manager] ShowMessage (${sevLabel}): ${message}\n`);
+            debugLog(`[vscode-server-manager] ShowMessage (${sevLabel}): ${message}\n`);
             sendEvent('extensionMessage', {
               severity: sevLabel,
               message: String(message || ''),
@@ -3730,7 +3744,7 @@ async function _triggerExtensionHostStartup(port, token) {
             if (Array.isArray(commands) && commands.length > 0) {
               const actionBtn = commands.find(c => !c.isCloseAffordance);
               if (actionBtn && actionBtn.handle !== undefined) {
-                process.stderr.write(`[vscode-server-manager] ShowMessage: auto-selecting "${actionBtn.title}" (handle=${actionBtn.handle})\n`);
+                debugLog(`[vscode-server-manager] ShowMessage: auto-selecting "${actionBtn.title}" (handle=${actionBtn.handle})\n`);
                 const json = Buffer.from(JSON.stringify(actionBtn.handle), 'utf8');
                 replyRpc = Buffer.alloc(5 + 4 + json.length);
                 replyRpc[0] = 9; // ReplyOKJSON
@@ -3759,7 +3773,7 @@ async function _triggerExtensionHostStartup(port, token) {
           try {
             const items = rpcArgs && rpcArgs[0];
             const opts = rpcArgs && rpcArgs[1];
-            process.stderr.write(`[vscode-server-manager] ShowQuickPick: ${(opts && opts.placeHolder) || 'no placeholder'} (${Array.isArray(items) ? items.length : '?'} items)\n`);
+            debugLog(`[vscode-server-manager] ShowQuickPick: ${(opts && opts.placeHolder) || 'no placeholder'} (${Array.isArray(items) ? items.length : '?'} items)\n`);
             sendEvent('showQuickPick', {
               items: Array.isArray(items) ? items.slice(0, 50) : [],
               options: opts || {},
@@ -3791,7 +3805,7 @@ async function _triggerExtensionHostStartup(port, token) {
           // Input box — forward to frontend and return default value when present.
           try {
             const opts = rpcArgs && rpcArgs[0];
-            process.stderr.write(`[vscode-server-manager] ShowInputBox: ${(opts && opts.prompt) || 'no prompt'}\n`);
+            debugLog(`[vscode-server-manager] ShowInputBox: ${(opts && opts.prompt) || 'no prompt'}\n`);
             sendEvent('showInputBox', { options: opts || {} });
 
             const defaultValue = opts && typeof opts.value === 'string' ? opts.value : '';
@@ -3833,12 +3847,12 @@ async function _triggerExtensionHostStartup(port, token) {
                 const contextKey = Array.isArray(commandArgs) && commandArgs[0];
                 const contextValue = Array.isArray(commandArgs) ? commandArgs[1] : undefined;
                 if (contextKey) {
-                  process.stderr.write(`[vscode-server-manager] setContext: ${contextKey} = ${JSON.stringify(contextValue)}\n`);
+                  debugLog(`[vscode-server-manager] setContext: ${contextKey} = ${JSON.stringify(contextValue)}\n`);
                   sendEvent('setContext', { key: String(contextKey), value: contextValue });
                 }
               } else {
                 // Log but do NOT forward to preload — avoids infinite loop
-                process.stderr.write(`[vscode-server-manager] $executeCommand (main-thread, no-op): ${commandId}\n`);
+                debugLog(`[vscode-server-manager] $executeCommand (main-thread, no-op): ${commandId}\n`);
               }
             }
           } catch (_) {}
@@ -3866,7 +3880,7 @@ async function _triggerExtensionHostStartup(port, token) {
           try {
             const text = rpcArgs && rpcArgs[0];
             if (text !== undefined) {
-              process.stderr.write(`[vscode-server-manager] $writeText: ${String(text).slice(0, 50)}\n`);
+              debugLog(`[vscode-server-manager] $writeText: ${String(text).slice(0, 50)}\n`);
               sendEvent('clipboardWrite', String(text));
               const deviceCode = extractDeviceCodeFromText(text);
               if (deviceCode) {
@@ -3889,7 +3903,7 @@ async function _triggerExtensionHostStartup(port, token) {
 
         } else if (methodName === '$showOpenDialog' || methodName === '$showSaveDialog') {
           // File dialogs — can't show in headless. Return undefined (cancelled).
-          process.stderr.write(`[vscode-server-manager] ${methodName}: forwarding to frontend\n`);
+          debugLog(`[vscode-server-manager] ${methodName}: forwarding to frontend\n`);
           sendEvent('showFileDialog', {
             type: methodName === '$showOpenDialog' ? 'open' : 'save',
             options: rpcArgs && rpcArgs[0],
@@ -3904,7 +3918,7 @@ async function _triggerExtensionHostStartup(port, token) {
             if (methodName === '$startProgress') {
               const handle = rpcArgs && rpcArgs[0];
               const opts = rpcArgs && rpcArgs[1];
-              process.stderr.write(`[vscode-server-manager] Progress: start ${handle} ${opts?.title || ''}\n`);
+              debugLog(`[vscode-server-manager] Progress: start ${handle} ${opts?.title || ''}\n`);
               sendEvent('extensionProgress', {
                 action: 'start',
                 handle,
@@ -3935,7 +3949,7 @@ async function _triggerExtensionHostStartup(port, token) {
           try {
             const providerId = rpcArgs && rpcArgs[0];
             const label = rpcArgs && rpcArgs[1];
-            process.stderr.write(`[vscode-server-manager] Auth provider registered: ${providerId} (${label})\n`);
+            debugLog(`[vscode-server-manager] Auth provider registered: ${providerId} (${label})\n`);
             sendEvent('authProviderRegistered', { providerId, label });
           } catch (_) {}
           replyRpc = Buffer.alloc(5);
@@ -3947,7 +3961,7 @@ async function _triggerExtensionHostStartup(port, token) {
           try {
             const providerId = rpcArgs && rpcArgs[0];
             const event = rpcArgs && rpcArgs[1];
-            process.stderr.write(`[vscode-server-manager] Session changed: ${providerId}\n`);
+            debugLog(`[vscode-server-manager] Session changed: ${providerId}\n`);
             sendEvent('authSessionChanged', { providerId, event });
           } catch (_) {}
           replyRpc = Buffer.alloc(5);
@@ -4004,7 +4018,7 @@ async function _triggerExtensionHostStartup(port, token) {
         type: 'auth',
         auth: '00000000-0000-0000-0000-000000000000',
       }));
-      process.stderr.write(`[vscode-server-manager] EH trigger: sent auth request\n`);
+      debugLog(`[vscode-server-manager] EH trigger: sent auth request\n`);
 
       socket.on('data', (chunk) => {
         recvBuf = Buffer.concat([recvBuf, chunk]);
@@ -4021,7 +4035,7 @@ async function _triggerExtensionHostStartup(port, token) {
           // and get logged as "unparseable frame" — which is misleading
           // and can cause stream desync if the log handler has side effects.
           if (frame.opcode === 0x08) { // Close
-            process.stderr.write(`[vscode-server-manager] EH trigger: server closed WebSocket\n`);
+            debugLog(`[vscode-server-manager] EH trigger: server closed WebSocket\n`);
             return;
           }
           if (frame.opcode === 0x09) { // Ping → must reply with Pong echoing payload
@@ -4065,14 +4079,14 @@ async function _triggerExtensionHostStartup(port, token) {
             const msg = parseOneProtocolMsg(framePayload);
             if (!msg) {
               if (framePayload.length >= 13) {
-                process.stderr.write(`[vscode-server-manager] EH trigger: rx unparseable data in frame (${framePayload.length}b remaining, hex=${framePayload.slice(0, 20).toString('hex')})\n`);
+                debugLog(`[vscode-server-manager] EH trigger: rx unparseable data in frame (${framePayload.length}b remaining, hex=${framePayload.slice(0, 20).toString('hex')})\n`);
               }
               break;
             }
             const consumed = msg._consumed || 13;
             framePayload = framePayload.slice(consumed);
 
-          process.stderr.write(`[vscode-server-manager] EH trigger: rx ${JSON.stringify(msg).slice(0, 300)}\n`);
+          debugLog(`[vscode-server-manager] EH trigger: rx ${JSON.stringify(msg).slice(0, 300)}\n`);
 
           if (step === 'awaitSign' && msg.type === 'sign') {
             step = 'awaitOk';
@@ -4085,7 +4099,7 @@ async function _triggerExtensionHostStartup(port, token) {
               desiredConnectionType: 2, // ConnectionType.ExtensionHost
               args: { language: 'en' },
             }));
-            process.stderr.write(`[vscode-server-manager] EH trigger: sent ExtensionHost connection request\n`);
+            debugLog(`[vscode-server-manager] EH trigger: sent ExtensionHost connection request\n`);
           }
           else if (step === 'awaitOk') {
             // The FIRST protocol message after connectionType=2 comes from
@@ -4093,7 +4107,7 @@ async function _triggerExtensionHostStartup(port, token) {
             // code-server then passes the raw socket to the EH process.
             // The EH creates a FRESH PersistentProtocol on this socket.
             if (msg.type === 'error') {
-              process.stderr.write(`[vscode-server-manager] EH connection rejected: ${msg.reason || JSON.stringify(msg)}\n`);
+              debugLog(`[vscode-server-manager] EH connection rejected: ${msg.reason || JSON.stringify(msg)}\n`);
               step = 'error';
             } else {
               const trigger = msg.type || `proto:${msg._protoType}`;
@@ -4106,7 +4120,7 @@ async function _triggerExtensionHostStartup(port, token) {
               // message IDs starting from 1. If we continue with ID 3+,
               // PersistentProtocol detects a gap and buffers our messages
               // without delivering them (causing ReplayRequest loops).
-              process.stderr.write(`[vscode-server-manager] Connection accepted (${trigger}) — resetting protocol IDs for EH endpoint\n`);
+              debugLog(`[vscode-server-manager] Connection accepted (${trigger}) — resetting protocol IDs for EH endpoint\n`);
               nextMsgId = 1;
               lastReceivedMsgId = 0;
             }
@@ -4128,16 +4142,16 @@ async function _triggerExtensionHostStartup(port, token) {
             if (msg._protoType === ProtoMsgType.Regular && msg._dataLen === 1 && msg._rawBuf) {
               const readyByte = msg._rawBuf[0];
               if (readyByte === 0x02) {
-                process.stderr.write(`[vscode-server-manager] EH sent Ready signal (0x02) — sending init data\n`);
+                debugLog(`[vscode-server-manager] EH sent Ready signal (0x02) — sending init data\n`);
                 _doSendInitData('EH Ready signal');
                 step = 'initSent';
               } else {
-                process.stderr.write(`[vscode-server-manager] EH sent Regular 1-byte (0x${readyByte.toString(16)}) — not Ready, ignoring\n`);
+                debugLog(`[vscode-server-manager] EH sent Regular 1-byte (0x${readyByte.toString(16)}) — not Ready, ignoring\n`);
               }
             } else if (msg._protoType === ProtoMsgType.Resume) {
-              process.stderr.write(`[vscode-server-manager] EH sent Resume (flow control) — waiting for Ready signal\n`);
+              debugLog(`[vscode-server-manager] EH sent Resume (flow control) — waiting for Ready signal\n`);
             } else {
-              process.stderr.write(`[vscode-server-manager] EH trigger: ${trigger} while waiting for Ready\n`);
+              debugLog(`[vscode-server-manager] EH trigger: ${trigger} while waiting for Ready\n`);
             }
           }
           else if (step === 'initSent') {
@@ -4148,7 +4162,7 @@ async function _triggerExtensionHostStartup(port, token) {
               if (statusByte === 0x01) {
                 // MessageType.Initialized — the EH parsed our init data
                 // and is loading extensions!
-                process.stderr.write(`[vscode-server-manager] EH sent Initialized (0x01) — extensions are loading! ✓\n`);
+                debugLog(`[vscode-server-manager] EH sent Initialized (0x01) — extensions are loading! ✓\n`);
                 // If preload bootstrap interception never fires, treat
                 // EH Initialized as a fallback readiness signal.
                 _markBootstrapReadyFallback('eh-initialized');
@@ -4172,7 +4186,7 @@ async function _triggerExtensionHostStartup(port, token) {
                 }, 50);
               } else if (statusByte === 0x02) {
                 // Late Ready — EH may be re-requesting init data
-                process.stderr.write(`[vscode-server-manager] EH sent Ready (0x02) after init — re-sending init data\n`);
+                debugLog(`[vscode-server-manager] EH sent Ready (0x02) after init — re-sending init data\n`);
                 initDataSent = false;
                 _doSendInitData('Late Ready signal');
               }
@@ -4183,7 +4197,7 @@ async function _triggerExtensionHostStartup(port, token) {
               // ReplayRequest — EH wants us to replay unacked messages.
               // With corrected message IDs this should be rare, but handle
               // it anyway by re-sending init data with current nextMsgId.
-              process.stderr.write(`[vscode-server-manager] EH sent ReplayRequest — re-sending init data\n`);
+              debugLog(`[vscode-server-manager] EH sent ReplayRequest — re-sending init data\n`);
               initDataSent = false;
               _doSendInitData(`ReplayRequest from EH`);
               setTimeout(() => _nudgeActivation('ReplayRequest:initSent'), 120);
@@ -4216,7 +4230,7 @@ async function _triggerExtensionHostStartup(port, token) {
               // causing more errors and triggering another ReplayRequest
               // (infinite loop).  Instead, send an Ack to acknowledge
               // the EH's messages and tell PersistentProtocol we're alive.
-              process.stderr.write(`[vscode-server-manager] EH sent ReplayRequest while running — sending Ack (NOT re-sending init data)\n`);
+              debugLog(`[vscode-server-manager] EH sent ReplayRequest while running — sending Ack (NOT re-sending init data)\n`);
               try {
                 const ackHdr = Buffer.alloc(13);
                 ackHdr[0] = ProtoMsgType.Ack;
@@ -4245,7 +4259,7 @@ async function _triggerExtensionHostStartup(port, token) {
         process.stderr.write(`[vscode-server-manager] EH trigger socket error: ${err.message}\n`);
       });
       socket.on('close', () => {
-        process.stderr.write(`[vscode-server-manager] EH trigger socket closed (step=${step})\n`);
+        debugLog(`[vscode-server-manager] EH trigger socket closed (step=${step})\n`);
       });
 
       // Fallback: if we never receive the Ready signal within 5s
@@ -4253,7 +4267,7 @@ async function _triggerExtensionHostStartup(port, token) {
       // data anyway to avoid hanging forever.
       const readyFallbackTimer = setTimeout(() => {
         if (step === 'ehStarting' && !initDataSent) {
-          process.stderr.write(`[vscode-server-manager] Ready signal not received after 5s — sending init data via fallback\n`);
+          debugLog(`[vscode-server-manager] Ready signal not received after 5s — sending init data via fallback\n`);
           _doSendInitData(`fallback timer (no Ready signal after 5s)`);
           step = 'initSent';
         }
@@ -4267,14 +4281,14 @@ async function _triggerExtensionHostStartup(port, token) {
       // We keep responding to pings to maintain the WebSocket connection.
       setTimeout(() => {
         if (step !== 'done' && step !== 'error' && step !== 'running') {
-          process.stderr.write(`[vscode-server-manager] EH trigger: protocol timeout 20s (step=${step}), continuing\n`);
+          debugLog(`[vscode-server-manager] EH trigger: protocol timeout 20s (step=${step}), continuing\n`);
 
           // If init data was sent but bootstrapState was never received,
           // log the situation but do NOT re-send init data.
           // The EH may already be in 'running' state processing RPC,
           // and re-sending init data would corrupt the RPC stream.
           if (initDataSent && !_bootstrapStateReceived) {
-            process.stderr.write(`[vscode-server-manager] 20s: bootstrapState not received (step=${step}) — NOT re-sending init data\n`);
+            debugLog(`[vscode-server-manager] 20s: bootstrapState not received (step=${step}) — NOT re-sending init data\n`);
           }
         }
         resolve();
@@ -4287,8 +4301,8 @@ async function _triggerExtensionHostStartup(port, token) {
       // triggers errors and ReplayRequest loops.
       const _lateRecoveryTimer = setTimeout(() => {
         if (!_bootstrapStateReceived && !socket.destroyed) {
-          process.stderr.write(`[vscode-server-manager] 60s: bootstrapState still not received — extensions may not have activated\n`);
-          process.stderr.write(`[vscode-server-manager] 60s: NOT re-sending init data (would corrupt running RPCProtocol)\n`);
+          debugLog(`[vscode-server-manager] 60s: bootstrapState still not received — extensions may not have activated\n`);
+          debugLog(`[vscode-server-manager] 60s: NOT re-sending init data (would corrupt running RPCProtocol)\n`);
           // Send an Ack to keep PersistentProtocol alive
           try {
             const ackHdr = Buffer.alloc(13);
@@ -4322,7 +4336,7 @@ async function _triggerExtensionHostStartup(port, token) {
 
     req.on('response', (res) => {
       res.resume();
-      process.stderr.write(`[vscode-server-manager] EH trigger: got HTTP ${res.statusCode} instead of upgrade\n`);
+      debugLog(`[vscode-server-manager] EH trigger: got HTTP ${res.statusCode} instead of upgrade\n`);
       resolve();
     });
 
@@ -4333,7 +4347,7 @@ async function _triggerExtensionHostStartup(port, token) {
 
     req.setTimeout(10000, () => {
       req.destroy();
-      process.stderr.write(`[vscode-server-manager] EH trigger WebSocket timeout\n`);
+      debugLog(`[vscode-server-manager] EH trigger WebSocket timeout\n`);
       resolve();
     });
 
@@ -4459,31 +4473,31 @@ async function _sendExtensionHostInitData(sendWSFrame, makeRegularMsg, port) {
         myExtensionIds.push(extIdentifier);
 
         if (!pkg.main && !pkg.browser) {
-          process.stderr.write(`[eh-init] Extension ${extId}: no main/browser field — may be theme-only\n`);
+          debugLog(`[eh-init] Extension ${extId}: no main/browser field — may be theme-only\n`);
         }
 
         if (forceNodeEntrypoint && pkg.browser) {
-          process.stderr.write(`[eh-init] Extension ${extId}: forcing Node entrypoint (main=${pkg.main}, browser=${pkg.browser} ignored)\n`);
+          debugLog(`[eh-init] Extension ${extId}: forcing Node entrypoint (main=${pkg.main}, browser=${pkg.browser} ignored)\n`);
         }
 
         if (hasRuntimeEntry && hasUIContributions && !declaredActivationEvents.includes('*')) {
-          process.stderr.write(`[eh-init] Extension ${extId}: forcing '*' activation in headless mode (declared: ${declaredActivationEvents.length})\n`);
+          debugLog(`[eh-init] Extension ${extId}: forcing '*' activation in headless mode (declared: ${declaredActivationEvents.length})\n`);
         }
 
         if (hasRuntimeEntry) {
-          process.stderr.write(`[eh-init] Extension ${extId}: forcing extensionKind to workspace-only(2) (declared: ${declaredExtensionKind.length ? declaredExtensionKind.join(',') : 'none'})\n`);
+          debugLog(`[eh-init] Extension ${extId}: forcing extensionKind to workspace-only(2) (declared: ${declaredExtensionKind.length ? declaredExtensionKind.join(',') : 'none'})\n`);
         }
 
-        process.stderr.write(`[eh-init] Extension: ${extId} (main: ${pkg.main || pkg.browser || 'none'}, api: ${extensionDesc.api})\n`);
+        debugLog(`[eh-init] Extension: ${extId} (main: ${pkg.main || pkg.browser || 'none'}, api: ${extensionDesc.api})\n`);
       } catch (e) {
         // Skip dirs without valid package.json (e.g. extensions.json)
       }
     }
   } catch (e) {
-    process.stderr.write(`[eh-init] Cannot read extensions dir: ${e.message}\n`);
+    debugLog(`[eh-init] Cannot read extensions dir: ${e.message}\n`);
   }
 
-  process.stderr.write(`[eh-init] Sending init data with ${extensions.length} extensions\n`);
+  debugLog(`[eh-init] Sending init data with ${extensions.length} extensions\n`);
 
   // ── Read product.json for version info ──
   let vsVersion = '1.88.0';
@@ -4628,9 +4642,9 @@ async function _sendExtensionHostInitData(sendWSFrame, makeRegularMsg, port) {
   }
 
   const initJson = JSON.stringify(initData);
-  process.stderr.write(`[eh-init] Init data size: ${initJson.length} bytes, extensions: ${extensions.length}\n`);
+  debugLog(`[eh-init] Init data size: ${initJson.length} bytes, extensions: ${extensions.length}\n`);
   sendWSFrame(makeRegularMsg(initJson));
-  process.stderr.write(`[eh-init] Init data sent\n`);
+  debugLog(`[eh-init] Init data sent\n`);
   return {
     allExtensions: extensions,
     myExtensionIds,
@@ -4692,7 +4706,7 @@ function stopServer() {
       return;
     }
 
-    process.stderr.write('[vscode-server-manager] Stopping server...\n');
+    debugLog('[vscode-server-manager] Stopping server...\n');
 
     // Stop the preload bridge (TCP server for ext-host-preload.js)
     stopPreloadBridge();
@@ -4749,7 +4763,7 @@ function startHealthChecks(port) {
 
     req.setTimeout(5000, () => {
       req.destroy();
-      process.stderr.write('[vscode-server-manager] Health check timeout\n');
+      debugLog('[vscode-server-manager] Health check timeout\n');
     });
   }, HEALTH_CHECK_INTERVAL);
 }
@@ -4770,13 +4784,13 @@ function startHealthChecks(port) {
  * @returns {Promise<void>}
  */
 async function _autoLoadUIExtensions() {
-  process.stderr.write(`[ext-scan] Auto-scanning extensions in ${EXTENSIONS_DIR}\n`);
+  debugLog(`[ext-scan] Auto-scanning extensions in ${EXTENSIONS_DIR}\n`);
 
   let dirs;
   try {
     dirs = fs.readdirSync(EXTENSIONS_DIR);
   } catch (e) {
-    process.stderr.write(`[ext-scan] Cannot read extensions dir: ${e.message}\n`);
+    debugLog(`[ext-scan] Cannot read extensions dir: ${e.message}\n`);
     return;
   }
 
@@ -4815,7 +4829,7 @@ async function _autoLoadUIExtensions() {
 
     if (isUIExtension) {
       uiExtCount++;
-      process.stderr.write(`[ext-scan] UI extension: ${extId} (views: ${hasViews}, containers: ${hasViewsContainers}, commands: ${hasCommands}, editors: ${hasCustomEditors}, notebooks: ${hasNotebooks})\n`);
+      debugLog(`[ext-scan] UI extension: ${extId} (views: ${hasViews}, containers: ${hasViewsContainers}, commands: ${hasCommands}, editors: ${hasCustomEditors}, notebooks: ${hasNotebooks})\n`);
 
       // Track it without waiting for the Extension Host to load it
       if (!extHostLoadedExtensions.has(extId)) {
@@ -4826,7 +4840,7 @@ async function _autoLoadUIExtensions() {
           for (const container of Object.keys(contributes.views)) {
             for (const view of contributes.views[container]) {
               if (view.id) {
-                process.stderr.write(`[ext-scan]   View: ${view.id} (type: ${view.type || 'tree'}, container: ${container})\n`);
+                debugLog(`[ext-scan]   View: ${view.id} (type: ${view.type || 'tree'}, container: ${container})\n`);
                 if (view.type === 'webview') {
                   manifestKnownWebviewViews.add(view.id);
                   // Queue webview resolution — will be flushed after bootstrapState
@@ -4842,7 +4856,7 @@ async function _autoLoadUIExtensions() {
                     if (t.unref) t.unref();
                   } else {
                     _deferredWebviewResolutions.push(viewType);
-                    process.stderr.write(`[ext-scan]   Deferred webview resolution for ${viewType} (waiting for bootstrapState)\n`);
+                    debugLog(`[ext-scan]   Deferred webview resolution for ${viewType} (waiting for bootstrapState)\n`);
                   }
                 } else {
                   manifestKnownTreeViews.add(view.id);
@@ -4855,7 +4869,7 @@ async function _autoLoadUIExtensions() {
     }
   }
 
-  process.stderr.write(`[ext-scan] Scan complete: ${dirs.length} extensions, ${uiExtCount} with UI contributions\n`);
+  debugLog(`[ext-scan] Scan complete: ${dirs.length} extensions, ${uiExtCount} with UI contributions\n`);
 
   // Always emit a static+RPC merged list so the browser can render
   // contribution shells even when bootstrap interception never fires.
@@ -4865,7 +4879,7 @@ async function _autoLoadUIExtensions() {
   // fallback provider discovery and event emission.
   const bootstrapGraceTimer = setTimeout(() => {
     if (_bootstrapStateReceived) return;
-    process.stderr.write('[fallback-providers] bootstrapState still missing after ext scan grace period — using manifest/RPC fallback\n');
+    debugLog('[fallback-providers] bootstrapState still missing after ext scan grace period — using manifest/RPC fallback\n');
     _emitMergedFallbackProviders('bootstrap-missing');
   }, 8000);
   if (bootstrapGraceTimer.unref) bootstrapGraceTimer.unref();
@@ -4901,7 +4915,7 @@ async function installVSIX(extensionId, vsixData) {
 
     if (binary) {
       // Use the server's CLI to install the extension properly
-      process.stderr.write(`[vscode-server-manager] Installing VSIX: ${extensionId}\n`);
+      debugLog(`[vscode-server-manager] Installing VSIX: ${extensionId}\n`);
 
       execFileSync(binary, [
         '--install-extension', vsixPath,
@@ -4923,7 +4937,7 @@ async function installVSIX(extensionId, vsixData) {
     });
 
     sendEvent('extensionInstalled', extensionId);
-    process.stderr.write(`[vscode-server-manager] ✓ VSIX installed: ${extensionId}\n`);
+    debugLog(`[vscode-server-manager] ✓ VSIX installed: ${extensionId}\n`);
 
     // Track UI contributions and request preload refresh.
     // With preload approach, extensions are automatically bridged.
@@ -4987,7 +5001,7 @@ async function manualInstallVSIX(extensionId, vsixPath) {
 function uninstallExtension(extensionId) {
   try {
     const extIdLower = String(extensionId || '').toLowerCase();
-    process.stderr.write(`[vscode-server-manager] uninstallExtension: ${extensionId}\n`);
+    debugLog(`[vscode-server-manager] uninstallExtension: ${extensionId}\n`);
 
     // Best-effort CLI uninstall first (handles internal metadata/state).
     // Note: code-server may only mark the extension as obsolete rather than
@@ -5041,9 +5055,9 @@ function uninstallExtension(extensionId) {
     }
 
     if (removedDirs.length === 0) {
-      process.stderr.write(`[vscode-server-manager] uninstallExtension: no matching dirs found for ${extensionId}\n`);
+      debugLog(`[vscode-server-manager] uninstallExtension: no matching dirs found for ${extensionId}\n`);
     } else {
-      process.stderr.write(`[vscode-server-manager] uninstallExtension: removed ${removedDirs.length} dirs for ${extensionId}: ${removedDirs.join(', ')}\n`);
+      debugLog(`[vscode-server-manager] uninstallExtension: removed ${removedDirs.length} dirs for ${extensionId}: ${removedDirs.join(', ')}\n`);
     }
 
     // Clean up in-memory tracking (case-insensitive match)
@@ -5121,12 +5135,12 @@ async function _discoverInstalledExtensions() {
   try {
     dirs = fs.readdirSync(EXTENSIONS_DIR);
   } catch (e) {
-    process.stderr.write(`[ext-install] Cannot read extensions dir: ${e.message}\n`);
+    debugLog(`[ext-install] Cannot read extensions dir: ${e.message}\n`);
     return result;
   }
 
-  process.stderr.write(`[ext-install] Extensions directory: ${EXTENSIONS_DIR}\n`);
-  process.stderr.write(`[ext-install] Found ${dirs.length} extension dirs: [${dirs.slice(0, 15).join(', ')}]\n`);
+  debugLog(`[ext-install] Extensions directory: ${EXTENSIONS_DIR}\n`);
+  debugLog(`[ext-install] Found ${dirs.length} extension dirs: [${dirs.slice(0, 15).join(', ')}]\n`);
 
   // Rebuild runtime cache from disk
   installedExtensions.clear();
@@ -5154,7 +5168,7 @@ async function _discoverInstalledExtensions() {
           path: path.join(EXTENSIONS_DIR, dir),
           installedAt: new Date().toISOString(),
         });
-        process.stderr.write(`[ext-install] ✓ ${extensionId} (dir: ${dir}, main: ${pkg.main || pkg.browser}, UI: ${hasUI})\n`);
+        debugLog(`[ext-install] ✓ ${extensionId} (dir: ${dir}, main: ${pkg.main || pkg.browser}, UI: ${hasUI})\n`);
         result.present.push(extensionId);
       } else {
         // Theme-only or metadata-only extension — still track it
@@ -5164,16 +5178,16 @@ async function _discoverInstalledExtensions() {
           path: path.join(EXTENSIONS_DIR, dir),
           installedAt: new Date().toISOString(),
         });
-        process.stderr.write(`[ext-install]   ${dir} → no main/browser entry (theme-only), UI: ${hasUI}\n`);
+        debugLog(`[ext-install]   ${dir} → no main/browser entry (theme-only), UI: ${hasUI}\n`);
         result.present.push(extensionId);
       }
     } catch (_) {
-      process.stderr.write(`[ext-install]   ${dir} → (no readable package.json)\n`);
+      debugLog(`[ext-install]   ${dir} → (no readable package.json)\n`);
       result.broken.push(dir);
     }
   }
 
-  process.stderr.write(`[ext-install] Extension verification: ${result.present.length} present, ${result.broken.length} broken\n`);
+  debugLog(`[ext-install] Extension verification: ${result.present.length} present, ${result.broken.length} broken\n`);
   return result;
 }
 
@@ -5362,13 +5376,13 @@ function _resolveNLSRecursive(obj, nlsMap) {
  */
 async function loadExtensionForUI(extensionId) {
   if (extHostLoadedExtensions.has(extensionId)) {
-    process.stderr.write(`[preload-bridge] ${extensionId} already tracked\n`);
+    debugLog(`[preload-bridge] ${extensionId} already tracked\n`);
     return { success: true, hasUI: true };
   }
 
   const result = _readExtensionManifest(extensionId);
   if (!result) {
-    process.stderr.write(`[preload-bridge] Cannot find manifest for ${extensionId}\n`);
+    debugLog(`[preload-bridge] Cannot find manifest for ${extensionId}\n`);
     return { success: false, hasUI: false };
   }
 
@@ -5376,21 +5390,21 @@ async function loadExtensionForUI(extensionId) {
   const webviewViewTypes = _getContributedWebviewViewIds(manifest);
 
   if (!_hasUIContributions(manifest)) {
-    process.stderr.write(`[preload-bridge] ${extensionId} has no UI contributions\n`);
+    debugLog(`[preload-bridge] ${extensionId} has no UI contributions\n`);
     return { success: true, hasUI: false };
   }
 
   extHostLoadedExtensions.add(extensionId);
-  process.stderr.write(`[preload-bridge] Tracking UI for ${extensionId}\n`);
+  debugLog(`[preload-bridge] Tracking UI for ${extensionId}\n`);
 
   // Wait for at least one preload client to connect before sending commands.
   // The Extension Host may still be starting — without this gate the commands
   // go nowhere because sendToPreloadClients iterates an empty set.
   const ready = await waitForPreloadClient(15000);
   if (ready) {
-    process.stderr.write(`[preload-bridge] Preload client ready — requesting data for ${extensionId}\n`);
+    debugLog(`[preload-bridge] Preload client ready — requesting data for ${extensionId}\n`);
   } else {
-    process.stderr.write(`[preload-bridge] Preload client not connected after 15s — sending anyway\n`);
+    debugLog(`[preload-bridge] Preload client not connected after 15s — sending anyway\n`);
   }
 
   // Ask preload clients to refresh — the extension may already be loaded
@@ -5409,7 +5423,7 @@ async function loadExtensionForUI(extensionId) {
   const retryDelays = [5000, 15000];
   for (const delay of retryDelays) {
     const timer = setTimeout(() => {
-      process.stderr.write(`[preload-bridge] Retry provider refresh for ${extensionId} (${delay / 1000}s)\n`);
+      debugLog(`[preload-bridge] Retry provider refresh for ${extensionId} (${delay / 1000}s)\n`);
       sendToPreloadClients({ action: 'refreshAllTrees' });
       sendToPreloadClients({ action: 'listProviders' });
       for (const viewType of webviewViewTypes) {
@@ -5429,14 +5443,14 @@ async function loadExtensionForUI(extensionId) {
  * separate extension host process.
  */
 function startExtHostBridge() {
-  process.stderr.write('[preload-bridge] startExtHostBridge() is a no-op (using preload approach)\n');
+  debugLog('[preload-bridge] startExtHostBridge() is a no-op (using preload approach)\n');
 }
 
 /**
  * No-op for backward compatibility.
  */
 function stopExtHostBridge() {
-  process.stderr.write('[preload-bridge] stopExtHostBridge() is a no-op (using preload approach)\n');
+  debugLog('[preload-bridge] stopExtHostBridge() is a no-op (using preload approach)\n');
   extHostLoadedExtensions.clear();
   preloadRegisteredTreeViews.clear();
   preloadRegisteredWebviewViews.clear();
@@ -5515,7 +5529,7 @@ function wsConnect(tunnelId, urlPath) {
     });
 
     req.on('upgrade', (res, socket, head) => {
-      process.stderr.write(`[ws-tunnel] Connected tunnel ${tunnelId} to ${reqPath}\n`);
+      debugLog(`[ws-tunnel] Connected tunnel ${tunnelId} to ${reqPath}\n`);
 
       wsTunnels.set(tunnelId, { socket, connected: true });
 
@@ -6004,7 +6018,7 @@ rl.on('line', async (line) => {
   try {
     msg = JSON.parse(line);
   } catch (e) {
-    process.stderr.write(`[vscode-server-manager] Invalid JSON: ${line}\n`);
+    debugLog(`[vscode-server-manager] Invalid JSON: ${line}\n`);
     return;
   }
 
@@ -6138,7 +6152,7 @@ rl.on('line', async (line) => {
           } else {
             if (!_skippedTreeRefreshLogged.has(viewId)) {
               _skippedTreeRefreshLogged.add(viewId);
-              process.stderr.write(`[preload-bridge] Skipping refreshTreeData for ${viewId}: provider not registered yet\n`);
+              debugLog(`[preload-bridge] Skipping refreshTreeData for ${viewId}: provider not registered yet\n`);
             }
           }
         } else {
@@ -6246,7 +6260,7 @@ rl.on('line', async (line) => {
           sendResponse(id, null, new Error('viewType is required'));
           break;
         }
-        process.stderr.write(`[preload-bridge] Requesting preload to resolve webview view: ${viewType}\n`);
+        debugLog(`[preload-bridge] Requesting preload to resolve webview view: ${viewType}\n`);
         sendToPreloadClients({ action: 'resolveWebviewView', viewType });
         sendResponse(id, { success: true, viewType });
         break;
@@ -6260,8 +6274,8 @@ rl.on('line', async (line) => {
         }
         const handlerCount = preloadRegisteredUriHandlers.size;
         const uriComponents = _toUriComponents(url);
-        process.stderr.write(`[preload-bridge] URI callback handlers available: ${handlerCount}\n`);
-        process.stderr.write(`[preload-bridge] Delivering URI callback: ${url}\n`);
+        debugLog(`[preload-bridge] URI callback handlers available: ${handlerCount}\n`);
+        debugLog(`[preload-bridge] Delivering URI callback: ${url}\n`);
         sendToPreloadClients({ action: 'deliverUriCallback', url, uriComponents });
         sendResponse(id, { success: true, url, uriComponents, handlers: handlerCount });
         break;
@@ -6357,19 +6371,19 @@ rl.on('line', async (line) => {
 // ============================================================================
 
 process.on('SIGTERM', async () => {
-  process.stderr.write('[vscode-server-manager] SIGTERM received, shutting down...\n');
+  debugLog('[vscode-server-manager] SIGTERM received, shutting down...\n');
   await stopServer();
   process.exit(0);
 });
 
 process.on('SIGINT', async () => {
-  process.stderr.write('[vscode-server-manager] SIGINT received, shutting down...\n');
+  debugLog('[vscode-server-manager] SIGINT received, shutting down...\n');
   await stopServer();
   process.exit(0);
 });
 
 rl.on('close', async () => {
-  process.stderr.write('[vscode-server-manager] stdin closed, shutting down...\n');
+  debugLog('[vscode-server-manager] stdin closed, shutting down...\n');
   await stopServer();
   process.exit(0);
 });
@@ -6377,5 +6391,5 @@ rl.on('close', async () => {
 // Announce readiness — the manager is ready to receive commands (startServer,
 // installExtension, etc.) via stdin immediately.  The browser-side
 // VSCodeServerProxy.waitForReady() listens for this event.
-process.stderr.write('[vscode-server-manager] VS Code Server Manager started\n');
+debugLog('[vscode-server-manager] VS Code Server Manager started\n');
 sendEvent('workerReady'); 

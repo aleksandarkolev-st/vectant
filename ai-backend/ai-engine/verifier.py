@@ -85,6 +85,16 @@ class Violation:
     suggested_fix: Optional[str] = None
 
 
+class VerificationFatalError(Exception):
+    """Raised when strict verification fails and callers opted into fatal behavior."""
+
+    def __init__(self, violations: List[Violation], context: Optional[Dict[str, Any]] = None):
+        self.violations = violations
+        self.context = context or {}
+        message = "; ".join(v.message for v in violations) or "Verification failed"
+        super().__init__(message)
+
+
 @dataclass
 class VerificationResult:
     """Result of AI output verification."""
@@ -95,22 +105,20 @@ class VerificationResult:
     verified_hash: str = ""
     timestamp: float = field(default_factory=time.time)
     duration_ms: float = 0.0
-    
-    # Repair tracking
     repair_depth: int = 0
     repair_diff_lines: int = 0
     repair_diff_ratio: float = 0.0
-    repair_capped: bool = False  # True if repair was limited by caps
-    
+    repair_capped: bool = False
+
     @property
     def passed(self) -> bool:
         return self.status in (VerificationStatus.PASS, VerificationStatus.REPAIRED)
-    
+
     @property
     def is_fatal(self) -> bool:
         """Returns True if this result should raise VerificationFatalError."""
         return self.status == VerificationStatus.FAIL
-    
+
     def to_dict(self) -> Dict[str, Any]:
         return {
             "status": self.status.value,
@@ -133,19 +141,19 @@ class VerificationResult:
 
 class SymbolTable:
     """Tracks symbols (functions, classes, variables) in code."""
-    
+
     def __init__(self):
         self.functions: Set[str] = set()
         self.classes: Set[str] = set()
         self.globals: Set[str] = set()
         self.exports: Set[str] = set()
         self.imports: Set[str] = set()
-    
+
     @classmethod
     def from_code(cls, code: str, lang: str) -> "SymbolTable":
         """Extract symbol table from code."""
         table = cls()
-        
+
         if lang in ("javascript", "typescript", "jsx", "tsx"):
             table._parse_js_ts(code)
         elif lang == "python":
@@ -154,7 +162,7 @@ class SymbolTable:
             table._parse_rust(code)
         elif lang in ("cpp", "c++", "c"):
             table._parse_cpp(code)
-        
+
         return table
     
     def _parse_js_ts(self, code: str) -> None:
@@ -568,13 +576,14 @@ class AIOutputVerifier:
                 return code, repair_info  # Reject repair, return original
         
         return repaired, repair_info
+
+    def _check_placeholders(self, code: str) -> List[Violation]:
         """Check for placeholder patterns that indicate incomplete code."""
         violations = []
-        
+
         for pattern in self.placeholder_patterns:
             matches = list(re.finditer(pattern, code, re.IGNORECASE))
             for match in matches:
-                # Find line number
                 line_num = code[:match.start()].count('\n') + 1
                 violations.append(Violation(
                     type=ViolationType.INCOMPLETE_CODE,
@@ -583,7 +592,7 @@ class AIOutputVerifier:
                     severity="error",
                     auto_repairable=False,
                 ))
-        
+
         return violations
     
     def _extract_referenced_symbols(self, text: str) -> List[str]:
@@ -783,10 +792,14 @@ _prod_verifier: Optional[AIOutputVerifier] = None
 
 
 def get_verifier() -> AIOutputVerifier:
-    """Get or create the default verifier instance (auto-detects mode)."""
+    """Get or create the default API verifier instance.
+
+    API endpoints expect structured verification results, not fatal exceptions.
+    Callers that want raising behavior should use get_prod_verifier().
+    """
     global _default_verifier
     if _default_verifier is None:
-        _default_verifier = AIOutputVerifier()  # Auto-detects dev mode
+        _default_verifier = AIOutputVerifier(raise_on_failure=False)
     return _default_verifier
 
 

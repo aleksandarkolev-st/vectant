@@ -6,9 +6,47 @@ use regex::Regex;
 // These functions apply all guardrails to source content BEFORE
 // hash computation, ensuring rebuild scope decisions are based
 // on the actual compiled content.
+//
+// Each guardrail represents a failure of the AI prompt.  When a
+// guardrail fires, it logs the event so prompt quality can be tracked.
+
+/// User-code adapters only (no AI-fix guardrails).
+/// Wraps main() → plugin format so user code runs in the runner.
+fn apply_core_user_adapters(content: &str) -> String {
+    let mut result = content.to_string();
+
+    // Only apply main()→plugin adapter (user code adaptation, not AI fix)
+    if !result.contains("core_on_load") && !result.contains("on_load") {
+        let re_main_no_args = Regex::new(r"\bint\s+main\s*\(\s*(void)?\s*\)").unwrap();
+        let re_main_args = Regex::new(r"\bint\s+main\s*\(").unwrap();
+
+        let mut handled = false;
+        if re_main_no_args.is_match(&result) {
+            result = re_main_no_args.replace(&result, "int user_main()").to_string();
+            result.push_str("\n\n#include <pthread.h>\nint user_main();\nextern \"C\" {\n");
+            result.push_str("    static void* main_thread_func(void* arg) { user_main(); return NULL; }\n");
+            handled = true;
+        } else if re_main_args.is_match(&result) {
+            result = re_main_args.replace(&result, "int user_main(").to_string();
+            result.push_str("\n\n#include <pthread.h>\nint user_main(int argc, char** argv);\nextern \"C\" {\n");
+            result.push_str("    static void* main_thread_func(void* arg) { char* app_name = (char*)\"app\"; char* argv[] = {app_name, NULL}; user_main(1, argv); return NULL; }\n");
+            handled = true;
+        }
+        if handled {
+            result.push_str("    void* core_on_load(void* prev_state, void* api) { pthread_t thread; pthread_create(&thread, NULL, main_thread_func, NULL); pthread_detach(thread); return NULL; }\n");
+            result.push_str("    void core_on_update(void* state, float dt) {}\n");
+            result.push_str("}\n");
+        }
+    }
+
+    result
+}
 
 /// Apply guardrails to shared.h content
 pub fn apply_shared_guardrails(content: &str) -> String {
+    if std::env::var("SYNTHI_ENABLE_GUARDRAILS").is_err() {
+        return content.to_string(); // Guardrails off by default — AI self-heals
+    }
     let mut result = content.to_string();
 
     // Guardrails: AI sometimes typedefs X11 types to void, which conflicts with Xlib headers.
@@ -75,7 +113,14 @@ pub fn apply_shared_guardrails(content: &str) -> String {
 }
 
 /// Apply guardrails to core.cpp content (requires processed shared.h for context)
+///
+/// Guardrails off by default — AI self-heals via compile→error→fix loop.
+/// Set SYNTHI_ENABLE_GUARDRAILS=1 to re-enable legacy regex guardrails.
 pub fn apply_core_guardrails(content: &str, _shared_content: &str, allow_gui: bool) -> String {
+    if std::env::var("SYNTHI_ENABLE_GUARDRAILS").is_err() {
+        // Skip AI-fix guardrails — only apply user-code adapters
+        return apply_core_user_adapters(content);
+    }
     let mut result = content.to_string();
 
     // Fix common AI mistakes in core.cpp before compilation.
@@ -388,64 +433,13 @@ pub fn apply_core_guardrails(content: &str, _shared_content: &str, allow_gui: bo
     result
 }
 
-/// Patch string literals in cached JSON result with new strings from source
-/// Returns (patched_result, did_patch_anything)
-pub fn patch_strings_in_cached_result(
-    cached: &serde_json::Value,
-    old_strings: &[String],
-    new_strings: &[String],
-) -> (serde_json::Value, bool) {
-    // Only patch if we have a reasonable mapping
-    if old_strings.is_empty() || new_strings.is_empty() {
-        return (cached.clone(), false);
-    }
-
-    let mut result = cached.clone();
-    let mut any_patches_applied = false;
-
-    // Patch each file's content in the split result
-    for key in &["core", "gui", "shared"] {
-        if let Some(file_obj) = result.get_mut(key) {
-            if let Some(content) = file_obj.get_mut("content") {
-                if let Some(content_str) = content.as_str() {
-                    let mut patched = content_str.to_string();
-
-                    // Replace old strings with new strings where they differ
-                    // Match by position in the string list (assuming order is preserved)
-                    for (old, new) in old_strings.iter().zip(new_strings.iter()) {
-                        if old != new && !old.is_empty() {
-                            // Use format with quotes to avoid partial matches
-                            let old_quoted = format!("\"{}\"", old);
-                            let new_quoted = format!("\"{}\"", new);
-                            if patched.contains(&old_quoted) {
-                                patched = patched.replace(&old_quoted, &new_quoted);
-                                any_patches_applied = true;
-                            }
-                        }
-                    }
-
-                    *content = serde_json::Value::String(patched);
-                }
-            }
-        }
-    }
-
-    (result, any_patches_applied)
-}
-
-/// Check if a string looks like a semantic value that AI transforms (not just copies)
-/// These include: color names, font names, file paths, etc.
-pub fn is_semantic_string(s: &str) -> bool {
-    // X11/CSS color names
-    let color_names = [
-        "black", "white", "red", "green", "blue", "yellow", "cyan", "magenta", "orange", "purple",
-        "pink", "brown", "gray", "grey", "navy", "teal", "lime", "aqua", "maroon", "olive",
-        "silver", "fuchsia",
-    ];
-
-    let lower = s.to_lowercase();
-    color_names.iter().any(|c| lower == *c)
-}
+// NOTE: `patch_strings_in_cached_result` and `is_semantic_string` were
+// removed together with the Level 2 structural-match cache shortcut in
+// `perform_ai_split`. They implemented SDL/CSS-color-specific string
+// diffing that was only ever called from that dead cache level. All
+// edit kinds now flow through handler.rs Tier 1 (regex value patcher,
+// pure Rust) or Tier 2 (/refactor/diff_patch with arch hint, one AI
+// call), language-agnostically.
 
 /// Get the Host KV header definitions
 fn get_hostkv_header() -> &'static str {
@@ -497,6 +491,9 @@ typedef struct HostKvApiV1 {
 
 /// Apply guardrails to gui.cpp content (requires processed shared.h for context)
 pub fn apply_gui_guardrails(content: &str, shared_content: &str) -> String {
+    if std::env::var("SYNTHI_ENABLE_GUARDRAILS").is_err() {
+        return content.to_string();
+    }
     let mut result = content.to_string();
 
     // Detect if shared.h has full struct definitions
@@ -697,6 +694,50 @@ pub fn apply_gui_guardrails(content: &str, shared_content: &str) -> String {
             Regex::new(r"AppState\*\s+state\s*=\s*\(AppState\*\)\s*calloc\s*\([^)]*\)\s*;")
                 .unwrap();
         result = re_calloc.replace_all(&result, "AppState* state = (prev_state) ? (AppState*)prev_state : &gui_app_state; // [Guardrail] Fixed calloc->static").to_string();
+    }
+
+    // FIX: Deduplicate AppState* state declarations within the SAME function.
+    // The AI sometimes declares it twice in one function (e.g., gui_on_load has
+    // malloc→static guardrail AND the AI's own declaration).  Only dedup within
+    // the same brace-level scope — different functions need their own locals.
+    {
+        let re_state_decl = Regex::new(r"(?m)^(\s*)AppState\*\s+state\s*=").unwrap();
+        let lines: Vec<&str> = result.lines().collect();
+        let mut deduped = Vec::with_capacity(lines.len());
+        let mut brace_depth: i32 = 0;
+        let mut decl_at_depth: Option<i32> = None; // depth where first decl was seen
+
+        for line in &lines {
+            // Track brace depth to detect function boundaries
+            for ch in line.chars() {
+                match ch {
+                    '{' => brace_depth += 1,
+                    '}' => {
+                        brace_depth -= 1;
+                        // If we leave the scope where the decl was, reset
+                        if let Some(d) = decl_at_depth {
+                            if brace_depth < d {
+                                decl_at_depth = None;
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            if re_state_decl.is_match(line) {
+                if decl_at_depth == Some(brace_depth) {
+                    // Duplicate in SAME scope — convert to assignment
+                    let fixed = re_state_decl.replace(line, "${1}state =").to_string();
+                    deduped.push(fixed);
+                    continue;
+                }
+                // First declaration at this scope depth
+                decl_at_depth = Some(brace_depth);
+            }
+            deduped.push(line.to_string());
+        }
+        result = deduped.join("\n");
     }
 
     // FIX: free(state) / delete state crashes on reload

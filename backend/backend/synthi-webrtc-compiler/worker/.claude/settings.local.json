@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(grep:*)",
+      "Bash(find /home/dev/synthi/synthi-test/synthi-whole/backend -type f \\\\\\( -name \"*.rs\" -o -name \"*.js\" \\\\\\) -exec grep -l \"env::var\\\\|process.env\" {} \\\\;)",
+      "Bash(cargo check:*)",
+      "Bash(cargo test:*)",
+      "Bash(cargo build:*)"
+    ]
+  }
+}

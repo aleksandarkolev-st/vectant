@@ -530,6 +530,22 @@ export class AnalyzerGatewayClient {
   }
 
   /**
+   * Record a failed HMR cycle in the agentic observability pipeline.
+   *
+   * This activates the backend HMR-failure detector so repeated rejected/
+   * fatal reloads can contribute to self-healing triggers.
+   *
+   * @param {Object} payload
+   * @param {string} payload.filePath - Best-effort file or module identifier
+   * @returns {Promise<Object>} Observability acknowledgement
+   */
+  agenticRecordHmrFailure(payload) {
+    return this._sendRequest('heal/agentic/observability/hmr-failure', {
+      filePath: payload?.filePath || payload?.file_path || '',
+    });
+  }
+
+  /**
    * Get AI agent statistics: LLM calls, latency, acceptance rate.
    * @returns {Promise<Object>} Agent statistics
    */

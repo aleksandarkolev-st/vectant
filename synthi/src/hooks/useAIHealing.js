@@ -40,6 +40,7 @@ import {
 
 import {
   selectHealingEnabled,
+  selectAIEnabled,
 } from '@/redux/healingSelectors';
 
 import {
@@ -79,7 +80,9 @@ export function useAIHealing({
   selfEditFlagRef,
 } = {}) {
   const dispatch = useDispatch();
-  const enabled = useSelector(selectHealingEnabled);
+  const healingEnabled = useSelector(selectHealingEnabled);
+  const aiEnabled = useSelector(selectAIEnabled);
+  const enabled = healingEnabled && aiEnabled;
 
   // ── State ───────────────────────────────────────────────────────────
   const [isAnalyzing, setIsAnalyzing] = useState(false);

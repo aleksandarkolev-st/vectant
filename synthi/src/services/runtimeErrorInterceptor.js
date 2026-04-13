@@ -29,6 +29,7 @@ const MAX_HEAL_ATTEMPTS = 3;       // Max consecutive heal attempts per file
 const HEAL_COOLDOWN_MS = 2000;     // Minimum time between heal attempts
 const AUTO_HEAL_DELAY_MS = 800;    // Delay before auto-healing (debounce rapid errors)
 const ATTEMPT_RESET_MS = 30000;    // Reset attempt counter after this idle period
+const HMR_FAILURE_REPORT_COOLDOWN_MS = 5000;
 
 // ── State ──────────────────────────────────────────────────────────────
 
@@ -48,12 +49,17 @@ class RuntimeErrorInterceptor {
     // Per-file healing state
     /** @type {Map<string, { attempts: number, lastAttempt: number, timer: any }>} */
     this._fileState = new Map();
+
+    // Best-effort dedupe for agentic HMR-failure observability.
+    /** @type {Map<string, number>} */
+    this._hmrFailureReports = new Map();
     
     // Currently active healing request (only one at a time)
     this._activeRequest = null;
     
     // Bound event handlers (for cleanup)
     this._onCompileError = this._handleCompileError.bind(this);
+    this._onCompileDiagnostics = this._handleCompileDiagnostics.bind(this);
     this._onRequestAIFix = this._handleRequestAIFix.bind(this);
     this._onHMRStatus = this._handleHMRStatus.bind(this);
     
@@ -82,11 +88,16 @@ class RuntimeErrorInterceptor {
    * @param {boolean} [opts.autoHeal=true] — auto-heal on compile errors
    */
   init({ gateway, getEditor, autoHeal = true }) {
+    const firstInit = !this._initialized;
     this._gateway = gateway;
     this._getEditor = getEditor;
     this._autoHeal = autoHeal;
-    
-    console.log('[RuntimeHealing] Interceptor initialized', { autoHeal });
+    this._initialized = true;
+    // Only log on first init — this function gets called by multiple hooks
+    // on every render, flooding the console with identical messages.
+    if (firstInit) {
+      console.log('[RuntimeHealing] Interceptor initialized', { autoHeal });
+    }
   }
 
   /**
@@ -97,6 +108,7 @@ class RuntimeErrorInterceptor {
     if (typeof window === 'undefined') return;
     
     window.addEventListener('synthi:compile-error', this._onCompileError);
+    window.addEventListener('synthi:compile-diagnostics', this._onCompileDiagnostics);
     window.addEventListener('synthi:request-ai-fix', this._onRequestAIFix);
     window.addEventListener('synthi:hmr-status', this._onHMRStatus);
     
@@ -112,6 +124,7 @@ class RuntimeErrorInterceptor {
     if (typeof window === 'undefined') return;
     
     window.removeEventListener('synthi:compile-error', this._onCompileError);
+    window.removeEventListener('synthi:compile-diagnostics', this._onCompileDiagnostics);
     window.removeEventListener('synthi:request-ai-fix', this._onRequestAIFix);
     window.removeEventListener('synthi:hmr-status', this._onHMRStatus);
     
@@ -126,6 +139,23 @@ class RuntimeErrorInterceptor {
   }
 
   // ── Event Handlers ─────────────────────────────────────────────────
+
+  /**
+   * Handle compile-diagnostics events from compilerClient.
+   * Bridges to _handleCompileError by extracting error diagnostics.
+   */
+  _handleCompileDiagnostics(event) {
+    const detail = event.detail || {};
+    const diagnostics = detail.diagnostics || [];
+    const errorCount = detail.error_count || 0;
+    
+    if (errorCount === 0 && diagnostics.length === 0) return;
+    
+    // Bridge to the existing compile-error handler
+    this._handleCompileError(new CustomEvent('synthi:compile-error', {
+      detail: { diagnostics, module: detail.language || null },
+    }));
+  }
 
   /**
    * Handle compile-error events from the build worker.
@@ -167,7 +197,8 @@ class RuntimeErrorInterceptor {
   }
 
   /**
-   * Handle HMR status changes — specifically 'fail' and 'rejected'.
+   * Handle HMR status changes — 'applied' (success after healing),
+   * 'compile-error' (bridge to healing), 'fail', 'rejected'.
    */
   _handleHMRStatus(event) {
     const detail = event.detail || {};
@@ -187,6 +218,25 @@ class RuntimeErrorInterceptor {
         this._fileState.delete(filePath);
       }
       console.log('[RuntimeHealing] ✓ HMR applied after healing!');
+    }
+    
+    // If compile-error arrives via hmr-status, bridge to the compile error handler
+    if (status === 'compile-error') {
+      const diagnostics = data.diagnostics || [];
+      if (diagnostics.length > 0 || data.error_count > 0) {
+        this._handleCompileError(new CustomEvent('synthi:compile-error', {
+          detail: { diagnostics, module: data.language || null },
+        }));
+      }
+    }
+
+    if (
+      status === 'rejected'
+      || status === 'fail'
+      || status === 'crash-fatal'
+      || status === 'full-reload-required'
+    ) {
+      this._reportHmrFailure(data);
     }
   }
 
@@ -420,6 +470,45 @@ class RuntimeErrorInterceptor {
       css: 'css', html: 'html', json: 'json', yaml: 'yaml',
     };
     return map[ext] || ext || 'plaintext';
+  }
+
+  _resolveHmrFailurePath(statusData) {
+    if (statusData?.filePath) return statusData.filePath;
+    if (statusData?.file_path) return statusData.file_path;
+    if (this._state.filePath) return this._state.filePath;
+
+    const editor = this._getEditor?.();
+    const model = editor?.getModel?.();
+    const editorPath = model?.uri?.path;
+    if (editorPath) return editorPath;
+
+    return statusData?.module || statusData?.module_id || 'unknown';
+  }
+
+  _reportHmrFailure(statusData) {
+    if (!this._gateway?.agenticRecordHmrFailure) {
+      return;
+    }
+
+    const filePath = this._resolveHmrFailurePath(statusData);
+    const status = statusData?.status || 'unknown';
+    const reportKey = `${status}:${filePath}`;
+    const now = Date.now();
+    const lastReportAt = this._hmrFailureReports.get(reportKey) || 0;
+
+    if (now - lastReportAt < HMR_FAILURE_REPORT_COOLDOWN_MS) {
+      return;
+    }
+
+    this._hmrFailureReports.set(reportKey, now);
+
+    void this._gateway.agenticRecordHmrFailure({ filePath }).catch((err) => {
+      console.warn('[RuntimeHealing] Failed to record HMR failure', {
+        filePath,
+        status,
+        error: err?.message || err,
+      });
+    });
   }
 
   _dispatch(eventName, detail) {

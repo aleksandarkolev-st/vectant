@@ -1,0 +1,169 @@
+services:
+  # ── Infrastructure ──────────────────────────────────────────────────────────
+  
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: synthi
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: synthi
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U synthi"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  y-sweet:
+    build: 
+      context: ./backend/y-sweet
+      dockerfile: Dockerfile
+    image: synthi-y-sweet
+    ports:
+      - "8180:8080"
+    volumes:
+      - ysweet-data:/data
+    restart: unless-stopped
+    command: y-sweet serve /data --host 0.0.0.0 --port 8080
+    environment:
+      - Y_SWEET_AUTH_KEY=dev-secret
+
+  # ── Core Services ──────────────────────────────────────────────────────────
+
+  frontend:
+    build:
+      context: ./synthi
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_COLLAB_SERVER_URL: "http://localhost:1234"
+        NEXT_PUBLIC_YSWEET_URL: "http://localhost:8180"
+        NEXT_PUBLIC_COLLAB_PORT: "1234"
+        NEXT_PUBLIC_COMPILE_SIGNAL_URL: "ws://localhost:9000"
+        NEXT_PUBLIC_GATEWAY_WS_URL: "ws://localhost:7070/ws"
+    ports:
+      - "3000:3000"
+    environment:
+      # Database
+      DATABASE_URL: postgresql://synthi:password@postgres:5432/synthi
+      # Auth (NextAuth.js)
+      NEXTAUTH_URL: http://localhost:3000
+      NEXTAUTH_SECRET: dev-secret-key-change-me-1234567890
+      AUTH_SECRET: dev-secret-key-change-me-1234567890
+      # OAuth Providers (dummies for local dev unless set in .env)
+      GITHUB_ID: ${GITHUB_ID:-dummy}
+      GITHUB_SECRET: ${GITHUB_SECRET:-dummy}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-dummy}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-dummy}
+      # Backend Services
+      CLOUDFLARE_TURN_TOKEN_ID: ${CLOUDFLARE_TURN_TOKEN_ID:-dummy}
+      CLOUDFLARE_TURN_API_TOKEN: ${CLOUDFLARE_TURN_API_TOKEN:-dummy}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  collab-server:
+    build:
+      context: ./backend/collab-server
+      dockerfile: Dockerfile
+    ports:
+      - "1234:1234"
+    environment:
+      COLLAB_PORT: "1234"
+      # Networking
+      CORS_ORIGIN: "http://localhost:3000"
+      CODE_INTEL_URL: "http://ai-engine:8000"
+      YSWEET_URL: "http://y-sweet:8080"
+      YSWEET_AUTH_KEY: dev-secret
+      # Storage (Local dev uses filesystem instead of GCS)
+      REPOS_DIR: /data/repos
+      REPO_CACHE_DIR: /data/repos
+      # Database
+      CLOUD_SQL_INSTANCE: "" # Not used in local dev
+      # Dev specific
+      GCS_SYNC_ON_FLUSH: "false"
+    volumes:
+      - collab-data:/data
+    depends_on:
+      - y-sweet
+      - ai-engine
+
+  signaling-server:
+    build:
+      context: ./backend/synthi-webrtc-compiler/signaling-server
+      dockerfile: Dockerfile
+    ports:
+      - "9000:9000"
+    environment:
+      SIGNALING_PORT: "9000"
+      REDIS_URL: "redis://redis:6379"
+      COLLAB_SERVER_URL: "http://collab-server:1234"
+    depends_on:
+      redis:
+        condition: service_healthy
+      collab-server:
+        condition: service_started
+
+  ai-engine:
+    build:
+      context: ./ai-backend/ai-engine
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      # API Keys (Must be set in .env file)
+      GOOGLE_AI_API_KEY: ${GOOGLE_AI_API_KEY:-dummy}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-dummy}
+
+  ai-gateway:
+    build:
+      context: ./ai-backend/gateway
+      dockerfile: Dockerfile
+    ports:
+      - "7070:7070"
+    environment:
+      GATEWAY_PORT: "7070"
+      GATEWAY_WS_PATH: "/ws"
+      BACKEND_URL: "http://ai-engine:8000"
+      GATEWAY_CLUSTER: "false"
+    depends_on:
+      - ai-engine
+
+  worker:
+    build:
+      context: ./backend/synthi-webrtc-compiler/worker
+      dockerfile: Dockerfile
+    # Worker connects outbound, no inbound ports needed usually, 
+    # but for local dev debugging we might want to exec in.
+    environment:
+      SESSION_ID: "local-session"
+      SIGNALING_URL: "ws://signaling-server:9000"
+      COLLAB_SERVER_URL: "http://collab-server:1234"
+      AI_BACKEND_URL: "http://ai-engine:8000"
+      # GStreamer
+      GST_DEBUG: "2"
+      DISPLAY: ":99"
+      # Logging
+      SYNTHI_LOG_LEVEL: "debug"
+    depends_on:
+      - signaling-server
+      - collab-server
+
+volumes:
+  ysweet-data:
+  postgres-data:
+  collab-data:
