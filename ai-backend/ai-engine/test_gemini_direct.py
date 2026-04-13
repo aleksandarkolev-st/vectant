@@ -8,17 +8,6 @@ by sending the exact same split prompt that's hanging through raw HTTP.
 Usage:
     cd ai-backend/ai-engine
     python test_gemini_direct.py
-
-Prints timing for:
-    1. A tiny sanity prompt (should be ~1-2s)
-    2. The full SPLIT_GUI_PROMPT + sample user code (the one hanging at 120s)
-    3. A retry of #2 to check variance
-
-Exit codes:
-    0  = both calls succeeded
-    1  = sanity prompt failed (API key / network / model name problem)
-    2  = split prompt timed out (>60s) — confirms H1 or H4
-    3  = split prompt got a 4xx/5xx error — confirms H4 or H5
 """
 import json
 import os
@@ -28,7 +17,7 @@ import urllib.error
 import urllib.request
 
 MODEL = os.environ.get("SYNTHI_GEMINI_MODEL", "gemini-3.1-flash-lite-preview")
-API_KEY = os.environ.get("GEMINI_API_KEY")
+API_KEY = "AIzaSyDaOUxXavFUVYkVHM8cD65svGU0sYKaxqQ"
 
 if not API_KEY:
     print("❌ GEMINI_API_KEY not set in environment")
@@ -78,6 +67,33 @@ int main() {
     return 0;
 }
 """
+
+def list_gemini_models(api_key: str):
+    """Make a GET request to list all available models for this API key."""
+    list_url = f"https://generativelanguage.googleapis.com/v1beta/models?key={api_key}"
+    req = urllib.request.Request(list_url, method="GET")
+    
+    try:
+        with urllib.request.urlopen(req, timeout=10.0) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            print(f"{'MODEL NAME':<40} | SUPPORTED METHODS")
+            print("-" * 75)
+            count = 0
+            for model in data.get("models", []):
+                methods = model.get("supportedGenerationMethods", [])
+                if "generateContent" in methods:
+                    clean_name = model.get("name", "").replace("models/", "")
+                    print(f"{clean_name:<40} | {', '.join(methods)}")
+                    count += 1
+            print("-" * 75)
+            print(f"Total generateContent models found: {count}")
+            return True
+    except urllib.error.HTTPError as e:
+        print(f"✗ HTTP Error fetching models: {e.code} - {e.read().decode('utf-8', errors='replace')}")
+        return False
+    except Exception as e:
+        print(f"✗ Failed to fetch models: {e}")
+        return False
 
 
 def call_gemini(full_prompt: str, timeout_s: float = 300.0) -> tuple[int, dict | str, float]:
@@ -134,10 +150,20 @@ def extract_text(response_body) -> str:
         return f"(extract error: {e}) {json.dumps(response_body)[:500]}"
 
 
-print(f"Model: {MODEL}")
-print(f"Endpoint: {URL.split('?')[0]}")
+print(f"Target Model: {MODEL}")
+print(f"Target Endpoint: {URL.split('?')[0]}")
 print(f"API key: {API_KEY[:4]}...{API_KEY[-4:]} (length {len(API_KEY)})")
 print()
+
+# ── Test 0: List Available Models ───────────────────────────────────
+print("─── Test 0: List Available Models ───────────────────────────────")
+print("Fetching allowed models for this API key...")
+list_success = list_gemini_models(API_KEY)
+print()
+
+if not list_success:
+    print("⚠ Skipping to Test 1, but model listing failed.")
+    print()
 
 # ── Test 1: tiny sanity prompt ──────────────────────────────────────
 print("─── Test 1: tiny sanity prompt ──────────────────────────────────")
@@ -161,6 +187,7 @@ try:
 except ImportError as e:
     print(f"✗ Could not import SPLIT_GUI_PROMPT: {e}")
     print("  Make sure you run this from ai-backend/ai-engine/")
+    print("  (Or comment out this block if you just wanted to list the models)")
     sys.exit(1)
 
 full_prompt = (
@@ -194,8 +221,8 @@ else:
     print(f"  Body: {str(body)[:1000]}")
     if status == 429:
         print("  → H4: rate limited. Check quotas.")
-    elif status in (400, 403):
-        print("  → H4 or H5: bad request or content filter.")
+    elif status in (400, 403, 404):
+        print("  → H4 or H5: bad request, content filter, or model not found.")
     sys.exit(3)
 
 print()
@@ -214,7 +241,7 @@ if status == 200 and status2 == 200:
 
 print()
 print("═══ Summary ═══")
-print(f"  Test 1 (sanity):   {'✓' if True else '✗'}  ~{elapsed:.1f}s (sanity)")
+print(f"  Test 1 (sanity):   {'✓' if status == 200 else '✗'}  ~{elapsed:.1f}s (sanity)")
 print(f"  Test 2 (split):    {'✓' if status == 200 else '✗'}  {elapsed:.1f}s")
 if status == 200:
     print(f"  Test 3 (retry):    {'✓' if status2 == 200 else '✗'}  {elapsed2:.1f}s")

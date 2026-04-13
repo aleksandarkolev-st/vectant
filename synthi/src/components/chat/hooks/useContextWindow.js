@@ -26,7 +26,7 @@ const MODEL_CONTEXT_WINDOWS = [
     // Gemini family
     ['gemini-3.1-pro',          1_048_576],
     ['gemini-3.1-flash-lite',   1_048_576],
-    ['gemini-3-flash',          1_048_576],
+    ['gemini-3.1-flash-lite-preview',          1_048_576],
     ['gemini-2.5-pro',          1_048_576],
     ['gemini-2.5-flash',        1_048_576],
     ['gemini-2.0-flash',        1_048_576],

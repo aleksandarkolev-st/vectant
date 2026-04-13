@@ -1163,7 +1163,7 @@ async def refactor_split(req: AnalyzeAiRequest):
             focus=req.focus,
             # Split needs stronger reasoning — 88K prompt, structured
             # JSON output, must not drift. Pro model by default.
-            model=req.model or "gemini-3.1-pro-preview",
+            model=req.model or "gemini-3.1-flash-lite-preview",
             api_key=req.api_key,
         )
         print(f"--- AI SPLIT OUTPUT START ---\n{ai_suggestion}\n--- AI SPLIT OUTPUT END ---")
@@ -1407,7 +1407,7 @@ async def refactor_split_verified(req: VerifiedAiRequest):
             focus=req.focus,
             # Split needs stronger reasoning — 88K prompt, structured
             # JSON output, must not drift. Pro model by default.
-            model=req.model or "gemini-3.1-pro-preview",
+            model=req.model or "gemini-3.1-flash-lite-preview",
             api_key=req.api_key,
         )
 
@@ -1959,7 +1959,7 @@ async def refactor_diff_patch(req: DiffPatchRequest):
             # and correct merging into split-module conventions. With the
             # edit-list output format, the pro-call output is short
             # (~100 tokens) so this is 1-2s of generation, not 30.
-            model=req.model or "gemini-3.1-pro-preview",
+            model=req.model or "gemini-3.1-flash-lite-preview",
             api_key=req.api_key,
         )
 
