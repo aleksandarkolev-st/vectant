@@ -1,22 +1,28 @@
 """
 Delta prompts for fast HMR.
 
-History: this module used to contain an "addition" path
-(`DELTA_ADDITION_PROMPT` + `inject_delta_into_code`) that literally
-asked the model to "Translate this X11 code snippet to SDL2" and then
-spliced the result into split modules using string-match injection
-with hardcoded markers (`} AppState;`, `app_state.running = 1;`,
-`SDL_RenderPresent`, `SDL_MOUSEBUTTONDOWN`). It was SDL-hardcoded and
-silently dropped half its injections. It has been removed — additions
-now flow through `/refactor/diff_patch` (language-agnostic,
-architecture-cache-aware).
+History (context for the shrinking surface area of this module):
+
+1. `DELTA_ADDITION_PROMPT` + `inject_delta_into_code` — REMOVED. Literally
+   asked the model to "Translate this X11 code snippet to SDL2" and then
+   spliced the result into split modules using string-match injection with
+   hardcoded markers (`} AppState;`, `app_state.running = 1;`,
+   `SDL_RenderPresent`, `SDL_MOUSEBUTTONDOWN`). SDL-hardcoded and silently
+   dropped half its injections. Additions now flow through
+   `/refactor/diff_patch` which is language-agnostic and arch-cache-aware.
+
+2. `DIFF_PATCH_PROMPT` + `format_diff_patch_prompt` — REMOVED. Contained
+   SDL-hardcoded routing rules ("SDL_Render*, SDL_SetRenderDrawColor → gui.cpp"
+   etc.) that broke on non-SDL code. Replaced by
+   `_build_full_diff_patch_prompt(req)` in main.py, which injects the cached
+   architecture markdown as the routing hint so the model does its own
+   routing without hardcoded rules.
 
 What remains here:
 - DELTA_DELETION_PROMPT + format_delta_deletion_prompt: deletion path
-  (still wired to /refactor/delta for `update_type == "deletion"`).
+  (still wired to /refactor/delta for `update_type == "deletion"`). This
+  has similar SDL-hardcoded concerns and is a candidate for removal next.
 - apply_deletion_delta: comments out lines matching deletion patterns.
-- DIFF_PATCH_PROMPT + format_diff_patch_prompt: the full 3-module
-  diff-patch prompt used by /refactor/diff_patch's full mode.
 - HEAL_PROMPT + format_heal_prompt: compilation-error repair prompt.
 """
 
@@ -81,71 +87,14 @@ def apply_deletion_delta(cached_result: dict, delta: dict) -> dict:
 # DIFF-PATCH PROMPT: Apply source diff to split modules
 # ============================================================
 
-DIFF_PATCH_PROMPT = """You are a code patcher for the Synthi HMR system.
-
-The user edited their original source file. Below is the DIFF of what changed.
-Below that are the current split module files (core.cpp, gui.cpp, shared.h)
-that were produced by a previous AI split of the original source.
-
-Your job: apply the user's changes to the correct module file(s).
-Return the COMPLETE updated content of ONLY the files that changed.
-
-## RULES
-- Do NOT regenerate files from scratch — patch the existing content
-- Do NOT add new boilerplate, stubs, or HMR callbacks
-- Do NOT change function signatures (on_load, on_update, on_render, on_event)
-- If the user changed a value (color, speed, position), find that value in the
-  split files and update it
-- If the user added new code, determine which module it belongs to:
-  - SDL_Render*, SDL_SetRenderDrawColor → gui.cpp (inside gui_on_render)
-  - State/logic updates → core.cpp (inside core_on_update)
-  - New struct fields → shared.h (inside AppState)
-- If the user removed code, remove it from the appropriate module
-- Preserve ALL existing code that wasn't affected by the diff
-
-## DIFF (what the user changed in their source)
-```diff
-{diff}
-```
-
-## CURRENT core.cpp
-```cpp
-{core}
-```
-
-## CURRENT gui.cpp
-```cpp
-{gui}
-```
-
-## CURRENT shared.h
-```cpp
-{shared}
-```
-
-## OUTPUT FORMAT
-Return ONLY a JSON object with the files that changed. Omit unchanged files.
-```json
-{{
-  "core": "... full updated core.cpp content ...",
-  "gui": "... full updated gui.cpp content ...",
-  "shared": "... full updated shared.h content ..."
-}}
-```
-
-If only gui.cpp changed, return: {{"gui": "..."}}
-If only a value in core.cpp changed, return: {{"core": "..."}}
-Return ONLY the JSON. No explanation."""
-
-
-def format_diff_patch_prompt(diff: str, core: str, gui: str, shared: str) -> str:
-    """Format the diff-patch prompt with actual content."""
-    return DIFF_PATCH_PROMPT.format(
-        diff=diff,
-        core=core,
-        gui=gui,
-        shared=shared,
-    )
+# NOTE: DIFF_PATCH_PROMPT + format_diff_patch_prompt were removed.
+# They contained SDL-hardcoded routing rules ("SDL_Render*, SDL_SetRenderDrawColor
+# → gui.cpp") that broke the moment a user wrote non-SDL code.
+# The replacement is `_build_full_diff_patch_prompt(req)` in main.py,
+# which injects the cached architecture doc (captured at split time)
+# as a language-agnostic routing hint. The architecture doc's
+# "Where User Code Goes" section tells the model where each kind of
+# code goes for THIS project, whatever its language/framework.
 
 
 # ============================================================

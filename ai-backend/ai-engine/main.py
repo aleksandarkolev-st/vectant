@@ -42,7 +42,6 @@ from llm.providers import get_provider
 from llm.prompts import SPLIT_GUI_PROMPT
 from llm.structural_prompts import (
     format_delta_deletion_prompt,
-    format_diff_patch_prompt,
     format_heal_prompt,
     apply_deletion_delta,
 )
@@ -1739,15 +1738,22 @@ async def refactor_structural(req: StructuralUpdateRequest):
 
 
 class DiffPatchRequest(BaseModel):
-    """Request for AI-powered diff patching of split modules."""
+    """Request for AI-powered diff patching of split modules.
+
+    As of the classify-removal refactor, there is only one mode: full
+    diff-patch with the cached architecture hint. The model receives all
+    three module contents + the user's diff + the architecture doc +
+    the priority rule, and returns updated content for whichever modules
+    changed. The previous targeted-mode optimization (pick ONE module
+    via an AI classifier, then send only that module) was removed —
+    classify was costing ~4s per edit for a lite call, which exceeded
+    the time saved by the smaller targeted prompt. One AI call per
+    edit, no classifier, no silent drops on classifier timeout.
+    """
     diff: str              # Unified diff of the user's source changes
-    # Full mode: all 3 modules
     core_content: str = ""
     gui_content: str = ""
     shared_content: str = ""
-    # Targeted mode: single module (much faster)
-    target_module: Optional[str] = None   # "core", "gui", or "shared"
-    module_content: Optional[str] = None  # content of the targeted module
     # Cached split architecture doc (markdown) — captured at initial
     # /refactor/split/verified time and re-injected here so the model
     # does not have to re-derive the module contract on every edit.
@@ -1758,7 +1764,7 @@ class DiffPatchRequest(BaseModel):
 
 
 # ══════════════════════════════════════════════════════════════
-# Diff-patch prompt builder (targeted mode)
+# Diff-patch prompt builder (full 3-module mode)
 # ══════════════════════════════════════════════════════════════
 #
 # The prompt is assembled in a specific order to exploit the LLM's
@@ -1768,7 +1774,7 @@ class DiffPatchRequest(BaseModel):
 #   1. Role + task statement                         ← top
 #   2. Generic CRITICAL RULES (file scope, etc.)
 #   3. ARCHITECTURE section (cached markdown blob)   ← middle (long)
-#   4. CURRENT file content to patch
+#   4. CURRENT core / gui / shared contents
 #   5. PRIORITY RULE                                 ← bottom (recency boost)
 #   6. DIFF (user's raw source changes)              ← last thing before generation
 #   7. Output format instruction
@@ -1778,6 +1784,10 @@ class DiffPatchRequest(BaseModel):
 # matters because the architecture cache is a HINT and can be stale
 # (user renamed a variable mid-session) — the priority rule reminds
 # the model to treat the diff as ground truth.
+#
+# The architecture doc itself tells the model which module to patch
+# ("Where User Code Goes: rendering → gui_on_render" etc.), so the
+# model does its own routing — we don't need an external classifier.
 
 _DIFF_PATCH_ARCH_HEADER = (
     "ARCHITECTURE (cached from the initial split — describes how this\n"
@@ -1800,45 +1810,55 @@ cached mapping only applies to references that remain UNCHANGED from
 the original source."""
 
 
-def _build_targeted_diff_patch_prompt(req: DiffPatchRequest) -> str:
-    """Assemble the targeted-mode diff_patch prompt.
+def _build_full_diff_patch_prompt(req: DiffPatchRequest) -> str:
+    """Assemble the full 3-module diff_patch prompt.
 
     When `req.architecture` is empty, the ARCHITECTURE + PRIORITY_RULE
     blocks are omitted and the prompt degrades to the generic form —
     no regression for pre-migration sidecars that don't have a
     cached architecture yet.
+
+    The model decides which modules to patch based on the architecture
+    doc's "Where User Code Goes" section and the diff content. Returns
+    a JSON object containing ONLY the modules that changed.
     """
     parts: List[str] = [
-        "You are applying a patch to a SPLIT module in a multi-module project.",
-        "Return ONLY the complete updated file content as a JSON object.",
+        "You are applying a patch to a SPLIT multi-module project.",
+        "Return ONLY the complete updated file content(s) as a JSON object.",
         "",
         "CRITICAL RULES — these apply to any language/framework:",
         "",
-        f"1. The target file ({req.target_module}) is a SPLIT module, NOT a standalone program.",
-        "   It may not have a main entrypoint, and it exports specific lifecycle functions",
-        "   (e.g. *_on_load, *_on_update, *_on_render, etc.). STUDY the current file below",
-        "   to identify its existing function signatures — those are your template.",
+        "1. The target files (core, gui, shared) are SPLIT modules, NOT standalone",
+        "   programs. They may not have a main entrypoint and they export specific",
+        "   lifecycle functions (e.g. *_on_load, *_on_update, *_on_render, etc.).",
+        "   STUDY the current module contents below to identify each file's",
+        "   existing function signatures — those are your template.",
         "",
         "2. The diff comes from the user's ORIGINAL source file, which may use raw",
-        "   idioms (local variables, inline entrypoint, direct API references). You must",
-        "   ADAPT those references to fit the split module's existing structure:",
+        "   idioms (local variables, inline entrypoint, direct API references). You",
+        "   must ADAPT those references to fit the split modules' existing structure:",
         "     - Local variables in the original source usually live on a shared state",
-        "       object in the split module. Look at the existing code to see how state is",
-        "       accessed (e.g. a cast like `State* s = (State*)state_ptr;`) and follow",
-        "       the same pattern.",
-        "     - API handles (renderer, window, audio, etc.) are typically stored on the",
-        "       state object — use the same field names the existing code uses.",
+        "       object in the split modules. Look at the existing code to see how",
+        "       state is accessed (e.g. a cast like `State* s = (State*)state_ptr;`)",
+        "       and follow the same pattern.",
+        "     - API handles (renderer, window, audio, etc.) are typically stored on",
+        "       the state object — use the same field names the existing code uses.",
         "",
-        "3. MERGE the diff into the appropriate existing function body. Do NOT:",
-        "     - Paste the diff verbatim at file scope (would cause \"expected declaration\"",
-        "       errors in C/C++ or top-level errors in Python/JS/Rust).",
+        "3. DECIDE which module(s) each diff hunk belongs to. The ARCHITECTURE",
+        "   section below tells you the routing rules — use its 'Where User Code",
+        "   Goes' section as the authoritative mapping. MERGE the diff into the",
+        "   appropriate existing function body in the correct module. Do NOT:",
+        "     - Paste the diff verbatim at file scope (would cause \"expected",
+        "       declaration\" errors in C/C++ or top-level errors in Python/JS/Rust).",
         "     - Redeclare variables that already exist in the split module.",
         "     - Add a new main() / entrypoint / redundant imports.",
         "     - Create new top-level functions unless the existing file's convention",
         "       calls for it.",
         "",
-        "4. Preserve all existing code in the module that isn't touched by the diff.",
-        "   Keep all existing exports, includes, helpers, and comments.",
+        "4. Preserve all existing code in every module that isn't touched by the",
+        "   diff. Keep all existing exports, includes, helpers, and comments. ONLY",
+        "   return modules that changed — omit unchanged modules from the output",
+        "   JSON entirely.",
         "",
     ]
 
@@ -1847,15 +1867,25 @@ def _build_targeted_diff_patch_prompt(req: DiffPatchRequest) -> str:
         parts += [_DIFF_PATCH_ARCH_HEADER, "", arch, ""]
 
     parts += [
-        f"CURRENT {req.target_module} file content (the split module you must patch):",
+        "CURRENT core module content:",
         "```",
-        req.module_content or "",
+        req.core_content or "",
+        "```",
+        "",
+        "CURRENT gui module content:",
+        "```",
+        req.gui_content or "",
+        "```",
+        "",
+        "CURRENT shared module content:",
+        "```",
+        req.shared_content or "",
         "```",
         "",
     ]
 
     if arch:
-        # Priority rule sits AFTER the architecture + module content and
+        # Priority rule sits AFTER the architecture + module contents and
         # immediately before the diff — last thing the model reads before
         # generating. Mitigates the "lost in the middle" effect.
         parts += [_DIFF_PATCH_PRIORITY_RULE, ""]
@@ -1866,8 +1896,10 @@ def _build_targeted_diff_patch_prompt(req: DiffPatchRequest) -> str:
         req.diff,
         "```",
         "",
-        f'Return ONLY valid JSON: {{"{req.target_module}": "<complete updated file content as a string>"}}',
-        "No markdown fences, no explanation.",
+        'Return ONLY valid JSON containing the modules that changed, e.g.',
+        '{"gui": "<complete updated gui content as a string>"} if only gui',
+        'changed, or {"core": "...", "gui": "..."} if both changed. OMIT',
+        'unchanged modules. No markdown fences, no explanation.',
     ]
     return "\n".join(parts)
 
@@ -1877,26 +1909,19 @@ async def refactor_diff_patch(req: DiffPatchRequest):
     """
     Apply a source diff to split module files using AI.
 
-    Two modes:
-    - Targeted: req.target_module + req.module_content set → patch ONE module (~1-2s)
-    - Full: all 3 module contents set → patch any/all modules (~2-3s)
+    One mode: full 3-module diff-patch with the cached architecture hint.
+    The model reads the diff + the arch doc's routing rules + the current
+    contents of all three modules, then returns updated content for
+    whichever modules changed. Single AI call per edit.
     """
     start_time = time.time()
 
     provider = get_provider(provider_name='gemini', use_custom=bool(req.api_key))
-
-    # Targeted single-module mode — much smaller context, much faster
-    if req.target_module and req.module_content:
-        prompt = _build_targeted_diff_patch_prompt(req)
-        if req.architecture and req.architecture.strip():
-            print(f"[DiffPatch] architecture hint ({len(req.architecture)} chars) injected into prompt")
+    prompt = _build_full_diff_patch_prompt(req)
+    if req.architecture and req.architecture.strip():
+        print(f"[DiffPatch] architecture hint ({len(req.architecture)} chars) injected into prompt")
     else:
-        prompt = format_diff_patch_prompt(
-            req.diff,
-            req.core_content,
-            req.gui_content,
-            req.shared_content,
-        )
+        print(f"[DiffPatch] no architecture hint (fallback to generic prompt)")
 
     try:
         ai_response = await provider.ask_llm(
@@ -1949,52 +1974,23 @@ async def refactor_diff_patch(req: DiffPatchRequest):
         raise HTTPException(status_code=400, detail=str(e))
 
 
-class ClassifyEditRequest(BaseModel):
-    """Request to classify which module an edit diff belongs to."""
-    diff: str
-    lang: str = "cpp"
-
-
-@app.post("/classify/edit")
-async def classify_edit_endpoint(req: ClassifyEditRequest):
-    """Classify which module (core/gui/shared) a diff targets. Tiny prompt, ~1s."""
-    start_time = time.time()
-    provider = get_provider(provider_name='gemini')
-    prompt = f"""Given this code diff, identify which module it belongs to in a core/gui/shared split architecture:
-
-- **core**: pure logic, state updates, computation (no rendering, no UI, no SDL)
-- **gui**: rendering, SDL calls, window/event handling, UI code
-- **shared**: struct/typedef/enum definitions used by both core and gui
-
-DIFF:
-```
-{req.diff}
-```
-
-Respond with ONLY a JSON object like {{"target": "gui"}}. Valid values: "core", "gui", "shared". No explanation."""
-
-    try:
-        ai_response = await provider.ask_llm(
-            prompt, req.lang, None, mode="delta",
-            # Lite model for classification — tiny prompt, one-word answer.
-            # Should be <2s with the lite variant.
-            model="gemini-3.1-flash-lite-preview",
-        )
-        result_str = ai_response.strip()
-        if "```json" in result_str:
-            result_str = result_str.split("```json")[1].split("```")[0].strip()
-        elif "```" in result_str:
-            result_str = result_str.split("```")[1].split("```")[0].strip()
-        parsed = json.loads(result_str)
-        target = parsed.get("target", "unknown")
-        if target not in ("core", "gui", "shared"):
-            target = "unknown"
-        elapsed = time.time() - start_time
-        print(f"[Classify] {target} ({elapsed:.2f}s)")
-        return {"target": target, "elapsed_seconds": elapsed}
-    except Exception as e:
-        print(f"[Classify] Error: {e}")
-        return {"target": "unknown", "error": str(e)}
+# NOTE: /classify/edit endpoint + ClassifyEditRequest were removed.
+# The endpoint ran an AI call (gemini-3.1-flash-lite-preview) to tell the
+# Rust worker which module (core/gui/shared) a diff hunk belonged to.
+# In practice it was costing ~4s per edit (network latency + Google API
+# TTFT + Python SDK overhead), which exceeded the time saved by using a
+# targeted single-module diff_patch prompt instead of a full 3-module
+# one. And when classify timed out, the Tier 2 loop silently dropped
+# the edit because hunks stayed EditTarget::Unknown.
+#
+# Net latency of classify + targeted (~10-12s/edit) was WORSE than
+# full diff_patch with arch hint (~6-8s/edit). The architecture cache
+# gives the full diff_patch prompt all the routing info it needs via
+# the "Where User Code Goes" section, so the AI does its own routing
+# without an external classifier. One call per edit, no silent drops,
+# no hardcoded identifier-prefix heuristics.
+#
+# See commit message history / the architecture plan file for details.
 
 
 class HealRequest(BaseModel):

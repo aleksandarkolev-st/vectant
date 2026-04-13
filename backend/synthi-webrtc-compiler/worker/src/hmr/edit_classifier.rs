@@ -94,48 +94,32 @@ pub fn classify_edit(old_source: &str, new_source: &str) -> EditClassification {
     }
 }
 
-/// Async variant: runs sync classification then asks the AI to classify the target module.
-/// Skips the AI call for value-only edits (Tier 1 regex patcher handles them).
-pub async fn classify_edit_with_ai(old_source: &str, new_source: &str, lang: &str) -> EditClassification {
-    let mut classification = classify_edit(old_source, new_source);
-
-    if classification.is_value_only || classification.hunks.is_empty() {
-        return classification;
-    }
-
-    // Build a combined diff from all non-value hunks.
-    let diff_text: String = classification.hunks.iter()
-        .filter(|h| h.kind != EditKind::ValueChange)
-        .map(|h| h.diff_text())
-        .collect::<Vec<_>>()
-        .join("\n");
-
-    if diff_text.trim().is_empty() {
-        return classification;
-    }
-
-    match crate::compiler::stages::ai_utils::perform_ai_classify_edit(&diff_text, lang).await {
-        Ok(target_str) => {
-            let target = match target_str.as_str() {
-                "core" => EditTarget::Core,
-                "gui" => EditTarget::Gui,
-                "shared" => EditTarget::Shared,
-                _ => EditTarget::Unknown,
-            };
-            eprintln!("[classify] AI classified as: {:?}", target);
-            for hunk in classification.hunks.iter_mut() {
-                if hunk.kind != EditKind::ValueChange {
-                    hunk.target = target;
-                }
-            }
-        }
-        Err(e) => {
-            eprintln!("[classify] AI classification failed: {}, hunks stay Unknown", e);
-        }
-    }
-
-    classification
-}
+// NOTE: classify_edit_with_ai() was removed.
+//
+// It ran a /classify/edit AI call (gemini-3.1-flash-lite-preview) to
+// assign `EditTarget::{Core,Gui,Shared}` to each non-value hunk so the
+// Tier 2 loop could route each hunk to a targeted single-module
+// diff_patch. Three problems:
+//
+//   1. Latency: classify took ~4s per edit (Google API TTFT + Python
+//      SDK overhead for a lite call) — more than the ~1-3s saved by
+//      the smaller targeted prompt. Net latency LOSS.
+//
+//   2. Silent drops: when classify timed out or returned "unknown",
+//      the Tier 2 loop skipped every hunk with `continue` and wrote
+//      the split modules back to disk unchanged, silently losing the
+//      edit. User saw "compile OK" with no visible change.
+//
+//   3. Redundant with the arch cache: the architecture doc emitted
+//      at split time already contains a "Where User Code Goes"
+//      section that tells the model how to route code. Handing that
+//      doc to the full 3-module diff_patch prompt lets the AI route
+//      internally from a single call — no external classifier.
+//
+// The replacement is handler.rs Tier 2, which calls `perform_ai_diff_patch`
+// (full 3-module mode) with the cached architecture markdown injected.
+// `classify_edit()` (sync, pure Rust) is still used for the Tier 1
+// value-only fast path — it doesn't touch the AI.
 
 // ── Kind classification ─────────────────────────────────────
 

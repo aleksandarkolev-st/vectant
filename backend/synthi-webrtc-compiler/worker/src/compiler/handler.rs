@@ -8,7 +8,7 @@ use crate::compiler::context::CompileContext;
 use crate::infra::messages::CompileRequest;
 
 // Import our new modular stages
-use crate::compiler::stages::ai_utils::{perform_ai_split, perform_ai_diff_patch, perform_targeted_delta_patch};
+use crate::compiler::stages::ai_utils::{perform_ai_split, perform_ai_diff_patch};
 use crate::compiler::stages::compile_core::compile_core;
 use crate::compiler::stages::compile_gui::compile_gui;
 use crate::compiler::stages::guardrails::{
@@ -309,26 +309,46 @@ pub async fn handle_compile_request(
                             "gui": { "content": gui_content, "filename": "gui.cpp" }
                         })
                     } else {
-                        // ── Tiered patching with on-demand classification ──
+                        // ── Tiered patching (no AI classifier) ──
                         //
                         // Tier 1: VALUE_CHANGE → instant regex patcher (0ms)
-                        // Tier 2: EXPR/ADD/DEL → targeted AI on ONE module (~1-2s)
-                        // Tier 3: STRUCTURAL → full AI re-split (last resort)
+                        //         Detected synchronously by classify_edit() —
+                        //         pure Rust, ~1ms, no AI call.
                         //
-                        // Classification runs HERE (synchronously, ~1s) rather than
-                        // in file-sync.  Classifying on every keystroke saturated
-                        // the single Python worker with concurrent Gemini calls;
-                        // classifying once per compile is sustainable.
-                        use crate::hmr::edit_classifier::{classify_edit_with_ai, EditKind, EditTarget};
+                        // Tier 2: anything else → single full /refactor/diff_patch
+                        //         call with all three split modules + the cached
+                        //         architecture doc. The AI uses the arch doc's
+                        //         "Where User Code Goes" section to route each
+                        //         hunk to the right module(s) internally. No
+                        //         external classifier.
+                        //
+                        // Tier 3: full AI re-split (last resort) if Tier 2 errors.
+                        //
+                        // Previously, Tier 2 used an /classify/edit AI call to
+                        // pick ONE module and a targeted single-module prompt.
+                        // classify cost ~4s per edit (Gemini API TTFT + SDK
+                        // overhead) which exceeded the ~1-3s saved by the
+                        // smaller targeted prompt — net latency LOSS. And when
+                        // classify timed out, the Tier 2 loop silently dropped
+                        // the edit because all hunks were EditTarget::Unknown.
+                        // Killing classify removed both the latency regression
+                        // and the silent-drop failure mode.
+                        use crate::hmr::edit_classifier::classify_edit;
                         use crate::hmr::diff_patcher::patch_split_files;
 
-                        let classification = classify_edit_with_ai(&old_source, &req.source, "cpp").await;
-                        debug_log!(
-                            "[HMR] Classified edit: {} hunks, value_only={}",
-                            classification.hunks.len(), classification.is_value_only
+                        let sync_classification = classify_edit(&old_source, &req.source);
+                        let is_value_only = sync_classification.is_value_only;
+                        eprintln!(
+                            "[HMR] sync classify: {} hunks, value_only={}",
+                            sync_classification.hunks.len(),
+                            is_value_only
                         );
-                        let is_value_only = classification.is_value_only;
-                        let cached_class: Option<&crate::hmr::edit_classifier::EditClassification> = Some(&classification);
+
+                        let arch_hint: Option<&str> = if architecture_md.is_empty() {
+                            None
+                        } else {
+                            Some(architecture_md.as_str())
+                        };
 
                         let (final_core, final_gui, final_shared) = if is_value_only {
                             // Tier 1: pure value change — instant regex
@@ -337,90 +357,23 @@ pub async fn handle_compile_request(
                                 &core_content, &gui_content, &shared_content,
                             );
                             if patch.has_changes() {
-                                debug_log!("[HMR] Tier 1: instant value patch (0ms)");
+                                eprintln!("[HMR] Tier 1: instant value patch (0ms)");
                                 (
                                     patch.core.unwrap_or_else(|| core_content.clone()),
                                     patch.gui.unwrap_or_else(|| gui_content.clone()),
                                     patch.shared.unwrap_or_else(|| shared_content.clone()),
                                 )
                             } else {
-                                (core_content.clone(), gui_content.clone(), shared_content.clone())
-                            }
-                        } else if let Some(classification) = cached_class {
-                            // Tier 2: targeted AI on the ONE module the classifier identified
-                            let mut target_diffs: std::collections::HashMap<String, String> = std::collections::HashMap::new();
-                            for hunk in &classification.hunks {
-                                if hunk.kind == EditKind::ValueChange { continue; }
-                                let module_name = match hunk.target {
-                                    EditTarget::Core => "core",
-                                    EditTarget::Gui => "gui",
-                                    EditTarget::Shared => "shared",
-                                    EditTarget::Unknown => {
-                                        debug_log!("[HMR] Tier 2 hunk has Unknown target, skipping");
-                                        continue;
-                                    }
-                                };
-                                target_diffs.entry(module_name.to_string())
-                                    .or_default()
-                                    .push_str(&hunk.diff_text());
-                            }
-
-                            // Start with unchanged module contents
-                            let mut c = core_content.clone();
-                            let mut g = gui_content.clone();
-                            let mut s = shared_content.clone();
-
-                            // AI patches only the module(s) with actual changes
-                            for (module, diff_text) in &target_diffs {
-                                if diff_text.trim().is_empty() { continue; }
-                                let module_content = match module.as_str() {
-                                    "core" => &c,
-                                    "gui" => &g,
-                                    "shared" => &s,
-                                    _ => continue,
-                                };
-                                debug_log!(
-                                    "[HMR] Tier 2: AI patch {} ({} bytes diff, arch={} chars)",
-                                    module,
-                                    diff_text.len(),
-                                    architecture_md.len()
-                                );
-                                let arch_hint: Option<&str> = if architecture_md.is_empty() {
-                                    None
-                                } else {
-                                    Some(architecture_md.as_str())
-                                };
-                                match perform_targeted_delta_patch(&diff_text, module, module_content, arch_hint).await {
-                                    Ok(patched_content) => {
-                                        match module.as_str() {
-                                            "core" => c = patched_content,
-                                            "gui" => g = patched_content,
-                                            "shared" => s = patched_content,
-                                            _ => {}
-                                        }
-                                    }
-                                    Err(e) => {
-                                        debug_log!("[HMR] Tier 2 failed for {}: {}", module, e);
-                                    }
-                                }
-                            }
-                            (c, g, s)
-                        } else {
-                            // No cached classification — try regex, fall back to AI
-                            let patch = patch_split_files(
-                                &old_source, &req.source,
-                                &core_content, &gui_content, &shared_content,
-                            );
-                            if patch.has_changes() && patch.unmatched_count == 0 {
-                                debug_log!("[HMR] No cached class, regex patch succeeded");
-                                (
-                                    patch.core.unwrap_or_else(|| core_content.clone()),
-                                    patch.gui.unwrap_or_else(|| gui_content.clone()),
-                                    patch.shared.unwrap_or_else(|| shared_content.clone()),
-                                )
-                            } else {
-                                debug_log!("[HMR] No cached class, falling back to AI diff-patch");
-                                match perform_ai_diff_patch(&diff, &core_content, &gui_content, &shared_content).await {
+                                // Regex couldn't find the value — fall through
+                                // to the AI path below rather than drop the edit.
+                                eprintln!("[HMR] Tier 1: regex patch failed despite value_only classification — falling through to AI diff_patch");
+                                match perform_ai_diff_patch(
+                                    &diff,
+                                    &core_content,
+                                    &gui_content,
+                                    &shared_content,
+                                    arch_hint,
+                                ).await {
                                     Ok(patched) => {
                                         let c = patched.get("core").and_then(|v| v.get("content").or(Some(v))).and_then(|v| v.as_str()).unwrap_or(&core_content).to_string();
                                         let g = patched.get("gui").and_then(|v| v.get("content").or(Some(v))).and_then(|v| v.as_str()).unwrap_or(&gui_content).to_string();
@@ -428,7 +381,7 @@ pub async fn handle_compile_request(
                                         (c, g, s)
                                     }
                                     Err(e) => {
-                                        debug_log!("[HMR] AI diff-patch failed: {}, full re-split", e);
+                                        eprintln!("[HMR] Tier 2 (value-fallback) AI diff_patch failed: {}, falling through to Tier 3 full re-split", e);
                                         let result = perform_ai_split(&req).await?;
                                         let fresh_arch = result
                                             .get("_synthi_architecture")
@@ -442,6 +395,52 @@ pub async fn handle_compile_request(
                                         write_sidecar_logged(&sidecar_path, &meta).await;
                                         return Ok(result);
                                     }
+                                }
+                            }
+                        } else {
+                            // Tier 2: non-value edit → full AI diff_patch with arch
+                            eprintln!(
+                                "[HMR] Tier 2: AI diff_patch (diff={} bytes, arch={} chars)",
+                                diff.len(),
+                                architecture_md.len()
+                            );
+                            match perform_ai_diff_patch(
+                                &diff,
+                                &core_content,
+                                &gui_content,
+                                &shared_content,
+                                arch_hint,
+                            ).await {
+                                Ok(patched) => {
+                                    // Python returns {"core": {...}, "gui": {...}, ...}
+                                    // containing ONLY modules that changed. Unchanged
+                                    // modules fall back to their current content.
+                                    let c = patched.get("core").and_then(|v| v.get("content").or(Some(v))).and_then(|v| v.as_str()).unwrap_or(&core_content).to_string();
+                                    let g = patched.get("gui").and_then(|v| v.get("content").or(Some(v))).and_then(|v| v.as_str()).unwrap_or(&gui_content).to_string();
+                                    let s = patched.get("shared").and_then(|v| v.get("content").or(Some(v))).and_then(|v| v.as_str()).unwrap_or(&shared_content).to_string();
+                                    eprintln!(
+                                        "[HMR] Tier 2 SUCCESS (core_changed={} gui_changed={} shared_changed={})",
+                                        c != core_content, g != gui_content, s != shared_content
+                                    );
+                                    (c, g, s)
+                                }
+                                Err(e) => {
+                                    eprintln!(
+                                        "[HMR] Tier 2 AI diff_patch FAILED: {} → falling through to Tier 3 full re-split",
+                                        e
+                                    );
+                                    let result = perform_ai_split(&req).await?;
+                                    let fresh_arch = result
+                                        .get("_synthi_architecture")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("");
+                                    let meta = serde_json::json!({
+                                        "split_hash": source_hash_str,
+                                        "original_source": req.source,
+                                        "architecture": fresh_arch,
+                                    });
+                                    write_sidecar_logged(&sidecar_path, &meta).await;
+                                    return Ok(result);
                                 }
                             }
                         };

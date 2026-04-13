@@ -760,25 +760,40 @@ pub async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value>
 /// Call the AI diff-patch endpoint to apply a source diff to split modules.
 ///
 /// Takes a unified diff of the user's source changes + current split file
-/// contents, sends them to the AI, and returns a JSON value with updated
-/// module contents for only the files that changed.
+/// contents + the cached split architecture markdown, sends them to the
+/// AI, and returns a JSON value with updated module contents for only the
+/// files that changed. The AI uses the architecture doc's "Where User
+/// Code Goes" section to route each hunk to the right module(s) — no
+/// external classifier needed.
+///
+/// `architecture` is the cached split-architecture markdown doc captured
+/// at initial split time. Passing `Some(arch)` injects it into the prompt
+/// as a hint so the model does not re-derive the module contract on every
+/// edit. Passing `None` (or `Some("")`) falls back to the generic prompt.
 pub async fn perform_ai_diff_patch(
     diff: &str,
     core_content: &str,
     gui_content: &str,
     shared_content: &str,
+    architecture: Option<&str>,
 ) -> Result<serde_json::Value> {
     let client = reqwest::Client::new();
     let backend_url = get_ai_backend_url();
     let url = format!("{}/refactor/diff_patch", backend_url);
 
-    eprintln!("[AI DiffPatch] Calling {} with diff ({} bytes)", url, diff.len());
+    eprintln!(
+        "[AI DiffPatch] Calling {} with diff ({} bytes), arch={} chars",
+        url,
+        diff.len(),
+        architecture.map(|s| s.len()).unwrap_or(0)
+    );
 
     let payload = serde_json::json!({
         "diff": diff,
         "core_content": core_content,
         "gui_content": gui_content,
         "shared_content": shared_content,
+        "architecture": architecture.unwrap_or(""),
     });
 
     let res = client
@@ -802,63 +817,15 @@ pub async fn perform_ai_diff_patch(
     Ok(result)
 }
 
-/// Targeted delta patch: send only ONE module + a small diff hunk to the AI.
-/// Much faster than sending all 3 modules (~1-2s vs ~22s).
-///
-/// `architecture` is the cached split-architecture markdown doc captured at
-/// initial split time. Passing `Some(arch)` injects it into the prompt as
-/// a hint so the model does not re-derive the module contract on every
-/// edit. Passing `None` (or `Some("")`) falls back to the generic prompt.
-pub async fn perform_targeted_delta_patch(
-    diff_hunk: &str,
-    module_name: &str,
-    module_content: &str,
-    architecture: Option<&str>,
-) -> Result<String> {
-    let client = reqwest::Client::new();
-    let backend_url = get_ai_backend_url();
-    let url = format!("{}/refactor/diff_patch", backend_url);
-
-    eprintln!(
-        "[AI TargetedPatch] {} module, {} bytes diff, arch={} chars",
-        module_name,
-        diff_hunk.len(),
-        architecture.map(|s| s.len()).unwrap_or(0)
-    );
-
-    let payload = serde_json::json!({
-        "diff": diff_hunk,
-        "target_module": module_name,
-        "module_content": module_content,
-        "architecture": architecture.unwrap_or(""),
-    });
-
-    let res = client
-        .post(&url)
-        .json(&payload)
-        // 60s — targeted diff_patch uses gemini-3.1-pro-preview with a
-        // single module + the arch doc injected (prompt_len ~5-8KB).
-        // Typical completion is 4-8s; the old 10s deadline silently timed
-        // out on every edit and dropped the patch. 60s is generous
-        // headroom for the pro model's worst-case latency.
-        .timeout(std::time::Duration::from_secs(60))
-        .send()
-        .await?
-        .json::<serde_json::Value>()
-        .await?;
-
-    let elapsed = res.get("elapsed_seconds").and_then(|v| v.as_f64()).unwrap_or(0.0);
-    eprintln!("[AI TargetedPatch] {} completed in {:.2}s", module_name, elapsed);
-
-    // Extract the patched module content
-    let result = res.get("result").cloned().unwrap_or(serde_json::json!({}));
-    let patched = result.get(module_name)
-        .and_then(|v| v.get("content").or(Some(v)))
-        .and_then(|v| v.as_str())
-        .unwrap_or(module_content);
-
-    Ok(patched.to_string())
-}
+// NOTE: perform_targeted_delta_patch was removed together with the
+// classify step in handler.rs. Rationale: classify took ~4s per edit
+// (network + Google API TTFT + Python SDK overhead for a lite call)
+// which exceeded the ~1-3s saved by using a targeted single-module
+// prompt over the full 3-module prompt. Net was a latency LOSS, plus
+// silent edit drops when classify timed out. The architecture cache
+// now gives full `perform_ai_diff_patch` all the routing info it needs
+// via the "Where User Code Goes" section, so the AI routes internally
+// from a single call.
 
 /// Ask the AI to fix a compilation error in a module.
 ///
@@ -912,28 +879,10 @@ pub async fn perform_ai_heal(
     Ok(content.to_string())
 }
 
-/// Classify which module a code diff belongs to using AI.
-/// Returns "core", "gui", "shared", or "unknown".
-pub async fn perform_ai_classify_edit(diff: &str, lang: &str) -> Result<String> {
-    let client = reqwest::Client::new();
-    let backend_url = get_ai_backend_url();
-    let url = format!("{}/classify/edit", backend_url);
-
-    let payload = serde_json::json!({ "diff": diff, "lang": lang });
-
-    // 30s allows for the occasional cold-start latency spike on Gemini lite.
-    // Typical classify should return in <2s with gemini-3.1-flash-lite-preview.
-    let res = client
-        .post(&url)
-        .json(&payload)
-        .timeout(std::time::Duration::from_secs(30))
-        .send()
-        .await?
-        .json::<serde_json::Value>()
-        .await?;
-
-    Ok(res.get("target")
-        .and_then(|v| v.as_str())
-        .unwrap_or("unknown")
-        .to_string())
-}
+// NOTE: perform_ai_classify_edit + the /classify/edit Python endpoint
+// were removed. Classify was costing ~4s per edit (network + Google
+// API TTFT + Python SDK overhead for a lite call) — more time than
+// it saved by letting us use a targeted single-module prompt. The
+// architecture cache now handles routing inside the full diff_patch
+// prompt via its "Where User Code Goes" section, so the AI routes
+// internally from a single call per edit. See handler.rs Tier 2 flow.
