@@ -92,6 +92,25 @@ pub async fn compile_core(
 
                     // ── AI Heal Loop: let the AI fix its own compile errors ──
                     let shared_for_heal = tokio::fs::read_to_string(dir_path.join("shared.h")).await.unwrap_or_default();
+                    // Read the cached split architecture from the sidecar so the
+                    // heal prompt has the same project-specific "Forbidden Patterns"
+                    // context that diff_patch uses. Empty string falls back to
+                    // the generic heal prompt.
+                    let heal_arch_md: String = {
+                        let sidecar = dir_path.join(".synthi_split_meta.json");
+                        match tokio::fs::read_to_string(&sidecar).await {
+                            Ok(raw) => serde_json::from_str::<serde_json::Value>(&raw)
+                                .ok()
+                                .and_then(|v| v.get("architecture").and_then(|a| a.as_str()).map(|s| s.to_string()))
+                                .unwrap_or_default(),
+                            Err(_) => String::new(),
+                        }
+                    };
+                    let heal_arch_hint: Option<&str> = if heal_arch_md.is_empty() {
+                        None
+                    } else {
+                        Some(heal_arch_md.as_str())
+                    };
                     let mut heal_content = content.to_string();
                     let mut heal_stderr = stderr_str.clone();
                     let mut healed = false;
@@ -99,7 +118,7 @@ pub async fn compile_core(
                     for attempt in 0..2 {
                         eprintln!("[CompileCore] AI heal attempt {} for core", attempt + 1);
                         match crate::compiler::stages::ai_utils::perform_ai_heal(
-                            "core", &heal_content, &heal_stderr, &shared_for_heal,
+                            "core", &heal_content, &heal_stderr, &shared_for_heal, heal_arch_hint,
                         ).await {
                             Ok(fixed) => {
                                 tokio::fs::write(dir_path.join(fname), &fixed).await?;

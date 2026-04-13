@@ -2027,8 +2027,14 @@ class HealRequest(BaseModel):
     """Request for AI-powered compilation error healing."""
     module_name: str          # "core", "gui", or "shared"
     module_content: str       # the broken code
-    error_messages: str       # g++ stderr / JSON diagnostics
-    shared_content: str = ""  # context: shared.h
+    error_messages: str       # compiler stderr / JSON diagnostics
+    shared_content: str = ""  # context: shared header
+    # Cached split architecture doc (markdown). Injected into the heal
+    # prompt so project-specific "don'ts" (e.g. forbidden patterns)
+    # come from the arch cache instead of hardcoded language-specific
+    # rules in the prompt itself. Empty string → generic prompt.
+    architecture: Optional[str] = None
+    language: str = "cpp"     # defaults to cpp for back-compat
 
 
 @app.post("/refactor/heal")
@@ -2037,8 +2043,10 @@ async def refactor_heal(req: HealRequest):
     Fix a compilation error in AI-generated module code.
 
     The AI split produced code that doesn't compile. Instead of regex
-    guardrails, we send the g++ error + the broken code to the AI and
-    let it fix the specific error. Fast (~1-2s) because context is tiny.
+    guardrails, we send the compiler error + the broken code to the
+    AI and let it fix the specific error. Fast (~1-2s) because context
+    is tiny. Project-specific restrictions come from the cached split
+    architecture doc, not hardcoded prompt rules.
     """
     start_time = time.time()
 
@@ -2049,7 +2057,11 @@ async def refactor_heal(req: HealRequest):
         code=req.module_content,
         errors=req.error_messages,
         shared=req.shared_content,
+        architecture=req.architecture or "",
+        language=req.language or "cpp",
     )
+    if req.architecture and req.architecture.strip():
+        print(f"[Heal] architecture hint ({len(req.architecture)} chars) injected into prompt")
 
     try:
         ai_response = await provider.ask_llm(

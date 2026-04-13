@@ -339,23 +339,33 @@ pub async fn perform_ai_diff_patch(
 
 /// Ask the AI to fix a compilation error in a module.
 ///
-/// Sends the broken code + g++ error messages to `/refactor/heal`.
-/// The AI returns the complete fixed file (~1-2s).
+/// Sends the broken code + compiler error messages + the cached split
+/// architecture doc to `/refactor/heal`. The AI returns the complete
+/// fixed file (~1-2s).
+///
+/// `architecture` is the cached split-architecture markdown doc (may
+/// be `None` or `Some("")` for pre-migration sidecars). When provided,
+/// the Python endpoint injects it into the heal prompt so that
+/// project-specific "don'ts" (e.g. forbidden patterns, runner-owned
+/// APIs) come from the arch cache instead of hardcoded SDL-specific
+/// rules that only worked for one codebase.
 pub async fn perform_ai_heal(
     module_name: &str,
     module_content: &str,
     error_messages: &str,
     shared_content: &str,
+    architecture: Option<&str>,
 ) -> Result<String> {
     let client = reqwest::Client::new();
     let backend_url = get_ai_backend_url();
     let url = format!("{}/refactor/heal", backend_url);
 
     eprintln!(
-        "[AI Heal] {} module, {} bytes code, {} bytes errors",
+        "[AI Heal] {} module, {} bytes code, {} bytes errors, arch={} chars",
         module_name,
         module_content.len(),
-        error_messages.len()
+        error_messages.len(),
+        architecture.map(|s| s.len()).unwrap_or(0)
     );
 
     let payload = serde_json::json!({
@@ -363,6 +373,7 @@ pub async fn perform_ai_heal(
         "module_content": module_content,
         "error_messages": error_messages,
         "shared_content": shared_content,
+        "architecture": architecture.unwrap_or(""),
     });
 
     let res = client
