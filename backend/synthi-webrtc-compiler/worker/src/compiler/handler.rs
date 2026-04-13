@@ -147,9 +147,23 @@ pub async fn handle_compile_request(
         Some(source_hash_str.clone()),
     );
 
-    debug_log!(
-        "[HMR] Compile loop: {:?} (reason: {:?}), language: {}",
-        compile_loop, classification.reason, language
+    // Unconditional log of the classify decision + its inputs. This exists
+    // because we've had cases where an HMR edit unexpectedly took the
+    // `AiBypassResult::Proceed` branch (full AI split) instead of
+    // `FallbackDeterministic` (Tier 2 diff_patch). Without seeing the
+    // classifier's inputs live, we're guessing at why. The line is noisy
+    // but fires once per compile request, which is fine.
+    eprintln!(
+        "[HMR] classify_loop → {:?} (reason={:?}) inputs: is_adapted={} split_hash={:?} src_hash={} consec_fail={} user_ai={} user_det={} lang={}",
+        compile_loop,
+        classification.reason,
+        adapted_status.is_adapted,
+        adapted_status.split_hash,
+        source_hash_str,
+        consecutive_failures,
+        req.user_requested_ai,
+        req.user_requested_deterministic,
+        language
     );
 
     // ── AI bypass gate ──

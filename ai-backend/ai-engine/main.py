@@ -41,11 +41,9 @@ from analyzer import supported_languages
 from llm.providers import get_provider
 from llm.prompts import SPLIT_GUI_PROMPT
 from llm.structural_prompts import (
-    format_delta_addition_prompt,
     format_delta_deletion_prompt,
     format_diff_patch_prompt,
     format_heal_prompt,
-    inject_delta_into_code,
     apply_deletion_delta,
 )
 
@@ -1645,70 +1643,35 @@ class StructuralUpdateRequest(BaseModel):
 @app.post("/refactor/delta")
 async def refactor_delta(req: StructuralUpdateRequest):
     """
-    Delta-based code translation endpoint for fast HMR.
-    
-    Instead of regenerating all code:
-    1. Keeps existing working code (with guardrails applied)
-    2. Takes the X11 delta the user wrote
-    3. Asks AI to TRANSLATE that X11 code to SDL2
-    4. Injects the translated SDL2 code into the existing modules
-    
-    Uses Gemini by default for fast ~2-3s response vs ~18s for full split.
+    Delta-based code deletion endpoint for fast HMR.
+
+    NOTE: The `update_type == "addition"` branch was removed. It used the
+    `DELTA_ADDITION_PROMPT` that literally instructed the model to
+    "Translate this X11 code snippet to SDL2" and then performed
+    string-match injection with hardcoded markers
+    (`} AppState;`, `app_state.running = 1;`, `SDL_RenderPresent`,
+    `SDL_MOUSEBUTTONDOWN`). It was SDL-specific and silently dropped
+    half its injections. Additions now flow through the language-agnostic
+    architecture-cache-aware diff_patch pipeline in `/refactor/diff_patch`.
     """
     start_time = time.time()
-    
+
     # Always use Gemini for delta operations (fast and efficient)
     provider = get_provider(provider_name='gemini', use_custom=bool(req.api_key))
-    
+
     try:
         if req.update_type == "addition":
-            print(f"[Delta] Translating X11 code to SDL2:\n{req.changes_description[:200]}...")
-            
-            # Generate the translation prompt - AI translates X11 -> SDL2
-            prompt = format_delta_addition_prompt(
-                req.changes_description,
-                req.core_content,
-                req.gui_content,
-                req.shared_content
-            )
-            
-            # Call AI to translate X11 to SDL2
-            ai_response = await provider.ask_llm(
-                prompt,
-                "cpp",
-                None,
-                mode="delta",
-                model=req.model or "gemini-3.1-flash-lite-preview",
-                api_key=req.api_key,
+            raise HTTPException(
+                status_code=410,
+                detail=(
+                    "update_type='addition' was removed. The SDL-hardcoded "
+                    "X11→SDL2 translation path is gone. Use /refactor/diff_patch "
+                    "(with the cached architecture from /refactor/split/verified) "
+                    "for language-agnostic edit routing."
+                ),
             )
 
-            print(f"[Delta] SDL2 translation:\n{ai_response}")
-            
-            # Parse the delta JSON from AI response
-            delta = _parse_delta_json(ai_response)
-            
-            # If we have a cached result, inject the delta into it
-            if req.cached_result:
-                updated_result = inject_delta_into_code(req.cached_result, delta)
-                elapsed = time.time() - start_time
-                print(f"[Delta Addition] completed in {elapsed:.2f}s")
-                
-                return {
-                    "result": updated_result,
-                    "delta": delta,
-                    "update_type": "addition",
-                    "elapsed_seconds": elapsed
-                }
-            else:
-                # Return just the delta if no cached result to inject into
-                elapsed = time.time() - start_time
-                return {
-                    "delta": delta,
-                    "update_type": "addition", 
-                    "elapsed_seconds": elapsed
-                }
-                
-        elif req.update_type == "deletion":
+        if req.update_type == "deletion":
             # Generate deletion prompt
             prompt = format_delta_deletion_prompt(req.changes_description)
             

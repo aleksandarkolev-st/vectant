@@ -438,89 +438,13 @@ async fn perform_delta_deletion(
     ))
 }
 
-fn detect_structural_additions(old_source: &str, new_source: &str) -> Option<String> {
-    let old_lines: Vec<&str> = old_source.lines().collect();
-    let new_lines: Vec<&str> = new_source.lines().collect();
-    let mut additions = Vec::new();
-    for new_line in &new_lines {
-        let trimmed = new_line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        if !old_lines.iter().any(|old_line| old_line.trim() == trimmed) {
-            additions.push(trimmed.to_string());
-        }
-    }
-    if additions.is_empty() {
-        return None;
-    }
-    Some(additions.join("\n"))
-}
-
-async fn perform_structural_ai_update(
-    cached_result: &serde_json::Value,
-    _original_source: &str,
-    _new_source: &str,
-    structural_changes: &str,
-    _language: &str,
-) -> Result<serde_json::Value> {
-    let core_content = cached_result
-        .get("core")
-        .and_then(|c| c.get("content"))
-        .and_then(|c| c.as_str())
-        .unwrap_or("");
-    let gui_content = cached_result
-        .get("gui")
-        .and_then(|g| g.get("content"))
-        .and_then(|c| c.as_str())
-        .unwrap_or("");
-    let shared_content = cached_result
-        .get("shared")
-        .and_then(|s| s.get("content"))
-        .and_then(|c| c.as_str())
-        .unwrap_or("");
-
-    let client = reqwest::Client::new();
-    let payload = serde_json::json!({
-        "update_type": "addition",
-        "changes_description": structural_changes,
-        "core_content": core_content,
-        "gui_content": gui_content,
-        "shared_content": shared_content,
-        "cached_result": cached_result
-    });
-    let backend_url = get_ai_backend_url();
-    let url = format!("{}/refactor/delta", backend_url);
-    let res = client
-        .post(&url)
-        .json(&payload)
-        .timeout(std::time::Duration::from_secs(30))
-        .send()
-        .await?
-        .json::<serde_json::Value>()
-        .await?;
-
-    if let Some(result) = res.get("result") {
-        return Ok(result.clone());
-    }
-    let result_str = res["result"]
-        .as_str()
-        .ok_or(anyhow::anyhow!("No result from AI delta endpoint"))?;
-    let clean_json = result_str
-        .trim()
-        .trim_start_matches("```json")
-        .trim_start_matches("```")
-        .trim_end_matches("```")
-        .trim();
-    // Try to find just the JSON object
-    let json_only = if let Some(start) = clean_json.find('{') {
-        &clean_json[start..] // Simple slice, real logic needs matching braces
-    } else {
-        clean_json
-    };
-    let updated_data: serde_json::Value = serde_json::from_str(json_only)?;
-    Ok(updated_data)
-}
+// NOTE: `detect_structural_additions` and `perform_structural_ai_update`
+// were removed together with the `Level 2.75` shortcut in `perform_ai_split`.
+// They implemented the SDL-hardcoded "X11→SDL2 translation" delta path
+// that silently failed on half its string-match injection points. The
+// architecture-cache-aware Tier 2 diff_patch pipeline in handler.rs
+// (FallbackDeterministic → classify → targeted diff_patch with cached
+// architecture hint) now handles the same case language-agnostically.
 
 pub async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value> {
     // Level 1: Full source hash -> instant cache hit
@@ -528,27 +452,41 @@ pub async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value>
     let structural_sig = extract_structural_signature(&req.source);
     let structural_hash = calculate_hash(&structural_sig);
 
+    eprintln!(
+        "[AI Split] ENTER (src_hash={}, struct_hash={}, src_len={})",
+        source_hash,
+        structural_hash,
+        req.source.len()
+    );
+
     {
         let cache = get_ai_split_cache().lock().await;
         if let Some(cached) = cache.get(&source_hash) {
-            eprintln!("[AI Split] Cache HIT (exact match)");
+            eprintln!("[AI Split] Level 1 HIT (exact source_hash match)");
             return Ok(cached.result.clone());
         }
+        eprintln!("[AI Split] Level 1 MISS (cache entries: {})", cache.len());
     }
 
     // Level 2: Structural match
     let structural_cache_result = {
         let structural_cache = get_ai_split_structural_cache().lock().await;
+        eprintln!(
+            "[AI Split] Level 2 lookup (structural_cache entries: {})",
+            structural_cache.len()
+        );
         structural_cache.get(&structural_hash).cloned()
     };
 
     if let Some(cached) = structural_cache_result {
+        eprintln!("[AI Split] Level 2 candidate found (structural match)");
         let old_strings = extract_string_literals(&cached.original_source);
         let new_strings = extract_string_literals(&req.source);
 
         if has_semantic_string_changes(&old_strings, &new_strings) {
             let changes = collect_string_changes(&old_strings, &new_strings);
             if !changes.is_empty() {
+                eprintln!("[AI Split] Level 2 semantic string changes ({} changes) → incremental AI update", changes.len());
                 if let Ok(updated) =
                     perform_incremental_ai_update(&cached.result, &changes, &req.language).await
                 {
@@ -564,15 +502,18 @@ pub async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value>
                         .lock()
                         .await
                         .insert(structural_hash, cached_entry);
+                    eprintln!("[AI Split] Level 2 incremental update SUCCESS (returning)");
                     return Ok(updated);
                 }
+                eprintln!("[AI Split] Level 2 incremental update FAILED (falling through)");
             }
         } else {
             let (patched_result, did_patch) =
                 patch_strings_in_cached_result(&cached.result, &old_strings, &new_strings);
             if old_strings != new_strings && !did_patch {
-                // Fallback to AI
+                eprintln!("[AI Split] Level 2 string-patch FAILED (falling through to AI)");
             } else {
+                eprintln!("[AI Split] Level 2 string-patch SUCCESS (did_patch={}, returning)", did_patch);
                 get_ai_split_cache().lock().await.insert(
                     source_hash,
                     CachedSplit {
@@ -583,6 +524,8 @@ pub async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value>
                 return Ok(patched_result);
             }
         }
+    } else {
+        eprintln!("[AI Split] Level 2 MISS (no structural match)");
     }
 
     // Level 2.6: Local deletion
@@ -593,8 +536,10 @@ pub async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value>
         .next()
         .cloned();
     if let Some(cached) = any_cached {
+        eprintln!("[AI Split] Level 2.6 checking deletions (first cached entry used as baseline)");
         let deletions = detect_structural_deletions(&cached.original_source, &req.source);
         if !deletions.is_empty() {
+            eprintln!("[AI Split] Level 2.6 {} deletion(s) detected", deletions.len());
             if let Some(patched) = try_local_deletion_patch(&cached.result, &deletions) {
                 let cached_entry = CachedSplit {
                     result: patched.clone(),
@@ -608,31 +553,32 @@ pub async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value>
                     .lock()
                     .await
                     .insert(structural_hash, cached_entry);
+                eprintln!("[AI Split] Level 2.6 local deletion patch SUCCESS (returning)");
                 return Ok(patched);
             }
+            eprintln!("[AI Split] Level 2.6 local patch failed → calling /refactor/delta deletion");
             if let Ok(updated) =
                 perform_delta_deletion(&cached.result, deletions.join("\n").as_str()).await
             {
+                eprintln!("[AI Split] Level 2.6 AI deletion SUCCESS (returning)");
                 return Ok(updated);
             }
+            eprintln!("[AI Split] Level 2.6 AI deletion FAILED (falling through to Level 3)");
+        } else {
+            eprintln!("[AI Split] Level 2.6 no deletions detected");
         }
 
-        // Level 2.75: Structural addition
-        if let Some(structural_changes) =
-            detect_structural_additions(&cached.original_source, &req.source)
-        {
-            if let Ok(updated) = perform_structural_ai_update(
-                &cached.result,
-                &cached.original_source,
-                &req.source,
-                &structural_changes,
-                &req.language,
-            )
-            .await
-            {
-                return Ok(updated);
-            }
-        }
+        // NOTE: Level 2.75 "structural addition" path was removed.
+        // It called /refactor/delta with a prompt literally named
+        // "Translate this X11 code snippet to SDL2" and used string-match
+        // injection points (`} AppState;`, `app_state.running = 1;`,
+        // `SDL_RenderPresent`, `SDL_MOUSEBUTTONDOWN`) that silently failed
+        // on half the injection targets. It was SDL-hardcoded and
+        // made obsolete by the architecture-cache-aware Tier 2 diff_patch
+        // pipeline in handler.rs. Additions now flow through Tier 2
+        // (FallbackDeterministic → classify → targeted diff_patch) or,
+        // if the classifier decides a full re-split is needed, through
+        // Level 3 below.
     }
 
     // Level 3: Full AI Split
@@ -640,6 +586,7 @@ pub async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value>
     // It expects a VerifiedAiRequest: { code, lang, mode?, verify?, auto_repair?, ... }
     // and returns { result: "<raw LLM JSON string>", lang, verified, ... }.
     // The LLM JSON inside "result" is: { core: {filename, content}, gui: {...}, shared: {...} }
+    eprintln!("[AI Split] Level 3 → full AI split via /refactor/split/verified");
     let client = reqwest::Client::new();
     let payload = serde_json::json!({
         "code": req.source,
