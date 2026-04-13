@@ -477,9 +477,25 @@ pub async fn handle_compile_request(
                             // On any miss / apply failure, fall through
                             // transparently to the normal live AI call.
                             let spec_hash = crate::hmr::speculative_diff_patch::hash_source(&req.source);
+                            // Wait up to 15s for any in-flight speculation
+                            // for this source hash. This de-duplicates the
+                            // Ctrl+S race: the frontend sends the file-sync
+                            // write and the compile request back-to-back,
+                            // so the speculative task is usually still in
+                            // its 300ms debounce when compile arrives. Without
+                            // the wait, handler.rs would fire its own live
+                            // AI call in parallel — two calls for the same
+                            // edit, no benefit. Waiting collapses them to one.
+                            // On miss / timeout, take_matching_or_wait
+                            // returns None and we fall through to the live
+                            // AI call below with no extra latency.
                             let speculative_applied: Option<(String, String, String)> = {
                                 if let Some(cached_edits) =
-                                    crate::hmr::speculative_diff_patch::take_matching(spec_hash).await
+                                    crate::hmr::speculative_diff_patch::take_matching_or_wait(
+                                        spec_hash,
+                                        std::time::Duration::from_secs(15),
+                                    )
+                                    .await
                                 {
                                     match apply_edit_list(
                                         &cached_edits,

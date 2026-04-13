@@ -59,9 +59,9 @@ use crate::hmr::edit_applier::Edit;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Notify};
 
 /// A cached speculative diff_patch result.
 #[derive(Debug, Clone)]
@@ -80,6 +80,17 @@ struct SpeculativeState {
     /// The most recent completed speculation result (if any). Consumed
     /// by `take_matching` on compile.
     latest_result: Option<SpeculativeResult>,
+    /// The source hash currently being speculated on. Set by a spawned
+    /// task as soon as it passes the generation check (AFTER the
+    /// debounce), cleared when the task completes or errors. This is
+    /// how `take_matching_or_wait` knows whether to wait for an
+    /// in-flight speculation vs fall through to a live AI call.
+    in_flight_hash: Option<u64>,
+    /// Woken (via `notify_one`) whenever an in-flight speculation
+    /// completes — whether it stored a result, errored, or was
+    /// superseded. Handlers waiting on speculation for their source
+    /// hash block on this notification.
+    completion: Arc<Notify>,
 }
 
 static STATE: OnceLock<Mutex<SpeculativeState>> = OnceLock::new();
@@ -89,6 +100,8 @@ fn get_state() -> &'static Mutex<SpeculativeState> {
         Mutex::new(SpeculativeState {
             generation: 0,
             latest_result: None,
+            in_flight_hash: None,
+            completion: Arc::new(Notify::new()),
         })
     })
 }
@@ -149,130 +162,154 @@ pub fn trigger_speculative(workspace_path: PathBuf, new_source: String) {
             }
         }
 
-        // Read sidecar for baseline + architecture.
-        let sidecar_path = workspace_path.join(".synthi_split_meta.json");
-        let (old_source, arch_md) = match tokio::fs::read_to_string(&sidecar_path).await {
-            Ok(raw) => match serde_json::from_str::<serde_json::Value>(&raw) {
-                Ok(meta) => {
-                    let old = meta
-                        .get("original_source")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string();
-                    let arch = meta
-                        .get("architecture")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string();
-                    (old, arch)
+        // Mark in-flight so `take_matching_or_wait` knows a speculation
+        // for this hash is imminent and can block on it instead of
+        // running a duplicate live AI call from the compile handler.
+        {
+            let mut s = get_state().lock().await;
+            s.in_flight_hash = Some(source_hash);
+        }
+
+        // Run the speculation body. Any early-return sets `stored`
+        // to false and falls through to the cleanup at the end of
+        // the task, which clears `in_flight_hash` and wakes any
+        // waiter blocked in `take_matching_or_wait`. Using explicit
+        // end-of-task cleanup (instead of a Drop guard) avoids
+        // the runtime/panic pitfalls of spawning from Drop.
+        let mut _stored = false;
+
+        'speculation: {
+            // Read sidecar for baseline + architecture.
+            let sidecar_path = workspace_path.join(".synthi_split_meta.json");
+            let (old_source, arch_md) = match tokio::fs::read_to_string(&sidecar_path).await {
+                Ok(raw) => match serde_json::from_str::<serde_json::Value>(&raw) {
+                    Ok(meta) => {
+                        let old = meta
+                            .get("original_source")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let arch = meta
+                            .get("architecture")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        (old, arch)
+                    }
+                    Err(e) => {
+                        eprintln!("[Spec] sidecar parse failed: {}", e);
+                        break 'speculation;
+                    }
+                },
+                Err(_) => {
+                    // No sidecar yet — first compile of the session
+                    // hasn't run. Nothing to speculate against.
+                    break 'speculation;
+                }
+            };
+
+            if old_source.is_empty() {
+                break 'speculation;
+            }
+            if old_source == new_source {
+                // No actual change, nothing to speculate.
+                break 'speculation;
+            }
+
+            // Read current split module contents from disk.
+            let core_content = tokio::fs::read_to_string(workspace_path.join("core.cpp"))
+                .await
+                .unwrap_or_default();
+            let gui_content = tokio::fs::read_to_string(workspace_path.join("gui.cpp"))
+                .await
+                .unwrap_or_default();
+            let shared_content = tokio::fs::read_to_string(workspace_path.join("shared.h"))
+                .await
+                .unwrap_or_default();
+            if core_content.is_empty() && gui_content.is_empty() && shared_content.is_empty() {
+                // No split files yet — first compile hasn't produced them.
+                break 'speculation;
+            }
+
+            // Compute a simple diff between baseline and new source.
+            let diff = crate::compiler::handler::build_simple_diff(&old_source, &new_source);
+            if diff.is_empty() {
+                break 'speculation;
+            }
+
+            eprintln!(
+                "[Spec] triggered: source_hash={}, diff={} bytes, arch={} chars (gen={})",
+                source_hash,
+                diff.len(),
+                arch_md.len(),
+                my_gen
+            );
+
+            // Run perform_ai_diff_patch with the arch hint.
+            let arch_hint: Option<&str> = if arch_md.is_empty() {
+                None
+            } else {
+                Some(arch_md.as_str())
+            };
+            let start = Instant::now();
+            let ai_result = crate::compiler::stages::ai_utils::perform_ai_diff_patch(
+                &diff,
+                &core_content,
+                &gui_content,
+                &shared_content,
+                arch_hint,
+            )
+            .await;
+
+            match ai_result {
+                Ok(edits) => {
+                    let elapsed = start.elapsed();
+                    let num_edits = edits.len();
+                    let mut s = get_state().lock().await;
+                    if s.generation != my_gen {
+                        // Superseded while waiting for AI. Discard result.
+                        eprintln!(
+                            "[Spec] superseded during AI call, discarding {} edit(s) (gen={}, current={}, took {:?})",
+                            num_edits, my_gen, s.generation, elapsed
+                        );
+                        break 'speculation;
+                    }
+                    eprintln!(
+                        "[Spec] READY source_hash={} {} edit(s) cached in {:?}",
+                        source_hash, num_edits, elapsed
+                    );
+                    s.latest_result = Some(SpeculativeResult {
+                        source_hash,
+                        edits,
+                        created_at: Instant::now(),
+                    });
+                    _stored = true;
                 }
                 Err(e) => {
-                    eprintln!("[Spec] sidecar parse failed: {}", e);
-                    return;
+                    eprintln!("[Spec] AI diff_patch failed (gen={}): {}", my_gen, e);
                 }
-            },
-            Err(_) => {
-                // No sidecar yet — first compile of the session hasn't run.
-                // Nothing to speculate against.
-                return;
             }
-        };
+        } // end 'speculation
 
-        if old_source.is_empty() {
-            return;
-        }
-        if old_source == new_source {
-            // No actual change, nothing to speculate.
-            return;
-        }
-
-        // Read current split module contents from disk.
-        let core_content = tokio::fs::read_to_string(workspace_path.join("core.cpp"))
-            .await
-            .unwrap_or_default();
-        let gui_content = tokio::fs::read_to_string(workspace_path.join("gui.cpp"))
-            .await
-            .unwrap_or_default();
-        let shared_content = tokio::fs::read_to_string(workspace_path.join("shared.h"))
-            .await
-            .unwrap_or_default();
-        if core_content.is_empty() && gui_content.is_empty() && shared_content.is_empty() {
-            // No split files yet — first compile hasn't produced them.
-            return;
-        }
-
-        // Compute a simple diff between baseline and new source.
-        let diff = crate::compiler::handler::build_simple_diff(&old_source, &new_source);
-        if diff.is_empty() {
-            return;
-        }
-
-        eprintln!(
-            "[Spec] triggered: source_hash={}, diff={} bytes, arch={} chars (gen={})",
-            source_hash,
-            diff.len(),
-            arch_md.len(),
-            my_gen
-        );
-
-        // Run perform_ai_diff_patch with the arch hint.
-        let arch_hint: Option<&str> = if arch_md.is_empty() {
-            None
-        } else {
-            Some(arch_md.as_str())
-        };
-        let start = Instant::now();
-        let ai_result = crate::compiler::stages::ai_utils::perform_ai_diff_patch(
-            &diff,
-            &core_content,
-            &gui_content,
-            &shared_content,
-            arch_hint,
-        )
-        .await;
-
-        match ai_result {
-            Ok(edits) => {
-                let elapsed = start.elapsed();
-                let num_edits = edits.len();
-                let mut s = get_state().lock().await;
-                if s.generation != my_gen {
-                    // Superseded while waiting for AI. Discard result.
-                    eprintln!(
-                        "[Spec] superseded during AI call, discarding {} edit(s) (gen={}, current={}, took {:?})",
-                        num_edits, my_gen, s.generation, elapsed
-                    );
-                    return;
-                }
-                eprintln!(
-                    "[Spec] READY source_hash={} {} edit(s) cached in {:?}",
-                    source_hash, num_edits, elapsed
-                );
-                s.latest_result = Some(SpeculativeResult {
-                    source_hash,
-                    edits,
-                    created_at: Instant::now(),
-                });
+        // Cleanup: always runs after the speculation block exits,
+        // regardless of whether we stored a result, errored, or took
+        // an early break. Clears `in_flight_hash` (if it's still our
+        // hash — i.e. we weren't already superseded) and wakes any
+        // compile handler blocked in `take_matching_or_wait`.
+        {
+            let mut s = get_state().lock().await;
+            if s.in_flight_hash == Some(source_hash) {
+                s.in_flight_hash = None;
             }
-            Err(e) => {
-                eprintln!(
-                    "[Spec] AI diff_patch failed (gen={}): {}",
-                    my_gen, e
-                );
-            }
+            s.completion.notify_one();
         }
     });
 }
 
-/// Called from handler.rs Tier 2. Atomically checks if the cache has
-/// a fresh result for the given source hash. If yes, consumes it and
-/// returns the edits; otherwise returns None.
-///
-/// Consuming (setting latest_result = None) prevents a stale cache
-/// entry from being used a second time if the user compiles the same
-/// source twice — the second compile should hit the full Tier 2 AI
-/// path so its result is based on fresh split module contents.
-pub async fn take_matching(source_hash: u64) -> Option<Vec<Edit>> {
+/// Fast-path cache lookup used by `take_matching_or_wait` and
+/// any caller that wants to peek without blocking. Consumes the
+/// entry if it matches so the next caller sees a miss.
+async fn try_take_matching(source_hash: u64) -> Option<Vec<Edit>> {
     let mut s = get_state().lock().await;
     if let Some(r) = &s.latest_result {
         if r.source_hash == source_hash && r.created_at.elapsed() < CACHE_MAX_AGE {
@@ -288,6 +325,84 @@ pub async fn take_matching(source_hash: u64) -> Option<Vec<Edit>> {
         }
     }
     None
+}
+
+/// Called from handler.rs Tier 2. Atomically checks if the cache has
+/// a fresh result for the given source hash OR if a speculation for
+/// the same hash is currently in flight. If in-flight, waits up to
+/// `timeout` for it to complete, then re-checks the cache. Returns
+/// the edits on success, None on miss/timeout — the caller falls
+/// through to the live AI call.
+///
+/// This exists to solve the Ctrl+S race: the frontend sends a
+/// file-sync write and a compile request back-to-back on save, so
+/// the speculative task is still in its 300ms debounce when the
+/// compile handler arrives. Without waiting, the handler would fire
+/// its own duplicate live AI call. Waiting de-dups to a single AI
+/// call per save.
+pub async fn take_matching_or_wait(source_hash: u64, timeout: Duration) -> Option<Vec<Edit>> {
+    // Fast path: a result is already cached.
+    if let Some(edits) = try_take_matching(source_hash).await {
+        return Some(edits);
+    }
+
+    // Check if there's an in-flight speculation for this exact hash.
+    // If not, return None immediately — the compile handler will run
+    // a fresh live AI call with no extra latency.
+    //
+    // We grab the `completion` Notify handle BEFORE releasing the
+    // lock so that if the speculation completes between the in-flight
+    // check and our wait, we still see it via the Notify permit.
+    // tokio::sync::Notify::notify_one stores one permit if no waiter
+    // is registered, so the race is safe.
+    let (in_flight_match, notify) = {
+        let s = get_state().lock().await;
+        (s.in_flight_hash == Some(source_hash), s.completion.clone())
+    };
+    if !in_flight_match {
+        return None;
+    }
+
+    eprintln!(
+        "[Spec] WAIT source_hash={} (speculation in flight, blocking up to {:?})",
+        source_hash, timeout
+    );
+    let wait_start = Instant::now();
+
+    // Wait for completion notification, with timeout.
+    let notified = notify.notified();
+    tokio::pin!(notified);
+    let done = tokio::time::timeout(timeout, &mut notified).await;
+
+    match done {
+        Ok(()) => {
+            // Speculation woke us. Re-check the cache.
+            if let Some(edits) = try_take_matching(source_hash).await {
+                eprintln!(
+                    "[Spec] WAIT complete after {:?}, cache hit",
+                    wait_start.elapsed()
+                );
+                Some(edits)
+            } else {
+                // Woken but no matching result. Could be because the
+                // speculation errored, was superseded, or the result
+                // was for a different hash. Fall through.
+                eprintln!(
+                    "[Spec] WAIT complete after {:?}, cache still empty — falling through",
+                    wait_start.elapsed()
+                );
+                None
+            }
+        }
+        Err(_) => {
+            // Timed out waiting for speculation. Fall through to live.
+            eprintln!(
+                "[Spec] WAIT timeout after {:?} — falling through to live AI call",
+                wait_start.elapsed()
+            );
+            None
+        }
+    }
 }
 
 /// Compute the source hash used as the cache key. Must match what
