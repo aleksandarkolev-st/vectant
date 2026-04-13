@@ -784,7 +784,11 @@ pub async fn perform_ai_diff_patch(
     let res = client
         .post(&url)
         .json(&payload)
-        .timeout(std::time::Duration::from_secs(15))
+        // 90s — full diff_patch uses gemini-3.1-pro-preview and sends all
+        // three modules in the prompt (5-15KB). Worst-case latency on big
+        // projects with long arch docs is ~20-30s; 90s gives generous
+        // headroom without blocking the compile thread forever.
+        .timeout(std::time::Duration::from_secs(90))
         .send()
         .await?
         .json::<serde_json::Value>()
@@ -832,7 +836,12 @@ pub async fn perform_targeted_delta_patch(
     let res = client
         .post(&url)
         .json(&payload)
-        .timeout(std::time::Duration::from_secs(10))
+        // 60s — targeted diff_patch uses gemini-3.1-pro-preview with a
+        // single module + the arch doc injected (prompt_len ~5-8KB).
+        // Typical completion is 4-8s; the old 10s deadline silently timed
+        // out on every edit and dropped the patch. 60s is generous
+        // headroom for the pro model's worst-case latency.
+        .timeout(std::time::Duration::from_secs(60))
         .send()
         .await?
         .json::<serde_json::Value>()
@@ -882,7 +891,10 @@ pub async fn perform_ai_heal(
     let res = client
         .post(&url)
         .json(&payload)
-        .timeout(std::time::Duration::from_secs(15))
+        // 60s — heal sends the broken module + g++ errors back to the AI
+        // for repair. Uses pro model by default (was previously lite but
+        // promoted for quality). Typical 3-6s; 60s is generous headroom.
+        .timeout(std::time::Duration::from_secs(60))
         .send()
         .await?
         .json::<serde_json::Value>()
