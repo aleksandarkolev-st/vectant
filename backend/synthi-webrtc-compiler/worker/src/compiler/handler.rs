@@ -62,6 +62,55 @@ async fn write_sidecar_logged(
     }
 }
 
+/// Apply a list of AI-produced edits to the current core/gui/shared
+/// module contents. Returns the patched contents, or propagates the
+/// first error encountered (caller falls through to Tier 3 full re-split).
+///
+/// Each `Edit` carries its own `module` field; this dispatcher just
+/// routes it to the matching string and calls `edit_applier::apply_edit`.
+/// Edits are applied in order; if edit N fails, edits 0..N-1 are
+/// already applied in the local copies but since we return `Err`, the
+/// caller discards them and falls through to Tier 3 — no partial state
+/// ever makes it to disk.
+fn apply_edit_list(
+    edits: &[crate::hmr::edit_applier::Edit],
+    core: &str,
+    gui: &str,
+    shared: &str,
+) -> anyhow::Result<(String, String, String)> {
+    use crate::hmr::edit_applier::apply_edit;
+    let mut c = core.to_string();
+    let mut g = gui.to_string();
+    let mut s = shared.to_string();
+
+    for (i, edit) in edits.iter().enumerate() {
+        let updated = match edit.module.as_str() {
+            "core" => apply_edit(&c, edit)?,
+            "gui" => apply_edit(&g, edit)?,
+            "shared" => apply_edit(&s, edit)?,
+            other => {
+                anyhow::bail!("edit #{} targets unknown module {:?}", i, other);
+            }
+        };
+        match edit.module.as_str() {
+            "core" => c = updated,
+            "gui" => g = updated,
+            "shared" => s = updated,
+            _ => unreachable!(),
+        }
+        eprintln!(
+            "[HMR] Tier 2: applied edit #{} {:?} to {} (anchor {} chars, content {} chars)",
+            i,
+            edit.operation,
+            edit.module,
+            edit.anchor.len(),
+            edit.content.len()
+        );
+    }
+
+    Ok((c, g, s))
+}
+
 use crate::hmr::loop_classifier::{classify_loop, LoopClassifierInput};
 use crate::hmr::adapted_project::detect_adapted_project;
 use crate::hmr::compile_enrichment::CompileEnrichment;
@@ -374,11 +423,28 @@ pub async fn handle_compile_request(
                                     &shared_content,
                                     arch_hint,
                                 ).await {
-                                    Ok(patched) => {
-                                        let c = patched.get("core").and_then(|v| v.get("content").or(Some(v))).and_then(|v| v.as_str()).unwrap_or(&core_content).to_string();
-                                        let g = patched.get("gui").and_then(|v| v.get("content").or(Some(v))).and_then(|v| v.as_str()).unwrap_or(&gui_content).to_string();
-                                        let s = patched.get("shared").and_then(|v| v.get("content").or(Some(v))).and_then(|v| v.as_str()).unwrap_or(&shared_content).to_string();
-                                        (c, g, s)
+                                    Ok(edits) => {
+                                        match apply_edit_list(&edits, &core_content, &gui_content, &shared_content) {
+                                            Ok((c, g, s)) => (c, g, s),
+                                            Err(apply_err) => {
+                                                eprintln!(
+                                                    "[HMR] Tier 2 (value-fallback) edit apply FAILED: {} → falling through to Tier 3 full re-split",
+                                                    apply_err
+                                                );
+                                                let result = perform_ai_split(&req).await?;
+                                                let fresh_arch = result
+                                                    .get("_synthi_architecture")
+                                                    .and_then(|v| v.as_str())
+                                                    .unwrap_or("");
+                                                let meta = serde_json::json!({
+                                                    "split_hash": source_hash_str,
+                                                    "original_source": req.source,
+                                                    "architecture": fresh_arch,
+                                                });
+                                                write_sidecar_logged(&sidecar_path, &meta).await;
+                                                return Ok(result);
+                                            }
+                                        }
                                     }
                                     Err(e) => {
                                         eprintln!("[HMR] Tier 2 (value-fallback) AI diff_patch failed: {}, falling through to Tier 3 full re-split", e);
@@ -399,6 +465,7 @@ pub async fn handle_compile_request(
                             }
                         } else {
                             // Tier 2: non-value edit → full AI diff_patch with arch
+                            // (diff-only output format — ~100 tokens, ~1s generation)
                             eprintln!(
                                 "[HMR] Tier 2: AI diff_patch (diff={} bytes, arch={} chars)",
                                 diff.len(),
@@ -411,18 +478,44 @@ pub async fn handle_compile_request(
                                 &shared_content,
                                 arch_hint,
                             ).await {
-                                Ok(patched) => {
-                                    // Python returns {"core": {...}, "gui": {...}, ...}
-                                    // containing ONLY modules that changed. Unchanged
-                                    // modules fall back to their current content.
-                                    let c = patched.get("core").and_then(|v| v.get("content").or(Some(v))).and_then(|v| v.as_str()).unwrap_or(&core_content).to_string();
-                                    let g = patched.get("gui").and_then(|v| v.get("content").or(Some(v))).and_then(|v| v.as_str()).unwrap_or(&gui_content).to_string();
-                                    let s = patched.get("shared").and_then(|v| v.get("content").or(Some(v))).and_then(|v| v.as_str()).unwrap_or(&shared_content).to_string();
+                                Ok(edits) => {
                                     eprintln!(
-                                        "[HMR] Tier 2 SUCCESS (core_changed={} gui_changed={} shared_changed={})",
-                                        c != core_content, g != gui_content, s != shared_content
+                                        "[HMR] Tier 2: received {} edit(s), applying locally",
+                                        edits.len()
                                     );
-                                    (c, g, s)
+                                    match apply_edit_list(&edits, &core_content, &gui_content, &shared_content) {
+                                        Ok((c, g, s)) => {
+                                            eprintln!(
+                                                "[HMR] Tier 2 SUCCESS ({} edits, core_changed={} gui_changed={} shared_changed={})",
+                                                edits.len(),
+                                                c != core_content,
+                                                g != gui_content,
+                                                s != shared_content
+                                            );
+                                            (c, g, s)
+                                        }
+                                        Err(apply_err) => {
+                                            // Anchor missing / ambiguous / unknown module.
+                                            // Don't try to partially apply — fall through
+                                            // to Tier 3 for a correct full re-split.
+                                            eprintln!(
+                                                "[HMR] Tier 2 edit apply FAILED: {} → falling through to Tier 3 full re-split",
+                                                apply_err
+                                            );
+                                            let result = perform_ai_split(&req).await?;
+                                            let fresh_arch = result
+                                                .get("_synthi_architecture")
+                                                .and_then(|v| v.as_str())
+                                                .unwrap_or("");
+                                            let meta = serde_json::json!({
+                                                "split_hash": source_hash_str,
+                                                "original_source": req.source,
+                                                "architecture": fresh_arch,
+                                            });
+                                            write_sidecar_logged(&sidecar_path, &meta).await;
+                                            return Ok(result);
+                                        }
+                                    }
                                 }
                                 Err(e) => {
                                     eprintln!(

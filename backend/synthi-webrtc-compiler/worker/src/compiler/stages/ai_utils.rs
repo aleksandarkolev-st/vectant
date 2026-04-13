@@ -252,10 +252,14 @@ pub async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value>
 ///
 /// Takes a unified diff of the user's source changes + current split file
 /// contents + the cached split architecture markdown, sends them to the
-/// AI, and returns a JSON value with updated module contents for only the
-/// files that changed. The AI uses the architecture doc's "Where User
-/// Code Goes" section to route each hunk to the right module(s) — no
-/// external classifier needed.
+/// AI, and returns a **list of structured edits** (not full files) that
+/// the caller applies locally via `hmr::edit_applier::apply_edit`.
+///
+/// The diff-only output format is what makes this call fast: instead of
+/// asking the model to regenerate ~3000 tokens of full `gui.cpp` content,
+/// we ask for ~100 tokens of edit instructions. Generation time drops
+/// from ~30s of autoregressive decoding to ~1s, which is the single
+/// biggest latency win we have short of running a local model.
 ///
 /// `architecture` is the cached split-architecture markdown doc captured
 /// at initial split time. Passing `Some(arch)` injects it into the prompt
@@ -267,7 +271,7 @@ pub async fn perform_ai_diff_patch(
     gui_content: &str,
     shared_content: &str,
     architecture: Option<&str>,
-) -> Result<serde_json::Value> {
+) -> Result<Vec<crate::hmr::edit_applier::Edit>> {
     let client = reqwest::Client::new();
     let backend_url = get_ai_backend_url();
     let url = format!("{}/refactor/diff_patch", backend_url);
@@ -287,25 +291,40 @@ pub async fn perform_ai_diff_patch(
         "architecture": architecture.unwrap_or(""),
     });
 
-    let res = client
+    let res: serde_json::Value = client
         .post(&url)
         .json(&payload)
-        // 90s — full diff_patch uses gemini-3.1-pro-preview and sends all
-        // three modules in the prompt (5-15KB). Worst-case latency on big
-        // projects with long arch docs is ~20-30s; 90s gives generous
-        // headroom without blocking the compile thread forever.
-        .timeout(std::time::Duration::from_secs(90))
+        // 60s — diff_patch with diff-only output format. Output tokens
+        // dropped from ~3000 (full file regen) to ~100 (edit instructions)
+        // so the pro-model call should normally be 1-2s. 60s is very
+        // generous headroom for network flakes.
+        .timeout(std::time::Duration::from_secs(60))
         .send()
         .await?
         .json::<serde_json::Value>()
         .await?;
 
-    // The endpoint returns {"result": {"core": {...}, "gui": {...}, ...}}
-    let result = res.get("result").cloned().unwrap_or(serde_json::json!({}));
     let elapsed = res.get("elapsed_seconds").and_then(|v| v.as_f64()).unwrap_or(0.0);
-    eprintln!("[AI DiffPatch] Completed in {:.2}s", elapsed);
 
-    Ok(result)
+    // Response shape: {"edits": [...], "elapsed_seconds": f64}
+    // Extra fields are ignored by serde (EditList uses #[serde(default)]
+    // and only pulls the `edits` array).
+    let edit_list: crate::hmr::edit_applier::EditList = serde_json::from_value(res.clone())
+        .map_err(|e| {
+            anyhow::anyhow!(
+                "[AI DiffPatch] failed to parse edit list from response: {} (raw: {})",
+                e,
+                res.to_string().chars().take(300).collect::<String>()
+            )
+        })?;
+
+    eprintln!(
+        "[AI DiffPatch] Completed in {:.2}s with {} edit(s)",
+        elapsed,
+        edit_list.edits.len()
+    );
+
+    Ok(edit_list.edits)
 }
 
 // NOTE: perform_targeted_delta_patch was removed together with the

@@ -1727,20 +1727,25 @@ the original source."""
 
 
 def _build_full_diff_patch_prompt(req: DiffPatchRequest) -> str:
-    """Assemble the full 3-module diff_patch prompt.
+    """Assemble the full 3-module diff_patch prompt in edit-list format.
+
+    Instead of asking the model to regenerate full updated module files
+    (~2500-4000 output tokens per edit), we ask for a list of structured
+    edits — anchor + operation + content — which Rust applies locally
+    via `hmr::edit_applier::apply_edit`. Output tokens drop from ~3000
+    to ~100, which cuts pro-model generation time from ~30s to ~1s.
 
     When `req.architecture` is empty, the ARCHITECTURE + PRIORITY_RULE
     blocks are omitted and the prompt degrades to the generic form —
-    no regression for pre-migration sidecars that don't have a
-    cached architecture yet.
-
-    The model decides which modules to patch based on the architecture
-    doc's "Where User Code Goes" section and the diff content. Returns
-    a JSON object containing ONLY the modules that changed.
+    no regression for pre-migration sidecars that don't have a cached
+    architecture yet.
     """
     parts: List[str] = [
-        "You are applying a patch to a SPLIT multi-module project.",
-        "Return ONLY the complete updated file content(s) as a JSON object.",
+        "You are generating EDIT INSTRUCTIONS for a SPLIT multi-module project.",
+        "Return a JSON object with an `edits` array. The Rust worker will apply",
+        "each edit locally by searching the current module content for `anchor`",
+        "and performing `operation` at that location. You do NOT return full",
+        "file contents — only the edits needed.",
         "",
         "CRITICAL RULES — these apply to any language/framework:",
         "",
@@ -1762,19 +1767,15 @@ def _build_full_diff_patch_prompt(req: DiffPatchRequest) -> str:
         "",
         "3. DECIDE which module(s) each diff hunk belongs to. The ARCHITECTURE",
         "   section below tells you the routing rules — use its 'Where User Code",
-        "   Goes' section as the authoritative mapping. MERGE the diff into the",
-        "   appropriate existing function body in the correct module. Do NOT:",
-        "     - Paste the diff verbatim at file scope (would cause \"expected",
-        "       declaration\" errors in C/C++ or top-level errors in Python/JS/Rust).",
-        "     - Redeclare variables that already exist in the split module.",
-        "     - Add a new main() / entrypoint / redundant imports.",
-        "     - Create new top-level functions unless the existing file's convention",
-        "       calls for it.",
+        "   Goes' section as the authoritative mapping. Each edit in your output",
+        "   must set the `module` field to one of `core`, `gui`, or `shared`.",
         "",
-        "4. Preserve all existing code in every module that isn't touched by the",
-        "   diff. Keep all existing exports, includes, helpers, and comments. ONLY",
-        "   return modules that changed — omit unchanged modules from the output",
-        "   JSON entirely.",
+        "4. Do NOT emit edits that paste the diff verbatim at file scope (would cause",
+        "   declaration errors in C/C++ or top-level errors in Python/JS/Rust).",
+        "   Do NOT redeclare existing variables, add duplicate entrypoints, or",
+        "   create new top-level functions unless the existing file's convention",
+        "   demands it. Your edits should merge the change into an existing",
+        "   function body, or add to an existing struct definition, etc.",
         "",
     ]
 
@@ -1812,23 +1813,132 @@ def _build_full_diff_patch_prompt(req: DiffPatchRequest) -> str:
         req.diff,
         "```",
         "",
-        'Return ONLY valid JSON containing the modules that changed, e.g.',
-        '{"gui": "<complete updated gui content as a string>"} if only gui',
-        'changed, or {"core": "...", "gui": "..."} if both changed. OMIT',
-        'unchanged modules. No markdown fences, no explanation.',
+        "# OUTPUT FORMAT",
+        "",
+        "Return a single JSON object with an `edits` array. Each edit has:",
+        "",
+        '  - `module`:    "core" | "gui" | "shared"',
+        '  - `operation`: "insert_after" | "insert_before" | "replace" | "delete"',
+        "  - `anchor`:    an EXACT substring of the current module content that",
+        "                 locates the edit. Rust will call `content.find(anchor)`.",
+        "                 The anchor MUST appear EXACTLY ONCE in the module — if",
+        "                 it is missing or ambiguous the whole edit fails and we",
+        "                 fall back to a full re-split. Include enough surrounding",
+        "                 context (usually 1-3 lines, or a full statement) to make",
+        "                 the anchor unique. Whitespace is preserved — copy the",
+        "                 anchor verbatim from the current content above.",
+        "  - `content`:   the new text. For insert_after / insert_before this is",
+        "                 the code to insert. For replace this is what replaces",
+        "                 the anchor. For delete this is ignored (use an empty",
+        "                 string). Preserve the surrounding indentation style.",
+        "",
+        "Operations:",
+        "  - insert_after:  put `content` immediately AFTER the anchor",
+        "  - insert_before: put `content` immediately BEFORE the anchor",
+        "  - replace:       replace the anchor with `content`",
+        "  - delete:        remove the anchor (content ignored)",
+        "",
+        "If no changes are needed, return `{\"edits\": []}`.",
+        "",
+        "# EXAMPLE",
+        "",
+        "Suppose the diff adds a red button after an existing blue button. The",
+        "current gui module contains:",
+        "",
+        "```",
+        "    SDL_Rect btn1 = {50, 50, 200, 60};",
+        "    SDL_SetRenderDrawColor(state->renderer, 60, 120, 220, 255);",
+        "    SDL_RenderFillRect(state->renderer, &btn1);",
+        "```",
+        "",
+        "A correct output would be:",
+        "",
+        "```",
+        "{",
+        '  "edits": [',
+        "    {",
+        '      "module": "gui",',
+        '      "operation": "insert_after",',
+        '      "anchor": "SDL_RenderFillRect(state->renderer, &btn1);",',
+        '      "content": "\\n\\n    SDL_Rect btn2 = {50, 130, 200, 60};\\n    SDL_SetRenderDrawColor(state->renderer, 220, 60, 60, 255);\\n    SDL_RenderFillRect(state->renderer, &btn2);"',
+        "    }",
+        "  ]",
+        "}",
+        "```",
+        "",
+        "Return ONLY the JSON object. No markdown fences, no prose, no explanation.",
     ]
     return "\n".join(parts)
+
+
+_VALID_EDIT_OPS = {"insert_after", "insert_before", "replace", "delete"}
+_VALID_EDIT_MODULES = {"core", "gui", "shared"}
+
+
+def _validate_edit_list(edits: object) -> List[dict]:
+    """Validate that the AI returned a well-formed list of edits.
+
+    Raises HTTPException(400) on any shape mismatch. Returns a cleaned
+    list with only the expected fields so the Rust worker's serde
+    deserializer sees exactly the schema it expects.
+    """
+    if not isinstance(edits, list):
+        raise HTTPException(
+            status_code=400,
+            detail=f"`edits` must be a JSON array, got {type(edits).__name__}",
+        )
+    cleaned: List[dict] = []
+    for i, e in enumerate(edits):
+        if not isinstance(e, dict):
+            raise HTTPException(
+                status_code=400,
+                detail=f"edit #{i} must be a JSON object, got {type(e).__name__}",
+            )
+        module = e.get("module")
+        op = e.get("operation")
+        anchor = e.get("anchor")
+        content = e.get("content", "")
+        if module not in _VALID_EDIT_MODULES:
+            raise HTTPException(
+                status_code=400,
+                detail=f"edit #{i}: `module` must be one of {_VALID_EDIT_MODULES}, got {module!r}",
+            )
+        if op not in _VALID_EDIT_OPS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"edit #{i}: `operation` must be one of {_VALID_EDIT_OPS}, got {op!r}",
+            )
+        if not isinstance(anchor, str) or not anchor:
+            raise HTTPException(
+                status_code=400,
+                detail=f"edit #{i}: `anchor` must be a non-empty string",
+            )
+        if not isinstance(content, str):
+            raise HTTPException(
+                status_code=400,
+                detail=f"edit #{i}: `content` must be a string (use empty string for delete)",
+            )
+        cleaned.append({
+            "module": module,
+            "operation": op,
+            "anchor": anchor,
+            "content": content,
+        })
+    return cleaned
 
 
 @app.post("/refactor/diff_patch")
 async def refactor_diff_patch(req: DiffPatchRequest):
     """
-    Apply a source diff to split module files using AI.
+    Apply a source diff to split module files using AI — edit-list format.
 
-    One mode: full 3-module diff-patch with the cached architecture hint.
-    The model reads the diff + the arch doc's routing rules + the current
-    contents of all three modules, then returns updated content for
-    whichever modules changed. Single AI call per edit.
+    The model returns a JSON object:
+        {"edits": [{"module": "gui", "operation": "insert_after", ...}, ...]}
+
+    Rust's hmr::edit_applier applies each edit locally by searching the
+    current module content for the anchor. This format makes the output
+    ~100 tokens instead of ~3000, dropping pro-model generation time from
+    ~30s to ~1s.
     """
     start_time = time.time()
 
@@ -1845,11 +1955,10 @@ async def refactor_diff_patch(req: DiffPatchRequest):
             "cpp",
             None,
             mode="delta",
-            # Pro for diff patches — lite was producing broken output
-            # (dropping user refs like `r`/`win` into wrong scopes after
-            # the split transform), triggering heal cycles that made the
-            # overall edit slower than just using pro once. Pro is ~4-5s
-            # correct on first try vs lite 3s wrong + 3.5s heal.
+            # Pro for diff patches — we want high-quality anchor selection
+            # and correct merging into split-module conventions. With the
+            # edit-list output format, the pro-call output is short
+            # (~100 tokens) so this is 1-2s of generation, not 30.
             model=req.model or "gemini-3.1-pro-preview",
             api_key=req.api_key,
         )
@@ -1863,28 +1972,33 @@ async def refactor_diff_patch(req: DiffPatchRequest):
         elif "```" in result_str:
             result_str = result_str.split("```")[1].split("```")[0].strip()
 
-        patched = json.loads(result_str)
+        parsed = json.loads(result_str)
+        if not isinstance(parsed, dict):
+            raise HTTPException(
+                status_code=400,
+                detail=f"AI response must be a JSON object, got {type(parsed).__name__}",
+            )
 
-        # Build the result: only include files that the AI returned
-        result = {}
-        if "core" in patched:
-            result["core"] = {"content": patched["core"], "filename": "core.cpp"}
-        if "gui" in patched:
-            result["gui"] = {"content": patched["gui"], "filename": "gui.cpp"}
-        if "shared" in patched:
-            result["shared"] = {"content": patched["shared"], "filename": "shared.h"}
+        edits = _validate_edit_list(parsed.get("edits", []))
 
         elapsed = time.time() - start_time
-        print(f"[DiffPatch] completed in {elapsed:.2f}s, patched: {list(result.keys())}")
+        module_counts: dict = {}
+        for e in edits:
+            module_counts[e["module"]] = module_counts.get(e["module"], 0) + 1
+        print(
+            f"[DiffPatch] completed in {elapsed:.2f}s, {len(edits)} edit(s): {module_counts}"
+        )
 
         return {
-            "result": result,
+            "edits": edits,
             "elapsed_seconds": elapsed,
         }
 
     except json.JSONDecodeError as e:
         print(f"[DiffPatch] JSON parse error: {e}")
         raise HTTPException(status_code=400, detail=f"Failed to parse AI patch response: {e}")
+    except HTTPException:
+        raise
     except Exception as e:
         print(f"[DiffPatch] Error: {e}")
         raise HTTPException(status_code=400, detail=str(e))

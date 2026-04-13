@@ -32,6 +32,7 @@ pub mod deterministic_compile;
 pub mod diagnostics;
 pub mod diff_patcher;
 pub mod dirty_classifier;
+pub mod edit_applier;
 pub mod edit_classifier;
 pub mod dynlib_adapter;
 pub mod dynlib_abi_contract;
