@@ -7,6 +7,27 @@ const SIGNAL_URL = process.env.NEXT_PUBLIC_COMPILE_SIGNAL_URL
 const WORKER_SPAWNER_HEARTBEAT_MS = 60_000;
 const USER_ID_STORAGE_KEY = 'synthi-user-id';
 
+function shouldUseWorkspaceSpawner() {
+    const override = process.env.NEXT_PUBLIC_ENABLE_WORKSPACE_SPAWNER;
+    if (override != null) {
+        const normalized = String(override).trim().toLowerCase();
+        return normalized === '1' || normalized === 'true' || normalized === 'yes' || normalized === 'on';
+    }
+
+    try {
+        const collabUrl = new URL(getCollabHttpBaseUrl());
+        const signalHttpUrl = new URL(
+            SIGNAL_URL
+                .replace(/^ws:/, 'http:')
+                .replace(/^wss:/, 'https:')
+        );
+        const localHosts = new Set(['localhost', '127.0.0.1']);
+        return !(localHosts.has(collabUrl.hostname) && localHosts.has(signalHttpUrl.hostname));
+    } catch (_) {
+        return true;
+    }
+}
+
 function getCollabHttpBaseUrl() {
     const envUrl = process.env.NEXT_PUBLIC_COLLAB_SERVER_URL;
     if (envUrl) {
@@ -67,6 +88,7 @@ export const CompilerStatus = {
 export class CompilerClient {
     constructor(url = SIGNAL_URL) {
         this.url = url;
+        this.useWorkspaceSpawner = shouldUseWorkspaceSpawner();
         this.ws = null;
         this.pc = null;
         this.pendingCompilationMap = new Map(); // session_id -> { resolve, reject }
@@ -156,7 +178,7 @@ export class CompilerClient {
         const response = await fetch(`${getCollabHttpBaseUrl()}/api/spawner/ensure`, {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
-            credentials: 'include',
+            credentials: 'omit',
             body: JSON.stringify({
                 session_id: sessionId,
                 user_id: this._getCompilerUserId() || sessionId,
@@ -183,7 +205,7 @@ export class CompilerClient {
             await fetch(`${getCollabHttpBaseUrl()}/api/spawner/touch`, {
                 method: 'POST',
                 headers: { 'content-type': 'application/json' },
-                credentials: 'include',
+                credentials: 'omit',
                 keepalive: true,
                 body: JSON.stringify({ session_id: sessionId }),
             });
@@ -295,16 +317,27 @@ export class CompilerClient {
             if (parsed && parsed.type === 'logcat') {
                 return;
             }
+            // Suppress LSP stderr spam (clangd/ts-server emit many lines per
+            // keystroke). Surface only on demand via SYNTHI_DEBUG_LSP=1.
+            if (parsed && parsed.type === 'lsp-stderr') {
+                if (typeof window !== 'undefined' && window.SYNTHI_DEBUG_LSP) {
+                    console.log('[CompilerClient] lsp-stderr:', parsed.line);
+                }
+                return;
+            }
         } catch (e) {
             // ignore
         }
 
-        // Some messages can be very large.
-        // Logging them verbatim can freeze DevTools and slow the UI.
-        if (typeof text === 'string' && text.length > 2000) {
-            console.log('[CompilerClient] Received log (truncated):', `${text.slice(0, 2000)}…`);
-        } else {
-            console.log('[CompilerClient] Received log:', text);
+        // Gate verbose received-log tracing behind a flag. Previously this
+        // fired on EVERY log line (hundreds per minute) and drowned out
+        // other console output.
+        if (typeof window !== 'undefined' && window.SYNTHI_DEBUG_COMPILER) {
+            if (typeof text === 'string' && text.length > 2000) {
+                console.log('[CompilerClient] Received log (truncated):', `${text.slice(0, 2000)}…`);
+            } else {
+                console.log('[CompilerClient] Received log:', text);
+            }
         }
 
         // Check for GUI control messages
@@ -318,8 +351,9 @@ export class CompilerClient {
                 // Do not forward these payloads to build log handlers (they can be large / base64).
                 return;
             }
+            const debugCompiler = typeof window !== 'undefined' && window.SYNTHI_DEBUG_COMPILER;
             if (parsed && parsed.type === 'run-gui-start') {
-                console.log('[CompilerClient] Dispatching synthi:gui-start', parsed);
+                if (debugCompiler) console.log('[CompilerClient] Dispatching synthi:gui-start', parsed);
                 if (typeof window !== 'undefined' && window.dispatchEvent) {
                     window.dispatchEvent(new CustomEvent('synthi:gui-start', { detail: parsed }));
                 }
@@ -344,13 +378,13 @@ export class CompilerClient {
                     }
                 } catch (_) {}
             } else if (parsed && parsed.type === 'run-gui-end') {
-                console.log('[CompilerClient] Dispatching synthi:gui-end', parsed);
+                if (debugCompiler) console.log('[CompilerClient] Dispatching synthi:gui-end', parsed);
                 if (typeof window !== 'undefined' && window.dispatchEvent) {
                     window.dispatchEvent(new CustomEvent('synthi:gui-end', { detail: parsed }));
                 }
             } else if (parsed && parsed.type === 'compile-diagnostics') {
                 // Structured compile diagnostics - dispatch to error overlay
-                console.log('[CompilerClient] Dispatching synthi:compile-diagnostics', parsed);
+                if (debugCompiler) console.log('[CompilerClient] Dispatching synthi:compile-diagnostics', parsed);
                 if (typeof window !== 'undefined' && window.dispatchEvent) {
                     window.dispatchEvent(new CustomEvent('synthi:compile-diagnostics', { detail: parsed }));
                     // Also dispatch hmr-status for the indicator
@@ -370,21 +404,21 @@ export class CompilerClient {
                 return;
             } else if (parsed && parsed.type === 'hmr-status') {
                 // Native HMR status from Rust worker - dispatch to HMR system
-                console.log('[CompilerClient] Dispatching synthi:hmr-status (native)', parsed);
+                if (debugCompiler) console.log('[CompilerClient] Dispatching synthi:hmr-status (native)', parsed);
                 if (typeof window !== 'undefined' && window.dispatchEvent) {
                     window.dispatchEvent(new CustomEvent('synthi:hmr-status', { detail: parsed.data || parsed }));
                 }
                 // Don't log HMR status to build log
                 return;
             } else if (parsed && (parsed.type === 'update' || parsed.type === 'hash' || parsed.type === 'ok' || parsed.type === 'reload')) {
-                console.log('[CompilerClient] Dispatching synthi:hmr-update', parsed);
+                if (debugCompiler) console.log('[CompilerClient] Dispatching synthi:hmr-update', parsed);
                 if (typeof window !== 'undefined' && window.dispatchEvent) {
                     window.dispatchEvent(new CustomEvent('synthi:hmr-update', { detail: parsed }));
                 }
                 // Do not log HMR messages to the build log
                 return;
             } else if (parsed && parsed.manifest && parsed.modules) {
-                console.log('[CompilerClient] Dispatching synthi:hmr-update (Rust payload)', parsed);
+                if (debugCompiler) console.log('[CompilerClient] Dispatching synthi:hmr-update (Rust payload)', parsed);
                 if (typeof window !== 'undefined' && window.dispatchEvent) {
                     const hmrMsg = {
                         type: 'update',
@@ -400,9 +434,47 @@ export class CompilerClient {
                        parsed.status === 'compile-error' || parsed.status === 'crash-recovered' ||
                        parsed.status === 'state-migrated' || parsed.status === 'crash-fatal')) {
                 // Direct HMR status object from runner
-                console.log('[CompilerClient] Dispatching synthi:hmr-status (runner)', parsed);
+                if (debugCompiler) console.log('[CompilerClient] Dispatching synthi:hmr-status (runner)', parsed);
                 if (typeof window !== 'undefined' && window.dispatchEvent) {
                     window.dispatchEvent(new CustomEvent('synthi:hmr-status', { detail: parsed }));
+                }
+                return;
+            } else if (parsed && parsed.type === 'adapter_status') {
+                // Adapter family status from HMR pipeline
+                if (typeof window !== 'undefined' && window.dispatchEvent) {
+                    window.dispatchEvent(new CustomEvent('synthi:adapter-status', { detail: parsed }));
+                }
+                return;
+            } else if (parsed && parsed.type === 'adapter_health') {
+                // Per-adapter health for the health panel
+                if (typeof window !== 'undefined' && window.dispatchEvent) {
+                    window.dispatchEvent(new CustomEvent('synthi:adapter-health', { detail: parsed }));
+                }
+                return;
+            } else if (parsed && parsed.type === 'state_restore_status') {
+                // State restore/migration progress
+                if (typeof window !== 'undefined' && window.dispatchEvent) {
+                    window.dispatchEvent(new CustomEvent('synthi:state-restore', { detail: parsed }));
+                }
+                return;
+            } else if (parsed && parsed.type === 'ai_status') {
+                // AI loop status (circuit breaker, cost, fallback)
+                if (typeof window !== 'undefined' && window.dispatchEvent) {
+                    window.dispatchEvent(new CustomEvent('synthi:ai-status', { detail: parsed }));
+                }
+                return;
+            } else if (parsed && parsed.event && (
+                parsed.event === 'Enqueued' ||
+                parsed.event === 'Loading' ||
+                parsed.event === 'HealthCheckStarted' ||
+                parsed.event === 'HealthCheckCompleted' ||
+                parsed.event === 'Promoted' ||
+                parsed.event === 'RolledBack' ||
+                parsed.event === 'Discarded' ||
+                parsed.event === 'PromotionDecision'
+            )) {
+                if (typeof window !== 'undefined' && window.dispatchEvent) {
+                    window.dispatchEvent(new CustomEvent('synthi:candidate-update', { detail: parsed }));
                 }
                 return;
             }
@@ -668,7 +740,7 @@ export class CompilerClient {
             };
 
             const signalingSessionId = this._getSignalingSessionId();
-            if (signalingSessionId) {
+            if (signalingSessionId && this.useWorkspaceSpawner) {
                 try {
                     await this._ensureWorkerPod(signalingSessionId);
                 } catch (e) {
@@ -807,8 +879,10 @@ export class CompilerClient {
                     session_id: signalingSessionId,
                 }));
                 this._registeredSignalingSessionId = signalingSessionId || null;
-                void this._touchWorkerPod(signalingSessionId);
-                this._startSpawnerHeartbeat(signalingSessionId);
+                if (this.useWorkspaceSpawner) {
+                    void this._touchWorkerPod(signalingSessionId);
+                    this._startSpawnerHeartbeat(signalingSessionId);
+                }
                 this.compileChannel = this.pc.createDataChannel('compile', { ordered: true });
                 // Terminal channel for stdin forwarding
                 this.terminalChannel = this.pc.createDataChannel('terminal', { ordered: true });
@@ -1095,6 +1169,27 @@ export class CompilerClient {
     }
 
     /**
+     * Send an edit delta to the worker for background classification.
+     * The worker diffs old vs new content and caches the classification
+     * so the compile handler can dispatch instantly on save.
+     * @param {string} relPath  Workspace-relative path
+     * @param {string} content  Full new file content
+     */
+    sendEditDelta(relPath, content) {
+        if (!this.fileSyncChannel || this.fileSyncChannel.readyState !== 'open') return;
+        try {
+            this.fileSyncChannel.send(JSON.stringify({
+                op: 'edit_delta',
+                path: relPath,
+                content,
+                slug: this.slug || '',
+            }));
+        } catch (e) {
+            // Best-effort — classification is an optimization, not critical
+        }
+    }
+
+    /**
      * Delete a file or directory on the worker's disk.
      * @param {string} relPath  Workspace-relative path
      */
@@ -1173,13 +1268,20 @@ export class CompilerClient {
         this._clearSpawnerHeartbeat();
         this._registeredSignalingSessionId = null;
 
-        if (this.ws) { this.ws.close(); }
-        if (this.pc) { this.pc.close(); }
+        // Null out this.ws BEFORE closing so the onclose handler sees a stale
+        // socket and skips its cleanup path (status broadcast + readyPromise
+        // teardown). Without this, onclose fires DISCONNECTED while we are in
+        // the middle of reconnecting, which races with the auto-reconnect timer
+        // in useCompiler and can produce a second overlapping connect() call.
+        const wsToClose = this.ws;
+        const pcToClose = this.pc;
+        this.ws = null;
+        this.pc = null;
+        if (wsToClose) { try { wsToClose.close(); } catch (_) {} }
+        if (pcToClose) { try { pcToClose.close(); } catch (_) {} }
 
         await new Promise(r => setTimeout(r, 500));
 
-        this.ws = null;
-        this.pc = null;
         this.compileChannel = null;
         this.buildLogChannel = null;
         this.terminalChannel = null;
@@ -1222,19 +1324,20 @@ export class CompilerClient {
         this._clearSpawnerHeartbeat();
         this._registeredSignalingSessionId = null;
 
-        if (this.ws) {
-            this.ws.close();
-        }
-        if (this.pc) {
-            this.pc.close();
-        }
-        
+        // Null out this.ws/pc BEFORE closing so onclose sees a stale socket
+        // and skips the DISCONNECTED broadcast + readyPromise teardown that
+        // would race with the reconnect we're about to initiate ourselves.
+        const wsToClose = this.ws;
+        const pcToClose = this.pc;
+        this.ws = null;
+        this.pc = null;
+        if (wsToClose) { try { wsToClose.close(); } catch (_) {} }
+        if (pcToClose) { try { pcToClose.close(); } catch (_) {} }
+
         // Wait for close events to propagate and backend to cleanup
         await new Promise(r => setTimeout(r, 1000));
 
         // Reset connection state but keep listeners
-        this.ws = null;
-        this.pc = null;
         this.compileChannel = null;
         this.buildLogChannel = null;
         this.terminalChannel = null;
@@ -1243,14 +1346,14 @@ export class CompilerClient {
         this.fileSyncChannel = null;
         this.readyPromise = null;
         this._setStatus(CompilerStatus.IDLE);
-        
+
         // Clear streaming state
         this.currentStreams = [];
-        
+
         return this.connect();
     }
 
-    async compile({ filename, source, language, files = [], isGui = false, width, height, onLog, useAiSplit = false, target = null, projectRoot = null, slug = null, sessionId: providedSessionId = null } = {}) {
+    async compile({ filename, source, language, files = [], isGui = false, width, height, onLog, useAiSplit = false, userRequestedAi = false, userRequestedDeterministic = false, target = null, projectRoot = null, slug = null, sessionId: providedSessionId = null } = {}) {
         // Auto-detect React Native from source if no target specified and file is JS/JSX/TSX
         const ext = (filename || '').split('.').pop().toLowerCase();
         const isJsxFile = ['js', 'jsx', 'tsx', 'ts'].includes(ext);
@@ -1516,7 +1619,25 @@ export class CompilerClient {
                             resolve(parsed);
                         } else {
                             this._sessionTargets.delete(sessionId);
-                            reject(new SynthiException('Compilation failed', 'The compilation process returned an error status.'));
+                            // Surface the actual error details from the backend instead of a generic message.
+                            // The worker sends `error`, `message`, and `stage` fields alongside success:false.
+                            // `error` may be a string (stderr text) or an object/array (structured g++ JSON) —
+                            // coerce to string for the exception message.
+                            let detail = parsed.error || parsed.message || 'The compilation process returned an error status.';
+                            if (typeof detail !== 'string') {
+                                // Structured error (e.g. g++ JSON diagnostics array) — extract human-readable messages
+                                try {
+                                    if (Array.isArray(detail)) {
+                                        detail = detail.map(d => d.message || JSON.stringify(d)).join('; ');
+                                    } else {
+                                        detail = detail.message || JSON.stringify(detail);
+                                    }
+                                } catch (_) {
+                                    detail = String(detail);
+                                }
+                            }
+                            const stage = parsed.stage ? `[${parsed.stage}]` : '';
+                            reject(new SynthiException('Compilation failed', `${stage} ${detail}`.trim()));
                         }
                         return;
                     }
@@ -1534,6 +1655,8 @@ export class CompilerClient {
                     height: height,
                     supports_h265: this.supportsH265,
                     use_ai_split: useAiSplit,
+                    user_requested_ai: userRequestedAi,
+                    user_requested_deterministic: userRequestedDeterministic,
                     target: effectiveTarget,
                     project_root: projectRoot,
                     slug: slug || this.slug
@@ -1791,7 +1914,7 @@ export const compileWithWorker = async (params) => {
     return client.compile(params);
 };
 
-export const cancelMobileJob = (sessionId) => {
+export const cancelMobileJob = (sessionId, options) => {
     const client = getCompilerClient();
-    client.cancelMobileJob(sessionId);
+    return client.cancelMobileJob(sessionId, options);
 };

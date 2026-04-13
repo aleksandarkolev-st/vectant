@@ -52,7 +52,7 @@ const DEFAULT_AUTO_HEAL_CATEGORIES = [
 // ── Initial state ─────────────────────────────────────────────────────────
 export const initialHealingState = {
   // Master toggle
-  enabled: true,
+  enabled: false,
 
   // Configuration
   config: {
@@ -62,7 +62,7 @@ export const initialHealingState = {
     cooldownMs: 1000,
     debounceMs: 800,
     showNotifications: true,
-    requireConfirmation: false, // If true, all fixes need user approval
+    requireConfirmation: true, // Auto-fixes stay staged until explicitly approved
     soundEnabled: false,
   },
 
@@ -101,7 +101,7 @@ export const initialHealingState = {
 
   // ── AI Agent state ──────────────────────────────────────────────────
   ai: {
-    enabled: true,
+    enabled: false,
     mode: 'ai', // 'ai' | 'hybrid' | 'off'
     isAnalyzing: false,
     lastAnalyzedAt: null,

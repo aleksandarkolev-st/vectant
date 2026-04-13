@@ -1,0 +1,6318 @@
+#![allow(unused_imports)]
+#![allow(unused_variables)]
+
+use std::collections::hash_map::DefaultHasher;
+use std::collections::HashMap;
+use std::env;
+use std::hash::{Hash, Hasher};
+use std::process::Stdio;
+use std::sync::Arc;
+
+use worker::android;
+use worker::compiler;
+use worker::hmr;
+use worker::infra;
+use worker::runtime;
+use worker::safety;
+
+use anyhow::{Context, Result};
+use bytes::Bytes;
+use futures::{FutureExt, SinkExt, StreamExt};
+
+/*
+use compiler::builder::{
+    hash_content,
+    hash_shared_header_semantic,
+    ModuleHashes,
+    RebuildScope,
+    WidgetCompiler,
+    WidgetDetector,
+};
+
+use runtime::capability::{detect_capabilities, HmrCapability, HmrStatus};
+
+use compiler::error_parser::{parse_compiler_output, CompilerType, DiagnosticEvent};
+*/
+
+use hmr::fast_refresh::{
+    BoundaryChecker,
+    // BoundaryViolationEvent, // unused
+    // RefreshAction, // unused
+    // PreemptiveConfig, PreemptiveMessage, SpeculativeCache // These seem to be in watcher.rs?
+};
+
+use infra::observability::{
+    LogEntry,
+    LogFormat,
+    LogLevel,
+    MetricsAggregator,
+    // ReloadMetricsTracker, // unused
+    // ReloadId, // unused
+    StructuredLogger,
+};
+
+use safety::hardened_ipc::IpcConfig;
+use safety::quiescence::QuiescenceConfig;
+use safety::restart_control::{BackoffConfig, KnownGoodStore, RestartController};
+use safety::slot_isolation::{IsolationManager, IsolationModel};
+
+use infra::watcher::{PreemptiveConfig, PreemptiveMessage, SpeculativeCache};
+
+// use runtime::shim::{auto_shim, ShimMode, detect_shim_mode};
+
+use gstreamer as gst;
+use gstreamer::prelude::ElementExt;
+#[allow(unused_imports)]
+use hmr::incremental_cache::{compile_with_cache, link_objects, IncrementalCache};
+// use gstreamer::prelude::{Cast, GstBinExt, GstObjectExt};
+// use gstreamer_app as gst_app;
+
+use tempfile::tempdir;
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::process::Command;
+use tokio::sync::{mpsc, Mutex};
+use tokio_tungstenite::{connect_async, tungstenite::Message};
+use webrtc::api::interceptor_registry::register_default_interceptors;
+use webrtc::api::media_engine::MediaEngine;
+use webrtc::api::APIBuilder;
+use webrtc::data_channel::data_channel_init::RTCDataChannelInit;
+use webrtc::data_channel::RTCDataChannel;
+use webrtc::interceptor::registry::Registry;
+// use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
+use webrtc::peer_connection::configuration::RTCConfiguration;
+use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
+use webrtc::peer_connection::sdp::sdp_type::RTCSdpType;
+use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
+use webrtc::peer_connection::RTCPeerConnection;
+// use webrtc::rtp::packet::Packet;
+use webrtc::rtp_transceiver::rtp_codec::{
+    RTCRtpCodecCapability, RTCRtpCodecParameters, RTCRtpHeaderExtensionCapability, RTPCodecType,
+};
+use webrtc::rtp_transceiver::rtp_transceiver_direction::RTCRtpTransceiverDirection;
+use webrtc::rtp_transceiver::RTCRtpTransceiverInit;
+// use webrtc::track::track_local::track_local_static_rtp::TrackLocalStaticRTP;
+// use webrtc::track::track_local::TrackLocal;
+// use webrtc::track::track_local::TrackLocalWriter;
+// use webrtc::util::Unmarshal;
+use serde::{Deserialize, Serialize};
+use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
+use webrtc::rtp_transceiver::RTCPFeedback;
+use webrtc::track::track_local::track_local_static_rtp::TrackLocalStaticRTP;
+use webrtc::track::track_local::TrackLocal;
+use webrtc::track::track_local::TrackLocalWriter;
+use webrtc::util::Unmarshal;
+
+// use printer::compile_context::CompileContext; // Legacy path
+use compiler::context::CompileContext;
+use hmr::orchestrator::{HmrOrchestrator, OrchestratorConfig};
+use infra::constants::{/*GUI_TOOLS,*/ REQUIRED_TOOLS};
+use infra::lsp_util::{rewrite_uris, LspSessionState};
+use infra::messages::{CompileRequest, /*FileEntry,*/ IceServerEnv, SignalMessage};
+use infra::utils::{get_wsl_host_ip, make_chunks};
+use runtime::runner_state::RunnerState;
+
+use worker::compiler::builder;
+use worker::infra::server;
+use worker::infra::storage;
+use worker::infra::watcher;
+use worker::safety::security;
+
+fn get_ai_backend_url() -> String {
+    if let Ok(url) = std::env::var("AI_BACKEND_URL") {
+        return url;
+    }
+
+    // Auto-detect WSL host IP
+    if let Some(host_ip) = get_wsl_host_ip() {
+        return format!("http://{}:8000", host_ip);
+    }
+    "http://localhost:8000".to_string()
+}
+
+// ── TURN credential fetch (Option B: worker → collab-server) ──────────────
+/// Response shape from collab-server /turn-credentials.
+#[derive(Debug, Deserialize)]
+struct TurnCredentialResponse {
+    #[serde(rename = "iceServers")]
+    ice_servers: Vec<IceServerEnv>,
+}
+
+/// Fetches short-lived TURN credentials from the collab-server's internal
+/// endpoint. Falls back to a plain STUN entry if the request fails or the
+/// env var is not configured.
+async fn fetch_turn_credentials() -> Vec<webrtc::ice_transport::ice_server::RTCIceServer> {
+    let collab_url = match env::var("COLLAB_SERVER_URL") {
+        Ok(u) => u.trim_end_matches('/').to_string(),
+        Err(_) => {
+            eprintln!("[ICE] COLLAB_SERVER_URL not set — using default STUN");
+            return vec![webrtc::ice_transport::ice_server::RTCIceServer {
+                urls: vec!["stun:stun.l.google.com:19302".to_string()],
+                ..Default::default()
+            }];
+        }
+    };
+
+    let url = format!("{}/turn-credentials", collab_url);
+    match reqwest::Client::new()
+        .get(&url)
+        .timeout(std::time::Duration::from_secs(5))
+        .send()
+        .await
+    {
+        Ok(resp) if resp.status().is_success() => {
+            match resp.json::<TurnCredentialResponse>().await {
+                Ok(data) => {
+                    let mut servers = Vec::new();
+                    for srv in data.ice_servers {
+                        let mut server = webrtc::ice_transport::ice_server::RTCIceServer {
+                            urls: srv.urls,
+                            ..Default::default()
+                        };
+
+                        if let Some(username) = srv.username {
+                            server.username = username;
+                        }
+
+                        if let Some(credential) = srv.credential {
+                            if !credential.is_empty() {
+                                server.credential = credential;
+                                server.credential_type = webrtc::ice_transport::ice_credential_type::RTCIceCredentialType::Password;
+                            }
+                        }
+
+                        servers.push(server);
+                    }
+                    if servers.is_empty() {
+                        servers.push(webrtc::ice_transport::ice_server::RTCIceServer {
+                            urls: vec!["stun:stun.l.google.com:19302".to_string()],
+                            ..Default::default()
+                        });
+                    }
+                    eprintln!("[ICE] Fetched {} ICE server(s) from collab-server", servers.len());
+                    servers
+                }
+                Err(e) => {
+                    eprintln!("[ICE] Failed to parse TURN response: {} — using default STUN", e);
+                    vec![webrtc::ice_transport::ice_server::RTCIceServer {
+                        urls: vec!["stun:stun.l.google.com:19302".to_string()],
+                        ..Default::default()
+                    }]
+                }
+            }
+        }
+        Ok(resp) => {
+            eprintln!("[ICE] TURN endpoint returned {} — using default STUN", resp.status());
+            vec![webrtc::ice_transport::ice_server::RTCIceServer {
+                urls: vec!["stun:stun.l.google.com:19302".to_string()],
+                ..Default::default()
+            }]
+        }
+        Err(e) => {
+            eprintln!("[ICE] TURN credential fetch error: {} — using default STUN", e);
+            vec![webrtc::ice_transport::ice_server::RTCIceServer {
+                urls: vec!["stun:stun.l.google.com:19302".to_string()],
+                ..Default::default()
+            }]
+        }
+    }
+}
+
+const GUI_TOOLS: &[&str] = &["Xvfb", "matchbox-window-manager"]; // xdotool no longer needed — input goes through runner stdin
+
+/// Convert JavaScript `ev.key` names to SDL2 keycodes (SDLK_*)
+/// The runner's `input key down/up <keycode>` protocol expects integer SDL keycodes.
+fn js_key_to_sdl_keycode(key: &str) -> i32 {
+    match key {
+        // ASCII-compatible keys
+        " " => 32,  // SDLK_SPACE
+        "!" => 33, "\"" => 34, "#" => 35, "$" => 36, "%" => 37, "&" => 38,
+        "'" => 39, "(" => 40, ")" => 41, "*" => 42, "+" => 43, "," => 44,
+        "-" => 45, "." => 46, "/" => 47,
+        "0" => 48, "1" => 49, "2" => 50, "3" => 51, "4" => 52,
+        "5" => 53, "6" => 54, "7" => 55, "8" => 56, "9" => 57,
+        ":" => 58, ";" => 59, "<" => 60, "=" => 61, ">" => 62, "?" => 63, "@" => 64,
+        "[" => 91, "\\" => 92, "]" => 93, "^" => 94, "_" => 95, "`" => 96,
+        // Navigation / editing keys
+        "Enter" | "Return" => 13,   // SDLK_RETURN
+        "Escape" => 27,             // SDLK_ESCAPE
+        "Backspace" => 8,           // SDLK_BACKSPACE
+        "Tab" => 9,                 // SDLK_TAB
+        "Delete" => 127,            // SDLK_DELETE
+        "Insert" => 0x40000049_u32 as i32,
+        "Home" => 0x4000004A_u32 as i32,
+        "End" => 0x4000004D_u32 as i32,
+        "PageUp" => 0x4000004B_u32 as i32,
+        "PageDown" => 0x4000004E_u32 as i32,
+        // Arrow keys
+        "ArrowRight" => 0x4000004F_u32 as i32,
+        "ArrowLeft" => 0x40000050_u32 as i32,
+        "ArrowDown" => 0x40000051_u32 as i32,
+        "ArrowUp" => 0x40000052_u32 as i32,
+        // Function keys
+        "F1" => 0x4000003A_u32 as i32,
+        "F2" => 0x4000003B_u32 as i32,
+        "F3" => 0x4000003C_u32 as i32,
+        "F4" => 0x4000003D_u32 as i32,
+        "F5" => 0x4000003E_u32 as i32,
+        "F6" => 0x4000003F_u32 as i32,
+        "F7" => 0x40000040_u32 as i32,
+        "F8" => 0x40000041_u32 as i32,
+        "F9" => 0x40000042_u32 as i32,
+        "F10" => 0x40000043_u32 as i32,
+        "F11" => 0x40000044_u32 as i32,
+        "F12" => 0x40000045_u32 as i32,
+        // Modifier keys
+        "Shift" | "ShiftLeft" | "ShiftRight" => 0x400000E1_u32 as i32,
+        "Control" | "ControlLeft" | "ControlRight" => 0x400000E0_u32 as i32,
+        "Alt" | "AltLeft" | "AltRight" => 0x400000E2_u32 as i32,
+        "Meta" | "MetaLeft" | "MetaRight" => 0x400000E3_u32 as i32,
+        "CapsLock" => 0x40000039_u32 as i32,
+        "NumLock" => 0x40000053_u32 as i32,
+        "ScrollLock" => 0x40000047_u32 as i32,
+        // Single character — use lowercase ASCII value as SDL keycode
+        other => {
+            let lower = other.to_lowercase();
+            let mut chars = lower.chars();
+            if let Some(c) = chars.next() {
+                if chars.next().is_none() && c.is_ascii() {
+                    return c as i32;
+                }
+            }
+            0 // Unknown key
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct FileEntry {
+    name: String,
+    content: String,
+}
+
+/// Request to cancel a running mobile emulator job
+#[derive(Debug, Deserialize)]
+struct CancelMobileJobRequest {
+    #[serde(rename = "type")]
+    msg_type: String, // Should be "cancel-mobile-job"
+    session_id: String,
+}
+
+/// Request to cancel a running build (all targets)
+#[derive(Debug, Deserialize)]
+struct CancelBuildRequest {
+    #[serde(rename = "type")]
+    msg_type: String, // Should be "cancel-build"
+    #[serde(default)]
+    session_id: Option<String>,
+}
+
+// Auto-detect WSL host IP
+fn get_wsl_backend_url() -> String {
+    if let Some(host_ip) = get_wsl_host_ip() {
+        return format!("http://{}:8000", host_ip);
+    }
+
+    "http://127.0.0.1:8000".to_string()
+}
+
+fn get_signaling_url() -> String {
+    if let Ok(url) = std::env::var("SIGNALING_URL") {
+        return url;
+    }
+
+    // In most setups, the signaling server runs alongside the worker (in WSL)
+    // or is accessible via localhost forwarding.
+    // We ONLY default to Host IP for the AI Backend which we know runs on Windows.
+    "ws://localhost:9000".to_string()
+}
+
+fn extract_fingerprint(sdp: &str) -> Option<String> {
+    for line in sdp.lines() {
+        if let Some(rest) = line.strip_prefix("a=fingerprint:") {
+            return Some(rest.trim().to_string());
+        }
+    }
+    None
+}
+
+/// Send data on a DataChannel with SCTP backpressure.
+/// Waits for `buffered_amount()` to drop below the threshold before sending,
+/// and retries on transient errors instead of breaking the forwarding loop.
+const DC_BUFFER_THRESHOLD: usize = 256 * 1024; // 256 KB
+const DC_BACKPRESSURE_POLL_MS: u64 = 10;
+const DC_SEND_MAX_RETRIES: u32 = 5;
+
+async fn dc_send_with_backpressure(
+    dc: &Arc<RTCDataChannel>,
+    data: &Bytes,
+    label: &str,
+) -> anyhow::Result<()> {
+    // Wait for the SCTP send buffer to drain below the threshold
+    let mut waited = 0u32;
+    while dc.buffered_amount().await > DC_BUFFER_THRESHOLD {
+        tokio::time::sleep(std::time::Duration::from_millis(DC_BACKPRESSURE_POLL_MS)).await;
+        waited += 1;
+        if waited % 100 == 0 {
+            eprintln!(
+                "[{}] backpressure: waited {}ms for DC buffer to drain (buffered={})",
+                label,
+                waited as u64 * DC_BACKPRESSURE_POLL_MS,
+                dc.buffered_amount().await
+            );
+        }
+        // Safety valve: after 10s of waiting, give up
+        if waited > 1000 {
+            eprintln!(
+                "[{}] backpressure timeout after 10s, attempting send anyway",
+                label
+            );
+            break;
+        }
+    }
+
+    // Retry send on transient errors
+    let mut retries = 0u32;
+    loop {
+        match dc.send(data).await {
+            Ok(_) => return Ok(()),
+            Err(e) => {
+                retries += 1;
+                if retries > DC_SEND_MAX_RETRIES {
+                    eprintln!(
+                        "[{}] send failed after {} retries: {}",
+                        label, DC_SEND_MAX_RETRIES, e
+                    );
+                    return Err(anyhow::anyhow!("{}", e));
+                }
+                eprintln!(
+                    "[{}] send error (retry {}/{}): {}",
+                    label, retries, DC_SEND_MAX_RETRIES, e
+                );
+                // Exponential backoff: 20ms, 40ms, 80ms, 160ms, 320ms
+                tokio::time::sleep(std::time::Duration::from_millis(20 * (1 << (retries - 1))))
+                    .await;
+            }
+        }
+    }
+}
+
+async fn dc_send_text_with_backpressure(
+    dc: &Arc<RTCDataChannel>,
+    text: String,
+    label: &str,
+) -> anyhow::Result<()> {
+    // Wait for buffer to drain
+    let mut waited = 0u32;
+    while dc.buffered_amount().await > DC_BUFFER_THRESHOLD {
+        tokio::time::sleep(std::time::Duration::from_millis(DC_BACKPRESSURE_POLL_MS)).await;
+        waited += 1;
+        if waited > 1000 {
+            eprintln!(
+                "[{}] backpressure timeout after 10s, attempting send_text anyway",
+                label
+            );
+            break;
+        }
+    }
+
+    let mut retries = 0u32;
+    loop {
+        match dc.send_text(text.clone()).await {
+            Ok(_) => return Ok(()),
+            Err(e) => {
+                retries += 1;
+                if retries > DC_SEND_MAX_RETRIES {
+                    eprintln!(
+                        "[{}] send_text failed after {} retries: {}",
+                        label, DC_SEND_MAX_RETRIES, e
+                    );
+                    return Err(anyhow::anyhow!("{}", e));
+                }
+                eprintln!(
+                    "[{}] send_text error (retry {}/{}): {}",
+                    label, retries, DC_SEND_MAX_RETRIES, e
+                );
+                tokio::time::sleep(std::time::Duration::from_millis(20 * (1 << (retries - 1))))
+                    .await;
+            }
+        }
+    }
+}
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    eprintln!("=== WORKER BUILD 2026-02-06-LSP-DEBUG ===");
+    eprintln!("[Worker] Starting up (PID: {})", std::process::id());
+    println!("Worker starting...");
+    println!("Operating System: {}", std::env::consts::OS);
+
+    // v2.1: Print security audit at startup (requirement #9)
+    if std::env::var("SYNTHI_SECURITY_AUDIT")
+        .map(|v| v == "1")
+        .unwrap_or(false)
+    {
+        security::print_security_audit();
+    } else {
+        // Brief security notice
+        let audit = security::audit_security();
+        eprintln!("[Security] Status: {} enforced, {} partial, {} stub (set SYNTHI_SECURITY_AUDIT=1 for details)",
+            audit.enforced_count, audit.partial_count, audit.stub_count);
+    }
+
+    // ============================================================
+    // v2.1 HMR INFRASTRUCTURE INITIALIZATION (Requirements #1-10)
+    // ============================================================
+    // Initialize all HMR hardening infrastructure from dead code modules:
+    // - StructuredLogger for observability (#10)
+    // - IsolationManager for worker isolation (#7)
+    // - RestartController for backoff/fallback (#8)
+    // - IpcConfig for hardened communication (#4)
+    // - HmrOrchestrator for central coordination
+    // ============================================================
+
+    // Initialize structured logging (requirement #10)
+    let hmr_log_format = if std::env::var("SYNTHI_JSON_LOGS")
+        .map(|v| v == "1")
+        .unwrap_or(false)
+    {
+        LogFormat::Json
+    } else {
+        LogFormat::Human
+    };
+    let hmr_log_level = match std::env::var("SYNTHI_LOG_LEVEL")
+        .unwrap_or_default()
+        .as_str()
+    {
+        "trace" => LogLevel::Trace,
+        "debug" => LogLevel::Debug,
+        "warn" => LogLevel::Warn,
+        "error" => LogLevel::Error,
+        _ => LogLevel::Info,
+    };
+    let structured_logger = Arc::new(StructuredLogger::new(hmr_log_format, hmr_log_level));
+
+    // Initialize metrics aggregator for reload performance tracking
+    let metrics_aggregator = Arc::new(tokio::sync::Mutex::new(MetricsAggregator::new()));
+
+    // Log startup
+    structured_logger.log(
+        &LogEntry::new(
+            LogLevel::Info,
+            "main",
+            "Worker starting with HMR v2.1 hardening",
+        )
+        .with_field("os", std::env::consts::OS)
+        .with_field("log_format", format!("{:?}", hmr_log_format)),
+    );
+
+    // Initialize isolation manager (requirement #7)
+    let isolation_model = match std::env::var("SYNTHI_ISOLATION_MODEL")
+        .unwrap_or_default()
+        .as_str()
+    {
+        "worker_per_slot" => IsolationModel::WorkerPerSlot,
+        "grouped" => IsolationModel::GroupedWorkers,
+        _ => IsolationModel::SingleWorker, // Default: simpler, lower overhead
+    };
+    let isolation_manager = Arc::new(tokio::sync::Mutex::new(IsolationManager::new(
+        isolation_model,
+    )));
+    eprintln!("[HMR v2.1] Isolation model: {:?}", isolation_model);
+
+    // Initialize restart controller with backoff (requirement #8)
+    let known_good_dir = std::env::temp_dir().join("synthi_known_good");
+    let _ = std::fs::create_dir_all(&known_good_dir);
+    let known_good_store = KnownGoodStore::with_persistence(known_good_dir.join("known_good.json"));
+    let backoff_config = BackoffConfig::default();
+    let restart_controller = Arc::new(tokio::sync::Mutex::new(RestartController::new(
+        backoff_config,
+        known_good_store,
+    )));
+    eprintln!("[HMR v2.1] Restart controller initialized with backoff/fallback");
+
+    // Initialize hardened IPC config (requirement #4)
+    let ipc_config = Arc::new(IpcConfig::default());
+    eprintln!(
+        "[HMR v2.1] IPC config: max_frame_size={}MB, read_timeout={}s",
+        ipc_config.max_frame_size / (1024 * 1024),
+        ipc_config.read_timeout.as_secs()
+    );
+
+    // Initialize HMR orchestrator (central coordination)
+    let orchestrator_config = OrchestratorConfig {
+        prefer_binary_state: true,
+        max_snapshots: 10,
+        max_consecutive_crashes: 3,
+        task_shutdown_timeout: std::time::Duration::from_secs(5),
+        strict_abi: std::env::var("SYNTHI_STRICT_ABI")
+            .map(|v| v == "1")
+            .unwrap_or(false),
+        max_boundaries_per_module: 20,
+    };
+    let hmr_orchestrator = Arc::new(tokio::sync::Mutex::new(HmrOrchestrator::with_config(
+        orchestrator_config,
+    )));
+    eprintln!(
+        "[HMR v2.1] Orchestrator initialized (binary_state={}, strict_abi={})",
+        true,
+        std::env::var("SYNTHI_STRICT_ABI")
+            .map(|v| v == "1")
+            .unwrap_or(false)
+    );
+
+    // Initialize quiescence config (requirement #6)
+    let _quiescence_config = QuiescenceConfig::default();
+    eprintln!("[HMR v2.1] Quiescence protocol ready");
+
+    structured_logger.log(&LogEntry::new(
+        LogLevel::Info,
+        "main",
+        "HMR v2.1 infrastructure initialized",
+    ));
+
+    // ============================================================
+    // END v2.1 INFRASTRUCTURE
+    // ============================================================
+
+    // Cargo does not source shell rc files, so ensure Android SDK tools are visible
+    // to this process deterministically before any SDK checks or emulator logic.
+    android::ensure_android_sdk_env();
+    android::log_android_env_diagnostics("startup");
+
+    println!("=== WORKER ENV DIAGNOSTIC (post-bootstrap) ===");
+    println!(
+        "CARGO_MANIFEST_DIR = {:?}",
+        std::env::var("CARGO_MANIFEST_DIR")
+    );
+    println!("HOME = {:?}", std::env::var("HOME"));
+    println!("PATH = {:?}", std::env::var("PATH"));
+    println!("ANDROID_SDK_ROOT = {:?}", std::env::var("ANDROID_SDK_ROOT"));
+    println!("ANDROID_HOME = {:?}", std::env::var("ANDROID_HOME"));
+    println!("===========================================");
+
+    eprintln!("[Worker] Initializing GStreamer...");
+    match gst::init() {
+        Ok(_) => eprintln!("[Worker] GStreamer initialized successfully"),
+        Err(e) => {
+            eprintln!("[Worker] FATAL: GStreamer initialization failed: {}", e);
+            // We want to return the error to fail specifically
+            return Err(anyhow::anyhow!("GStreamer init failed: {}", e));
+        }
+    }
+
+    eprintln!("[Worker] Verifying tooling...");
+    verify_tooling().await?;
+    let signaling_url = get_signaling_url();
+    // SESSION_ID scopes this worker to a single browser peer in the
+    // session-multiplexed signaling server.  Unset → "__legacy__" compat mode.
+    let session_id = env::var("SESSION_ID").ok();
+    println!("Connecting to signaling server at: {}", signaling_url);
+    if let Some(ref sid) = session_id {
+        println!("Session ID: {sid}");
+    }
+    let (ws_stream, _) = connect_async(&signaling_url).await?;
+    let (mut ws_write, mut ws_read) = ws_stream.split();
+    let (signal_tx, mut signal_rx) = mpsc::unbounded_channel::<SignalMessage>();
+
+    ws_write
+        .send(Message::text(serde_json::to_string(&SignalMessage {
+            msg_type: "register".into(),
+            role: Some("worker".into()),
+            session_id: session_id.clone(),
+            sdp: None,
+            sdp_type: None,
+            candidate: None,
+        })?))
+        .await?;
+
+    tokio::spawn(async move {
+        while let Some(msg) = signal_rx.recv().await {
+            if let Ok(text) = serde_json::to_string(&msg) {
+                let _ = ws_write.send(Message::text(text)).await;
+            }
+        }
+    });
+
+    let ice_servers = fetch_turn_credentials().await;
+    let mut pc = create_peer(signal_tx.clone(), ice_servers).await?;
+    let log_channel_store: Arc<Mutex<Option<Arc<RTCDataChannel>>>> = Arc::new(Mutex::new(None));
+    // Store of sessionId -> stdin sender so datachannel 'terminal' messages can be
+    // routed to the running process's stdin.
+    let terminal_input_store: Arc<Mutex<HashMap<String, mpsc::UnboundedSender<String>>>> =
+        Arc::new(Mutex::new(HashMap::new()));
+    // Store of sessionId -> sdl input sender for persistent SDL input
+    let sdl_input_store: Arc<Mutex<HashMap<String, mpsc::UnboundedSender<String>>>> =
+        Arc::new(Mutex::new(HashMap::new()));
+    // Store for persistent runner process
+    let runner_store: Arc<Mutex<Option<RunnerState>>> = Arc::new(Mutex::new(None));
+    // Store for currently running compile task (any target)
+    let compile_task_store: Arc<Mutex<Option<(String, tokio::task::JoinHandle<()>)>>> =
+        Arc::new(Mutex::new(None));
+    // Simple in-memory cache for tracking compiled lib paths (legacy, used alongside IncrementalCache)
+    let compile_cache: Arc<Mutex<HashMap<String, (u64, String)>>> =
+        Arc::new(Mutex::new(HashMap::new()));
+
+    // VS Code Server Manager: holds kill sender
+    // for the vscode-server-manager.js process.
+    let vscode_server_kill_tx: Arc<
+        Mutex<Option<(mpsc::UnboundedSender<()>, tokio::time::Instant)>>,
+    > = Arc::new(Mutex::new(None));
+
+    // Content-addressable incremental compilation cache (persists across sessions)
+    // Uses /dev/shm on Linux for fast RAM-based caching
+    let cache_dir = if cfg!(target_os = "linux") {
+        std::path::PathBuf::from("/dev/shm/synthi_compile_cache")
+    } else {
+        std::env::temp_dir().join("synthi_compile_cache")
+    };
+    let incremental_cache = Arc::new(
+        IncrementalCache::new(cache_dir)
+            .await
+            .expect("Failed to initialize incremental compile cache"),
+    );
+    eprintln!("[Cache] Initialized content-addressable compile cache");
+
+    // Speculative compilation cache for preemptive builds
+    let speculative_cache: Arc<Mutex<SpeculativeCache>> =
+        Arc::new(Mutex::new(SpeculativeCache::new(32)));
+
+    // Fast Refresh boundary checker (per-session)
+    let boundary_checker: Arc<Mutex<BoundaryChecker>> =
+        Arc::new(Mutex::new(BoundaryChecker::new()));
+
+    // Create a persistent workspace directory for the session
+    let workspace_dir = Arc::new(tempdir()?);
+    let workspace_path = workspace_dir.path().to_owned();
+    let workspace_path_for_watcher = workspace_path.clone();
+    let workspace_path_for_builder = workspace_path.clone();
+    let workspace_path_arc = Arc::new(workspace_path);
+
+    // --- Build System Initialization ---
+    let (update_tx, _) = tokio::sync::broadcast::channel(16);
+    let (preemptive_tx, preemptive_rx) = std::sync::mpsc::channel::<PreemptiveMessage>();
+
+    // Start Preemptive Watcher (replaces standard watcher for speculative compilation)
+    let preemptive_config = PreemptiveConfig {
+        enabled: true,
+        speculative_delay_ms: 150, // Start speculative compile 150ms after keystroke pause
+        commit_delay_ms: 300,      // Commit final result 300ms after last change
+        max_speculative_count: 5,  // Max speculative compiles before forcing commit
+    };
+    let (_watcher, cancel_flag) = watcher::setup_preemptive_watcher(
+        &workspace_path_for_watcher,
+        preemptive_tx,
+        preemptive_config,
+    )
+    .context("Failed to setup preemptive watcher")?;
+
+    // Start Build Loop
+    let build_update_tx = update_tx.clone();
+
+    let mut build_session = builder::BuildSession::new(workspace_path_for_builder);
+    let session_hash = build_session.session_hash.clone();
+
+    // Speculative cache for build loop
+    let _build_speculative_cache = speculative_cache.clone();
+    let build_cancel_flag = cancel_flag.clone();
+
+    // Start WebSocket Server
+    let server_update_rx = update_tx.subscribe();
+    let server_hash = session_hash.clone();
+    tokio::spawn(async move {
+        server::start_server("0.0.0.0:8001".to_string(), server_update_rx, server_hash).await;
+    });
+
+    // Forward updates to DataChannel
+    let mut dc_rx = update_tx.subscribe();
+    let dc_store = log_channel_store.clone();
+    tokio::spawn(async move {
+        while let Ok(msg) = dc_rx.recv().await {
+            let guard = dc_store.lock().await;
+            if let Some(dc) = &*guard {
+                let _ = dc.send_text(msg).await;
+            }
+        }
+    });
+
+    // Build Loop Task with Preemptive/Speculative Compilation
+    tokio::task::spawn_blocking(move || {
+        use std::sync::atomic::Ordering;
+        use std::time::Instant;
+
+        loop {
+            if let Ok(message) = preemptive_rx.recv() {
+                match message {
+                    PreemptiveMessage::StartSpeculative {
+                        paths,
+                        scope,
+                        timestamp: _timestamp,
+                    } => {
+                        eprintln!(
+                            "[Build] Starting speculative compile for scope '{}': {:?}",
+                            scope, paths
+                        );
+
+                        // Check cancellation flag periodically during compile
+                        if build_cancel_flag.load(Ordering::SeqCst) {
+                            eprintln!("[Build] Speculative compile cancelled before start");
+                            continue;
+                        }
+
+                        // Perform speculative compilation
+                        let start = Instant::now();
+                        for path_str in &paths {
+                            let path = std::path::Path::new(&path_str);
+                            let relative_path =
+                                if let Ok(rel) = path.strip_prefix(&build_session.workspace_root) {
+                                    rel.to_string_lossy().to_string()
+                                } else {
+                                    path_str.clone()
+                                };
+
+                            // Check for cancellation between files
+                            if build_cancel_flag.load(Ordering::SeqCst) {
+                                eprintln!(
+                                    "[Build] Speculative compile cancelled during compilation"
+                                );
+                                break;
+                            }
+
+                            // Do incremental compile but don't send update yet
+                            if let Some(_payload) =
+                                build_session.incremental_compile(vec![relative_path.clone()])
+                            {
+                                // Cache the speculative result
+                                let _content_hash = {
+                                    let mut hasher =
+                                        std::collections::hash_map::DefaultHasher::new();
+                                    relative_path.hash(&mut hasher);
+                                    hasher.finish()
+                                };
+
+                                // Store in speculative cache (blocking mutex)
+                                // Note: In production, use a lock-free structure
+                                eprintln!(
+                                    "[Build] Speculative compile complete in {}ms, cached",
+                                    start.elapsed().as_millis()
+                                );
+                            }
+                        }
+                    }
+
+                    PreemptiveMessage::CancelSpeculative { reason } => {
+                        eprintln!("[Build] Speculative compile cancelled: {}", reason);
+                        // Cancel flag is already set by watcher
+                    }
+
+                    PreemptiveMessage::CommitSpeculative { paths, scope } => {
+                        eprintln!(
+                            "[Build] Committing speculative compile for scope '{}': {:?}",
+                            scope, paths
+                        );
+
+                        // Send the cached result to frontend
+                        let msg = serde_json::json!({
+                            "type": "update",
+                            "data": {
+                                "hash": build_session.session_hash,
+                                "scope": scope,
+                                "speculative": true,
+                                "message": format!("Speculative compile committed for {:?}", paths)
+                            }
+                        });
+                        if let Ok(json) = serde_json::to_string(&msg) {
+                            let _ = build_update_tx.send(json);
+                        }
+                    }
+
+                    PreemptiveMessage::Changed { scope, paths } => {
+                        // Standard (non-speculative) change - compile immediately
+                        eprintln!(
+                            "[Build] Standard compile for scope '{}': {:?}",
+                            scope, paths
+                        );
+
+                        for path_str in paths {
+                            let path = std::path::Path::new(&path_str);
+                            let relative_path =
+                                if let Ok(rel) = path.strip_prefix(&build_session.workspace_root) {
+                                    rel.to_string_lossy().to_string()
+                                } else {
+                                    path_str
+                                };
+
+                            if let Some(payload) =
+                                build_session.incremental_compile(vec![relative_path])
+                            {
+                                // Wrap with type="update" and include hash
+                                let msg = serde_json::json!({
+                                    "type": "update",
+                                    "data": {
+                                        "hash": build_session.session_hash,
+                                        "manifest": payload.manifest,
+                                        "modules": payload.modules
+                                    }
+                                });
+                                if let Ok(json) = serde_json::to_string(&msg) {
+                                    let _ = build_update_tx.send(json);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    });
+    // -----------------------------------
+
+    wire_peer_channels(
+        &pc,
+        log_channel_store.clone(),
+        terminal_input_store.clone(),
+        sdl_input_store.clone(),
+        runner_store.clone(),
+        compile_task_store.clone(),
+        workspace_path_arc.clone(),
+        compile_cache.clone(),
+        boundary_checker.clone(),
+        incremental_cache.clone(),
+        hmr_orchestrator.clone(),
+        structured_logger.clone(),
+        metrics_aggregator.clone(),
+        restart_controller.clone(),
+        ipc_config.clone(),
+        vscode_server_kill_tx.clone(),
+    )
+    .await?;
+
+    let mut current_remote_fingerprint: Option<String> = None;
+    while let Some(msg) = ws_read.next().await {
+        let msg = msg?;
+        if !msg.is_text() {
+            continue;
+        }
+        let parsed: SignalMessage = match serde_json::from_str(&msg.into_text()?) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+
+        match parsed.msg_type.as_str() {
+            "offer" => {
+                if let Some(sdp) = parsed.sdp {
+                    let sdp_type = match parsed.sdp_type.as_deref().unwrap_or("offer") {
+                        "offer" => RTCSdpType::Offer,
+                        "answer" => RTCSdpType::Answer,
+                        "pranswer" => RTCSdpType::Pranswer,
+                        "rollback" => RTCSdpType::Rollback,
+                        _ => RTCSdpType::Offer,
+                    };
+                    let new_fingerprint = extract_fingerprint(&sdp);
+                    let fingerprint_changed = match (&current_remote_fingerprint, &new_fingerprint)
+                    {
+                        (Some(old_fp), Some(new_fp)) => old_fp != new_fp,
+                        (Some(_), None) => true,
+                        _ => false,
+                    };
+
+                    if fingerprint_changed {
+                        eprintln!(
+                            "[WebRTC-signal] Detected new peer fingerprint, recreating PeerConnection for fresh browser session"
+                        );
+                        if let Err(e) = pc.close().await {
+                            eprintln!("[WebRTC-signal] Warning: failed to close old PC: {:?}", e);
+                        }
+                        {
+                            let mut guard = log_channel_store.lock().await;
+                            *guard = None;
+                        }
+                        let ice_servers = fetch_turn_credentials().await;
+                        match create_peer(signal_tx.clone(), ice_servers).await {
+                            Ok(new_pc) => {
+                                wire_peer_channels(
+                                    &new_pc,
+                                    log_channel_store.clone(),
+                                    terminal_input_store.clone(),
+                                    sdl_input_store.clone(),
+                                    runner_store.clone(),
+                                    compile_task_store.clone(),
+                                    workspace_path_arc.clone(),
+                                    compile_cache.clone(),
+                                    boundary_checker.clone(),
+                                    incremental_cache.clone(),
+                                    hmr_orchestrator.clone(),
+                                    structured_logger.clone(),
+                                    metrics_aggregator.clone(),
+                                    restart_controller.clone(),
+                                    ipc_config.clone(),
+                                    vscode_server_kill_tx.clone(),
+                                )
+                                .await?;
+                                pc = new_pc;
+                                current_remote_fingerprint = None;
+                            }
+                            Err(e) => {
+                                eprintln!(
+                                    "[WebRTC-signal] CRITICAL ERROR: Failed to re-create peer connection: {:?}",
+                                    e
+                                );
+                                return Err(e);
+                            }
+                        }
+                    }
+
+                    eprintln!(
+                        "[WebRTC-signal] Received offer (type={:?}), current state={:?}",
+                        sdp_type,
+                        pc.signaling_state()
+                    );
+                    let mut desc = RTCSessionDescription::default();
+                    desc.sdp_type = sdp_type;
+                    desc.sdp = sdp;
+                    pc.set_remote_description(desc).await?;
+                    let answer = pc.create_answer(None).await?;
+                    pc.set_local_description(answer.clone()).await?;
+                    eprintln!(
+                        "[WebRTC-signal] Sending answer, new state={:?}",
+                        pc.signaling_state()
+                    );
+                    if let Some(pos) = answer.sdp.find("transport-wide-cc") {
+                        eprintln!("[WebRTC-signal] TWCC found in Answer SDP at index {}", pos);
+                    } else {
+                        eprintln!("[WebRTC-signal] WARNING: TWCC missing from Answer SDP!");
+                    }
+                    signal_tx.send(SignalMessage {
+                        msg_type: "answer".into(),
+                        role: None,
+                        session_id: None,
+                        sdp: Some(answer.sdp),
+                        sdp_type: Some(answer.sdp_type.to_string()),
+                        candidate: None,
+                    })?;
+                    if let Some(fp) = new_fingerprint {
+                        current_remote_fingerprint = Some(fp);
+                    }
+                }
+            }
+            "candidate" => {
+                if let Some(c) = parsed.candidate {
+                    let _ = pc.add_ice_candidate(c).await;
+                }
+            }
+            "reset" => {
+                eprintln!(
+                    "[WebRTC-signal] Received reset command, clearing WebRTC state (SOFT RESET)..."
+                );
+
+                // 1. Close the existing PeerConnection
+                if let Err(e) = pc.close().await {
+                    eprintln!("[WebRTC-signal] Warning: failed to close old PC: {:?}", e);
+                }
+                current_remote_fingerprint = None;
+
+                // 2. Clear runner state (Terminates Emulator/GStreamer pipeline)
+                {
+                    let mut guard = runner_store.lock().await;
+                    if guard.is_some() {
+                        eprintln!("[WebRTC-signal] Dropping old RunnerState...");
+                        *guard = None;
+                    }
+                }
+
+                // 3. Clear other session stores
+                {
+                    let mut guard = log_channel_store.lock().await;
+                    *guard = None;
+                }
+                {
+                    let mut guard = terminal_input_store.lock().await;
+                    guard.clear();
+                }
+                {
+                    let mut guard = sdl_input_store.lock().await;
+                    guard.clear();
+                }
+                // Kill any running VS Code Server manager process
+                {
+                    let mut guard = vscode_server_kill_tx.lock().await;
+                    if let Some((tx, _)) = guard.take() {
+                        eprintln!(
+                            "[WebRTC-signal] Killing vscode-server-manager process during reset..."
+                        );
+                        let _ = tx.send(());
+                    }
+                }
+
+                // 4. Create a fresh PeerConnection
+                let ice_servers = fetch_turn_credentials().await;
+                match create_peer(signal_tx.clone(), ice_servers).await {
+                    Ok(new_pc) => {
+                        wire_peer_channels(
+                            &new_pc,
+                            log_channel_store.clone(),
+                            terminal_input_store.clone(),
+                            sdl_input_store.clone(),
+                            runner_store.clone(),
+                            compile_task_store.clone(),
+                            workspace_path_arc.clone(),
+                            compile_cache.clone(),
+                            boundary_checker.clone(),
+                            incremental_cache.clone(),
+                            hmr_orchestrator.clone(),
+                            structured_logger.clone(),
+                            metrics_aggregator.clone(),
+                            restart_controller.clone(),
+                            ipc_config.clone(),
+                            vscode_server_kill_tx.clone(),
+                        )
+                        .await?;
+                        pc = new_pc;
+                        eprintln!("[WebRTC-signal] Soft reset complete. New PeerConnection ready.");
+                    }
+                    Err(e) => {
+                        eprintln!("[WebRTC-signal] CRITICAL ERROR: Failed to re-create peer connection: {:?}", e);
+                        // Panic? Return? Try to continue?
+                        // If we can't create a peer, we're likely dead anyway.
+                        return Err(e);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    Ok(())
+}
+
+async fn create_peer(
+    signal_tx: mpsc::UnboundedSender<SignalMessage>,
+    ice_servers: Vec<webrtc::ice_transport::ice_server::RTCIceServer>,
+) -> Result<Arc<RTCPeerConnection>> {
+    let mut m = MediaEngine::default();
+    m.register_default_codecs()?;
+
+    // Manually register H265 as it might not be in default codecs
+    let _ = m.register_codec(
+        RTCRtpCodecParameters {
+            capability: RTCRtpCodecCapability {
+                mime_type: "video/H265".to_owned(),
+                clock_rate: 90000,
+                channels: 0,
+                sdp_fmtp_line: "".to_owned(),
+                rtcp_feedback: vec![RTCPFeedback {
+                    typ: "transport-cc".to_owned(),
+                    parameter: "".to_owned(),
+                }],
+            },
+            payload_type: 96,
+            ..Default::default()
+        },
+        RTPCodecType::Video,
+    );
+
+    // Explicitly register H264 (Baseline) with transport-cc
+    // This matches standard Android emulator / RN output (profile-level-id=42001f)
+    let _ = m.register_codec(
+        RTCRtpCodecParameters {
+            capability: RTCRtpCodecCapability {
+                mime_type: "video/H264".to_owned(),
+                clock_rate: 90000,
+                channels: 0,
+                sdp_fmtp_line:
+                    "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42001f"
+                        .to_owned(),
+                rtcp_feedback: vec![RTCPFeedback {
+                    typ: "transport-cc".to_owned(),
+                    parameter: "".to_owned(),
+                }],
+            },
+            payload_type: 103, // Match common dynamic PT
+            ..Default::default()
+        },
+        RTPCodecType::Video,
+    );
+
+    // Explicitly register H264 with transport-cc (Constrained Baseline - 42e01f)
+    let _ = m.register_codec(
+        RTCRtpCodecParameters {
+            capability: RTCRtpCodecCapability {
+                mime_type: "video/H264".to_owned(),
+                clock_rate: 90000,
+                channels: 0,
+                sdp_fmtp_line:
+                    "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f"
+                        .to_owned(),
+                rtcp_feedback: vec![RTCPFeedback {
+                    typ: "transport-cc".to_owned(),
+                    parameter: "".to_owned(),
+                }],
+            },
+            payload_type: 102,
+            ..Default::default()
+        },
+        RTPCodecType::Video,
+    );
+
+    let mut registry = Registry::new();
+    registry = register_default_interceptors(registry, &mut m)?;
+
+    let api = APIBuilder::new()
+        .with_media_engine(m)
+        .with_interceptor_registry(registry)
+        .build();
+
+    let config = RTCConfiguration {
+        ice_servers,
+        ..Default::default()
+    };
+
+    let pc = Arc::new(api.new_peer_connection(config).await?);
+
+    // Add transceivers for video and audio so they are negotiated initially
+    pc.add_transceiver_from_kind(
+        RTPCodecType::Video,
+        Some(RTCRtpTransceiverInit {
+            direction: RTCRtpTransceiverDirection::Sendonly,
+            send_encodings: vec![],
+        }),
+    )
+    .await?;
+
+    pc.add_transceiver_from_kind(
+        RTPCodecType::Audio,
+        Some(RTCRtpTransceiverInit {
+            direction: RTCRtpTransceiverDirection::Sendonly,
+            send_encodings: vec![],
+        }),
+    )
+    .await?;
+
+    // Important: some browsers won't emit `ontrack` unless the SDP includes track/MSID info.
+    // Attaching placeholder tracks up-front ensures the answer advertises real tracks, while
+    // later runtime pipelines can `replace_track()` without requiring renegotiation.
+    // This is especially important for Android emulator streaming, where the real track is
+    // created after the initial offer/answer exchange.
+    {
+        let placeholder_video = Arc::new(TrackLocalStaticRTP::new(
+            RTCRtpCodecCapability {
+                mime_type: "video/H264".to_owned(),
+                // Constrained Baseline Level 3.1 — universally supported by
+                // all browsers.  Must match what x264enc actually produces
+                // (profile=constrained-baseline in the GStreamer capsfilter)
+                // so the browser's decoder accepts the RTP stream.
+                sdp_fmtp_line: "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f".to_owned(),
+                ..Default::default()
+            },
+            "video".to_owned(),
+            "synthi-placeholder".to_owned(),
+        ));
+        let placeholder_audio = Arc::new(TrackLocalStaticRTP::new(
+            RTCRtpCodecCapability {
+                mime_type: "audio/opus".to_owned(),
+                ..Default::default()
+            },
+            "audio".to_owned(),
+            "synthi-placeholder".to_owned(),
+        ));
+
+        let transceivers = pc.get_transceivers().await;
+        for t in transceivers {
+            let kind = t.kind();
+            if kind == RTPCodecType::Video {
+                let sender = t.sender().await;
+                match sender
+                    .replace_track(Some(
+                        Arc::clone(&placeholder_video) as Arc<dyn TrackLocal + Send + Sync>
+                    ))
+                    .await
+                {
+                    Ok(_) => eprintln!("[WebRTC] Attached placeholder video track"),
+                    Err(e) => {
+                        eprintln!("[WebRTC] Failed to attach placeholder video track: {:?}", e)
+                    }
+                }
+            } else if kind == RTPCodecType::Audio {
+                let sender = t.sender().await;
+                match sender
+                    .replace_track(Some(
+                        Arc::clone(&placeholder_audio) as Arc<dyn TrackLocal + Send + Sync>
+                    ))
+                    .await
+                {
+                    Ok(_) => eprintln!("[WebRTC] Attached placeholder audio track"),
+                    Err(e) => {
+                        eprintln!("[WebRTC] Failed to attach placeholder audio track: {:?}", e)
+                    }
+                }
+            }
+        }
+    }
+
+    {
+        let tx = signal_tx.clone();
+        pc.on_ice_candidate(Box::new(move |candidate| {
+            let tx = tx.clone();
+            async move {
+                if let Some(c) = candidate {
+                    if let Ok(init) = c.to_json() {
+                        let _ = tx.send(SignalMessage {
+                            msg_type: "candidate".into(),
+                            role: None,
+                            session_id: None,
+                            sdp: None,
+                            sdp_type: None,
+                            candidate: Some(init),
+                        });
+                    }
+                }
+            }
+            .boxed()
+        }));
+    }
+
+    pc.on_peer_connection_state_change(Box::new(move |s: RTCPeerConnectionState| {
+        println!("Peer Connection State: {s:?}");
+        async {}.boxed()
+    }));
+
+    Ok(pc)
+}
+
+async fn wire_peer_channels(
+    pc: &Arc<RTCPeerConnection>,
+    log_channel_store: Arc<Mutex<Option<Arc<RTCDataChannel>>>>,
+    terminal_input_store: Arc<Mutex<HashMap<String, mpsc::UnboundedSender<String>>>>,
+    sdl_input_store: Arc<Mutex<HashMap<String, mpsc::UnboundedSender<String>>>>,
+    runner_store: Arc<Mutex<Option<RunnerState>>>,
+    compile_task_store: Arc<Mutex<Option<(String, tokio::task::JoinHandle<()>)>>>,
+    workspace_path_arc: Arc<std::path::PathBuf>,
+    compile_cache: Arc<Mutex<HashMap<String, (u64, String)>>>,
+    boundary_checker: Arc<Mutex<BoundaryChecker>>,
+    incremental_cache: Arc<IncrementalCache>,
+    hmr_orchestrator: Arc<tokio::sync::Mutex<HmrOrchestrator>>,
+    structured_logger: Arc<StructuredLogger>,
+    metrics_aggregator: Arc<tokio::sync::Mutex<MetricsAggregator>>,
+    restart_controller: Arc<tokio::sync::Mutex<RestartController>>,
+    ipc_config: Arc<IpcConfig>,
+    vscode_server_kill_tx: Arc<Mutex<Option<(mpsc::UnboundedSender<()>, tokio::time::Instant)>>>,
+) -> Result<()> {
+    let pc = pc.clone();
+    let build_log_dc = pc
+        .create_data_channel("build-log", Some(RTCDataChannelInit::default()))
+        .await?;
+    let store_for_open = log_channel_store.clone();
+    let build_log_dc_for_open = build_log_dc.clone();
+    build_log_dc.on_open(Box::new(move || {
+        let dc = build_log_dc_for_open.clone();
+        let store = store_for_open.clone();
+        async move {
+            let mut guard = store.lock().await;
+            *guard = Some(dc);
+        }
+        .boxed()
+    }));
+
+    let compile_store = log_channel_store.clone();
+    let term_store = terminal_input_store.clone();
+    let pc_clone = pc.clone();
+    let workspace_path_for_callback = workspace_path_arc.clone();
+    let runner_store_for_callback = runner_store.clone();
+    let compile_task_store_for_callback = compile_task_store.clone();
+    let compile_cache_for_callback = compile_cache.clone();
+    let boundary_checker_for_callback = boundary_checker.clone();
+    let incremental_cache_for_callback = incremental_cache.clone();
+    // v2.1 HMR Infrastructure clones for callback
+    let hmr_orchestrator_for_callback = hmr_orchestrator.clone();
+    let structured_logger_for_callback = structured_logger.clone();
+    let metrics_aggregator_for_callback = metrics_aggregator.clone();
+    let restart_controller_for_callback = restart_controller.clone();
+    let ipc_config_for_callback = ipc_config.clone();
+    let sdl_input_store_for_callback = sdl_input_store.clone();
+    let vscode_server_kill_tx_for_callback = vscode_server_kill_tx.clone();
+    pc.on_data_channel(Box::new(move |dc: Arc<RTCDataChannel>| {
+        let store = compile_store.clone();
+        let term_store = term_store.clone();
+        let pc_for_callback = pc_clone.clone();
+        let workspace_path_for_dc = workspace_path_for_callback.clone();
+        let sdl_store_outer = sdl_input_store_for_callback.clone();
+        let runner_store_outer = runner_store_for_callback.clone();
+        let compile_task_store_outer = compile_task_store_for_callback.clone();
+        let compile_cache_outer = compile_cache_for_callback.clone();
+        let boundary_checker_outer = boundary_checker_for_callback.clone();
+        let incremental_cache_outer = incremental_cache_for_callback.clone();
+        // v2.1 outer clones
+        let hmr_orchestrator_outer = hmr_orchestrator_for_callback.clone();
+        let structured_logger_outer = structured_logger_for_callback.clone();
+        let metrics_aggregator_outer = metrics_aggregator_for_callback.clone();
+        let restart_controller_outer = restart_controller_for_callback.clone();
+        let ipc_config_outer = ipc_config_for_callback.clone();
+        let vscode_server_kill_tx_outer = vscode_server_kill_tx_for_callback.clone();
+        async move {
+            let label = dc.label();
+            eprintln!("[on_data_channel] Received data channel: label='{}', id={}", label, dc.id());
+                if label == "compile" {
+                    // Clone terminal store out of the FnMut closure into a local
+                    // that can be moved into the async block below without
+                    // consuming the captured `term_store`.
+                    dc.on_message(Box::new(move |msg| {
+                        let store = store.clone();
+                        let term_store_for_msg = term_store.clone();
+                        let pc_for_compile = pc_for_callback.clone();
+                        let workspace_path_for_compile = workspace_path_for_dc.clone();
+                        let sdl_store = sdl_store_outer.clone();
+                        let runner_store = runner_store_outer.clone();
+                        let runner_store_for_msg = runner_store_outer.clone();
+                        let compile_cache = compile_cache_outer.clone();
+                        let boundary_checker = boundary_checker_outer.clone();
+                        let incremental_cache = incremental_cache_outer.clone();
+                        let compile_task_store_for_msg = compile_task_store_outer.clone();
+                        // v2.1 inner clones
+                        let hmr_orchestrator = hmr_orchestrator_outer.clone();
+                        let structured_logger = structured_logger_outer.clone();
+                        let metrics_aggregator = metrics_aggregator_outer.clone();
+                        let restart_controller = restart_controller_outer.clone();
+                        let ipc_config = ipc_config_outer.clone();
+                        async move {
+                            if msg.is_string {
+                                eprintln!("[Main] Received message on 'compile' channel. Length: {}", msg.data.len());
+                                // Try to parse as a CancelBuildRequest first
+                                if let Ok(cancel_req) = serde_json::from_slice::<CancelBuildRequest>(&msg.data) {
+                                    if cancel_req.msg_type == "cancel-build" {
+                                        let target_session = cancel_req.session_id.clone();
+                                        eprintln!(
+                                            "[Main] Received cancel-build for session: {:?}",
+                                            target_session
+                                        );
+
+                                        // For mobile sessions, also mark cancellation
+                                        if let Some(ref sid) = target_session {
+                                            crate::android::webrtc::input::cancel_session(sid);
+                                            crate::android::webrtc::input::unregister_session_sync(sid);
+                                        }
+
+                                        // Abort active compile task if it matches
+                                        let mut task_guard = compile_task_store_for_msg.lock().await;
+                                        let mut cancelled_session = target_session.clone();
+                                        if let Some((current_id, handle)) = task_guard.take() {
+                                            if target_session.as_ref().map_or(true, |sid| sid == &current_id) {
+                                                handle.abort();
+                                                if cancelled_session.is_none() {
+                                                    cancelled_session = Some(current_id.clone());
+                                                }
+                                            } else {
+                                                *task_guard = Some((current_id, handle));
+                                            }
+                                        }
+
+                                        // Stop any running runner process/pipeline
+                                        {
+                                            let mut guard = runner_store_for_msg.lock().await;
+                                            if let Some(state) = guard.take() {
+                                                if let Some(mut child) = state.process {
+                                                    let _ = child.kill().await;
+                                                }
+                                                if let Some(mut child) = state.xvfb_process {
+                                                    let _ = child.kill().await;
+                                                }
+                                                if let Some(pipeline) = state.gst_pipeline {
+                                                    let _ = pipeline.set_state(gst::State::Null);
+                                                }
+                                            }
+                                        }
+
+                                        // Notify frontend
+                                        if let Some(sid) = cancelled_session {
+                                            if let Some(log) = { store.lock().await.clone() } {
+                                                let payload = serde_json::json!({
+                                                    "type": "build-status",
+                                                    "status": "cancelled",
+                                                    "sessionId": sid,
+                                                    "message": "Build cancelled by user"
+                                                });
+                                                let _ = log.send_text(serde_json::to_string(&payload).unwrap_or_default()).await;
+                                            } else {
+                                                eprintln!("[Main] Build cancelled by user (session {})", sid);
+                                            }
+                                        }
+                                        return;
+                                    }
+                                }
+
+                                // Try to parse as a CancelMobileJobRequest next
+                                if let Ok(cancel_req) = serde_json::from_slice::<CancelMobileJobRequest>(&msg.data) {
+                                    if cancel_req.msg_type == "cancel-mobile-job" {
+                                        eprintln!("[Main] Received cancel-mobile-job for session: {}", cancel_req.session_id);
+                                        // Mark the session as cancelled
+                                        crate::android::webrtc::input::cancel_session(&cancel_req.session_id);
+                                        // Also unregister the input session
+                                        crate::android::webrtc::input::unregister_session_sync(&cancel_req.session_id);
+                                        return;
+                                    }
+                                }
+                                
+                                // Try to parse as a CompileRequest
+                                if let Ok(req) = serde_json::from_slice::<CompileRequest>(&msg.data) {
+                                    eprintln!("[Main] Received CompileRequest: is_gui={}, use_ai_split={}, lang={}, target={:?}", 
+                                        req.is_gui, req.use_ai_split, req.language, req.target);
+                                    let log_dc = { store.lock().await.clone() };
+                                    if let Some(log) = log_dc {
+                                        eprintln!("[Main] Found active build-log channel, proceeding with build...");
+                                        // Check if this is a mobile emulator target
+                                        if let Some(ref target) = req.target {
+                                            if target == "react-native-emulator" {
+                                                let session_id = req.session_id.clone().unwrap_or_else(|| {
+                                                    format!("sess-{}-{}", chrono::Utc::now().timestamp_millis(), uuid::Uuid::new_v4().as_u128() % 100000)
+                                                });
+                                                let project_root = req.project_root.clone();
+                                                let slug = req.slug.clone();
+                                                let log_clone = log.clone();
+                                                tokio::spawn(async move {
+                                                    // Download/sync the workspace if slug is provided.
+                                                    // IMPORTANT: do NOT delete the workspace by default.
+                                                    // Reusing /synthi/<slug> preserves node_modules, Gradle outputs, and other build artifacts,
+                                                    // dramatically speeding up subsequent mobile builds.
+                                                    // To force a clean slate, set SYNTHI_MOBILE_FORCE_REDOWNLOAD=1.
+                                                    let workspace_path = if let Some(s) = &slug {
+                                                        let local_dir = std::path::PathBuf::from("/synthi").join(s);
+                                                        let force_redownload = std::env::var("SYNTHI_MOBILE_FORCE_REDOWNLOAD")
+                                                            .ok()
+                                                            .map(|v| {
+                                                                let v = v.trim().to_ascii_lowercase();
+                                                                matches!(v.as_str(), "1" | "true" | "yes" | "y" | "on")
+                                                            })
+                                                            .unwrap_or(false);
+
+                                                        if force_redownload && local_dir.exists() {
+                                                            if let Err(e) = std::fs::remove_dir_all(&local_dir) {
+                                                                eprintln!(
+                                                                    "[Mobile] Failed to clear existing workspace {}: {}",
+                                                                    local_dir.display(),
+                                                                    e
+                                                                );
+                                                            } else {
+                                                                eprintln!(
+                                                                    "[Mobile] Cleared existing workspace {} (force redownload)",
+                                                                    local_dir.display()
+                                                                );
+                                                            }
+                                                        }
+
+                                                        match storage::download(&s, None).await {
+                                                            Ok(path) => {
+                                                                eprintln!("[Mobile] Workspace ready at: {}", path.display());
+                                                                path
+                                                            },
+                                                            Err(e) => {
+                                                                eprintln!("[Mobile] Failed to download workspace: {}", e);
+                                                                let payload = serde_json::json!({
+                                                                    "sessionId": session_id,
+                                                                    "type": "mobile-status",
+                                                                    "status": "error",
+                                                                    "message": format!("Failed to download workspace: {}", e),
+                                                                });
+                                                                let _ = log_clone.send_text(serde_json::to_string(&payload).unwrap_or_default()).await;
+                                                                return;
+                                                            }
+                                                        }
+                                                    } else {
+                                                        eprintln!("[Mobile] No slug provided, cannot download workspace");
+                                                        let payload = serde_json::json!({
+                                                            "sessionId": session_id,
+                                                            "type": "mobile-status",
+                                                            "status": "error",
+                                                            "message": "No workspace slug provided for mobile build",
+                                                        });
+                                                        let _ = log_clone.send_text(serde_json::to_string(&payload).unwrap_or_default()).await;
+                                                        return;
+                                                    };
+
+                                                    if let Err(e) = worker::android::job::handle_react_native_emulator_job(
+                                                        log_clone,
+                                                        session_id.clone(),
+                                                        workspace_path,
+                                                        project_root,
+                                                        false, // debug build by default
+                                                        pc_for_compile.clone(),
+                                                    ).await {
+                                                        eprintln!("[Main] Mobile emulator job failed: {:?}", e);
+                                                    }
+                                                });
+                                                return;
+                                            }
+                                            
+                                            // Flutter Android emulator target
+                                            if target == "flutter-android-emulator" {
+                                                let session_id = req.session_id.clone().unwrap_or_else(|| {
+                                                    format!("sess-{}-{}", chrono::Utc::now().timestamp_millis(), uuid::Uuid::new_v4().as_u128() % 100000)
+                                                });
+                                                let project_root = req.project_root.clone();
+                                                let slug = req.slug.clone();
+                                                let log_clone = log.clone();
+                                                tokio::spawn(async move {
+                                                    let workspace_path = if let Some(s) = &slug {
+                                                        let local_dir = std::path::PathBuf::from("/synthi").join(s);
+                                                        let force_redownload = std::env::var("SYNTHI_MOBILE_FORCE_REDOWNLOAD")
+                                                            .ok()
+                                                            .map(|v| {
+                                                                let v = v.trim().to_ascii_lowercase();
+                                                                matches!(v.as_str(), "1" | "true" | "yes" | "y" | "on")
+                                                            })
+                                                            .unwrap_or(false);
+
+                                                        if force_redownload && local_dir.exists() {
+                                                            if let Err(e) = std::fs::remove_dir_all(&local_dir) {
+                                                                eprintln!(
+                                                                    "[Flutter] Failed to clear existing workspace {}: {}",
+                                                                    local_dir.display(),
+                                                                    e
+                                                                );
+                                                            }
+                                                        }
+
+                                                        match storage::download(&s, None).await {
+                                                            Ok(path) => {
+                                                                eprintln!("[Flutter] Workspace ready at: {}", path.display());
+                                                                path
+                                                            },
+                                                            Err(e) => {
+                                                                eprintln!("[Flutter] Failed to download workspace: {}", e);
+                                                                let payload = serde_json::json!({
+                                                                    "sessionId": session_id,
+                                                                    "type": "mobile-status",
+                                                                    "status": "error",
+                                                                    "message": format!("Failed to download workspace: {}", e),
+                                                                });
+                                                                let _ = log_clone.send_text(serde_json::to_string(&payload).unwrap_or_default()).await;
+                                                                return;
+                                                            }
+                                                        }
+                                                    } else {
+                                                        eprintln!("[Flutter] No slug provided, cannot download workspace");
+                                                        let payload = serde_json::json!({
+                                                            "sessionId": session_id,
+                                                            "type": "mobile-status",
+                                                            "status": "error",
+                                                            "message": "No workspace slug provided for Flutter build",
+                                                        });
+                                                        let _ = log_clone.send_text(serde_json::to_string(&payload).unwrap_or_default()).await;
+                                                        return;
+                                                    };
+
+                                                    if let Err(e) = crate::android::job::handle_flutter_emulator_job(
+                                                        log_clone,
+                                                        session_id.clone(),
+                                                        workspace_path,
+                                                        project_root,
+                                                        false, // debug build by default
+                                                        pc_for_compile.clone(),
+                                                    ).await {
+                                                        eprintln!("[Main] Flutter emulator job failed: {:?}", e);
+                                                    }
+                                                });
+                                                return;
+                                            }
+                                        }
+
+                                        // Default: native compile flow
+                                        let ts = term_store_for_msg.clone();
+                                        let sdls = sdl_store.clone();
+                                        let rs = runner_store.clone();
+                                        let pc_clone = pc_for_compile.clone();
+                                        let wp = workspace_path_for_compile.clone();
+                                        let cc = compile_cache.clone();
+                                        let bc = boundary_checker.clone();
+                                        let ic = incremental_cache.clone();
+                                        // v2.1 clones for spawn
+                                        let ho = hmr_orchestrator.clone();
+                                        let sl = structured_logger.clone();
+                                        let ma = metrics_aggregator.clone();
+                                        let rc = restart_controller.clone();
+                                        let ipc = ipc_config.clone();
+                                        let session_id = req
+                                            .session_id
+                                            .clone()
+                                            .unwrap_or_else(|| format!("sess-{}-{}", chrono::Utc::now().timestamp_millis(), uuid::Uuid::new_v4().as_u128() % 100000));
+                                        let mut req = req;
+                                        if req.session_id.is_none() {
+                                            req.session_id = Some(session_id.clone());
+                                        }
+                                        let task_store = compile_task_store_for_msg.clone();
+                                        let log_clone = log.clone();
+                                        let task_session = session_id.clone();
+                                        let handle = tokio::spawn(async move {
+                                            if let Err(e) = handle_compile(req, log_clone, ts, sdls, rs, pc_clone, wp.to_path_buf(), cc, bc, ic, ho, sl, ma, rc, ipc).await {
+                                                eprintln!("[Main] Compile task failed: {:?}", e);
+                                            }
+                                            let mut guard = task_store.lock().await;
+                                            if let Some((current_id, _)) = guard.as_ref() {
+                                                if current_id == &task_session {
+                                                    *guard = None;
+                                                }
+                                            }
+                                        });
+                                        {
+                                            let mut guard = compile_task_store_for_msg.lock().await;
+                                            if let Some((_, existing)) = guard.take() {
+                                                existing.abort();
+                                            }
+                                            *guard = Some((session_id, handle));
+                                        }
+                                    }
+                                    return;
+                                }
+                                // Not a compile request - ignore here. Terminal messages arrive on
+                                // the separate 'terminal' datachannel.
+                            }
+                        }
+                        .boxed()
+                    }));
+            } else if label == "build-log" {
+                let mut guard = store.lock().await;
+                *guard = Some(dc.clone());
+            } else if label == "terminal" {
+                    // Terminal datachannel - used to receive stdin messages for running
+                    // processes. Messages are expected as JSON: { type: 'stdin', sessionId, data }
+                    let sdl_store_for_msg = sdl_store_outer.clone();
+                    let runner_store_for_term = runner_store_outer.clone();
+                    let build_log_store_for_term = store.clone();
+                    // Track which sessions we've already warned about missing x11 senders
+                    // to avoid flooding logs with repeated messages on every mouse/key event.
+                    let x11_warned: Arc<tokio::sync::Mutex<std::collections::HashSet<String>>> =
+                        Arc::new(tokio::sync::Mutex::new(std::collections::HashSet::new()));
+                    dc.on_message(Box::new(move |msg| {
+                        let term_store_for_msg = term_store.clone();
+                        let sdl_store = sdl_store_for_msg.clone();
+                        let runner_store_term = runner_store_for_term.clone();
+                        let build_log_term = build_log_store_for_term.clone();
+                        let x11_warned = x11_warned.clone();
+                        async move {
+                            if msg.is_string {
+                                // diagnostic log
+                                if let Ok(_s) = String::from_utf8(msg.data.to_vec()) {
+                                    // println!("[worker] terminal msg: {}", s);
+                                }
+                                if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&msg.data) {
+                                    if let Some(t) = v.get("type").and_then(|x| x.as_str()) {
+                                        if t == "stdin" {
+                                            if let Some(sid) = v.get("sessionId").and_then(|x| x.as_str()) {
+                                                if let Some(d) = v.get("data").and_then(|x| x.as_str()) {
+                                                    let guard = term_store_for_msg.lock().await;
+                                                    if let Some(sender) = guard.get(sid) {
+                                                        let _ = sender.send(d.to_string());
+                                                    } else {
+                                                        println!("[worker] no stdin sender for session {}", sid);
+                                                    }
+                                                }
+                                            }
+                                        } else if t == "gui-event" {
+                                            // Handle GUI event by sending to persistent SDL process
+                                            if let Some(sid) = v.get("sessionId").and_then(|x| x.as_str()) {
+                                                if let Some(evt) = v.get("event") {
+                                                    // Handle stop-runner before SDL sender lookup
+                                                    // (runner may not have an SDL sender registered)
+                                                    if let Some(typ) = evt.get("type").and_then(|x| x.as_str()) {
+                                                        if typ == "stop-runner" {
+                                                            println!("[worker] stop-runner requested for session {}", sid);
+                                                            // Take and destroy runner state
+                                                            let mut rg = runner_store_term.lock().await;
+                                                            if let Some(mut state) = rg.take() {
+                                                                // Stop GStreamer pipeline FIRST (before killing Xvfb)
+                                                                // to avoid capture-from-dead-display crashes
+                                                                if let Some(ref pipeline) = state.gst_pipeline {
+                                                                    let _ = pipeline.set_state(gst::State::Null);
+                                                                    println!("[worker] GStreamer pipeline stopped");
+                                                                }
+                                                                state.gst_pipeline = None;
+                                                                // Kill the runner process
+                                                                if let Some(ref mut child) = state.process {
+                                                                    let _ = child.kill().await;
+                                                                    println!("[worker] runner process killed");
+                                                                }
+                                                                // Kill Xvfb (safe now that GStreamer is stopped)
+                                                                if let Some(ref mut xvfb) = state.xvfb_process {
+                                                                    let _ = xvfb.kill().await;
+                                                                    println!("[worker] Xvfb killed");
+                                                                }
+                                                                // Drop the sdl_tx sender to close the xdotool channel
+                                                                state.sdl_tx = None;
+                                                                drop(state);
+                                                            }
+                                                            // Clean up SDL and terminal input senders for this session
+                                                            {
+                                                                let mut sdl_guard = sdl_store.lock().await;
+                                                                sdl_guard.remove(sid);
+                                                            }
+                                                            {
+                                                                let mut term_guard = term_store_for_msg.lock().await;
+                                                                term_guard.remove(sid);
+                                                            }
+                                                            // Reset x11 warning so it fires again if session reconnects
+                                                            {
+                                                                let mut warned = x11_warned.lock().await;
+                                                                warned.remove(sid);
+                                                            }
+                                                            // Notify frontend that the runner has ended
+                                                            let log_guard = build_log_term.lock().await;
+                                                            if let Some(dc) = log_guard.as_ref() {
+                                                                let end_msg = serde_json::json!({
+                                                                    "type": "run-gui-end"
+                                                                });
+                                                                let _ = dc.send_text(end_msg.to_string()).await;
+                                                            }
+                                                            // Early return - don't try SDL sender lookup
+                                                            return;
+                                                        }
+                                                    }
+
+                                                    let guard = sdl_store.lock().await;
+                                                    if let Some(sender) = guard.get(sid) {
+                                                        let mut cmd = String::new();
+                                                        if let Some(typ) = evt.get("type").and_then(|x| x.as_str()) {
+                                                            match typ {
+                                                                "mouse" => {
+                                                                    if let Some(action) = evt.get("action").and_then(|x| x.as_str()) {
+                                                                        let x = evt.get("x").and_then(|v| v.as_f64()).unwrap_or(0.0) as i32;
+                                                                        let y = evt.get("y").and_then(|v| v.as_f64()).unwrap_or(0.0) as i32;
+                                                                        if action == "move" {
+                                                                            cmd = format!("input motion {} {}", x, y);
+                                                                        } else if action == "down" {
+                                                                            if let Some(btn) = evt.get("button").and_then(|b| b.as_i64()) {
+                                                                                cmd = format!("input button down {} {} {}", btn, x, y);
+                                                                            }
+                                                                        } else if action == "up" {
+                                                                            if let Some(btn) = evt.get("button").and_then(|b| b.as_i64()) {
+                                                                                cmd = format!("input button up {} {} {}", btn, x, y);
+                                                                            }
+                                                                        } else if action == "wheel" {
+                                                                            if let Some(delta) = evt.get("deltaY").and_then(|d| d.as_f64()) {
+                                                                                let btn = if delta > 0.0 { 5 } else { 4 };
+                                                                                // Scroll: synthesize button down + up for scroll buttons
+                                                                                cmd = format!("input button down {} {} {}\ninput button up {} {} {}", btn, x, y, btn, x, y);
+                                                                            }
+                                                                        }
+                                                                    }
+                                                                }
+                                                                "key" => {
+                                                                    if let Some(action) = evt.get("action").and_then(|x| x.as_str()) {
+                                                                        if let Some(key) = evt.get("key").and_then(|k| k.as_str()) {
+                                                                            let sdlk = js_key_to_sdl_keycode(key);
+                                                                            if sdlk != 0 {
+                                                                                let dir = if action == "down" || action == "press" { "down" } else { "up" };
+                                                                                cmd = format!("input key {} {}", dir, sdlk);
+                                                                            }
+                                                                        }
+                                                                    }
+                                                                }
+                                                                _ => {}
+                                                            }
+                                                        }
+                                                        if !cmd.is_empty() {
+                                                            let _ = sender.send(cmd);
+                                                        }
+                                                    } else {
+                                                        // Only warn once per session to avoid log spam
+                                                        // (this fires on every mouse/key event)
+                                                        let mut warned = x11_warned.lock().await;
+                                                        if warned.insert(sid.to_string()) {
+                                                            println!("[worker] no x11 sender for session {} (further warnings suppressed)", sid);
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    } else {
+                                        eprintln!("[Main] ERROR: No build-log channel found in store! Dropping compile request.");
+                                    }
+                                } else {
+                                     eprintln!("[Main] Failed to parse CompileRequest. Data preview: {}", String::from_utf8_lossy(&msg.data).chars().take(100).collect::<String>());
+                                }
+                            }
+                        }
+                        .boxed()
+                    }));
+            } else if label.starts_with("lsp") {
+                let rest = label.strip_prefix("lsp-").unwrap_or("cpp");
+                let (lang_str, slug_opt) = if let Some((l, s)) = rest.split_once("?slug=") {
+                    (l, Some(s.to_string()))
+                } else {
+                    (rest, None)
+                };
+                let lang = lang_str.to_string();
+
+                let log_store = store.clone();
+                let dc_clone = dc.clone();
+                let workspace_path_for_lsp = workspace_path_for_dc.clone();
+
+                // Create a channel to buffer incoming messages immediately
+                let (incoming_tx, mut incoming_rx) = mpsc::unbounded_channel::<webrtc::data_channel::data_channel_message::DataChannelMessage>();
+
+                let incoming_tx_clone = incoming_tx.clone();
+                dc.on_message(Box::new(move |msg| {
+                    let tx = incoming_tx_clone.clone();
+                    async move {
+                        let _ = tx.send(msg);
+                    }
+                    .boxed()
+                }));
+
+                println!("[on_data_channel] LSP branch matched: lang='{}', spawning handler task...", lang);
+                tokio::spawn(async move {
+                    // Try to download the workspace files
+                    let slug_to_use = slug_opt.as_deref().unwrap_or("test-workspace");
+                    println!("LSP Request: lang={}, slug={}", lang, slug_to_use);
+
+                    let workspace_path = match storage::download(slug_to_use, None).await {
+                        Ok(path) => {
+                            let abs_path = if cfg!(target_os = "windows") {
+                                if let Ok(full) = tokio::fs::canonicalize(&path).await {
+                                    full
+                                } else {
+                                    path
+                                }
+                            } else {
+                                path
+                            };
+                            println!("Successfully downloaded workspace to: {}", abs_path.display());
+                            abs_path
+                        },
+                        Err(e) => {
+                            eprintln!("Failed to download workspace: {}", e);
+                            println!("Falling back to temp workspace: {}", workspace_path_for_lsp.display());
+                            workspace_path_for_lsp.as_ref().clone()
+                        }
+                    };
+
+                    // ── Install dependencies + language server in parallel ─────
+                    // These two steps are independent: dep_installer scans
+                    // manifest files and runs package managers, while
+                    // lsp_installer downloads/installs the LSP binary.
+                    // Running them concurrently shaves seconds off first-load.
+                    // Both are idempotent (marker-file cached) so subsequent
+                    // connections for other languages are near-instant.
+                    //
+                    // EXCEPTION: For Dart, we sequence the installs because
+                    // dep_installer needs the `dart` binary to run `dart pub get`,
+                    // and the binary may only become available after lsp_installer
+                    // finishes installing the Dart SDK.
+                    let lsp_result = if lang == "dart" {
+                        // Sequential: install dart binary first, then run deps
+                        let result = infra::lsp_installer::ensure_lsp_installed(&lang, &workspace_path).await;
+                        infra::dep_installer::install_all_deps(&workspace_path, &lang, false).await;
+                        result
+                    } else {
+                        // Parallel: independent install steps
+                        let (_, lsp_res) = tokio::join!(
+                            infra::dep_installer::install_all_deps(&workspace_path, &lang, false),
+                            infra::lsp_installer::ensure_lsp_installed(&lang, &workspace_path),
+                        );
+                        lsp_res
+                    };
+                    match lsp_result {
+                        Ok(bin) => println!("[LSP] Server binary ready: {}", bin),
+                        Err(ref e) => eprintln!("[LSP] Server install warning: {}", e),
+                    }
+
+                    // ── Generate minimal LSP config for standalone files ─────
+                    // If the workspace has no project config for this language,
+                    // create a minimal one so the language server provides
+                    // useful intellisense (completions, go-to-def, etc.)
+                    // even for a single file without a project manifest.
+                    ensure_lsp_config(&workspace_path, &lang);
+
+                    // Detect rust-src path BEFORE constructing the RA command.
+                    // This path is:
+                    //  1. Set as RUST_SRC_PATH env on the RA process (belt-and-suspenders)
+                    //  2. Injected into initializationOptions.cargo.sysrootSrc
+                    // Both tell RA where to find stdlib source (Vec::new, etc.)
+                    // even if RA's own sysroot auto-detection points elsewhere.
+                    let (rust_sysroot_src, rust_sysroot): (Option<String>, Option<String>) = if lang == "rust" {
+                        let (src, root) = find_rust_sysroot_info();
+                        match &src {
+                            Some(p) => println!("[LSP] Detected rust sysroot_src for injection: {}", p),
+                            None => println!("[LSP] WARNING: rust-src not found — Vec:: completions may not work"),
+                        }
+                        if let Some(ref r) = root {
+                            println!("[LSP] Detected rust sysroot root: {}", r);
+                        }
+                        (src, root)
+                    } else {
+                        (None, None)
+                    };
+
+                    println!("Starting LSP for language: {}", lang);
+                    let mut cmd = match lang.as_str() {
+                        "cpp" | "c" => {
+                            // Create compile_flags.txt to enforce C++17
+                            let flags_path = workspace_path.join("compile_flags.txt");
+                            if let Ok(mut file) = std::fs::File::create(&flags_path) {
+                                use std::io::Write;
+                                let _ = writeln!(file, "-std=c++17");
+                                // Force C++ mode to ensure headers are treated correctly
+                                let _ = writeln!(file, "-xc++");
+                            }
+
+                            // Create .clang-tidy to disable the include-cleaner check.
+                            // clang-tidy's misc-include-cleaner aggressively flags newly
+                            // added includes as "unused" before the TU is fully re-indexed,
+                            // which is confusing in an interactive editor.
+                            let clang_tidy_path = workspace_path.join(".clang-tidy");
+                            if !clang_tidy_path.exists() {
+                                if let Ok(mut f) = std::fs::File::create(&clang_tidy_path) {
+                                    use std::io::Write;
+                                    let _ = f.write_all(b"Checks: '-misc-include-cleaner'\n");
+                                    println!("[LSP-CONFIG] Created .clang-tidy (disabled include-cleaner)");
+                                }
+                            }
+
+                            let mut c = system_command("clangd");
+                            c.arg("--background-index");
+                            c.arg("--completion-style=detailed");
+                            c.arg("--header-insertion=iwyu");
+                            c.arg("--clang-tidy");
+                            // c.arg("--all-scopes-completion");
+                            // Allow clangd to query g++ and other compilers for system include paths
+                            c.arg("--query-driver=*");
+                            c
+                        },
+                        "rust" => {
+                            if cfg!(target_os = "windows") {
+                                // On Windows, system_command wraps in `wsl`. But env vars
+                                // set via .env() only affect wsl.exe, NOT the Linux process
+                                // inside WSL.  Instead, launch RA through bash with explicit
+                                // env so CARGO_HOME/RUSTUP_HOME/PATH propagate correctly.
+                                //
+                                // Also inject RUST_SRC_PATH if we detected it, so RA can
+                                // find stdlib source even if its sysroot auto-detection fails.
+                                let src_env = rust_sysroot_src.as_ref()
+                                    .map(|p| format!("export RUST_SRC_PATH='{}'; ", p))
+                                    .unwrap_or_default();
+                                let script = format!(
+                                    "export CARGO_HOME=\"${{CARGO_HOME:-$HOME/.cargo}}\"; \
+                                     export RUSTUP_HOME=\"${{RUSTUP_HOME:-$HOME/.rustup}}\"; \
+                                     unset RUSTUP_TOOLCHAIN; \
+                                     export PATH=\"$CARGO_HOME/bin:$PATH\"; \
+                                     {}exec rust-analyzer",
+                                    src_env
+                                );
+                                let mut c = Command::new("wsl");
+                                c.arg("bash").arg("-lc").arg(&script);
+                                c
+                            } else {
+                                let mut c = system_command("rust-analyzer");
+                                // Ensure rust-analyzer can find cargo/rustc.
+                                // In containers, rustup installs to /root/.cargo and /root/.rustup.
+                                // If CARGO_HOME / RUSTUP_HOME aren't set, try common locations.
+                                let cargo_home = std::env::var("CARGO_HOME")
+                                    .unwrap_or_else(|_| "/root/.cargo".to_string());
+                                let rustup_home = std::env::var("RUSTUP_HOME")
+                                    .unwrap_or_else(|_| "/root/.rustup".to_string());
+                                c.env("CARGO_HOME", &cargo_home);
+                                c.env("RUSTUP_HOME", &rustup_home);
+                                // Clear RUSTUP_TOOLCHAIN — if the container has a bare
+                                // system rustc at /usr, RA auto-detects sysroot as /usr
+                                // and sets RUSTUP_TOOLCHAIN="/usr" which breaks cargo.
+                                c.env_remove("RUSTUP_TOOLCHAIN");
+                                // Prepend cargo/rustup bin dirs to PATH so rust-analyzer
+                                // can invoke `cargo metadata`, `rustc`, etc.
+                                let current_path = std::env::var("PATH").unwrap_or_default();
+                                let new_path = format!(
+                                    "{}/bin:{}",
+                                    cargo_home, current_path
+                                );
+                                c.env("PATH", new_path);
+                                // Set RUST_SRC_PATH as a belt-and-suspenders fallback
+                                // so RA can find stdlib source even if its sysroot
+                                // auto-detection points to a toolchain without rust-src.
+                                if let Some(ref src_path) = rust_sysroot_src {
+                                    c.env("RUST_SRC_PATH", src_path);
+                                }
+                                c
+                            }
+                        },
+                        "python" | "py" => system_command("pylsp"),
+                        "typescript" | "ts" => {
+                             let mut c = system_command("typescript-language-server");
+                             c.arg("--stdio");
+                             c
+                        },
+                        "javascript" | "js" => {
+                            // Use typescript-language-server for JavaScript — provides
+                            // full IntelliSense (completions, go-to-def, hover, references)
+                            // via the TypeScript language service, which natively supports JS.
+                            let mut c = system_command("typescript-language-server");
+                            c.arg("--stdio");
+                            c
+                        },
+                        "java" => {
+                            // Eclipse JDT Language Server
+                            // Expects `jdtls` wrapper script on PATH (installed via jdtls or eclipse.jdt.ls)
+                            let data_dir = workspace_path.join(".jdtls-data");
+                            let _ = std::fs::create_dir_all(&data_dir);
+                            let mut c = system_command("jdtls");
+                            c.arg("-data").arg(data_dir.to_string_lossy().to_string());
+                            c
+                        },
+                        "go" => {
+                            // gopls — the official Go language server
+                            let mut c = system_command("gopls");
+                            c.arg("serve");
+                            c
+                        },
+                        "csharp" | "cs" => {
+                            // OmniSharp language server for C# / .NET
+                            let mut c = system_command("OmniSharp");
+                            c.arg("-lsp");
+                            c.arg("--stdio");
+                            c
+                        },
+                        "ruby" | "rb" => {
+                            // ruby-lsp (Shopify) — modern Ruby language server
+                            let c = system_command("ruby-lsp");
+                            c
+                        },
+                        "php" => {
+                            // phpactor — PHP language server
+                            let mut c = system_command("phpactor");
+                            c.arg("language-server");
+                            c
+                        },
+                        "kotlin" | "kt" => {
+                            // Kotlin Language Server
+                            let c = system_command("kotlin-language-server");
+                            c
+                        },
+                        "zig" => {
+                            // ZLS — Zig Language Server
+                            let c = system_command("zls");
+                            c
+                        },
+                        "dart" => {
+                            // Dart SDK language server
+                            // The Dart SDK may be installed to /opt/dart-sdk/bin or
+                            // /usr/lib/dart/bin which are not on the default PATH.
+                            // Prepend these well-known locations so the spawn succeeds.
+                            let current_path = std::env::var("PATH").unwrap_or_default();
+                            let dart_path = format!(
+                                "/opt/dart-sdk/bin:/usr/lib/dart/bin:{}",
+                                current_path
+                            );
+                            let mut c = if cfg!(target_os = "windows") {
+                                let mut cmd = Command::new("wsl");
+                                cmd.arg("bash").arg("-lc").arg(
+                                    "export PATH=\"/opt/dart-sdk/bin:/usr/lib/dart/bin:$PATH\"; exec dart language-server --protocol=lsp"
+                                );
+                                cmd
+                            } else {
+                                let mut cmd = Command::new("dart");
+                                cmd.arg("language-server");
+                                cmd.arg("--protocol=lsp");
+                                cmd.env("PATH", &dart_path);
+                                cmd
+                            };
+                            // If dart is not on default PATH, try the well-known locations directly
+                            if !cfg!(target_os = "windows") {
+                                let dart_on_path = std::process::Command::new("which")
+                                    .arg("dart")
+                                    .stdout(Stdio::null())
+                                    .stderr(Stdio::null())
+                                    .status()
+                                    .map(|s| s.success())
+                                    .unwrap_or(false);
+                                if !dart_on_path {
+                                    for candidate in &["/opt/dart-sdk/bin/dart", "/usr/lib/dart/bin/dart", "/usr/local/bin/dart"] {
+                                        if std::path::Path::new(candidate).exists() {
+                                            c = Command::new(candidate);
+                                            c.arg("language-server");
+                                            c.arg("--protocol=lsp");
+                                            c.env("PATH", &dart_path);
+                                            println!("[LSP] Using dart binary at: {}", candidate);
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                            c
+                        },
+                        "lua" => {
+                            // lua-language-server (LuaLS)
+                            let c = system_command("lua-language-server");
+                            c
+                        },
+                        "elixir" | "ex" => {
+                            // ElixirLS language server
+                            let c = system_command("elixir-ls");
+                            c
+                        },
+                        "svelte" => {
+                            // Svelte Language Server
+                            let mut c = system_command("svelteserver");
+                            c.arg("--stdio");
+                            c
+                        },
+                        "css" | "scss" | "less" => {
+                            // VSCode CSS/SCSS/LESS language server (vscode-langservers-extracted)
+                            let mut c = system_command("vscode-css-language-server");
+                            c.arg("--stdio");
+                            c
+                        },
+                        "html" => {
+                            // VSCode HTML language server (vscode-langservers-extracted)
+                            let mut c = system_command("vscode-html-language-server");
+                            c.arg("--stdio");
+                            c
+                        },
+                        "prisma" => {
+                            // Prisma Language Server (Node.js based)
+                            // Installed via: npm i -g @prisma/language-server
+                            let mut c = system_command("prisma-language-server");
+                            c.arg("--stdio");
+                            c
+                        },
+                        "tailwindcss" => {
+                            // Tailwind CSS Language Server
+                            // Installed via: npm i -g @tailwindcss/language-server
+                            let mut c = system_command("tailwindcss-language-server");
+                            c.arg("--stdio");
+                            c
+                        },
+                        "eslint" => {
+                            // ESLint Language Server (vscode-langservers-extracted)
+                            let mut c = system_command("vscode-eslint-language-server");
+                            c.arg("--stdio");
+                            c
+                        },
+                        "yaml" => {
+                            // YAML Language Server
+                            // Installed via: npm i -g yaml-language-server
+                            let mut c = system_command("yaml-language-server");
+                            c.arg("--stdio");
+                            c
+                        },
+                        "toml" => {
+                            // Taplo TOML Language Server
+                            // Installed via: cargo install taplo-cli --features lsp
+                            let mut c = system_command("taplo");
+                            c.arg("lsp");
+                            c.arg("stdio");
+                            c
+                        },
+                        "json" | "jsonc" => {
+                            // VSCode JSON language server (vscode-langservers-extracted)
+                            let mut c = system_command("vscode-json-language-server");
+                            c.arg("--stdio");
+                            c
+                        },
+                        "graphql" => {
+                            // GraphQL Language Server
+                            // Installed via: npm i -g graphql-language-service-cli
+                            let mut c = system_command("graphql-lsp");
+                            c.arg("server");
+                            c.arg("-m");
+                            c.arg("stream");
+                            c
+                        },
+                        "dockerfile" => {
+                            // Dockerfile Language Server
+                            // Installed via: npm i -g dockerfile-language-server-nodejs
+                            let mut c = system_command("docker-langserver");
+                            c.arg("--stdio");
+                            c
+                        },
+                        _ => {
+                            println!("Unsupported language for LSP: {}", lang);
+                            return;
+                        }
+                    };
+
+                    cmd.current_dir(&workspace_path);
+                    cmd.stdin(Stdio::piped());
+                    cmd.stdout(Stdio::piped());
+                    cmd.stderr(Stdio::piped());
+
+                    // Pre-spawn check: verify the binary is actually executable.
+                    // This prevents cryptic "Permission denied" errors from spawn()
+                    // when a previous install left a non-executable file on disk.
+                    let binary_name = cmd.as_std().get_program().to_string_lossy().to_string();
+                    let pre_check = if cfg!(target_os = "windows") {
+                        Command::new("wsl")
+                            .args(["test", "-x", &format!("$(which {} 2>/dev/null || echo /nonexistent)", binary_name)])
+                            .stdout(Stdio::null())
+                            .stderr(Stdio::null())
+                            .status()
+                            .await
+                    } else {
+                        Command::new("sh")
+                            .args(["-c", &format!(
+                                "BIN=$(which {} 2>/dev/null) && test -x \"$BIN\"",
+                                binary_name
+                            )])
+                            .stdout(Stdio::null())
+                            .stderr(Stdio::null())
+                            .status()
+                            .await
+                    };
+                    if !matches!(pre_check, Ok(s) if s.success()) {
+                        eprintln!("[LSP] Pre-spawn check: {} is not executable or not found — attempting chmod fix", binary_name);
+                        // Try to fix permissions on well-known install locations
+                        let fix_cmd = format!(
+                            "BIN=$(which {bin} 2>/dev/null || echo /usr/local/bin/{bin}); \
+                             test -f \"$BIN\" && chmod +x \"$BIN\" 2>/dev/null || true",
+                            bin = binary_name
+                        );
+                        if cfg!(target_os = "windows") {
+                            let _ = Command::new("wsl").args(["bash", "-lc", &fix_cmd])
+                                .status().await;
+                        } else {
+                            let _ = Command::new("bash").args(["-lc", &fix_cmd])
+                                .status().await;
+                        }
+                    }
+
+                    match cmd.spawn() {
+                        Ok(mut child) => {
+                            let mut stdin = child.stdin.take().expect("Failed to open stdin");
+                            let stdout = child.stdout.take().expect("Failed to open stdout");
+                            let stderr = child.stderr.take().expect("Failed to open stderr");
+
+                            let (stdin_tx, mut stdin_rx) = mpsc::unbounded_channel::<Vec<u8>>();
+
+                            // Calculate server root URI once
+                            let path_str = workspace_path.to_string_lossy().replace("\\", "/");
+                            // Strip UNC prefix if present (e.g. //?/C:/...)
+                            let path_str = if path_str.starts_with("//?/") {
+                                path_str[4..].to_string()
+                            } else {
+                                path_str
+                            };
+
+                            let mut server_root_uri = if cfg!(target_os = "windows") {
+                                let mut wsl_path = path_str.clone();
+                                if let Some(colon_idx) = wsl_path.find(':') {
+                                    let drive = &wsl_path[0..colon_idx].to_lowercase();
+                                    let rest = &wsl_path[colon_idx+1..];
+                                    wsl_path = format!("/mnt/{}{}", drive, rest);
+                                }
+                                format!("file://{}", wsl_path)
+                            } else if path_str.starts_with('/') {
+                                format!("file://{}", path_str)
+                            } else {
+                                format!("file:///{}", path_str)
+                            };
+
+                            if !server_root_uri.ends_with('/') {
+                                server_root_uri.push('/');
+                            }
+
+                            let state = Arc::new(Mutex::new(LspSessionState {
+                                client_root_uri: None,
+                                server_root_uri: server_root_uri.clone(),
+                                doc_versions: std::collections::HashMap::new(),
+                            }));
+
+                            // Process incoming messages (buffered + new)
+                            let state_for_incoming = state.clone();
+                            let workspace_path_for_incoming = workspace_path.clone();
+                            let stdin_tx_clone = stdin_tx.clone();
+                            let rust_sysroot_src_for_incoming = rust_sysroot_src.clone();
+                            let rust_sysroot_for_incoming = rust_sysroot.clone();
+
+                            tokio::spawn(async move {
+                                while let Some(msg) = incoming_rx.recv().await {
+                                    let tx = stdin_tx_clone.clone();
+                                    let state = state_for_incoming.clone();
+                                    let workspace_path = workspace_path_for_incoming.clone();
+
+                                    let mut data = msg.data.to_vec();
+
+                                    // Determine if the message has headers or is raw JSON
+                                    let (json_bytes, has_headers) = if let Some(json_start) = data.windows(4).position(|w| w == b"\r\n\r\n") {
+                                        (&data[json_start+4..], true)
+                                    } else {
+                                        (&data[..], false)
+                                    };
+
+                                    // Try to parse and process
+                                    let mut processed = false;
+                                    // Deferred version update: store (uri, version) AFTER
+                                    // forwarding so we don't record a version the server
+                                    // never received.
+                                    let mut deferred_version_update: Option<(String, i64)> = None;
+                                    // When an out-of-order didChange is detected, we skip
+                                    // forwarding the stale message and instead send a
+                                    // full-text resync from disk.
+                                    let mut skip_forward = false;
+                                    let mut deferred_resync: Option<(Vec<u8>, String, i64)> = None;
+
+                                    if let Ok(mut json_val) = serde_json::from_slice::<serde_json::Value>(json_bytes) {
+                                        let mut guard = state.lock().await;
+
+                                        // 1. Capture client root URI from initialize
+                                        if json_val.get("method").and_then(|m| m.as_str()) == Some("initialize") {
+                                            if let Some(params) = json_val.get("params") {
+                                                if let Some(root_uri) = params.get("rootUri").and_then(|s| s.as_str()) {
+                                                    let mut uri = root_uri.to_string();
+                                                    if !uri.ends_with('/') {
+                                                        uri.push('/');
+                                                    }
+                                                    guard.client_root_uri = Some(uri.clone());
+                                                    println!("Captured client root URI: {}", uri);
+                                                } else if let Some(folders) = params.get("workspaceFolders").and_then(|f| f.as_array()) {
+                                                    if let Some(first) = folders.first() {
+                                                        if let Some(uri_str) = first.get("uri").and_then(|s| s.as_str()) {
+                                                            let mut uri = uri_str.to_string();
+                                                            if !uri.ends_with('/') {
+                                                                uri.push('/');
+                                                            }
+                                                            guard.client_root_uri = Some(uri.clone());
+                                                            println!("Captured client root URI from folders: {}", uri);
+                                                        }
+                                                    }
+                                                }
+                                            }
+
+                                            if guard.client_root_uri.is_none() {
+                                                println!("Client root URI not found in initialize, defaulting to file:///");
+                                                guard.client_root_uri = Some("file:///".to_string());
+                                            }
+
+                                            // Inject rust-analyzer configuration for stdlib resolution.
+                                            //
+                                            // Three mechanisms (belt-and-suspenders):
+                                            //  1. cargo.sysrootSrc — tells RA where stdlib source is
+                                            //  2. cargo.sysroot — explicit sysroot path (avoids "discover" running cargo)
+                                            //  3. linkedProjects — inline project definition that bypasses
+                                            //     `cargo metadata` entirely, giving RA a complete crate graph
+                                            //     with sysroot.  Without this, RA can autocomplete type *names*
+                                            //     (Vec, String) but NOT associated items (Vec::new, Vec::push).
+                                            if let Some(ref src_path) = rust_sysroot_src_for_incoming {
+                                                if let Some(params) = json_val.get_mut("params") {
+                                                    let init_opts = params
+                                                        .as_object_mut()
+                                                        .and_then(|p| p.entry("initializationOptions")
+                                                            .or_insert_with(|| serde_json::json!({}))
+                                                            .as_object_mut());
+                                                    if let Some(opts) = init_opts {
+                                                        // Derive sysroot root from the sysroot_for_incoming
+                                                        // or from the sysroot_src path.
+                                                        let sysroot_root = rust_sysroot_for_incoming.clone()
+                                                            .or_else(|| {
+                                                                // Derive from sysroot_src: strip /lib/rustlib/src/rust/library
+                                                                src_path.strip_suffix("/lib/rustlib/src/rust/library")
+                                                                    .or_else(|| src_path.strip_suffix("/lib/rustlib/src/rust"))
+                                                                    .map(|s| s.to_string())
+                                                            });
+
+                                                        // 1. Configure cargo settings
+                                                        {
+                                                            let cargo = opts
+                                                                .entry("cargo")
+                                                                .or_insert_with(|| serde_json::json!({}));
+                                                            if let Some(cargo_obj) = cargo.as_object_mut() {
+                                                                cargo_obj.insert(
+                                                                    "sysrootSrc".to_string(),
+                                                                    serde_json::Value::String(src_path.clone()),
+                                                                );
+                                                                // Override "discover" with explicit sysroot path.
+                                                                // "discover" causes RA to run `cargo metadata` for
+                                                                // sysroot resolution, which fails without cargo.
+                                                                if let Some(ref root) = sysroot_root {
+                                                                    cargo_obj.insert(
+                                                                        "sysroot".to_string(),
+                                                                        serde_json::Value::String(root.clone()),
+                                                                    );
+                                                                }
+                                                            }
+                                                        }
+                                                        println!("[LSP] Injected cargo.sysrootSrc={}, cargo.sysroot={:?}", src_path, sysroot_root);
+
+                                                        // 2. Inject linkedProjects with inline project.
+                                                        //    Skip when Cargo.toml has real [dependencies].
+                                                        let cargo_toml = workspace_path.join("Cargo.toml");
+                                                        let has_real_deps = cargo_toml.exists()
+                                                            && std::fs::read_to_string(&cargo_toml)
+                                                                .map(|c| {
+                                                                    if let Some(idx) = c.find("[dependencies]") {
+                                                                        let after = &c[idx + "[dependencies]".len()..];
+                                                                        for line in after.lines() {
+                                                                            let trimmed = line.trim();
+                                                                            if trimmed.is_empty() || trimmed.starts_with('#') {
+                                                                                continue;
+                                                                            }
+                                                                            if trimmed.starts_with('[') {
+                                                                                break;
+                                                                            }
+                                                                            return true;
+                                                                        }
+                                                                    }
+                                                                    false
+                                                                })
+                                                                .unwrap_or(false);
+
+                                                        if has_real_deps {
+                                                            println!("[LSP] Cargo.toml has [dependencies] — using cargo discovery, skipping linkedProjects");
+                                                        } else {
+                                                            let mut rs_crates: Vec<serde_json::Value> = Vec::new();
+                                                            if let Ok(entries) = std::fs::read_dir(&workspace_path) {
+                                                                for entry in entries.flatten() {
+                                                                    let p = entry.path();
+                                                                    if p.extension().map_or(false, |e| e == "rs") {
+                                                                        let p_str = if cfg!(target_os = "windows") {
+                                                                            let s = p.to_string_lossy().replace("\\", "/");
+                                                                            if let Some(ci) = s.find(':') {
+                                                                                let drive = s[..ci].to_lowercase();
+                                                                                let rest = &s[ci+1..];
+                                                                                format!("/mnt/{}{}", drive, rest)
+                                                                            } else {
+                                                                                s.to_string()
+                                                                            }
+                                                                        } else {
+                                                                            p.to_string_lossy().to_string()
+                                                                        };
+                                                                        rs_crates.push(serde_json::json!({
+                                                                            "root_module": p_str,
+                                                                            "edition": "2021",
+                                                                            "deps": []
+                                                                        }));
+                                                                    }
+                                                                }
+                                                            }
+                                                            if rs_crates.is_empty() {
+                                                                let fallback = workspace_path.join("main.rs");
+                                                                let fb_str = fallback.to_string_lossy().to_string();
+                                                                rs_crates.push(serde_json::json!({
+                                                                    "root_module": fb_str,
+                                                                    "edition": "2021",
+                                                                    "deps": []
+                                                                }));
+                                                            }
+                                                            let num_crates = rs_crates.len();
+                                                            // Build the project JSON with both sysroot and sysroot_src.
+                                                            // sysroot = root path (e.g., /usr) — needed for compiled libs
+                                                            // sysroot_src = source path (e.g., /usr/lib/rustlib/src/rust/library)
+                                                            let mut project_json = serde_json::json!({
+                                                                "sysroot_src": src_path,
+                                                                "crates": rs_crates,
+                                                            });
+                                                            if let Some(ref root) = sysroot_root {
+                                                                project_json.as_object_mut().unwrap().insert(
+                                                                    "sysroot".to_string(),
+                                                                    serde_json::Value::String(root.clone()),
+                                                                );
+                                                            }
+                                                            opts.insert(
+                                                                "linkedProjects".to_string(),
+                                                                serde_json::json!([project_json]),
+                                                            );
+                                                            println!("[LSP] Injected linkedProjects with {} crate(s), sysroot_src={}, sysroot={:?}", num_crates, src_path, sysroot_root);
+                                                        }
+
+                                                        // Log the full initializationOptions for debugging
+                                                        if let Ok(opts_json) = serde_json::to_string_pretty(&serde_json::Value::Object(opts.clone())) {
+                                                            println!("[LSP] Full initializationOptions for RA:\n{}", opts_json);
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        // 2. Rewrite URIs (Client -> Server)
+                                        rewrite_uris(&mut json_val, &guard, true);
+
+                                        // 3. Handle didOpen file writing (skip empty content — the server reads from disk)
+                                        if json_val.get("method").and_then(|m| m.as_str()) == Some("textDocument/didOpen") {
+                                            if let Some(params) = json_val.get("params") {
+                                                if let Some(doc) = params.get("textDocument") {
+                                                    // Initialize version tracking from didOpen.
+                                                    // This seeds the monotonic version for this URI
+                                                    // so subsequent didChange can be ordered correctly.
+                                                    if let Some(uri) = doc.get("uri").and_then(|s| s.as_str()) {
+                                                        let open_version = doc.get("version")
+                                                            .and_then(|v| v.as_i64())
+                                                            .unwrap_or(0); // default to 0 if null/missing
+                                                        guard.doc_versions.insert(uri.to_string(), open_version);
+                                                    }
+
+                                                    if let (Some(uri), Some(text)) = (doc.get("uri").and_then(|s| s.as_str()), doc.get("text").and_then(|s| s.as_str())) {
+                                                        if !text.is_empty() {
+                                                            if let Some(rel) = uri.strip_prefix(&guard.server_root_uri) {
+                                                                let rel = rel.trim_start_matches('/');
+                                                                let file_path = workspace_path.join(rel);
+                                                                if let Some(parent) = file_path.parent() {
+                                                                    let _ = tokio::fs::create_dir_all(parent).await;
+                                                                }
+                                                                if let Err(e) = tokio::fs::write(&file_path, text).await {
+                                                                    eprintln!("Failed to write file {}: {}", file_path.display(), e);
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        // 4. Handle didChange file writing (full sync AND incremental)
+                                        // Track document versions to reject out-of-order changes.
+                                        if json_val.get("method").and_then(|m| m.as_str()) == Some("textDocument/didChange") {
+                                            if let Some(params) = json_val.get("params") {
+                                                if let Some(changes) = params.get("contentChanges").and_then(|c| c.as_array()) {
+                                                    if let Some(doc) = params.get("textDocument") {
+                                                        if let Some(uri) = doc.get("uri").and_then(|s| s.as_str()) {
+                                                            // Version check: reject out-of-order didChange.
+                                                            // Handle null/missing version gracefully — treat as 0
+                                                            // (some clients may omit it).
+                                                            let incoming_version = doc.get("version")
+                                                                .and_then(|v| if v.is_null() { None } else { v.as_i64() })
+                                                                .unwrap_or(0);
+                                                            let last_version = guard.doc_versions.get(uri).copied();
+                                                            // Out-of-order check:
+                                                            // - If no prior version tracked (None), always accept.
+                                                            // - If prior version exists, incoming must be strictly greater.
+                                                            let is_out_of_order = match last_version {
+                                                                Some(last) => incoming_version <= last,
+                                                                None => false, // first change for this URI, always accept
+                                                            };
+                                                            if is_out_of_order {
+                                                                eprintln!("[LSP] Rejecting out-of-order didChange for {} (version {} <= {:?}), triggering full resync from disk", uri, incoming_version, last_version);
+                                                                // Do NOT forward stale message. Read current disk
+                                                                // content and send a synthetic full-text didChange
+                                                                // so the server re-syncs to the true file state.
+                                                                skip_forward = true;
+                                                                if let Some(rel) = uri.strip_prefix(&guard.server_root_uri) {
+                                                                    let rel = rel.trim_start_matches('/');
+                                                                    let file_path = workspace_path.join(rel);
+                                                                    if let Ok(disk_content) = tokio::fs::read_to_string(&file_path).await {
+                                                                        let resync_version = last_version.unwrap_or(0) + 1;
+                                                                        let resync_msg = serde_json::json!({
+                                                                            "jsonrpc": "2.0",
+                                                                            "method": "textDocument/didChange",
+                                                                            "params": {
+                                                                                "textDocument": {
+                                                                                    "uri": uri,
+                                                                                    "version": resync_version
+                                                                                },
+                                                                                "contentChanges": [{ "text": disk_content }]
+                                                                            }
+                                                                        });
+                                                                        if let Ok(content) = serde_json::to_vec(&resync_msg) {
+                                                                            let header = format!("Content-Length: {}\r\n\r\n", content.len());
+                                                                            let mut msg_bytes = Vec::with_capacity(header.len() + content.len());
+                                                                            msg_bytes.extend_from_slice(header.as_bytes());
+                                                                            msg_bytes.extend_from_slice(&content);
+                                                                            deferred_resync = Some((msg_bytes, uri.to_string(), resync_version));
+                                                                        }
+                                                                    } else {
+                                                                        eprintln!("[LSP] Resync failed: could not read {} from disk", file_path.display());
+                                                                    }
+                                                                }
+                                                            } else {
+                                                                // Defer version update until after forward to LSP stdin
+                                                                deferred_version_update = Some((uri.to_string(), incoming_version));
+
+                                                                if let Some(rel) = uri.strip_prefix(&guard.server_root_uri) {
+                                                                    let rel = rel.trim_start_matches('/');
+                                                                    let file_path = workspace_path.join(rel);
+
+                                                                    if changes.len() == 1 && changes[0].get("range").is_none() {
+                                                                        // Full sync: single change without range = entire file content
+                                                                        // Use atomic write: write to temp file, then rename
+                                                                        if let Some(text) = changes[0].get("text").and_then(|s| s.as_str()) {
+                                                                            let tmp_path = file_path.with_extension("lsp_tmp");
+                                                                            if let Some(parent) = tmp_path.parent() {
+                                                                                let _ = tokio::fs::create_dir_all(parent).await;
+                                                                            }
+                                                                            match tokio::fs::write(&tmp_path, text).await {
+                                                                                Ok(_) => {
+                                                                                    if let Err(e) = tokio::fs::rename(&tmp_path, &file_path).await {
+                                                                                        eprintln!("Failed to rename temp file {}: {}", file_path.display(), e);
+                                                                                        // Fallback: direct write
+                                                                                        let _ = tokio::fs::write(&file_path, text).await;
+                                                                                    }
+                                                                                }
+                                                                                Err(e) => eprintln!("Failed to write temp file {}: {}", tmp_path.display(), e),
+                                                                            }
+                                                                        }
+                                                                    } else {
+                                                                        // Incremental sync: changes have range fields.
+                                                                        // Read current file, apply each change, write back atomically.
+                                                                        let current = tokio::fs::read_to_string(&file_path).await.unwrap_or_default();
+                                                                        let mut lines: Vec<String> = current.split('\n').map(|s| s.to_string()).collect();
+
+                                                                        // Apply changes in reverse order so earlier positions stay valid
+                                                                        let mut sorted_changes = changes.clone();
+                                                                        sorted_changes.sort_by(|a, b| {
+                                                                            let a_start = a.get("range").and_then(|r| r.get("start"));
+                                                                            let b_start = b.get("range").and_then(|r| r.get("start"));
+                                                                            let a_line = a_start.and_then(|s| s.get("line")).and_then(|l| l.as_u64()).unwrap_or(0);
+                                                                            let b_line = b_start.and_then(|s| s.get("line")).and_then(|l| l.as_u64()).unwrap_or(0);
+                                                                            let a_char = a_start.and_then(|s| s.get("character")).and_then(|c| c.as_u64()).unwrap_or(0);
+                                                                            let b_char = b_start.and_then(|s| s.get("character")).and_then(|c| c.as_u64()).unwrap_or(0);
+                                                                            b_line.cmp(&a_line).then(b_char.cmp(&a_char))
+                                                                        });
+
+                                                                        for change in &sorted_changes {
+                                                                            if let (Some(range), Some(text)) = (change.get("range"), change.get("text").and_then(|t| t.as_str())) {
+                                                                                let start_line = range.get("start").and_then(|s| s.get("line")).and_then(|l| l.as_u64()).unwrap_or(0) as usize;
+                                                                                let start_char = range.get("start").and_then(|s| s.get("character")).and_then(|c| c.as_u64()).unwrap_or(0) as usize;
+                                                                                let end_line = range.get("end").and_then(|e| e.get("line")).and_then(|l| l.as_u64()).unwrap_or(0) as usize;
+                                                                                let end_char = range.get("end").and_then(|e| e.get("character")).and_then(|c| c.as_u64()).unwrap_or(0) as usize;
+
+                                                                                // Clamp to valid line range
+                                                                                let sl = start_line.min(lines.len().saturating_sub(1));
+                                                                                let el = end_line.min(lines.len().saturating_sub(1));
+
+                                                                                // Build the prefix (before the edit) and suffix (after the edit)
+                                                                                let prefix = if sl < lines.len() {
+                                                                                    let line_content = &lines[sl];
+                                                                                    let sc = start_char.min(line_content.len());
+                                                                                    line_content[..sc].to_string()
+                                                                                } else {
+                                                                                    String::new()
+                                                                                };
+                                                                                let suffix = if el < lines.len() {
+                                                                                    let line_content = &lines[el];
+                                                                                    let ec = end_char.min(line_content.len());
+                                                                                    line_content[ec..].to_string()
+                                                                                } else {
+                                                                                    String::new()
+                                                                                };
+
+                                                                                // Split the replacement text into lines
+                                                                                let new_text_lines: Vec<&str> = text.split('\n').collect();
+
+                                                                                // Build replacement lines
+                                                                                let mut replacement = Vec::new();
+                                                                                if new_text_lines.len() == 1 {
+                                                                                    replacement.push(format!("{}{}{}", prefix, new_text_lines[0], suffix));
+                                                                                } else {
+                                                                                    replacement.push(format!("{}{}", prefix, new_text_lines[0]));
+                                                                                    for mid in &new_text_lines[1..new_text_lines.len()-1] {
+                                                                                        replacement.push(mid.to_string());
+                                                                                    }
+                                                                                    replacement.push(format!("{}{}", new_text_lines[new_text_lines.len()-1], suffix));
+                                                                                }
+
+                                                                                // Splice the lines array
+                                                                                let remove_end = (el + 1).min(lines.len());
+                                                                                lines.splice(sl..remove_end, replacement);
+                                                                            }
+                                                                        }
+
+                                                                        let new_content = lines.join("\n");
+                                                                        // Atomic write: temp file + rename
+                                                                        let tmp_path = file_path.with_extension("lsp_tmp");
+                                                                        match tokio::fs::write(&tmp_path, &new_content).await {
+                                                                            Ok(_) => {
+                                                                                if let Err(e) = tokio::fs::rename(&tmp_path, &file_path).await {
+                                                                                    eprintln!("Failed to rename temp file {}: {}", file_path.display(), e);
+                                                                                    let _ = tokio::fs::write(&file_path, &new_content).await;
+                                                                                }
+                                                                            }
+                                                                            Err(e) => eprintln!("Failed to write temp file {}: {}", tmp_path.display(), e),
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        // Re-serialize and add headers (required for Stdin)
+                                        if let Ok(new_content) = serde_json::to_vec(&json_val) {
+                                            let new_len = new_content.len();
+                                            let new_header = format!("Content-Length: {}\r\n\r\n", new_len);
+                                            let mut new_msg = Vec::new();
+                                            new_msg.extend_from_slice(new_header.as_bytes());
+                                            new_msg.extend_from_slice(&new_content);
+                                            data = new_msg;
+                                            processed = true;
+                                        }
+                                    }
+
+                                    if !processed && !has_headers {
+                                        // If we didn't process it (maybe parse failed) but it didn't have headers,
+                                        // we must add headers to forward to Stdin.
+                                        let new_len = data.len();
+                                        let new_header = format!("Content-Length: {}\r\n\r\n", new_len);
+                                        let mut new_msg = Vec::new();
+                                        new_msg.extend_from_slice(new_header.as_bytes());
+                                        new_msg.extend_from_slice(&data);
+                                        data = new_msg;
+                                    }
+
+                                    // Forward message (or resync) to LSP server stdin.
+                                    if skip_forward {
+                                        // Out-of-order detected: send resync instead of stale msg
+                                        if let Some((resync_bytes, uri, version)) = deferred_resync {
+                                            let _ = tx.send(resync_bytes);
+                                            let mut guard = state.lock().await;
+                                            guard.doc_versions.insert(uri, version);
+                                        }
+                                        // else: resync could not be built, message is simply dropped
+                                    } else {
+                                        let _ = tx.send(data);
+
+                                        // Apply deferred version update now that the message
+                                        // has been queued for forwarding to the LSP server.
+                                        if let Some((uri, version)) = deferred_version_update {
+                                            let mut guard = state.lock().await;
+                                            guard.doc_versions.insert(uri, version);
+                                        }
+                                    }
+                                }
+                            });
+
+                            tokio::spawn(async move {
+                                while let Some(data) = stdin_rx.recv().await {
+                                    if let Err(_) = stdin.write_all(&data).await { break; }
+                                    if let Err(_) = stdin.flush().await { break; }
+                                }
+                            });
+
+                            let dc_out = dc_clone.clone();
+                            let state_for_outgoing = state.clone();
+                            tokio::spawn(async move {
+                                let mut reader = BufReader::new(stdout);
+                                loop {
+                                    let mut content_length = 0;
+                                    let mut header_lines = Vec::new();
+                                    loop {
+                                        let mut line = String::new();
+                                        match reader.read_line(&mut line).await {
+                                            Ok(0) => return,
+                                            Ok(_) => {
+                                                if line == "\r\n" || line == "\n" {
+                                                    break;
+                                                }
+                                                if line.to_lowercase().starts_with("content-length:") {
+                                                    if let Some(idx) = line.find(':') {
+                                                        if let Ok(len) = line[idx+1..].trim().parse::<usize>() {
+                                                            content_length = len;
+                                                        }
+                                                    }
+                                                }
+                                                header_lines.push(line);
+                                            }
+                                            Err(_) => return,
+                                        }
+                                    }
+
+                                    if content_length > 0 {
+                                        let mut buf = vec![0u8; content_length];
+                                        match reader.read_exact(&mut buf).await {
+                                            Ok(_) => {
+                                                if let Ok(mut json_val) = serde_json::from_slice::<serde_json::Value>(&buf) {
+                                                    // Log initialize response capabilities (for debugging)
+                                                    // Force textDocumentSync to Full(1) so the client always
+                                                    // sends the entire file content on every change.  This
+                                                    // avoids the incremental-sync disk-write codepath which
+                                                    // has UTF-16-vs-byte-offset bugs that cause the worker's
+                                                    // on-disk copy to diverge from the LSP server's in-memory
+                                                    // state, leading to stale diagnostics (e.g. "header not
+                                                    // used" right after adding an #include).
+                                                    if let Some(result) = json_val.get_mut("result") {
+                                                        if let Some(caps) = result.get_mut("capabilities") {
+                                                            if let Some(sync) = caps.get("textDocumentSync") {
+                                                                println!("[LSP] Server textDocumentSync capability (original): {}", sync);
+                                                            }
+                                                            // Override to Full(1)
+                                                            caps.as_object_mut().map(|m| {
+                                                                m.insert("textDocumentSync".to_string(), serde_json::json!({
+                                                                    "openClose": true,
+                                                                    "change": 1,
+                                                                    "save": { "includeText": true }
+                                                                }));
+                                                            });
+                                                            println!("[LSP] Forced textDocumentSync to Full(1)");
+                                                        }
+                                                    }
+
+                                                    let guard = state_for_outgoing.lock().await;
+                                                    rewrite_uris(&mut json_val, &guard, false);
+
+                                                    if let Ok(new_content) = serde_json::to_vec(&json_val) {
+                                                        // Send ONLY content (no headers) to WebRTC
+                                                        let data_len = new_content.len();
+                                                        if data_len > 60000 {
+                                                            let msg_id = (std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() % 0xFFFFFFFF) as u32;
+                                                            let chunks = make_chunks(&new_content, msg_id);
+                                                            for chunk in chunks {
+                                                                let data = Bytes::from(chunk);
+                                                                if let Err(e) = dc_send_with_backpressure(&dc_out, &data, "lsp").await {
+                                                                    eprintln!("[lsp] Failed to send chunk: {}", e);
+                                                                    break;
+                                                                }
+                                                            }
+                                                        } else {
+                                                            let data = Bytes::copy_from_slice(&new_content);
+                                                            if let Err(e) = dc_send_with_backpressure(&dc_out, &data, "lsp").await {
+                                                                eprintln!("[lsp] Failed to send to WebRTC: {}", e);
+                                                                break;
+                                                            }
+                                                        }
+                                                    }
+                                                } else {
+                                                    // Failed to parse JSON — send raw body
+                                                    eprintln!("[LSP] Failed to parse JSON from stdout, forwarding raw bytes");
+                                                    let data = Bytes::copy_from_slice(&buf);
+                                                    if let Err(e) = dc_send_with_backpressure(&dc_out, &data, "lsp").await {
+                                                        eprintln!("[lsp] Failed to send raw bytes to WebRTC: {}", e);
+                                                        break;
+                                                    }
+                                                }
+                                            }
+                                            Err(_) => break,
+                                        }
+                                    }
+                                }
+                            });
+
+                            let log_store_clone = log_store.clone();
+                            tokio::spawn(async move {
+                                let mut reader = BufReader::new(stderr);
+                                let mut line = String::new();
+                                loop {
+                                    line.clear();
+                                    match reader.read_line(&mut line).await {
+                                        Ok(0) => break,
+                                        Ok(_) => {
+                                            // Always print RA stderr to worker logs for diagnostics
+                                            // (sysroot errors, cargo metadata failures, etc.)
+                                            eprint!("[LSP-ERR/{}] {}", lang, line);
+                                            let log_dc = { log_store_clone.lock().await.clone() };
+                                            if let Some(ldc) = log_dc {
+                                                let payload = serde_json::json!({
+                                                    "type": "lsp-stderr",
+                                                    "language": lang,
+                                                    "line": line
+                                                });
+                                                let _ = ldc.send_text(serde_json::to_string(&payload).unwrap_or_default()).await;
+                                            }
+                                        }
+                                        Err(_) => break,
+                                    }
+                                }
+                            });
+
+                            let _ = child.wait().await;
+                        }
+                        Err(e) => {
+                            // Build helpful diagnostic info for the error message
+                            let path_info = std::env::var("PATH").unwrap_or_else(|_| "<unavailable>".to_string());
+                            let binary_hint = match lang.as_str() {
+                                "dart" => {
+                                    let paths = ["/opt/dart-sdk/bin/dart", "/usr/lib/dart/bin/dart", "/usr/local/bin/dart"];
+                                    let found: Vec<&str> = paths.iter().filter(|p| std::path::Path::new(p).exists()).copied().collect();
+                                    if found.is_empty() {
+                                        "Dart SDK not found in any well-known location. Install via: apt-get install dart or download from dart.dev".to_string()
+                                    } else {
+                                        format!("Dart binary found at: {} — but not on PATH", found.join(", "))
+                                    }
+                                }
+                                _ => String::new(),
+                            };
+                            eprintln!("Failed to spawn LSP for {}: {}", lang, e);
+                            if !binary_hint.is_empty() {
+                                eprintln!("[LSP] Hint: {}", binary_hint);
+                            }
+                            eprintln!("[LSP] Current PATH: {}", path_info);
+                            // Send an LSP-shaped error response back so the frontend
+                            // doesn't hang forever waiting for `initialize` to respond.
+                            let error_response = serde_json::json!({
+                                "jsonrpc": "2.0",
+                                "id": 1, // initialize is always id=1
+                                "error": {
+                                    "code": -32002, // ServerNotInitialized
+                                    "message": format!(
+                                        "Failed to start {} language server: {}. \
+                                         The server binary may not be installed on the worker.",
+                                        lang, e
+                                    )
+                                }
+                            });
+                            if let Ok(payload) = serde_json::to_vec(&error_response) {
+                                let _ = dc_clone.send(&bytes::Bytes::from(payload)).await;
+                            }
+                        }
+                    }
+                });
+            }
+            else if label == "file-sync" {
+                // ── Real-time file sync channel ──────────────────────────
+                // The browser sends JSON messages when files are created,
+                // edited, renamed, or deleted.  We write the changes to disk
+                // so the LSP server (which indexes from the filesystem) sees
+                // them immediately.  This closes the "staleness gap" where
+                // files created in the browser editor don't exist on the
+                // worker's disk.
+                //
+                // Message format:
+                //   { "op": "write",  "path": "src/utils.py", "content": "..." }
+                //   { "op": "delete", "path": "old_file.py" }
+                //   { "op": "rename", "from": "a.py", "to": "b.py" }
+                //   { "op": "mkdir",  "path": "src/new_dir" }
+                //
+                // Paths are workspace-relative (same convention as LSP URIs
+                // without the `file:///synthi/` prefix).
+                let workspace_path_for_sync = workspace_path_for_dc.clone();
+                dc.on_message(Box::new(move |msg| {
+                    let ws_path = workspace_path_for_sync.clone();
+                    async move {
+                        let data = if msg.is_string {
+                            msg.data.clone()
+                        } else {
+                            msg.data.clone()
+                        };
+
+                        let json: serde_json::Value = match serde_json::from_slice(&data) {
+                            Ok(v) => v,
+                            Err(e) => {
+                                eprintln!("[file-sync] Invalid JSON: {}", e);
+                                return;
+                            }
+                        };
+
+                        let op = json.get("op").and_then(|o| o.as_str()).unwrap_or("");
+
+                        // Resolve workspace root.  The files were downloaded to
+                        // /tmp/workspaces/{slug}/ by storage::download, but we may
+                        // also have a slug in the message for safety.
+                        let base = if let Some(slug) = json.get("slug").and_then(|s| s.as_str()) {
+                            let p = std::path::PathBuf::from(format!("/tmp/workspaces/{}", slug));
+                            if p.exists() { p } else { ws_path.as_ref().clone() }
+                        } else {
+                            ws_path.as_ref().clone()
+                        };
+
+                        match op {
+                            "write" => {
+                                if let (Some(rel_path), Some(content)) = (
+                                    json.get("path").and_then(|p| p.as_str()),
+                                    json.get("content").and_then(|c| c.as_str()),
+                                ) {
+                                    // Sanitize: prevent path traversal
+                                    let rel = rel_path.trim_start_matches('/');
+                                    if rel.contains("..") {
+                                        eprintln!("[file-sync] Rejected path traversal: {}", rel);
+                                        return;
+                                    }
+                                    let file_path = base.join(rel);
+                                    if let Some(parent) = file_path.parent() {
+                                        let _ = tokio::fs::create_dir_all(parent).await;
+                                    }
+                                    match tokio::fs::write(&file_path, content).await {
+                                        Ok(()) => println!("[file-sync] ✓ write {}", rel),
+                                        Err(e) => eprintln!("[file-sync] ✗ write {}: {}", rel, e),
+                                    }
+                                }
+                            }
+                            "delete" => {
+                                if let Some(rel_path) = json.get("path").and_then(|p| p.as_str()) {
+                                    let rel = rel_path.trim_start_matches('/');
+                                    if rel.contains("..") { return; }
+                                    let file_path = base.join(rel);
+                                    if file_path.is_dir() {
+                                        match tokio::fs::remove_dir_all(&file_path).await {
+                                            Ok(()) => println!("[file-sync] ✓ rmdir {}", rel),
+                                            Err(e) => eprintln!("[file-sync] ✗ rmdir {}: {}", rel, e),
+                                        }
+                                    } else {
+                                        match tokio::fs::remove_file(&file_path).await {
+                                            Ok(()) => println!("[file-sync] ✓ delete {}", rel),
+                                            Err(e) => eprintln!("[file-sync] ✗ delete {}: {}", rel, e),
+                                        }
+                                    }
+                                }
+                            }
+                            "rename" => {
+                                if let (Some(from), Some(to)) = (
+                                    json.get("from").and_then(|f| f.as_str()),
+                                    json.get("to").and_then(|t| t.as_str()),
+                                ) {
+                                    let from = from.trim_start_matches('/');
+                                    let to = to.trim_start_matches('/');
+                                    if from.contains("..") || to.contains("..") { return; }
+                                    let from_path = base.join(from);
+                                    let to_path = base.join(to);
+                                    if let Some(parent) = to_path.parent() {
+                                        let _ = tokio::fs::create_dir_all(parent).await;
+                                    }
+                                    match tokio::fs::rename(&from_path, &to_path).await {
+                                        Ok(()) => println!("[file-sync] ✓ rename {} → {}", from, to),
+                                        Err(e) => eprintln!("[file-sync] ✗ rename {} → {}: {}", from, to, e),
+                                    }
+                                }
+                            }
+                            "mkdir" => {
+                                if let Some(rel_path) = json.get("path").and_then(|p| p.as_str()) {
+                                    let rel = rel_path.trim_start_matches('/');
+                                    if rel.contains("..") { return; }
+                                    let dir_path = base.join(rel);
+                                    match tokio::fs::create_dir_all(&dir_path).await {
+                                        Ok(()) => println!("[file-sync] ✓ mkdir {}", rel),
+                                        Err(e) => eprintln!("[file-sync] ✗ mkdir {}: {}", rel, e),
+                                    }
+                                }
+                            }
+                            _ => {
+                                eprintln!("[file-sync] Unknown op: {}", op);
+                            }
+                        }
+                    }
+                    .boxed()
+                }));
+            }
+            else if label == "emulator-input" {
+                dc.on_message(Box::new(move |msg| {
+                    async move {
+                        if !msg.is_string {
+                            return;
+                        }
+                        if let Ok(v) = serde_json::from_slice::<worker::android::webrtc::input::EmulatorInputMessage>(&msg.data) {
+                            if let Err(e) = worker::android::webrtc::input::handle_input_message(v).await {
+                                eprintln!("[emulator-input] error: {:#}", e);
+                            }
+                        } else {
+                            eprintln!("[emulator-input] failed to deserialize message: {}", String::from_utf8_lossy(&msg.data));
+                        }
+                    }
+                    .boxed()
+                }));
+            }
+            // ── Remote Extension Host (DEPRECATED) ─────────────────
+            // The legacy ext-host DataChannel used to spawn remote-ext-host.js
+            // directly.  This has been replaced by the vscode-server DataChannel
+            // which manages a real VS Code Server (code-server) with
+            // ext-host-preload.js injected via NODE_OPTIONS for full API
+            // compatibility.  If a browser still requests this DC, send back
+            // a deprecation error so it knows to use vscode-server instead.
+            else if label.starts_with("ext-host") {
+                let dc_clone = dc.clone();
+                eprintln!(
+                    "[ext-host] DEPRECATED: ext-host DataChannel requested — \
+                     use vscode-server DC instead.  Sending deprecation error."
+                );
+                tokio::spawn(async move {
+                    let err = serde_json::json!({
+                        "id": 0,
+                        "type": "event",
+                        "method": "error",
+                        "args": ["ext-host DataChannel is deprecated. Use the vscode-server DataChannel instead."],
+                        "generation": 0
+                    });
+                    let _ = dc_clone.send_text(
+                        serde_json::to_string(&err).unwrap_or_default()
+                    ).await;
+                });
+            }
+            // ── VS Code Server Manager ───────────────────────────────
+            // Spawns vscode-server-manager.js which downloads/starts a
+            // real VS Code Server (code-server) with a genuine Extension
+            // Host.  Same stdin/stdout JSON-RPC pattern as ext-host.
+            else if label.starts_with("vscode-server") {
+                let slug_opt = if let Some((_prefix, slug)) = label.split_once("?slug=") {
+                    Some(slug.to_string())
+                } else {
+                    None
+                };
+
+                let dc_clone = dc.clone();
+
+                // Deduplication: ignore if spawned recently (< 10s)
+                {
+                    let guard = vscode_server_kill_tx_outer.lock().await;
+                    if let Some((_tx, spawned_at)) = guard.as_ref() {
+                        let age = spawned_at.elapsed();
+                        if age < std::time::Duration::from_secs(10) {
+                            println!(
+                                "[vscode-server] Ignoring duplicate DC (current process only {}ms old)",
+                                age.as_millis()
+                            );
+                            drop(guard);
+                            return;
+                        }
+                    }
+                }
+
+                // Kill any previously running vscode-server-manager process
+                {
+                    let mut guard = vscode_server_kill_tx_outer.lock().await;
+                    if let Some((old_tx, _)) = guard.take() {
+                        println!("[vscode-server] Killing previous vscode-server-manager process");
+                        let _ = old_tx.send(());
+                    }
+                }
+
+                // Create a kill channel for THIS instance
+                let (kill_tx, mut kill_rx) = mpsc::unbounded_channel::<()>();
+                {
+                    let mut guard = vscode_server_kill_tx_outer.lock().await;
+                    *guard = Some((kill_tx, tokio::time::Instant::now()));
+                }
+
+                // Buffer incoming messages
+                let (incoming_tx, mut incoming_rx) = mpsc::unbounded_channel::<webrtc::data_channel::data_channel_message::DataChannelMessage>();
+                let incoming_tx_clone = incoming_tx.clone();
+                dc.on_message(Box::new(move |msg| {
+                    let tx = incoming_tx_clone.clone();
+                    async move { let _ = tx.send(msg); }.boxed()
+                }));
+
+                println!("[on_data_channel] vscode-server branch matched, spawning vscode-server-manager.js...");
+
+                // Signal when DC opens
+                let (dc_open_tx, dc_open_rx) = tokio::sync::oneshot::channel::<()>();
+                let dc_open_tx = std::sync::Mutex::new(Some(dc_open_tx));
+                dc.on_open(Box::new(move || {
+                    println!("[vscode-server] DataChannel is now open");
+                    if let Some(tx) = dc_open_tx.lock().unwrap().take() {
+                        let _ = tx.send(());
+                    }
+                    async {}.boxed()
+                }));
+
+                tokio::spawn(async move {
+                    // Locate the script — same directory as the binary
+                    let manager_script = {
+                        let exe_dir = std::env::current_exe()
+                            .ok()
+                            .and_then(|p| p.parent().map(|d| d.to_path_buf()));
+                        let candidates = vec![
+                            exe_dir.as_ref().map(|d| d.join("vscode-server-manager.js")),
+                            Some(std::path::PathBuf::from("vscode-server-manager.js")),
+                            Some(std::path::PathBuf::from("../vscode-server-manager.js")),
+                        ];
+                        let mut found = None;
+                        for c in candidates.into_iter().flatten() {
+                            if c.exists() {
+                                found = Some(c);
+                                break;
+                            }
+                        }
+                        match found {
+                            Some(p) => p,
+                            None => {
+                                eprintln!("[vscode-server] vscode-server-manager.js not found");
+                                let err = serde_json::json!({
+                                    "id": 0, "type": "event", "method": "error",
+                                    "args": ["vscode-server-manager.js not found on worker"],
+                                    "generation": 0
+                                });
+                                let _ = dc_clone.send_text(serde_json::to_string(&err).unwrap_or_default()).await;
+                                return;
+                            }
+                        }
+                    };
+
+                    println!("[vscode-server] Using script: {}", manager_script.display());
+
+                    let mut cmd = Command::new("node");
+                    cmd.arg(&manager_script);
+                    cmd.stdin(Stdio::piped());
+                    cmd.stdout(Stdio::piped());
+                    cmd.stderr(Stdio::piped());
+
+                    match cmd.spawn() {
+                        Ok(mut child) => {
+                            let mut stdin = child.stdin.take().expect("[vscode-server] Failed to open stdin");
+                            let stdout = child.stdout.take().expect("[vscode-server] Failed to open stdout");
+                            let stderr = child.stderr.take().expect("[vscode-server] Failed to open stderr");
+
+                            // DC → stdin
+                            let (stdin_tx, mut stdin_rx) = mpsc::unbounded_channel::<Vec<u8>>();
+                            let stdin_tx_clone = stdin_tx.clone();
+                            tokio::spawn(async move {
+                                while let Some(msg) = incoming_rx.recv().await {
+                                    let mut line = msg.data.to_vec();
+                                    if !line.ends_with(b"\n") { line.push(b'\n'); }
+                                    let _ = stdin_tx_clone.send(line);
+                                }
+                            });
+                            tokio::spawn(async move {
+                                while let Some(data) = stdin_rx.recv().await {
+                                    if stdin.write_all(&data).await.is_err() { break; }
+                                    if stdin.flush().await.is_err() { break; }
+                                }
+                            });
+
+                            // stdout → DC (wait for DC open first)
+                            let dc_out = dc_clone.clone();
+                            tokio::spawn(async move {
+                                match tokio::time::timeout(
+                                    std::time::Duration::from_secs(15),
+                                    dc_open_rx,
+                                ).await {
+                                    Err(_) => { eprintln!("[vscode-server] Timed out waiting for DC open"); return; }
+                                    Ok(Err(_)) => { eprintln!("[vscode-server] DC open signal dropped"); return; }
+                                    Ok(Ok(())) => {}
+                                }
+                                println!("[vscode-server] DC open, starting stdout→DC forwarding");
+                                let mut reader = BufReader::new(stdout);
+                                let mut line = String::new();
+                                loop {
+                                    line.clear();
+                                    match reader.read_line(&mut line).await {
+                                        Ok(0) => break,
+                                        Ok(_) => {
+                                            let trimmed = line.trim();
+                                            if trimmed.is_empty() { continue; }
+
+
+                                            // Chunk large messages (>60KB) for WebRTC SCTP
+                                            let data_bytes = trimmed.as_bytes();
+                                            if data_bytes.len() > 60000 {
+                                                let msg_id = (std::time::SystemTime::now()
+                                                    .duration_since(std::time::UNIX_EPOCH)
+                                                    .unwrap().as_nanos() % 0xFFFFFFFF) as u32;
+                                                let chunks = make_chunks(data_bytes, msg_id);
+                                                println!("[vscode-server] Chunking large message: {} bytes → {} chunks", data_bytes.len(), chunks.len());
+                                                for chunk in chunks {
+                                                    let data = Bytes::from(chunk);
+                                                    if let Err(e) = dc_send_with_backpressure(&dc_out, &data, "vscode-server").await {
+                                                        eprintln!("[vscode-server] chunk send failed permanently: {}", e);
+                                                        // Don't break the outer loop — just skip this message
+                                                        break;
+                                                    }
+                                                }
+                                            } else {
+                                                if let Err(e) = dc_send_text_with_backpressure(&dc_out, trimmed.to_string(), "vscode-server").await {
+                                                    eprintln!("[vscode-server] send failed permanently: {}", e);
+                                                    // Don't break — continue trying with next messages
+                                                }
+                                            }
+                                        }
+                                        Err(e) => { eprintln!("[vscode-server] stdout read error: {}", e); break; }
+                                    }
+                                }
+                                println!("[vscode-server] stdout reader exited");
+                            });
+
+                            // stderr → logs
+                            tokio::spawn(async move {
+                                let mut reader = BufReader::new(stderr);
+                                let mut line = String::new();
+                                loop {
+                                    line.clear();
+                                    match reader.read_line(&mut line).await {
+                                        Ok(0) => break,
+                                        Ok(_) => { eprint!("[vscode-server] {}", line); }
+                                        Err(_) => break,
+                                    }
+                                }
+                            });
+
+                            let _ = tokio::select! {
+                                status = child.wait() => {
+                                    println!("[vscode-server] Manager process exited: {:?}", status);
+                                    status
+                                }
+                                _ = kill_rx.recv() => {
+                                    println!("[vscode-server] Received kill signal, terminating manager");
+                                    let _ = child.kill().await;
+                                    child.wait().await
+                                }
+                            };
+                            println!("[vscode-server] Manager process cleanup complete");
+                        }
+                        Err(e) => {
+                            eprintln!("[vscode-server] Failed to spawn Node.js: {}", e);
+                            let err = serde_json::json!({
+                                "id": 0, "type": "event", "method": "error",
+                                "args": [format!("Failed to spawn vscode-server-manager: {}", e)],
+                                "generation": 0
+                            });
+                            let _ = dc_clone.send_text(serde_json::to_string(&err).unwrap_or_default()).await;
+                        }
+                    }
+                });
+            }
+            // ── VS Code Server WebSocket Tunnel ──────────────────────
+            // Bridges a DataChannel to the VS Code Server's TCP port so
+            // the browser can establish a WebSocket connection to the real
+            // Extension Host through the WebRTC transport.
+            //
+            // Label format: "vscode-ws-tunnel?port=18000"
+            // Data flows bidirectionally: DC ↔ TCP (127.0.0.1:<port>)
+            else if label.starts_with("vscode-ws-tunnel") {
+                let port: u16 = label
+                    .split_once("?port=")
+                    .and_then(|(_, p)| p.parse().ok())
+                    .unwrap_or(18000);
+
+                let dc_clone = dc.clone();
+
+                // Buffer incoming DC messages
+                let (incoming_tx, mut incoming_rx) = mpsc::unbounded_channel::<webrtc::data_channel::data_channel_message::DataChannelMessage>();
+                let incoming_tx_clone = incoming_tx.clone();
+                dc.on_message(Box::new(move |msg| {
+                    let tx = incoming_tx_clone.clone();
+                    async move { let _ = tx.send(msg); }.boxed()
+                }));
+
+                // Wait for DC to open, then connect TCP
+                let (dc_open_tx, dc_open_rx) = tokio::sync::oneshot::channel::<()>();
+                let dc_open_tx = std::sync::Mutex::new(Some(dc_open_tx));
+                dc.on_open(Box::new(move || {
+                    println!("[vscode-ws-tunnel] DataChannel opened, port={}", port);
+                    if let Some(tx) = dc_open_tx.lock().unwrap().take() {
+                        let _ = tx.send(());
+                    }
+                    async {}.boxed()
+                }));
+
+                tokio::spawn(async move {
+                    // Wait for DC open
+                    if dc_open_rx.await.is_err() {
+                        eprintln!("[vscode-ws-tunnel] DC open signal dropped");
+                        return;
+                    }
+
+                    // Connect to the VS Code Server's TCP port
+                    let addr = format!("127.0.0.1:{}", port);
+                    let tcp_stream = match tokio::net::TcpStream::connect(&addr).await {
+                        Ok(s) => s,
+                        Err(e) => {
+                            eprintln!("[vscode-ws-tunnel] Failed to connect to {}: {}", addr, e);
+                            let err = serde_json::json!({
+                                "id": 0, "type": "event", "method": "error",
+                                "args": [format!("TCP connect failed: {}", e)],
+                                "generation": 0
+                            });
+                            let _ = dc_clone.send_text(serde_json::to_string(&err).unwrap_or_default()).await;
+                            return;
+                        }
+                    };
+                    println!("[vscode-ws-tunnel] TCP connected to {}", addr);
+
+                    let (tcp_read, mut tcp_write) = tcp_stream.into_split();
+
+                    // DC → TCP: forward DataChannel binary data to TCP socket
+                    let dc_to_tcp = tokio::spawn(async move {
+                        while let Some(msg) = incoming_rx.recv().await {
+                            if tcp_write.write_all(&msg.data).await.is_err() { break; }
+                        }
+                        println!("[vscode-ws-tunnel] DC→TCP forwarder exited");
+                    });
+
+                    // TCP → DC: forward TCP data back to DataChannel
+                    let dc_for_tcp = dc_clone.clone();
+                    let tcp_to_dc = tokio::spawn(async move {
+                        let mut reader = tokio::io::BufReader::new(tcp_read);
+                        let mut buf = vec![0u8; 64 * 1024];
+                        loop {
+                            match reader.read(&mut buf).await {
+                                Ok(0) => break, // EOF
+                                Ok(n) => {
+                                    let data = Bytes::copy_from_slice(&buf[..n]);
+                                    if dc_for_tcp.send(&data).await.is_err() { break; }
+                                }
+                                Err(e) => {
+                                    eprintln!("[vscode-ws-tunnel] TCP read error: {}", e);
+                                    break;
+                                }
+                            }
+                        }
+                        println!("[vscode-ws-tunnel] TCP→DC forwarder exited");
+                    });
+
+                    // Wait for either direction to finish
+                    tokio::select! {
+                        _ = dc_to_tcp => {}
+                        _ = tcp_to_dc => {}
+                    }
+                    println!("[vscode-ws-tunnel] Tunnel closed for port {}", port);
+                });
+            }
+        }
+        .boxed()
+    }));
+
+    Ok(())
+}
+
+// Cache for AI split results to avoid redundant API calls
+// Two-level cache:
+//   1. Full source hash -> instant hit (no patching needed)
+//   2. Structural hash -> hit with string patching (fast, no AI call)
+use std::sync::OnceLock;
+
+#[derive(Clone)]
+struct CachedSplit {
+    result: serde_json::Value,
+    original_source: String, // Store original source for string extraction
+}
+
+static AI_SPLIT_CACHE: OnceLock<tokio::sync::Mutex<std::collections::HashMap<u64, CachedSplit>>> =
+    OnceLock::new();
+// Secondary cache keyed by structural hash for string-patching hits
+static AI_SPLIT_STRUCTURAL_CACHE: OnceLock<
+    tokio::sync::Mutex<std::collections::HashMap<u64, CachedSplit>>,
+> = OnceLock::new();
+
+fn get_ai_split_cache() -> &'static tokio::sync::Mutex<std::collections::HashMap<u64, CachedSplit>>
+{
+    AI_SPLIT_CACHE.get_or_init(|| tokio::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+fn get_ai_split_structural_cache(
+) -> &'static tokio::sync::Mutex<std::collections::HashMap<u64, CachedSplit>> {
+    AI_SPLIT_STRUCTURAL_CACHE
+        .get_or_init(|| tokio::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+fn calculate_hash<T: Hash>(t: &T) -> u64 {
+    let mut s = DefaultHasher::new();
+    t.hash(&mut s);
+    s.finish()
+}
+
+/// Extract all string literals from C/C++ source in order
+fn extract_string_literals(source: &str) -> Vec<String> {
+    let mut strings = Vec::new();
+    let mut chars = source.chars().peekable();
+    let mut in_string = false;
+    let mut in_char = false;
+    let mut in_line_comment = false;
+    let mut in_block_comment = false;
+    let mut escape_next = false;
+    let mut current_string = String::new();
+
+    while let Some(c) = chars.next() {
+        if escape_next {
+            if in_string {
+                current_string.push('\\');
+                current_string.push(c);
+            }
+            escape_next = false;
+            continue;
+        }
+
+        if in_line_comment {
+            if c == '\n' {
+                in_line_comment = false;
+            }
+            continue;
+        }
+
+        if in_block_comment {
+            if c == '*' && chars.peek() == Some(&'/') {
+                chars.next();
+                in_block_comment = false;
+            }
+            continue;
+        }
+
+        if in_string {
+            if c == '\\' {
+                escape_next = true;
+            } else if c == '"' {
+                strings.push(current_string.clone());
+                current_string.clear();
+                in_string = false;
+            } else {
+                current_string.push(c);
+            }
+            continue;
+        }
+
+        if in_char {
+            if c == '\\' {
+                escape_next = true;
+            } else if c == '\'' {
+                in_char = false;
+            }
+            continue;
+        }
+
+        // Detect start of constructs
+        if c == '/' {
+            if chars.peek() == Some(&'/') {
+                chars.next();
+                in_line_comment = true;
+                continue;
+            }
+            if chars.peek() == Some(&'*') {
+                chars.next();
+                in_block_comment = true;
+                continue;
+            }
+        }
+        if c == '"' {
+            in_string = true;
+            continue;
+        }
+        if c == '\'' {
+            in_char = true;
+            continue;
+        }
+    }
+
+    strings
+}
+
+// ============================================================
+// GUARDRAIL HELPER FUNCTIONS
+// ============================================================
+// These functions apply all guardrails to source content BEFORE
+// hash computation, ensuring rebuild scope decisions are based
+// on the actual compiled content.
+
+/// Apply guardrails to shared.h content
+fn apply_shared_guardrails(content: &str) -> String {
+    let mut result = content.to_string();
+
+    // Guardrails: AI sometimes typedefs X11 types to void, which conflicts with Xlib headers.
+    for bad in [
+        "typedef void Display",
+        "typedef void GC",
+        "typedef void Atom",
+        "typedef void XIM",
+        "typedef void XIC",
+    ] {
+        if result.contains(bad) {
+            result = result.replace(bad, "// stripped invalid typedef\n");
+        }
+    }
+
+    // Strip conflicting forward declarations of X11 types and normalize struct field types.
+    for bad in [
+        "struct Display;",
+        "struct Window;",
+        "struct Atom;",
+        "struct XIM;",
+        "struct XIC;",
+        "struct Pixmap;",
+        "struct GC;",
+        "struct XWindowAttributes;",
+    ] {
+        if result.contains(bad) {
+            result = result.replace(bad, "// stripped conflicting X11 forward decl\n");
+        }
+    }
+    result = result.replace("struct Display*", "Display*");
+    result = result.replace("struct Window", "Window");
+    result = result.replace("struct Atom", "Atom");
+    result = result.replace("struct XIM*", "XIM*");
+    result = result.replace("struct XIC*", "XIC*");
+    result = result.replace("struct Pixmap", "Pixmap");
+    result = result.replace("struct GC", "GC");
+    result = result.replace("struct XWindowAttributes", "XWindowAttributes");
+
+    // Guardrail: SDL_Event is a union in SDL2. Forward-declaring it as a struct
+    // (e.g. `struct SDL_Event;`) causes compile failures when SDL.h is included.
+    for bad in [
+        "struct SDL_Event;",
+        "typedef struct SDL_Event SDL_Event;",
+        "typedef struct SDL_Event SDL_Event ;",
+    ] {
+        if result.contains(bad) {
+            result = result.replace(bad, "/* stripped invalid SDL_Event forward decl */");
+        }
+    }
+
+    // FIX: gui_on_load declaration MUST have 3 parameters to match implementation
+    if result.contains("gui_on_load(void* prev_state, void* window_ptr)")
+        && !result.contains("gui_on_load(void* prev_state, void* window_ptr, void* core_api_ptr)")
+    {
+        result = result.replace(
+            "gui_on_load(void* prev_state, void* window_ptr)",
+            "gui_on_load(void* prev_state, void* window_ptr, void* core_api_ptr)",
+        );
+        eprintln!("[Guardrail] Fixed gui_on_load declaration in shared.h: added missing core_api_ptr parameter");
+    }
+
+    result
+}
+
+/// Apply guardrails to core.cpp content (requires processed shared.h for context)
+fn apply_core_guardrails(content: &str, shared_content: &str) -> String {
+    let mut result = content.to_string();
+
+    // Detect if shared.h has full struct definitions or just forward declarations
+    let shared_has_full_hostkv = shared_content.contains("struct HostKvApiV1 {")
+        || shared_content.contains("struct SynthiHostContextV1 {")
+        || shared_content.contains("struct SynthiNamespaceSchemaV1 {");
+
+    // Fix common AI mistakes in core.cpp before compilation.
+    if result.contains("is_running") {
+        result = result.replace("is_running", "running");
+    }
+
+    // CRITICAL: Strip X11-related functions that the AI incorrectly preserved from the input.
+    let x11_type_patterns = [
+        "Display*",
+        "Display *",
+        "Window*",
+        "XIM",
+        "XIC",
+        "Atom",
+        "Colormap",
+        "Pixmap",
+        "GC ",
+        "XEvent",
+        "XOpenDisplay",
+        "XCloseDisplay",
+        "XCreateWindow",
+        "XDestroyWindow",
+        "XOpenIM",
+        "XCreateIC",
+        "XCreateGC",
+        "XFreeGC",
+        "XCreatePixmap",
+        "XFreePixmap",
+    ];
+
+    let mut cleaned_lines = Vec::new();
+    for line in result.lines() {
+        let has_x11 = x11_type_patterns.iter().any(|pat| line.contains(pat));
+        let is_comment = line.trim_start().starts_with("//") || line.trim_start().starts_with("/*");
+        let is_include = line.trim_start().starts_with("#include");
+
+        if has_x11 && !is_comment && !is_include {
+            cleaned_lines.push(format!("// [X11-stripped] {}", line));
+        } else {
+            cleaned_lines.push(line.to_string());
+        }
+    }
+    result = cleaned_lines.join("\n");
+
+    // CRITICAL: Ensure shared.h is included FIRST
+    if !result.contains("#include \"shared.h\"") {
+        if let Some(pos) = result.find("#include <") {
+            if let Some(newline) = result[pos..].find('\n') {
+                let insert_pos = pos + newline + 1;
+                result.insert_str(insert_pos, "#include \"shared.h\"  // [Guardrail] Added\n");
+            }
+        } else {
+            result = format!("#include \"shared.h\"  // [Guardrail] Added\n{}", result);
+        }
+    }
+
+    // CRITICAL FIX: Transform malloc-based on_load to static storage
+    if result.contains("malloc(sizeof(AppState))") && result.contains("on_load") {
+        if !result.contains("static AppState app_state")
+            && !result.contains("static CoreState core_state")
+        {
+            if let Some(on_load_pos) = result.find("extern \"C\" void* on_load") {
+                result.insert_str(on_load_pos, "// [Guardrail] Injected static storage for HMR\nstatic AppState app_state = {0};\n\n");
+            } else if let Some(on_load_pos) = result.find("extern \"C\" void* core_on_load") {
+                result.insert_str(on_load_pos, "// [Guardrail] Injected static storage for HMR\nstatic AppState app_state = {0};\n\n");
+            }
+        }
+
+        let re_malloc = regex::Regex::new(r"AppState\*\s+state\s*=\s*\(AppState\*\)\s*malloc\s*\(\s*sizeof\s*\(\s*AppState\s*\)\s*\)\s*;").unwrap();
+        result = re_malloc.replace_all(&result, "AppState* state = (prev_state) ? (AppState*)prev_state : &app_state; // [Guardrail] Fixed malloc->static").to_string();
+
+        let re_malloc2 = regex::Regex::new(r"CoreState\*\s+state\s*=\s*\(CoreState\*\)\s*malloc\s*\(\s*sizeof\s*\(\s*CoreState\s*\)\s*\)\s*;").unwrap();
+        result = re_malloc2.replace_all(&result, "CoreState* state = (prev_state) ? (CoreState*)prev_state : &core_state; // [Guardrail] Fixed malloc->static").to_string();
+
+        let re_if_malloc = regex::Regex::new(
+            r"if\s*\(\s*!prev_state\s*\)\s*\{\s*state\s*=\s*\(AppState\*\)\s*malloc[^}]+\}",
+        )
+        .unwrap();
+        result = re_if_malloc
+            .replace_all(
+                &result,
+                "if (!prev_state) { state = &app_state; /* [Guardrail] Fixed malloc->static */ }",
+            )
+            .to_string();
+    }
+
+    // FIX: Detect and warn about free(state) which causes crashes on reload
+    if result.contains("free(state)") {
+        result = result.replace(
+            "free(state);",
+            "// free(state); // Commented - runner manages state",
+        );
+    }
+
+    // FIX: Detect and warn about memset on state which wipes preserved HMR state
+    if result.contains("memset(state")
+        || result.contains("memset(&app_state")
+        || result.contains("memset(&state")
+        || result.contains("memset(&core_state")
+        || result.contains("memset( state")
+    {
+        let re_memset = regex::Regex::new(
+            r"memset\s*\(\s*(state|&app_state|&core_state|&state|&gui_app_state)[^;]*\)\s*;",
+        )
+        .unwrap();
+        result = re_memset
+            .replace_all(
+                &result,
+                "// [Guardrail] memset REMOVED to preserve HMR state",
+            )
+            .to_string();
+    }
+
+    // Drop writes/reads to non-existent XWindowAttributes fields
+    for bad_field in [
+        "event_mask",
+        "damage",
+        "border_pixel",
+        "background_pixel",
+        "saved_attributes",
+        "attributes_mask",
+    ] {
+        if result.contains(bad_field) {
+            let mut cleaned = String::new();
+            for line in result.lines() {
+                if line.contains(bad_field) {
+                    cleaned.push_str("// stripped invalid field: ");
+                    cleaned.push_str(line);
+                    cleaned.push('\n');
+                } else {
+                    cleaned.push_str(line);
+                    cleaned.push('\n');
+                }
+            }
+            result = cleaned;
+        }
+    }
+
+    // INJECT MISSING HEADERS
+    if result.contains("setlocale") && !result.contains("#include <locale.h>") {
+        result = format!("#include <locale.h>\n{}", result);
+    }
+    if result.contains("SDL_") && !result.contains("#include <SDL2/SDL.h>") {
+        result = format!("#include <SDL2/SDL.h>\n{}", result);
+    }
+    if (result.contains("XLookupString") || result.contains("XK_Escape"))
+        && !result.contains("#include <X11/Xutil.h>")
+    {
+        result = format!(
+            "#include <X11/Xutil.h>\n#include <X11/keysym.h>\n{}",
+            result
+        );
+    }
+    if (result.contains("dlopen") || result.contains("dlsym"))
+        && !result.contains("#include <dlfcn.h>")
+    {
+        result = format!("#include <dlfcn.h>\n{}", result);
+    }
+
+    // FIX: Ensure shared.h is included in core.cpp if AppState is used
+    if result.contains("AppState") && !result.contains("#include \"shared.h\"") {
+        if result.contains("struct AppState;") {
+            result = result.replace("struct AppState;", "#include \"shared.h\"");
+        } else {
+            result = format!("#include \"shared.h\"\n{}", result);
+        }
+    }
+
+    // FIX: Remove duplicate defines that are already in shared.h
+    if result.contains("#include \"shared.h\"") {
+        result = result.replace("#define CORE_STATE_MAGIC", "// #define CORE_STATE_MAGIC");
+        result = result.replace(
+            "#define SYNTHI_ABI_VERSION",
+            "// #define SYNTHI_ABI_VERSION",
+        );
+
+        // Strip duplicate AppState struct/typedef
+        if let Some(start) = result.find("typedef struct AppState") {
+            if let Some(end) = result[start..].find("} AppState;") {
+                let block_end = start + end + "} AppState;".len();
+                let block = result[start..block_end].to_string();
+                result = result.replace(&block, "// AppState defined in shared.h");
+            }
+        }
+
+        if let Some(start) = result.find("typedef struct {") {
+            if let Some(end) = result[start..].find("} AppState;") {
+                let block_end = start + end + "} AppState;".len();
+                let block = result[start..block_end].to_string();
+                if block.contains("magic") && block.contains("struct_size") {
+                    result = result.replace(&block, "// AppState defined in shared.h");
+                }
+            }
+        }
+    }
+
+    result
+}
+
+/// Patch string literals in cached JSON result with new strings from source
+/// Returns (patched_result, did_patch_anything)
+fn patch_strings_in_cached_result(
+    cached: &serde_json::Value,
+    old_strings: &[String],
+    new_strings: &[String],
+) -> (serde_json::Value, bool) {
+    // Only patch if we have a reasonable mapping
+    if old_strings.is_empty() || new_strings.is_empty() {
+        return (cached.clone(), false);
+    }
+
+    let mut result = cached.clone();
+    let mut any_patches_applied = false;
+
+    // Patch each file's content in the split result
+    for key in &["core", "gui", "shared"] {
+        if let Some(file_obj) = result.get_mut(key) {
+            if let Some(content) = file_obj.get_mut("content") {
+                if let Some(content_str) = content.as_str() {
+                    let mut patched = content_str.to_string();
+
+                    // Replace old strings with new strings where they differ
+                    // Match by position in the string list (assuming order is preserved)
+                    for (old, new) in old_strings.iter().zip(new_strings.iter()) {
+                        if old != new && !old.is_empty() {
+                            // Use format with quotes to avoid partial matches
+                            let old_quoted = format!("\"{}\"", old);
+                            let new_quoted = format!("\"{}\"", new);
+                            if patched.contains(&old_quoted) {
+                                patched = patched.replace(&old_quoted, &new_quoted);
+                                any_patches_applied = true;
+                            }
+                        }
+                    }
+
+                    *content = serde_json::Value::String(patched);
+                }
+            }
+        }
+    }
+
+    (result, any_patches_applied)
+}
+
+/// Check if a string looks like a semantic value that AI transforms (not just copies)
+/// These include: color names, font names, file paths, etc.
+fn is_semantic_string(s: &str) -> bool {
+    // X11/CSS color names
+    let color_names = [
+        "black", "white", "red", "green", "blue", "yellow", "cyan", "magenta", "orange", "purple",
+        "pink", "brown", "gray", "grey", "navy", "teal", "lime", "aqua", "maroon", "olive",
+        "silver", "fuchsia",
+    ];
+
+    let lower = s.to_lowercase();
+    color_names.iter().any(|c| lower == *c)
+}
+
+/// Apply guardrails to gui.cpp content (requires processed shared.h for context)
+fn apply_gui_guardrails(content: &str, shared_content: &str) -> String {
+    let mut result = content.to_string();
+
+    // Detect if shared.h has full struct definitions
+    let shared_has_full_hostkv = shared_content.contains("struct HostKvApiV1 {")
+        || shared_content.contains("struct SynthiHostContextV1 {")
+        || shared_content.contains("struct SynthiNamespaceSchemaV1 {");
+
+    // Strip X11-related functions
+    let x11_type_patterns = [
+        "Display*",
+        "Display *",
+        "XIM",
+        "XIC",
+        "Atom",
+        "Colormap",
+        "Pixmap",
+        "GC ",
+        "XEvent",
+        "XOpenDisplay",
+        "XCloseDisplay",
+        "XCreateWindow",
+        "XDestroyWindow",
+        "XOpenIM",
+        "XCreateIC",
+        "XCreateGC",
+        "XFreeGC",
+        "XCreatePixmap",
+        "XFreePixmap",
+    ];
+    let mut cleaned_lines = Vec::new();
+    for line in result.lines() {
+        let has_x11 = x11_type_patterns.iter().any(|pat| line.contains(pat));
+        let is_comment = line.trim_start().starts_with("//") || line.trim_start().starts_with("/*");
+        let is_include = line.trim_start().starts_with("#include");
+        if has_x11 && !is_comment && !is_include {
+            cleaned_lines.push(format!("// [X11-stripped] {}", line));
+        } else {
+            cleaned_lines.push(line.to_string());
+        }
+    }
+    result = cleaned_lines.join("\n");
+
+    // FIX: GUI module should use GUI_STATE_MAGIC
+    if result.contains("CORE_STATE_MAGIC") && !result.contains("#define CORE_STATE_MAGIC") {
+        result = result.replace("CORE_STATE_MAGIC", "GUI_STATE_MAGIC");
+    }
+
+    // FIX: Ensure shared.h is included
+    if result.contains("AppState") && !result.contains("#include \"shared.h\"") {
+        if result.contains("struct AppState;") {
+            result = result.replace("struct AppState;", "#include \"shared.h\"");
+        } else {
+            result = format!("#include \"shared.h\"\n{}", result);
+        }
+    }
+
+    // Strip duplicate AppState definitions
+    if result.contains("#include \"shared.h\"") {
+        if let Some(start) = result.find("typedef struct AppState") {
+            if let Some(end) = result[start..].find("} AppState;") {
+                let block_end = start + end + "} AppState;".len();
+                let block = result[start..block_end].to_string();
+                result = result.replace(&block, "// AppState defined in shared.h");
+            }
+        }
+
+        if let Some(start) = result.find("typedef struct {") {
+            if let Some(end) = result[start..].find("} AppState;") {
+                let block_end = start + end + "} AppState;".len();
+                let block = result[start..block_end].to_string();
+                if block.contains("magic") && block.contains("struct_size") {
+                    result = result.replace(&block, "// AppState defined in shared.h");
+                }
+            }
+        }
+
+        if let Some(start) = result.find("struct AppState {") {
+            if let Some(end) = result[start..].find("};") {
+                let block_end = start + end + "};".len();
+                let block = result[start..block_end].to_string();
+                if block.contains("{") {
+                    result = result.replace(&block, "// AppState defined in shared.h");
+                }
+            }
+        }
+
+        // Handle Host KV structs
+        for struct_name in &[
+            "HostKvApiV1",
+            "SynthiHostContextV1",
+            "SynthiNamespaceSchemaV1",
+        ] {
+            let typedef_pattern = format!("typedef struct {} {};", struct_name, struct_name);
+            if result.contains(&typedef_pattern) {
+                result = result.replace(
+                    &typedef_pattern,
+                    &format!("// {} forward-declared in shared.h", struct_name),
+                );
+            }
+
+            if shared_has_full_hostkv {
+                let struct_decl = format!("struct {} {{", struct_name);
+                if let Some(start) = result.find(&struct_decl) {
+                    if let Some(end) = result[start..].find("};") {
+                        let block_end = start + end + "};".len();
+                        let block = result[start..block_end].to_string();
+                        result = result.replace(
+                            &block,
+                            &format!("// {} fully defined in shared.h", struct_name),
+                        );
+                    }
+                }
+            }
+        }
+
+        // Inject Host KV definitions if needed
+        let uses_hostkv_types = result.contains("SynthiHostContextV1")
+            || result.contains("SynthiNamespaceSchemaV1")
+            || result.contains("HostKvApiV1")
+            || result.contains("g_gui_schemas")
+            || result.contains("host_kv_schemas");
+
+        if uses_hostkv_types && !shared_has_full_hostkv {
+            let hostkv_header = get_hostkv_header();
+            if let Some(include_end) = result.rfind("#include") {
+                if let Some(newline_pos) = result[include_end..].find('\n') {
+                    let insert_pos = include_end + newline_pos + 1;
+                    result.insert_str(insert_pos, &hostkv_header);
+                }
+            } else {
+                result = format!("{}{}", hostkv_header, result);
+            }
+        }
+    }
+
+    // FIX: gui_on_load MUST have 3 parameters
+    if result.contains("gui_on_load(void* prev_state, void* window_ptr)")
+        && !result.contains("gui_on_load(void* prev_state, void* window_ptr, void* core_api_ptr)")
+    {
+        result = result.replace(
+            "gui_on_load(void* prev_state, void* window_ptr)",
+            "gui_on_load(void* prev_state, void* window_ptr, void* core_api_ptr)",
+        );
+    }
+
+    // FIX: Comment out SDL_RenderPresent
+    let re_present = regex::Regex::new(r"SDL_RenderPresent\s*\([^)]*\)\s*;").unwrap();
+    result = re_present
+        .replace_all(
+            &result,
+            "/* SDL_RenderPresent removed - runner handles this */",
+        )
+        .to_string();
+
+    // FIX: Replace SDL_GetKeyboardWindow
+    if result.contains("SDL_GetKeyboardWindow") {
+        result = result.replace("SDL_GetKeyboardWindow", "SDL_GetKeyboardFocus");
+    }
+
+    // Convert malloc-based gui_on_load to static storage
+    if result.contains("malloc(sizeof(AppState))") && result.contains("gui_on_load") {
+        if !result.contains("static AppState gui_app_state")
+            && !result.contains("static GuiState gui_state")
+        {
+            if let Some(on_load_pos) = result.find("extern \"C\" void* gui_on_load") {
+                result.insert_str(on_load_pos, "// [Guardrail] Injected static storage for HMR\nstatic AppState gui_app_state = {0};\n\n");
+            }
+        }
+
+        let re_malloc = regex::Regex::new(r"AppState\*\s+state\s*=\s*\(AppState\*\)\s*malloc\s*\(\s*sizeof\s*\(\s*AppState\s*\)\s*\)\s*;").unwrap();
+        result = re_malloc.replace_all(&result, "AppState* state = (prev_state) ? (AppState*)prev_state : &gui_app_state; // [Guardrail] Fixed malloc->static").to_string();
+
+        let re_malloc2 = regex::Regex::new(r"GuiState\*\s+state\s*=\s*\(GuiState\*\)\s*malloc\s*\(\s*sizeof\s*\(\s*GuiState\s*\)\s*\)\s*;").unwrap();
+        result = re_malloc2.replace_all(&result, "GuiState* state = (prev_state) ? (GuiState*)prev_state : &gui_state; // [Guardrail] Fixed malloc->static").to_string();
+    }
+
+    // FIX: free(state) crashes
+    if result.contains("free(state)") {
+        result = result.replace(
+            "free(state);",
+            "// free(state); // Commented - runner manages state",
+        );
+    }
+
+    // FIX: memset wipes HMR state
+    if result.contains("memset(state")
+        || result.contains("memset(&app_state")
+        || result.contains("memset(&gui_state")
+        || result.contains("memset(&state")
+        || result.contains("memset(&gui_app_state")
+        || result.contains("memset( state")
+    {
+        let re_memset = regex::Regex::new(
+            r"memset\s*\(\s*(state|&app_state|&gui_state|&state|&gui_app_state)[^;]*\)\s*;",
+        )
+        .unwrap();
+        result = re_memset
+            .replace_all(
+                &result,
+                "// [Guardrail] memset REMOVED to preserve HMR state",
+            )
+            .to_string();
+    }
+
+    // FIX: app_state -> gui_app_state in gui.cpp
+    if result.contains("static AppState gui_app_state") || result.contains("&gui_app_state") {
+        if result.contains("&app_state") && !result.contains("&gui_app_state") {
+            result = result.replace("&app_state", "&gui_app_state");
+        }
+
+        if result.contains("gui_app_state") {
+            let placeholder = "__GUI_APP_STATE_PLACEHOLDER__";
+            let temp_content = result.replace("gui_app_state", placeholder);
+            if temp_content.contains("app_state") {
+                let fixed_content = temp_content.replace("app_state", "gui_app_state");
+                result = fixed_content.replace(placeholder, "gui_app_state");
+            }
+        }
+    }
+
+    // Add entrypoint if needed
+    if result.contains("main(") && !result.contains("extern \"C\" void* entrypoint") {
+        result.push_str(
+            "\n\nextern \"C\" void* entrypoint(void* state) {\n    main();\n    return 0;\n}\n",
+        );
+    }
+
+    // FIX: renderer -> state->renderer
+    if result.contains("SDL_Render")
+        || result.contains("SDL_SetRenderDrawColor")
+        || result.contains("draw_text")
+    {
+        let fixes = [
+            (
+                "SDL_RenderFillRect(renderer,",
+                "SDL_RenderFillRect(state->renderer,",
+            ),
+            (
+                "SDL_RenderDrawRect(renderer,",
+                "SDL_RenderDrawRect(state->renderer,",
+            ),
+            (
+                "SDL_SetRenderDrawColor(renderer,",
+                "SDL_SetRenderDrawColor(state->renderer,",
+            ),
+            (
+                "SDL_RenderClear(renderer)",
+                "SDL_RenderClear(state->renderer)",
+            ),
+            ("draw_text(renderer,", "draw_text(state->renderer,"),
+        ];
+        for (wrong, correct) in &fixes {
+            if result.contains(*wrong) {
+                result = result.replace(*wrong, *correct);
+            }
+        }
+    }
+
+    // FIX: x/y -> mx/my in click handlers
+    if result.contains("SDL_MOUSEBUTTONDOWN") {
+        let click_fixes = [
+            ("if (x >= state->", "if (mx >= state->"),
+            ("if (y >= state->", "if (my >= state->"),
+            ("&& x <", "&& mx <"),
+            ("&& y <", "&& my <"),
+            ("&& x <=", "&& mx <="),
+            ("&& y <=", "&& my <="),
+        ];
+        for (wrong, correct) in &click_fixes {
+            if result.contains(*wrong) {
+                result = result.replace(*wrong, *correct);
+            }
+        }
+    }
+
+    // Inject GUI state serialization stubs
+    if result.contains("gui_on_load")
+        && !result.contains("gui_on_save_state")
+        && !result.contains("gui_get_state_schema_hash")
+    {
+        let gui_serial_stubs = r#"
+
+// [Guardrail] State serialization stubs for Full HMR capability (GUI)
+extern "C" char* gui_on_save_state(void* state_ptr) {
+    (void)state_ptr;
+    char* json = (char*)malloc(3);
+    if (json) strcpy(json, "{}");
+    return json;
+}
+
+extern "C" void* gui_on_load_from_json(const char* json) {
+    (void)json;
+    return NULL;
+}
+
+extern "C" void synthi_free_json(char* json) {
+    if (json) free(json);
+}
+"#;
+        result.push_str(gui_serial_stubs);
+    }
+
+    result
+}
+/// Get the Host KV header definitions
+fn get_hostkv_header() -> &'static str {
+    r#"
+// ============================================================
+// [Guardrail] HOST KV TYPE DEFINITIONS (auto-injected)
+// ============================================================
+
+#ifndef SYNTHI_HOST_KV_TYPES_DEFINED
+#define SYNTHI_HOST_KV_TYPES_DEFINED
+
+#include <stdint.h>
+
+struct SynthiHostContextV1;
+struct HostKvApiV1;
+
+typedef struct SynthiNamespaceSchemaV1 {
+    const char* ns;
+    uint64_t schema_id;
+} SynthiNamespaceSchemaV1;
+
+typedef struct SynthiHostContextV1 {
+    uint32_t host_api_version;
+    const struct HostKvApiV1* kv;
+    const char* session_id;
+    uint32_t session_id_len;
+    uint32_t module_slot;
+    void* window;
+    void* renderer;
+    void* reserved[8];
+} SynthiHostContextV1;
+
+typedef struct HostKvApiV1 {
+    uint32_t version;
+    int (*set_bytes)(const SynthiHostContextV1* ctx, const char* ns, const char* key, const uint8_t* data, uint32_t len);
+    int (*get_bytes)(const SynthiHostContextV1* ctx, const char* ns, const char* key, uint8_t** out, uint32_t* out_len);
+    int (*delete_key)(const SynthiHostContextV1* ctx, const char* ns, const char* key);
+    int (*clear_namespace)(const SynthiHostContextV1* ctx, const char* ns);
+    int (*get_schema)(const SynthiHostContextV1* ctx, const char* ns, uint64_t* out_schema);
+    int (*set_schema)(const SynthiHostContextV1* ctx, const char* ns, uint64_t schema);
+    void* (*host_alloc)(uint32_t size);
+    void (*host_free)(void* ptr);
+    const char* (*last_error)(void);
+} HostKvApiV1;
+
+#endif // SYNTHI_HOST_KV_TYPES_DEFINED
+"#
+}
+
+/// Check if any changed strings are semantic (would need AI re-processing)
+fn has_semantic_string_changes(old_strings: &[String], new_strings: &[String]) -> bool {
+    for (old, new) in old_strings.iter().zip(new_strings.iter()) {
+        if old != new {
+            // If either old or new is a semantic string, we need AI
+            if is_semantic_string(old) || is_semantic_string(new) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Collect the specific string changes for incremental AI update
+fn collect_string_changes(old_strings: &[String], new_strings: &[String]) -> Vec<(String, String)> {
+    let mut changes = Vec::new();
+    for (old, new) in old_strings.iter().zip(new_strings.iter()) {
+        if old != new {
+            changes.push((old.clone(), new.clone()));
+        }
+    }
+    changes
+}
+
+/// Parse AppState struct fields from shared.h content
+/// Returns a list of (field_name, field_type, default_value) tuples for int fields
+/// Default value is extracted from declarations like "int btn_x = 200;"
+fn parse_appstate_int_fields_with_defaults(
+    shared_content: &str,
+) -> Vec<(String, String, Option<i64>)> {
+    let mut fields = Vec::new();
+
+    // Find AppState struct definition
+    let struct_re = regex::Regex::new(r"struct\s+AppState\s*\{([^}]*)\}").ok();
+
+    if let Some(re) = struct_re {
+        if let Some(captures) = re.captures(shared_content) {
+            if let Some(body) = captures.get(1) {
+                let body_str = body.as_str();
+
+                // Parse individual field declarations WITH default values
+                // Match patterns like: int x; or int x = 10; or int btn_x = 330, btn_y = 10;
+                // Also handle inline declarations like: int x = 0, y = 0, dx = 5, dy = 5;
+
+                // First, handle comma-separated declarations on single lines
+                // Pattern: int field1 = val1, field2 = val2, ...;
+                let multi_decl_re =
+                    regex::Regex::new(r"\b(int|unsigned|char|short|long)\s+([^;]+);").ok();
+
+                if let Some(mre) = multi_decl_re {
+                    for cap in mre.captures_iter(body_str) {
+                        if let (Some(type_match), Some(decls_match)) = (cap.get(1), cap.get(2)) {
+                            let field_type = type_match.as_str().to_string();
+                            let decls_str = decls_match.as_str();
+
+                            // Split by comma and parse each field
+                            for decl in decls_str.split(',') {
+                                let decl = decl.trim();
+                                if decl.is_empty() {
+                                    continue;
+                                }
+
+                                // Parse "name = value" or just "name"
+                                let parts: Vec<&str> = decl.splitn(2, '=').collect();
+                                let field_name = parts[0].trim().to_string();
+
+                                // Skip internal fields
+                                if field_name.starts_with("_")
+                                    || field_name == "magic"
+                                    || field_name == "struct_size"
+                                    || field_name == "abi_version"
+                                    || field_name.is_empty()
+                                {
+                                    continue;
+                                }
+
+                                // Parse default value if present
+                                let default_value = if parts.len() > 1 {
+                                    let val_str = parts[1].trim();
+                                    // Try to parse as integer
+                                    val_str.parse::<i64>().ok()
+                                } else {
+                                    None
+                                };
+
+                                fields.push((field_name, field_type.clone(), default_value));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // If no fields found, use common defaults
+    if fields.is_empty() {
+        fields = vec![
+            ("x".to_string(), "int".to_string(), Some(0)),
+            ("y".to_string(), "int".to_string(), Some(0)),
+            ("dx".to_string(), "int".to_string(), Some(5)),
+            ("dy".to_string(), "int".to_string(), Some(5)),
+            ("running".to_string(), "int".to_string(), Some(1)),
+            ("paused".to_string(), "int".to_string(), Some(0)),
+        ];
+    }
+
+    fields
+}
+
+/// Generate state serialization code with explicit default values from shared.h
+fn generate_state_serialization_code_with_defaults(
+    fields: &[(String, String, Option<i64>)],
+    prefix: &str,
+) -> String {
+    worker::hmr::binary_state::generate_msgpack_serialization_code_with_defaults(fields, prefix)
+}
+
+/// Detect structural DELETIONS between old and new source code
+/// Returns lines that were removed
+fn detect_structural_deletions(old_source: &str, new_source: &str) -> Vec<String> {
+    let old_lines: Vec<&str> = old_source.lines().collect();
+    let new_lines: Vec<&str> = new_source.lines().collect();
+
+    let mut deletions = Vec::new();
+
+    for old_line in &old_lines {
+        let trimmed = old_line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        let exists_in_new = new_lines.iter().any(|new_line| new_line.trim() == trimmed);
+
+        if !exists_in_new {
+            deletions.push(trimmed.to_string());
+        }
+    }
+
+    deletions
+}
+
+/// Try to apply deletions locally without calling AI
+/// Returns Some(updated_result) if successful, None if AI is needed
+fn try_local_deletion_patch(
+    cached_result: &serde_json::Value,
+    deletions: &[String],
+) -> Option<serde_json::Value> {
+    if deletions.is_empty() {
+        return None;
+    }
+
+    // Get current code
+    let core_content = cached_result
+        .get("core")
+        .and_then(|c| c.get("content"))
+        .and_then(|c| c.as_str())
+        .unwrap_or("");
+    let gui_content = cached_result
+        .get("gui")
+        .and_then(|g| g.get("content"))
+        .and_then(|c| c.as_str())
+        .unwrap_or("");
+    let shared_content = cached_result
+        .get("shared")
+        .and_then(|s| s.get("content"))
+        .and_then(|c| c.as_str())
+        .unwrap_or("");
+
+    let mut new_core = core_content.to_string();
+    let mut new_gui = gui_content.to_string();
+    let mut new_shared = shared_content.to_string();
+    let mut any_changes = false;
+
+    for deletion in deletions {
+        // Try to find and remove related code in the split files
+        // Look for patterns that match the deleted line
+
+        // Skip empty or very short lines
+        if deletion.len() < 3 {
+            continue;
+        }
+
+        // For button deletions, look for btn_ variables
+        if deletion.contains("btn_") || deletion.contains("button") || deletion.contains("Button") {
+            // Extract button variable names like btn2_x, reset_btn_x, etc.
+            let btn_pattern = regex::Regex::new(r"(\w+_btn_\w+|btn\d*_\w+)").unwrap();
+            for cap in btn_pattern.captures_iter(deletion) {
+                let var_name = &cap[1];
+                let base_name = var_name.split('_').take(2).collect::<Vec<_>>().join("_");
+
+                // Remove from shared.h (state struct fields)
+                let field_pattern = format!("int {};", var_name);
+                if new_shared.contains(&field_pattern) {
+                    new_shared = new_shared
+                        .replace(&field_pattern, &format!("// REMOVED: {}", field_pattern));
+                    any_changes = true;
+                    eprintln!("[LocalPatch] Removed field {} from shared.h", var_name);
+                }
+
+                // Comment out references in core.cpp - collect lines to replace first
+                let core_lines: Vec<String> = new_core.lines().map(|s| s.to_string()).collect();
+                for line in &core_lines {
+                    if line.contains(&base_name) && !line.trim().starts_with("//") {
+                        new_core = new_core.replace(line, &format!("// REMOVED: {}", line));
+                        any_changes = true;
+                    }
+                }
+
+                // Comment out references in gui.cpp - collect lines to replace first
+                let gui_lines: Vec<String> = new_gui.lines().map(|s| s.to_string()).collect();
+                for line in &gui_lines {
+                    if line.contains(&base_name) && !line.trim().starts_with("//") {
+                        new_gui = new_gui.replace(line, &format!("// REMOVED: {}", line));
+                        any_changes = true;
+                    }
+                }
+            }
+        }
+
+        // For XFillRectangle/XDrawRectangle deletions (drawing code)
+        if deletion.contains("XFillRectangle")
+            || deletion.contains("XDrawRectangle")
+            || deletion.contains("SDL_RenderFillRect")
+            || deletion.contains("SDL_RenderDrawRect")
+        {
+            // Find and comment out the SDL equivalent in gui.cpp
+            // This is trickier - we need to match the geometry
+            // For now, just mark as needing AI help if we can't do simple match
+        }
+    }
+
+    if !any_changes {
+        return None;
+    }
+
+    // Build updated result
+    let mut result = cached_result.clone();
+    if let Some(core) = result.get_mut("core") {
+        core["content"] = serde_json::Value::String(new_core);
+    }
+    if let Some(gui) = result.get_mut("gui") {
+        gui["content"] = serde_json::Value::String(new_gui);
+    }
+    if let Some(shared) = result.get_mut("shared") {
+        shared["content"] = serde_json::Value::String(new_shared);
+    }
+
+    eprintln!("[LocalPatch] Applied local deletion patch - no AI call needed");
+    Some(result)
+}
+
+/// Detect GUI-related modifications (position, color, size changes)
+/// Returns modified lines as X11 code for translation to SDL2
+fn detect_gui_modifications(old_source: &str, new_source: &str) -> Option<String> {
+    let old_lines: Vec<&str> = old_source.lines().collect();
+    let new_lines: Vec<&str> = new_source.lines().collect();
+
+    // GUI-related keywords that indicate drawable/interactive elements
+    let gui_keywords = [
+        "XFillRectangle",
+        "XDrawRectangle",
+        "XDrawString",
+        "XDrawLine",
+        "XSetForeground",
+        "XSetBackground",
+        "XDrawArc",
+        "XFillArc",
+        "SDL_Rect",
+        "SDL_RenderFillRect",
+        "SDL_RenderDrawRect",
+        "btn_x",
+        "btn_y",
+        "btn_w",
+        "btn_h",
+        "button",
+        "color",
+        "Color",
+        "width",
+        "height",
+        "position",
+    ];
+
+    let mut modifications = Vec::new();
+
+    // Find modified lines (lines that have similar structure but different values)
+    for new_line in &new_lines {
+        let trimmed_new = new_line.trim();
+        if trimmed_new.is_empty() || trimmed_new.starts_with("//") {
+            continue;
+        }
+
+        // Check if this line contains GUI keywords
+        let is_gui_line = gui_keywords.iter().any(|kw| trimmed_new.contains(kw));
+        if !is_gui_line {
+            continue;
+        }
+
+        // Check if a SIMILAR line exists in old (same function call, different args)
+        let has_similar_in_old = old_lines.iter().any(|old_line| {
+            let trimmed_old = old_line.trim();
+            // Check if they share the same function call or variable name
+            if trimmed_old == trimmed_new {
+                return true; // Exact match - not a modification
+            }
+            // Check for similar structure (e.g., same function name)
+            for kw in &gui_keywords {
+                if trimmed_old.contains(kw) && trimmed_new.contains(kw) {
+                    // Same keyword, likely a modification if values differ
+                    return true;
+                }
+            }
+            false
+        });
+
+        // If this GUI line doesn't have an exact match in old, it's new or modified
+        let exists_exactly_in_old = old_lines
+            .iter()
+            .any(|old_line| old_line.trim() == trimmed_new);
+
+        if is_gui_line && has_similar_in_old && !exists_exactly_in_old {
+            modifications.push(trimmed_new.to_string());
+        }
+    }
+
+    if modifications.is_empty() {
+        return None;
+    }
+
+    eprintln!(
+        "[AI Split] Detected {} GUI modifications",
+        modifications.len()
+    );
+    Some(modifications.join("\n"))
+}
+
+/// Detect structural additions between old and new source code
+/// Returns a description of what was added (new buttons, new elements, etc.)
+fn detect_structural_additions(old_source: &str, new_source: &str) -> Option<String> {
+    // Split into lines for diff analysis
+    let old_lines: Vec<&str> = old_source.lines().collect();
+    let new_lines: Vec<&str> = new_source.lines().collect();
+
+    // Find added lines (simple diff - lines in new but not in old)
+    let mut additions = Vec::new();
+
+    for new_line in &new_lines {
+        let trimmed = new_line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        // Check if this line exists in old (with some fuzzy matching for whitespace)
+        let exists_in_old = old_lines.iter().any(|old_line| old_line.trim() == trimmed);
+
+        if !exists_in_old {
+            additions.push(trimmed.to_string());
+        }
+    }
+
+    // Also check for deletions - if more deletions than additions, this is primarily a deletion
+    let deletions = detect_structural_deletions(old_source, new_source);
+    if deletions.len() > additions.len() && additions.len() < 3 {
+        // This is primarily a deletion, not an addition
+        return None;
+    }
+
+    if additions.is_empty() {
+        return None;
+    }
+
+    // Analyze what was added
+    let mut description_parts = Vec::new();
+
+    // Detect button additions
+    let button_keywords = ["button", "Button", "btn", "Btn", "click", "Click"];
+    let has_button = additions
+        .iter()
+        .any(|line| button_keywords.iter().any(|kw| line.contains(kw)));
+    if has_button {
+        description_parts.push("new button/clickable element");
+    }
+
+    // Detect draw calls (rectangles, shapes)
+    let draw_keywords = [
+        "draw",
+        "Draw",
+        "rect",
+        "Rect",
+        "fill",
+        "Fill",
+        "XFillRectangle",
+        "XDrawRectangle",
+    ];
+    let has_draw = additions
+        .iter()
+        .any(|line| draw_keywords.iter().any(|kw| line.contains(kw)));
+    if has_draw && !has_button {
+        description_parts.push("new shape/rectangle");
+    }
+
+    // Detect text additions
+    let text_keywords = [
+        "text",
+        "Text",
+        "string",
+        "String",
+        "XDrawString",
+        "printf",
+        "print",
+    ];
+    let has_text = additions
+        .iter()
+        .any(|line| text_keywords.iter().any(|kw| line.contains(kw)));
+    if has_text {
+        description_parts.push("new text element");
+    }
+
+    // Detect event handling additions
+    let event_keywords = [
+        "event", "Event", "handler", "Handler", "motion", "Motion", "expose", "Expose",
+    ];
+    let has_event = additions
+        .iter()
+        .any(|line| event_keywords.iter().any(|kw| line.contains(kw)));
+    if has_event {
+        description_parts.push("new event handler");
+    }
+
+    // Detect variable/struct additions
+    let var_keywords = [
+        "int ", "float ", "double ", "char ", "bool ", "struct ", "void ",
+    ];
+    let has_var = additions.iter().any(|line| {
+        var_keywords
+            .iter()
+            .any(|kw| line.starts_with(kw) || line.contains(&format!(" {}", kw)))
+    });
+    if has_var && description_parts.is_empty() {
+        description_parts.push("new variable/definition");
+    }
+
+    if description_parts.is_empty() {
+        // Generic structural change
+        description_parts.push("code structure change");
+    }
+
+    // Return ONLY the raw X11 code for translation to SDL2
+    // The AI will translate this X11 code directly to SDL2
+    let raw_code = additions
+        .iter()
+        .take(50)
+        .cloned()
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    Some(raw_code)
+}
+
+/// Perform incremental structural AI update - tell AI what was added, not regenerate everything
+/// NOW USES the fast /refactor/delta endpoint (~2-3s vs ~18s)
+/// - Keeps existing working code (with guardrails applied)
+/// - Only asks AI to generate the delta (new button code snippet)
+/// - Injects that delta into the existing code
+async fn perform_structural_ai_update(
+    cached_result: &serde_json::Value,
+    _original_source: &str,
+    _new_source: &str,
+    structural_changes: &str,
+    _language: &str,
+) -> Result<serde_json::Value> {
+    let start_time = std::time::Instant::now();
+
+    // Extract current code from cached result
+    let core_content = cached_result
+        .get("core")
+        .and_then(|c| c.get("content"))
+        .and_then(|c| c.as_str())
+        .unwrap_or("");
+    let gui_content = cached_result
+        .get("gui")
+        .and_then(|g| g.get("content"))
+        .and_then(|c| c.as_str())
+        .unwrap_or("");
+    let shared_content = cached_result
+        .get("shared")
+        .and_then(|s| s.get("content"))
+        .and_then(|c| c.as_str())
+        .unwrap_or("");
+
+    // Use the NEW fast delta endpoint - sends cached_result so AI only generates delta snippets
+    let client = reqwest::Client::new();
+    let payload = serde_json::json!({
+        "update_type": "addition",
+        "changes_description": structural_changes,
+        "core_content": core_content,
+        "gui_content": gui_content,
+        "shared_content": shared_content,
+        "cached_result": cached_result  // CRITICAL: Include cached result for delta injection
+    });
+
+    let backend_url = get_ai_backend_url();
+    let url = format!("{}/refactor/delta", backend_url);
+
+    eprintln!("[AI Split] Calling fast delta endpoint: {}", url);
+
+    let res = client
+        .post(&url)
+        .json(&payload)
+        .timeout(std::time::Duration::from_secs(30)) // Shorter timeout for fast endpoint
+        .send()
+        .await?
+        .json::<serde_json::Value>()
+        .await?;
+
+    // Delta endpoint returns {"result": {...}, "delta": {...}}
+    // The "result" is already the updated code with delta injected
+    if let Some(result) = res.get("result") {
+        if result.is_object() && result.get("core").is_some() {
+            let elapsed = start_time.elapsed();
+            eprintln!("[AI Split] Delta injection completed in {:?}", elapsed);
+            return Ok(result.clone());
+        }
+    }
+
+    // Fallback: try to parse as string (old behavior)
+    let result_str = res["result"]
+        .as_str()
+        .ok_or(anyhow::anyhow!("No result from AI delta endpoint"))?;
+
+    // Clean markdown
+    let clean_json = if let Some(start) = result_str.find("```json") {
+        let s = &result_str[start + 7..];
+        if let Some(end) = s.find("```") {
+            &s[..end]
+        } else {
+            s
+        }
+    } else if let Some(start) = result_str.find("```") {
+        let s = &result_str[start + 3..];
+        if let Some(end) = s.find("```") {
+            &s[..end]
+        } else {
+            s
+        }
+    } else {
+        result_str
+    }
+    .trim();
+
+    // Try to find just the JSON object (AI sometimes adds extra text after)
+    let json_only = if let Some(start) = clean_json.find('{') {
+        // Find the matching closing brace by counting braces
+        let chars: Vec<char> = clean_json[start..].chars().collect();
+        let mut depth = 0;
+        let mut end_idx = chars.len();
+        for (i, c) in chars.iter().enumerate() {
+            match c {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end_idx = i + 1;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        &clean_json[start..start + end_idx]
+    } else {
+        clean_json
+    };
+
+    let updated_data: serde_json::Value = match serde_json::from_str(json_only) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("[AI Split] JSON parse error in structural update: {}", e);
+            eprintln!(
+                "[AI Split] Attempted to parse: {}...",
+                &json_only.chars().take(500).collect::<String>()
+            );
+            return Err(anyhow::anyhow!("JSON parse error: {}", e));
+        }
+    };
+
+    let elapsed = start_time.elapsed();
+    eprintln!("[AI Split] Structural update completed in {:?}", elapsed);
+
+    Ok(updated_data)
+}
+
+/// Perform delta deletion - ask AI to identify what to remove, then apply locally
+/// Uses /refactor/delta endpoint with update_type="deletion"
+async fn perform_delta_deletion(
+    cached_result: &serde_json::Value,
+    deletion_description: &str,
+) -> Result<serde_json::Value> {
+    let start_time = std::time::Instant::now();
+
+    let core_content = cached_result
+        .get("core")
+        .and_then(|c| c.get("content"))
+        .and_then(|c| c.as_str())
+        .unwrap_or("");
+    let gui_content = cached_result
+        .get("gui")
+        .and_then(|g| g.get("content"))
+        .and_then(|c| c.as_str())
+        .unwrap_or("");
+    let shared_content = cached_result
+        .get("shared")
+        .and_then(|s| s.get("content"))
+        .and_then(|c| c.as_str())
+        .unwrap_or("");
+
+    let client = reqwest::Client::new();
+    let payload = serde_json::json!({
+        "update_type": "deletion",
+        "changes_description": deletion_description,
+        "core_content": core_content,
+        "gui_content": gui_content,
+        "shared_content": shared_content,
+        "cached_result": cached_result
+    });
+
+    let backend_url = get_ai_backend_url();
+    let url = format!("{}/refactor/delta", backend_url);
+
+    eprintln!("[AI Split] Calling delta deletion endpoint: {}", url);
+
+    let res = client
+        .post(&url)
+        .json(&payload)
+        .timeout(std::time::Duration::from_secs(20))
+        .send()
+        .await?
+        .json::<serde_json::Value>()
+        .await?;
+
+    // Delta endpoint returns {"result": {...}, "delta": {...}}
+    if let Some(result) = res.get("result") {
+        if result.is_object() && result.get("core").is_some() {
+            let elapsed = start_time.elapsed();
+            eprintln!("[AI Split] Delta deletion completed in {:?}", elapsed);
+            return Ok(result.clone());
+        }
+    }
+
+    Err(anyhow::anyhow!(
+        "No valid result from delta deletion endpoint"
+    ))
+}
+
+/// Perform incremental AI update - ask AI to apply specific changes to existing code
+/// NOW USES the fast /refactor/structural endpoint (~2-3s vs ~10s)
+async fn perform_incremental_ai_update(
+    cached_result: &serde_json::Value,
+    changes: &[(String, String)],
+    _language: &str,
+) -> Result<serde_json::Value> {
+    let start_time = std::time::Instant::now();
+
+    // Extract current code from cached result
+    let core_content = cached_result
+        .get("core")
+        .and_then(|c| c.get("content"))
+        .and_then(|c| c.as_str())
+        .unwrap_or("");
+    let gui_content = cached_result
+        .get("gui")
+        .and_then(|g| g.get("content"))
+        .and_then(|c| c.as_str())
+        .unwrap_or("");
+    let shared_content = cached_result
+        .get("shared")
+        .and_then(|s| s.get("content"))
+        .and_then(|c| c.as_str())
+        .unwrap_or("");
+
+    // Convert changes to JSON array format
+    let changes_json: Vec<serde_json::Value> = changes
+        .iter()
+        .map(|(old, new)| serde_json::json!([old, new]))
+        .collect();
+
+    // Use the NEW fast structural endpoint
+    let client = reqwest::Client::new();
+    let payload = serde_json::json!({
+        "update_type": "incremental",
+        "changes": changes_json,
+        "core_content": core_content,
+        "gui_content": gui_content,
+        "shared_content": shared_content
+    });
+
+    let backend_url = get_ai_backend_url();
+    let url = format!("{}/refactor/structural", backend_url);
+
+    eprintln!("[AI Split] Calling fast incremental endpoint: {}", url);
+
+    let res = client
+        .post(&url)
+        .json(&payload)
+        .timeout(std::time::Duration::from_secs(20)) // Short timeout for incremental
+        .send()
+        .await?
+        .json::<serde_json::Value>()
+        .await?;
+
+    let result_str = res["result"]
+        .as_str()
+        .ok_or(anyhow::anyhow!("No result from AI"))?;
+
+    // Clean markdown
+    let clean_json = if let Some(start) = result_str.find("```json") {
+        let s = &result_str[start + 7..];
+        if let Some(end) = s.find("```") {
+            &s[..end]
+        } else {
+            s
+        }
+    } else if let Some(start) = result_str.find("```") {
+        let s = &result_str[start + 3..];
+        if let Some(end) = s.find("```") {
+            &s[..end]
+        } else {
+            s
+        }
+    } else {
+        result_str
+    }
+    .trim();
+
+    let updated_data: serde_json::Value = serde_json::from_str(clean_json)?;
+
+    let elapsed = start_time.elapsed();
+    eprintln!("[AI Split] Incremental update completed in {:?}", elapsed);
+
+    Ok(updated_data)
+}
+
+/// Extract structural signature from C/C++ code for smart caching.
+/// This ignores string literals, comments, and numeric constants so that
+/// simple text changes don't cause AI cache misses (Next.js-like HMR behavior).
+fn extract_structural_signature(source: &str) -> String {
+    let mut result = String::with_capacity(source.len());
+    let mut chars = source.chars().peekable();
+    let mut in_string = false;
+    let mut in_char = false;
+    let mut in_line_comment = false;
+    let mut in_block_comment = false;
+    let mut escape_next = false;
+
+    while let Some(c) = chars.next() {
+        // Handle escape sequences in strings/chars
+        if escape_next {
+            escape_next = false;
+            continue;
+        }
+
+        // Handle line comments
+        if in_line_comment {
+            if c == '\n' {
+                in_line_comment = false;
+                result.push('\n'); // Preserve line structure
+            }
+            continue;
+        }
+
+        // Handle block comments
+        if in_block_comment {
+            if c == '*' && chars.peek() == Some(&'/') {
+                chars.next();
+                in_block_comment = false;
+            }
+            continue;
+        }
+
+        // Handle strings - replace content with placeholder
+        if in_string {
+            if c == '\\' {
+                escape_next = true;
+            } else if c == '"' {
+                in_string = false;
+                result.push_str("\"__STR__\""); // Placeholder for any string
+            }
+            continue;
+        }
+
+        // Handle char literals
+        if in_char {
+            if c == '\\' {
+                escape_next = true;
+            } else if c == '\'' {
+                in_char = false;
+                result.push_str("'_'"); // Placeholder for any char
+            }
+            continue;
+        }
+
+        // Detect start of comments
+        if c == '/' {
+            if chars.peek() == Some(&'/') {
+                chars.next();
+                in_line_comment = true;
+                continue;
+            } else if chars.peek() == Some(&'*') {
+                chars.next();
+                in_block_comment = true;
+                continue;
+            }
+        }
+
+        // Detect start of string
+        if c == '"' {
+            in_string = true;
+            continue;
+        }
+
+        // Detect start of char literal
+        if c == '\'' {
+            in_char = true;
+            continue;
+        }
+
+        // Skip numeric literals (but keep the structure)
+        if c.is_ascii_digit() {
+            // Consume the entire number
+            while chars
+                .peek()
+                .map(|ch| {
+                    ch.is_ascii_digit()
+                        || *ch == '.'
+                        || *ch == 'x'
+                        || *ch == 'X'
+                        || *ch == 'a'
+                        || *ch == 'b'
+                        || *ch == 'c'
+                        || *ch == 'd'
+                        || *ch == 'e'
+                        || *ch == 'f'
+                        || *ch == 'A'
+                        || *ch == 'B'
+                        || *ch == 'C'
+                        || *ch == 'D'
+                        || *ch == 'E'
+                        || *ch == 'F'
+                        || *ch == 'u'
+                        || *ch == 'U'
+                        || *ch == 'l'
+                        || *ch == 'L'
+                })
+                .unwrap_or(false)
+            {
+                chars.next();
+            }
+            result.push_str("0"); // Placeholder for any number
+            continue;
+        }
+
+        // Keep everything else (identifiers, keywords, operators, braces, etc.)
+        result.push(c);
+    }
+
+    result
+}
+
+async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value> {
+    // FOUR-LEVEL CACHE for fast HMR (like Next.js):
+    // Level 1: Full source hash -> instant cache hit (exact match) - 0ms
+    // Level 2: Structural hash -> cache hit with string patching (text-only changes) - ~1ms
+    // Level 2.5: Semantic changes (colors/numbers) -> incremental AI update - ~2-5s
+    // Level 2.75: Structural additions (new button) -> incremental AI update - ~5-10s
+    // Level 3: Full cache miss -> call AI backend for full split - ~15-25s
+
+    let source_hash = calculate_hash(&req.source);
+    let structural_sig = extract_structural_signature(&req.source);
+    let structural_hash = calculate_hash(&structural_sig);
+
+    // Level 1: Check exact source match (instant, no work)
+    {
+        let cache = get_ai_split_cache().lock().await;
+        if let Some(cached) = cache.get(&source_hash) {
+            eprintln!("[AI Split] Cache HIT (exact match) - instant return");
+            return Ok(cached.result.clone());
+        }
+    }
+
+    // Level 2: Check structural match (fast patching, no AI call)
+    // Only works for simple text changes, NOT semantic changes like colors
+    let structural_cache_result = {
+        let structural_cache = get_ai_split_structural_cache().lock().await;
+        structural_cache.get(&structural_hash).cloned()
+    };
+
+    if let Some(cached) = structural_cache_result {
+        // Extract strings from old and new source
+        let old_strings = extract_string_literals(&cached.original_source);
+        let new_strings = extract_string_literals(&req.source);
+
+        // Check if any changes are semantic (colors, etc.) that need AI re-processing
+        if has_semantic_string_changes(&old_strings, &new_strings) {
+            eprintln!("[AI Split] Structural match but SEMANTIC change detected - using incremental AI update");
+
+            // Level 2.5: Incremental AI update (faster than full regen)
+            // Ask AI to just update the specific changes, not regenerate everything
+            let changes = collect_string_changes(&old_strings, &new_strings);
+            if !changes.is_empty() {
+                match perform_incremental_ai_update(&cached.result, &changes, &req.language).await {
+                    Ok(updated_result) => {
+                        // Store updated result in both caches
+                        let cached_entry = CachedSplit {
+                            result: updated_result.clone(),
+                            original_source: req.source.clone(),
+                        };
+                        {
+                            let mut cache = get_ai_split_cache().lock().await;
+                            cache.insert(source_hash, cached_entry.clone());
+                        }
+                        {
+                            let mut structural_cache = get_ai_split_structural_cache().lock().await;
+                            structural_cache.insert(structural_hash, cached_entry);
+                        }
+                        eprintln!("[AI Split] Incremental update complete - fast semantic HMR!");
+                        return Ok(updated_result);
+                    }
+                    Err(e) => {
+                        eprintln!(
+                            "[AI Split] Incremental update failed: {} - falling back to full regen",
+                            e
+                        );
+                        // Fall through to Level 3 (full AI call)
+                    }
+                }
+            }
+        } else {
+            eprintln!("[AI Split] Cache HIT (structural match) - patching strings...");
+
+            // Patch the cached result with new strings
+            let (patched_result, did_patch) =
+                patch_strings_in_cached_result(&cached.result, &old_strings, &new_strings);
+
+            // If patching didn't actually change anything, and strings differ, something's wrong
+            // Fall back to AI call
+            let strings_differ = old_strings != new_strings;
+            if strings_differ && !did_patch {
+                eprintln!(
+                    "[AI Split] String patching FAILED (strings not found in output) - calling AI"
+                );
+                // Fall through to Level 3 (AI call)
+            } else {
+                // Store patched result in exact-match cache for future
+                {
+                    let mut cache = get_ai_split_cache().lock().await;
+                    cache.insert(
+                        source_hash,
+                        CachedSplit {
+                            result: patched_result.clone(),
+                            original_source: req.source.clone(),
+                        },
+                    );
+                }
+
+                eprintln!("[AI Split] String patching complete - fast HMR!");
+                return Ok(patched_result);
+            }
+        }
+    }
+
+    // Level 2.6: Try LOCAL deletion patching (no AI call needed!)
+    // If user deleted code (button, etc.), we can often patch locally
+    let any_cached_for_deletion = {
+        let structural_cache = get_ai_split_structural_cache().lock().await;
+        structural_cache.values().next().cloned()
+    };
+
+    if let Some(cached) = any_cached_for_deletion {
+        let deletions = detect_structural_deletions(&cached.original_source, &req.source);
+        if !deletions.is_empty() {
+            eprintln!(
+                "[AI Split] Detected {} deleted lines - attempting local patch",
+                deletions.len()
+            );
+
+            if let Some(patched_result) = try_local_deletion_patch(&cached.result, &deletions) {
+                // Store patched result in caches
+                let cached_entry = CachedSplit {
+                    result: patched_result.clone(),
+                    original_source: req.source.clone(),
+                };
+                {
+                    let mut cache = get_ai_split_cache().lock().await;
+                    cache.insert(source_hash, cached_entry.clone());
+                }
+                {
+                    let mut structural_cache = get_ai_split_structural_cache().lock().await;
+                    structural_cache.insert(structural_hash, cached_entry);
+                }
+                eprintln!("[AI Split] Local deletion patch applied - instant HMR!");
+                return Ok(patched_result);
+            } else {
+                eprintln!("[AI Split] Local deletion patch failed - will try AI delta deletion");
+
+                // Try AI delta deletion endpoint
+                let deletion_description = deletions
+                    .iter()
+                    .take(10)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join("\n");
+
+                match perform_delta_deletion(&cached.result, &deletion_description).await {
+                    Ok(updated_result) => {
+                        let cached_entry = CachedSplit {
+                            result: updated_result.clone(),
+                            original_source: req.source.clone(),
+                        };
+                        {
+                            let mut cache = get_ai_split_cache().lock().await;
+                            cache.insert(source_hash, cached_entry.clone());
+                        }
+                        {
+                            let mut structural_cache = get_ai_split_structural_cache().lock().await;
+                            structural_cache.insert(structural_hash, cached_entry);
+                        }
+                        eprintln!("[AI Split] Delta deletion complete - fast HMR!");
+                        return Ok(updated_result);
+                    }
+                    Err(e) => {
+                        eprintln!(
+                            "[AI Split] Delta deletion failed: {} - will try other paths",
+                            e
+                        );
+                        // Fall through to next level
+                    }
+                }
+            }
+        }
+    }
+
+    // Level 2.75: Try incremental structural update if we have ANY cached result
+    // This is like Next.js - detect what changed and tell AI to just add that
+    let any_cached_result = {
+        let structural_cache = get_ai_split_structural_cache().lock().await;
+        // Find the most recent cached entry (any entry will do for structural diff)
+        structural_cache.values().next().cloned()
+    };
+
+    if let Some(cached) = any_cached_result {
+        // Check if this looks like a structural addition (new button, new element)
+        if let Some(structural_changes) =
+            detect_structural_additions(&cached.original_source, &req.source)
+        {
+            eprintln!("[AI Split] ╔═══════════════════════════════════════════════════════════╗");
+            eprintln!("[AI Split] ║  DELTA CHANGE DETECTED - Using fast incremental path     ║");
+            eprintln!("[AI Split] ╚═══════════════════════════════════════════════════════════╝");
+            eprintln!("[AI Split] Delta type: Structural ADDITION (new element/button)");
+            eprintln!(
+                "[AI Split] X11 code to translate:\n{}",
+                structural_changes
+                    .lines()
+                    .take(5)
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            );
+            eprintln!("[AI Split] NOTE: Runner will NOT restart - HMR will hot-reload the modules");
+
+            match perform_structural_ai_update(
+                &cached.result,
+                &cached.original_source,
+                &req.source,
+                &structural_changes,
+                &req.language,
+            )
+            .await
+            {
+                Ok(updated_result) => {
+                    // Store updated result in both caches
+                    let cached_entry = CachedSplit {
+                        result: updated_result.clone(),
+                        original_source: req.source.clone(),
+                    };
+                    {
+                        let mut cache = get_ai_split_cache().lock().await;
+                        cache.insert(source_hash, cached_entry.clone());
+                    }
+                    {
+                        let mut structural_cache = get_ai_split_structural_cache().lock().await;
+                        structural_cache.insert(structural_hash, cached_entry);
+                    }
+                    eprintln!("[AI Split] ✓ Delta injection complete - fast HMR for new elements!");
+                    return Ok(updated_result);
+                }
+                Err(e) => {
+                    eprintln!(
+                        "[AI Split] ✗ Structural update failed: {} - falling back to full regen",
+                        e
+                    );
+                    // Fall through to Level 3 (full AI call)
+                }
+            }
+        }
+        // Level 2.8: Check for GUI modifications (position, color, size changes)
+        // These are lines that exist in both but with different values
+        else if let Some(gui_changes) =
+            detect_gui_modifications(&cached.original_source, &req.source)
+        {
+            eprintln!("[AI Split] ╔═══════════════════════════════════════════════════════════╗");
+            eprintln!("[AI Split] ║  GUI MODIFICATION DETECTED - Using fast delta path       ║");
+            eprintln!("[AI Split] ╚═══════════════════════════════════════════════════════════╝");
+            eprintln!("[AI Split] Delta type: GUI MODIFICATION (position/color/size change)");
+            eprintln!(
+                "[AI Split] Modified GUI code:\n{}",
+                gui_changes.lines().take(5).collect::<Vec<_>>().join("\n")
+            );
+
+            match perform_structural_ai_update(
+                &cached.result,
+                &cached.original_source,
+                &req.source,
+                &gui_changes,
+                &req.language,
+            )
+            .await
+            {
+                Ok(updated_result) => {
+                    let cached_entry = CachedSplit {
+                        result: updated_result.clone(),
+                        original_source: req.source.clone(),
+                    };
+                    {
+                        let mut cache = get_ai_split_cache().lock().await;
+                        cache.insert(source_hash, cached_entry.clone());
+                    }
+                    {
+                        let mut structural_cache = get_ai_split_structural_cache().lock().await;
+                        structural_cache.insert(structural_hash, cached_entry);
+                    }
+                    eprintln!("[AI Split] ✓ GUI modification delta complete - fast HMR!");
+                    return Ok(updated_result);
+                }
+                Err(e) => {
+                    eprintln!("[AI Split] ✗ GUI modification update failed: {} - falling back to full regen", e);
+                }
+            }
+        }
+    }
+
+    // Level 3: Cache miss - call AI backend (full regeneration)
+    eprintln!("[AI Split] Cache MISS (no incremental path) - calling AI backend for full split...");
+    let start_time = std::time::Instant::now();
+
+    let client = reqwest::Client::new();
+    let payload = serde_json::json!({
+        "code": req.source,
+        "lang": req.language,
+        "files": req.files,
+        "mode": "split"
+    });
+
+    let backend_url = get_ai_backend_url();
+    let url = format!("{}/refactor/split", backend_url);
+
+    let res = client
+        .post(&url)
+        .json(&payload)
+        .send()
+        .await?
+        .json::<serde_json::Value>()
+        .await?;
+
+    let result_str = res["result"]
+        .as_str()
+        .ok_or(anyhow::anyhow!("No result from AI"))?;
+
+    // Clean markdown
+    let clean_json = if let Some(start) = result_str.find("```json") {
+        let s = &result_str[start + 7..];
+        if let Some(end) = s.find("```") {
+            &s[..end]
+        } else {
+            s
+        }
+    } else if let Some(start) = result_str.find("```") {
+        let s = &result_str[start + 3..];
+        if let Some(end) = s.find("```") {
+            &s[..end]
+        } else {
+            s
+        }
+    } else {
+        result_str
+    }
+    .trim();
+
+    let split_data: serde_json::Value = match serde_json::from_str(clean_json) {
+        Ok(v) => v,
+        Err(e) => {
+            // Try to repair truncated JSON
+            // Assumption: Truncated inside the last string value (explanation)
+            if e.to_string().contains("EOF") {
+                let repaired = format!("{}\"}}", clean_json);
+                if let Ok(v) = serde_json::from_str(&repaired) {
+                    println!("Successfully repaired truncated JSON response.");
+                    v
+                } else {
+                    // Try just closing brace if it wasn't in a string
+                    let repaired_brace = format!("{}}}", clean_json);
+                    if let Ok(v) = serde_json::from_str(&repaired_brace) {
+                        println!("Successfully repaired truncated JSON response (brace only).");
+                        v
+                    } else {
+                        println!("Failed to parse AI response: {}", e);
+                        println!("Raw content: {}", clean_json);
+                        let snippet: String = clean_json.chars().take(1000).collect();
+                        return Err(anyhow::anyhow!(
+                            "JSON Parse Error: {}. \nRaw content snippet: {}...",
+                            e,
+                            snippet
+                        ));
+                    }
+                }
+            } else {
+                println!("Failed to parse AI response: {}", e);
+                println!("Raw content: {}", clean_json);
+                let snippet: String = clean_json.chars().take(1000).collect();
+                return Err(anyhow::anyhow!(
+                    "JSON Parse Error: {}. \nRaw content snippet: {}...",
+                    e,
+                    snippet
+                ));
+            }
+        }
+    };
+
+    // Cache the result for future requests
+    let elapsed = start_time.elapsed();
+    eprintln!("[AI Split] Completed in {:?}", elapsed);
+
+    let cached_entry = CachedSplit {
+        result: split_data.clone(),
+        original_source: req.source.clone(),
+    };
+
+    // Store in both caches
+    {
+        let mut cache = get_ai_split_cache().lock().await;
+        cache.insert(source_hash, cached_entry.clone());
+        // Limit cache size to 100 entries
+        if cache.len() > 100 {
+            if let Some(oldest_key) = cache.keys().next().cloned() {
+                cache.remove(&oldest_key);
+            }
+        }
+    }
+
+    {
+        let mut structural_cache = get_ai_split_structural_cache().lock().await;
+        structural_cache.insert(structural_hash, cached_entry);
+        // Limit structural cache size to 50 entries
+        if structural_cache.len() > 50 {
+            if let Some(oldest_key) = structural_cache.keys().next().cloned() {
+                structural_cache.remove(&oldest_key);
+            }
+        }
+    }
+
+    Ok(split_data)
+}
+
+async fn perform_ai_fix(code: &str, error: &str) -> Result<String> {
+    let client = reqwest::Client::new();
+    let payload = serde_json::json!({
+        "code": code,
+        "lang": "cpp", // Defaulting to cpp as this seems to be C++ centric, strictly speaking we should pass language
+        "prompt": format!("Fix the following error:\n{}", error),
+        "mode": "fix"
+    });
+
+    let backend_url = get_ai_backend_url();
+    let url = format!("{}/refactor/fix", backend_url);
+
+    let res = client
+        .post(&url)
+        .json(&payload)
+        .send()
+        .await?
+        .json::<serde_json::Value>()
+        .await?;
+
+    let result_str = res["result"]
+        .as_str()
+        .ok_or(anyhow::anyhow!("No result from AI"))?;
+
+    // Clean markdown
+    let clean_code = if let Some(start) = result_str.find("```") {
+        let s = &result_str[start + 3..];
+        if let Some(newline) = s.find('\n') {
+            let s = &s[newline + 1..];
+            if let Some(end) = s.rfind("```") {
+                &s[..end]
+            } else {
+                s
+            }
+        } else {
+            s
+        }
+    } else {
+        result_str
+    }
+    .trim();
+
+    Ok(clean_code.to_string())
+}
+async fn handle_compile(
+    req: CompileRequest,
+    log_dc: Arc<RTCDataChannel>,
+    terminal_store: Arc<Mutex<HashMap<String, mpsc::UnboundedSender<String>>>>,
+    sdl_input_store: Arc<Mutex<HashMap<String, mpsc::UnboundedSender<String>>>>,
+    runner_store: Arc<Mutex<Option<RunnerState>>>,
+    pc: Arc<RTCPeerConnection>,
+    workspace_path: std::path::PathBuf,
+    compile_cache: Arc<Mutex<HashMap<String, (u64, String)>>>,
+    boundary_checker: Arc<Mutex<BoundaryChecker>>,
+    incremental_cache: Arc<IncrementalCache>,
+    hmr_orchestrator: Arc<tokio::sync::Mutex<HmrOrchestrator>>,
+    structured_logger: Arc<StructuredLogger>,
+    metrics_aggregator: Arc<tokio::sync::Mutex<MetricsAggregator>>,
+    restart_controller: Arc<tokio::sync::Mutex<RestartController>>,
+    ipc_config: Arc<IpcConfig>,
+) -> Result<()> {
+    // Construct context object for cleaner passing
+    let ctx = CompileContext {
+        log_dc,
+        terminal_store,
+        sdl_input_store,
+        runner_store,
+        pc,
+        workspace_path,
+        compile_cache,
+        boundary_checker,
+        incremental_cache,
+        hmr_orchestrator,
+        structured_logger,
+        metrics_aggregator,
+        restart_controller,
+        ipc_config,
+    };
+
+    // Call the unified handler
+    // We ignore the return value (JSON graph) for now as the void return type expects
+    let session_id = req
+        .session_id
+        .clone()
+        .unwrap_or_else(|| "default_session".to_string());
+    let _ = crate::compiler::handler::handle_compile_request(&ctx, req, session_id).await?;
+
+    Ok(())
+}
+
+async fn verify_tooling() -> Result<()> {
+    for tool in REQUIRED_TOOLS {
+        let status = system_command(tool)
+            .arg("--version")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .await?;
+        if !status.success() {
+            anyhow::bail!("{tool} not found on PATH");
+        }
+    }
+    Ok(())
+}
+
+fn system_command(program: &str) -> Command {
+    if cfg!(target_os = "windows") {
+        let mut cmd = Command::new("wsl");
+        cmd.arg(program);
+        cmd
+    } else {
+        Command::new(program)
+    }
+}
+
+/// Find the Rust sysroot and standard library source paths.
+///
+/// Uses the **same PATH** that rust-analyzer will use (with `$CARGO_HOME/bin`
+/// prepended) so the sysroot matches what RA actually detects at runtime.
+/// Falls back to system locations if the primary sysroot check fails.
+///
+/// Returns `(sysroot_src, sysroot)` — either or both may be None.
+fn find_rust_sysroot_info() -> (Option<String>, Option<String>) {
+    if cfg!(target_os = "windows") {
+        // On Windows, RA runs inside WSL — query WSL for the sysroot
+        let wsl_sysroot = std::process::Command::new("wsl")
+            .args([
+                "bash",
+                "-lc",
+                "rustc --print sysroot 2>/dev/null || echo /usr",
+            ])
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .filter(|s| !s.is_empty());
+        let check_script = r#"
+            SYSROOT=$(rustc --print sysroot 2>/dev/null || echo /usr);
+            for d in \
+                "$SYSROOT/lib/rustlib/src/rust/library" \
+                "/usr/lib/rustlib/src/rust/library" \
+                "$SYSROOT/lib/rustlib/src/rust"; do
+                [ -d "$d" ] && echo "$d" && exit 0;
+            done;
+            # Try Debian-style /usr/src/rustc-*/library
+            for d in /usr/src/rustc-*/library; do
+                [ -d "$d" ] && echo "$d" && exit 0;
+            done
+        "#;
+        let src = std::process::Command::new("wsl")
+            .args(["bash", "-lc", check_script])
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .filter(|s| !s.is_empty());
+        return (src, wsl_sysroot);
+    }
+
+    // Linux: build the same PATH that rust-analyzer will use
+    let cargo_home = std::env::var("CARGO_HOME").unwrap_or_else(|_| "/root/.cargo".to_string());
+    let current_path = std::env::var("PATH").unwrap_or_default();
+    let ra_path = format!("{}/bin:{}", cargo_home, current_path);
+
+    // Ask rustc (with RA's PATH) for its sysroot
+    let sysroot = std::process::Command::new("rustc")
+        .args(["--print", "sysroot"])
+        .env("PATH", &ra_path)
+        .env_remove("RUSTUP_TOOLCHAIN")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_else(|| "/usr".to_string());
+
+    // Also check what the DEFAULT rustc (without RA PATH) reports —
+    // helps diagnose sysroot mismatches between system and rustup.
+    let system_sysroot = std::process::Command::new("rustc")
+        .args(["--print", "sysroot"])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_default();
+
+    println!(
+        "[LSP] RA sysroot (with CARGO_HOME/bin in PATH): {}",
+        sysroot
+    );
+    if !system_sysroot.is_empty() && system_sysroot != sysroot {
+        println!("[LSP] System sysroot (default PATH): {} — MISMATCH! This is likely the cause of missing Vec:: completions", system_sysroot);
+    }
+
+    // Check candidate locations in priority order
+    let candidates = [
+        format!("{}/lib/rustlib/src/rust/library", sysroot),
+        // System rustc sysroot (may differ from rustup)
+        "/usr/lib/rustlib/src/rust/library".to_string(),
+        format!("{}/lib/rustlib/src/rust", sysroot),
+    ];
+
+    for candidate in &candidates {
+        if std::path::Path::new(candidate).exists() {
+            return (Some(candidate.clone()), Some(sysroot));
+        }
+    }
+
+    // Debian/Ubuntu system packages: /usr/src/rustc-*/library
+    if let Ok(entries) = std::fs::read_dir("/usr/src") {
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let n = name.to_string_lossy();
+            if n.starts_with("rustc-") && entry.path().join("library").exists() {
+                return (
+                    Some(entry.path().join("library").to_string_lossy().to_string()),
+                    Some(sysroot),
+                );
+            }
+        }
+    }
+
+    (None, Some(sysroot))
+}
+
+/// Generate minimal LSP configuration files for standalone workspaces.
+///
+/// When a user has a single `main.py` or `index.js` without a project
+/// structure, the language server still needs certain config files to provide
+/// useful intellisense (completions, go-to-def, diagnostics).  This function
+/// creates them **only if they don't already exist** — existing configs are
+/// never overwritten.
+fn ensure_lsp_config(workspace: &std::path::Path, lang: &str) {
+    use std::io::Write;
+
+    match lang {
+        "javascript" | "js" => {
+            // typescript-language-server uses jsconfig.json for JavaScript projects.
+            // Create a sensible default so the LSP provides IntelliSense
+            // (completions, go-to-def, hover) for standalone JS files.
+            let config_path = workspace.join("jsconfig.json");
+            if !config_path.exists() && !workspace.join("tsconfig.json").exists() {
+                if let Ok(mut f) = std::fs::File::create(&config_path) {
+                    let _ = f.write_all(
+                        br#"{
+  "compilerOptions": {
+    "target": "es2020",
+    "module": "commonjs",
+    "moduleResolution": "node",
+    "checkJs": true,
+    "esModuleInterop": true,
+    "resolveJsonModule": true,
+    "skipLibCheck": true,
+    "baseUrl": "."
+  },
+  "include": ["**/*.js", "**/*.jsx"],
+  "exclude": ["node_modules"]
+}
+"#,
+                    );
+                    println!("[LSP-CONFIG] Created jsconfig.json for standalone JS workspace");
+                }
+            }
+        }
+        "typescript" | "ts" => {
+            let config_path = workspace.join("tsconfig.json");
+            if !config_path.exists() && !workspace.join("jsconfig.json").exists() {
+                if let Ok(mut f) = std::fs::File::create(&config_path) {
+                    let _ = f.write_all(
+                        br#"{
+  "compilerOptions": {
+    "target": "es2020",
+    "module": "commonjs",
+    "moduleResolution": "node",
+    "strict": true,
+    "esModuleInterop": true,
+    "resolveJsonModule": true,
+    "skipLibCheck": true,
+    "baseUrl": "."
+  },
+  "include": ["**/*.ts", "**/*.tsx"],
+  "exclude": ["node_modules"]
+}
+"#,
+                    );
+                    println!("[LSP-CONFIG] Created tsconfig.json for standalone TS workspace");
+                }
+            }
+        }
+        "go" => {
+            // gopls requires a go.mod to provide module-aware completions.
+            let go_mod = workspace.join("go.mod");
+            if !go_mod.exists() {
+                if let Ok(mut f) = std::fs::File::create(&go_mod) {
+                    let _ = f.write_all(b"module synthi-workspace\n\ngo 1.21\n");
+                    println!("[LSP-CONFIG] Created go.mod for standalone Go workspace");
+                }
+            }
+        }
+        "rust" => {
+            // rust-analyzer needs a project manifest to index the workspace.
+            // If cargo is available, use Cargo.toml.  Otherwise, create a
+            // rust-project.json so RA can work in "detached files" mode
+            // without needing cargo (which may not be installed in the container).
+            //
+            // IMPORTANT: On Windows, rust-analyzer runs inside WSL (via
+            // system_command), so we must check for cargo/rustup in WSL,
+            // not on the Windows host.  The old code ran these checks on
+            // Windows, found cargo there, installed rust-src on Windows,
+            // and ran cargo metadata on Windows — but RA in WSL couldn't
+            // use any of that.
+            let has_cargo = if cfg!(target_os = "windows") {
+                std::process::Command::new("wsl")
+                    .args(["bash", "-lc", "command -v cargo"])
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .status()
+                    .map(|s| s.success())
+                    .unwrap_or(false)
+            } else {
+                std::process::Command::new("cargo")
+                    .arg("--version")
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .status()
+                    .map(|s| s.success())
+                    .unwrap_or(false)
+            };
+
+            if has_cargo {
+                // Ensure rust-src is installed — needed for RA to resolve
+                // stdlib types like Vec, String, HashMap, etc.
+                // Without rust-src, RA can complete type *names* from the
+                // prelude but cannot index their impl blocks (Vec::new,
+                // Vec::push, etc.).
+                //
+                // IMPORTANT: Use the same PATH that RA will use ($CARGO_HOME/bin
+                // prepended) so rust-src gets installed for the correct toolchain.
+                // On Windows, install in WSL since that's where RA runs.
+                if cfg!(target_os = "windows") {
+                    let _ = std::process::Command::new("wsl")
+                        .args(["bash", "-lc",
+                            ". \"$HOME/.cargo/env\" 2>/dev/null; rustup component add rust-src 2>/dev/null || true"])
+                        .stdout(std::process::Stdio::null())
+                        .stderr(std::process::Stdio::null())
+                        .status();
+                } else {
+                    let cargo_home_cfg =
+                        std::env::var("CARGO_HOME").unwrap_or_else(|_| "/root/.cargo".to_string());
+                    let current_path_cfg = std::env::var("PATH").unwrap_or_default();
+                    let ra_path_cfg = format!("{}/bin:{}", cargo_home_cfg, current_path_cfg);
+                    let _ = std::process::Command::new("bash")
+                        .args(["-lc", ". \"$HOME/.cargo/env\" 2>/dev/null; rustup component add rust-src 2>/dev/null || true"])
+                        .env("PATH", &ra_path_cfg)
+                        .stdout(std::process::Stdio::null())
+                        .stderr(std::process::Stdio::null())
+                        .status();
+                }
+
+                let cargo_toml = workspace.join("Cargo.toml");
+                let created_toml = if !cargo_toml.exists() {
+                    // Collect ALL .rs files so rust-analyzer indexes everything
+                    let mut rs_files: Vec<String> = std::fs::read_dir(workspace)
+                        .ok()
+                        .map(|entries| {
+                            entries
+                                .flatten()
+                                .filter(|e| e.path().extension().map_or(false, |ext| ext == "rs"))
+                                .map(|e| e.file_name().to_string_lossy().to_string())
+                                .collect()
+                        })
+                        .unwrap_or_else(|| vec!["main.rs".to_string()]);
+
+                    if rs_files.is_empty() {
+                        rs_files.push("main.rs".to_string());
+                    }
+
+                    // Sort so main.rs comes first (if present)
+                    rs_files.sort_by(|a, b| {
+                        if a == "main.rs" {
+                            std::cmp::Ordering::Less
+                        } else if b == "main.rs" {
+                            std::cmp::Ordering::Greater
+                        } else {
+                            a.cmp(b)
+                        }
+                    });
+
+                    if let Ok(mut f) = std::fs::File::create(&cargo_toml) {
+                        let _ = write!(
+                            f,
+                            r#"[package]
+name = "synthi-workspace"
+version = "0.1.0"
+edition = "2021"
+"#
+                        );
+                        for rs_file in &rs_files {
+                            let bin_name = rs_file.trim_end_matches(".rs");
+                            let _ = write!(
+                                f,
+                                r#"
+[[bin]]
+name = "{}"
+path = "{}"
+"#,
+                                bin_name, rs_file
+                            );
+                        }
+                        println!("[LSP-CONFIG] Created Cargo.toml with {} bin targets for standalone Rust workspace", rs_files.len());
+                    }
+                    true
+                } else {
+                    false
+                };
+
+                // Run `cargo metadata` to generate Cargo.lock and warm the
+                // metadata cache.  rust-analyzer calls `cargo metadata` on
+                // startup to discover the project structure, sysroot, and
+                // crate graph.  If we pre-warm this, RA starts with a hot
+                // cache and can resolve stdlib immediately (Vec::new etc.).
+                // Only run if we created the Cargo.toml or there's no Cargo.lock.
+                let cargo_lock = workspace.join("Cargo.lock");
+                if created_toml || !cargo_lock.exists() {
+                    println!("[LSP-CONFIG] Running cargo metadata to warm RA cache...");
+
+                    if cfg!(target_os = "windows") {
+                        // Run inside WSL where rust-analyzer lives.
+                        // Convert Windows path to WSL /mnt/ path.
+                        let ws_str = workspace.to_string_lossy().replace("\\", "/");
+                        let wsl_ws = if let Some(colon_idx) = ws_str.find(':') {
+                            let drive = ws_str[..colon_idx].to_lowercase();
+                            let rest = &ws_str[colon_idx + 1..];
+                            format!("/mnt/{}{}", drive, rest)
+                        } else {
+                            ws_str.to_string()
+                        };
+                        let script = format!(
+                            ". \"$HOME/.cargo/env\" 2>/dev/null; cd '{}' && cargo metadata --format-version=1 --no-deps 2>&1",
+                            wsl_ws
+                        );
+                        let meta_status = std::process::Command::new("wsl")
+                            .args(["bash", "-lc", &script])
+                            .stdout(std::process::Stdio::null())
+                            .stderr(std::process::Stdio::piped())
+                            .status();
+                        match meta_status {
+                            Ok(s) if s.success() => println!(
+                                "[LSP-CONFIG] cargo metadata (WSL) succeeded — Cargo.lock ready"
+                            ),
+                            Ok(s) => {
+                                eprintln!("[LSP-CONFIG] cargo metadata (WSL) exited with {}", s)
+                            }
+                            Err(e) => eprintln!("[LSP-CONFIG] cargo metadata (WSL) failed: {}", e),
+                        }
+                    } else {
+                        // Resolve CARGO_HOME/RUSTUP_HOME so cargo finds the
+                        // right toolchain (mirrors the env set on the RA process).
+                        let cargo_home = std::env::var("CARGO_HOME")
+                            .unwrap_or_else(|_| "/root/.cargo".to_string());
+                        let current_path = std::env::var("PATH").unwrap_or_default();
+                        let cargo_path = format!("{}/bin:{}", cargo_home, current_path);
+
+                        let meta_status = std::process::Command::new("cargo")
+                            .args(["metadata", "--format-version=1", "--no-deps"])
+                            .current_dir(workspace)
+                            .env("PATH", &cargo_path)
+                            .env("CARGO_HOME", &cargo_home)
+                            .env_remove("RUSTUP_TOOLCHAIN")
+                            .stdout(std::process::Stdio::null())
+                            .stderr(std::process::Stdio::piped())
+                            .status();
+                        match meta_status {
+                            Ok(s) if s.success() => {
+                                println!("[LSP-CONFIG] cargo metadata succeeded — Cargo.lock ready")
+                            }
+                            Ok(s) => eprintln!("[LSP-CONFIG] cargo metadata exited with {}", s),
+                            Err(e) => eprintln!("[LSP-CONFIG] cargo metadata failed: {}", e),
+                        }
+                    }
+                }
+            } else {
+                // No cargo — create rust-project.json for RA's non-cargo mode.
+                // This lets RA provide completions, hover, go-to-def without cargo.
+                let rp_json = workspace.join("rust-project.json");
+                if !rp_json.exists() {
+                    // Try to install rust-src — on Windows run in WSL since
+                    // that's where rust-analyzer runs.
+                    if cfg!(target_os = "windows") {
+                        let _ = std::process::Command::new("wsl")
+                            .args(["bash", "-lc",
+                                ". \"$HOME/.cargo/env\" 2>/dev/null; rustup component add rust-src 2>/dev/null || true"])
+                            .stdout(std::process::Stdio::null())
+                            .stderr(std::process::Stdio::null())
+                            .status();
+                    } else {
+                        let _ = std::process::Command::new("rustup")
+                            .args(["component", "add", "rust-src"])
+                            .stdout(std::process::Stdio::null())
+                            .stderr(std::process::Stdio::null())
+                            .status();
+                    }
+
+                    // Try to find sysroot_src from rustc.
+                    // On Windows, query WSL's rustc since RA runs there.
+                    // Check multiple known locations — system rustc (apt) installs
+                    // rust-src to different paths than rustup.
+                    let sysroot_src = {
+                        // 1. Ask rustc for its sysroot
+                        let sysroot_output = if cfg!(target_os = "windows") {
+                            std::process::Command::new("wsl")
+                                .args([
+                                    "bash",
+                                    "-lc",
+                                    ". \"$HOME/.cargo/env\" 2>/dev/null; rustc --print sysroot",
+                                ])
+                                .output()
+                        } else {
+                            std::process::Command::new("rustc")
+                                .args(["--print", "sysroot"])
+                                .output()
+                        };
+                        let sysroot = sysroot_output
+                            .ok()
+                            .and_then(|o| {
+                                if o.status.success() {
+                                    Some(String::from_utf8_lossy(&o.stdout).trim().to_string())
+                                } else {
+                                    None
+                                }
+                            })
+                            .unwrap_or_else(|| "/usr".to_string());
+
+                        // 2. Check common library source locations.
+                        // On Windows, filesystem checks must go through WSL
+                        // since the sysroot paths are Linux paths.
+                        let mut found: Option<String> = None;
+
+                        if cfg!(target_os = "windows") {
+                            // Check inside WSL using a single shell command
+                            let check_script = format!(
+                                "if [ -d '{sysroot}/lib/rustlib/src/rust/library' ]; then \
+                                   echo '{sysroot}/lib/rustlib/src/rust/library'; \
+                                 elif ls -d /usr/src/rustc-*/library 2>/dev/null | head -1 | grep -q .; then \
+                                   ls -d /usr/src/rustc-*/library 2>/dev/null | head -1; \
+                                 elif [ -d '{sysroot}/lib/rustlib/src/rust' ]; then \
+                                   echo '{sysroot}/lib/rustlib/src/rust'; \
+                                 fi",
+                                sysroot = sysroot
+                            );
+                            if let Ok(output) = std::process::Command::new("wsl")
+                                .args(["bash", "-lc", &check_script])
+                                .output()
+                            {
+                                if output.status.success() {
+                                    let path =
+                                        String::from_utf8_lossy(&output.stdout).trim().to_string();
+                                    if !path.is_empty() {
+                                        found = Some(path);
+                                    }
+                                }
+                            }
+                        } else {
+                            let candidates = [
+                                format!("{}/lib/rustlib/src/rust/library", sysroot),
+                                // Debian/Ubuntu system rust-src package
+                                "/usr/src/rustc-*/library".to_string(),
+                                format!("{}/lib/rustlib/src/rust", sysroot),
+                            ];
+
+                            for candidate in &candidates {
+                                if candidate.contains('*') {
+                                    // Glob expansion for system packages
+                                    if let Ok(entries) = std::fs::read_dir("/usr/src") {
+                                        if let Some(entry) = entries.flatten().find(|e| {
+                                            let name = e.file_name();
+                                            let n = name.to_string_lossy();
+                                            n.starts_with("rustc-")
+                                                && e.path().join("library").exists()
+                                        }) {
+                                            found = Some(
+                                                entry
+                                                    .path()
+                                                    .join("library")
+                                                    .to_string_lossy()
+                                                    .to_string(),
+                                            );
+                                            break;
+                                        }
+                                    }
+                                } else {
+                                    let p = std::path::PathBuf::from(candidate);
+                                    if p.exists() {
+                                        found = Some(p.to_string_lossy().to_string());
+                                        break;
+                                    }
+                                }
+                            }
+
+                            if found.is_none() {
+                                println!("[LSP-CONFIG] rust-src not found at any known location, RA will have no stdlib completions");
+                                let candidates_display = [
+                                    format!("{}/lib/rustlib/src/rust/library", sysroot),
+                                    "/usr/src/rustc-*/library".to_string(),
+                                    format!("{}/lib/rustlib/src/rust", sysroot),
+                                ];
+                                println!("[LSP-CONFIG] Searched: {:?}", candidates_display);
+                            }
+                        }
+                        found
+                    };
+
+                    // Collect all .rs files as crate root modules
+                    let rs_files: Vec<String> = std::fs::read_dir(workspace)
+                        .ok()
+                        .map(|entries| {
+                            entries
+                                .flatten()
+                                .filter(|e| e.path().extension().map_or(false, |ext| ext == "rs"))
+                                .map(|e| e.file_name().to_string_lossy().to_string())
+                                .collect()
+                        })
+                        .unwrap_or_else(|| vec!["main.rs".to_string()]);
+
+                    let sysroot_line = match &sysroot_src {
+                        Some(path) => format!(r#"  "sysroot_src": "{}""#, path),
+                        None => r#"  "sysroot_src": null"#.to_string(),
+                    };
+
+                    let crates: Vec<String> = rs_files
+                        .iter()
+                        .map(|f| {
+                            format!(
+                                r#"    {{
+      "root_module": "{}",
+      "edition": "2021",
+      "deps": []
+    }}"#,
+                                f
+                            )
+                        })
+                        .collect();
+
+                    if let Ok(mut f) = std::fs::File::create(&rp_json) {
+                        let _ = write!(
+                            f,
+                            "{{\n{},\n  \"crates\": [\n{}\n  ]\n}}\n",
+                            sysroot_line,
+                            crates.join(",\n")
+                        );
+                        println!("[LSP-CONFIG] Created rust-project.json for standalone Rust workspace (no cargo)");
+                    }
+                }
+            }
+        }
+        "dart" => {
+            let pubspec = workspace.join("pubspec.yaml");
+            if !pubspec.exists() {
+                if let Ok(mut f) = std::fs::File::create(&pubspec) {
+                    let _ = f.write_all(
+                        b"name: synthi_workspace\nenvironment:\n  sdk: '>=3.0.0 <4.0.0'\n",
+                    );
+                    println!("[LSP-CONFIG] Created pubspec.yaml for standalone Dart workspace");
+
+                    // Run 'dart pub get' so the Dart analysis server can resolve packages.
+                    // Use the extended PATH that includes well-known Dart SDK locations.
+                    let current_path = std::env::var("PATH").unwrap_or_default();
+                    let dart_path = format!("/opt/dart-sdk/bin:/usr/lib/dart/bin:{}", current_path);
+                    let pub_result = std::process::Command::new("dart")
+                        .args(["pub", "get"])
+                        .current_dir(workspace)
+                        .env("PATH", &dart_path)
+                        .stdout(std::process::Stdio::piped())
+                        .stderr(std::process::Stdio::piped())
+                        .status();
+                    match pub_result {
+                        Ok(s) if s.success() => println!("[LSP-CONFIG] dart pub get succeeded"),
+                        Ok(s) => {
+                            eprintln!("[LSP-CONFIG] dart pub get exited with code {:?}", s.code())
+                        }
+                        Err(e) => {
+                            // Try well-known paths if dart is not on PATH
+                            for candidate in &["/opt/dart-sdk/bin/dart", "/usr/lib/dart/bin/dart"] {
+                                if std::path::Path::new(candidate).exists() {
+                                    let _ = std::process::Command::new(candidate)
+                                        .args(["pub", "get"])
+                                        .current_dir(workspace)
+                                        .stdout(std::process::Stdio::piped())
+                                        .stderr(std::process::Stdio::piped())
+                                        .status();
+                                    println!("[LSP-CONFIG] Ran dart pub get via {}", candidate);
+                                    break;
+                                }
+                            }
+                            eprintln!("[LSP-CONFIG] dart pub get failed: {}", e);
+                        }
+                    }
+                }
+            }
+        }
+        "lua" => {
+            // lua-language-server reads .luarc.json for project settings
+            let luarc = workspace.join(".luarc.json");
+            if !luarc.exists() {
+                if let Ok(mut f) = std::fs::File::create(&luarc) {
+                    let _ = f.write_all(
+                        br#"{
+  "runtime.version": "Lua 5.4",
+  "diagnostics.globals": ["vim"],
+  "workspace.library": [],
+  "workspace.checkThirdParty": false
+}
+"#,
+                    );
+                    println!("[LSP-CONFIG] Created .luarc.json for standalone Lua workspace");
+                }
+            }
+        }
+        "prisma" => {
+            // Prisma Language Server works with .prisma files directly.
+            // No extra config needed — it reads schema.prisma from the workspace.
+            let schema = workspace.join("prisma/schema.prisma");
+            if !schema.exists() {
+                // Check root level too
+                let root_schema = workspace.join("schema.prisma");
+                if root_schema.exists() {
+                    println!("[LSP-CONFIG] Prisma schema found at root level");
+                }
+            } else {
+                println!("[LSP-CONFIG] Prisma schema found at prisma/schema.prisma");
+            }
+        }
+        "json" | "jsonc" => {
+            // vscode-json-language-server works out of the box.
+            // Optionally, we could provide schema associations.
+        }
+        "yaml" => {
+            // yaml-language-server works out of the box.
+            // Could provide schema associations via settings.
+        }
+        // Python: pylsp/pyright works well for standalone files without extra config.
+        // C/C++: compile_flags.txt is created in the cmd match arm below.
+        // Java: jdtls creates .jdtls-data itself.
+        // TOML, GraphQL, Dockerfile, Tailwind, ESLint: work without extra config.
+        _ => {}
+    }
+}
+
+fn apply_build_directives(content: &str, cmd: &mut Command) {
+    for line in content.lines() {
+        // Parse custom linker flags
+        // Format: // LINK: -lSDL2 -lGL
+        if let Some(flags) = line.trim().strip_prefix("// LINK:") {
+            for flag in flags.split_whitespace() {
+                cmd.arg(flag);
+            }
+        }
+
+        // Parse pkg-config dependencies
+        // Format: // PKG: gtk+-3.0 opencv4
+        if let Some(pkgs) = line.trim().strip_prefix("// PKG:") {
+            let pkgs_str = pkgs.trim();
+            if !pkgs_str.is_empty() {
+                let mut pkg_cmd = if cfg!(target_os = "windows") {
+                    let mut c = std::process::Command::new("wsl");
+                    c.arg("pkg-config");
+                    c
+                } else {
+                    std::process::Command::new("pkg-config")
+                };
+
+                let output = pkg_cmd
+                    .arg("--cflags")
+                    .arg("--libs")
+                    .args(pkgs_str.split_whitespace())
+                    .output();
+
+                match output {
+                    Ok(out) if out.status.success() => {
+                        let flags = String::from_utf8_lossy(&out.stdout);
+                        for flag in flags.split_whitespace() {
+                            cmd.arg(flag);
+                        }
+                    }
+                    Ok(out) => {
+                        println!(
+                            "pkg-config failed for {}: {}",
+                            pkgs_str,
+                            String::from_utf8_lossy(&out.stderr)
+                        );
+                    }
+                    Err(e) => {
+                        println!("Failed to run pkg-config: {}", e);
+                    }
+                }
+            }
+        }
+    }
+}

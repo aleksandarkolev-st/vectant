@@ -1,0 +1,27 @@
+# Node modules
+node_modules/
+
+# LevelDB / runtime persistence
+data/
+data/*
+
+# Runtime workspace repos (generated data)
+repos/
+
+# Logs
+logs/
+*.log
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Legacy workspace metadata (contains secrets — never commit)
+workspaces.json
+
+repos/

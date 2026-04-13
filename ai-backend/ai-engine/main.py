@@ -1,7 +1,8 @@
 # PROTOTYPING AI ENGINE WITH PYTHON, LATER SWITCH TO RUST
 from __future__ import annotations
 
-from typing import List, Optional, Union
+from typing import List, Optional, Union, Tuple
+import re
 import requests
 import json
 import sys
@@ -39,12 +40,7 @@ from analyzer import supported_languages
 
 from llm.providers import get_provider
 from llm.prompts import SPLIT_GUI_PROMPT
-from llm.structural_prompts import (
-    format_delta_addition_prompt,
-    format_delta_deletion_prompt,
-    inject_delta_into_code,
-    apply_deletion_delta,
-)
+from llm.structural_prompts import format_heal_prompt
 
 # New imports for enhanced architecture
 from job_queue import (
@@ -60,6 +56,69 @@ from provenance import (
     ProvenanceTracker, get_provenance_tracker,
     ChangeType, VerificationStatus as ProvVerificationStatus, track_ai_call
 )
+
+# Map verifier status strings to provenance status strings
+_VERIFIER_TO_PROV_STATUS = {
+    "pass": "passed",
+    "warn": "warned",
+    "fail": "failed",
+    "repaired": "repaired",
+}
+
+def _map_verification_status(verifier_status) -> ProvVerificationStatus:
+    raw = verifier_status.value if hasattr(verifier_status, 'value') else str(verifier_status)
+    mapped = _VERIFIER_TO_PROV_STATUS.get(raw, raw)
+    return ProvVerificationStatus(mapped)
+
+
+# ══════════════════════════════════════════════════════════════
+# Architecture cache extraction (for /refactor/split/verified)
+# ══════════════════════════════════════════════════════════════
+#
+# The split model emits a markdown architecture doc wrapped in
+# <synthi_arch_cache>...</synthi_arch_cache> tags AFTER the JSON
+# split block. We extract it before parsing the JSON so that:
+#   1. The JSON parser never sees the architecture trailer.
+#   2. The architecture string can be returned alongside the result
+#      and cached by the Rust worker in the split sidecar.
+#
+# XML tags are used instead of `---ARCHITECTURE---` because `---` is
+# valid markdown for horizontal rules and collides with pro-model
+# prose / user source comments. XML open/close pairs fail cleanly if
+# the model truncates — unmatched closing tag → no match → fallback.
+
+_ARCH_TAG_RE = re.compile(
+    r"""
+    (?:^|\n)                                   # start of line
+    \s*                                        # optional leading whitespace
+    (?:```[a-zA-Z]*\s*\n)?                      # optional opening code fence
+    <\s*synthi_arch_cache\s*>\s*\n?            # <synthi_arch_cache>
+    (?P<body>.*?)                              # the architecture doc
+    \n?\s*<\s*/\s*synthi_arch_cache\s*>        # </synthi_arch_cache>
+    """,
+    re.IGNORECASE | re.VERBOSE | re.DOTALL,
+)
+
+
+def extract_architecture(ai_response: str) -> Tuple[str, str]:
+    """Split the raw LLM response into (json_part, architecture_md).
+
+    Returns `(response, "")` if the architecture tags are not found — the
+    caller then falls back to the generic prompt with no regression.
+    Never raises.
+    """
+    if not isinstance(ai_response, str) or not ai_response:
+        return ai_response or "", ""
+    match = _ARCH_TAG_RE.search(ai_response)
+    if not match:
+        return ai_response, ""
+    # The JSON lives BEFORE the <synthi_arch_cache> tag.
+    json_part = ai_response[: match.start()].rstrip()
+    # Strip any trailing code fence the model might have wrapped around
+    # the whole tail block.
+    json_part = re.sub(r"\n?```\s*$", "", json_part).rstrip()
+    arch_part = (match.group("body") or "").strip()
+    return json_part, arch_part
 # Proactive Analysis imports
 from analyzer.proactive import (
     ProactiveAnalyzer,
@@ -1102,7 +1161,9 @@ async def refactor_split(req: AnalyzeAiRequest):
             mode="split",
             files=req.files,
             focus=req.focus,
-            model=req.model,
+            # Split needs stronger reasoning — 88K prompt, structured
+            # JSON output, must not drift. Pro model by default.
+            model=req.model or "gemini-3.1-flash-lite-preview",
             api_key=req.api_key,
         )
         print(f"--- AI SPLIT OUTPUT START ---\n{ai_suggestion}\n--- AI SPLIT OUTPUT END ---")
@@ -1266,7 +1327,7 @@ async def analyze_code_ai_verified(req: VerifiedAiRequest):
         # Update provenance with verification
         tracker.update_verification(
             provenance_id,
-            status=ProvVerificationStatus(verification_result.status.value),
+            status=_map_verification_status(verification_result.status),
             violations=[v.message for v in verification_result.violations],
             original_hash=verification_result.original_hash,
             verified_hash=verification_result.verified_hash,
@@ -1344,10 +1405,12 @@ async def refactor_split_verified(req: VerifiedAiRequest):
             mode="split",
             files=req.files,
             focus=req.focus,
-            model=req.model,
+            # Split needs stronger reasoning — 88K prompt, structured
+            # JSON output, must not drift. Pro model by default.
+            model=req.model or "gemini-3.1-flash-lite-preview",
             api_key=req.api_key,
         )
-        
+
         latency_ms = (time.time() - start_time) * 1000
         tracker.update_model_info(
             provenance_id,
@@ -1365,50 +1428,76 @@ async def refactor_split_verified(req: VerifiedAiRequest):
 
     # Parse and verify split result
     try:
+        # First, peel off the architecture cache block (if present). The split
+        # prompt asks the model to emit <synthi_arch_cache>...</synthi_arch_cache>
+        # AFTER the JSON. Extracting it first means the JSON parser never sees
+        # the trailer, and the architecture string flows through to the Rust
+        # worker for sidecar storage.
+        json_only_response, architecture_md = extract_architecture(ai_suggestion)
+        if architecture_md:
+            logger.info(f"[split/verified] architecture cache captured ({len(architecture_md)} chars)")
+        else:
+            logger.info("[split/verified] no architecture cache in response (fallback to generic)")
+
         # Clean up markdown if present
-        result_str = ai_suggestion
+        result_str = json_only_response
         if "```json" in result_str:
             result_str = result_str.split("```json")[1].split("```")[0].strip()
         elif "```" in result_str:
             result_str = result_str.split("```")[1].split("```")[0].strip()
-        
+
         split_result = json.loads(result_str)
-        
+
         if req.verify:
             verification_result = verifier.verify_split_result(
                 split_result,
                 original_code=req.code,
                 lang=req.lang,
             )
-            
+
             tracker.update_verification(
                 provenance_id,
-                status=ProvVerificationStatus(verification_result.status.value),
+                status=_map_verification_status(verification_result.status),
                 violations=[v.message for v in verification_result.violations],
                 original_hash=verification_result.original_hash,
                 verified_hash=verification_result.verified_hash,
                 duration_ms=verification_result.duration_ms,
             )
-            
+
             if not verification_result.passed:
-                tracker.mark_rejected(provenance_id, "Split verification failed")
+                # Return the split result as a string even when verification finds issues.
+                # The worker expects "result" to be a raw LLM string (same as /refactor/split),
+                # and "result: null" causes the worker to bail completely, hanging the IDE on
+                # "Compiling...". Bracket-balance warnings are often false positives for split
+                # output (each file is a partial compile unit). The real compiler will catch
+                # genuine syntax errors.
+                tracker.mark_rejected(provenance_id, "Split verification failed (forwarding result anyway)")
                 return {
-                    "result": None,
+                    "result": result_str,
+                    "architecture": architecture_md,
                     "lang": req.lang,
+                    "verified": False,
                     "verification": verification_result.to_dict(),
                     "provenance_id": provenance_id,
-                    "error": "Split output failed verification",
                 }
-        
+
         tracker.mark_accepted(provenance_id)
-        
+
         return {
-            "result": split_result,
+            # Return the raw JSON string so the worker can parse it the same way it handles
+            # the /refactor/split response. Returning a parsed dict causes the worker's
+            # "result.as_str()" check to fail and bail with "unexpected response format".
+            "result": result_str,
+            # Architecture cache (markdown, may be empty string if the model
+            # forgot to emit the <synthi_arch_cache> block). Worker stores it
+            # in the split sidecar and re-injects into diff_patch calls.
+            "architecture": architecture_md,
             "lang": req.lang,
+            "verified": True,
             "verification": verification_result.to_dict() if req.verify else None,
             "provenance_id": provenance_id,
         }
-        
+
     except json.JSONDecodeError as e:
         tracker.mark_rejected(provenance_id, f"Invalid JSON: {e}")
         return {
@@ -1530,153 +1619,480 @@ async def get_provenance_stats():
 
 
 # ============================================================
-# FAST STRUCTURAL UPDATE ENDPOINTS (for HMR)
+# /refactor/delta and /refactor/structural were REMOVED.
 # ============================================================
+#
+# Both endpoints were SDL-hardcoded string-match delta paths:
+#
+# - /refactor/delta update_type="addition" used DELTA_ADDITION_PROMPT
+#   which literally told the model to "Translate this X11 code snippet
+#   to SDL2" and then spliced the result into the cached split using
+#   hardcoded markers (`} AppState;`, `app_state.running = 1;`,
+#   `SDL_RenderPresent`, `SDL_MOUSEBUTTONDOWN`). Silently failed half
+#   its injections.
+#
+# - /refactor/delta update_type="deletion" used DELTA_DELETION_PROMPT
+#   + apply_deletion_delta to comment out "matching patterns" with
+#   `// REMOVED:` prefixes. On Tier 3 fallback, this path corrupted
+#   the split by applying deletions to stale baselines while leaving
+#   the user's actual additions missing — compile would succeed but
+#   the edit never reached the running binary.
+#
+# - /refactor/structural was a back-compat redirect to /refactor/delta.
+#
+# All edit kinds — additions, deletions, expression changes, value
+# changes — now flow through:
+#
+#   Tier 1 (handler.rs): pure Rust regex value patcher for value-only
+#     edits, 0 AI calls.
+#   Tier 2 (handler.rs): /refactor/diff_patch with the cached architecture
+#     doc injected into the prompt. The model decides which modules to
+#     patch based on the arch doc's "Where User Code Goes" section.
+#   Tier 3 (handler.rs): if Tier 2 fails, fall through to
+#     /refactor/split/verified for a full re-split. No cheap cache levels
+#     in perform_ai_split — they were removed too.
 
-class StructuralUpdateRequest(BaseModel):
-    """Request for fast structural updates (add/remove elements)."""
-    update_type: str  # "addition", "deletion"
-    changes_description: str = ""  # What changed (for addition/deletion)
-    core_content: str
-    gui_content: str
-    shared_content: str
-    # Existing cached split result to inject delta into
-    cached_result: Optional[dict] = None
+
+class DiffPatchRequest(BaseModel):
+    """Request for AI-powered diff patching of split modules.
+
+    As of the classify-removal refactor, there is only one mode: full
+    diff-patch with the cached architecture hint. The model receives all
+    three module contents + the user's diff + the architecture doc +
+    the priority rule, and returns updated content for whichever modules
+    changed. The previous targeted-mode optimization (pick ONE module
+    via an AI classifier, then send only that module) was removed —
+    classify was costing ~4s per edit for a lite call, which exceeded
+    the time saved by the smaller targeted prompt. One AI call per
+    edit, no classifier, no silent drops on classifier timeout.
+    """
+    diff: str              # Unified diff of the user's source changes
+    core_content: str = ""
+    gui_content: str = ""
+    shared_content: str = ""
+    # Cached split architecture doc (markdown) — captured at initial
+    # /refactor/split/verified time and re-injected here so the model
+    # does not have to re-derive the module contract on every edit.
+    # Empty string → fall back to the generic prompt (no regression).
+    architecture: Optional[str] = None
     model: Optional[str] = None
     api_key: Optional[str] = None
 
 
-@app.post("/refactor/delta")
-async def refactor_delta(req: StructuralUpdateRequest):
+# ══════════════════════════════════════════════════════════════
+# Diff-patch prompt builder (full 3-module mode)
+# ══════════════════════════════════════════════════════════════
+#
+# The prompt is assembled in a specific order to exploit the LLM's
+# attention bias ("lost in the middle" — models attend most to
+# start + end of the context window):
+#
+#   1. Role + task statement                         ← top
+#   2. Generic CRITICAL RULES (file scope, etc.)
+#   3. ARCHITECTURE section (cached markdown blob)   ← middle (long)
+#   4. CURRENT core / gui / shared contents
+#   5. PRIORITY RULE                                 ← bottom (recency boost)
+#   6. DIFF (user's raw source changes)              ← last thing before generation
+#   7. Output format instruction
+#
+# Putting the PRIORITY RULE immediately above the DIFF ensures it is
+# the LAST instruction the model reads before generating output. This
+# matters because the architecture cache is a HINT and can be stale
+# (user renamed a variable mid-session) — the priority rule reminds
+# the model to treat the diff as ground truth.
+#
+# The architecture doc itself tells the model which module to patch
+# ("Where User Code Goes: rendering → gui_on_render" etc.), so the
+# model does its own routing — we don't need an external classifier.
+
+_DIFF_PATCH_ARCH_HEADER = (
+    "ARCHITECTURE (cached from the initial split — describes how this\n"
+    "project's split modules are organized):"
+)
+
+_DIFF_PATCH_PRIORITY_RULE = """PRIORITY RULE (read this carefully):
+The ARCHITECTURE section above was captured at initial split time. It
+describes how the ORIGINAL source's variables were relocated into the
+split modules. It is a HINT, not ground truth.
+
+If the user's DIFF (below) explicitly:
+  - renames a variable (e.g. changes `r` to `main_renderer`)
+  - redefines a type
+  - restructures a function
+  - introduces new fields or functions
+...then the DIFF is authoritative. Follow the diff. Do NOT apply stale
+mappings to references that no longer match the original form. The
+cached mapping only applies to references that remain UNCHANGED from
+the original source."""
+
+
+def _build_full_diff_patch_prompt(req: DiffPatchRequest) -> str:
+    """Assemble the full 3-module diff_patch prompt in edit-list format.
+
+    Instead of asking the model to regenerate full updated module files
+    (~2500-4000 output tokens per edit), we ask for a list of structured
+    edits — anchor + operation + content — which Rust applies locally
+    via `hmr::edit_applier::apply_edit`. Output tokens drop from ~3000
+    to ~100, which cuts pro-model generation time from ~30s to ~1s.
+
+    When `req.architecture` is empty, the ARCHITECTURE + PRIORITY_RULE
+    blocks are omitted and the prompt degrades to the generic form —
+    no regression for pre-migration sidecars that don't have a cached
+    architecture yet.
     """
-    Delta-based code translation endpoint for fast HMR.
-    
-    Instead of regenerating all code:
-    1. Keeps existing working code (with guardrails applied)
-    2. Takes the X11 delta the user wrote
-    3. Asks AI to TRANSLATE that X11 code to SDL2
-    4. Injects the translated SDL2 code into the existing modules
-    
-    Uses Gemini by default for fast ~2-3s response vs ~18s for full split.
+    parts: List[str] = [
+        "You are generating EDIT INSTRUCTIONS for a SPLIT multi-module project.",
+        "Return a JSON object with an `edits` array. The Rust worker will apply",
+        "each edit locally by searching the current module content for `anchor`",
+        "and performing `operation` at that location. You do NOT return full",
+        "file contents — only the edits needed.",
+        "",
+        "CRITICAL RULES — these apply to any language/framework:",
+        "",
+        "1. The target files (core, gui, shared) are SPLIT modules, NOT standalone",
+        "   programs. They may not have a main entrypoint and they export specific",
+        "   lifecycle functions (e.g. *_on_load, *_on_update, *_on_render, etc.).",
+        "   STUDY the current module contents below to identify each file's",
+        "   existing function signatures — those are your template.",
+        "",
+        "2. The diff comes from the user's ORIGINAL source file, which may use raw",
+        "   idioms (local variables, inline entrypoint, direct API references). You",
+        "   must ADAPT those references to fit the split modules' existing structure:",
+        "     - Local variables in the original source usually live on a shared state",
+        "       object in the split modules. Look at the existing code to see how",
+        "       state is accessed (e.g. a cast like `State* s = (State*)state_ptr;`)",
+        "       and follow the same pattern.",
+        "     - API handles (renderer, window, audio, etc.) are typically stored on",
+        "       the state object — use the same field names the existing code uses.",
+        "",
+        "3. DECIDE which module(s) each diff hunk belongs to. The ARCHITECTURE",
+        "   section below tells you the routing rules — use its 'Where User Code",
+        "   Goes' section as the authoritative mapping. Each edit in your output",
+        "   must set the `module` field to one of `core`, `gui`, or `shared`.",
+        "",
+        "4. Do NOT emit edits that paste the diff verbatim at file scope (would cause",
+        "   declaration errors in C/C++ or top-level errors in Python/JS/Rust).",
+        "   Do NOT redeclare existing variables, add duplicate entrypoints, or",
+        "   create new top-level functions unless the existing file's convention",
+        "   demands it. Your edits should merge the change into an existing",
+        "   function body, or add to an existing struct definition, etc.",
+        "",
+    ]
+
+    arch = (req.architecture or "").strip()
+    if arch:
+        parts += [_DIFF_PATCH_ARCH_HEADER, "", arch, ""]
+
+    parts += [
+        "CURRENT core module content:",
+        "```",
+        req.core_content or "",
+        "```",
+        "",
+        "CURRENT gui module content:",
+        "```",
+        req.gui_content or "",
+        "```",
+        "",
+        "CURRENT shared module content:",
+        "```",
+        req.shared_content or "",
+        "```",
+        "",
+    ]
+
+    if arch:
+        # Priority rule sits AFTER the architecture + module contents and
+        # immediately before the diff — last thing the model reads before
+        # generating. Mitigates the "lost in the middle" effect.
+        parts += [_DIFF_PATCH_PRIORITY_RULE, ""]
+
+    parts += [
+        "DIFF (from user's source — use as INTENT, apply the priority rule above):",
+        "```",
+        req.diff,
+        "```",
+        "",
+        "# OUTPUT FORMAT",
+        "",
+        "Return a single JSON object with an `edits` array. Each edit has:",
+        "",
+        '  - `module`:    "core" | "gui" | "shared"',
+        '  - `operation`: "insert_after" | "insert_before" | "replace" | "delete"',
+        "  - `anchor`:    an EXACT substring of the current module content that",
+        "                 locates the edit. Rust will call `content.find(anchor)`.",
+        "                 The anchor MUST appear EXACTLY ONCE in the module — if",
+        "                 it is missing or ambiguous the whole edit fails and we",
+        "                 fall back to a full re-split. Include enough surrounding",
+        "                 context (usually 1-3 lines, or a full statement) to make",
+        "                 the anchor unique. Whitespace is preserved — copy the",
+        "                 anchor verbatim from the current content above.",
+        "  - `content`:   the new text. For insert_after / insert_before this is",
+        "                 the code to insert. For replace this is what replaces",
+        "                 the anchor. For delete this is ignored (use an empty",
+        "                 string). Preserve the surrounding indentation style.",
+        "",
+        "Operations:",
+        "  - insert_after:  put `content` immediately AFTER the anchor",
+        "  - insert_before: put `content` immediately BEFORE the anchor",
+        "  - replace:       replace the anchor with `content`",
+        "  - delete:        remove the anchor (content ignored)",
+        "",
+        "If no changes are needed, return `{\"edits\": []}`.",
+        "",
+        "# EXAMPLE",
+        "",
+        "Suppose the diff adds a red button after an existing blue button. The",
+        "current gui module contains:",
+        "",
+        "```",
+        "    SDL_Rect btn1 = {50, 50, 200, 60};",
+        "    SDL_SetRenderDrawColor(state->renderer, 60, 120, 220, 255);",
+        "    SDL_RenderFillRect(state->renderer, &btn1);",
+        "```",
+        "",
+        "A correct output would be:",
+        "",
+        "```",
+        "{",
+        '  "edits": [',
+        "    {",
+        '      "module": "gui",',
+        '      "operation": "insert_after",',
+        '      "anchor": "SDL_RenderFillRect(state->renderer, &btn1);",',
+        '      "content": "\\n\\n    SDL_Rect btn2 = {50, 130, 200, 60};\\n    SDL_SetRenderDrawColor(state->renderer, 220, 60, 60, 255);\\n    SDL_RenderFillRect(state->renderer, &btn2);"',
+        "    }",
+        "  ]",
+        "}",
+        "```",
+        "",
+        "Return ONLY the JSON object. No markdown fences, no prose, no explanation.",
+    ]
+    return "\n".join(parts)
+
+
+_VALID_EDIT_OPS = {"insert_after", "insert_before", "replace", "delete"}
+_VALID_EDIT_MODULES = {"core", "gui", "shared"}
+
+
+def _validate_edit_list(edits: object) -> List[dict]:
+    """Validate that the AI returned a well-formed list of edits.
+
+    Raises HTTPException(400) on any shape mismatch. Returns a cleaned
+    list with only the expected fields so the Rust worker's serde
+    deserializer sees exactly the schema it expects.
+    """
+    if not isinstance(edits, list):
+        raise HTTPException(
+            status_code=400,
+            detail=f"`edits` must be a JSON array, got {type(edits).__name__}",
+        )
+    cleaned: List[dict] = []
+    for i, e in enumerate(edits):
+        if not isinstance(e, dict):
+            raise HTTPException(
+                status_code=400,
+                detail=f"edit #{i} must be a JSON object, got {type(e).__name__}",
+            )
+        module = e.get("module")
+        op = e.get("operation")
+        anchor = e.get("anchor")
+        content = e.get("content", "")
+        if module not in _VALID_EDIT_MODULES:
+            raise HTTPException(
+                status_code=400,
+                detail=f"edit #{i}: `module` must be one of {_VALID_EDIT_MODULES}, got {module!r}",
+            )
+        if op not in _VALID_EDIT_OPS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"edit #{i}: `operation` must be one of {_VALID_EDIT_OPS}, got {op!r}",
+            )
+        if not isinstance(anchor, str) or not anchor:
+            raise HTTPException(
+                status_code=400,
+                detail=f"edit #{i}: `anchor` must be a non-empty string",
+            )
+        if not isinstance(content, str):
+            raise HTTPException(
+                status_code=400,
+                detail=f"edit #{i}: `content` must be a string (use empty string for delete)",
+            )
+        cleaned.append({
+            "module": module,
+            "operation": op,
+            "anchor": anchor,
+            "content": content,
+        })
+    return cleaned
+
+
+@app.post("/refactor/diff_patch")
+async def refactor_diff_patch(req: DiffPatchRequest):
+    """
+    Apply a source diff to split module files using AI — edit-list format.
+
+    The model returns a JSON object:
+        {"edits": [{"module": "gui", "operation": "insert_after", ...}, ...]}
+
+    Rust's hmr::edit_applier applies each edit locally by searching the
+    current module content for the anchor. This format makes the output
+    ~100 tokens instead of ~3000, dropping pro-model generation time from
+    ~30s to ~1s.
     """
     start_time = time.time()
-    
-    # Always use Gemini for delta operations (fast and efficient)
+
     provider = get_provider(provider_name='gemini', use_custom=bool(req.api_key))
-    
+    prompt = _build_full_diff_patch_prompt(req)
+    if req.architecture and req.architecture.strip():
+        print(f"[DiffPatch] architecture hint ({len(req.architecture)} chars) injected into prompt")
+    else:
+        print(f"[DiffPatch] no architecture hint (fallback to generic prompt)")
+
     try:
-        if req.update_type == "addition":
-            print(f"[Delta] Translating X11 code to SDL2:\n{req.changes_description[:200]}...")
-            
-            # Generate the translation prompt - AI translates X11 -> SDL2
-            prompt = format_delta_addition_prompt(
-                req.changes_description,
-                req.core_content,
-                req.gui_content,
-                req.shared_content
+        ai_response = await provider.ask_llm(
+            prompt,
+            "cpp",
+            None,
+            mode="delta",
+            # Pro for diff patches — we want high-quality anchor selection
+            # and correct merging into split-module conventions. With the
+            # edit-list output format, the pro-call output is short
+            # (~100 tokens) so this is 1-2s of generation, not 30.
+            model=req.model or "gemini-3.1-flash-lite-preview",
+            api_key=req.api_key,
+        )
+
+        print(f"[DiffPatch] AI response:\n{ai_response[:500]}")
+
+        # Parse JSON from response
+        result_str = ai_response.strip()
+        if "```json" in result_str:
+            result_str = result_str.split("```json")[1].split("```")[0].strip()
+        elif "```" in result_str:
+            result_str = result_str.split("```")[1].split("```")[0].strip()
+
+        parsed = json.loads(result_str)
+        if not isinstance(parsed, dict):
+            raise HTTPException(
+                status_code=400,
+                detail=f"AI response must be a JSON object, got {type(parsed).__name__}",
             )
-            
-            # Call AI to translate X11 to SDL2
-            ai_response = await provider.ask_llm(
-                prompt,
-                "cpp",
-                None,
-                mode="delta",
-                model=req.model or "gemini-2.5-flash-lite",
-                api_key=req.api_key,
-            )
-            
-            print(f"[Delta] SDL2 translation:\n{ai_response}")
-            
-            # Parse the delta JSON from AI response
-            delta = _parse_delta_json(ai_response)
-            
-            # If we have a cached result, inject the delta into it
-            if req.cached_result:
-                updated_result = inject_delta_into_code(req.cached_result, delta)
-                elapsed = time.time() - start_time
-                print(f"[Delta Addition] completed in {elapsed:.2f}s")
-                
-                return {
-                    "result": updated_result,
-                    "delta": delta,
-                    "update_type": "addition",
-                    "elapsed_seconds": elapsed
-                }
-            else:
-                # Return just the delta if no cached result to inject into
-                elapsed = time.time() - start_time
-                return {
-                    "delta": delta,
-                    "update_type": "addition", 
-                    "elapsed_seconds": elapsed
-                }
-                
-        elif req.update_type == "deletion":
-            # Generate deletion prompt
-            prompt = format_delta_deletion_prompt(req.changes_description)
-            
-            ai_response = await provider.ask_llm(
-                prompt,
-                "cpp",
-                None,
-                mode="delta",
-                model=req.model or "gemini-2.5-flash-lite",
-                api_key=req.api_key,
-            )
-            
-            delta = _parse_delta_json(ai_response)
-            
-            if req.cached_result:
-                updated_result = apply_deletion_delta(req.cached_result, delta)
-                elapsed = time.time() - start_time
-                print(f"[Delta Deletion] completed in {elapsed:.2f}s")
-                
-                return {
-                    "result": updated_result,
-                    "delta": delta,
-                    "update_type": "deletion",
-                    "elapsed_seconds": elapsed
-                }
-            else:
-                elapsed = time.time() - start_time
-                return {
-                    "delta": delta,
-                    "update_type": "deletion",
-                    "elapsed_seconds": elapsed
-                }
-        else:
-            raise HTTPException(status_code=400, detail=f"Unknown update_type: {req.update_type}. Use 'addition' or 'deletion'.")
-            
+
+        edits = _validate_edit_list(parsed.get("edits", []))
+
+        elapsed = time.time() - start_time
+        module_counts: dict = {}
+        for e in edits:
+            module_counts[e["module"]] = module_counts.get(e["module"], 0) + 1
+        print(
+            f"[DiffPatch] completed in {elapsed:.2f}s, {len(edits)} edit(s): {module_counts}"
+        )
+
+        return {
+            "edits": edits,
+            "elapsed_seconds": elapsed,
+        }
+
     except json.JSONDecodeError as e:
-        print(f"[Delta] JSON parse error: {e}")
-        raise HTTPException(status_code=400, detail=f"Failed to parse AI delta response: {e}")
+        print(f"[DiffPatch] JSON parse error: {e}")
+        raise HTTPException(status_code=400, detail=f"Failed to parse AI patch response: {e}")
+    except HTTPException:
+        raise
     except Exception as e:
-        print(f"[Delta] Error: {e}")
+        print(f"[DiffPatch] Error: {e}")
         raise HTTPException(status_code=400, detail=str(e))
 
 
-def _parse_delta_json(ai_response: str) -> dict:
-    """Parse JSON from AI response, handling markdown code blocks."""
-    result_str = ai_response.strip()
-    
-    # Clean up markdown if present
-    if "```json" in result_str:
-        result_str = result_str.split("```json")[1].split("```")[0].strip()
-    elif "```" in result_str:
-        result_str = result_str.split("```")[1].split("```")[0].strip()
-    
-    return json.loads(result_str)
+# NOTE: /classify/edit endpoint + ClassifyEditRequest were removed.
+# The endpoint ran an AI call (gemini-3.1-flash-lite-preview) to tell the
+# Rust worker which module (core/gui/shared) a diff hunk belonged to.
+# In practice it was costing ~4s per edit (network latency + Google API
+# TTFT + Python SDK overhead), which exceeded the time saved by using a
+# targeted single-module diff_patch prompt instead of a full 3-module
+# one. And when classify timed out, the Tier 2 loop silently dropped
+# the edit because hunks stayed EditTarget::Unknown.
+#
+# Net latency of classify + targeted (~10-12s/edit) was WORSE than
+# full diff_patch with arch hint (~6-8s/edit). The architecture cache
+# gives the full diff_patch prompt all the routing info it needs via
+# the "Where User Code Goes" section, so the AI does its own routing
+# without an external classifier. One call per edit, no silent drops,
+# no hardcoded identifier-prefix heuristics.
+#
+# See commit message history / the architecture plan file for details.
 
 
-@app.post("/refactor/structural")
-async def refactor_structural(req: StructuralUpdateRequest):
+class HealRequest(BaseModel):
+    """Request for AI-powered compilation error healing."""
+    module_name: str          # "core", "gui", or "shared"
+    module_content: str       # the broken code
+    error_messages: str       # compiler stderr / JSON diagnostics
+    shared_content: str = ""  # context: shared header
+    # Cached split architecture doc (markdown). Injected into the heal
+    # prompt so project-specific "don'ts" (e.g. forbidden patterns)
+    # come from the arch cache instead of hardcoded language-specific
+    # rules in the prompt itself. Empty string → generic prompt.
+    architecture: Optional[str] = None
+    language: str = "cpp"     # defaults to cpp for back-compat
+
+
+@app.post("/refactor/heal")
+async def refactor_heal(req: HealRequest):
     """
-    Legacy structural update endpoint - redirects to delta-based approach.
-    Kept for backwards compatibility.
+    Fix a compilation error in AI-generated module code.
+
+    The AI split produced code that doesn't compile. Instead of regex
+    guardrails, we send the compiler error + the broken code to the
+    AI and let it fix the specific error. Fast (~1-2s) because context
+    is tiny. Project-specific restrictions come from the cached split
+    architecture doc, not hardcoded prompt rules.
     """
-    # Redirect to delta endpoint
-    return await refactor_delta(req)
+    start_time = time.time()
+
+    provider = get_provider(provider_name='gemini', use_custom=False)
+
+    prompt = format_heal_prompt(
+        module=req.module_name,
+        code=req.module_content,
+        errors=req.error_messages,
+        shared=req.shared_content,
+        architecture=req.architecture or "",
+        language=req.language or "cpp",
+    )
+    if req.architecture and req.architecture.strip():
+        print(f"[Heal] architecture hint ({len(req.architecture)} chars) injected into prompt")
+
+    try:
+        ai_response = await provider.ask_llm(
+            prompt,
+            "cpp",
+            None,
+            mode="delta",
+            model="gemini-3.1-flash-lite-preview",
+        )
+
+        # Strip markdown fences if present
+        result = ai_response.strip()
+        if result.startswith("```cpp"):
+            result = result[6:]
+        elif result.startswith("```"):
+            result = result[3:]
+        if result.endswith("```"):
+            result = result[:-3]
+        result = result.strip()
+
+        elapsed = time.time() - start_time
+        print(f"[Heal] {req.module_name} fixed in {elapsed:.2f}s")
+
+        return {
+            "result": {"content": result},
+            "elapsed_seconds": elapsed,
+        }
+
+    except Exception as e:
+        print(f"[Heal] Error: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 # =============================================================================
@@ -3050,4 +3466,4 @@ if __name__ == "__main__":
     else:
         import uvicorn
         # Bind to 0.0.0.0 to allow access from WSL/Containers
-        uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+        uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True, timeout_keep_alive=120)

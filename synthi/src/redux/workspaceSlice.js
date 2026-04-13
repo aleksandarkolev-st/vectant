@@ -165,7 +165,16 @@ export const saveFileContentThunk = createAsyncThunk(
         // No git-status refresh here — there was no disk write, so nothing
         // changed from git's perspective.  Out-of-band changes (terminal edits,
         // Yjs flush) are caught by the FS-watcher-based refresh instead.
-        if (normalizeTrailing(contentToSave) === normalizeTrailing(state.savedContent)) {
+        //
+        // IMPORTANT: use _preSaveSavedContent as the baseline, NOT savedContent.
+        // The `pending` reducer optimistically sets savedContent = currentContent
+        // before this async function runs.  Reading savedContent here would
+        // always produce a false "no change" match and skip the network write.
+        // _preSaveSavedContent holds the real pre-optimistic value.
+        const savedBaseline = state._preSaveSavedContent !== undefined
+            ? state._preSaveSavedContent
+            : state.savedContent;
+        if (normalizeTrailing(contentToSave) === normalizeTrailing(savedBaseline)) {
             return contentToSave; // fulfilled reducer marks as saved
         }
 
@@ -371,22 +380,12 @@ export const handleCreateItemThunk = createAsyncThunk(
             }
         }
 
+        // api.createItem calls the collab-server's write-file / create-directory
+        // endpoint which writes to disk. This is the authoritative creation path.
         await api.createItem(slug, fullPath, isFolder);
-        
-        // Also write the file to collab-server (local disk) so it appears immediately in the file tree
-        // The file tree reads from collab-server's listFilesMeta which uses local disk
-        try {
-            if (!isFolder) {
-                await gitClient.writeFile(slug, fullPath, '');
-            } else {
-                await gitClient.createDirectory(slug, fullPath);
-            }
-        } catch (e) {
-            console.warn('[Workspace] Failed to write item to collab-server:', e);
-            // Don't throw - item was still created in GCS, just may not appear until refresh
-        }
-        
-        // ── Sync new file/folder to worker disk for LSP cross-file resolution ──
+
+        // Sync to the compiler worker's disk for LSP cross-file resolution.
+        // Best-effort: file-sync channel may not be open if no compilation has run.
         try {
             const client = getCompilerClient();
             if (isFolder) {

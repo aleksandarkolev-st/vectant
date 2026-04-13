@@ -1,0 +1,262 @@
+﻿python.exe : Creating temporary archive of 181 file(s) totalling 16.4 MiB 
+before compression.
+At C:\Program Files (x86)\Google\Cloud SDK\google-cloud-sdk\bin\gcloud.ps1:114 
+char:3
++   & "$cloudsdk_python" $run_args_array
++   ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (Creating tempor...re compression. 
+   :String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+Some files were not included in the source upload.
+
+Check the gcloud log 
+[C:\Users\HP\AppData\Roaming\gcloud\logs\2026.03.30\13.44.29.754531.log] to 
+see which files and the contents of the
+default gcloudignore file used (see `$ gcloud topic gcloudignore` to learn
+more).
+
+Uploading tarball of [./backend/synthi-webrtc-compiler/worker] to [gs://overvie
+w-synti_cloudbuild/source/1774867470.15116-b4738d83cfec493480b841a309d61714.tgz
+]
+Created [https://cloudbuild.googleapis.com/v1/projects/overview-synti/locations
+/global/builds/db57dbba-daee-4f5c-bd06-0c5cfab0ac5f].
+Logs are available at [ https://console.cloud.google.com/cloud-build/builds/db5
+7dbba-daee-4f5c-bd06-0c5cfab0ac5f?project=767721372193 ].
+Waiting for build to complete. Polling interval: 1 second(s).
+----------------------------- REMOTE BUILD OUTPUT ------------------------------
+starting build "db57dbba-daee-4f5c-bd06-0c5cfab0ac5f"
+
+FETCHSOURCE
+Fetching storage object: gs://overview-synti_cloudbuild/source/1774867470.15116-b4738d83cfec493480b841a309d61714.tgz#1774867482959817
+Copying gs://overview-synti_cloudbuild/source/1774867470.15116-b4738d83cfec493480b841a309d61714.tgz#1774867482959817...
+/ [0 files][    0.0 B/  3.5 MiB]                                                
+/ [1 files][  3.5 MiB/  3.5 MiB]                                                
+
+Operation completed over 1 objects/3.5 MiB.
+BUILD
+Already have image (with digest): gcr.io/cloud-builders/gcb-internal
+Sending build context to Docker daemon  16.89MB
+
+
+Step 1/27 : FROM rust:1.88-bookworm AS builder
+1.88-bookworm: Pulling from library/rust
+ebed137c7c18: Pulling fs layer
+c2e76af9483f: Pulling fs layer
+37f838b71c6b: Pulling fs layer
+873a4c802874: Pulling fs layer
+94b9ed071384: Pulling fs layer
+c2e76af9483f: Verifying Checksum
+c2e76af9483f: Download complete
+ebed137c7c18: Verifying Checksum
+ebed137c7c18: Download complete
+37f838b71c6b: Verifying Checksum
+37f838b71c6b: Download complete
+873a4c802874: Verifying Checksum
+873a4c802874: Download complete
+94b9ed071384: Verifying Checksum
+94b9ed071384: Download complete
+ebed137c7c18: Pull complete
+c2e76af9483f: Pull complete
+37f838b71c6b: Pull complete
+873a4c802874: Pull complete
+94b9ed071384: Pull complete
+Digest: sha256:af306cfa71d987911a781c37b59d7d67d934f49684058f96cf72079c3626bfe0
+Status: Downloaded newer image for rust:1.88-bookworm
+ ---> 1dc2982f2cd4
+Step 2/27 : WORKDIR /build
+ ---> Running in 341a33aaa081
+Removing intermediate container 341a33aaa081
+ ---> bca7e82553cb
+Step 3/27 : RUN apt-get update && apt-get install -y --no-install-recommends     libgstreamer1.0-dev     libgstreamer-plugins-base1.0-dev     libx11-dev libxcb1-dev     clang libclang-dev llvm-dev     protobuf-compiler libprotobuf-dev     pkg-config     cmake     && rm -rf /var/lib/apt/lists/*
+ ---> Running in 87fcb26fae08
+Get:1 http://deb.debian.org/debian bookworm InRelease [151 kB]
+Get:2 http://deb.debian.org/debian bookworm-updates InRelease [55.4 kB]
+Get:3 http://deb.debian.org/debian-security bookworm-security InRelease [48.0 kB]
+Get:4 http://deb.debian.org/debian bookworm/main amd64 Packages [8792 kB]
+Get:5 http://deb.debian.org/debian bookworm-updates/main amd64 Packages [6924 B]
+Get:6 http://deb.debian.org/debian-security bookworm-security/main amd64 Packages [294 kB]
+Fetched 9347 kB in 2s (5803 kB/s)
+Reading package lists...
+Reading package lists...
+Building dependency tree...
+Reading state information...
+libx11-dev is already the newest version (2:1.8.4-2+deb12u2).
+libx11-dev set to manually installed.
+libxcb1-dev is already the newest version (1.15-1).
+libxcb1-dev set to manually installed.
+pkg-config is already the newest version (1.8.1-1).
+pkg-config set to manually installed.
+The following additional packages will be installed:
+  clang-14 cmake-data curl gir1.2-gst-plugins-base-1.0 gir1.2-gstreamer-1.0
+  gir1.2-gudev-1.0 iso-codes libarchive13 libcap2 libcap2-bin libclang-14-dev
+  libclang-common-14-dev libclang-cpp14 libclang1-14 libcurl3-gnutls
+  libcurl3-nss libcurl4 libcurl4-openssl-dev libdrm-amdgpu1 libdrm-common
+  libdrm-dev libdrm-intel1 libdrm-nouveau2 libdrm-radeon1 libdrm2 libdw-dev
+  libdw1 libegl-dev libegl-mesa0 libegl1 libelf-dev libgbm-dev libgbm1 libgc1
+  libgl-dev libgl1 libgl1-mesa-dri libglapi-mesa libgles-dev libgles1 libgles2
+  libglvnd0 libglx-dev libglx-mesa0 libglx0 libgstreamer-gl1.0-0
+  libgstreamer-plugins-base1.0-0 libgstreamer1.0-0 libgudev-1.0-0
+  libgudev-1.0-dev libjsoncpp25 libllvm14 libllvm15 libnspr4 libnss3
+  libobjc-12-dev libobjc4 liborc-0.4-0 liborc-0.4-dev liborc-0.4-dev-bin
+  libpciaccess-dev libpciaccess0 libpfm4 libprotobuf-lite32 libprotobuf32
+  libprotoc32 librhash0 libsensors-config libsensors5 libsystemd0 libudev-dev
+  libudev1 libunwind-dev libunwind8 libuv1 libwayland-bin libwayland-client0
+  libwayland-cursor0 libwayland-dev libwayland-egl1 libwayland-server0
+  libx11-xcb-dev libx11-xcb1 libxcb-dri2-0 libxcb-dri3-0 libxcb-glx0
+  libxcb-present0 libxcb-randr0 libxcb-sync1 libxcb-xfixes0 libxfixes3
+  libxshmfence1 libxxf86vm1 libz3-4 libz3-dev llvm llvm-14 llvm-14-dev
+  llvm-14-linker-tools llvm-14-runtime llvm-14-tools llvm-runtime
+  nss-plugin-pem python3-pkg-resources python3-pygments python3-yaml
+Suggested packages:
+  clang-14-doc wasi-libc cmake-doc cmake-format elpa-cmake-mode ninja-build
+  isoquery lrzip libcurl4-doc libidn-dev libldap2-dev librtmp-dev
+  libssh2-1-dev libvisual-0.4-plugins gstreamer1.0-tools gstreamer1.0-doc
+  liborc-0.4-doc pciutils lm-sensors libwayland-doc llvm-14-doc
+  protobuf-mode-el python3-setuptools python-pygments-doc ttf-bitstream-vera
+Recommended packages:
+  libpam-cap libclang-rt-14-dev gstreamer1.0-gl gstreamer1.0-plugins-base
+  binfmt-support | systemd
+The following NEW packages will be installed:
+  clang clang-14 cmake cmake-data gir1.2-gst-plugins-base-1.0
+  gir1.2-gstreamer-1.0 gir1.2-gudev-1.0 iso-codes libarchive13 libcap2-bin
+  libclang-14-dev libclang-common-14-dev libclang-cpp14 libclang-dev
+  libclang1-14 libcurl3-nss libdrm-amdgpu1 libdrm-common libdrm-dev
+  libdrm-intel1 libdrm-nouveau2 libdrm-radeon1 libdrm2 libdw-dev libdw1
+  libegl-dev libegl-mesa0 libegl1 libelf-dev libgbm-dev libgbm1 libgc1
+  libgl-dev libgl1 libgl1-mesa-dri libglapi-mesa libgles-dev libgles1 libgles2
+  libglvnd0 libglx-dev libglx-mesa0 libglx0 libgstreamer-gl1.0-0
+  libgstreamer-plugins-base1.0-0 libgstreamer-plugins-base1.0-dev
+  libgstreamer1.0-0 libgstreamer1.0-dev libgudev-1.0-0 libgudev-1.0-dev
+  libjsoncpp25 libllvm14 libllvm15 libnspr4 libnss3 libobjc-12-dev libobjc4
+  liborc-0.4-0 liborc-0.4-dev liborc-0.4-dev-bin libpciaccess-dev
+  libpciaccess0 libpfm4 libprotobuf-dev libprotobuf-lite32 libprotobuf32
+  libprotoc32 librhash0 libsensors-config libsensors5 libudev-dev
+  libunwind-dev libunwind8 libuv1 libwayland-bin libwayland-client0
+  libwayland-cursor0 libwayland-dev libwayland-egl1 libwayland-server0
+  libx11-xcb-dev libx11-xcb1 libxcb-dri2-0 libxcb-dri3-0 libxcb-glx0
+  libxcb-present0 libxcb-randr0 libxcb-sync1 libxcb-xfixes0 libxfixes3
+  libxshmfence1 libxxf86vm1 libz3-4 libz3-dev llvm llvm-14 llvm-14-dev
+  llvm-14-linker-tools llvm-14-runtime llvm-14-tools llvm-dev llvm-runtime
+  nss-plugin-pem protobuf-compiler python3-pkg-resources python3-pygments
+  python3-yaml
+The following packages will be upgraded:
+  curl libcap2 libcurl3-gnutls libcurl4 libcurl4-openssl-dev libsystemd0
+  libudev1
+7 upgraded, 107 newly installed, 0 to remove and 101 not upgraded.
+Need to get 180 MB of archives.
+After this operation, 1107 MB of additional disk space will be used.
+Get:1 http://deb.debian.org/debian bookworm/main amd64 libcap2 amd64 1:2.66-4+deb12u2+b2 [27.5 kB]
+Get:2 http://deb.debian.org/debian bookworm/main amd64 libsystemd0 amd64 252.39-1~deb12u1 [333 kB]
+Get:3 http://deb.debian.org/debian bookworm/main amd64 libudev1 amd64 252.39-1~deb12u1 [109 kB]
+Get:4 http://deb.debian.org/debian bookworm/main amd64 libz3-4 amd64 4.8.12-3.1 [7216 kB]
+Get:5 http://deb.debian.org/debian bookworm/main amd64 libllvm14 amd64 1:14.0.6-12 [21.8 MB]
+Get:6 http://deb.debian.org/debian bookworm/main amd64 libclang-cpp14 amd64 1:14.0.6-12 [11.1 MB]
+Get:7 http://deb.debian.org/debian bookworm/main amd64 libgc1 amd64 1:8.2.2-3 [245 kB]
+Get:8 http://deb.debian.org/debian bookworm/main amd64 libobjc4 amd64 12.2.0-14+deb12u1 [43.2 kB]
+Get:9 http://deb.debian.org/debian bookworm/main amd64 libobjc-12-dev amd64 12.2.0-14+deb12u1 [170 kB]
+Get:10 http://deb.debian.org/debian bookworm/main amd64 libclang-common-14-dev all 1:14.0.6-12 [890 kB]
+Get:11 http://deb.debian.org/debian bookworm/main amd64 llvm-14-linker-tools amd64 1:14.0.6-12 [1288 kB]
+Get:12 http://deb.debian.org/debian bookworm/main amd64 libclang1-14 amd64 1:14.0.6-12 [6157 kB]
+Get:13 http://deb.debian.org/debian bookworm/main amd64 clang-14 amd64 1:14.0.6-12 [102 kB]
+Get:14 http://deb.debian.org/debian bookworm/main amd64 clang amd64 1:14.0-55.7~deb12u1 [5144 B]
+Get:15 http://deb.debian.org/debian bookworm/main amd64 libarchive13 amd64 3.6.2-1+deb12u3 [343 kB]
+Get:16 http://deb.debian.org/debian bookworm/main amd64 curl amd64 7.88.1-10+deb12u14 [316 kB]
+Get:17 http://deb.debian.org/debian bookworm/main amd64 libcurl4-openssl-dev amd64 7.88.1-10+deb12u14 [492 kB]
+Get:18 http://deb.debian.org/debian bookworm/main amd64 libcurl4 amd64 7.88.1-10+deb12u14 [392 kB]
+Get:19 http://deb.debian.org/debian bookworm/main amd64 libjsoncpp25 amd64 1.9.5-4 [78.6 kB]
+Get:20 http://deb.debian.org/debian bookworm/main amd64 librhash0 amd64 1.4.3-3 [134 kB]
+Get:21 http://deb.debian.org/debian bookworm/main amd64 libuv1 amd64 1.44.2-1+deb12u1 [136 kB]
+Get:22 http://deb.debian.org/debian bookworm/main amd64 cmake-data all 3.25.1-1 [2026 kB]
+Get:23 http://deb.debian.org/debian bookworm/main amd64 cmake amd64 3.25.1-1 [8692 kB]
+Get:24 http://deb.debian.org/debian bookworm/main amd64 libdw1 amd64 0.188-2.1 [235 kB]
+Get:25 http://deb.debian.org/debian bookworm/main amd64 libunwind8 amd64 1.6.2-3 [51.2 kB]
+Get:26 http://deb.debian.org/debian bookworm/main amd64 libcap2-bin amd64 1:2.66-4+deb12u2+b2 [35.2 kB]
+Get:27 http://deb.debian.org/debian bookworm/main amd64 libgstreamer1.0-0 amd64 1.22.0-2+deb12u1 [1170 kB]
+Get:28 http://deb.debian.org/debian bookworm/main amd64 gir1.2-gstreamer-1.0 amd64 1.22.0-2+deb12u1 [105 kB]
+Get:29 http://deb.debian.org/debian bookworm/main amd64 libdrm-common all 2.4.114-1 [7112 B]
+Get:30 http://deb.debian.org/debian bookworm/main amd64 libdrm2 amd64 2.4.114-1+b1 [37.5 kB]
+Get:31 http://deb.debian.org/debian bookworm/main amd64 libglvnd0 amd64 1.6.0-1 [51.8 kB]
+Get:32 http://deb.debian.org/debian bookworm/main amd64 libwayland-server0 amd64 1.21.0-1 [35.9 kB]
+Get:33 http://deb.debian.org/debian bookworm/main amd64 libgbm1 amd64 22.3.6-1+deb12u1 [38.0 kB]
+Get:34 http://deb.debian.org/debian bookworm/main amd64 libglapi-mesa amd64 22.3.6-1+deb12u1 [35.7 kB]
+Get:35 http://deb.debian.org/debian bookworm/main amd64 libwayland-client0 amd64 1.21.0-1 [28.3 kB]
+Get:36 http://deb.debian.org/debian bookworm/main amd64 libx11-xcb1 amd64 2:1.8.4-2+deb12u2 [192 kB]
+Get:37 http://deb.debian.org/debian bookworm/main amd64 libxcb-dri2-0 amd64 1.15-1 [107 kB]
+Get:38 http://deb.debian.org/debian bookworm/main amd64 libxcb-dri3-0 amd64 1.15-1 [107 kB]
+Get:39 http://deb.debian.org/debian bookworm/main amd64 libxcb-present0 amd64 1.15-1 [105 kB]
+Get:40 http://deb.debian.org/debian bookworm/main amd64 libxcb-randr0 amd64 1.15-1 [117 kB]
+Get:41 http://deb.debian.org/debian bookworm/main amd64 libxcb-sync1 amd64 1.15-1 [109 kB]
+Get:42 http://deb.debian.org/debian bookworm/main amd64 libxcb-xfixes0 amd64 1.15-1 [109 kB]
+Get:43 http://deb.debian.org/debian bookworm/main amd64 libxshmfence1 amd64 1.3-1 [8820 B]
+Get:44 http://deb.debian.org/debian bookworm/main amd64 libegl-mesa0 amd64 22.3.6-1+deb12u1 [114 kB]
+Get:45 http://deb.debian.org/debian bookworm/main amd64 libegl1 amd64 1.6.0-1 [33.7 kB]
+Get:46 http://deb.debian.org/debian bookworm/main amd64 libxcb-glx0 amd64 1.15-1 [122 kB]
+Get:47 http://deb.debian.org/debian bookworm/main amd64 libxfixes3 amd64 1:6.0.0-2 [22.7 kB]
+Get:48 http://deb.debian.org/debian bookworm/main amd64 libxxf86vm1 amd64 1:1.1.4-1+b2 [20.8 kB]
+Get:49 http://deb.debian.org/debian bookworm/main amd64 libdrm-amdgpu1 amd64 2.4.114-1+b1 [20.9 kB]
+Get:50 http://deb.debian.org/debian bookworm/main amd64 libpciaccess0 amd64 0.17-2 [51.4 kB]
+Get:51 http://deb.debian.org/debian bookworm/main amd64 libdrm-intel1 amd64 2.4.114-1+b1 [64.0 kB]
+Get:52 http://deb.debian.org/debian bookworm/main amd64 libdrm-nouveau2 amd64 2.4.114-1+b1 [19.1 kB]
+Get:53 http://deb.debian.org/debian bookworm/main amd64 libdrm-radeon1 amd64 2.4.114-1+b1 [21.8 kB]
+Get:54 http://deb.debian.org/debian bookworm/main amd64 libllvm15 amd64 1:15.0.6-4+b1 [23.1 MB]
+Get:55 http://deb.debian.org/debian bookworm/main amd64 libsensors-config all 1:3.6.0-7.1 [14.3 kB]
+Get:56 http://deb.debian.org/debian bookworm/main amd64 libsensors5 amd64 1:3.6.0-7.1 [34.2 kB]
+Get:57 http://deb.debian.org/debian bookworm/main amd64 libgl1-mesa-dri amd64 22.3.6-1+deb12u1 [7239 kB]
+Get:58 http://deb.debian.org/debian bookworm/main amd64 libglx-mesa0 amd64 22.3.6-1+deb12u1 [147 kB]
+Get:59 http://deb.debian.org/debian bookworm/main amd64 libglx0 amd64 1.6.0-1 [34.4 kB]
+Get:60 http://deb.debian.org/debian bookworm/main amd64 libgl1 amd64 1.6.0-1 [88.4 kB]
+Get:61 http://deb.debian.org/debian bookworm/main amd64 liborc-0.4-0 amd64 1:0.4.33-2 [164 kB]
+Get:62 http://deb.debian.org/debian bookworm/main amd64 iso-codes all 4.15.0-1 [2906 kB]
+Get:63 http://deb.debian.org/debian-security bookworm-security/main amd64 libgstreamer-plugins-base1.0-0 amd64 1.22.0-3+deb12u6 [934 kB]
+Get:64 http://deb.debian.org/debian bookworm/main amd64 libgudev-1.0-0 amd64 237-2 [15.1 kB]
+Get:65 http://deb.debian.org/debian bookworm/main amd64 libwayland-cursor0 amd64 1.21.0-1 [14.4 kB]
+Get:66 http://deb.debian.org/debian bookworm/main amd64 libwayland-egl1 amd64 1.21.0-1 [8640 B]
+Get:67 http://deb.debian.org/debian-security bookworm-security/main amd64 libgstreamer-gl1.0-0 amd64 1.22.0-3+deb12u6 [246 kB]
+Get:68 http://deb.debian.org/debian-security bookworm-security/main amd64 gir1.2-gst-plugins-base-1.0 amd64 1.22.0-3+deb12u6 [154 kB]
+Get:69 http://deb.debian.org/debian bookworm/main amd64 gir1.2-gudev-1.0 amd64 237-2 [5372 B]
+Get:70 http://deb.debian.org/debian bookworm/main amd64 libclang-14-dev amd64 1:14.0.6-12 [23.1 MB]
+Get:71 http://deb.debian.org/debian bookworm/main amd64 libclang-dev amd64 1:14.0-55.7~deb12u1 [4728 B]
+Get:72 http://deb.debian.org/debian bookworm/main amd64 libcurl3-gnutls amd64 7.88.1-10+deb12u14 [386 kB]
+Get:73 http://deb.debian.org/debian bookworm/main amd64 libnspr4 amd64 2:4.35-1 [113 kB]
+Get:74 http://deb.debian.org/debian-security bookworm-security/main amd64 libnss3 amd64 2:3.87.1-1+deb12u2 [1332 kB]
+Get:75 http://deb.debian.org/debian bookworm/main amd64 nss-plugin-pem amd64 1.0.8+1-1 [54.6 kB]
+Get:76 http://deb.debian.org/debian bookworm/main amd64 libcurl3-nss amd64 7.88.1-10+deb12u14 [395 kB]
+Get:77 http://deb.debian.org/debian bookworm/main amd64 libpciaccess-dev amd64 0.17-2 [54.8 kB]
+Get:78 http://deb.debian.org/debian bookworm/main amd64 libdrm-dev amd64 2.4.114-1+b1 [287 kB]
+Get:79 http://deb.debian.org/debian bookworm/main amd64 libelf-dev amd64 0.188-2.1 [72.9 kB]
+Get:80 http://deb.debian.org/debian bookworm/main amd64 libdw-dev amd64 0.188-2.1 [311 kB]
+Get:81 http://deb.debian.org/debian bookworm/main amd64 libglx-dev amd64 1.6.0-1 [15.3 kB]
+Get:82 http://deb.debian.org/debian bookworm/main amd64 libgl-dev amd64 1.6.0-1 [100 kB]
+Get:83 http://deb.debian.org/debian bookworm/main amd64 libegl-dev amd64 1.6.0-1 [19.1 kB]
+Get:84 http://deb.debian.org/debian bookworm/main amd64 libgbm-dev amd64 22.3.6-1+deb12u1 [18.3 kB]
+Get:85 http://deb.debian.org/debian bookworm/main amd64 libgles1 amd64 1.6.0-1 [11.7 kB]
+Get:86 http://deb.debian.org/debian bookworm/main amd64 libgles2 amd64 1.6.0-1 [16.8 kB]
+Get:87 http://deb.debian.org/debian bookworm/main amd64 libgles-dev amd64 1.6.0-1 [50.4 kB]
+Get:88 http://deb.debian.org/debian bookworm/main amd64 libunwind-dev amd64 1.6.2-3 [441 kB]
+Get:89 http://deb.debian.org/debian bookworm/main amd64 libgstreamer1.0-dev amd64 1.22.0-2+deb12u1 [549 kB]
+Get:90 http://deb.debian.org/debian bookworm/main amd64 liborc-0.4-dev-bin amd64 1:0.4.33-2 [19.9 kB]
+Get:91 http://deb.debian.org/debian bookworm/main amd64 liborc-0.4-dev amd64 1:0.4.33-2 [27.0 kB]
+Get:92 http://deb.debian.org/debian bookworm/main amd64 libx11-xcb-dev amd64 2:1.8.4-2+deb12u2 [195 kB]
+Get:93 http://deb.debian.org/debian bookworm/main amd64 libwayland-bin amd64 1.21.0-1 [23.6 kB]
+Get:94 http://deb.debian.org/debian bookworm/main amd64 libwayland-dev amd64 1.21.0-1 [72.5 kB]
+Get:95 http://deb.debian.org/debian bookworm/main amd64 libudev-dev amd64 252.39-1~deb12u1 [52.8 kB]
+Get:96 http://deb.debian.org/debian bookworm/main amd64 libgudev-1.0-dev amd64 237-2 [29.0 kB]
+Get:97 http://deb.debian.org/debian-security bookworm-security/main amd64 libgstreamer-plugins-base1.0-dev amd64 1.22.0-3+deb12u6 [508 kB]
+Get:98 http://deb.debian.org/debian bookworm/main amd64 libpfm4 amd64 4.13.0-1 [294 kB]
+Get:99 http://deb.debian.org/debian bookworm/main amd64 libprotobuf32 amd64 3.21.12-3 [932 kB]
+Get:100 http://deb.debian.org/debian bookworm/main amd64 libprotobuf-lite32 amd64 3.21.12-3 [261 kB]
+Get:101 http://deb.debian.org/debian bookworm/main amd64 libprotobuf-dev amd64 3.21.12-3 [1283 kB]
+Get:102 http://deb.debian.org/debian bookworm/main amd64 libprotoc32 amd64 3.21.12-3 [829 kB]
+Get:103 http://deb.debian.org/debian bookworm/main amd64 libz3-dev amd64 4.8.12-3.1 [90.6 kB]
+Get:104 http://deb.debian.org/debian bookworm/main amd64 llvm-14-runtime amd64 1:14.0.6-12 [477 kB]
+Get:105 http://deb.debian.org/debian bookworm/main amd64 llvm-runtime amd64 1:14.0-55.7~deb12u1 [4812 B]
+Get:106 http://deb.debian.org/debian bookworm/main amd64 llvm-14 amd64 1:14.0.6-12 [11.7 MB]
+Get:107 http://deb.debian.org/debian bookworm/main amd64 llvm amd64 1:14.0-55.7~deb12u1 [7212 B]
+Get:108 http://deb.debian.org/debian bookworm/main amd64 python3-pkg-resources all 66.1.1-1+deb12u2 [297 kB]
+Get:109 http://deb.debian.org/debian bookworm/main amd64 python3-pygments all 2.14.0+dfsg-1 [783 kB]
+Get:110 http://deb.debian.org/debian bookworm/main amd64 python3-yaml amd64 6.0-3+b2 [119 kB]
+Get:111 http://deb.debian.org/debian bookworm/main amd64 llvm-14-tools amd64 1:14.0.6-12 [405 kB]
+Get:112 http://deb.debian.org/debian bookworm/main amd64 llvm-14-dev amd64 1:14.0.6-12 [33.9 MB]
+Get:113 http://deb.debian.org/debian bookworm/main amd64 llvm-dev amd64 1:14.0-55.7~deb12u1 [5064 B]
+Get:114 http://deb.debian.org/debian bookworm/main amd64 protobuf-compiler amd64 3.21.12-3 [83.9 kB]

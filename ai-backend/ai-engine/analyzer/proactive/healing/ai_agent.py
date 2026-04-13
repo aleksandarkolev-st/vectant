@@ -27,9 +27,6 @@ from .ai_prompts import (
     build_batch_prompt,
     build_focused_prompt,
     build_runtime_error_prompt,
-    format_related_files,
-    format_context_notes,
-    AGENT_SYSTEM_PROMPT,
 )
 from .ai_parser import (
     parse_detection_response,
@@ -39,8 +36,9 @@ from .ai_parser import (
 from .ai_context import (
     collect_context,
     AnalysisContext,
+    detect_language,
 )
-from .ai_memory import AIAgentMemory, get_agent_memory
+from .ai_memory import get_agent_memory
 from .ai_rate_limiter import get_rate_limiter, RateLimitExceeded
 from .ai_retry import with_retry
 from .ai_telemetry import get_telemetry
@@ -188,19 +186,23 @@ class AIHealingAgent:
                 context_notes=ctx.context_notes,
             )
         elif ctx.related_files:
-            related_text = format_related_files([
+            prompt = build_detect_prompt(
+                code=ctx.source_code,
+                language=ctx.language,
+                file_path=file_path,
+                related_files=[
                 {"path": f.path, "content": f.content}
                 for f in ctx.related_files
-            ])
-            context_notes_text = format_context_notes(ctx.context_notes)
-            prompt = build_detect_prompt(
-                ctx.source_code,
-                ctx.language,
-                related_files=related_text,
-                context_notes=context_notes_text,
+                ],
+                context_notes=ctx.context_notes,
             )
         else:
-            prompt = build_detect_prompt(ctx.source_code, ctx.language)
+            prompt = build_detect_prompt(
+                code=ctx.source_code,
+                language=ctx.language,
+                file_path=file_path,
+                context_notes=ctx.context_notes,
+            )
 
         # 3. Call the LLM
         raw_response = await self._call_llm(
@@ -273,7 +275,14 @@ class AIHealingAgent:
             return {path: fixes} if fixes else {}
 
         # For batch, use the batch prompt
-        prompt = build_batch_prompt(files, language or "unknown")
+        prompt = build_batch_prompt([
+            {
+                "path": path,
+                "content": source,
+                "language": detect_language(path) if path else (language or "unknown"),
+            }
+            for path, source in files.items()
+        ])
 
         # Use first file's source as the primary code arg
         first_path = next(iter(files))
@@ -460,12 +469,14 @@ class AIHealingAgent:
     ) -> Dict[str, Any]:
         """Validate a single fix with a second LLM call."""
         prompt = build_validate_prompt(
+            code=ctx.source_code,
+            file_path=ctx.file_path,
+            line=fix.line + 1,
+            end_line=fix.end_line + 1,
             original=fix.original_text,
             replacement=fix.replacement_text,
             language=ctx.language,
-            surrounding_code=self._get_surrounding_code(
-                ctx.source_code, fix.line, radius=5
-            ),
+            description=fix.description,
         )
 
         raw = await self._call_llm(
