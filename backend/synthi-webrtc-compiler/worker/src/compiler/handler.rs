@@ -464,76 +464,128 @@ pub async fn handle_compile_request(
                                 }
                             }
                         } else {
-                            // Tier 2: non-value edit → full AI diff_patch with arch
-                            // (diff-only output format — ~100 tokens, ~1s generation)
-                            eprintln!(
-                                "[HMR] Tier 2: AI diff_patch (diff={} bytes, arch={} chars)",
-                                diff.len(),
-                                architecture_md.len()
-                            );
-                            match perform_ai_diff_patch(
-                                &diff,
-                                &core_content,
-                                &gui_content,
-                                &shared_content,
-                                arch_hint,
-                            ).await {
-                                Ok(edits) => {
-                                    eprintln!(
-                                        "[HMR] Tier 2: received {} edit(s), applying locally",
-                                        edits.len()
-                                    );
-                                    match apply_edit_list(&edits, &core_content, &gui_content, &shared_content) {
-                                        Ok((c, g, s)) => {
+                            // Tier 2: non-value edit.
+                            //
+                            // First check the speculative cache for a hit.
+                            // If the file-sync handler fired a speculative
+                            // diff_patch while the user was pausing and
+                            // the AI call completed before compile, the
+                            // edits are already in the cache keyed by the
+                            // current source hash. Apply them directly and
+                            // skip the live AI call entirely.
+                            //
+                            // On any miss / apply failure, fall through
+                            // transparently to the normal live AI call.
+                            let spec_hash = crate::hmr::speculative_diff_patch::hash_source(&req.source);
+                            let speculative_applied: Option<(String, String, String)> = {
+                                if let Some(cached_edits) =
+                                    crate::hmr::speculative_diff_patch::take_matching(spec_hash).await
+                                {
+                                    match apply_edit_list(
+                                        &cached_edits,
+                                        &core_content,
+                                        &gui_content,
+                                        &shared_content,
+                                    ) {
+                                        Ok(tuple) => {
                                             eprintln!(
-                                                "[HMR] Tier 2 SUCCESS ({} edits, core_changed={} gui_changed={} shared_changed={})",
-                                                edits.len(),
-                                                c != core_content,
-                                                g != gui_content,
-                                                s != shared_content
+                                                "[HMR] Tier 2 SPECULATIVE HIT ({} edit(s), skipped AI call)",
+                                                cached_edits.len()
                                             );
-                                            (c, g, s)
+                                            Some(tuple)
                                         }
-                                        Err(apply_err) => {
-                                            // Anchor missing / ambiguous / unknown module.
-                                            // Don't try to partially apply — fall through
-                                            // to Tier 3 for a correct full re-split.
+                                        Err(e) => {
+                                            // Speculative was based on stale
+                                            // split contents — anchor doesn't
+                                            // match the live file. Fall through
+                                            // to the live AI call rather than
+                                            // bail to Tier 3.
                                             eprintln!(
-                                                "[HMR] Tier 2 edit apply FAILED: {} → falling through to Tier 3 full re-split",
-                                                apply_err
+                                                "[HMR] Tier 2 speculative apply FAILED: {} → falling through to live AI call",
+                                                e
                                             );
-                                            let result = perform_ai_split(&req).await?;
-                                            let fresh_arch = result
-                                                .get("_synthi_architecture")
-                                                .and_then(|v| v.as_str())
-                                                .unwrap_or("");
-                                            let meta = serde_json::json!({
-                                                "split_hash": source_hash_str,
-                                                "original_source": req.source,
-                                                "architecture": fresh_arch,
-                                            });
-                                            write_sidecar_logged(&sidecar_path, &meta).await;
-                                            return Ok(result);
+                                            None
                                         }
                                     }
+                                } else {
+                                    None
                                 }
-                                Err(e) => {
-                                    eprintln!(
-                                        "[HMR] Tier 2 AI diff_patch FAILED: {} → falling through to Tier 3 full re-split",
-                                        e
-                                    );
-                                    let result = perform_ai_split(&req).await?;
-                                    let fresh_arch = result
-                                        .get("_synthi_architecture")
-                                        .and_then(|v| v.as_str())
-                                        .unwrap_or("");
-                                    let meta = serde_json::json!({
-                                        "split_hash": source_hash_str,
-                                        "original_source": req.source,
-                                        "architecture": fresh_arch,
-                                    });
-                                    write_sidecar_logged(&sidecar_path, &meta).await;
-                                    return Ok(result);
+                            };
+
+                            if let Some(triple) = speculative_applied {
+                                triple
+                            } else {
+                                // Live AI call (diff-only output format — ~100
+                                // output tokens, ~1s generation on pro).
+                                eprintln!(
+                                    "[HMR] Tier 2: AI diff_patch (diff={} bytes, arch={} chars)",
+                                    diff.len(),
+                                    architecture_md.len()
+                                );
+                                match perform_ai_diff_patch(
+                                    &diff,
+                                    &core_content,
+                                    &gui_content,
+                                    &shared_content,
+                                    arch_hint,
+                                ).await {
+                                    Ok(edits) => {
+                                        eprintln!(
+                                            "[HMR] Tier 2: received {} edit(s), applying locally",
+                                            edits.len()
+                                        );
+                                        match apply_edit_list(&edits, &core_content, &gui_content, &shared_content) {
+                                            Ok((c, g, s)) => {
+                                                eprintln!(
+                                                    "[HMR] Tier 2 SUCCESS ({} edits, core_changed={} gui_changed={} shared_changed={})",
+                                                    edits.len(),
+                                                    c != core_content,
+                                                    g != gui_content,
+                                                    s != shared_content
+                                                );
+                                                (c, g, s)
+                                            }
+                                            Err(apply_err) => {
+                                                // Anchor missing / ambiguous / unknown module.
+                                                // Don't try to partially apply — fall through
+                                                // to Tier 3 for a correct full re-split.
+                                                eprintln!(
+                                                    "[HMR] Tier 2 edit apply FAILED: {} → falling through to Tier 3 full re-split",
+                                                    apply_err
+                                                );
+                                                let result = perform_ai_split(&req).await?;
+                                                let fresh_arch = result
+                                                    .get("_synthi_architecture")
+                                                    .and_then(|v| v.as_str())
+                                                    .unwrap_or("");
+                                                let meta = serde_json::json!({
+                                                    "split_hash": source_hash_str,
+                                                    "original_source": req.source,
+                                                    "architecture": fresh_arch,
+                                                });
+                                                write_sidecar_logged(&sidecar_path, &meta).await;
+                                                return Ok(result);
+                                            }
+                                        }
+                                    }
+                                    Err(e) => {
+                                        eprintln!(
+                                            "[HMR] Tier 2 AI diff_patch FAILED: {} → falling through to Tier 3 full re-split",
+                                            e
+                                        );
+                                        let result = perform_ai_split(&req).await?;
+                                        let fresh_arch = result
+                                            .get("_synthi_architecture")
+                                            .and_then(|v| v.as_str())
+                                            .unwrap_or("");
+                                        let meta = serde_json::json!({
+                                            "split_hash": source_hash_str,
+                                            "original_source": req.source,
+                                            "architecture": fresh_arch,
+                                        });
+                                        write_sidecar_logged(&sidecar_path, &meta).await;
+                                        return Ok(result);
+                                    }
                                 }
                             }
                         };
@@ -1272,7 +1324,7 @@ async fn discover_exported_symbols(lib_path: &str) -> Vec<String> {
 /// Build a simple unified-diff-style string from two sources.
 /// Not a proper unified diff — just shows changed/added/removed lines
 /// with +/- prefixes so the AI can see what changed.
-fn build_simple_diff(old: &str, new: &str) -> String {
+pub(crate) fn build_simple_diff(old: &str, new: &str) -> String {
     let old_lines: Vec<&str> = old.lines().collect();
     let new_lines: Vec<&str> = new.lines().collect();
 

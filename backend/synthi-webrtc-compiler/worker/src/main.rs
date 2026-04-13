@@ -2989,6 +2989,34 @@ async fn wire_peer_channels(
                                         Ok(()) => debug_log!("[file-sync] ✓ write {}", rel),
                                         Err(e) => debug_log!("[file-sync] ✗ write {}: {}", rel, e),
                                     }
+
+                                    // ── Speculative diff_patch trigger ──────────
+                                    // If this write is the user's main source (not
+                                    // one of the split modules core.cpp/gui.cpp/
+                                    // shared.h), fire a speculative diff_patch
+                                    // against the current split baseline. The
+                                    // result lands in the speculative cache and
+                                    // gets consumed by handler.rs Tier 2 if the
+                                    // source_hash still matches on compile.
+                                    //
+                                    // Split-file writes go through a different
+                                    // handler.rs code path ("is_editing_split_file")
+                                    // that never calls Tier 2 diff_patch, so
+                                    // speculating would be wasted.
+                                    let is_split_file = {
+                                        let lower = rel.to_lowercase();
+                                        lower.ends_with("core.cpp")
+                                            || lower.ends_with("gui.cpp")
+                                            || lower.ends_with("shared.h")
+                                    };
+                                    if !is_split_file {
+                                        let spec_ws = ws_path.as_ref().clone();
+                                        let spec_source = content.to_string();
+                                        worker::hmr::speculative_diff_patch::trigger_speculative(
+                                            spec_ws,
+                                            spec_source,
+                                        );
+                                    }
                                 }
                             }
                             "delete" => {
