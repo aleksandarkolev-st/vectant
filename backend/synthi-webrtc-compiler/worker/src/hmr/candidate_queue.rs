@@ -50,8 +50,12 @@ impl CandidateQueue {
         let gen = self.generation;
 
         if manifest.preview_id != self.preview_id {
-            eprintln!(
-                "[CandidateQueue] Preview mismatch (manifest={}, queue={}) - normalizing to queue preview",
+            // Expected when subsequent compiles generate a new session_id on
+            // the frontend — the queue keeps its original preview_id as the
+            // canonical identity for this preview session. Gated behind
+            // debug_log! so it only shows with SYNTHI_WORKER_VERBOSE=1.
+            crate::debug_log!(
+                "[CandidateQueue] Normalizing new manifest preview ({}) to queue preview ({})",
                 manifest.preview_id, self.preview_id
             );
             manifest.preview_id = self.preview_id.clone();

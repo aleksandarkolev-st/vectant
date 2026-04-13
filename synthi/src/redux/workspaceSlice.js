@@ -380,22 +380,12 @@ export const handleCreateItemThunk = createAsyncThunk(
             }
         }
 
+        // api.createItem calls the collab-server's write-file / create-directory
+        // endpoint which writes to disk. This is the authoritative creation path.
         await api.createItem(slug, fullPath, isFolder);
-        
-        // Also write the file to collab-server (local disk) so it appears immediately in the file tree
-        // The file tree reads from collab-server's listFilesMeta which uses local disk
-        try {
-            if (!isFolder) {
-                await gitClient.writeFile(slug, fullPath, '');
-            } else {
-                await gitClient.createDirectory(slug, fullPath);
-            }
-        } catch (e) {
-            console.warn('[Workspace] Failed to write item to collab-server:', e);
-            // Don't throw - item was still created in GCS, just may not appear until refresh
-        }
-        
-        // ── Sync new file/folder to worker disk for LSP cross-file resolution ──
+
+        // Sync to the compiler worker's disk for LSP cross-file resolution.
+        // Best-effort: file-sync channel may not be open if no compilation has run.
         try {
             const client = getCompilerClient();
             if (isFolder) {

@@ -12,7 +12,7 @@ import { NextResponse } from 'next/server';
 
 const GEMINI_BASE =
   (process.env.GEMINI_API_BASE || 'https://generativelanguage.googleapis.com/v1beta').replace(/\/$/, '');
-const DEFAULT_MODEL = process.env.SYNTHI_AI_MODEL || process.env.GEMINI_MODEL || 'gemini-3-flash';
+const DEFAULT_MODEL = process.env.SYNTHI_AI_MODEL || process.env.GEMINI_MODEL || 'gemini-3.1-flash-lite-preview';
 
 /* ─── All theme colour keys the creator expects ─────────────────────────── */
 const ALL_COLOR_KEYS = [

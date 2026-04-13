@@ -1,3 +1,4 @@
+import asyncio
 import os
 import time
 from typing import Any, Mapping, Optional, Sequence, Dict
@@ -36,19 +37,24 @@ def _get_metrics_collector():
         return None
 
 
+# Limit concurrent Gemini API calls to 1 — prevents split and analyze
+# from competing for quota and causing DeadlineExceeded/rate-limit errors.
+_gemini_semaphore = asyncio.Semaphore(1)
+
+
 class GeminiProvider(AiProvider):
     _clients: Dict[str, genai.GenerativeModel] = {}
 
     def __init__(self) -> None:
         super().__init__(name="gemini")
-        self.model_name = os.getenv("SYNTHI_GEMINI_MODEL", "gemini-2.5-flash-lite")
+        self.model_name = os.getenv("SYNTHI_GEMINI_MODEL", "gemini-3.1-flash-lite-preview")
         # Keep generation parameters centralized so they can be passed into each stream request.
         self.generation_config = genai.GenerationConfig(
             temperature=0.2,
             top_p=0.8,
             top_k=40,
             # Increase output allowance to support larger returned patches or full-file outputs.
-            # Note: input/context window size is determined by the model selection (e.g. gemini-2.5-flash-lite).
+            # Note: input/context window size is determined by the model selection (e.g. gemini-3.1-flash-lite-preview).
             max_output_tokens=131072,
         )
 
@@ -99,6 +105,11 @@ class GeminiProvider(AiProvider):
             # Do NOT wrap in build_prompt() — that adds general-analysis framing
             # which causes the LLM to emit explanation prose before the JSON.
             full_prompt = (prompt or '') + f"\n\nHere is the code to split (language: {lang}):\n```{lang}\n{code}\n```\n\nRespond with ONLY the JSON object. No explanation."
+        elif mode_lower == 'delta':
+            # Delta mode: structural addition/deletion prompt already fully formed.
+            # Do NOT wrap in build_prompt() — it adds analysis framing that makes
+            # Gemini return prose instead of pure JSON.
+            full_prompt = code + "\n\nRespond with ONLY the JSON object. No explanation."
         else:
             # Backwards-compat: some clients include the instructive string in `prompt`.
             if prompt and 'Respond only with the updated full file contents' in prompt:
@@ -111,55 +122,25 @@ class GeminiProvider(AiProvider):
         try:
             model_name = model or self.model_name
             client = self._get_client(api_key, model_name)
-            
+
             # Metrics tracking
             start_time = time.time()
             first_token_time = None
             total_tokens = 0
-            
-            # Stream tokens from the Gemini API, accumulating text so the AI chat window
-            # can display the final suggestion as a plain string.
-            response = await client.generate_content_async(full_prompt, stream=True)
 
-            chunks = []
-            prompt_feedback = None
-            async for chunk in response:
-                # Track TTFT
-                if first_token_time is None:
-                    first_token_time = time.time()
-                
-                if getattr(chunk, "prompt_feedback", None):
-                    prompt_feedback = chunk.prompt_feedback
-                
-                # Safely extract text from chunk - accessing .text throws if no valid parts
-                # This can happen when finish_reason is STOP (1) but no content was generated
-                try:
-                    # Check for candidates with content first (safer approach)
-                    candidates = getattr(chunk, "candidates", None)
-                    if candidates and len(candidates) > 0:
-                        candidate = candidates[0]
-                        content = getattr(candidate, "content", None)
-                        if content:
-                            parts = getattr(content, "parts", None)
-                            if parts:
-                                for part in parts:
-                                    part_text = getattr(part, "text", None)
-                                    if part_text:
-                                        chunks.append(part_text)
-                                        total_tokens += _count_tokens(part_text)
-                                continue
-                    
-                    # Fallback: try the .text accessor
-                    text = chunk.text
-                    if text:
-                        chunks.append(text)
-                        total_tokens += _count_tokens(text)
-                except (ValueError, AttributeError):
-                    # .text accessor throws ValueError if no valid parts
-                    # This is expected when finish_reason is STOP without content
-                    pass
-
-            combined = "".join(chunks).strip()
+            # Non-streaming — more reliable than streaming which hangs on this model
+            print(f"[Gemini] Calling API for mode={mode_lower}, prompt_len={len(full_prompt)} chars")
+            try:
+                resp = await asyncio.wait_for(
+                    client.generate_content_async(full_prompt, stream=False),
+                    timeout=120.0,
+                )
+                combined = resp.text.strip()
+                total_tokens = _count_tokens(combined)
+                print(f"[Gemini] Succeeded: {total_tokens} tokens, {time.time() - start_time:.2f}s")
+            except Exception as err:
+                print(f"[Gemini] Failed: {type(err).__name__}: {err}")
+                raise
             
             # Record metrics
             end_time = time.time()
@@ -211,7 +192,7 @@ class GeminiProvider(AiProvider):
                     is_timeout=is_timeout,
                     error_type=type(e).__name__,
                 )
-            return f"LLM error: {type(e).__name__}: {e}"
+            raise
 
     def __repr__(self) -> str:
         return f"<GeminiProvider model={self.model_name} client={'set' if self._client else 'none'}>"

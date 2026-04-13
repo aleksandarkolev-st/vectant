@@ -2129,23 +2129,31 @@ async function forwardAIStream(socket, data, requestId) {
       }
     }
 
-    // Flush any remaining buffer
+    // Flush the UTF-8 decoder (release any buffered multi-byte tail)
+    const tail = decoder.decode(undefined, { stream: false });
+    if (tail) buffer += tail;
+
+    // Flush any remaining complete SSE events in the buffer
     if (buffer.trim()) {
-      const dataLine = buffer
-        .split("\n")
-        .find((l) => l.startsWith("data: "));
-      if (dataLine) {
+      const tailParts = buffer.split("\n\n");
+      for (const part of tailParts) {
+        const trimmed = part.trim();
+        if (!trimmed) continue;
+        const dataLine = trimmed
+          .split("\n")
+          .find((l) => l.startsWith("data: "));
+        if (!dataLine) continue;
         try {
           const parsed = JSON.parse(dataLine.slice(6));
           safeSend(socket, {
             type: "stream",
             action: "heal/ai/stream",
             requestId,
-            event: parsed.event || "data",
+            event: parsed.event || parsed.type || "data",
             data: parsed,
           });
         } catch {
-          // ignore
+          // ignore malformed tail
         }
       }
     }

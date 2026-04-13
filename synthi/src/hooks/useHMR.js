@@ -111,9 +111,14 @@ export function useHMR() {
                     });
                 }
                 
-                // Handle hmr-status messages specially for UI feedback
-                if (message.type === 'hmr-status') {
-                    const statusData = message.data || {};
+                // Handle hmr-status messages specially for UI feedback.
+                // Messages arrive in two shapes depending on source:
+                //   1. {type:'hmr-status', data:{status:'applied'}} (from onStatusChange callback)
+                //   2. {type:'hmr-status', status:'reload-planned', ...} (from planner/worker)
+                //   3. {status:'applied', ...} (direct status object from runner stderr)
+                // Normalize to extract the status string consistently.
+                if (message.type === 'hmr-status' || (message.status && !message.type)) {
+                    const statusData = message.data || message;
                     
                     // Map backend status to UI status
                     if (statusData.status === 'applied') {
@@ -222,6 +227,7 @@ export function useHMR() {
         };
 
         window.addEventListener('synthi:hmr-update', handleHMRMessage);
+        window.addEventListener('synthi:hmr-status', handleHMRMessage);
 
         // ── Subscribe to HMR pipeline stores ──
         const unsubAi = subscribeAiLoopStatus((s) => {
@@ -275,6 +281,7 @@ export function useHMR() {
             // SAFETY: Mark as unmounted to prevent state updates after cleanup
             isMountedRef.current = false;
             window.removeEventListener('synthi:hmr-update', handleHMRMessage);
+            window.removeEventListener('synthi:hmr-status', handleHMRMessage);
             window.removeEventListener('synthi:adapter-status', handleAdapterEvent);
             window.removeEventListener('synthi:adapter-health', handleHealthEvent);
             unsubAi();

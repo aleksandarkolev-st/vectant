@@ -210,7 +210,10 @@ export default function EditorPage({ params }) {
         filePath: activeFilePath,
         language: activeLanguage,
         workspaceRoot: slug,
-        analyzeOnSave: true,     // auto-trigger on Ctrl+S
+        // DISABLED: was auto-firing /heal/ai/analyze on every Ctrl+S,
+        // piling up Gemini calls on the single Python worker.
+        // Re-enable with window.SYNTHI_ENABLE_PROACTIVE.
+        analyzeOnSave: typeof window !== 'undefined' && !!window.SYNTHI_ENABLE_PROACTIVE,
         mode: 'ai',
         selfEditFlagRef,
     });
@@ -218,11 +221,15 @@ export default function EditorPage({ params }) {
     // Keyboard shortcuts: Ctrl+Shift+I (analyze), Y (apply safe), N (dismiss), M (toggle mode)
     useAIHealingKeyboard({ aiHealing });
 
-    // Auto-analyze after 4s of inactivity (background, non-intrusive)
+    // Auto-analyze after 4s of inactivity (background, non-intrusive).
+    // TEMPORARILY DISABLED: every fire was calling /heal/ai/analyze → Gemini,
+    // saturating the Python backend and starving /refactor/split/verified.
+    // Gated behind window.SYNTHI_ENABLE_PROACTIVE (same flag as analyze/unified).
+    const proactiveEnabled = typeof window !== 'undefined' && !!window.SYNTHI_ENABLE_PROACTIVE;
     useAIAutoAnalysis({
         editorRef,
         analyzeCallback: aiHealing.analyze,
-        enabled: !!editor && !!activeFile,
+        enabled: proactiveEnabled && !!editor && !!activeFile,
         debounceMs: 4000,
     });
 
@@ -583,9 +590,14 @@ export default function EditorPage({ params }) {
                         setWorkspaceMissing(false);
                         setWorkspaceMissingMessage('');
 
-                        // Trigger full workspace analysis on initialization
+                        // Initial full workspace analysis — DISABLED by default.
+                        // Was firing /analyze/workspace with include_ai=true on every
+                        // project open, triggering the AI Predictor → Gemini mode=analyze
+                        // calls that saturated the Python backend.
+                        // Gated behind window.SYNTHI_ENABLE_PROACTIVE for opt-in.
+                        const proactiveEnabled = typeof window !== 'undefined' && !!window.SYNTHI_ENABLE_PROACTIVE;
                         const { files } = result.payload;
-                        if (files && files.length > 0) {
+                        if (proactiveEnabled && files && files.length > 0) {
                             (async () => {
                                 try {
                                     // Helper to flatten tree
@@ -1040,7 +1052,15 @@ export default function EditorPage({ params }) {
     useEffect(() => {
         triggerAnalysisRef.current = () => {
         if (!activeFile || !hasLoadedInitialFile || !slug) return;
-        
+
+        // TEMPORARY: proactive analysis (analyze/unified) is disabled because
+        // it was called on every keystroke and saturated the Python AI backend,
+        // starving the split/compile endpoints. Re-enable by setting
+        // window.SYNTHI_ENABLE_PROACTIVE = true in DevTools.
+        if (typeof window !== 'undefined' && !window.SYNTHI_ENABLE_PROACTIVE) {
+            return;
+        }
+
         // Clear timeouts exactly as we did before
         if (proactiveTimeoutRef.current) {
             clearTimeout(proactiveTimeoutRef.current);

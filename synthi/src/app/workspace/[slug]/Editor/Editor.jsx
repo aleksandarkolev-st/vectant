@@ -265,6 +265,8 @@ const EditorPanel = ({
     const pendingPositionFrameRef = useRef(null);
     // P0: Debounced Redux sync — only flush content to Redux after 300ms pause
     const reduxSyncTimerRef = useRef(null);
+    // Background HMR edit classification — debounced 300ms
+    const editDeltaTimerRef = useRef(null);
     // P0: Debounced marker clearing — avoid blocking main thread on every keystroke
     const markerClearTimerRef = useRef(null);
     // P2: Cached content hash — avoid O(n) FNV-1a on every keystroke
@@ -2647,6 +2649,19 @@ const EditorPanel = ({
         }
         dispatch(updateContent(newCode));
 
+        // ── Background HMR classification ───────────────────────────
+        // Stream the edit to the worker so it can classify what changed
+        // (value/expression/addition/deletion) in the background.  When
+        // the user saves, the compile handler reads the cached classification
+        // and dispatches instantly without re-analyzing.  300ms debounce
+        // to avoid flooding the DataChannel on fast typing.
+        if (compilerClient && activeFile?.path) {
+            if (editDeltaTimerRef.current) clearTimeout(editDeltaTimerRef.current);
+            editDeltaTimerRef.current = setTimeout(() => {
+                compilerClient.sendEditDelta(activeFile.path, newCode);
+            }, 300);
+        }
+
         // ── Save-state sync for guests ──────────────────────────────
         // When remote edits arrive via Yjs (from the host), automatically
         // align the guest's savedContent so the tab never shows a false
@@ -2988,9 +3003,7 @@ const EditorPanel = ({
             const source = (d.source || '').toString().toLowerCase();
             return tier !== 'ai' && !source.includes('ai');
         });
-        
-        console.log(`[Editor] Filtering diagnostics for "${currentFilePath}": ${proactiveDiagnostics.length} total -> ${currentFileDiagnostics.length} for current file`);
-        
+
         // Convert proactive diagnostics format to markers
             const proactiveMarkers = nonAiDiagnostics.map(diag => {
                 const location = diag.location || {};

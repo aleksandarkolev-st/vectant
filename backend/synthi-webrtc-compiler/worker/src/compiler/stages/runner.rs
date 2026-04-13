@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use crate::debug_log;
 use gstreamer as gst;
 use gstreamer::prelude::*;
 use gstreamer_app as gst_app;
@@ -57,14 +58,12 @@ pub async fn handle_runner_execution(
 
     let mut guard = ctx.runner_store.lock().await;
 
-    // Check if we need to restart due to GUI mode change or blocking app
-    let is_blocking_app = !has_on_update;
     let req_width = req.width.unwrap_or(800);
     let req_height = req.height.unwrap_or(600);
 
-    eprintln!(
-        "[Main] Restart check: is_gui={}, has_on_update={}, is_blocking_app={}, use_ai_split={}",
-        req.is_gui, has_on_update, is_blocking_app, use_ai_split
+    debug_log!(
+        "[Main] Restart check: is_gui={}, has_on_update={}, use_ai_split={}",
+        req.is_gui, has_on_update, use_ai_split
     );
 
     // Reuse Xvfb/GStreamer if possible
@@ -76,25 +75,19 @@ pub async fn handle_runner_execution(
     let mut video_track_opt: Option<Arc<TrackLocalStaticRTP>> = None;
     let mut audio_track_opt: Option<Arc<TrackLocalStaticRTP>> = None;
 
-    // Determine if we have an existing runner that can handle HMR
-    let existing_runner_can_hmr = if is_blocking_app {
-        // Hard policy: blocking apps require full restart
-        eprintln!("[Policy] Hard policy: blocking app requires full restart, HMR disabled");
-        false
-    } else if let Some(state) = guard.as_ref() {
-        // Can do HMR if:
-        // 1. GUI mode is the same
-        // 2. Resolution is the same
-        // 3. The app supports HMR (has_on_update is true) - already checked above
+    // Determine if we have an existing runner that can handle HMR.
+    // The runner process supports hot-loading modules via stdin `load`
+    // commands regardless of whether the user's code exports on_update.
+    // The on_update callback is optional — it just lets user code react
+    // to the swap (e.g. migrate state).  Without it, the new module is
+    // loaded and the next render frame picks up the new symbols.
+    let existing_runner_can_hmr = if let Some(state) = guard.as_ref() {
         let gui_mode_same = state.is_gui == req.is_gui;
         let resolution_same = state.width == req_width && state.height == req_height;
-        eprintln!("[Main] Existing runner: is_gui={}, gui_mode_same={}, resolution_same={}, has_on_update={}", 
+        debug_log!("[Main] Existing runner: is_gui={}, gui_mode_same={}, resolution_same={}, has_on_update={}",
             state.is_gui, gui_mode_same, resolution_same, has_on_update);
-        
+
         // HMR enabled: reuse running process when GUI mode and resolution match.
-        // The HMR pipeline (planner → adapter → orchestrator) handles the reload
-        // decision and state preservation. Falls back to full restart if conditions
-        // aren't met.
         gui_mode_same && resolution_same
     } else {
         false
@@ -102,18 +95,18 @@ pub async fn handle_runner_execution(
 
     // If we can do HMR, skip all the restart/initialization logic and just send load commands
     if existing_runner_can_hmr {
-        eprintln!("[Main] ╔═══════════════════════════════════════════════════════════╗");
-        eprintln!("[Main] ║  HMR MODE: Reusing existing runner - NO RESTART          ║");
-        eprintln!("[Main] ╚═══════════════════════════════════════════════════════════╝");
-        eprintln!(
+        debug_log!("[Main] ╔═══════════════════════════════════════════════════════════╗");
+        debug_log!("[Main] ║  HMR MODE: Reusing existing runner - NO RESTART          ║");
+        debug_log!("[Main] ╚═══════════════════════════════════════════════════════════╝");
+        debug_log!(
             "[Main] HMR mode: Skipping track attachment and output subscription (already set up)"
         );
     } else if let Some(state) = guard.as_mut() {
         // We have an existing runner but can't do HMR - need to restart
         let gui_mode_changed = state.is_gui != req.is_gui;
-        eprintln!(
-            "[Main] Restarting runner: gui_mode_changed={}, is_blocking_app={}, use_ai_split={}",
-            gui_mode_changed, is_blocking_app, use_ai_split
+        debug_log!(
+            "[Main] Restarting runner: gui_mode_changed={}, use_ai_split={}",
+            gui_mode_changed, use_ai_split
         );
 
         // If resolution matches and is_gui matches, we can reuse Xvfb/GStreamer
@@ -122,12 +115,12 @@ pub async fn handle_runner_execution(
 
         let state = guard.take().unwrap();
         if let Some(mut child) = state.process {
-            println!("Killing old runner process...");
+            debug_log!("Killing old runner process...");
             let _ = child.kill().await;
         }
 
         if can_reuse {
-            println!("Reusing Xvfb and GStreamer pipeline...");
+            debug_log!("Reusing Xvfb and GStreamer pipeline...");
             reused_xvfb = state.xvfb_process;
             reused_pipeline = state.gst_pipeline;
             reused_wsl_display = state.wsl_display_str;
@@ -136,7 +129,7 @@ pub async fn handle_runner_execution(
             video_track_opt = state.video_track;
             audio_track_opt = state.audio_track;
         } else {
-            println!("Full restart (resolution/GUI mode changed)...");
+            debug_log!("Full restart (resolution/GUI mode changed)...");
             // Stop GStreamer BEFORE killing Xvfb to avoid capture-from-dead-display crashes
             if let Some(pipeline) = state.gst_pipeline {
                 let _ = pipeline.set_state(gst::State::Null);
@@ -150,7 +143,7 @@ pub async fn handle_runner_execution(
     // Only start a new runner if we don't have one (either first run, or after restart)
     if !existing_runner_can_hmr && guard.is_none() {
         // Start runner
-        println!("Starting persistent runner...");
+        debug_log!("Starting persistent runner...");
 
         let mut wsl_display_str = reused_wsl_display;
         let mut gst_display_str = reused_gst_display;
@@ -165,17 +158,9 @@ pub async fn handle_runner_execution(
             if xvfb_process.is_none() {
                 for tool in GUI_TOOLS {
                     if Command::new(tool).arg("--version").output().await.is_err() {
-                        let msg = format!("Error: GUI tool '{}' is missing. GUI apps require Linux/WSL with xdotool, Xvfb, and matchbox-window-manager installed.\n", tool);
-                        let payload = serde_json::json!({
-                        "sessionId": session_id.clone(),
-                        "type": "stderr",
-                        "line": msg
-                        });
-                        let _ = ctx
-                            .log_dc
-                            .send_text(serde_json::to_string(&payload).unwrap_or_default())
-                            .await;
-                        return Ok(());
+                        let msg = format!("GUI tool '{}' is missing. GUI apps require Linux/WSL with xdotool, Xvfb, and matchbox-window-manager installed.", tool);
+                        debug_log!("[Runner] {}", msg);
+                        anyhow::bail!(msg);
                     }
                 }
 
@@ -187,19 +172,19 @@ pub async fn handle_runner_execution(
                 // [Fix] Clean up stale lock files from previous runs
                 let lock_file = format!("/tmp/.X11-unix/X{}", display_num);
                 if std::path::Path::new(&lock_file).exists() {
-                    println!("Removing stale Xvfb lock file: {}", lock_file);
+                    debug_log!("Removing stale Xvfb lock file: {}", lock_file);
                     let _ = std::fs::remove_file(&lock_file);
                 }
                 let lock_file_tmp = format!("/tmp/.X{}-lock", display_num);
                 if std::path::Path::new(&lock_file_tmp).exists() {
-                    println!("Removing stale Xvfb lock file: {}", lock_file_tmp);
+                    debug_log!("Removing stale Xvfb lock file: {}", lock_file_tmp);
                     let _ = std::fs::remove_file(&lock_file_tmp);
                 }
 
                 wsl_display_str = format!(":{}", display_num);
                 gst_display_str = wsl_display_str.clone();
 
-                println!("Starting Xvfb on display {}", wsl_display_str);
+                debug_log!("Starting Xvfb on display {}", wsl_display_str);
 
                 let mut xvfb_cmd = Command::new("Xvfb");
                 xvfb_cmd
@@ -232,11 +217,12 @@ pub async fn handle_runner_execution(
                     .spawn()
                     .context("Failed to spawn matchbox-window-manager")?;
 
-                println!("Xvfb and Window Manager started.");
+                debug_log!("Xvfb and Window Manager started.");
             }
 
-            tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
-            tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+            // Wait for Xvfb and window manager to be fully ready before
+            // starting GStreamer capture (ximagesrc needs a live X display).
+            tokio::time::sleep(tokio::time::Duration::from_millis(700)).await;
 
             if gst_pipeline.is_none() {
                 // Start GStreamer Pipeline
@@ -253,7 +239,7 @@ pub async fn handle_runner_execution(
 
                 while encoder_idx < encoders.len() {
                     let (encoder, payloader, mime_type) = encoders[encoder_idx];
-                    println!("Trying encoder: {}", encoder);
+                    debug_log!("Trying encoder: {}", encoder);
 
                     // ximagesrc -> videoscale -> videoconvert -> encoder -> payloader -> appsink
                     // audiotestsrc (silence) -> opusenc -> rtpopuspay -> appsink
@@ -281,13 +267,13 @@ pub async fn handle_runner_execution(
                                                 println!("Encoder {} failed: {}", encoder, err.error());
                                                 let _ = pipe.set_state(gst::State::Null);
                                             } else {
-                                                println!("Encoder {} started successfully.", encoder);
+                                                debug_log!("Encoder {} started successfully.", encoder);
                                                 pipeline = Some(pipe);
                                                 selected_mime_type = mime_type.to_string();
                                                 break;
                                             }
                                         } else {
-                                            println!(
+                                            debug_log!(
                                                 "Encoder {} started successfully (no immediate error).",
                                                 encoder
                                             );
@@ -297,7 +283,7 @@ pub async fn handle_runner_execution(
                                         }
                                     }
                                     Err(err) => {
-                                        println!(
+                                        debug_log!(
                                             "Failed to set state for encoder {}: {}",
                                             encoder, err
                                         );
@@ -313,17 +299,9 @@ pub async fn handle_runner_execution(
                 }
 
                 if pipeline.is_none() {
-                    let msg = "Error: Failed to initialize any video encoder. Please check GStreamer installation.";
-                    let payload = serde_json::json!({
-                       "sessionId": session_id.clone(),
-                       "type": "stderr",
-                       "line": msg
-                    });
-                    let _ = ctx
-                        .log_dc
-                        .send_text(serde_json::to_string(&payload).unwrap_or_default())
-                        .await;
-                    return Ok(());
+                    let msg = "Failed to initialize any video encoder (tried nvh264enc, vaapih264enc, x264enc, vp8enc). Check GStreamer installation.";
+                    debug_log!("[Runner] {}", msg);
+                    anyhow::bail!(msg);
                 }
 
                 let (v_tx, mut v_rx) = mpsc::unbounded_channel::<Vec<u8>>();
@@ -436,7 +414,7 @@ pub async fn handle_runner_execution(
             .and_then(|p| p.parent().map(|p| p.join("runner")))
             .unwrap_or_else(|| std::path::PathBuf::from("runner"));
 
-        println!("Spawning runner: {:?}", runner_path);
+        debug_log!("Spawning runner: {:?}", runner_path);
 
         let mut cmd = Command::new(runner_path);
         cmd.env("DISPLAY", &wsl_display_str)
@@ -506,7 +484,7 @@ pub async fn handle_runner_execution(
             while let Ok(line) = reader.next_line().await {
                 match line {
                     Some(l) => {
-                        eprintln!("[Runner Stderr] {}", l);
+                        debug_log!("[Runner Stderr] {}", l);
                         let _ = log_tx_clone2.send(l.clone());
 
                         if let Some(structured) = extract_structured_runner_message(&l) {
@@ -589,10 +567,10 @@ pub async fn handle_runner_execution(
                         }
                         let _ = stdin_guard.flush().await;
                     }
-                    eprintln!("[stdin-input] Input channel closed");
+                    debug_log!("[stdin-input] Input channel closed");
                 });
 
-                println!(
+                debug_log!(
                     "[Main] stdin input channel registered for session {}",
                     sid
                 );
@@ -615,7 +593,7 @@ pub async fn handle_runner_execution(
             // Replace tracks on pre-allocated transceivers instead of adding new ones
             let transceivers = ctx.pc.get_transceivers().await;
             if let Some(track) = &state.video_track {
-                println!("[Main] Replacing video track on transceiver");
+                debug_log!("[Main] Replacing video track on transceiver");
                 for t in &transceivers {
                     if t.kind() == webrtc::rtp_transceiver::rtp_codec::RTPCodecType::Video {
                         match t
@@ -626,7 +604,7 @@ pub async fn handle_runner_execution(
                             ))
                             .await
                         {
-                            Ok(_) => println!("[Main] Video track replaced successfully"),
+                            Ok(_) => debug_log!("[Main] Video track replaced successfully"),
                             Err(e) => eprintln!("[Main] ERROR replacing video track: {:?}", e),
                         }
                         break;
@@ -634,7 +612,7 @@ pub async fn handle_runner_execution(
                 }
             }
             if let Some(track) = &state.audio_track {
-                println!("[Main] Replacing audio track on transceiver");
+                debug_log!("[Main] Replacing audio track on transceiver");
                 for t in &transceivers {
                     if t.kind() == webrtc::rtp_transceiver::rtp_codec::RTPCodecType::Audio {
                         match t
@@ -645,7 +623,7 @@ pub async fn handle_runner_execution(
                             ))
                             .await
                         {
-                            Ok(_) => println!("[Main] Audio track replaced successfully"),
+                            Ok(_) => debug_log!("[Main] Audio track replaced successfully"),
                             Err(e) => eprintln!("[Main] ERROR replacing audio track: {:?}", e),
                         }
                         break;
@@ -682,7 +660,7 @@ pub async fn handle_runner_execution(
             let mut process_alive = true;
             if let Some(child) = state.process.as_mut() {
                 if let Ok(Some(status)) = child.try_wait() {
-                    eprintln!(
+                    debug_log!(
                         "[Main] Runner process has already exited with status: {}",
                         status
                     );
@@ -692,30 +670,47 @@ pub async fn handle_runner_execution(
 
             if process_alive {
                 let mut stdin = stdin_arc.lock().await;
+                let mut send_failed = false;
 
                 // Send set_session first (required for Host KV support).
                 // The runner needs the session ID before any module load
                 // so modules can read/write persistent key-value state.
                 if let Some(ref sid) = session_id {
                     let session_cmd = format!("set_session {}\n", sid);
-                    eprintln!("[Main] Sending session to runner: {}", session_cmd.trim());
-                    let _ = stdin.write_all(session_cmd.as_bytes()).await;
-                }
-
-                // Send all load commands back-to-back (no sleep between them)
-                for (name, path) in &modules_to_load {
-                    let cmd = format!("load {} {}\n", name, path);
-                    println!("[Main] Sending command to runner: {}", cmd.trim());
-                    if let Err(e) = stdin.write_all(cmd.as_bytes()).await {
-                        eprintln!("Failed to write to runner stdin: {}", e);
-                        break;
+                    debug_log!("[Main] Sending session to runner: {}", session_cmd.trim());
+                    if let Err(e) = stdin.write_all(session_cmd.as_bytes()).await {
+                        eprintln!("[Main] Failed to write set_session to runner stdin: {}", e);
+                        send_failed = true;
                     }
                 }
 
-                // Single flush pushes all commands at once
-                if let Err(e) = stdin.flush().await {
-                    eprintln!("Failed to flush runner stdin: {}", e);
+                if !send_failed {
+                    // Send all load commands back-to-back (no sleep between them)
+                    for (name, path) in &modules_to_load {
+                        let cmd = format!("load {} {}\n", name, path);
+                        debug_log!("[Main] Sending command to runner: {}", cmd.trim());
+                        if let Err(e) = stdin.write_all(cmd.as_bytes()).await {
+                            eprintln!("[Main] Failed to write to runner stdin: {}", e);
+                            send_failed = true;
+                            break;
+                        }
+                    }
                 }
+
+                if !send_failed {
+                    // Single flush pushes all commands at once
+                    if let Err(e) = stdin.flush().await {
+                        eprintln!("[Main] Failed to flush runner stdin: {}", e);
+                        send_failed = true;
+                    }
+                }
+
+                if send_failed {
+                    // Runner process likely crashed - report error to frontend
+                    anyhow::bail!("Runner process stdin write failed (process may have crashed)");
+                }
+            } else {
+                anyhow::bail!("Runner process exited before module loading could begin");
             }
         }
 

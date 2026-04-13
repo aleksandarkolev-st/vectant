@@ -135,21 +135,28 @@ pub enum DeterministicRebuildScope {
 
 /// Determine which modules need recompilation.
 ///
-/// This is a simplified version that checks file existence;
-/// the full version will use dirty-unit detection (Wave 07).
+/// Checks core, gui, and shared header hashes to decide which
+/// modules need rebuilding.  A shared header change forces both
+/// modules to recompile since both include it.
 pub fn determine_deterministic_scope(
-    input: &DeterministicCompileInput,
+    _input: &DeterministicCompileInput,
     prev_core_hash: Option<&str>,
     prev_gui_hash: Option<&str>,
+    prev_shared_hash: Option<&str>,
     curr_core_hash: &str,
     curr_gui_hash: &str,
+    curr_shared_hash: &str,
 ) -> DeterministicRebuildScope {
+    // Shared header change forces both modules to recompile
+    let shared_changed = prev_shared_hash
+        .map(|h| h != curr_shared_hash)
+        .unwrap_or(curr_shared_hash != "0");
+    if shared_changed {
+        return DeterministicRebuildScope::Both;
+    }
+
     let core_changed = prev_core_hash.map(|h| h != curr_core_hash).unwrap_or(true);
     let gui_changed = prev_gui_hash.map(|h| h != curr_gui_hash).unwrap_or(true);
-
-    // If shared header exists, a change forces both
-    // (this will be refined in Wave 07 with dirty-unit tracking)
-    let _ = input; // used for shared header check in future
 
     match (core_changed, gui_changed) {
         (false, false) => DeterministicRebuildScope::None,
@@ -212,20 +219,34 @@ mod tests {
             preview_id: "p1".into(),
         };
 
+        // Nothing changed
         assert_eq!(
-            determine_deterministic_scope(&input, Some("h1"), Some("h2"), "h1", "h2"),
+            determine_deterministic_scope(&input, Some("h1"), Some("h2"), Some("s1"), "h1", "h2", "s1"),
             DeterministicRebuildScope::None
         );
+        // Core only changed
         assert_eq!(
-            determine_deterministic_scope(&input, Some("h1"), Some("h2"), "h1x", "h2"),
+            determine_deterministic_scope(&input, Some("h1"), Some("h2"), Some("s1"), "h1x", "h2", "s1"),
             DeterministicRebuildScope::CoreOnly
         );
+        // GUI only changed
         assert_eq!(
-            determine_deterministic_scope(&input, Some("h1"), Some("h2"), "h1", "h2x"),
+            determine_deterministic_scope(&input, Some("h1"), Some("h2"), Some("s1"), "h1", "h2x", "s1"),
             DeterministicRebuildScope::GuiOnly
         );
+        // Both changed
         assert_eq!(
-            determine_deterministic_scope(&input, Some("h1"), Some("h2"), "h1x", "h2x"),
+            determine_deterministic_scope(&input, Some("h1"), Some("h2"), Some("s1"), "h1x", "h2x", "s1"),
+            DeterministicRebuildScope::Both
+        );
+        // Shared header changed → forces Both
+        assert_eq!(
+            determine_deterministic_scope(&input, Some("h1"), Some("h2"), Some("s1"), "h1", "h2", "s2"),
+            DeterministicRebuildScope::Both
+        );
+        // Shared header changed even though core/gui also unchanged
+        assert_eq!(
+            determine_deterministic_scope(&input, Some("h1"), Some("h2"), Some("s1"), "h1", "h2", "s1x"),
             DeterministicRebuildScope::Both
         );
     }

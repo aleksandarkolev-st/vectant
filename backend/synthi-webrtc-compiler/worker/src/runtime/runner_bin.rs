@@ -87,6 +87,7 @@ use supervisor::{CrashSupervisor, RecoveryAction, SupervisorConfig};
 //     HotModuleState, HotReloadResult, RUNNER_API,
 // };
 use worker::runtime::legacy_module_state::{AppState, ModuleState};
+use worker::debug_log;
 
 // ============================================================
 // INDEPENDENT SWAP DOMAINS: Separate state for each module
@@ -143,8 +144,8 @@ fn main() {
             // If we're the top-level process, we need to spawn a supervisor.
             if std::env::var("SYNTHI_SUPERVISED").is_err() {
                 // We are the top-level process - start the supervisor
-                eprintln!("[Runner] Starting in PROCESS-ISOLATED mode (safe default)");
-                eprintln!("[Runner] Spawning supervisor to manage worker process...");
+                debug_log!("[Runner] Starting in PROCESS-ISOLATED mode (safe default)");
+                debug_log!("[Runner] Spawning supervisor to manage worker process...");
 
                 // Mark that we're now supervising
                 std::env::set_var("SYNTHI_SUPERVISED", "1");
@@ -158,34 +159,34 @@ fn main() {
                 }
 
                 // Run the full supervisor event loop
-                eprintln!("[Runner] Supervisor started, entering event loop");
+                debug_log!("[Runner] Supervisor started, entering event loop");
                 if let Err(e) = supervisor.run_event_loop() {
                     eprintln!("[Runner] Supervisor event loop error: {}", e);
                     std::process::exit(1);
                 }
 
-                eprintln!("[Runner] Supervisor event loop completed, exiting");
+                debug_log!("[Runner] Supervisor event loop completed, exiting");
                 std::process::exit(0);
             } else {
-                eprintln!(
+                debug_log!(
                     "[Runner] Running as supervised worker process (PID: {})",
                     std::process::id()
                 );
                 // v2.1: Verify we are receiving the correct environment
                 if let Ok(parent_pid) = std::env::var("SYNTHI_SUPERVISOR_PID") {
-                    eprintln!("[Runner] Managed by supervisor PID: {}", parent_pid);
+                    debug_log!("[Runner] Managed by supervisor PID: {}", parent_pid);
                 }
             }
         }
         #[allow(deprecated)]
         process_isolation::ExecutionMode::UnsafeInProcess => {
             // UNSAFE PATH - User explicitly opted in
-            eprintln!("[Runner] ============================================================");
+            debug_log!("[Runner] ============================================================");
             eprintln!("[Runner] WARNING: Running in UNSAFE IN-PROCESS mode");
-            eprintln!("[Runner] This mode is DEPRECATED and may cause process corruption");
+            debug_log!("[Runner] This mode is DEPRECATED and may cause process corruption");
             eprintln!("[Runner] dlclose UB can corrupt memory, leak resources, crash randomly");
-            eprintln!("[Runner] Use SYNTHI_UNSAFE_INPROCESS=1 only for debugging");
-            eprintln!("[Runner] ============================================================");
+            debug_log!("[Runner] Use SYNTHI_UNSAFE_INPROCESS=1 only for debugging");
+            debug_log!("[Runner] ============================================================");
         }
     }
 
@@ -225,7 +226,7 @@ fn main() {
         // Worker manages Xvfb — we still need an X11 connection for XTest
         // input injection (fake_input for mouse events).
         let display_str = std::env::var("DISPLAY").unwrap_or_else(|_| ":99".to_string());
-        eprintln!("[Runner] Worker manages display — connecting to {} for XTest input injection", display_str);
+        debug_log!("[Runner] Worker manages display — connecting to {} for XTest input injection", display_str);
         match x11rb::connect(Some(&display_str)) {
             Ok((conn, screen_num)) => {
                 let root = conn.setup().roots[screen_num].root;
@@ -247,14 +248,14 @@ fn main() {
         match conn.xtest_get_version(2, 2u16) {
             Ok(cookie) => match cookie.reply() {
                 Ok(ver) => {
-                    eprintln!("[Runner] XTest extension v{}.{} available", ver.major_version, ver.minor_version);
+                    debug_log!("[Runner] XTest extension v{}.{} available", ver.major_version, ver.minor_version);
                     // Enable grab bypass: XTest events will not activate passive grabs
                     // (e.g. matchbox-WM's button grabs for click-to-focus). Without this,
                     // the WM intercepts every button event before the app sees it.
                     match conn.xtest_grab_control(true) {
                         Ok(_) => {
                             let _ = conn.flush();
-                            eprintln!("[Runner] XTest grab_control(impervious=true) — WM grabs bypassed");
+                            debug_log!("[Runner] XTest grab_control(impervious=true) — WM grabs bypassed");
                             true
                         }
                         Err(e) => {
@@ -269,7 +270,7 @@ fn main() {
                 }
             },
             Err(e) => {
-                eprintln!("[Runner] XTest extension not available: {}. Mouse input may not work.", e);
+                debug_log!("[Runner] XTest extension not available: {}. Mouse input may not work.", e);
                 false
             }
         }
@@ -331,11 +332,11 @@ fn main() {
     if let Err(e) = gstreamer::init() {
         eprintln!("Failed to initialize GStreamer: {}", e);
     } else {
-        eprintln!("GStreamer initialized.");
+        debug_log!("GStreamer initialized.");
     }
     let _ = io::stdout().flush();
 
-    eprintln!("Runner started. Waiting for commands...");
+    debug_log!("Runner started. Waiting for commands...");
 
     let (tx, rx) = mpsc::channel::<RunnerCommand>();
 
@@ -363,7 +364,7 @@ fn main() {
                 }
             });
         } else {
-            eprintln!("[Runner] Raw video output DISABLED in ProcessIsolated mode (IPC active)");
+            debug_log!("[Runner] Raw video output DISABLED in ProcessIsolated mode (IPC active)");
         }
     }
 
@@ -373,7 +374,7 @@ fn main() {
 
     // Spawn stdin reader thread
     thread::spawn(move || {
-        eprintln!("Input reader thread started (Mode: {:?})", mode_for_thread);
+        debug_log!("Input reader thread started (Mode: {:?})", mode_for_thread);
         let stdin = io::stdin();
         let mut handle = stdin.lock();
 
@@ -401,7 +402,7 @@ fn main() {
                             // Check if it's EOF
                             if matches!(e, worker::safety::hardened_ipc::IpcError::ConnectionClosed)
                             {
-                                eprintln!("IPC connection closed (EOF)");
+                                debug_log!("IPC connection closed (EOF)");
                             } else {
                                 eprintln!("IPC Read error: {:?}", e);
                             }
@@ -417,13 +418,13 @@ fn main() {
                 loop {
                     match handle.read_line(&mut line) {
                         Ok(0) => {
-                            eprintln!("Stdin closed (EOF)");
+                            debug_log!("Stdin closed (EOF)");
                             break;
                         }
                         Ok(_) => {
                             let trimmed = line.trim().to_string();
                             if !trimmed.is_empty() {
-                                eprintln!("Stdin received: {}", trimmed);
+                                debug_log!("Stdin received: {}", trimmed);
                                 if let Err(e) = tx_clone.send(RunnerCommand::Legacy(trimmed)) {
                                     eprintln!("Failed to send command to main thread: {}", e);
                                     break;
@@ -439,13 +440,16 @@ fn main() {
                 }
             }
         }
-        eprintln!("Input reader thread exited");
+        debug_log!("Input reader thread exited");
     });
 
     let mut modules: HashMap<String, Library> = HashMap::new();
     let mut loaded_paths: HashMap<String, String> = HashMap::new();
     // Independent swap: Track state per module
     let mut module_states: HashMap<String, ModuleState> = HashMap::new();
+    // Flicker prevention: skip render for one frame after a module load
+    // so the new module's on_load has executed before on_render is called.
+    let mut skip_render_frames: u32 = 0;
 
     // ============================================================
     // MODULE LOADER WITH ABI VALIDATION
@@ -461,7 +465,7 @@ fn main() {
     let mut module_loader = ModuleLoader::new();
     let loader_enabled = std::env::var("SYNTHI_LOADER_VALIDATION").is_ok();
     if loader_enabled {
-        eprintln!("[Runner] ModuleLoader ABI validation ENABLED");
+        debug_log!("[Runner] ModuleLoader ABI validation ENABLED");
     }
 
     // ============================================================
@@ -488,7 +492,7 @@ fn main() {
     // ============================================================
     // StateManager tracks state per module for centralized lifecycle management
     let _state_manager = StateManager::new();
-    eprintln!("[Runner] StateManager initialized");
+    debug_log!("[Runner] StateManager initialized");
 
     // ============================================================
     // HMR ORCHESTRATOR (Unified State/Reload Management)
@@ -500,7 +504,7 @@ fn main() {
     // - Crash recovery coordination
     // ============================================================
     let mut orchestrator = HmrOrchestrator::new();
-    eprintln!("[Runner] HmrOrchestrator initialized (binary_state=ENABLED)");
+    debug_log!("[Runner] HmrOrchestrator initialized (binary_state=ENABLED)");
 
     #[cfg(not(target_os = "linux"))]
     let (window, renderer) = (ptr::null_mut(), ptr::null_mut());
@@ -529,14 +533,14 @@ fn main() {
         .as_ref()
         .and_then(|s| CString::new(s.clone()).ok());
     if let Some(ref sid) = session_id {
-        eprintln!("[Runner] Session ID from env: {}", sid);
+        debug_log!("[Runner] Session ID from env: {}", sid);
     }
     let kv_api = create_kv_api();
 
     #[cfg(target_os = "linux")]
-    eprintln!("[Runner] Frame capture enabled (Linux build)");
+    debug_log!("[Runner] Frame capture enabled (Linux build)");
     #[cfg(not(target_os = "linux"))]
-    eprintln!("[Runner] Frame capture DISABLED (non-Linux build)");
+    debug_log!("[Runner] Frame capture DISABLED (non-Linux build)");
 
     // Notify supervisor that we are ready (if in isolated mode)
     if let process_isolation::ExecutionMode::ProcessIsolated = execution_mode {
@@ -548,7 +552,7 @@ fn main() {
             eprintln!("[Runner] Failed to send Ready message: {}", e);
         } else {
             let _ = stdout.flush();
-            eprintln!("[Runner] Sent Ready message to supervisor");
+            debug_log!("[Runner] Sent Ready message to supervisor");
         }
     }
 
@@ -609,7 +613,7 @@ fn main() {
                                 if let Err(crash_info) = result {
                                     eprintln!("{}", generate_crash_report(&crash_info));
                                     let status = HmrCrashStatus::from_crash(&crash_info, true);
-                                    eprintln!("[Runner] [HMR-STATUS] {}", status.to_json());
+                                    debug_log!("[Runner] [HMR-STATUS] {}", status.to_json());
                                     eprintln!("[Runner] on_event crash in module '{}' — continuing", name);
                                     // Don't kill the runner; skip this module's event and continue
                                 }
@@ -626,7 +630,7 @@ fn main() {
 
         if last_log.elapsed() > Duration::from_secs(5) {
             // Keep stdout clean for raw frame bytes; log diagnostics to stderr instead.
-            eprintln!(
+            debug_log!(
                 "[Runner] Heartbeat. Modules: {}, FPS: {:.2}",
                 modules.len(),
                 1.0 / last_frame.elapsed().as_secs_f64().max(0.001)
@@ -666,11 +670,11 @@ fn main() {
                             }
                         }
                         process_isolation::IpcMessage::Ping { seq } => {
-                            eprintln!("[Runner] Ping received (seq={})", seq);
+                            debug_log!("[Runner] Ping received (seq={})", seq);
                             String::new()
                         }
                         _ => {
-                            eprintln!("[Runner] Unhandled IPC message: {:?}", msg);
+                            debug_log!("[Runner] Unhandled IPC message: {:?}", msg);
                             String::new()
                         }
                     }
@@ -682,7 +686,7 @@ fn main() {
             }
 
             // Route command logs to stderr so stdout stays dedicated to the video stream.
-            eprintln!("[Runner] Processing command: {}", cmd);
+            debug_log!("[Runner] Processing command: {}", cmd);
             let parts: Vec<&str> = cmd.split_whitespace().collect();
             if parts.is_empty() {
                 continue;
@@ -703,7 +707,7 @@ fn main() {
                                 continue;
                             }
                             // Same session, no-op
-                            eprintln!("[Runner] [HOST-KV] Session already set: {}", new_session);
+                            debug_log!("[Runner] [HOST-KV] Session already set: {}", new_session);
                             continue;
                         }
 
@@ -711,13 +715,13 @@ fn main() {
                         session_id = Some(new_session.clone());
                         session_id_cstring = CString::new(new_session.clone()).ok();
 
-                        eprintln!("[Runner] [HOST-KV] Session set: {}", new_session);
+                        debug_log!("[Runner] [HOST-KV] Session set: {}", new_session);
 
                         // Emit status event
                         let status = HmrStatus::host_kv_ready(&new_session, "pending");
-                        eprintln!("[Runner] [HMR-STATUS] {}", status.to_json());
+                        debug_log!("[Runner] [HMR-STATUS] {}", status.to_json());
                     } else {
-                        eprintln!(
+                        debug_log!(
                             "[Runner] [HOST-KV] ERROR: set_session requires session_id argument"
                         );
                     }
@@ -814,7 +818,7 @@ fn main() {
                                 }
                             }
                             _ => {
-                                eprintln!("[Runner] Unknown input type: {}", parts[1]);
+                                debug_log!("[Runner] Unknown input type: {}", parts[1]);
                             }
                         }
                     }
@@ -831,11 +835,11 @@ fn main() {
                         continue;
                     };
 
-                    eprintln!("[Runner] Loading module '{}' from {}", name, path);
+                    debug_log!("[Runner] Loading module '{}' from {}", name, path);
 
                     if let Some(current_path) = loaded_paths.get(name) {
                         if current_path == path {
-                            eprintln!(
+                            debug_log!(
                                 "[Runner] Module '{}' already loaded from {}. Skipping.",
                                 name, path
                             );
@@ -859,11 +863,14 @@ fn main() {
                             loader_enabled,
                         );
                     }
+                    // Skip render for 1 frame to let on_load initialize state
+                    // before on_render uses it — prevents flicker
+                    skip_render_frames = 1;
                 }
                 "unload" => {
                     if parts.len() == 2 {
                         let name = parts[1];
-                        eprintln!("[Runner] Unloading module '{}'", name);
+                        debug_log!("[Runner] Unloading module '{}'", name);
                         if let Some(lib) = modules.remove(name) {
                             loaded_paths.remove(name);
                             // Get module's own state for unload
@@ -887,12 +894,12 @@ fn main() {
                                     f(module_state_ptr);
                                 }
                             }
-                            eprintln!("[Runner] Unloaded module {}", name);
+                            debug_log!("[Runner] Unloaded module {}", name);
                         }
                     }
                 }
                 "quit" => {
-                    eprintln!("[Runner] Quitting.");
+                    debug_log!("[Runner] Quitting.");
                     #[cfg(target_os = "linux")]
                     unsafe {
                         SDL_Quit();
@@ -1011,8 +1018,8 @@ fn main() {
 
                                 let status =
                                     HmrCrashStatus::from_crash(&crash_info, !force_restart);
-                                eprintln!("[Runner] [HMR-STATUS] {}", status.to_json());
-                                eprintln!("[Runner] Recovery action: {:?}", recovery_action);
+                                debug_log!("[Runner] [HMR-STATUS] {}", status.to_json());
+                                debug_log!("[Runner] Recovery action: {:?}", recovery_action);
 
                                 if force_restart {
                                     eprintln!("[Runner] Too many consecutive crashes (action={:?}). Exiting for cold restart.", recovery_action);
@@ -1056,7 +1063,13 @@ fn main() {
         // a click that corrupted module state would cause an unprotected
         // on_render to SIGSEGV, killing the runner process ("app disappears
         // when user clicks a button").
-        if let Some(lib) = modules.get("gui") {
+        //
+        // Flicker prevention: after a module load, skip rendering for one
+        // frame so on_load has time to initialize state.  The previous
+        // frame stays visible on the X11 framebuffer (ximagesrc captures it).
+        if skip_render_frames > 0 {
+            skip_render_frames -= 1;
+        } else if let Some(lib) = modules.get("gui") {
             unsafe {
                 // Try new symbol first, then legacy
                 let render_func: Option<Symbol<unsafe extern "C" fn(*mut c_void)>> = lib
@@ -1092,7 +1105,7 @@ fn main() {
                         if let Err(crash_info) = result {
                             eprintln!("{}", generate_crash_report(&crash_info));
                             let status = HmrCrashStatus::from_crash(&crash_info, true);
-                            eprintln!("[Runner] [HMR-STATUS] {}", status.to_json());
+                            debug_log!("[Runner] [HMR-STATUS] {}", status.to_json());
                             eprintln!("[Runner] on_render crash in module 'gui' — continuing");
                         }
                     }
@@ -1121,7 +1134,7 @@ fn main() {
                         if let Err(crash_info) = result {
                             eprintln!("{}", generate_crash_report(&crash_info));
                             let status = HmrCrashStatus::from_crash(&crash_info, true);
-                            eprintln!("[Runner] [HMR-STATUS] {}", status.to_json());
+                            debug_log!("[Runner] [HMR-STATUS] {}", status.to_json());
                             eprintln!("[Runner] on_render crash in module 'core' — continuing");
                         }
                     }
@@ -1158,7 +1171,7 @@ fn main() {
                         if let Err(crash_info) = result {
                             eprintln!("{}", generate_crash_report(&crash_info));
                             let status = HmrCrashStatus::from_crash(&crash_info, true);
-                            eprintln!("[Runner] [HMR-STATUS] {}", status.to_json());
+                            debug_log!("[Runner] [HMR-STATUS] {}", status.to_json());
                             eprintln!("[Runner] on_render crash in module 'main' — continuing");
                         }
                     }

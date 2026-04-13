@@ -1,4 +1,5 @@
 use anyhow::Result;
+use crate::debug_log;
 
 use crate::compiler::builder::{
     hash_content, hash_shared_header_semantic, ModuleHashes, RebuildScope,
@@ -7,13 +8,108 @@ use crate::compiler::context::CompileContext;
 use crate::infra::messages::CompileRequest;
 
 // Import our new modular stages
-use crate::compiler::stages::ai_utils::perform_ai_split;
+use crate::compiler::stages::ai_utils::{perform_ai_split, perform_ai_diff_patch};
 use crate::compiler::stages::compile_core::compile_core;
 use crate::compiler::stages::compile_gui::compile_gui;
 use crate::compiler::stages::guardrails::{
     apply_core_guardrails, apply_gui_guardrails, apply_shared_guardrails,
 };
 use crate::compiler::stages::runner::handle_runner_execution;
+
+/// Write the split sidecar to disk with end-to-end operator logging.
+///
+/// Replaces the previous `let _ = tokio::fs::write(...)` pattern that
+/// silently discarded both success and errors. The architecture cache
+/// landing in the sidecar is load-bearing for every subsequent Tier 2
+/// diff_patch, so we need to *see* it being written — path, byte count,
+/// and the `architecture` field length — to verify the cache round-trips.
+///
+/// Uses `eprintln!` (not `debug_log!`) so it surfaces without the
+/// `SYNTHI_WORKER_VERBOSE=1` env var. Operator observability trumps log
+/// noise here; four call sites total.
+async fn write_sidecar_logged(
+    path: &std::path::Path,
+    meta: &serde_json::Value,
+) {
+    let body = match serde_json::to_string(meta) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("[HMR] sidecar serialize failed: {}", e);
+            return;
+        }
+    };
+    let arch_len = meta
+        .get("architecture")
+        .and_then(|v| v.as_str())
+        .map(|s| s.len())
+        .unwrap_or(0);
+    match tokio::fs::write(path, &body).await {
+        Ok(()) => {
+            eprintln!(
+                "[HMR] sidecar written: {} ({} bytes, arch={} chars)",
+                path.display(),
+                body.len(),
+                arch_len
+            );
+        }
+        Err(e) => {
+            eprintln!(
+                "[HMR] sidecar WRITE FAILED: {} → {}",
+                path.display(),
+                e
+            );
+        }
+    }
+}
+
+/// Apply a list of AI-produced edits to the current core/gui/shared
+/// module contents. Returns the patched contents, or propagates the
+/// first error encountered (caller falls through to Tier 3 full re-split).
+///
+/// Each `Edit` carries its own `module` field; this dispatcher just
+/// routes it to the matching string and calls `edit_applier::apply_edit`.
+/// Edits are applied in order; if edit N fails, edits 0..N-1 are
+/// already applied in the local copies but since we return `Err`, the
+/// caller discards them and falls through to Tier 3 — no partial state
+/// ever makes it to disk.
+fn apply_edit_list(
+    edits: &[crate::hmr::edit_applier::Edit],
+    core: &str,
+    gui: &str,
+    shared: &str,
+) -> anyhow::Result<(String, String, String)> {
+    use crate::hmr::edit_applier::apply_edit;
+    let mut c = core.to_string();
+    let mut g = gui.to_string();
+    let mut s = shared.to_string();
+
+    for (i, edit) in edits.iter().enumerate() {
+        let updated = match edit.module.as_str() {
+            "core" => apply_edit(&c, edit)?,
+            "gui" => apply_edit(&g, edit)?,
+            "shared" => apply_edit(&s, edit)?,
+            other => {
+                anyhow::bail!("edit #{} targets unknown module {:?}", i, other);
+            }
+        };
+        match edit.module.as_str() {
+            "core" => c = updated,
+            "gui" => g = updated,
+            "shared" => s = updated,
+            _ => unreachable!(),
+        }
+        eprintln!(
+            "[HMR] Tier 2: applied edit #{} {:?} to {} (anchor {} chars, content {} chars)",
+            i,
+            edit.operation,
+            edit.module,
+            edit.anchor.len(),
+            edit.content.len()
+        );
+    }
+
+    Ok((c, g, s))
+}
 
 use crate::hmr::loop_classifier::{classify_loop, LoopClassifierInput};
 use crate::hmr::adapted_project::detect_adapted_project;
@@ -47,7 +143,7 @@ pub async fn handle_compile_request(
     let ext = "so";
 
     // Manual logging instead of record_step for now
-    eprintln!("[Compile] Step: Handler started");
+    debug_log!("[Compile] Step: Handler started");
 
     // ============================================================
     // HMR PIPELINE: Initialize and classify compile loop
@@ -100,9 +196,23 @@ pub async fn handle_compile_request(
         Some(source_hash_str.clone()),
     );
 
+    // Unconditional log of the classify decision + its inputs. This exists
+    // because we've had cases where an HMR edit unexpectedly took the
+    // `AiBypassResult::Proceed` branch (full AI split) instead of
+    // `FallbackDeterministic` (Tier 2 diff_patch). Without seeing the
+    // classifier's inputs live, we're guessing at why. The line is noisy
+    // but fires once per compile request, which is fine.
     eprintln!(
-        "[HMR] Compile loop: {:?} (reason: {:?}), language: {}",
-        compile_loop, classification.reason, language
+        "[HMR] classify_loop → {:?} (reason={:?}) inputs: is_adapted={} split_hash={:?} src_hash={} consec_fail={} user_ai={} user_det={} lang={}",
+        compile_loop,
+        classification.reason,
+        adapted_status.is_adapted,
+        adapted_status.split_hash,
+        source_hash_str,
+        consecutive_failures,
+        req.user_requested_ai,
+        req.user_requested_deterministic,
+        language
     );
 
     // ── AI bypass gate ──
@@ -120,12 +230,24 @@ pub async fn handle_compile_request(
     let split_data = match ai_bypass_result {
         AiBypassResult::Proceed => {
             // Loop B: AI call allowed — perform the split
-            eprintln!("[HMR] AI bypass: Proceed → calling perform_ai_split");
+            debug_log!("[HMR] AI bypass: Proceed → calling perform_ai_split");
             let result = perform_ai_split(&req).await?;
 
-            // Persist split freshness sidecar after successful AI split
-            let meta = serde_json::json!({ "split_hash": source_hash_str });
-            let _ = tokio::fs::write(&sidecar_path, serde_json::to_string(&meta).unwrap_or_default()).await;
+            // Persist split freshness sidecar + original source + architecture
+            // cache for diff-patching. The architecture is a markdown doc
+            // emitted by the split model (may be an empty string if the model
+            // forgot to emit the <synthi_arch_cache> block — fallback path
+            // in Python will degrade to the generic diff_patch prompt).
+            let architecture_md = result
+                .get("_synthi_architecture")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let meta = serde_json::json!({
+                "split_hash": source_hash_str,
+                "original_source": req.source,
+                "architecture": architecture_md,
+            });
+            write_sidecar_logged(&sidecar_path, &meta).await;
 
             // Cache the result for future Loop A lookups
             split_cache.put(crate::hmr::ai_bypass::CachedSplitResult {
@@ -144,7 +266,7 @@ pub async fn handle_compile_request(
         }
         AiBypassResult::UseCached(cached) => {
             // Loop A with cached split: reuse previous AI result
-            eprintln!("[HMR] AI bypass: UseCached → reusing cached split");
+            debug_log!("[HMR] AI bypass: UseCached → reusing cached split");
             serde_json::json!({
                 "shared": { "content": cached.shared_code.unwrap_or_default(), "filename": "shared.h" },
                 "core": { "content": cached.core_code, "filename": "core.cpp" },
@@ -152,32 +274,383 @@ pub async fn handle_compile_request(
             })
         }
         AiBypassResult::FallbackDeterministic => {
-            // Loop A, no cache: read existing adapted files from disk
-            if enrichment.adapted_status.is_adapted {
-                eprintln!("[HMR] AI bypass: FallbackDeterministic → reading adapted files from disk");
-                let core_content = if let Some(ref p) = enrichment.adapted_status.core_path {
-                    tokio::fs::read_to_string(p).await.unwrap_or_default()
-                } else {
-                    String::new()
-                };
-                let gui_content = if let Some(ref p) = enrichment.adapted_status.gui_path {
-                    tokio::fs::read_to_string(p).await.unwrap_or_default()
-                } else {
-                    String::new()
-                };
-                let shared_content = if let Some(ref p) = enrichment.adapted_status.shared_path {
-                    tokio::fs::read_to_string(p).await.unwrap_or_default()
-                } else {
-                    String::new()
-                };
+            // Loop A, no cache: read existing adapted files from disk.
+            let is_editing_split_file = {
+                let fname = req.filename.to_lowercase();
+                fname.contains("core.") || fname.contains("gui.") || fname.contains("shared.")
+            };
+
+            // Always read the current split files from disk
+            let core_content = if let Some(ref p) = enrichment.adapted_status.core_path {
+                tokio::fs::read_to_string(p).await.unwrap_or_default()
+            } else {
+                String::new()
+            };
+            let gui_content = if let Some(ref p) = enrichment.adapted_status.gui_path {
+                tokio::fs::read_to_string(p).await.unwrap_or_default()
+            } else {
+                String::new()
+            };
+            let shared_content = if let Some(ref p) = enrichment.adapted_status.shared_path {
+                tokio::fs::read_to_string(p).await.unwrap_or_default()
+            } else {
+                String::new()
+            };
+
+            if enrichment.adapted_status.is_adapted && is_editing_split_file {
+                // User is editing a split file directly — syncFile already
+                // wrote the new content to disk.  Just use it.
+                debug_log!("[HMR] FallbackDeterministic → split file edit ({})", req.filename);
                 serde_json::json!({
                     "shared": { "content": shared_content, "filename": "shared.h" },
                     "core": { "content": core_content, "filename": "core.cpp" },
                     "gui": { "content": gui_content, "filename": "gui.cpp" }
                 })
+            } else if enrichment.adapted_status.is_adapted {
+                // User is editing original source (main.cpp).  Diff-patch the
+                // changes into the split files without re-running AI.
+                //
+                // Read the original source saved at AI-split time.  Diff it
+                // against the user's new source, then transplant each changed
+                // line into the right split file (core/gui/shared).
+                // Read both `original_source` (diff baseline) and `architecture`
+                // (cached split doc — may be empty on pre-migration sidecars)
+                // from the same sidecar file in one pass.
+                let (original_source, architecture_md) = {
+                    if let Ok(meta_raw) = tokio::fs::read_to_string(&sidecar_path).await {
+                        match serde_json::from_str::<serde_json::Value>(&meta_raw) {
+                            Ok(meta) => {
+                                let src = meta
+                                    .get("original_source")
+                                    .and_then(|s| s.as_str())
+                                    .map(|s| s.to_string());
+                                let arch = meta
+                                    .get("architecture")
+                                    .and_then(|s| s.as_str())
+                                    .unwrap_or("")
+                                    .to_string();
+                                (src, arch)
+                            }
+                            Err(_) => (None, String::new()),
+                        }
+                    } else {
+                        (None, String::new())
+                    }
+                };
+                // Log what came back so the user can verify the cache is
+                // round-tripping: the Proceed branch's "sidecar written: ...
+                // arch=NNNN chars" should match this read's "arch=NNNN chars".
+                eprintln!(
+                    "[HMR] sidecar read: {} (original_source={}, arch={} chars)",
+                    sidecar_path.display(),
+                    if original_source.is_some() { "yes" } else { "no" },
+                    architecture_md.len()
+                );
+
+                if let Some(old_source) = original_source {
+                    let diff = build_simple_diff(&old_source, &req.source);
+
+                    if diff.is_empty() {
+                        debug_log!("[HMR] No diff detected");
+                        serde_json::json!({
+                            "shared": { "content": shared_content, "filename": "shared.h" },
+                            "core": { "content": core_content, "filename": "core.cpp" },
+                            "gui": { "content": gui_content, "filename": "gui.cpp" }
+                        })
+                    } else {
+                        // ── Tiered patching (no AI classifier) ──
+                        //
+                        // Tier 1: VALUE_CHANGE → instant regex patcher (0ms)
+                        //         Detected synchronously by classify_edit() —
+                        //         pure Rust, ~1ms, no AI call.
+                        //
+                        // Tier 2: anything else → single full /refactor/diff_patch
+                        //         call with all three split modules + the cached
+                        //         architecture doc. The AI uses the arch doc's
+                        //         "Where User Code Goes" section to route each
+                        //         hunk to the right module(s) internally. No
+                        //         external classifier.
+                        //
+                        // Tier 3: full AI re-split (last resort) if Tier 2 errors.
+                        //
+                        // Previously, Tier 2 used an /classify/edit AI call to
+                        // pick ONE module and a targeted single-module prompt.
+                        // classify cost ~4s per edit (Gemini API TTFT + SDK
+                        // overhead) which exceeded the ~1-3s saved by the
+                        // smaller targeted prompt — net latency LOSS. And when
+                        // classify timed out, the Tier 2 loop silently dropped
+                        // the edit because all hunks were EditTarget::Unknown.
+                        // Killing classify removed both the latency regression
+                        // and the silent-drop failure mode.
+                        use crate::hmr::edit_classifier::classify_edit;
+                        use crate::hmr::diff_patcher::patch_split_files;
+
+                        let sync_classification = classify_edit(&old_source, &req.source);
+                        let is_value_only = sync_classification.is_value_only;
+                        eprintln!(
+                            "[HMR] sync classify: {} hunks, value_only={}",
+                            sync_classification.hunks.len(),
+                            is_value_only
+                        );
+
+                        let arch_hint: Option<&str> = if architecture_md.is_empty() {
+                            None
+                        } else {
+                            Some(architecture_md.as_str())
+                        };
+
+                        let (final_core, final_gui, final_shared) = if is_value_only {
+                            // Tier 1: pure value change — instant regex
+                            let patch = patch_split_files(
+                                &old_source, &req.source,
+                                &core_content, &gui_content, &shared_content,
+                            );
+                            if patch.has_changes() {
+                                eprintln!("[HMR] Tier 1: instant value patch (0ms)");
+                                (
+                                    patch.core.unwrap_or_else(|| core_content.clone()),
+                                    patch.gui.unwrap_or_else(|| gui_content.clone()),
+                                    patch.shared.unwrap_or_else(|| shared_content.clone()),
+                                )
+                            } else {
+                                // Regex couldn't find the value — fall through
+                                // to the AI path below rather than drop the edit.
+                                eprintln!("[HMR] Tier 1: regex patch failed despite value_only classification — falling through to AI diff_patch");
+                                match perform_ai_diff_patch(
+                                    &diff,
+                                    &core_content,
+                                    &gui_content,
+                                    &shared_content,
+                                    arch_hint,
+                                ).await {
+                                    Ok(edits) => {
+                                        match apply_edit_list(&edits, &core_content, &gui_content, &shared_content) {
+                                            Ok((c, g, s)) => (c, g, s),
+                                            Err(apply_err) => {
+                                                eprintln!(
+                                                    "[HMR] Tier 2 (value-fallback) edit apply FAILED: {} → falling through to Tier 3 full re-split",
+                                                    apply_err
+                                                );
+                                                let result = perform_ai_split(&req).await?;
+                                                let fresh_arch = result
+                                                    .get("_synthi_architecture")
+                                                    .and_then(|v| v.as_str())
+                                                    .unwrap_or("");
+                                                let meta = serde_json::json!({
+                                                    "split_hash": source_hash_str,
+                                                    "original_source": req.source,
+                                                    "architecture": fresh_arch,
+                                                });
+                                                write_sidecar_logged(&sidecar_path, &meta).await;
+                                                return Ok(result);
+                                            }
+                                        }
+                                    }
+                                    Err(e) => {
+                                        eprintln!("[HMR] Tier 2 (value-fallback) AI diff_patch failed: {}, falling through to Tier 3 full re-split", e);
+                                        let result = perform_ai_split(&req).await?;
+                                        let fresh_arch = result
+                                            .get("_synthi_architecture")
+                                            .and_then(|v| v.as_str())
+                                            .unwrap_or("");
+                                        let meta = serde_json::json!({
+                                            "split_hash": source_hash_str,
+                                            "original_source": req.source,
+                                            "architecture": fresh_arch,
+                                        });
+                                        write_sidecar_logged(&sidecar_path, &meta).await;
+                                        return Ok(result);
+                                    }
+                                }
+                            }
+                        } else {
+                            // Tier 2: non-value edit.
+                            //
+                            // First check the speculative cache for a hit.
+                            // If the file-sync handler fired a speculative
+                            // diff_patch while the user was pausing and
+                            // the AI call completed before compile, the
+                            // edits are already in the cache keyed by the
+                            // current source hash. Apply them directly and
+                            // skip the live AI call entirely.
+                            //
+                            // On any miss / apply failure, fall through
+                            // transparently to the normal live AI call.
+                            let spec_hash = crate::hmr::speculative_diff_patch::hash_source(&req.source);
+                            // Wait up to 15s for any in-flight speculation
+                            // for this source hash. This de-duplicates the
+                            // Ctrl+S race: the frontend sends the file-sync
+                            // write and the compile request back-to-back,
+                            // so the speculative task is usually still in
+                            // its 300ms debounce when compile arrives. Without
+                            // the wait, handler.rs would fire its own live
+                            // AI call in parallel — two calls for the same
+                            // edit, no benefit. Waiting collapses them to one.
+                            // On miss / timeout, take_matching_or_wait
+                            // returns None and we fall through to the live
+                            // AI call below with no extra latency.
+                            let speculative_applied: Option<(String, String, String)> = {
+                                if let Some(cached_edits) =
+                                    crate::hmr::speculative_diff_patch::take_matching_or_wait(
+                                        spec_hash,
+                                        std::time::Duration::from_secs(15),
+                                    )
+                                    .await
+                                {
+                                    match apply_edit_list(
+                                        &cached_edits,
+                                        &core_content,
+                                        &gui_content,
+                                        &shared_content,
+                                    ) {
+                                        Ok(tuple) => {
+                                            eprintln!(
+                                                "[HMR] Tier 2 SPECULATIVE HIT ({} edit(s), skipped AI call)",
+                                                cached_edits.len()
+                                            );
+                                            Some(tuple)
+                                        }
+                                        Err(e) => {
+                                            // Speculative was based on stale
+                                            // split contents — anchor doesn't
+                                            // match the live file. Fall through
+                                            // to the live AI call rather than
+                                            // bail to Tier 3.
+                                            eprintln!(
+                                                "[HMR] Tier 2 speculative apply FAILED: {} → falling through to live AI call",
+                                                e
+                                            );
+                                            None
+                                        }
+                                    }
+                                } else {
+                                    None
+                                }
+                            };
+
+                            if let Some(triple) = speculative_applied {
+                                triple
+                            } else {
+                                // Live AI call (diff-only output format — ~100
+                                // output tokens, ~1s generation on pro).
+                                eprintln!(
+                                    "[HMR] Tier 2: AI diff_patch (diff={} bytes, arch={} chars)",
+                                    diff.len(),
+                                    architecture_md.len()
+                                );
+                                match perform_ai_diff_patch(
+                                    &diff,
+                                    &core_content,
+                                    &gui_content,
+                                    &shared_content,
+                                    arch_hint,
+                                ).await {
+                                    Ok(edits) => {
+                                        eprintln!(
+                                            "[HMR] Tier 2: received {} edit(s), applying locally",
+                                            edits.len()
+                                        );
+                                        match apply_edit_list(&edits, &core_content, &gui_content, &shared_content) {
+                                            Ok((c, g, s)) => {
+                                                eprintln!(
+                                                    "[HMR] Tier 2 SUCCESS ({} edits, core_changed={} gui_changed={} shared_changed={})",
+                                                    edits.len(),
+                                                    c != core_content,
+                                                    g != gui_content,
+                                                    s != shared_content
+                                                );
+                                                (c, g, s)
+                                            }
+                                            Err(apply_err) => {
+                                                // Anchor missing / ambiguous / unknown module.
+                                                // Don't try to partially apply — fall through
+                                                // to Tier 3 for a correct full re-split.
+                                                eprintln!(
+                                                    "[HMR] Tier 2 edit apply FAILED: {} → falling through to Tier 3 full re-split",
+                                                    apply_err
+                                                );
+                                                let result = perform_ai_split(&req).await?;
+                                                let fresh_arch = result
+                                                    .get("_synthi_architecture")
+                                                    .and_then(|v| v.as_str())
+                                                    .unwrap_or("");
+                                                let meta = serde_json::json!({
+                                                    "split_hash": source_hash_str,
+                                                    "original_source": req.source,
+                                                    "architecture": fresh_arch,
+                                                });
+                                                write_sidecar_logged(&sidecar_path, &meta).await;
+                                                return Ok(result);
+                                            }
+                                        }
+                                    }
+                                    Err(e) => {
+                                        eprintln!(
+                                            "[HMR] Tier 2 AI diff_patch FAILED: {} → falling through to Tier 3 full re-split",
+                                            e
+                                        );
+                                        let result = perform_ai_split(&req).await?;
+                                        let fresh_arch = result
+                                            .get("_synthi_architecture")
+                                            .and_then(|v| v.as_str())
+                                            .unwrap_or("");
+                                        let meta = serde_json::json!({
+                                            "split_hash": source_hash_str,
+                                            "original_source": req.source,
+                                            "architecture": fresh_arch,
+                                        });
+                                        write_sidecar_logged(&sidecar_path, &meta).await;
+                                        return Ok(result);
+                                    }
+                                }
+                            }
+                        };
+
+                        // Write patched files to disk + update sidecar. Preserve
+                        // the existing architecture cache — this is a diff-patch
+                        // apply, not a re-split, so the architecture is still
+                        // valid (same split modules, same contract).
+                        if let Some(ref p) = enrichment.adapted_status.core_path {
+                            let _ = tokio::fs::write(p, &final_core).await;
+                        }
+                        if let Some(ref p) = enrichment.adapted_status.gui_path {
+                            let _ = tokio::fs::write(p, &final_gui).await;
+                        }
+                        if let Some(ref p) = enrichment.adapted_status.shared_path {
+                            let _ = tokio::fs::write(p, &final_shared).await;
+                        }
+                        let meta = serde_json::json!({
+                            "split_hash": source_hash_str,
+                            "original_source": req.source,
+                            "architecture": architecture_md,
+                        });
+                        write_sidecar_logged(&sidecar_path, &meta).await;
+
+                        serde_json::json!({
+                            "shared": { "content": final_shared, "filename": "shared.h" },
+                            "core": { "content": final_core, "filename": "core.cpp" },
+                            "gui": { "content": final_gui, "filename": "gui.cpp" }
+                        })
+                    }
+                } else {
+                    // No original source saved — need AI re-split
+                    debug_log!("[HMR] No original source baseline, falling back to AI split");
+                    let result = perform_ai_split(&req).await?;
+                    let fresh_arch = result
+                        .get("_synthi_architecture")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    let meta = serde_json::json!({
+                        "split_hash": source_hash_str,
+                        "original_source": req.source,
+                        "architecture": fresh_arch,
+                    });
+                    write_sidecar_logged(&sidecar_path, &meta).await;
+                    result
+                }
             } else {
-                // Not adapted and no cache — wrap source as single core module
-                eprintln!("[HMR] AI bypass: FallbackDeterministic → no adapted project, wrapping source");
+                // Not adapted: wrap source as single core module
+                debug_log!("[HMR] FallbackDeterministic → not adapted, wrapping as single module");
                 serde_json::json!({
                     "shared": { "content": "", "filename": "shared.h" },
                     "core": { "content": req.source.clone(), "filename": "core.cpp" },
@@ -202,11 +675,21 @@ pub async fn handle_compile_request(
         .unwrap_or("");
 
     // 3. Apply Guardrails
+    // Each guardrail that modifies content = a prompt failure.  Log so we
+    // can track prompt quality and eventually remove guardrails.
     let processed_shared = apply_shared_guardrails(shared_raw);
-    // Allow GUI in core if we are on the deterministic path (no AI split)
+    if processed_shared != shared_raw {
+        debug_log!("[Guardrail] shared.h was modified by guardrails — prompt produced incorrect output");
+    }
     let allow_gui_in_core = enrichment.is_deterministic();
     let processed_core = apply_core_guardrails(core_raw, &processed_shared, allow_gui_in_core);
+    if processed_core != core_raw {
+        debug_log!("[Guardrail] core.cpp was modified by guardrails — prompt produced incorrect output");
+    }
     let processed_gui = apply_gui_guardrails(gui_raw, &processed_shared);
+    if processed_gui != gui_raw {
+        debug_log!("[Guardrail] gui.cpp was modified by guardrails — prompt produced incorrect output");
+    }
 
     // ============================================================
     // PHASE 2: REBUILD SCOPE DETERMINATION (deterministic_compile coordinator)
@@ -251,29 +734,32 @@ pub async fn handle_compile_request(
         } else {
             let prev_core_h = if prev_hashes.core_hash != 0 { Some(format!("{}", prev_hashes.core_hash)) } else { None };
             let prev_gui_h = if prev_hashes.gui_hash != 0 { Some(format!("{}", prev_hashes.gui_hash)) } else { None };
+            let prev_shared_h = if prev_hashes.shared_hash != 0 { Some(format!("{}", prev_hashes.shared_hash)) } else { None };
             let det_scope = determine_deterministic_scope(
                 &det_input,
                 prev_core_h.as_deref(),
                 prev_gui_h.as_deref(),
+                prev_shared_h.as_deref(),
                 &format!("{}", new_hashes.core_hash),
                 &format!("{}", new_hashes.gui_hash),
+                &format!("{}", new_hashes.shared_hash),
             );
             // Map DeterministicRebuildScope → RebuildScope
             match det_scope {
                 DeterministicRebuildScope::None => {
-                    eprintln!("[Handler] Deterministic: No changes detected");
+                    debug_log!("[Handler] Deterministic: No changes detected");
                     RebuildScope::None
                 }
                 DeterministicRebuildScope::CoreOnly => {
-                    eprintln!("[Handler] Deterministic: Core rebuild");
+                    debug_log!("[Handler] Deterministic: Core rebuild");
                     RebuildScope::CoreOnly
                 }
                 DeterministicRebuildScope::GuiOnly => {
-                    eprintln!("[Handler] Deterministic: GUI rebuild");
+                    debug_log!("[Handler] Deterministic: GUI rebuild");
                     RebuildScope::GuiOnly
                 }
                 DeterministicRebuildScope::Both => {
-                    eprintln!("[Handler] Deterministic: Full rebuild");
+                    debug_log!("[Handler] Deterministic: Full rebuild");
                     RebuildScope::Both
                 }
             }
@@ -315,7 +801,7 @@ pub async fn handle_compile_request(
     let reload_id = format!("r-{}", timestamp);
 
     // Manual logging
-    eprintln!("[Compile] Step: Starting compilation");
+    debug_log!("[Compile] Step: Starting compilation");
 
     // Validate: bail early if AI split produced empty core content.
     // Without this guard, an empty .cpp is compiled into a .so with no
@@ -326,7 +812,7 @@ pub async fn handle_compile_request(
         && processed_core.trim().is_empty()
     {
         let msg = "AI split returned empty core module content. Cannot compile.";
-        eprintln!("[Handler] {}", msg);
+        debug_log!("[Handler] {}", msg);
         let payload = serde_json::json!({
             "sessionId": session_id.clone(),
             "type": "stderr",
@@ -362,8 +848,8 @@ pub async fn handle_compile_request(
     )
     .await?;
 
-    let core_lib_path =
-        core_lib_path_opt.ok_or_else(|| anyhow::anyhow!("Core compilation failed"))?;
+    let core_lib_path = core_lib_path_opt
+        .ok_or_else(|| anyhow::anyhow!("Core compilation produced no output (no core module in split data or scope is GUI-only)"))?;
 
     // Compile GUI
     let gui_lib_path_opt = compile_gui(
@@ -385,7 +871,7 @@ pub async fn handle_compile_request(
     let gui_lib_path = gui_lib_path_opt.unwrap_or(prev_gui_path.unwrap_or_default());
 
     // Manual logging
-    eprintln!("[Compile] Step: Compilation finished");
+    debug_log!("[Compile] Step: Compilation finished");
 
     // ============================================================
     // PHASE 3.5: HMR PLANNER — decide reload strategy
@@ -459,6 +945,33 @@ pub async fn handle_compile_request(
         }
         _ => discover_exported_symbols(&core_lib_path).await,
     };
+
+    // ── Validate required HMR entry points ──
+    // Only check for core entry points when core was actually compiled.
+    // GUI-only rebuilds won't have on_load (it's in core.so).
+    if rebuild_scope != RebuildScope::GuiOnly {
+        let has_on_load = exported_symbols.iter().any(|s| {
+            s == "on_load" || s == "core_on_load" || s == "on_load_host" || s == "core_on_load_host"
+        });
+        if !has_on_load && !exported_symbols.is_empty() {
+            let sym_list = exported_symbols.join(", ");
+            let msg = format!(
+                "Compiled .so is missing a required entry point (on_load / core_on_load). Exported symbols: [{}]",
+                sym_list
+            );
+            debug_log!("[Handler] Symbol validation failed: {}", msg);
+            let payload = serde_json::json!({
+                "sessionId": session_id.clone(),
+                "type": "stderr",
+                "line": format!("[HMR Error] {}\n", msg)
+            });
+            let _ = ctx
+                .log_dc
+                .send_text(serde_json::to_string(&payload).unwrap_or_default())
+                .await;
+            anyhow::bail!(msg);
+        }
+    }
 
     // ── Determine capabilities from exported symbols ──
     let capabilities: Vec<String> = {
@@ -552,7 +1065,7 @@ pub async fn handle_compile_request(
     if let Ok(planner_json) = serde_json::to_string(&planner_notification) {
         let _ = ctx.log_dc.send_text(planner_json).await;
     }
-    eprintln!(
+    debug_log!(
         "[HMR Planner] Decision: {:?} — {}",
         planner_output.decision, planner_output.reason.decision_reason
     );
@@ -575,7 +1088,7 @@ pub async fn handle_compile_request(
             crate::hmr::planner_decision::ReloadDecision::ProcessSwap,
             AdapterReloadResult::Success { state_preserved, reload_ms },
         ) if !dynlib_family => {
-            eprintln!(
+            debug_log!(
                 "[HMR] Process-swap reload completed authoritatively: state_preserved={}, reload_ms={}",
                 state_preserved, reload_ms
             );
@@ -585,7 +1098,7 @@ pub async fn handle_compile_request(
             crate::hmr::planner_decision::ReloadDecision::ProcessSwap,
             AdapterReloadResult::Success { state_preserved, reload_ms },
         ) => {
-            eprintln!(
+            debug_log!(
                 "[HMR] Dynlib adapter preflight reached a process-swap plan (state_preserved={}, reload_ms={}); delegating actual reload to runner",
                 state_preserved, reload_ms
             );
@@ -594,7 +1107,7 @@ pub async fn handle_compile_request(
         (decision, AdapterReloadResult::Success { state_preserved, reload_ms })
             if decision.is_in_process() && !dynlib_family =>
         {
-            eprintln!(
+            debug_log!(
                 "[HMR] Adapter reload completed authoritatively: state_preserved={}, reload_ms={}",
                 state_preserved, reload_ms
             );
@@ -603,14 +1116,14 @@ pub async fn handle_compile_request(
         (decision, AdapterReloadResult::Success { state_preserved, reload_ms })
             if decision.is_in_process() && dynlib_family =>
         {
-            eprintln!(
+            debug_log!(
                 "[HMR] Dynlib adapter preflight succeeded (state_preserved={}, reload_ms={}), delegating actual swap to runner",
                 state_preserved, reload_ms
             );
             false
         }
         _ => {
-            eprintln!(
+            debug_log!(
                 "[HMR] Adapter did not handle reload (decision={:?}, result={:?}), falling through to runner",
                 planner_output.decision, reload_result
             );
@@ -691,7 +1204,7 @@ pub async fn handle_compile_request(
         for msg in candidate_messages {
             let _ = ctx.log_dc.send_text(msg).await;
         }
-        eprintln!("[HMR] Skipping handle_runner_execution — adapter reload was authoritative");
+        debug_log!("[HMR] Skipping handle_runner_execution — adapter reload was authoritative");
         // Resolve the frontend's compile() promise so the IDE doesn't stay stuck
         // in "Compiling..." when the adapter handled the reload without going through
         // handle_runner_execution (which is where build-status: done is normally sent).
@@ -776,19 +1289,19 @@ fn hash_based_rebuild_scope(prev_hashes: &ModuleHashes, new_hashes: &ModuleHashe
         && prev_hashes.core_hash == 0
         && prev_hashes.gui_hash == 0
     {
-        eprintln!("[Handler] First build - Full Rebuild");
+        debug_log!("[Handler] First build - Full Rebuild");
         RebuildScope::Both
     } else if prev_hashes.shared_hash != new_hashes.shared_hash {
-        eprintln!("[Handler] Shared header changed - Full Rebuild");
+        debug_log!("[Handler] Shared header changed - Full Rebuild");
         RebuildScope::Both
     } else if prev_hashes.core_hash != new_hashes.core_hash {
-        eprintln!("[Handler] Core changed - Core Rebuild");
+        debug_log!("[Handler] Core changed - Core Rebuild");
         RebuildScope::CoreOnly
     } else if prev_hashes.gui_hash != new_hashes.gui_hash {
-        eprintln!("[Handler] GUI changed - GUI Rebuild");
+        debug_log!("[Handler] GUI changed - GUI Rebuild");
         RebuildScope::GuiOnly
     } else {
-        eprintln!("[Handler] No code changes detected");
+        debug_log!("[Handler] No code changes detected");
         RebuildScope::None
     }
 }
@@ -822,4 +1335,45 @@ async fn discover_exported_symbols(lib_path: &str) -> Vec<String> {
         }
         _ => vec![],
     }
+}
+
+/// Build a simple unified-diff-style string from two sources.
+/// Not a proper unified diff — just shows changed/added/removed lines
+/// with +/- prefixes so the AI can see what changed.
+pub(crate) fn build_simple_diff(old: &str, new: &str) -> String {
+    let old_lines: Vec<&str> = old.lines().collect();
+    let new_lines: Vec<&str> = new.lines().collect();
+
+    if old_lines == new_lines {
+        return String::new();
+    }
+
+    let mut diff = String::new();
+    let mut oi = 0;
+    let mut ni = 0;
+
+    while oi < old_lines.len() && ni < new_lines.len() {
+        if old_lines[oi] == new_lines[ni] {
+            // Context line
+            diff.push_str(&format!(" {}\n", old_lines[oi]));
+            oi += 1;
+            ni += 1;
+        } else {
+            // Changed line
+            diff.push_str(&format!("-{}\n", old_lines[oi]));
+            diff.push_str(&format!("+{}\n", new_lines[ni]));
+            oi += 1;
+            ni += 1;
+        }
+    }
+    while oi < old_lines.len() {
+        diff.push_str(&format!("-{}\n", old_lines[oi]));
+        oi += 1;
+    }
+    while ni < new_lines.len() {
+        diff.push_str(&format!("+{}\n", new_lines[ni]));
+        ni += 1;
+    }
+
+    diff
 }
