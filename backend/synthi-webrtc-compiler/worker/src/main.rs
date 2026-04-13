@@ -687,6 +687,12 @@ async fn main() -> Result<()> {
     // Create a persistent workspace directory for the session
     let workspace_dir = Arc::new(tempdir()?);
     let workspace_path = workspace_dir.path().to_owned();
+    // Unconditional operator log: the user needs to know where compile
+    // artifacts (including .synthi_split_meta.json with the architecture
+    // cache) are actually written. `tempfile::tempdir()` picks a random
+    // path under the system temp dir, and without this line the user has
+    // no way to find the sidecar on disk to verify the cache.
+    eprintln!("[WORKER] workspace tempdir: {}", workspace_path.display());
     let workspace_path_for_watcher = workspace_path.clone();
     let workspace_path_for_builder = workspace_path.clone();
     let workspace_path_arc = Arc::new(workspace_path);

@@ -16,6 +16,52 @@ use crate::compiler::stages::guardrails::{
 };
 use crate::compiler::stages::runner::handle_runner_execution;
 
+/// Write the split sidecar to disk with end-to-end operator logging.
+///
+/// Replaces the previous `let _ = tokio::fs::write(...)` pattern that
+/// silently discarded both success and errors. The architecture cache
+/// landing in the sidecar is load-bearing for every subsequent Tier 2
+/// diff_patch, so we need to *see* it being written — path, byte count,
+/// and the `architecture` field length — to verify the cache round-trips.
+///
+/// Uses `eprintln!` (not `debug_log!`) so it surfaces without the
+/// `SYNTHI_WORKER_VERBOSE=1` env var. Operator observability trumps log
+/// noise here; four call sites total.
+async fn write_sidecar_logged(
+    path: &std::path::Path,
+    meta: &serde_json::Value,
+) {
+    let body = match serde_json::to_string(meta) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("[HMR] sidecar serialize failed: {}", e);
+            return;
+        }
+    };
+    let arch_len = meta
+        .get("architecture")
+        .and_then(|v| v.as_str())
+        .map(|s| s.len())
+        .unwrap_or(0);
+    match tokio::fs::write(path, &body).await {
+        Ok(()) => {
+            eprintln!(
+                "[HMR] sidecar written: {} ({} bytes, arch={} chars)",
+                path.display(),
+                body.len(),
+                arch_len
+            );
+        }
+        Err(e) => {
+            eprintln!(
+                "[HMR] sidecar WRITE FAILED: {} → {}",
+                path.display(),
+                e
+            );
+        }
+    }
+}
+
 use crate::hmr::loop_classifier::{classify_loop, LoopClassifierInput};
 use crate::hmr::adapted_project::detect_adapted_project;
 use crate::hmr::compile_enrichment::CompileEnrichment;
@@ -138,7 +184,7 @@ pub async fn handle_compile_request(
                 "original_source": req.source,
                 "architecture": architecture_md,
             });
-            let _ = tokio::fs::write(&sidecar_path, serde_json::to_string(&meta).unwrap_or_default()).await;
+            write_sidecar_logged(&sidecar_path, &meta).await;
 
             // Cache the result for future Loop A lookups
             split_cache.put(crate::hmr::ai_bypass::CachedSplitResult {
@@ -228,6 +274,15 @@ pub async fn handle_compile_request(
                         (None, String::new())
                     }
                 };
+                // Log what came back so the user can verify the cache is
+                // round-tripping: the Proceed branch's "sidecar written: ...
+                // arch=NNNN chars" should match this read's "arch=NNNN chars".
+                eprintln!(
+                    "[HMR] sidecar read: {} (original_source={}, arch={} chars)",
+                    sidecar_path.display(),
+                    if original_source.is_some() { "yes" } else { "no" },
+                    architecture_md.len()
+                );
 
                 if let Some(old_source) = original_source {
                     let diff = build_simple_diff(&old_source, &req.source);
@@ -370,7 +425,7 @@ pub async fn handle_compile_request(
                                             "original_source": req.source,
                                             "architecture": fresh_arch,
                                         });
-                                        let _ = tokio::fs::write(&sidecar_path, serde_json::to_string(&meta).unwrap_or_default()).await;
+                                        write_sidecar_logged(&sidecar_path, &meta).await;
                                         return Ok(result);
                                     }
                                 }
@@ -395,7 +450,7 @@ pub async fn handle_compile_request(
                             "original_source": req.source,
                             "architecture": architecture_md,
                         });
-                        let _ = tokio::fs::write(&sidecar_path, serde_json::to_string(&meta).unwrap_or_default()).await;
+                        write_sidecar_logged(&sidecar_path, &meta).await;
 
                         serde_json::json!({
                             "shared": { "content": final_shared, "filename": "shared.h" },
@@ -416,7 +471,7 @@ pub async fn handle_compile_request(
                         "original_source": req.source,
                         "architecture": fresh_arch,
                     });
-                    let _ = tokio::fs::write(&sidecar_path, serde_json::to_string(&meta).unwrap_or_default()).await;
+                    write_sidecar_logged(&sidecar_path, &meta).await;
                     result
                 }
             } else {
