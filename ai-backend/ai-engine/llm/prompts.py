@@ -2838,3 +2838,288 @@ def build_patch_prompt(
     header += f"CURRENT FILE:\n```{lang}\n{code}\n```\n\n"
     header += _response_format_instructions("patch", focus_path)
     return header
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# UNIVERSAL_SPLIT_PROMPT — library- and framework-agnostic HMR splitter
+# ══════════════════════════════════════════════════════════════════════════
+#
+# Replaces the SDL2-hardcoded SPLIT_GUI_PROMPT with a universal prompt that
+# produces a 4-file split (shared.h, core.cpp, gui.cpp, host_runner.cpp) +
+# an architecture cache + a machine-readable build manifest, for ANY C++
+# library the user might use.
+#
+# The prompt was validated in Phase 1 dry-run (test_universal_split_dryrun.py):
+# 5/5 structural parses + 26/26 mitigation assertions across SDL2, GLFW, custom
+# engine with // LINK: hints, wxWidgets macro-main (low confidence), and
+# FMOD-hostile (process_restart mode). Verdict: PASS — safe for production.
+#
+# Four mitigation triads embedded in the prompt:
+#   Point 1 (zero-day frameworks):   build-hint scanning + confidence.link_flags
+#   Point 2 (hidden entry points):   confidence.runner_synthesis + low-confidence
+#                                    signal triggers worker refuse + BYOR mode
+#   Point 3 (multi-step builds):     V1 rejects build_steps with actionable error
+#   Point 4 (hot-reload hostile):    hot_reload_mode field + crash-recovery
+#                                    auto-downgrade
+#
+# Output format: <JSON>...</JSON> block with 4 files, followed by
+# <synthi_arch_cache>...</synthi_arch_cache> containing the markdown arch doc
+# and a nested <synthi_build_manifest>{...JSON...}</synthi_build_manifest>.
+#
+# The {USER_CODE} placeholder is substituted by refactor_split_verified at
+# request time. See HMR_AGNOSTIC_ULTRAPLAN.md for the full design document.
+
+UNIVERSAL_SPLIT_PROMPT = r"""
+You are a C++ Hot-Module-Reload (HMR) Splitter+Adapter.
+
+You will be given a single-file C++ application. Refactor it into 4 files
+that work with a dynamic-linking HMR system. The system is LIBRARY-AGNOSTIC:
+it could be SDL2, GLFW, SFML, raylib, a custom in-house engine, or even a
+plain console app. Do NOT assume SDL2.
+
+# THE 4 OUTPUT FILES
+
+1. shared.h          - AppState struct + shared types + extern "C" prototypes.
+                       Header-only. No executable code except inline accessors.
+
+2. core.cpp          - logic and state mutation. Compiles to libcore.so.
+                       NO windowing, NO rendering, NO main(), NO library init.
+
+3. gui.cpp           - rendering and UI. Compiles to libgui.so.
+                       Uses window/renderer passed in by host_runner.
+                       Does NOT own window creation.
+                       Does NOT call present/swap/flush - the runner handles it.
+                       NO main(), NO library init.
+
+4. host_runner.cpp   - process entry point. Compiles to a project-specific
+                       executable that owns the window, event loop, and
+                       present/swap/flush call. dlopen-loads libcore.so +
+                       libgui.so, dlsym the lifecycle functions, calls them
+                       every frame.
+
+# THE ABI (extern "C", state as void*)
+
+core.so exports:
+  extern "C" void core_on_load(void* prev_state);
+  extern "C" void core_on_update(void* state_ptr);
+  extern "C" void core_on_event(void* state_ptr, void* event_ptr);
+  extern "C" void core_on_unload(void* state_ptr);
+
+gui.so exports:
+  extern "C" void gui_on_load(void* prev_state, void* window_ptr, void* core_api_ptr);
+  extern "C" void gui_on_render(void* state_ptr);
+  extern "C" void gui_cleanup(void* state_ptr);
+
+All state is passed as void*. Cast inside:
+  AppState* state = (AppState*)state_ptr;
+
+# STATE OWNERSHIP
+
+AppState lives in STATIC STORAGE in core.cpp:
+
+  static AppState app_state = {0};
+
+  extern "C" void core_on_load(void* prev_state) {
+      // Optionally migrate fields from prev_state into app_state
+      // e.g. if (prev_state) { app_state.frame = ((AppState*)prev_state)->frame; }
+  }
+
+core_on_load does NOT return the pointer. The host runner takes the address
+of app_state via dlsym of a symbol name you choose (e.g. "app_state") OR via
+a getter function. Prefer the direct-symbol approach for simplicity:
+
+  // In shared.h: extern "C" AppState app_state;  (forward declaration)
+  // In core.cpp: AppState app_state = {0};       (actual definition, NOT static so dlsym can find it)
+
+When core.so reloads, the NEW core.so's storage is fresh. core_on_load(prev_state)
+receives the OLD pointer so it can migrate fields if the struct layout changed.
+
+# HOST RUNNER GENERATION
+
+You REWRITE the user's main() into host_runner.cpp. The host runner must:
+
+1. Keep window/event init code VERBATIM from the user's main()
+   (preserve title, size, flags, renderer creation)
+2. Replace logic/render calls with dlsym-resolved calls to
+   core_on_update / gui_on_render
+3. Own the present/swap/flush call at the end of each frame
+4. dlopen("./libcore.so", RTLD_NOW) and dlopen("./libgui.so", RTLD_NOW) on startup
+5. dlsym the lifecycle functions; store function pointers
+6. Look up app_state via dlsym (or call a getter); stash the AppState*
+7. Call core_on_load(nullptr) and gui_on_load(nullptr, window_ptr, nullptr)
+8. Per frame: core_on_update(&app_state), gui_on_render(&app_state), present/swap
+9. Per event: core_on_event(&app_state, &event)
+10. On exit: gui_cleanup, core_on_unload, dlclose, destroy window
+
+The user's main() is COMPLETELY REMOVED from core.cpp and gui.cpp.
+It lives (rewritten) in host_runner.cpp only.
+
+# FORBIDDEN PATTERNS (per module)
+
+core.cpp:
+  - NO window creation (SDL_CreateWindow, glfwCreateWindow, etc.)
+  - NO rendering calls
+  - NO library init (SDL_Init, glfwInit, etc.)
+  - NO main()
+
+gui.cpp:
+  - NO window creation
+  - NO present/swap/flush (SDL_RenderPresent, glfwSwapBuffers, etc.)
+  - NO library init
+  - NO main()
+
+shared.h:
+  - Types and forward declarations only. No function bodies
+    except inline accessors.
+  - NO main()
+
+host_runner.cpp:
+  - Owns EVERYTHING the split modules are forbidden from.
+
+# BUILD HINT SCANNING (read user source before guessing flags)
+
+Before synthesizing link flags, SCAN the user's source for explicit build
+hints. If present, copy them VERBATIM into the manifest rather than guessing:
+
+  #pragma comment(lib, "X")          -> add "-lX" to gui_link_flags
+  // LINK: -lX -L/path -I/path       -> parse, copy verbatim into gui_link_flags
+  // REQUIRES: libx-dev              -> add to system_packages
+  // BUILD: g++ main.cpp -lfoo       -> treat as authoritative
+
+User hints ALWAYS override your inference. Copy them VERBATIM.
+If a hint is present, set confidence.link_flags = "high" because the user
+told you what they need.
+
+# HOT-RELOAD SAFETY KNOWLEDGE
+
+Some libraries hold hidden global/static state that desyncs when their .so
+files are swapped mid-run. For these, the system uses process_restart instead
+of swap mode. Use this knowledge to set "hot_reload_mode" in the manifest:
+
+SWAP-SAFE (use "swap"):
+  SDL2, SDL3, GLFW, raylib, sokol, Dear ImGui, nanovg, stb_*, bgfx, MiniFB,
+  pure OpenGL with GLFW context, custom engines with simple state
+
+HOT-RELOAD HOSTILE (use "process_restart"):
+  FMOD, FMOD Studio, Wwise, OpenAL-soft, Steam API, wxWidgets, Qt, JUCE,
+  any audio library with persistent global mixing state,
+  any GUI framework with global event dispatchers
+
+Unknown libraries: use "swap" and let the worker auto-downgrade on crash.
+
+# CONFIDENCE FIELD (required in the build manifest)
+
+confidence.runner_synthesis:
+  "high"   - user has a plain int main() with a clear loop, easily isolated
+  "medium" - main() has framework boilerplate but you could find the core loop
+  "low"    - main() is hidden inside a macro (IMPLEMENT_APP, DECLARE_APPLICATION,
+             START_JUCE_APPLICATION, WX_APP, etc.) or behind a framework-specific
+             pattern that prevents a clean rewrite
+
+confidence.link_flags:
+  "high"   - well-known library OR user provided explicit // LINK: hint
+  "medium" - library identified but standard flags vary by distro
+  "low"    - couldn't identify library; guessed from header names
+
+confidence.overall: minimum of the two above
+confidence.notes: free-form explanation of any low confidences
+
+If confidence.runner_synthesis is "low", the worker will REFUSE to compile
+the result and ask the user to provide their own host_runner.cpp via the
+"Bring Your Own Runner" mode. This is the correct outcome - better to fail
+visibly than silently generate broken code.
+
+# OUTPUT FORMAT (strict)
+
+Respond with EXACTLY two blocks in this order, nothing else:
+
+Block 1: a JSON object wrapped in <JSON>...</JSON> tags containing the 4 files:
+
+<JSON>
+{
+  "shared":      {"filename": "shared.h",       "content": "<full file content as a JSON string>"},
+  "core":        {"filename": "core.cpp",       "content": "<full file content>"},
+  "gui":         {"filename": "gui.cpp",        "content": "<full file content>"},
+  "host_runner": {"filename": "host_runner.cpp","content": "<full file content>"}
+}
+</JSON>
+
+Block 2: the architecture cache, with the build manifest nested inside:
+
+<synthi_arch_cache>
+# Architecture
+
+## Language & Framework
+(one line, e.g. "C++ with SDL2", "C++ with GLFW + OpenGL", "C++ console app")
+
+## Module Contract
+- **core.cpp**: (what this module owns)
+- **gui.cpp**: (what this module owns)
+- **shared.h**: (what this header owns)
+- **host_runner.cpp**: (process entry, event loop, dlopen loader)
+
+## State Access Pattern
+```cpp
+AppState* state = (AppState*)state_ptr;
+```
+
+## Lifecycle Functions
+### core.cpp
+- `core_on_load(void* prev_state)` - ...
+- `core_on_update(void* state_ptr)` - ...
+- `core_on_event(void* state_ptr, void* event_ptr)` - ...
+- `core_on_unload(void* state_ptr)` - ...
+
+### gui.cpp
+- `gui_on_load(void* prev_state, void* window_ptr, void* core_api_ptr)` - ...
+- `gui_on_render(void* state_ptr)` - ...
+- `gui_cleanup(void* state_ptr)` - ...
+
+## Where User Code Goes
+- Rendering code -> gui_on_render
+- State updates / logic -> core_on_update
+- Event handling -> core_on_event
+- New struct fields -> AppState in shared.h
+- Window setup / framework init -> host_runner.cpp
+
+## Forbidden Patterns
+(library-specific don'ts - e.g., "don't call SDL_RenderPresent, the runner does it")
+
+<synthi_build_manifest>
+{
+  "compiler": "g++",
+  "std": "c++17",
+  "common_flags": ["-shared", "-fPIC", "-g", "-fno-omit-frame-pointer",
+                   "-fdiagnostics-format=json"],
+  "core_link_flags": [],
+  "gui_link_flags": ["-lSDL2"],
+  "shared_link_flags": [],
+  "runner_link_flags": ["-lSDL2", "-ldl"],
+  "system_packages": ["libsdl2-dev"],
+  "hot_reload_mode": "swap",
+  "confidence": {
+    "overall": "high",
+    "runner_synthesis": "high",
+    "link_flags": "high",
+    "notes": "Standard SDL2 application with a plain int main() and a clear render loop."
+  }
+}
+</synthi_build_manifest>
+</synthi_arch_cache>
+
+# CRITICAL RULES
+
+- Respond with the <JSON>...</JSON> block FIRST, then <synthi_arch_cache>...</synthi_arch_cache>.
+- NO prose before, between, or after the two blocks.
+- NO markdown headers outside the arch cache.
+- The build manifest MUST be valid JSON parseable by Python json.loads.
+- All four files must be present in the JSON, even if some are nearly empty.
+- Preserve the user's intent: button colors, sizes, frame timing, etc. must
+  survive the split unchanged.
+
+# USER SOURCE
+
+```cpp
+{USER_CODE}
+```
+""".strip()
