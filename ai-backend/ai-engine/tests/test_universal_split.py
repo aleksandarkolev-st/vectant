@@ -118,37 +118,41 @@ def validate_corpus_entry(
     expect_rejection = expected.get("expect_rejection", False)
 
     # Rejection path: the worker returns HTTP 422 for V1-unsupported
-    # projects (multi-step builds, etc.). Accept either a 422 response
-    # OR a manifest with `build_steps` non-empty OR notes with a
-    # rejection keyword.
+    # projects (multi-step builds, etc.). FastAPI's 422 responses carry
+    # the rejection message in `body.detail` (string), so we search BOTH
+    # the manifest path (for fat JSON responses) AND the detail path
+    # (for lean 422s) before declaring the rejection marker missing.
     if expect_rejection:
-        # `body` could be a dict (parsed JSON) or a string (raw). Check
-        # for rejection markers.
+        notes_keywords = expected.get("notes_keywords", [])
+        # Fallback keyword set if expected.json lists none — catches
+        # the common rejection phrases the Python side emits.
+        fallback_keywords = ["moc", "q_object", "qt", "multi-step", "build_steps", "pre-compile"]
+        search_keywords = notes_keywords or fallback_keywords
+
+        manifest_notes = ""
+        build_steps = None
+        detail_str = ""
+
         if isinstance(body, dict):
             manifest = body.get("manifest") or {}
-            build_steps = manifest.get("build_steps") if isinstance(manifest, dict) else None
-            notes = ""
             if isinstance(manifest, dict):
+                build_steps = manifest.get("build_steps")
                 conf = manifest.get("confidence") or {}
-                notes = str(conf.get("notes", "")).lower()
-            rejected_via_build_steps = bool(build_steps)
-            rejected_via_notes = any(
-                kw.lower() in notes for kw in expected.get("notes_keywords", [])
-            )
-            out.append(check(
-                "rejection marker present (build_steps non-empty OR notes mention moc/Q_OBJECT)",
-                rejected_via_build_steps or rejected_via_notes,
-                f"build_steps={build_steps!r}, notes={notes[:150]}",
-            ))
+                manifest_notes = str(conf.get("notes", "")).lower()
+            # FastAPI 422 puts the rejection message here — check it too
+            detail_str = str(body.get("detail", "")).lower()
         else:
-            # Non-dict body means HTTP 422 with a string detail.
-            # That's ALSO a valid rejection path.
             detail_str = str(body).lower()
-            out.append(check(
-                "rejection marker present (HTTP 422 with MOC/Qt mention)",
-                any(kw.lower() in detail_str for kw in ("moc", "q_object", "qt", "multi-step", "build_steps")),
-                f"detail: {detail_str[:200]}",
-            ))
+
+        rejected_via_build_steps = bool(build_steps)
+        rejected_via_notes = any(kw.lower() in manifest_notes for kw in search_keywords)
+        rejected_via_detail = any(kw.lower() in detail_str for kw in search_keywords)
+
+        out.append(check(
+            "rejection marker present (build_steps OR notes OR detail mentions rejection keyword)",
+            rejected_via_build_steps or rejected_via_notes or rejected_via_detail,
+            f"build_steps={build_steps!r}, notes={manifest_notes[:120]!r}, detail={detail_str[:200]!r}",
+        ))
         return out
 
     # Happy path: response should be a dict with manifest + result
@@ -253,6 +257,21 @@ def run_entry(
         timeout_s=TIMEOUT_SEC,
     )
     print(f"  HTTP {status}  elapsed {elapsed:.1f}s")
+
+    # Print 422 body details for observability. When an entry that
+    # expected a 200 hits a 422, we need to see the rejection reason
+    # to know whether the test or the prompt is at fault.
+    expect_rejection = expected.get("expect_rejection", False)
+    if status == 422 and not expect_rejection:
+        # Unexpected rejection — dump the detail so the failure mode is
+        # visible without re-running with curl.
+        if isinstance(body, dict):
+            detail = body.get("detail", str(body))
+        else:
+            detail = str(body)
+        # Truncate aggressively — rejection messages can be paragraph-long
+        detail_short = str(detail)[:500]
+        print(f"  \033[33m[422 rejection reason]\033[0m {detail_short}")
 
     # For expect_rejection entries, 422 is a PASS on the transport level
     # but we still validate the body to confirm the rejection reason.

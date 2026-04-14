@@ -359,12 +359,32 @@ def _flag_satisfies(ident: str, flags: List[str]) -> bool:
 
 
 def _excused_in_notes(ident: str, notes: str) -> bool:
-    """True iff confidence.notes mentions `ident` as a substring,
-    case-insensitively. The prompt says to write lines like
-    `Header-only: stb_image.h (single-file ...)`; we just look for the
-    identifier anywhere in the notes string.
+    """True iff confidence.notes mentions `ident` — as a full substring
+    OR as a "stem" (the prefix before the first separator).
+
+    The stem match is essential for multi-part identifiers: e.g. a
+    project that includes `<imgui_impl_sdl2.h>` gets
+    `ident="imgui_impl_sdl2"` but the AI would naturally write
+    "Header-only: imgui compiled inline" in the notes — the user
+    reasonably expects the "imgui" mention to excuse all three
+    imgui-derived headers in one shot. Same for SFML's
+    `sfml-graphics-s` → "sfml", Qt's `QtCore-5` → "qt", etc.
+
+    Rule is generic: take the part of `ident` before the first
+    `_`, `-`, or `.`, and if it's >= 3 chars, check that too.
+    Library-agnostic — no catalog, just lexical stems.
     """
-    return ident.lower() in notes.lower()
+    ident_lower = ident.lower()
+    notes_lower = notes.lower()
+    if ident_lower in notes_lower:
+        return True
+    for sep in ("_", "-", "."):
+        if sep in ident_lower:
+            stem = ident_lower.split(sep, 1)[0]
+            if len(stem) >= 3 and stem in notes_lower:
+                return True
+            break
+    return False
 
 
 REJECTION_INCLUDE_LINK_MISMATCH_TEMPLATE = (

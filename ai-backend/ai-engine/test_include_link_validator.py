@@ -406,6 +406,51 @@ def test_validator_rejects_when_excuse_for_wrong_library():
     raise AssertionError("excuse for unrelated library must not satisfy fmod")
 
 
+def test_validator_excuse_stem_matches_imgui_impl_variants():
+    # The imgui backend headers are named imgui_impl_sdl2.h,
+    # imgui_impl_opengl3.h etc. The AI naturally writes "imgui
+    # compiled inline" as a single excuse — we want that one
+    # mention to cover ALL the imgui_* includes via stem matching.
+    src = """
+    #include <imgui.h>
+    #include <imgui_impl_sdl2.h>
+    #include <imgui_impl_opengl3.h>
+    #include <SDL2/SDL.h>
+    int main() {}
+    """
+    m = make_manifest(
+        runner_link_flags=["-lSDL2", "-ldl"],
+        gui_link_flags=["-lSDL2"],
+        notes="Header-only: imgui compiled directly into the gui module",
+    )
+    # Should pass — imgui stem match satisfies all three imgui_* headers
+    validate_include_link_coverage(m, src)
+
+
+def test_validator_excuse_stem_respects_length_threshold():
+    # Very short stems (< 3 chars) don't stem-match to avoid false
+    # positives. E.g. a 2-char prefix like "x" or "io" shouldn't
+    # excuse random includes just because "x" appears in the notes.
+    src = "#include <a_long_lib_name.h>\nint main(){}"
+    m = make_manifest(notes="a b c — short words")
+    try:
+        validate_include_link_coverage(m, src)
+    except ManifestRejection as e:
+        assert "a_long_lib_name" in e.message or "a" in e.message
+        return
+    raise AssertionError(
+        "stems shorter than 3 chars must not trip the stem-match excuse"
+    )
+
+
+def test_validator_excuse_stem_uses_first_separator_only():
+    # The stem is everything before the FIRST separator (_, -, .).
+    # `sfml-graphics-s` → stem "sfml" (first -).
+    src = "#include <sfml-graphics.h>\nint main(){}"
+    m = make_manifest(notes="Uses SFML for rendering — linked dynamically.")
+    validate_include_link_coverage(m, src)  # "sfml" (stem) in notes → pass
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Edge cases
 # ─────────────────────────────────────────────────────────────────────────────

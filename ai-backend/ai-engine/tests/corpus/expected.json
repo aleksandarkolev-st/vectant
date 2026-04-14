@@ -28,7 +28,7 @@
     "forbidden_substrings": [],
     "confidence_runner_synthesis": ["low", "medium"],
     "hot_reload_mode": ["process_restart", "swap", "auto"],
-    "notes_keywords": ["macro", "implement_app", "wxapp", "wxwidgets"]
+    "notes_keywords": ["macro", "implement_app", "wxwidgets"]
   },
   "05_fmod_hostile.cpp": {
     "flag_substrings": ["sdl", "fmod"],
