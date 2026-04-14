@@ -50,6 +50,7 @@ import { AIHealingPanel } from '@/components/healing/AIHealingPanel';
 import { clearAIFixes, clearPendingFixes, setAIEnabled, setHealingEnabled, setRequireConfirmation } from '@/redux/healingSlice';
 import { useWorkspaceAnalysis } from '@/hooks/useWorkspaceAnalysis';
 import { useCompiler } from '@/hooks/useCompiler';
+import { useCompileManifestListener } from '@/hooks/useCompileManifestListener';
 import { useCodeIntelIndex } from '@/hooks/useCodeIntelIndex';
 import AIChatWindow from '@/components/chat/AIChatWindow';
 import { api } from '@/services/api';
@@ -150,6 +151,10 @@ export default function EditorPage({ params }) {
     const gateway = useAnalyzerGateway();
     const { analyzeCode, analyzeProactive, analyzeContainer, analyzeUnified, lastResult, isAnalyzing: isAnalyzingGateway, connectionMeta } = gateway;
     const { client, compile, mediaStream, cancelMobileJob, isCompiling, status: compilerStatus } = useCompiler();
+    // ULTRAPLAN Phase 8: listen for compile-manifest events from the worker
+    // and populate the Redux compileManifestSlice. Powers the StatusBar
+    // framework pill, CompileErrorCard, and ConfidenceWarning components.
+    useCompileManifestListener();
     const hmrState = useHMR();
     const healingState = useRuntimeHealing({ editorRef, gateway, autoHeal: false });
     const { canRetry, retryCount, isRetrying, retry } = useRetryCompile({ compilerClient: client, autoRetry: true });

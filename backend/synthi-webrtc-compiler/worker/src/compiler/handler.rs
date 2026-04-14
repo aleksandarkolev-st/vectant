@@ -947,6 +947,63 @@ pub async fn handle_compile_request(
         None => eprintln!("[HMR] compile_manifest: none (falling back to sdl2_default downstream)"),
     }
 
+    // ULTRAPLAN Phase 8: forward the manifest + architecture cache to
+    // the frontend over the log data channel. The frontend's
+    // compilerClient.js bridges `{type: "compile-manifest", ...}` into
+    // a `synthi:compile-manifest` CustomEvent, and
+    // `useCompileManifestListener` populates the Redux slice that the
+    // StatusBar framework pill, CompileErrorCard and ConfidenceWarning
+    // components read from.
+    //
+    // We emit BEFORE compile starts so the frontend can show the
+    // detected framework + confidence nudge up-front, even if compile
+    // fails. The architecture cache is sourced from split_data first
+    // (fresh Proceed / Tier 3 path) and falls back to re-reading the
+    // sidecar (UseCached / Tier 2 path where split_data lacks it).
+    {
+        let arch_from_split_data = split_data
+            .get("_synthi_architecture")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        let architecture_for_frontend = if let Some(a) = arch_from_split_data {
+            a
+        } else {
+            match tokio::fs::read_to_string(&sidecar_path).await {
+                Ok(raw) => serde_json::from_str::<serde_json::Value>(&raw)
+                    .ok()
+                    .and_then(|meta| {
+                        meta.get("architecture")
+                            .and_then(|a| a.as_str())
+                            .map(|s| s.to_string())
+                    })
+                    .unwrap_or_default(),
+                Err(_) => String::new(),
+            }
+        };
+        // Serialize the compile_manifest struct back to JSON so the
+        // frontend receives the exact wire shape produced by the Python
+        // side. If resolution produced None (pre-Phase-3 project, split
+        // failure, etc.) emit null so the frontend knows there's no
+        // manifest available rather than showing stale data.
+        let manifest_json_for_frontend: serde_json::Value = compile_manifest
+            .as_ref()
+            .and_then(|m| serde_json::to_value(m).ok())
+            .unwrap_or(serde_json::Value::Null);
+        if !manifest_json_for_frontend.is_null() || !architecture_for_frontend.is_empty() {
+            let payload = serde_json::json!({
+                "sessionId": session_id.clone(),
+                "type": "compile-manifest",
+                "manifest": manifest_json_for_frontend,
+                "architecture": architecture_for_frontend,
+            });
+            let _ = ctx
+                .log_dc
+                .send_text(serde_json::to_string(&payload).unwrap_or_default())
+                .await;
+            eprintln!("[HMR] compile-manifest emitted to frontend data channel");
+        }
+    }
+
     // Compile Core
     let core_lib_path_opt = compile_core(
         ctx,
