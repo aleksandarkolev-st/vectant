@@ -77,7 +77,18 @@
     "forbidden_substrings": [],
     "confidence_runner_synthesis": ["low", "medium", "high"],
     "hot_reload_mode": ["process_restart", "swap", "auto"],
-    "notes_keywords": ["moc", "q_object", "qt", "multi-step", "build_steps"],
+    "notes_keywords": [
+      "moc",
+      "q_object",
+      "qt",
+      "qapplication",
+      "qmainwindow",
+      "qpushbutton",
+      "multi-step",
+      "build_steps",
+      "link flag",
+      "missing"
+    ],
     "expect_rejection": true
   }
 }
