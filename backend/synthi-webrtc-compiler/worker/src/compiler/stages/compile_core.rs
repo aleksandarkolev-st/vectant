@@ -124,7 +124,42 @@ pub async fn compile_core(
                     let stderr_str = String::from_utf8_lossy(&output.stderr).to_string();
                     eprintln!("[CompileCore] g++ FAILED:\n{}", stderr_str);
 
-                    // ── AI Heal Loop: let the AI fix its own compile errors ──
+                    // ── ULTRAPLAN Phase 6: manifest heal (link errors) ──
+                    // When stderr contains `undefined reference` errors, the
+                    // problem is a missing link flag, not bad source. Ask the
+                    // AI to update the manifest's link flags and retry once
+                    // with the new flags. If the retry succeeds, we skip the
+                    // source-heal loop entirely and proceed to cache.put.
+                    // See ai_utils::try_manifest_heal_retry for the flow.
+                    let manifest_healed = crate::compiler::stages::ai_utils::try_manifest_heal_retry(
+                        &stderr_str,
+                        dir_path,
+                        "core",
+                        content,
+                        |m| {
+                            let mut cmd = system_command(m.compiler.executable());
+                            cmd.arg(format!("-std={}", m.std));
+                            for f in &m.common_flags {
+                                cmd.arg(f);
+                            }
+                            cmd.arg(fname).arg("-I.").arg("-o").arg(&core_out);
+                            for f in &m.core_link_flags {
+                                cmd.arg(f);
+                            }
+                            cmd.arg("-ldl").arg("-pthread").arg("-rdynamic");
+                            cmd.current_dir(dir_path);
+                            cmd
+                        },
+                    )
+                    .await
+                    .is_some();
+
+                    if manifest_healed {
+                        eprintln!("[CompileCore] manifest heal SUCCEEDED — skipping source heal");
+                        // Fall through to the post-compile path (cache.put + return).
+                        // The retry command wrote to `core_out` already.
+                    } else {
+                        // ── AI Heal Loop: let the AI fix its own compile errors ──
                     let shared_for_heal = tokio::fs::read_to_string(dir_path.join("shared.h")).await.unwrap_or_default();
                     // Read the cached split architecture from the sidecar so the
                     // heal prompt has the same project-specific "Forbidden Patterns"
@@ -215,6 +250,7 @@ pub async fn compile_core(
                         };
                         anyhow::bail!("Core compilation failed: {}", truncated);
                     }
+                    } // end source-heal else-branch (Phase 6 manifest_healed=false)
                 }
 
                 let path = core_out.to_string_lossy().to_string();

@@ -1856,6 +1856,11 @@ from diff_patch_helpers import (  # noqa: E402 — late import is intentional
     validate_edit_list as _validate_edit_list,
     VALID_EDIT_MODULES as _VALID_EDIT_MODULES,
     VALID_EDIT_OPS as _VALID_EDIT_OPS,
+    HealManifestRequest,
+    HealManifestResponse,
+    VALID_FAILED_MODULES as _VALID_FAILED_MODULES,
+    build_manifest_heal_prompt as _build_manifest_heal_prompt,
+    parse_heal_manifest_response as _parse_heal_manifest_response,
 )
 
 
@@ -2039,6 +2044,100 @@ async def refactor_heal(req: HealRequest):
     except Exception as e:
         print(f"[Heal] Error: {e}")
         raise HTTPException(status_code=400, detail=str(e))
+
+
+# =============================================================================
+# /refactor/heal/manifest — ULTRAPLAN Phase 6
+# =============================================================================
+# Runtime safety net: when compile_core / compile_gui / compile_runner
+# hits an `undefined reference` error, the worker extracts the symbols,
+# sends them here, and we ask the AI to update the manifest's link
+# flags. The worker retries the compile once with the new manifest.
+#
+# Library-agnostic by construction: see diff_patch_helpers.build_manifest_heal_prompt
+# — no library names anywhere in the prompt, the AI uses general
+# knowledge to map symbols → flags.
+
+@app.post("/refactor/heal/manifest")
+async def refactor_heal_manifest(req: HealManifestRequest):
+    """
+    Ask the AI to update a build manifest's link flags after a link-time
+    failure. Runtime safety net for undefined-reference errors.
+
+    Returns `{updated_manifest, unchanged, notes}`. When `unchanged` is
+    True (AI couldn't infer a fix), the worker should NOT retry compile —
+    surface the 3-option error card immediately to avoid loops.
+    """
+    start_time = time.time()
+
+    if req.failed_module not in _VALID_FAILED_MODULES:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"failed_module must be one of {_VALID_FAILED_MODULES}, "
+                f"got {req.failed_module!r}"
+            ),
+        )
+    if not req.undefined_symbols:
+        raise HTTPException(
+            status_code=400,
+            detail="undefined_symbols must be a non-empty list",
+        )
+    if not isinstance(req.current_manifest, dict) or not req.current_manifest:
+        raise HTTPException(
+            status_code=400,
+            detail="current_manifest must be a non-empty JSON object",
+        )
+
+    provider = get_provider(provider_name='gemini', use_custom=bool(req.api_key))
+    prompt = _build_manifest_heal_prompt(req)
+
+    print(
+        f"[ManifestHeal] failed_module={req.failed_module} "
+        f"symbols={len(req.undefined_symbols)} "
+        f"source_excerpt={len(req.source_excerpt)} chars"
+    )
+
+    try:
+        ai_response = await provider.ask_llm(
+            prompt,
+            "cpp",
+            None,
+            mode="delta",
+            # Pro model — manifest heal needs strong library knowledge
+            # and the output is small (~50-200 tokens of JSON), so
+            # latency cost is bounded.
+            model=req.model or "gemini-3.1-flash-lite-preview",
+            api_key=req.api_key,
+        )
+    except Exception as e:
+        print(f"[ManifestHeal] AI call failed: {e}")
+        raise HTTPException(status_code=502, detail=f"AI provider error: {e}")
+
+    try:
+        parsed = _parse_heal_manifest_response(ai_response)
+    except ValueError as e:
+        # AI returned non-JSON or wrong shape. Surface as 422 so the
+        # Rust worker treats it as "heal failed" and shows the error
+        # card instead of retrying with garbage.
+        print(f"[ManifestHeal] response parse failed: {e}")
+        raise HTTPException(
+            status_code=422,
+            detail=f"AI returned malformed manifest heal response: {e}",
+        )
+
+    elapsed = time.time() - start_time
+    print(
+        f"[ManifestHeal] {'unchanged' if parsed.unchanged else 'updated'} "
+        f"in {elapsed:.2f}s — notes: {parsed.notes[:120]}"
+    )
+
+    return {
+        "updated_manifest": parsed.updated_manifest,
+        "unchanged": parsed.unchanged,
+        "notes": parsed.notes,
+        "elapsed_seconds": elapsed,
+    }
 
 
 # =============================================================================

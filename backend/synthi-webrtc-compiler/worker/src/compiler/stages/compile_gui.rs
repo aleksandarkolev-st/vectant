@@ -137,6 +137,39 @@ pub async fn compile_gui(
                     let stderr_str = String::from_utf8_lossy(&output.stderr).to_string();
                     eprintln!("[CompileGUI] g++ FAILED:\n{}", stderr_str);
 
+                    // ── ULTRAPLAN Phase 6: manifest heal (link errors) ──
+                    // See compile_core.rs for the rationale — when the stderr
+                    // contains undefined-reference errors, update the manifest's
+                    // link flags and retry once before falling back to source heal.
+                    let manifest_healed = crate::compiler::stages::ai_utils::try_manifest_heal_retry(
+                        &stderr_str,
+                        dir_path,
+                        "gui",
+                        &content,
+                        |m| {
+                            let mut cmd = system_command(m.compiler.executable());
+                            cmd.arg(format!("-std={}", m.std));
+                            for f in &m.common_flags {
+                                cmd.arg(f);
+                            }
+                            cmd.arg(fname).arg("-I.").arg("-o").arg(&gui_out);
+                            if req_is_gui {
+                                for f in &m.gui_link_flags {
+                                    cmd.arg(f);
+                                }
+                            }
+                            cmd.arg("-ldl").arg("-rdynamic");
+                            cmd.current_dir(dir_path);
+                            cmd
+                        },
+                    )
+                    .await
+                    .is_some();
+
+                    if manifest_healed {
+                        eprintln!("[CompileGUI] manifest heal SUCCEEDED — skipping source heal");
+                    } else {
+
                     // ── AI Heal Loop ──
                     let shared_for_heal = tokio::fs::read_to_string(dir_path.join("shared.h")).await.unwrap_or_default();
                     // Read the cached split architecture from the sidecar so the
@@ -228,6 +261,7 @@ pub async fn compile_gui(
                         };
                         anyhow::bail!("GUI compilation failed: {}", truncated);
                     }
+                    } // end source-heal else-branch (Phase 6 manifest_healed=false)
                 }
 
                 let gui_lib_path = gui_out.to_string_lossy().to_string();

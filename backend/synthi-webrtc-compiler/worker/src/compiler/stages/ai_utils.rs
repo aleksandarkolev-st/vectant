@@ -463,3 +463,348 @@ pub async fn perform_ai_heal(
 // architecture cache now handles routing inside the full diff_patch
 // prompt via its "Where User Code Goes" section, so the AI routes
 // internally from a single call per edit. See handler.rs Tier 2 flow.
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ULTRAPLAN Phase 6 — manifest heal via /refactor/heal/manifest
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Result of a manifest-heal AI call.
+#[derive(Debug, Clone)]
+pub struct ManifestHealResult {
+    /// The new manifest JSON to retry the compile with. When `unchanged`
+    /// is true this is byte-identical to the input — caller MUST short
+    /// circuit and surface the error card instead of retrying.
+    pub updated_manifest: serde_json::Value,
+    /// True when the AI couldn't infer a fix and returned the input
+    /// unchanged. Triggers immediate fall-through to the 3-option
+    /// error card (no compile retry).
+    pub unchanged: bool,
+    /// One-sentence explanation from the AI. Surfaced in logs and in
+    /// the error card if the heal eventually fails.
+    pub notes: String,
+}
+
+/// ULTRAPLAN Phase 6 — attempt a manifest-heal retry for a failing
+/// compile stage. This is the runtime safety net that catches
+/// `undefined reference` errors the Phase 4.5 pre-flight validator
+/// missed.
+///
+/// Flow:
+///   1. Extract undefined symbols from `stderr` (generic regex).
+///   2. Read the sidecar for the current manifest + original_source
+///      + architecture cache.
+///   3. Call `/refactor/heal/manifest` with those inputs.
+///   4. If the AI returned an updated manifest, parse it and retry the
+///      compile ONCE via `rebuild_cmd(new_manifest)`.
+///   5. On success, write the updated manifest back to the sidecar
+///      so the NEXT compile uses it.
+///
+/// Returns `Some((output, new_manifest))` when the manifest-heal
+/// retry succeeds. Returns `None` in all these "keep going with source
+/// heal" cases:
+///   - `stderr` has no undefined-reference errors (pure source error)
+///   - sidecar has no compile_manifest (pre-Phase-3 project)
+///   - AI heal returned `unchanged: true` (couldn't infer a fix)
+///   - the retry compile also failed
+///
+/// Caller's responsibility: on Some, treat the compile as succeeded
+/// and fall through to the post-compile path (cache.put, return Ok).
+/// On None, fall through to the existing source-heal loop.
+///
+/// `rebuild_cmd` closure: given the new manifest, produce the tokio
+/// Command that will retry the compile. Must set `current_dir` and
+/// specify the output path. The closure is called at most once.
+pub async fn try_manifest_heal_retry<F>(
+    stderr: &str,
+    workspace_dir: &std::path::Path,
+    failed_module: &str,
+    source_excerpt_fallback: &str,
+    rebuild_cmd: F,
+) -> Option<(std::process::Output, crate::hmr::compile_manifest::CompileManifest)>
+where
+    F: FnOnce(&crate::hmr::compile_manifest::CompileManifest) -> tokio::process::Command,
+{
+    use crate::hmr::compile_manifest::CompileManifest;
+    use crate::hmr::undef_symbols::extract_undefined_symbols;
+
+    // 1. Extract undefined symbols
+    let symbols = extract_undefined_symbols(stderr);
+    if symbols.is_empty() {
+        return None; // pure source error, not a link error
+    }
+    eprintln!(
+        "[ManifestHeal/{}] detected {} undefined symbol(s), attempting manifest heal",
+        failed_module,
+        symbols.len()
+    );
+
+    // 2. Read sidecar for current manifest + source + arch
+    let sidecar_path = workspace_dir.join(".synthi_split_meta.json");
+    let sidecar: serde_json::Value = match tokio::fs::read_to_string(&sidecar_path).await {
+        Ok(raw) => match serde_json::from_str(&raw) {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!(
+                    "[ManifestHeal/{}] sidecar parse failed: {}",
+                    failed_module, e
+                );
+                return None;
+            }
+        },
+        Err(_) => {
+            eprintln!(
+                "[ManifestHeal/{}] no sidecar at {} — cannot heal",
+                failed_module,
+                sidecar_path.display()
+            );
+            return None;
+        }
+    };
+    let current_manifest_json = sidecar
+        .get("compile_manifest")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+    if current_manifest_json.is_null() {
+        eprintln!(
+            "[ManifestHeal/{}] sidecar has no compile_manifest field — cannot heal",
+            failed_module
+        );
+        return None;
+    }
+    let original_source = sidecar
+        .get("original_source")
+        .and_then(|s| s.as_str())
+        .unwrap_or("");
+    let source_excerpt = if !original_source.is_empty() {
+        original_source
+    } else {
+        source_excerpt_fallback
+    };
+    let architecture = sidecar
+        .get("architecture")
+        .and_then(|s| s.as_str())
+        .unwrap_or("");
+    let arch_hint: Option<&str> = if architecture.is_empty() {
+        None
+    } else {
+        Some(architecture)
+    };
+
+    // 3. Call manifest heal
+    let symbol_names: Vec<String> = symbols.iter().map(|s| s.name.clone()).collect();
+    let healed = match perform_ai_heal_manifest(
+        &current_manifest_json,
+        &symbol_names,
+        source_excerpt,
+        failed_module,
+        arch_hint,
+    )
+    .await
+    {
+        Ok(h) => h,
+        Err(e) => {
+            eprintln!(
+                "[ManifestHeal/{}] heal endpoint call failed: {}",
+                failed_module, e
+            );
+            return None;
+        }
+    };
+    if healed.unchanged {
+        eprintln!(
+            "[ManifestHeal/{}] AI returned unchanged — no retry (notes: {})",
+            failed_module,
+            healed.notes.chars().take(120).collect::<String>()
+        );
+        return None;
+    }
+
+    // 4. Parse new manifest
+    let new_manifest = match CompileManifest::from_json_value(&healed.updated_manifest) {
+        Some(m) => m,
+        None => {
+            eprintln!(
+                "[ManifestHeal/{}] new manifest JSON is malformed — skipping retry",
+                failed_module
+            );
+            return None;
+        }
+    };
+    eprintln!(
+        "[ManifestHeal/{}] heal SUCCEEDED — gui_flags={:?}, runner_flags={:?}",
+        failed_module, new_manifest.gui_link_flags, new_manifest.runner_link_flags
+    );
+
+    // 5. Write updated manifest back to sidecar BEFORE the retry so
+    //    that if the retry itself crashes, the next compile starts
+    //    from the improved manifest rather than the old broken one.
+    let mut sidecar_updated = sidecar.clone();
+    if let Some(obj) = sidecar_updated.as_object_mut() {
+        obj.insert(
+            "compile_manifest".to_string(),
+            healed.updated_manifest.clone(),
+        );
+    }
+    match serde_json::to_string(&sidecar_updated) {
+        Ok(body) => {
+            let _ = tokio::fs::write(&sidecar_path, body).await;
+            eprintln!(
+                "[ManifestHeal/{}] sidecar manifest updated at {}",
+                failed_module,
+                sidecar_path.display()
+            );
+        }
+        Err(e) => {
+            eprintln!(
+                "[ManifestHeal/{}] sidecar serialize failed: {} (retry will proceed anyway)",
+                failed_module, e
+            );
+        }
+    }
+
+    // 6. Rebuild command with new manifest + spawn
+    let mut cmd = rebuild_cmd(&new_manifest);
+    cmd.kill_on_drop(true);
+    let child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("[ManifestHeal/{}] spawn failed: {}", failed_module, e);
+            return None;
+        }
+    };
+    let out = match tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        child.wait_with_output(),
+    )
+    .await
+    {
+        Ok(Ok(o)) => o,
+        Ok(Err(e)) => {
+            eprintln!("[ManifestHeal/{}] retry wait error: {}", failed_module, e);
+            return None;
+        }
+        Err(_) => {
+            eprintln!(
+                "[ManifestHeal/{}] retry compile timed out after 30s",
+                failed_module
+            );
+            return None;
+        }
+    };
+
+    if out.status.success() {
+        eprintln!(
+            "[ManifestHeal/{}] retry compile SUCCEEDED",
+            failed_module
+        );
+        Some((out, new_manifest))
+    } else {
+        let retry_stderr = String::from_utf8_lossy(&out.stderr).to_string();
+        eprintln!(
+            "[ManifestHeal/{}] retry compile FAILED:\n{}",
+            failed_module,
+            retry_stderr.chars().take(500).collect::<String>()
+        );
+        None
+    }
+}
+
+/// Ask the AI to update a manifest's link flags after a link-time
+/// `undefined reference` failure. Wrapper around
+/// `POST /refactor/heal/manifest` (see ai-engine/main.py for the
+/// endpoint and ai-engine/diff_patch_helpers.py for the prompt body).
+///
+/// `current_manifest` is the JSON shape that came out of the split
+/// (or last successful compile) — same wire format as the manifest
+/// the worker just tried to use. Pass it through verbatim.
+///
+/// `undefined_symbols` is the result of
+/// `hmr::undef_symbols::extract_undefined_symbols(stderr)`. Empty list
+/// is a programming error — the caller should not invoke this path
+/// when there's nothing to heal.
+///
+/// `source_excerpt` is enough of the user's source for the AI to
+/// correlate symbols with `#include` directives. Caller should slice
+/// down to the includes + the function bodies that reference the
+/// missing symbols. ~2KB is plenty.
+///
+/// `failed_module` is one of "core", "gui", "shared", "host_runner".
+/// Tells the AI which manifest field needs the new flag. Server
+/// rejects anything else with HTTP 400.
+pub async fn perform_ai_heal_manifest(
+    current_manifest: &serde_json::Value,
+    undefined_symbols: &[String],
+    source_excerpt: &str,
+    failed_module: &str,
+    architecture: Option<&str>,
+) -> Result<ManifestHealResult> {
+    if undefined_symbols.is_empty() {
+        anyhow::bail!(
+            "perform_ai_heal_manifest called with empty undefined_symbols — caller bug"
+        );
+    }
+
+    let client = reqwest::Client::new();
+    let backend_url = get_ai_backend_url();
+    let url = format!("{}/refactor/heal/manifest", backend_url);
+
+    eprintln!(
+        "[ManifestHeal] POST {} ({} symbols, failed_module={}, source_excerpt={} bytes)",
+        url,
+        undefined_symbols.len(),
+        failed_module,
+        source_excerpt.len(),
+    );
+
+    let payload = serde_json::json!({
+        "current_manifest": current_manifest,
+        "undefined_symbols": undefined_symbols,
+        "source_excerpt": source_excerpt,
+        "failed_module": failed_module,
+        "architecture": architecture.unwrap_or(""),
+    });
+
+    let res: serde_json::Value = client
+        .post(&url)
+        .json(&payload)
+        // 60s — manifest heal output is tiny (~100-300 tokens of JSON)
+        // so this should normally be 1-2s. 60s is generous headroom for
+        // network flakes.
+        .timeout(std::time::Duration::from_secs(60))
+        .send()
+        .await?
+        .error_for_status()?
+        .json::<serde_json::Value>()
+        .await?;
+
+    let updated_manifest = res
+        .get("updated_manifest")
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("[ManifestHeal] response missing `updated_manifest`"))?;
+    let unchanged = res
+        .get("unchanged")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let notes = res
+        .get("notes")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let elapsed = res
+        .get("elapsed_seconds")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0);
+
+    eprintln!(
+        "[ManifestHeal] {} in {:.2}s — notes: {}",
+        if unchanged { "UNCHANGED (no fix inferred)" } else { "UPDATED" },
+        elapsed,
+        notes.chars().take(120).collect::<String>(),
+    );
+
+    Ok(ManifestHealResult {
+        updated_manifest,
+        unchanged,
+        notes,
+    })
+}

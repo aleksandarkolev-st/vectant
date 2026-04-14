@@ -17,6 +17,14 @@ CRITICAL RULE 5 (host_runner ownership):
   present, or runner-side dlopen wiring belong in `host_runner`.
   Per-frame logic stays in `core`/`gui` per the architecture.
   Empty host_runner → AI must NOT emit host_runner edits.
+
+ULTRAPLAN Phase 6: this module also hosts the manifest-heal request
+schema and prompt builder for `/refactor/heal/manifest`. The endpoint
+is the runtime safety net that catches link-time `undefined reference`
+failures: extract symbols → ask AI to update link flags → retry once.
+The prompt is intentionally library-agnostic — it never names a
+specific library or symbol prefix. The AI uses general knowledge of
+which symbols come from which library to produce updated link flags.
 """
 from __future__ import annotations
 
@@ -342,3 +350,255 @@ def build_full_diff_patch_prompt(req: DiffPatchRequest) -> str:
         "Return ONLY the JSON object. No markdown fences, no prose, no explanation.",
     ]
     return "\n".join(parts)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Manifest heal — ULTRAPLAN Phase 6
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# Runtime safety net for link errors that slipped past Phase 4.5's
+# pre-flight include→link validator. Sequence:
+#
+#   1. compile_core / compile_gui / compile_runner spawns g++/clang
+#   2. linker emits `undefined reference to X` errors
+#   3. Rust worker calls hmr::undef_symbols::extract_undefined_symbols
+#   4. Worker calls /refactor/heal/manifest with (manifest, symbols, source, module)
+#   5. AI returns updated manifest with new link flags
+#   6. Worker retries compile ONCE with the updated manifest
+#   7. On second failure, surface the visible 3-option error card
+#
+# This module owns the schema + prompt builder. The actual endpoint
+# handler in main.py is a thin wrapper that calls the LLM provider
+# and parses the response.
+#
+# ANTI-HARDCODING GUARANTEE: the prompt below contains zero library
+# names. It uses placeholder syntax and instructs the AI to read the
+# user's source + symbols and update the manifest using its general
+# knowledge. Adding a new library tomorrow needs no prompt changes.
+
+
+class HealManifestRequest(BaseModel):
+    """Request for AI-driven manifest heal after link failure.
+
+    Sent by the Rust worker when `extract_undefined_symbols` returns
+    a non-empty list and the existing source-heal loop hasn't already
+    burned its retry budget. The AI returns an updated manifest whose
+    runner_link_flags / gui_link_flags / core_link_flags satisfy the
+    missing symbols.
+    """
+
+    # The manifest the worker tried to use, as the same dict shape that
+    # came out of `manifest_to_dict` originally. Pydantic accepts dict
+    # here so the worker can ship the JSON it has on disk verbatim.
+    current_manifest: dict
+
+    # List of undefined symbol names extracted from the linker stderr.
+    # Order is preserved for diagnostic clarity but doesn't affect
+    # correctness — the AI heals based on the set, not the sequence.
+    undefined_symbols: List[str]
+
+    # Excerpt of the user's source so the AI can correlate symbols
+    # with #include directives + call sites. Should include AT LEAST
+    # the #include lines + any function bodies that reference the
+    # missing symbols. The worker's responsibility to slice this down.
+    source_excerpt: str
+
+    # Which compile stage failed: "core" / "gui" / "host_runner" /
+    # "shared". Tells the AI which manifest field needs the new flag
+    # (gui_link_flags vs core_link_flags vs runner_link_flags). The
+    # set of valid values is fixed but the rule for what they mean
+    # is generic — `failed_module` is just a routing hint.
+    failed_module: str
+
+    # Optional — the original architecture cache markdown, for context.
+    architecture: Optional[str] = None
+    model: Optional[str] = None
+    api_key: Optional[str] = None
+
+
+# Set of valid values for `failed_module`. host_runner is the runner
+# binary, shared is the header (rare to fail-link-on but possible if
+# the user puts a function body in the header — kept for completeness).
+VALID_FAILED_MODULES = {"core", "gui", "shared", "host_runner"}
+
+
+class HealManifestResponse(BaseModel):
+    """Response from /refactor/heal/manifest.
+
+    `updated_manifest` is the new manifest dict the worker should retry
+    with. `unchanged` is True when the AI couldn't suggest any new
+    flags — Rust short-circuits the retry in that case and goes
+    straight to the error card.
+    """
+
+    updated_manifest: dict
+    unchanged: bool = False
+    notes: str = ""
+
+
+def build_manifest_heal_prompt(req: HealManifestRequest) -> str:
+    """Library-agnostic prompt asking the AI to update link flags
+    based on undefined symbols + user source + current manifest.
+
+    NO library names appear anywhere in this string. All examples use
+    placeholder syntax (`<name>`) so the prompt cannot bias the AI
+    toward known libraries. The rule is generic: read the symbols and
+    the source, infer which library each symbol belongs to from your
+    own training-set knowledge, return updated flag arrays.
+    """
+    symbols_block = "\n".join(f"  - {s}" for s in req.undefined_symbols) or "  (none)"
+
+    parts: List[str] = [
+        "You are repairing a build manifest after a link-time failure.",
+        "",
+        "The user's project compiled successfully but the LINKER reported",
+        "undefined references for the symbols listed below. These symbols",
+        "exist in some external library that the manifest's link flags do",
+        "not yet pull in. Your task: update the manifest's link flag arrays",
+        "so the next compile attempt resolves these symbols.",
+        "",
+        "# CONTEXT",
+        "",
+        f"FAILED COMPILE STAGE: {req.failed_module}",
+        "",
+        "  - If `core`: update `core_link_flags` (and usually also",
+        "    `gui_link_flags` if the same library is referenced from gui).",
+        "  - If `gui`:  update `gui_link_flags`.",
+        "  - If `host_runner`: update `runner_link_flags`. Most missing-",
+        "    symbol cases at link time are runner-stage failures because",
+        "    the runner is the executable that gets the actual link.",
+        "  - If `shared`: rare — usually the symbol belongs in core/gui",
+        "    instead. Be conservative; prefer adding to core_link_flags.",
+        "",
+        "UNDEFINED SYMBOLS (raw, as the linker reported them):",
+        "",
+        symbols_block,
+        "",
+        "USER SOURCE EXCERPT (look for `#include` lines and call sites):",
+        "```",
+        req.source_excerpt,
+        "```",
+        "",
+        "CURRENT MANIFEST (this is what we tried, and the linker rejected):",
+        "```json",
+        _safe_dump_json(req.current_manifest),
+        "```",
+        "",
+    ]
+
+    if req.architecture and req.architecture.strip():
+        parts += [
+            "ARCHITECTURE CACHE (for additional context — same one used at split):",
+            "```",
+            req.architecture.strip(),
+            "```",
+            "",
+        ]
+
+    parts += [
+        "# RULES",
+        "",
+        "1. KEEP THE SAME SHAPE. Return the same JSON keys in the same order.",
+        "   You may add/remove entries inside the link flag arrays but you",
+        "   may NOT add new top-level fields, drop existing ones, or change",
+        "   `compiler` / `std` / `hot_reload_mode` / `confidence`.",
+        "",
+        "2. ADD link flags that satisfy the undefined symbols. Use your",
+        "   general knowledge of which libraries export which symbol prefixes",
+        "   (e.g. `Foo_Bar()` typically comes from `-lfoo`, `xy_init()` from",
+        "   `-lxy`). DO NOT ask the user; infer from the symbols and the",
+        "   `#include` directives in the source excerpt.",
+        "",
+        "3. PRESERVE existing link flags. If the manifest already has",
+        "   `-lSomething`, keep it — the new symbols ADD to the requirements,",
+        "   they do not replace them.",
+        "",
+        "4. DO NOT remove flags except when you're CERTAIN they are wrong",
+        "   (e.g. duplicate, contradictory, or a typo). Conservative additions",
+        "   only.",
+        "",
+        "5. UPDATE BOTH the failed-module field AND any sibling flag arrays",
+        "   that reference the same library. Example: if `core` failed and",
+        "   `<some-lib>` is used, the new flag goes into `core_link_flags`",
+        "   AND `runner_link_flags` (because the runner re-links against",
+        "   the same .so). If you're not sure whether a sibling needs the",
+        "   flag, add it conservatively — duplicate `-l` flags are harmless.",
+        "",
+        "6. IF YOU CANNOT INFER a library from a symbol, leave the manifest",
+        "   unchanged and set `unchanged: true`. The system will surface the",
+        "   3-option error card to the user instead of looping forever.",
+        "",
+        "# OUTPUT FORMAT (strict)",
+        "",
+        "Return a SINGLE JSON object with three fields:",
+        "",
+        "  {",
+        '    "updated_manifest": { ...same shape as the input manifest... },',
+        '    "unchanged": false,',
+        '    "notes": "<one-sentence explanation of what you added and why>"',
+        "  }",
+        "",
+        "If you couldn't determine the library for any symbol, return:",
+        "",
+        "  {",
+        '    "updated_manifest": { ...the input manifest, byte-identical... },',
+        '    "unchanged": true,',
+        '    "notes": "<one-sentence explanation of what was unclear>"',
+        "  }",
+        "",
+        "Return ONLY the JSON object. No markdown fences, no prose.",
+    ]
+    return "\n".join(parts)
+
+
+def _safe_dump_json(obj: dict) -> str:
+    """Dump dict as pretty JSON, falling back to repr() on any error.
+    Used in prompt assembly where we'd rather show a debuggable string
+    than crash the whole heal endpoint on a non-serialisable manifest.
+    """
+    import json as _json
+
+    try:
+        return _json.dumps(obj, indent=2, sort_keys=False)
+    except (TypeError, ValueError):
+        return repr(obj)
+
+
+def parse_heal_manifest_response(raw: str) -> HealManifestResponse:
+    """Parse the AI's JSON response into a HealManifestResponse.
+
+    Strips markdown fences if the model added them despite the prompt's
+    "no fences" instruction. Raises ValueError on shape mismatch — the
+    Rust worker treats that as "treat heal as failed, go to error card".
+    """
+    import json as _json
+
+    cleaned = raw.strip()
+    if cleaned.startswith("```json"):
+        cleaned = cleaned[7:]
+        if cleaned.endswith("```"):
+            cleaned = cleaned[:-3]
+    elif cleaned.startswith("```"):
+        cleaned = cleaned[3:]
+        if cleaned.endswith("```"):
+            cleaned = cleaned[:-3]
+    cleaned = cleaned.strip()
+
+    try:
+        data = _json.loads(cleaned)
+    except _json.JSONDecodeError as e:
+        raise ValueError(f"manifest heal response is not valid JSON: {e}") from e
+
+    if not isinstance(data, dict):
+        raise ValueError(
+            f"manifest heal response must be a JSON object, got {type(data).__name__}"
+        )
+    if "updated_manifest" not in data:
+        raise ValueError("manifest heal response missing `updated_manifest`")
+    if not isinstance(data["updated_manifest"], dict):
+        raise ValueError("`updated_manifest` must be a JSON object")
+    return HealManifestResponse(
+        updated_manifest=data["updated_manifest"],
+        unchanged=bool(data.get("unchanged", False)),
+        notes=str(data.get("notes", "")),
+    )

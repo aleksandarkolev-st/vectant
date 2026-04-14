@@ -196,6 +196,46 @@ pub async fn compile_runner(
         let stderr_str = String::from_utf8_lossy(&output.stderr).to_string();
         eprintln!("[CompileRunner] {} FAILED:\n{}", compiler_exe, stderr_str);
 
+        // ── ULTRAPLAN Phase 6: manifest heal (link errors) ──
+        // When stderr contains undefined-reference errors, the host_runner
+        // is missing a -l flag for a library it references. Ask the AI to
+        // update the manifest's runner_link_flags and retry once. This is
+        // the stage that most commonly hits missing-flag errors because
+        // the runner is the final executable link step — symbols from
+        // libraries only get resolved here.
+        let manifest_healed = crate::compiler::stages::ai_utils::try_manifest_heal_retry(
+            &stderr_str,
+            dir_path,
+            "host_runner",
+            host_runner_content,
+            |m| {
+                let mut cmd = system_command(m.compiler.executable());
+                cmd.arg(format!("-std={}", m.std));
+                // Strip -shared / -fPIC (runner is an executable, not a .so)
+                for f in &m.common_flags {
+                    if f != "-shared" && f != "-fPIC" {
+                        cmd.arg(f);
+                    }
+                }
+                cmd.arg(HOST_RUNNER_FILENAME)
+                    .arg("-I.")
+                    .arg("-o")
+                    .arg(&runner_out);
+                for f in &m.runner_link_flags {
+                    cmd.arg(f);
+                }
+                cmd.arg("-ldl").arg("-rdynamic");
+                cmd.current_dir(dir_path);
+                cmd
+            },
+        )
+        .await
+        .is_some();
+
+        if manifest_healed {
+            eprintln!("[CompileRunner] manifest heal SUCCEEDED — skipping source heal");
+        } else {
+
         // ── AI Heal Loop ──
         // Same pattern as compile_core / compile_gui: feed the broken
         // runner + g++ errors back to the AI for a repair, retry once.
@@ -316,6 +356,7 @@ pub async fn compile_runner(
             };
             anyhow::bail!("Host runner compilation failed: {}", truncated);
         }
+        } // end source-heal else-branch (Phase 6 manifest_healed=false)
     }
 
     let path = runner_out.to_string_lossy().to_string();
