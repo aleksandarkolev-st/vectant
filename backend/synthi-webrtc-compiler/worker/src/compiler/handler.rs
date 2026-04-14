@@ -43,13 +43,18 @@ async fn write_sidecar_logged(
         .and_then(|v| v.as_str())
         .map(|s| s.len())
         .unwrap_or(0);
+    let manifest_present = meta
+        .get("compile_manifest")
+        .map(|v| !v.is_null())
+        .unwrap_or(false);
     match tokio::fs::write(path, &body).await {
         Ok(()) => {
             eprintln!(
-                "[HMR] sidecar written: {} ({} bytes, arch={} chars)",
+                "[HMR] sidecar written: {} ({} bytes, arch={} chars, compile_manifest={})",
                 path.display(),
                 body.len(),
-                arch_len
+                arch_len,
+                if manifest_present { "yes" } else { "no" },
             );
         }
         Err(e) => {
@@ -120,6 +125,7 @@ use crate::hmr::deterministic_compile::{
     DeterministicRebuildScope,
 };
 use crate::hmr::build_manifest::{BuildManifest, BuildSlot, SnapshotMode};
+use crate::hmr::compile_manifest::CompileManifest;
 use crate::hmr::adapter_trait::AdapterReloadResult;
 
 pub async fn handle_compile_request(
@@ -242,10 +248,20 @@ pub async fn handle_compile_request(
                 .get("_synthi_architecture")
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
+            // ULTRAPLAN Phase 3: persist the AI-synthesised compile manifest
+            // alongside the architecture. On Tier 2/3 the FallbackDeterministic
+            // branch reads it back from the sidecar. `null` is the "no manifest
+            // in this response" sentinel — downstream treats it as "fall back
+            // to sdl2_default()".
+            let manifest_json = result
+                .get("_synthi_manifest")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null);
             let meta = serde_json::json!({
                 "split_hash": source_hash_str,
                 "original_source": req.source,
                 "architecture": architecture_md,
+                "compile_manifest": manifest_json,
             });
             write_sidecar_logged(&sidecar_path, &meta).await;
 
@@ -313,10 +329,13 @@ pub async fn handle_compile_request(
                 // Read the original source saved at AI-split time.  Diff it
                 // against the user's new source, then transplant each changed
                 // line into the right split file (core/gui/shared).
-                // Read both `original_source` (diff baseline) and `architecture`
-                // (cached split doc — may be empty on pre-migration sidecars)
-                // from the same sidecar file in one pass.
-                let (original_source, architecture_md) = {
+                // Read `original_source` (diff baseline), `architecture`
+                // (cached split doc — may be empty on pre-migration sidecars),
+                // and `compile_manifest` (AI-synthesised build recipe from the
+                // universal split prompt — may be null on pre-Phase-3 sidecars,
+                // in which case downstream falls back to sdl2_default()) from
+                // the same sidecar file in one pass.
+                let (original_source, architecture_md, sidecar_manifest_json) = {
                     if let Ok(meta_raw) = tokio::fs::read_to_string(&sidecar_path).await {
                         match serde_json::from_str::<serde_json::Value>(&meta_raw) {
                             Ok(meta) => {
@@ -329,22 +348,27 @@ pub async fn handle_compile_request(
                                     .and_then(|s| s.as_str())
                                     .unwrap_or("")
                                     .to_string();
-                                (src, arch)
+                                let manifest = meta
+                                    .get("compile_manifest")
+                                    .cloned()
+                                    .unwrap_or(serde_json::Value::Null);
+                                (src, arch, manifest)
                             }
-                            Err(_) => (None, String::new()),
+                            Err(_) => (None, String::new(), serde_json::Value::Null),
                         }
                     } else {
-                        (None, String::new())
+                        (None, String::new(), serde_json::Value::Null)
                     }
                 };
                 // Log what came back so the user can verify the cache is
                 // round-tripping: the Proceed branch's "sidecar written: ...
                 // arch=NNNN chars" should match this read's "arch=NNNN chars".
                 eprintln!(
-                    "[HMR] sidecar read: {} (original_source={}, arch={} chars)",
+                    "[HMR] sidecar read: {} (original_source={}, arch={} chars, compile_manifest={})",
                     sidecar_path.display(),
                     if original_source.is_some() { "yes" } else { "no" },
-                    architecture_md.len()
+                    architecture_md.len(),
+                    if sidecar_manifest_json.is_null() { "no" } else { "yes" },
                 );
 
                 if let Some(old_source) = original_source {
@@ -436,10 +460,15 @@ pub async fn handle_compile_request(
                                                     .get("_synthi_architecture")
                                                     .and_then(|v| v.as_str())
                                                     .unwrap_or("");
+                                                let fresh_manifest = result
+                                                    .get("_synthi_manifest")
+                                                    .cloned()
+                                                    .unwrap_or(serde_json::Value::Null);
                                                 let meta = serde_json::json!({
                                                     "split_hash": source_hash_str,
                                                     "original_source": req.source,
                                                     "architecture": fresh_arch,
+                                                    "compile_manifest": fresh_manifest,
                                                 });
                                                 write_sidecar_logged(&sidecar_path, &meta).await;
                                                 return Ok(result);
@@ -453,10 +482,15 @@ pub async fn handle_compile_request(
                                             .get("_synthi_architecture")
                                             .and_then(|v| v.as_str())
                                             .unwrap_or("");
+                                        let fresh_manifest = result
+                                            .get("_synthi_manifest")
+                                            .cloned()
+                                            .unwrap_or(serde_json::Value::Null);
                                         let meta = serde_json::json!({
                                             "split_hash": source_hash_str,
                                             "original_source": req.source,
                                             "architecture": fresh_arch,
+                                            "compile_manifest": fresh_manifest,
                                         });
                                         write_sidecar_logged(&sidecar_path, &meta).await;
                                         return Ok(result);
@@ -574,10 +608,15 @@ pub async fn handle_compile_request(
                                                     .get("_synthi_architecture")
                                                     .and_then(|v| v.as_str())
                                                     .unwrap_or("");
+                                                let fresh_manifest = result
+                                                    .get("_synthi_manifest")
+                                                    .cloned()
+                                                    .unwrap_or(serde_json::Value::Null);
                                                 let meta = serde_json::json!({
                                                     "split_hash": source_hash_str,
                                                     "original_source": req.source,
                                                     "architecture": fresh_arch,
+                                                    "compile_manifest": fresh_manifest,
                                                 });
                                                 write_sidecar_logged(&sidecar_path, &meta).await;
                                                 return Ok(result);
@@ -594,10 +633,15 @@ pub async fn handle_compile_request(
                                             .get("_synthi_architecture")
                                             .and_then(|v| v.as_str())
                                             .unwrap_or("");
+                                        let fresh_manifest = result
+                                            .get("_synthi_manifest")
+                                            .cloned()
+                                            .unwrap_or(serde_json::Value::Null);
                                         let meta = serde_json::json!({
                                             "split_hash": source_hash_str,
                                             "original_source": req.source,
                                             "architecture": fresh_arch,
+                                            "compile_manifest": fresh_manifest,
                                         });
                                         write_sidecar_logged(&sidecar_path, &meta).await;
                                         return Ok(result);
@@ -607,9 +651,11 @@ pub async fn handle_compile_request(
                         };
 
                         // Write patched files to disk + update sidecar. Preserve
-                        // the existing architecture cache — this is a diff-patch
-                        // apply, not a re-split, so the architecture is still
-                        // valid (same split modules, same contract).
+                        // the existing architecture cache AND compile manifest
+                        // — this is a diff-patch apply, not a re-split, so the
+                        // architecture is still valid (same split modules, same
+                        // contract) and the manifest hasn't changed (same
+                        // library, same link flags).
                         if let Some(ref p) = enrichment.adapted_status.core_path {
                             let _ = tokio::fs::write(p, &final_core).await;
                         }
@@ -623,13 +669,15 @@ pub async fn handle_compile_request(
                             "split_hash": source_hash_str,
                             "original_source": req.source,
                             "architecture": architecture_md,
+                            "compile_manifest": sidecar_manifest_json.clone(),
                         });
                         write_sidecar_logged(&sidecar_path, &meta).await;
 
                         serde_json::json!({
                             "shared": { "content": final_shared, "filename": "shared.h" },
                             "core": { "content": final_core, "filename": "core.cpp" },
-                            "gui": { "content": final_gui, "filename": "gui.cpp" }
+                            "gui": { "content": final_gui, "filename": "gui.cpp" },
+                            "_synthi_manifest": sidecar_manifest_json.clone(),
                         })
                     }
                 } else {
@@ -640,10 +688,15 @@ pub async fn handle_compile_request(
                         .get("_synthi_architecture")
                         .and_then(|v| v.as_str())
                         .unwrap_or("");
+                    let fresh_manifest = result
+                        .get("_synthi_manifest")
+                        .cloned()
+                        .unwrap_or(serde_json::Value::Null);
                     let meta = serde_json::json!({
                         "split_hash": source_hash_str,
                         "original_source": req.source,
                         "architecture": fresh_arch,
+                        "compile_manifest": fresh_manifest,
                     });
                     write_sidecar_logged(&sidecar_path, &meta).await;
                     result
@@ -834,6 +887,52 @@ pub async fn handle_compile_request(
         tokio::fs::write(ctx.workspace_path.join(shared_fname), &processed_shared).await?;
     }
 
+    // ULTRAPLAN Phase 3: resolve the compile manifest for this request.
+    //
+    // Three-layer lookup:
+    //   1. `split_data._synthi_manifest` — set by ai_utils Proceed branch
+    //      AND by the FallbackDeterministic Tier 2 success path (preserved
+    //      from sidecar). Covers the common happy-path flows.
+    //   2. sidecar `.synthi_split_meta.json::compile_manifest` — re-read
+    //      here to cover `AiBypassResult::UseCached` (where the cached
+    //      split content was reused but the manifest wasn't threaded
+    //      through) and any edge case where the split_data was built
+    //      without the manifest embedded.
+    //   3. None → downstream `compile_core` / `compile_gui` fall back to
+    //      `CompileManifest::sdl2_default()`, preserving exact backward
+    //      compatibility with pre-universal-prompt projects.
+    let compile_manifest: Option<CompileManifest> = {
+        let from_split_data = split_data
+            .get("_synthi_manifest")
+            .and_then(|v| if v.is_null() { None } else { Some(v) })
+            .and_then(CompileManifest::from_json_value);
+        if from_split_data.is_some() {
+            from_split_data
+        } else {
+            // Fallback: re-read sidecar. Cheap — tens of KB at most,
+            // and only on UseCached/edge paths that don't carry the
+            // manifest inside split_data.
+            match tokio::fs::read_to_string(&sidecar_path).await {
+                Ok(raw) => serde_json::from_str::<serde_json::Value>(&raw)
+                    .ok()
+                    .and_then(|meta| meta.get("compile_manifest").cloned())
+                    .and_then(|v| if v.is_null() { None } else { Some(v) })
+                    .and_then(|v| CompileManifest::from_json_value(&v)),
+                Err(_) => None,
+            }
+        }
+    };
+    match &compile_manifest {
+        Some(m) => eprintln!(
+            "[HMR] compile_manifest: compiler={}, std={}, gui_link={:?}, hot_reload={}",
+            m.compiler.executable(),
+            m.std,
+            m.gui_link_flags,
+            m.hot_reload_mode.as_str(),
+        ),
+        None => eprintln!("[HMR] compile_manifest: none (falling back to sdl2_default downstream)"),
+    }
+
     // Compile Core
     let core_lib_path_opt = compile_core(
         ctx,
@@ -845,6 +944,7 @@ pub async fn handle_compile_request(
         timestamp,
         ext,
         Some(session_id.clone()),
+        compile_manifest.as_ref(),
     )
     .await?;
 
@@ -863,6 +963,7 @@ pub async fn handle_compile_request(
         ext,
         Some(session_id.clone()),
         req.is_gui,
+        compile_manifest.as_ref(),
     )
     .await?;
 

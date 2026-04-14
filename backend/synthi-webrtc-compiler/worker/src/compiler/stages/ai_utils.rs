@@ -235,6 +235,28 @@ pub async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value>
         }
     }
 
+    // ULTRAPLAN Phase 3: capture the compile manifest the AI synthesised
+    // alongside the architecture cache. The Python response wrapper is
+    // `{result: "...", architecture: "...", manifest: {...}, ...}` under
+    // the universal split prompt. We stash it as `_synthi_manifest` in the
+    // split Value so handler.rs can pull it into the sidecar and thread it
+    // into compile_core / compile_gui. If the field is absent (old sidecar,
+    // backend running pre-Phase-2 code, or parse failure on Python side),
+    // downstream falls back to `CompileManifest::sdl2_default()`.
+    if let Some(manifest) = raw_response.get("manifest") {
+        if !manifest.is_null() {
+            let manifest_size = manifest.to_string().len();
+            eprintln!("[AI Split] compile manifest captured ({} bytes)", manifest_size);
+            if let Some(obj) = res.as_object_mut() {
+                obj.insert("_synthi_manifest".to_string(), manifest.clone());
+            }
+        } else {
+            eprintln!("[AI Split] manifest field is null (fallback to sdl2 default downstream)");
+        }
+    } else {
+        eprintln!("[AI Split] no manifest in response (fallback to sdl2 default downstream)");
+    }
+
     // Cache result (Level 1 only — the structural cache is gone).
     let cached_entry = CachedSplit {
         result: res.clone(),

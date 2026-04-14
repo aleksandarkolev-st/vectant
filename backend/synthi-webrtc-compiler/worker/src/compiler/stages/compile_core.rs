@@ -2,6 +2,7 @@ use crate::compiler::builder::RebuildScope;
 use crate::compiler::context::CompileContext;
 use crate::compiler::error_parser::{parse_compiler_output, CompilerType};
 use crate::compiler::stages::ai_utils::calculate_hash;
+use crate::hmr::compile_manifest::CompileManifest;
 use crate::hmr::incremental_cache::IncrementalCache;
 use crate::infra::utils::system_command;
 use anyhow::{Context, Result};
@@ -17,8 +18,26 @@ pub async fn compile_core(
     timestamp: i64,
     ext: &str,
     session_id: Option<String>,
+    compile_manifest: Option<&CompileManifest>,
 ) -> Result<Option<String>> {
     let dir_path = &ctx.workspace_path;
+
+    // ULTRAPLAN Phase 3: resolve the effective compile manifest.
+    // If the AI-synthesised manifest is present (universal split prompt
+    // path), use it to drive the g++ invocation. Otherwise fall back to
+    // the hardcoded SDL2 shape, which matches the pre-Phase-3 behavior
+    // exactly — so existing SDL2 projects compile identically whether or
+    // not a manifest is in the sidecar.
+    let owned_default_manifest;
+    let effective_manifest: &CompileManifest = match compile_manifest {
+        Some(m) => m,
+        None => {
+            owned_default_manifest = CompileManifest::sdl2_default();
+            &owned_default_manifest
+        }
+    };
+    let compiler_exe = effective_manifest.compiler.executable();
+    let std_flag = format!("-std={}", effective_manifest.std);
 
     // Skip core compilation if GUI-only rebuild (reuse existing core.so)
     if rebuild_scope == RebuildScope::Both || rebuild_scope == RebuildScope::CoreOnly {
@@ -31,9 +50,27 @@ pub async fn compile_core(
             // Calculate hash for caching
             let content_hash = calculate_hash(&content);
 
-            // Try content-addressable cache first
-            // Note: In a real scenario, we might want to include compiler flags in the key
-            let cache_key = IncrementalCache::cache_key(content, &["-shared", "-fPIC"], &[]);
+            // Build the effective flag list used both for compile AND for
+            // the cache key. Includes manifest common_flags, std,
+            // core_link_flags, and the hardcoded dlopen boilerplate
+            // (-ldl -pthread -rdynamic). Keeping the cache key in sync with
+            // the real args means different manifests don't collide in the
+            // content-addressable cache.
+            let mut effective_flag_strings: Vec<String> = Vec::with_capacity(
+                effective_manifest.common_flags.len()
+                    + effective_manifest.core_link_flags.len()
+                    + 4,
+            );
+            effective_flag_strings.push(std_flag.clone());
+            effective_flag_strings.extend(effective_manifest.common_flags.iter().cloned());
+            effective_flag_strings.extend(effective_manifest.core_link_flags.iter().cloned());
+            effective_flag_strings.push("-ldl".to_string());
+            effective_flag_strings.push("-pthread".to_string());
+            effective_flag_strings.push("-rdynamic".to_string());
+            let effective_flag_refs: Vec<&str> =
+                effective_flag_strings.iter().map(String::as_str).collect();
+
+            let cache_key = IncrementalCache::cache_key(content, &effective_flag_refs, &[]);
 
             if let Some(cached_so) = ctx.incremental_cache.get(&cache_key).await {
                 let path = cached_so.to_string_lossy().to_string();
@@ -44,19 +81,16 @@ pub async fn compile_core(
                 tokio::fs::write(dir_path.join(fname), content).await?;
 
                 let core_out = output_dir.join(format!("libcore_{}.{}", timestamp, ext));
-                let mut cmd = system_command("g++");
-                cmd.arg("-shared")
-                    .arg("-fPIC")
-                    .arg("-D_POSIX_C_SOURCE=199309L")
-                    .arg("-g")
-                    .arg("-gdwarf-4")
-                    .arg("-fno-omit-frame-pointer")
-                    .arg("-fdiagnostics-format=json")
-                    .arg(fname)
-                    .arg("-I.")
-                    .arg("-o")
-                    .arg(&core_out)
-                    .arg("-ldl")
+                let mut cmd = system_command(compiler_exe);
+                cmd.arg(&std_flag);
+                for f in &effective_manifest.common_flags {
+                    cmd.arg(f);
+                }
+                cmd.arg(fname).arg("-I.").arg("-o").arg(&core_out);
+                for f in &effective_manifest.core_link_flags {
+                    cmd.arg(f);
+                }
+                cmd.arg("-ldl")
                     .arg("-pthread") // Required for threaded adapters
                     .arg("-rdynamic");
                 cmd.current_dir(dir_path);
@@ -122,12 +156,20 @@ pub async fn compile_core(
                         ).await {
                             Ok(fixed) => {
                                 tokio::fs::write(dir_path.join(fname), &fixed).await?;
-                                let mut retry_cmd = system_command("g++");
-                                retry_cmd.arg("-shared").arg("-fPIC")
-                                    .arg("-D_POSIX_C_SOURCE=199309L").arg("-g").arg("-gdwarf-4")
-                                    .arg("-fno-omit-frame-pointer").arg("-fdiagnostics-format=json")
-                                    .arg(fname).arg("-I.").arg("-o").arg(&core_out)
-                                    .arg("-ldl").arg("-pthread").arg("-rdynamic");
+                                let mut retry_cmd = system_command(compiler_exe);
+                                retry_cmd.arg(&std_flag);
+                                for f in &effective_manifest.common_flags {
+                                    retry_cmd.arg(f);
+                                }
+                                retry_cmd
+                                    .arg(fname)
+                                    .arg("-I.")
+                                    .arg("-o")
+                                    .arg(&core_out);
+                                for f in &effective_manifest.core_link_flags {
+                                    retry_cmd.arg(f);
+                                }
+                                retry_cmd.arg("-ldl").arg("-pthread").arg("-rdynamic");
                                 retry_cmd.current_dir(dir_path);
                                 retry_cmd.kill_on_drop(true);
                                 if let Ok(retry_child) = retry_cmd.spawn() {
@@ -180,7 +222,9 @@ pub async fn compile_core(
                 // Update persistent cache
                 if let Ok(so_data) = tokio::fs::read(&path).await {
                     let source_hash = content_hash;
-                    let flags_hash = calculate_hash(&"-shared-fPIC"); // Simplified flag hash
+                    // Hash the full effective flag list so that a manifest
+                    // change (e.g. new link flags) invalidates the cached .so.
+                    let flags_hash = calculate_hash(&effective_flag_strings.join(" "));
                     let headers_hash = 0u64; // Assuming headers didn't change for this scoped recompilation or are captured in content hash if included.
                                              // Ideally we'd hash shared.h too, but that affects content via guardrails anyway.
                     let _ = ctx
