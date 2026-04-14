@@ -11,6 +11,7 @@ use crate::infra::messages::CompileRequest;
 use crate::compiler::stages::ai_utils::{perform_ai_split, perform_ai_diff_patch};
 use crate::compiler::stages::compile_core::compile_core;
 use crate::compiler::stages::compile_gui::compile_gui;
+use crate::compiler::stages::compile_runner::{compile_runner, HOST_RUNNER_FILENAME};
 use crate::compiler::stages::guardrails::{
     apply_core_guardrails, apply_gui_guardrails, apply_shared_guardrails,
 };
@@ -970,6 +971,133 @@ pub async fn handle_compile_request(
     // If GUI is not requested or failed (but core succeeded), we might proceed with just core?
     // But `gui_lib_path_opt` returns existing path if not rebuilt.
     let gui_lib_path = gui_lib_path_opt.unwrap_or(prev_gui_path.unwrap_or_default());
+
+    // ============================================================
+    // ULTRAPLAN PHASE 4: HOST RUNNER COMPILATION
+    // ============================================================
+    //
+    // The universal split prompt emits a 4th file alongside core/gui/
+    // shared: `host_runner.cpp`, the per-project main() that owns the
+    // window/event loop and dlopens libcore.so + libgui.so. We compile
+    // it as a build artifact here.
+    //
+    // V1 scope: BUILD only. The runtime-side runner spawn is still the
+    // shipped `runner_bin` binary (with its full HMR protocol + Xvfb /
+    // GStreamer video streaming). Switching the runtime spawn to the
+    // per-project compiled runner is a Phase 5+ concern because it has
+    // implications for how video gets out to the browser.
+    //
+    // BYOR mode: when `adapted_status.user_owned_runner` is true (the
+    // existing host_runner.cpp on disk starts with `// SYNTHI_USER_RUNNER`),
+    // we MUST NOT overwrite it with the AI's regenerated content — even
+    // on a fresh AI split. We just rebuild the user's existing file.
+    // See HMR_AGNOSTIC_ULTRAPLAN.md §5.2 (Mitigation 2B).
+    let host_runner_content: Option<String> = if enrichment.adapted_status.user_owned_runner {
+        // BYOR: read the user-authored runner from disk, ignore split_data.
+        if let Some(ref p) = enrichment.adapted_status.host_runner_path {
+            match tokio::fs::read_to_string(p).await {
+                Ok(content) => {
+                    eprintln!(
+                        "[HMR] host_runner: BYOR mode — reusing user-owned runner ({} bytes from {})",
+                        content.len(),
+                        p.display()
+                    );
+                    Some(content)
+                }
+                Err(e) => {
+                    eprintln!("[HMR] host_runner: BYOR sentinel set but read failed: {}", e);
+                    None
+                }
+            }
+        } else {
+            eprintln!("[HMR] host_runner: BYOR flag set but no host_runner_path — skipping");
+            None
+        }
+    } else {
+        // AI-owned: prefer fresh content from split_data (Proceed / Tier 3
+        // re-split paths), fall back to disk read (UseCached / Tier 2
+        // diff_patch apply paths where split_data was constructed without
+        // the host_runner field).
+        let from_split = split_data
+            .get("host_runner")
+            .and_then(|v| v.get("content"))
+            .and_then(|c| c.as_str())
+            .filter(|s| !s.trim().is_empty())
+            .map(|s| s.to_string());
+        if let Some(content) = from_split {
+            // Persist to workspace so detect_adapted_project picks it up
+            // on the next compile and the user can see / edit the file.
+            let host_runner_disk = ctx.workspace_path.join(HOST_RUNNER_FILENAME);
+            match tokio::fs::write(&host_runner_disk, &content).await {
+                Ok(()) => {
+                    eprintln!(
+                        "[HMR] host_runner: wrote {} bytes from split_data → {}",
+                        content.len(),
+                        host_runner_disk.display()
+                    );
+                }
+                Err(e) => {
+                    eprintln!("[HMR] host_runner: workspace write FAILED: {}", e);
+                }
+            }
+            Some(content)
+        } else if let Some(ref p) = enrichment.adapted_status.host_runner_path {
+            // No fresh content (cached / tier-2 diff_patch path) — read
+            // the on-disk copy. compile_runner's content cache will hit
+            // for unchanged files so this is cheap.
+            match tokio::fs::read_to_string(p).await {
+                Ok(content) => {
+                    eprintln!(
+                        "[HMR] host_runner: reusing on-disk runner ({} bytes from {})",
+                        content.len(),
+                        p.display()
+                    );
+                    Some(content)
+                }
+                Err(e) => {
+                    eprintln!("[HMR] host_runner: disk read failed: {}", e);
+                    None
+                }
+            }
+        } else {
+            eprintln!(
+                "[HMR] host_runner: no content from split_data or disk — skipping runner compile (pre-Phase-4 project)"
+            );
+            None
+        }
+    };
+
+    // Compile the runner if we have content. Errors here are non-fatal
+    // for V1 — the shipped runner_bin still launches at runtime, so a
+    // host_runner build failure is observability only. When Phase 5+
+    // wires runtime spawn to the per-project runner, this should bail
+    // hard on Err instead.
+    let host_runner_bin_path: Option<String> = if let Some(ref content) = host_runner_content {
+        match compile_runner(
+            ctx,
+            content,
+            &output_dir,
+            timestamp,
+            Some(session_id.clone()),
+            compile_manifest.as_ref(),
+        )
+        .await
+        {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!(
+                    "[HMR] compile_runner FAILED (non-fatal in V1, runtime still uses shipped runner): {}",
+                    e
+                );
+                None
+            }
+        }
+    } else {
+        None
+    };
+    if let Some(ref p) = host_runner_bin_path {
+        eprintln!("[HMR] host_runner binary: {}", p);
+    }
 
     // Manual logging
     debug_log!("[Compile] Step: Compilation finished");

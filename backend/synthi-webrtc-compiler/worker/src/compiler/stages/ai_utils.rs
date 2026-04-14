@@ -257,6 +257,32 @@ pub async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value>
         eprintln!("[AI Split] no manifest in response (fallback to sdl2 default downstream)");
     }
 
+    // ULTRAPLAN Phase 4: log host_runner presence. The parsed `res` Value
+    // already carries `host_runner` as a sibling of `core`/`gui`/`shared`
+    // (because the universal split prompt outputs all four fields inside
+    // the same `<JSON>` block, which Python forwards as `result`). No
+    // explicit re-stashing is needed here — handler.rs reads
+    // `split_data["host_runner"]["content"]` directly. This block is
+    // observability only: confirms the AI honoured the 4-file contract.
+    match res.get("host_runner").and_then(|v| v.get("content")).and_then(|c| c.as_str()) {
+        Some(content) if !content.trim().is_empty() => {
+            eprintln!(
+                "[AI Split] host_runner.cpp captured ({} bytes)",
+                content.len()
+            );
+        }
+        Some(_) => {
+            eprintln!(
+                "[AI Split] host_runner field present but empty — universal split prompt likely failed; downstream will skip runner compile"
+            );
+        }
+        None => {
+            eprintln!(
+                "[AI Split] no host_runner in response — pre-universal-prompt or split-only project; downstream will skip runner compile"
+            );
+        }
+    }
+
     // Cache result (Level 1 only — the structural cache is gone).
     let cached_entry = CachedSplit {
         result: res.clone(),
