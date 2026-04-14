@@ -39,8 +39,16 @@ from analyzer import get_analyzer
 from analyzer import supported_languages
 
 from llm.providers import get_provider
-from llm.prompts import SPLIT_GUI_PROMPT
+from llm.prompts import SPLIT_GUI_PROMPT, UNIVERSAL_SPLIT_PROMPT
 from llm.structural_prompts import format_heal_prompt
+from build_manifest import (
+    BuildManifest,
+    ManifestRejection,
+    parse_manifest,
+    validate_manifest_v1,
+    validate_include_link_coverage,
+    manifest_to_dict,
+)
 
 # New imports for enhanced architecture
 from job_queue import (
@@ -119,6 +127,124 @@ def extract_architecture(ai_response: str) -> Tuple[str, str]:
     json_part = re.sub(r"\n?```\s*$", "", json_part).rstrip()
     arch_part = (match.group("body") or "").strip()
     return json_part, arch_part
+
+
+# ══════════════════════════════════════════════════════════════
+# Build manifest extraction (for /refactor/split/verified V2 universal)
+# ══════════════════════════════════════════════════════════════
+#
+# The universal split prompt (UNIVERSAL_SPLIT_PROMPT) asks the AI to
+# emit a machine-readable JSON block inside the architecture cache,
+# wrapped in <synthi_build_manifest>...</synthi_build_manifest> tags.
+# We parse it with its own regex (nested inside the arch cache) and
+# validate with pydantic in build_manifest.py.
+#
+# Nested XML tags (rather than a fenced ```json block) chosen because:
+#   - Same regex shape as the outer <synthi_arch_cache> (easy to parse)
+#   - Impossible to collide with markdown prose in the arch doc
+#   - Fails cleanly on truncation (unmatched close → no match → no manifest)
+#
+# See HMR_AGNOSTIC_ULTRAPLAN.md §4 for the full schema.
+
+_MANIFEST_TAG_RE = re.compile(
+    r"""
+    <\s*synthi_build_manifest\s*>\s*\n?
+    (?P<body>.*?)
+    \n?\s*<\s*/\s*synthi_build_manifest\s*>
+    """,
+    re.IGNORECASE | re.VERBOSE | re.DOTALL,
+)
+
+# The universal split prompt wraps the 4-file JSON object in <JSON>...</JSON>
+# tags (see UNIVERSAL_SPLIT_PROMPT output format spec). The legacy
+# SPLIT_GUI_PROMPT didn't, so the handler's `result_str` json.loads call
+# used to work on raw JSON directly. With the universal prompt, we need to
+# unwrap the tags here before returning `json_part` or the downstream
+# json.loads explodes with a JSONDecodeError, the handler falls into its
+# error-catch branch, and the response comes back as
+# {result: None, error: ...} — which is exactly what the live test hit on
+# its first run (0/3 tests passing, handler returning error-shape dicts).
+#
+# Non-greedy match + first-match-wins because the prompt spec says the
+# <JSON> block comes FIRST in the response. Case-insensitive for forgiveness.
+_JSON_WRAPPER_RE = re.compile(
+    r"""
+    <\s*JSON\s*>\s*\n?
+    (?P<body>.*?)
+    \n?\s*<\s*/\s*JSON\s*>
+    """,
+    re.IGNORECASE | re.VERBOSE | re.DOTALL,
+)
+
+
+def extract_architecture_and_manifest(
+    ai_response: str,
+) -> Tuple[str, str, Optional[dict]]:
+    """Parse the universal-split AI response into its three parts.
+
+    Returns `(json_part, architecture_md, manifest_dict)`:
+      - `json_part` — the JSON object containing the 4 files, with any
+        `<JSON>...</JSON>` wrapper stripped so the caller can pass it
+        directly to `json.loads`. If the AI didn't wrap it, returned
+        as-is (text before the arch cache, same as legacy extractor).
+      - `architecture_md` — the markdown inside <synthi_arch_cache> (with
+        the <synthi_build_manifest> block stripped out). Empty string if
+        the tag was not present in the response.
+      - `manifest_dict` — the JSON dict inside <synthi_build_manifest>.
+        `None` if the tag was not present or the JSON failed to parse.
+
+    Never raises — all failures degrade to partial results so the caller
+    can decide whether to continue (pre-universal-prompt fallback) or
+    error out.
+    """
+    if not isinstance(ai_response, str) or not ai_response:
+        return (ai_response or ""), "", None
+
+    # First split at the arch cache boundary (same as legacy extractor).
+    json_part, arch_md = extract_architecture(ai_response)
+
+    # Then pull the manifest JSON out of the arch cache. The manifest tag
+    # lives INSIDE the arch cache, so we search the full original response
+    # (not just arch_md) because the legacy extractor already stripped the
+    # outer tags and the manifest may straddle whitespace edges.
+    manifest_dict: Optional[dict] = None
+    if arch_md:
+        manifest_match = _MANIFEST_TAG_RE.search(ai_response)
+        if manifest_match:
+            manifest_raw = (manifest_match.group("body") or "").strip()
+            try:
+                manifest_dict = json.loads(manifest_raw)
+            except json.JSONDecodeError as e:
+                logger.warning(
+                    f"[split/verified] <synthi_build_manifest> not valid JSON: {e}"
+                )
+                # Best-effort fallback: strip trailing commas some models emit
+                cleaned = re.sub(r",(\s*[}\]])", r"\1", manifest_raw)
+                try:
+                    manifest_dict = json.loads(cleaned)
+                    logger.info(
+                        "[split/verified] manifest recovered after trailing-comma cleanup"
+                    )
+                except Exception:
+                    manifest_dict = None
+
+            # Also strip the manifest block from the returned arch_md so the
+            # architecture markdown the worker stores doesn't duplicate JSON.
+            arch_md = _MANIFEST_TAG_RE.sub("", arch_md).strip()
+
+    # Unwrap <JSON>...</JSON> from json_part so the caller's json.loads sees
+    # clean JSON. The universal split prompt wraps the 4-file object in these
+    # tags; without this step, the handler's json.loads raises JSONDecodeError,
+    # falls into its error branch, and returns {result: None, error: ...}
+    # with no architecture / manifest / verified fields — exactly what the
+    # live test hit before this fix. First-match-wins per the prompt spec
+    # (the <JSON> block comes FIRST in the response).
+    if isinstance(json_part, str) and json_part:
+        json_wrap_match = _JSON_WRAPPER_RE.search(json_part)
+        if json_wrap_match:
+            json_part = (json_wrap_match.group("body") or "").strip()
+
+    return json_part, arch_md, manifest_dict
 # Proactive Analysis imports
 from analyzer.proactive import (
     ProactiveAnalyzer,
@@ -1392,11 +1518,16 @@ async def refactor_split_verified(req: VerifiedAiRequest):
         return None
 
     provider = get_provider(provider_name=select_provider_name(), use_custom=bool(req.api_key))
-    
-    prompt = SPLIT_GUI_PROMPT
+
+    # Use the universal library-agnostic split prompt (Phase 1 of ULTRAPLAN).
+    # It produces a 4-file split (shared / core / gui / host_runner) + a
+    # machine-readable build manifest inside the arch cache, for ANY C++
+    # library (not just SDL2). Substitute the user source into the template
+    # so it's inlined at request time.
+    prompt = UNIVERSAL_SPLIT_PROMPT.replace("{USER_CODE}", req.code)
     if req.prompt:
         prompt += "\nUser Instructions: " + req.prompt
-        
+
     try:
         ai_suggestion = await provider.ask_llm(
             req.code,
@@ -1405,8 +1536,8 @@ async def refactor_split_verified(req: VerifiedAiRequest):
             mode="split",
             files=req.files,
             focus=req.focus,
-            # Split needs stronger reasoning — 88K prompt, structured
-            # JSON output, must not drift. Pro model by default.
+            # Universal split with 4-file output + build manifest needs
+            # stronger reasoning; pro by default. Override via req.model.
             model=req.model or "gemini-3.1-flash-lite-preview",
             api_key=req.api_key,
         )
@@ -1421,23 +1552,76 @@ async def refactor_split_verified(req: VerifiedAiRequest):
             latency_ms=latency_ms,
         )
         tracker.update_output(provenance_id, ai_suggestion)
-        
+
     except Exception as e:
         tracker.mark_rejected(provenance_id, f"AI error: {e}")
         raise HTTPException(status_code=400, detail=str(e))
 
     # Parse and verify split result
     try:
-        # First, peel off the architecture cache block (if present). The split
-        # prompt asks the model to emit <synthi_arch_cache>...</synthi_arch_cache>
-        # AFTER the JSON. Extracting it first means the JSON parser never sees
-        # the trailer, and the architecture string flows through to the Rust
-        # worker for sidecar storage.
-        json_only_response, architecture_md = extract_architecture(ai_suggestion)
+        # Peel off the architecture cache AND the nested build manifest.
+        # Universal prompt emits:
+        #   <JSON>{4 files}</JSON>
+        #   <synthi_arch_cache># Architecture...<synthi_build_manifest>{...}</synthi_build_manifest></synthi_arch_cache>
+        # The extractor returns (json_part, arch_md, manifest_dict). The
+        # manifest is validated via pydantic below and forwarded to the
+        # Rust worker for compile dispatch.
+        json_only_response, architecture_md, manifest_dict = (
+            extract_architecture_and_manifest(ai_suggestion)
+        )
         if architecture_md:
-            logger.info(f"[split/verified] architecture cache captured ({len(architecture_md)} chars)")
+            logger.info(
+                f"[split/verified] architecture cache captured ({len(architecture_md)} chars)"
+            )
         else:
-            logger.info("[split/verified] no architecture cache in response (fallback to generic)")
+            logger.info(
+                "[split/verified] no architecture cache in response (fallback to generic)"
+            )
+
+        # Parse + validate the manifest (Phase 2). If malformed, log and
+        # return `manifest=None` so the Rust worker falls back to hardcoded
+        # SDL2 defaults (backward compat with pre-universal sidecars).
+        manifest_parsed: Optional[BuildManifest] = None
+        manifest_out: Optional[dict] = None
+        if manifest_dict is not None:
+            try:
+                manifest_parsed = parse_manifest(manifest_dict)
+                validate_manifest_v1(manifest_parsed)
+                # ULTRAPLAN Phase 4.5: enforce the generic include→link rule
+                # against the user's source. This is library-agnostic — it
+                # scans the source's #include directives and checks that
+                # every non-stdlib header has a corresponding link flag in
+                # both runner_link_flags and gui_link_flags, OR is excused
+                # via confidence.notes. Catches the common AI flake of
+                # producing gui_link_flags=["-lSDL2"] but
+                # runner_link_flags=["-lSDL2"] for a project that also
+                # includes <fmod.h>, before the manifest reaches the worker.
+                validate_include_link_coverage(manifest_parsed, req.code)
+                manifest_out = manifest_to_dict(manifest_parsed)
+                logger.info(
+                    f"[split/verified] manifest parsed "
+                    f"(compiler={manifest_parsed.compiler}, "
+                    f"hot_reload_mode={manifest_parsed.hot_reload_mode}, "
+                    f"confidence={manifest_parsed.confidence.overall})"
+                )
+            except ManifestRejection as e:
+                # V1 can't execute this manifest (multi-step build, unknown
+                # compiler, missing link flag for an include, etc.). Surface
+                # as HTTP 422 with the actionable error card text (see
+                # HMR_AGNOSTIC_ULTRAPLAN.md §5.3).
+                tracker.mark_rejected(provenance_id, f"Manifest rejected: {e.message}")
+                raise HTTPException(status_code=422, detail=e.message)
+            except Exception as e:
+                logger.warning(
+                    f"[split/verified] manifest validation failed: {e}. "
+                    "Proceeding with None (worker will fall back to SDL2 default)."
+                )
+                manifest_out = None
+        else:
+            logger.info(
+                "[split/verified] no <synthi_build_manifest> in response "
+                "(pre-universal prompt? worker falls back to SDL2 default)"
+            )
 
         # Clean up markdown if present
         result_str = json_only_response
@@ -1475,6 +1659,7 @@ async def refactor_split_verified(req: VerifiedAiRequest):
                 return {
                     "result": result_str,
                     "architecture": architecture_md,
+                    "manifest": manifest_out,
                     "lang": req.lang,
                     "verified": False,
                     "verification": verification_result.to_dict(),
@@ -1492,6 +1677,13 @@ async def refactor_split_verified(req: VerifiedAiRequest):
             # forgot to emit the <synthi_arch_cache> block). Worker stores it
             # in the split sidecar and re-injects into diff_patch calls.
             "architecture": architecture_md,
+            # Build manifest (ULTRAPLAN Phase 2): compiler flags, link flags,
+            # hot_reload_mode, and confidence fields — emitted by the AI
+            # inside <synthi_build_manifest>...</synthi_build_manifest>. May
+            # be None if the response didn't contain one (pre-universal
+            # prompt, or model failed to emit the block) — worker falls
+            # back to hardcoded SDL2 defaults.
+            "manifest": manifest_out,
             "lang": req.lang,
             "verified": True,
             "verification": verification_result.to_dict() if req.verify else None,
@@ -1653,278 +1845,37 @@ async def get_provenance_stats():
 #     in perform_ai_split — they were removed too.
 
 
-class DiffPatchRequest(BaseModel):
-    """Request for AI-powered diff patching of split modules.
-
-    As of the classify-removal refactor, there is only one mode: full
-    diff-patch with the cached architecture hint. The model receives all
-    three module contents + the user's diff + the architecture doc +
-    the priority rule, and returns updated content for whichever modules
-    changed. The previous targeted-mode optimization (pick ONE module
-    via an AI classifier, then send only that module) was removed —
-    classify was costing ~4s per edit for a lite call, which exceeded
-    the time saved by the smaller targeted prompt. One AI call per
-    edit, no classifier, no silent drops on classifier timeout.
-    """
-    diff: str              # Unified diff of the user's source changes
-    core_content: str = ""
-    gui_content: str = ""
-    shared_content: str = ""
-    # Cached split architecture doc (markdown) — captured at initial
-    # /refactor/split/verified time and re-injected here so the model
-    # does not have to re-derive the module contract on every edit.
-    # Empty string → fall back to the generic prompt (no regression).
-    architecture: Optional[str] = None
-    model: Optional[str] = None
-    api_key: Optional[str] = None
-
-
-# ══════════════════════════════════════════════════════════════
-# Diff-patch prompt builder (full 3-module mode)
-# ══════════════════════════════════════════════════════════════
-#
-# The prompt is assembled in a specific order to exploit the LLM's
-# attention bias ("lost in the middle" — models attend most to
-# start + end of the context window):
-#
-#   1. Role + task statement                         ← top
-#   2. Generic CRITICAL RULES (file scope, etc.)
-#   3. ARCHITECTURE section (cached markdown blob)   ← middle (long)
-#   4. CURRENT core / gui / shared contents
-#   5. PRIORITY RULE                                 ← bottom (recency boost)
-#   6. DIFF (user's raw source changes)              ← last thing before generation
-#   7. Output format instruction
-#
-# Putting the PRIORITY RULE immediately above the DIFF ensures it is
-# the LAST instruction the model reads before generating output. This
-# matters because the architecture cache is a HINT and can be stale
-# (user renamed a variable mid-session) — the priority rule reminds
-# the model to treat the diff as ground truth.
-#
-# The architecture doc itself tells the model which module to patch
-# ("Where User Code Goes: rendering → gui_on_render" etc.), so the
-# model does its own routing — we don't need an external classifier.
-
-_DIFF_PATCH_ARCH_HEADER = (
-    "ARCHITECTURE (cached from the initial split — describes how this\n"
-    "project's split modules are organized):"
+# DiffPatchRequest, the prompt builder, and the edit-list validator now
+# live in diff_patch_helpers.py so they can be unit-tested without
+# dragging in main.py's full import chain (model clients, telemetry,
+# etc.). Re-export them under the existing names so all the call sites
+# in this file (the @app.post handler below) need no changes.
+from diff_patch_helpers import (  # noqa: E402 — late import is intentional
+    DiffPatchRequest,
+    build_full_diff_patch_prompt as _build_full_diff_patch_prompt,
+    validate_edit_list as _validate_edit_list,
+    VALID_EDIT_MODULES as _VALID_EDIT_MODULES,
+    VALID_EDIT_OPS as _VALID_EDIT_OPS,
+    HealManifestRequest,
+    HealManifestResponse,
+    VALID_FAILED_MODULES as _VALID_FAILED_MODULES,
+    build_manifest_heal_prompt as _build_manifest_heal_prompt,
+    parse_heal_manifest_response as _parse_heal_manifest_response,
 )
 
-_DIFF_PATCH_PRIORITY_RULE = """PRIORITY RULE (read this carefully):
-The ARCHITECTURE section above was captured at initial split time. It
-describes how the ORIGINAL source's variables were relocated into the
-split modules. It is a HINT, not ground truth.
 
-If the user's DIFF (below) explicitly:
-  - renames a variable (e.g. changes `r` to `main_renderer`)
-  - redefines a type
-  - restructures a function
-  - introduces new fields or functions
-...then the DIFF is authoritative. Follow the diff. Do NOT apply stale
-mappings to references that no longer match the original form. The
-cached mapping only applies to references that remain UNCHANGED from
-the original source."""
+# ══════════════════════════════════════════════════════════════
+# Diff-patch prompt builder (full 4-module mode)
+# ══════════════════════════════════════════════════════════════
+#
+# The prompt builder + validator + DiffPatchRequest schema all live
+# in diff_patch_helpers.py (extracted in Phase 5 so they can be
+# unit-tested without dragging in main.py's import chain). The
+# original full docstring + ordering rationale is in that module.
+#
+# Below kept ONLY for the historical comment; the actual implementation
+# is in diff_patch_helpers.py and re-exported above.
 
-
-def _build_full_diff_patch_prompt(req: DiffPatchRequest) -> str:
-    """Assemble the full 3-module diff_patch prompt in edit-list format.
-
-    Instead of asking the model to regenerate full updated module files
-    (~2500-4000 output tokens per edit), we ask for a list of structured
-    edits — anchor + operation + content — which Rust applies locally
-    via `hmr::edit_applier::apply_edit`. Output tokens drop from ~3000
-    to ~100, which cuts pro-model generation time from ~30s to ~1s.
-
-    When `req.architecture` is empty, the ARCHITECTURE + PRIORITY_RULE
-    blocks are omitted and the prompt degrades to the generic form —
-    no regression for pre-migration sidecars that don't have a cached
-    architecture yet.
-    """
-    parts: List[str] = [
-        "You are generating EDIT INSTRUCTIONS for a SPLIT multi-module project.",
-        "Return a JSON object with an `edits` array. The Rust worker will apply",
-        "each edit locally by searching the current module content for `anchor`",
-        "and performing `operation` at that location. You do NOT return full",
-        "file contents — only the edits needed.",
-        "",
-        "CRITICAL RULES — these apply to any language/framework:",
-        "",
-        "1. The target files (core, gui, shared) are SPLIT modules, NOT standalone",
-        "   programs. They may not have a main entrypoint and they export specific",
-        "   lifecycle functions (e.g. *_on_load, *_on_update, *_on_render, etc.).",
-        "   STUDY the current module contents below to identify each file's",
-        "   existing function signatures — those are your template.",
-        "",
-        "2. The diff comes from the user's ORIGINAL source file, which may use raw",
-        "   idioms (local variables, inline entrypoint, direct API references). You",
-        "   must ADAPT those references to fit the split modules' existing structure:",
-        "     - Local variables in the original source usually live on a shared state",
-        "       object in the split modules. Look at the existing code to see how",
-        "       state is accessed (e.g. a cast like `State* s = (State*)state_ptr;`)",
-        "       and follow the same pattern.",
-        "     - API handles (renderer, window, audio, etc.) are typically stored on",
-        "       the state object — use the same field names the existing code uses.",
-        "",
-        "3. DECIDE which module(s) each diff hunk belongs to. The ARCHITECTURE",
-        "   section below tells you the routing rules — use its 'Where User Code",
-        "   Goes' section as the authoritative mapping. Each edit in your output",
-        "   must set the `module` field to one of `core`, `gui`, or `shared`.",
-        "",
-        "4. Do NOT emit edits that paste the diff verbatim at file scope (would cause",
-        "   declaration errors in C/C++ or top-level errors in Python/JS/Rust).",
-        "   Do NOT redeclare existing variables, add duplicate entrypoints, or",
-        "   create new top-level functions unless the existing file's convention",
-        "   demands it. Your edits should merge the change into an existing",
-        "   function body, or add to an existing struct definition, etc.",
-        "",
-    ]
-
-    arch = (req.architecture or "").strip()
-    if arch:
-        parts += [_DIFF_PATCH_ARCH_HEADER, "", arch, ""]
-
-    parts += [
-        "CURRENT core module content:",
-        "```",
-        req.core_content or "",
-        "```",
-        "",
-        "CURRENT gui module content:",
-        "```",
-        req.gui_content or "",
-        "```",
-        "",
-        "CURRENT shared module content:",
-        "```",
-        req.shared_content or "",
-        "```",
-        "",
-    ]
-
-    if arch:
-        # Priority rule sits AFTER the architecture + module contents and
-        # immediately before the diff — last thing the model reads before
-        # generating. Mitigates the "lost in the middle" effect.
-        parts += [_DIFF_PATCH_PRIORITY_RULE, ""]
-
-    parts += [
-        "DIFF (from user's source — use as INTENT, apply the priority rule above):",
-        "```",
-        req.diff,
-        "```",
-        "",
-        "# OUTPUT FORMAT",
-        "",
-        "Return a single JSON object with an `edits` array. Each edit has:",
-        "",
-        '  - `module`:    "core" | "gui" | "shared"',
-        '  - `operation`: "insert_after" | "insert_before" | "replace" | "delete"',
-        "  - `anchor`:    an EXACT substring of the current module content that",
-        "                 locates the edit. Rust will call `content.find(anchor)`.",
-        "                 The anchor MUST appear EXACTLY ONCE in the module — if",
-        "                 it is missing or ambiguous the whole edit fails and we",
-        "                 fall back to a full re-split. Include enough surrounding",
-        "                 context (usually 1-3 lines, or a full statement) to make",
-        "                 the anchor unique. Whitespace is preserved — copy the",
-        "                 anchor verbatim from the current content above.",
-        "  - `content`:   the new text. For insert_after / insert_before this is",
-        "                 the code to insert. For replace this is what replaces",
-        "                 the anchor. For delete this is ignored (use an empty",
-        "                 string). Preserve the surrounding indentation style.",
-        "",
-        "Operations:",
-        "  - insert_after:  put `content` immediately AFTER the anchor",
-        "  - insert_before: put `content` immediately BEFORE the anchor",
-        "  - replace:       replace the anchor with `content`",
-        "  - delete:        remove the anchor (content ignored)",
-        "",
-        "If no changes are needed, return `{\"edits\": []}`.",
-        "",
-        "# EXAMPLE",
-        "",
-        "Suppose the diff adds a red button after an existing blue button. The",
-        "current gui module contains:",
-        "",
-        "```",
-        "    SDL_Rect btn1 = {50, 50, 200, 60};",
-        "    SDL_SetRenderDrawColor(state->renderer, 60, 120, 220, 255);",
-        "    SDL_RenderFillRect(state->renderer, &btn1);",
-        "```",
-        "",
-        "A correct output would be:",
-        "",
-        "```",
-        "{",
-        '  "edits": [',
-        "    {",
-        '      "module": "gui",',
-        '      "operation": "insert_after",',
-        '      "anchor": "SDL_RenderFillRect(state->renderer, &btn1);",',
-        '      "content": "\\n\\n    SDL_Rect btn2 = {50, 130, 200, 60};\\n    SDL_SetRenderDrawColor(state->renderer, 220, 60, 60, 255);\\n    SDL_RenderFillRect(state->renderer, &btn2);"',
-        "    }",
-        "  ]",
-        "}",
-        "```",
-        "",
-        "Return ONLY the JSON object. No markdown fences, no prose, no explanation.",
-    ]
-    return "\n".join(parts)
-
-
-_VALID_EDIT_OPS = {"insert_after", "insert_before", "replace", "delete"}
-_VALID_EDIT_MODULES = {"core", "gui", "shared"}
-
-
-def _validate_edit_list(edits: object) -> List[dict]:
-    """Validate that the AI returned a well-formed list of edits.
-
-    Raises HTTPException(400) on any shape mismatch. Returns a cleaned
-    list with only the expected fields so the Rust worker's serde
-    deserializer sees exactly the schema it expects.
-    """
-    if not isinstance(edits, list):
-        raise HTTPException(
-            status_code=400,
-            detail=f"`edits` must be a JSON array, got {type(edits).__name__}",
-        )
-    cleaned: List[dict] = []
-    for i, e in enumerate(edits):
-        if not isinstance(e, dict):
-            raise HTTPException(
-                status_code=400,
-                detail=f"edit #{i} must be a JSON object, got {type(e).__name__}",
-            )
-        module = e.get("module")
-        op = e.get("operation")
-        anchor = e.get("anchor")
-        content = e.get("content", "")
-        if module not in _VALID_EDIT_MODULES:
-            raise HTTPException(
-                status_code=400,
-                detail=f"edit #{i}: `module` must be one of {_VALID_EDIT_MODULES}, got {module!r}",
-            )
-        if op not in _VALID_EDIT_OPS:
-            raise HTTPException(
-                status_code=400,
-                detail=f"edit #{i}: `operation` must be one of {_VALID_EDIT_OPS}, got {op!r}",
-            )
-        if not isinstance(anchor, str) or not anchor:
-            raise HTTPException(
-                status_code=400,
-                detail=f"edit #{i}: `anchor` must be a non-empty string",
-            )
-        if not isinstance(content, str):
-            raise HTTPException(
-                status_code=400,
-                detail=f"edit #{i}: `content` must be a string (use empty string for delete)",
-            )
-        cleaned.append({
-            "module": module,
-            "operation": op,
-            "anchor": anchor,
-            "content": content,
-        })
-    return cleaned
 
 
 @app.post("/refactor/diff_patch")
@@ -2093,6 +2044,100 @@ async def refactor_heal(req: HealRequest):
     except Exception as e:
         print(f"[Heal] Error: {e}")
         raise HTTPException(status_code=400, detail=str(e))
+
+
+# =============================================================================
+# /refactor/heal/manifest — ULTRAPLAN Phase 6
+# =============================================================================
+# Runtime safety net: when compile_core / compile_gui / compile_runner
+# hits an `undefined reference` error, the worker extracts the symbols,
+# sends them here, and we ask the AI to update the manifest's link
+# flags. The worker retries the compile once with the new manifest.
+#
+# Library-agnostic by construction: see diff_patch_helpers.build_manifest_heal_prompt
+# — no library names anywhere in the prompt, the AI uses general
+# knowledge to map symbols → flags.
+
+@app.post("/refactor/heal/manifest")
+async def refactor_heal_manifest(req: HealManifestRequest):
+    """
+    Ask the AI to update a build manifest's link flags after a link-time
+    failure. Runtime safety net for undefined-reference errors.
+
+    Returns `{updated_manifest, unchanged, notes}`. When `unchanged` is
+    True (AI couldn't infer a fix), the worker should NOT retry compile —
+    surface the 3-option error card immediately to avoid loops.
+    """
+    start_time = time.time()
+
+    if req.failed_module not in _VALID_FAILED_MODULES:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"failed_module must be one of {_VALID_FAILED_MODULES}, "
+                f"got {req.failed_module!r}"
+            ),
+        )
+    if not req.undefined_symbols:
+        raise HTTPException(
+            status_code=400,
+            detail="undefined_symbols must be a non-empty list",
+        )
+    if not isinstance(req.current_manifest, dict) or not req.current_manifest:
+        raise HTTPException(
+            status_code=400,
+            detail="current_manifest must be a non-empty JSON object",
+        )
+
+    provider = get_provider(provider_name='gemini', use_custom=bool(req.api_key))
+    prompt = _build_manifest_heal_prompt(req)
+
+    print(
+        f"[ManifestHeal] failed_module={req.failed_module} "
+        f"symbols={len(req.undefined_symbols)} "
+        f"source_excerpt={len(req.source_excerpt)} chars"
+    )
+
+    try:
+        ai_response = await provider.ask_llm(
+            prompt,
+            "cpp",
+            None,
+            mode="delta",
+            # Pro model — manifest heal needs strong library knowledge
+            # and the output is small (~50-200 tokens of JSON), so
+            # latency cost is bounded.
+            model=req.model or "gemini-3.1-flash-lite-preview",
+            api_key=req.api_key,
+        )
+    except Exception as e:
+        print(f"[ManifestHeal] AI call failed: {e}")
+        raise HTTPException(status_code=502, detail=f"AI provider error: {e}")
+
+    try:
+        parsed = _parse_heal_manifest_response(ai_response)
+    except ValueError as e:
+        # AI returned non-JSON or wrong shape. Surface as 422 so the
+        # Rust worker treats it as "heal failed" and shows the error
+        # card instead of retrying with garbage.
+        print(f"[ManifestHeal] response parse failed: {e}")
+        raise HTTPException(
+            status_code=422,
+            detail=f"AI returned malformed manifest heal response: {e}",
+        )
+
+    elapsed = time.time() - start_time
+    print(
+        f"[ManifestHeal] {'unchanged' if parsed.unchanged else 'updated'} "
+        f"in {elapsed:.2f}s — notes: {parsed.notes[:120]}"
+    )
+
+    return {
+        "updated_manifest": parsed.updated_manifest,
+        "unchanged": parsed.unchanged,
+        "notes": parsed.notes,
+        "elapsed_seconds": elapsed,
+    }
 
 
 # =============================================================================

@@ -25,6 +25,21 @@ pub struct AdaptedProjectStatus {
     /// Path to the shared header, if found.
     pub shared_path: Option<PathBuf>,
 
+    /// ULTRAPLAN Phase 4: path to host_runner.cpp, if present.
+    /// The universal split prompt emits a 4th file alongside core/gui/
+    /// shared — the per-project main() that dlopens libcore.so / libgui.so.
+    /// Pre-Phase-4 sidecars don't have it; field is None for those.
+    #[serde(default)]
+    pub host_runner_path: Option<PathBuf>,
+
+    /// ULTRAPLAN Phase 4: BYOR (Bring Your Own Runner) sentinel.
+    /// True iff the host_runner.cpp on disk starts with the
+    /// `// SYNTHI_USER_RUNNER` marker, meaning the user authored the
+    /// runner themselves and we MUST NOT regenerate it on AI splits.
+    /// See HMR_AGNOSTIC_ULTRAPLAN.md §5.2 (Point 2 mitigation B).
+    #[serde(default)]
+    pub user_owned_runner: bool,
+
     /// Hash of the AI split result that produced this adaptation.
     /// Used to detect if the split is stale vs the original source.
     pub split_hash: Option<String>,
@@ -41,6 +56,31 @@ impl AdaptedProjectStatus {
             core_path: Some(core),
             gui_path: Some(gui),
             shared_path: shared,
+            host_runner_path: None,
+            user_owned_runner: false,
+            split_hash: None,
+            reason: None,
+        }
+    }
+
+    /// Phase 4: full 4-file adaptation (core + gui + shared + host_runner).
+    /// Use this constructor when the universal split prompt has produced
+    /// all four files. `user_owned` flips when the host_runner contains
+    /// the BYOR sentinel.
+    pub fn adapted_full(
+        core: PathBuf,
+        gui: PathBuf,
+        shared: Option<PathBuf>,
+        host_runner: PathBuf,
+        user_owned: bool,
+    ) -> Self {
+        Self {
+            is_adapted: true,
+            core_path: Some(core),
+            gui_path: Some(gui),
+            shared_path: shared,
+            host_runner_path: Some(host_runner),
+            user_owned_runner: user_owned,
             split_hash: None,
             reason: None,
         }
@@ -53,6 +93,8 @@ impl AdaptedProjectStatus {
             core_path: None,
             gui_path: None,
             shared_path: None,
+            host_runner_path: None,
+            user_owned_runner: false,
             split_hash: None,
             reason: Some(reason.into()),
         }
@@ -69,6 +111,34 @@ impl AdaptedProjectStatus {
 const CORE_NAMES: &[&str] = &["core.cpp", "core.c", "core.rs", "core.zig"];
 const GUI_NAMES: &[&str] = &["gui.cpp", "gui.c", "gui.rs", "gui.zig"];
 const SHARED_NAMES: &[&str] = &["shared.h", "shared.hpp", "shared.rs"];
+/// ULTRAPLAN Phase 4. Only one extension supported in V1 — the universal
+/// split prompt is C++-only. V2 will language-parameterise this list.
+const HOST_RUNNER_NAMES: &[&str] = &["host_runner.cpp"];
+
+/// ULTRAPLAN Phase 4: marker that a host_runner.cpp is user-authored
+/// rather than AI-generated. When the FIRST line of host_runner.cpp
+/// (after optional whitespace) is exactly `// SYNTHI_USER_RUNNER`, the
+/// HMR system locks the file and never regenerates it on subsequent
+/// AI splits. The user can edit freely and we just rebuild on changes.
+pub const BYOR_SENTINEL: &str = "// SYNTHI_USER_RUNNER";
+
+/// ULTRAPLAN Phase 4: scan the first non-blank line of `host_runner.cpp`
+/// for the BYOR sentinel. Returns false on read failure (treat as
+/// AI-owned, the safer default).
+pub fn host_runner_is_user_owned(host_runner_path: &Path) -> bool {
+    let content = match std::fs::read_to_string(host_runner_path) {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        return trimmed == BYOR_SENTINEL;
+    }
+    false
+}
 
 /// Detect whether a workspace directory contains an adapted project.
 ///
@@ -76,7 +146,8 @@ const SHARED_NAMES: &[&str] = &["shared.h", "shared.hpp", "shared.rs"];
 /// 1. A core module file (core.cpp, core.rs, etc.)
 /// 2. A GUI module file (gui.cpp, gui.rs, etc.)
 ///
-/// Optionally also a shared header (shared.h, shared.hpp).
+/// Optionally also a shared header (shared.h, shared.hpp) and a
+/// host_runner.cpp (Phase 4).
 pub fn detect_adapted_project(workspace_dir: &Path) -> AdaptedProjectStatus {
     if !workspace_dir.is_dir() {
         return AdaptedProjectStatus::not_adapted("workspace directory does not exist");
@@ -85,9 +156,23 @@ pub fn detect_adapted_project(workspace_dir: &Path) -> AdaptedProjectStatus {
     let core_path = find_first_match(workspace_dir, CORE_NAMES);
     let gui_path = find_first_match(workspace_dir, GUI_NAMES);
     let shared_path = find_first_match(workspace_dir, SHARED_NAMES);
+    let host_runner_path = find_first_match(workspace_dir, HOST_RUNNER_NAMES);
+    let user_owned_runner = match &host_runner_path {
+        Some(p) => host_runner_is_user_owned(p),
+        None => false,
+    };
 
     match (core_path, gui_path) {
-        (Some(core), Some(gui)) => AdaptedProjectStatus::adapted(core, gui, shared_path),
+        (Some(core), Some(gui)) => match host_runner_path {
+            Some(runner) => AdaptedProjectStatus::adapted_full(
+                core,
+                gui,
+                shared_path,
+                runner,
+                user_owned_runner,
+            ),
+            None => AdaptedProjectStatus::adapted(core, gui, shared_path),
+        },
         (Some(_), None) => {
             AdaptedProjectStatus::not_adapted("core module found but no gui module")
         }

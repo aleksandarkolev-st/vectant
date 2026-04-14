@@ -382,6 +382,25 @@ export class CompilerClient {
                 if (typeof window !== 'undefined' && window.dispatchEvent) {
                     window.dispatchEvent(new CustomEvent('synthi:gui-end', { detail: parsed }));
                 }
+            } else if (parsed && parsed.type === 'compile-manifest') {
+                // ULTRAPLAN Phase 8: bridge the Rust worker's manifest +
+                // architecture cache into a CustomEvent that
+                // useCompileManifestListener.js dispatches into the Redux
+                // compileManifestSlice. Populates the StatusBar framework
+                // pill, CompileErrorCard, and ConfidenceWarning components.
+                if (debugCompiler) console.log('[CompilerClient] Dispatching synthi:compile-manifest', parsed);
+                if (typeof window !== 'undefined' && window.dispatchEvent) {
+                    window.dispatchEvent(new CustomEvent('synthi:compile-manifest', {
+                        detail: {
+                            manifest: parsed.manifest ?? null,
+                            architecture: parsed.architecture ?? '',
+                            rejection: parsed.rejection ?? null,
+                        }
+                    }));
+                }
+                // Don't log manifest payloads to the build log (they go
+                // straight to the UI via Redux)
+                return;
             } else if (parsed && parsed.type === 'compile-diagnostics') {
                 // Structured compile diagnostics - dispatch to error overlay
                 if (debugCompiler) console.log('[CompilerClient] Dispatching synthi:compile-diagnostics', parsed);

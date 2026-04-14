@@ -2,6 +2,7 @@ use crate::compiler::builder::RebuildScope;
 use crate::compiler::context::CompileContext;
 use crate::compiler::error_parser::{parse_compiler_output, CompilerType};
 use crate::compiler::serialization_utils::calculate_hash;
+use crate::hmr::compile_manifest::CompileManifest;
 use crate::hmr::incremental_cache::IncrementalCache;
 use crate::infra::utils::system_command;
 use anyhow::{Context, Result};
@@ -18,8 +19,25 @@ pub async fn compile_gui(
     ext: &str,
     session_id: Option<String>,
     req_is_gui: bool, // req.is_gui
+    compile_manifest: Option<&CompileManifest>,
 ) -> Result<Option<String>> {
     let dir_path = &ctx.workspace_path;
+
+    // ULTRAPLAN Phase 3: resolve the effective compile manifest (mirrors
+    // compile_core). See compile_core.rs for the rationale. When a manifest
+    // is present, its gui_link_flags (e.g. `-lSDL2`, `-lglfw`, `-lraylib`,
+    // `-lfmod`) replace the old hardcoded `-lSDL2` — that is the single
+    // biggest lever for library-agnostic HMR.
+    let owned_default_manifest;
+    let effective_manifest: &CompileManifest = match compile_manifest {
+        Some(m) => m,
+        None => {
+            owned_default_manifest = CompileManifest::sdl2_default();
+            &owned_default_manifest
+        }
+    };
+    let compiler_exe = effective_manifest.compiler.executable();
+    let std_flag = format!("-std={}", effective_manifest.std);
 
     // Skip compilation entirely when the GUI source is empty or whitespace-only.
     // An empty .cpp compiles to a valid .so with no exported symbols, which the
@@ -45,8 +63,29 @@ pub async fn compile_gui(
             // Hash content + core_lib_path dependency
             let _combined_hash = calculate_hash(&(content.clone(), &core_lib_path));
 
+            // Build the effective flag list — manifest common_flags +
+            // std + gui_link_flags + hardcoded dlopen boilerplate.
+            // `req_is_gui=false` means the runner won't ask gui.so to
+            // render anything, so we skip the gui_link_flags to avoid
+            // linking SDL2/GLFW/etc for headless projects (matches the
+            // pre-manifest gating on `-lSDL2`).
+            let mut effective_flag_strings: Vec<String> = Vec::with_capacity(
+                effective_manifest.common_flags.len()
+                    + effective_manifest.gui_link_flags.len()
+                    + 3,
+            );
+            effective_flag_strings.push(std_flag.clone());
+            effective_flag_strings.extend(effective_manifest.common_flags.iter().cloned());
+            if req_is_gui {
+                effective_flag_strings.extend(effective_manifest.gui_link_flags.iter().cloned());
+            }
+            effective_flag_strings.push("-ldl".to_string());
+            effective_flag_strings.push("-rdynamic".to_string());
+            let effective_flag_refs: Vec<&str> =
+                effective_flag_strings.iter().map(String::as_str).collect();
+
             let gui_cache_key =
-                IncrementalCache::cache_key(&content, &["-shared", "-fPIC", "-lSDL2"], &[]);
+                IncrementalCache::cache_key(&content, &effective_flag_refs, &[]);
             if let Some(cached_so) = ctx.incremental_cache.get(&gui_cache_key).await {
                 let path = cached_so.to_string_lossy().to_string();
                 eprintln!("[Cache] HIT for gui module (persistent cache)");
@@ -56,24 +95,18 @@ pub async fn compile_gui(
                 tokio::fs::write(dir_path.join(fname), &content).await?;
 
                 let gui_out = output_dir.join(format!("libgui_{}.{}", timestamp, ext));
-                let mut cmd = system_command("g++");
-                cmd.arg("-shared")
-                    .arg("-fPIC")
-                    .arg("-D_POSIX_C_SOURCE=199309L")
-                    .arg("-g")
-                    .arg("-gdwarf-4")
-                    .arg("-fno-omit-frame-pointer")
-                    .arg("-fdiagnostics-format=json")
-                    .arg(fname)
-                    .arg("-I.")
-                    .arg("-o")
-                    .arg(&gui_out)
-                    .arg("-ldl")
-                    .arg("-rdynamic");
-
-                if req_is_gui {
-                    cmd.arg("-lSDL2");
+                let mut cmd = system_command(compiler_exe);
+                cmd.arg(&std_flag);
+                for f in &effective_manifest.common_flags {
+                    cmd.arg(f);
                 }
+                cmd.arg(fname).arg("-I.").arg("-o").arg(&gui_out);
+                if req_is_gui {
+                    for f in &effective_manifest.gui_link_flags {
+                        cmd.arg(f);
+                    }
+                }
+                cmd.arg("-ldl").arg("-rdynamic");
 
                 cmd.current_dir(dir_path);
 
@@ -103,6 +136,39 @@ pub async fn compile_gui(
                 if !output.status.success() {
                     let stderr_str = String::from_utf8_lossy(&output.stderr).to_string();
                     eprintln!("[CompileGUI] g++ FAILED:\n{}", stderr_str);
+
+                    // ── ULTRAPLAN Phase 6: manifest heal (link errors) ──
+                    // See compile_core.rs for the rationale — when the stderr
+                    // contains undefined-reference errors, update the manifest's
+                    // link flags and retry once before falling back to source heal.
+                    let manifest_healed = crate::compiler::stages::ai_utils::try_manifest_heal_retry(
+                        &stderr_str,
+                        dir_path,
+                        "gui",
+                        &content,
+                        |m| {
+                            let mut cmd = system_command(m.compiler.executable());
+                            cmd.arg(format!("-std={}", m.std));
+                            for f in &m.common_flags {
+                                cmd.arg(f);
+                            }
+                            cmd.arg(fname).arg("-I.").arg("-o").arg(&gui_out);
+                            if req_is_gui {
+                                for f in &m.gui_link_flags {
+                                    cmd.arg(f);
+                                }
+                            }
+                            cmd.arg("-ldl").arg("-rdynamic");
+                            cmd.current_dir(dir_path);
+                            cmd
+                        },
+                    )
+                    .await
+                    .is_some();
+
+                    if manifest_healed {
+                        eprintln!("[CompileGUI] manifest heal SUCCEEDED — skipping source heal");
+                    } else {
 
                     // ── AI Heal Loop ──
                     let shared_for_heal = tokio::fs::read_to_string(dir_path.join("shared.h")).await.unwrap_or_default();
@@ -135,13 +201,22 @@ pub async fn compile_gui(
                         ).await {
                             Ok(fixed) => {
                                 tokio::fs::write(dir_path.join(fname), &fixed).await?;
-                                let mut retry_cmd = system_command("g++");
-                                retry_cmd.arg("-shared").arg("-fPIC")
-                                    .arg("-D_POSIX_C_SOURCE=199309L").arg("-g").arg("-gdwarf-4")
-                                    .arg("-fno-omit-frame-pointer").arg("-fdiagnostics-format=json")
-                                    .arg(fname).arg("-I.").arg("-o").arg(&gui_out)
-                                    .arg("-ldl").arg("-rdynamic");
-                                if req_is_gui { retry_cmd.arg("-lSDL2"); }
+                                let mut retry_cmd = system_command(compiler_exe);
+                                retry_cmd.arg(&std_flag);
+                                for f in &effective_manifest.common_flags {
+                                    retry_cmd.arg(f);
+                                }
+                                retry_cmd
+                                    .arg(fname)
+                                    .arg("-I.")
+                                    .arg("-o")
+                                    .arg(&gui_out);
+                                if req_is_gui {
+                                    for f in &effective_manifest.gui_link_flags {
+                                        retry_cmd.arg(f);
+                                    }
+                                }
+                                retry_cmd.arg("-ldl").arg("-rdynamic");
                                 retry_cmd.current_dir(dir_path);
                                 retry_cmd.kill_on_drop(true);
                                 if let Ok(retry_child) = retry_cmd.spawn() {
@@ -186,6 +261,7 @@ pub async fn compile_gui(
                         };
                         anyhow::bail!("GUI compilation failed: {}", truncated);
                     }
+                    } // end source-heal else-branch (Phase 6 manifest_healed=false)
                 }
 
                 let gui_lib_path = gui_out.to_string_lossy().to_string();
@@ -193,7 +269,9 @@ pub async fn compile_gui(
                 // Update persistent cache on success
                 if let Ok(so_data) = tokio::fs::read(&gui_lib_path).await {
                     let source_hash = calculate_hash(&content);
-                    let flags_hash = calculate_hash(&"-shared-fPIC-lSDL2");
+                    // Hash the full effective flag list so a manifest
+                    // change (e.g. -lSDL2 → -lglfw) invalidates cache.
+                    let flags_hash = calculate_hash(&effective_flag_strings.join(" "));
                     let headers_hash = 0u64;
                     let _ = ctx
                         .incremental_cache

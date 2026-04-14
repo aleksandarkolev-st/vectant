@@ -226,6 +226,14 @@ pub fn trigger_speculative(workspace_path: PathBuf, new_source: String) {
             let shared_content = tokio::fs::read_to_string(workspace_path.join("shared.h"))
                 .await
                 .unwrap_or_default();
+            // ULTRAPLAN Phase 5: read host_runner.cpp as the 4th edit
+            // target. Empty string is the legacy 3-file project sentinel —
+            // perform_ai_diff_patch / Python prompt builder skip the
+            // host_runner section in that case.
+            let host_runner_content =
+                tokio::fs::read_to_string(workspace_path.join("host_runner.cpp"))
+                    .await
+                    .unwrap_or_default();
             if core_content.is_empty() && gui_content.is_empty() && shared_content.is_empty() {
                 // No split files yet — first compile hasn't produced them.
                 break 'speculation;
@@ -257,6 +265,7 @@ pub fn trigger_speculative(workspace_path: PathBuf, new_source: String) {
                 &core_content,
                 &gui_content,
                 &shared_content,
+                &host_runner_content,
                 arch_hint,
             )
             .await;

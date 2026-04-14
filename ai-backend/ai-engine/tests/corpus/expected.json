@@ -1,0 +1,94 @@
+{
+  "_comment": "ULTRAPLAN Phase 7 expected outputs for each corpus project. `flag_substrings` are case-insensitive substrings that MUST appear in runner_link_flags. `forbidden_substrings` must NOT appear. `confidence_runner_synthesis` is the expected range {high, medium, low}. `hot_reload_mode` is the expected mode. `notes_keywords` are case-insensitive words that MUST appear in confidence.notes (useful for rejection cases).",
+
+  "01_sdl2_button.cpp": {
+    "flag_substrings": ["sdl"],
+    "forbidden_substrings": ["glfw", "fmod", "raylib"],
+    "confidence_runner_synthesis": ["high", "medium"],
+    "hot_reload_mode": ["swap"],
+    "notes_keywords": []
+  },
+  "02_glfw_triangle.cpp": {
+    "flag_substrings": ["glfw"],
+    "forbidden_substrings": ["sdl"],
+    "confidence_runner_synthesis": ["high", "medium"],
+    "hot_reload_mode": ["swap"],
+    "notes_keywords": []
+  },
+  "03_custom_engine_with_hint.cpp": {
+    "flag_substrings": ["my_engine"],
+    "forbidden_substrings": [],
+    "confidence_runner_synthesis": ["high", "medium"],
+    "hot_reload_mode": ["swap", "auto"],
+    "confidence_link_flags": ["high"],
+    "notes_keywords": []
+  },
+  "04_macro_main_wxwidgets.cpp": {
+    "flag_substrings": ["wx"],
+    "forbidden_substrings": [],
+    "confidence_runner_synthesis": ["low", "medium"],
+    "hot_reload_mode": ["process_restart", "swap", "auto"],
+    "notes_keywords": ["macro", "implement_app", "wxwidgets"]
+  },
+  "05_fmod_hostile.cpp": {
+    "flag_substrings": ["sdl", "fmod"],
+    "forbidden_substrings": [],
+    "confidence_runner_synthesis": ["high", "medium"],
+    "hot_reload_mode": ["process_restart"],
+    "notes_keywords": []
+  },
+  "06_sfml_sprite.cpp": {
+    "flag_substrings": ["sfml"],
+    "forbidden_substrings": ["sdl2", "glfw"],
+    "confidence_runner_synthesis": ["high", "medium"],
+    "hot_reload_mode": ["swap"],
+    "notes_keywords": []
+  },
+  "07_raylib_circle.cpp": {
+    "flag_substrings": ["raylib"],
+    "forbidden_substrings": ["sdl2", "glfw"],
+    "confidence_runner_synthesis": ["high", "medium"],
+    "hot_reload_mode": ["swap"],
+    "notes_keywords": []
+  },
+  "08_imgui_sdl.cpp": {
+    "flag_substrings": ["sdl"],
+    "forbidden_substrings": [],
+    "confidence_runner_synthesis": ["high", "medium"],
+    "hot_reload_mode": ["swap"],
+    "notes_keywords": []
+  },
+  "09_sokol_pixel.cpp": {
+    "flag_substrings": [],
+    "forbidden_substrings": [],
+    "confidence_runner_synthesis": ["high", "medium"],
+    "hot_reload_mode": ["swap"],
+    "notes_keywords": []
+  },
+  "10_console_app.cpp": {
+    "flag_substrings": [],
+    "forbidden_substrings": ["sdl", "glfw", "fmod", "raylib", "sfml"],
+    "confidence_runner_synthesis": ["high", "medium"],
+    "hot_reload_mode": ["swap"],
+    "notes_keywords": []
+  },
+  "11_qt_with_moc.cpp": {
+    "flag_substrings": [],
+    "forbidden_substrings": [],
+    "confidence_runner_synthesis": ["low", "medium", "high"],
+    "hot_reload_mode": ["process_restart", "swap", "auto"],
+    "notes_keywords": [
+      "moc",
+      "q_object",
+      "qt",
+      "qapplication",
+      "qmainwindow",
+      "qpushbutton",
+      "multi-step",
+      "build_steps",
+      "link flag",
+      "missing"
+    ],
+    "expect_rejection": true
+  }
+}
