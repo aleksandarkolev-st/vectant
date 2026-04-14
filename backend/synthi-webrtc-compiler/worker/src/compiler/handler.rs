@@ -11,6 +11,7 @@ use crate::infra::messages::CompileRequest;
 use crate::compiler::stages::ai_utils::{perform_ai_split, perform_ai_diff_patch};
 use crate::compiler::stages::compile_core::compile_core;
 use crate::compiler::stages::compile_gui::compile_gui;
+use crate::compiler::stages::compile_runner::{compile_runner, HOST_RUNNER_FILENAME};
 use crate::compiler::stages::guardrails::{
     apply_core_guardrails, apply_gui_guardrails, apply_shared_guardrails,
 };
@@ -43,13 +44,18 @@ async fn write_sidecar_logged(
         .and_then(|v| v.as_str())
         .map(|s| s.len())
         .unwrap_or(0);
+    let manifest_present = meta
+        .get("compile_manifest")
+        .map(|v| !v.is_null())
+        .unwrap_or(false);
     match tokio::fs::write(path, &body).await {
         Ok(()) => {
             eprintln!(
-                "[HMR] sidecar written: {} ({} bytes, arch={} chars)",
+                "[HMR] sidecar written: {} ({} bytes, arch={} chars, compile_manifest={})",
                 path.display(),
                 body.len(),
-                arch_len
+                arch_len,
+                if manifest_present { "yes" } else { "no" },
             );
         }
         Err(e) => {
@@ -62,44 +68,21 @@ async fn write_sidecar_logged(
     }
 }
 
-/// Apply a list of AI-produced edits to the current core/gui/shared
-/// module contents. Returns the patched contents, or propagates the
-/// first error encountered (caller falls through to Tier 3 full re-split).
-///
-/// Each `Edit` carries its own `module` field; this dispatcher just
-/// routes it to the matching string and calls `edit_applier::apply_edit`.
-/// Edits are applied in order; if edit N fails, edits 0..N-1 are
-/// already applied in the local copies but since we return `Err`, the
-/// caller discards them and falls through to Tier 3 — no partial state
-/// ever makes it to disk.
+/// Thin handler-side wrapper around `edit_applier::apply_edit_list`
+/// that adds per-edit eprintln logging for operator observability.
+/// The actual dispatch logic lives in `hmr::edit_applier::apply_edit_list`
+/// so it is independently unit-testable from integration tests without
+/// needing a CompileContext.
 fn apply_edit_list(
     edits: &[crate::hmr::edit_applier::Edit],
     core: &str,
     gui: &str,
     shared: &str,
-) -> anyhow::Result<(String, String, String)> {
-    use crate::hmr::edit_applier::apply_edit;
-    let mut c = core.to_string();
-    let mut g = gui.to_string();
-    let mut s = shared.to_string();
-
+    host_runner: &str,
+) -> anyhow::Result<(String, String, String, String)> {
     for (i, edit) in edits.iter().enumerate() {
-        let updated = match edit.module.as_str() {
-            "core" => apply_edit(&c, edit)?,
-            "gui" => apply_edit(&g, edit)?,
-            "shared" => apply_edit(&s, edit)?,
-            other => {
-                anyhow::bail!("edit #{} targets unknown module {:?}", i, other);
-            }
-        };
-        match edit.module.as_str() {
-            "core" => c = updated,
-            "gui" => g = updated,
-            "shared" => s = updated,
-            _ => unreachable!(),
-        }
         eprintln!(
-            "[HMR] Tier 2: applied edit #{} {:?} to {} (anchor {} chars, content {} chars)",
+            "[HMR] Tier 2: applying edit #{} {:?} to {} (anchor {} chars, content {} chars)",
             i,
             edit.operation,
             edit.module,
@@ -107,8 +90,7 @@ fn apply_edit_list(
             edit.content.len()
         );
     }
-
-    Ok((c, g, s))
+    crate::hmr::edit_applier::apply_edit_list(edits, core, gui, shared, host_runner)
 }
 
 use crate::hmr::loop_classifier::{classify_loop, LoopClassifierInput};
@@ -120,6 +102,7 @@ use crate::hmr::deterministic_compile::{
     DeterministicRebuildScope,
 };
 use crate::hmr::build_manifest::{BuildManifest, BuildSlot, SnapshotMode};
+use crate::hmr::compile_manifest::CompileManifest;
 use crate::hmr::adapter_trait::AdapterReloadResult;
 
 pub async fn handle_compile_request(
@@ -242,10 +225,20 @@ pub async fn handle_compile_request(
                 .get("_synthi_architecture")
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
+            // ULTRAPLAN Phase 3: persist the AI-synthesised compile manifest
+            // alongside the architecture. On Tier 2/3 the FallbackDeterministic
+            // branch reads it back from the sidecar. `null` is the "no manifest
+            // in this response" sentinel — downstream treats it as "fall back
+            // to sdl2_default()".
+            let manifest_json = result
+                .get("_synthi_manifest")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null);
             let meta = serde_json::json!({
                 "split_hash": source_hash_str,
                 "original_source": req.source,
                 "architecture": architecture_md,
+                "compile_manifest": manifest_json,
             });
             write_sidecar_logged(&sidecar_path, &meta).await;
 
@@ -296,6 +289,16 @@ pub async fn handle_compile_request(
             } else {
                 String::new()
             };
+            // ULTRAPLAN Phase 5: read host_runner.cpp as a 4th edit target
+            // for Tier 2 diff_patch. Empty string when the project is a
+            // pre-Phase-4 3-file project (host_runner_path is None) — the
+            // diff_patch prompt builder skips the host_runner block in
+            // that case so the prompt stays small.
+            let host_runner_content = if let Some(ref p) = enrichment.adapted_status.host_runner_path {
+                tokio::fs::read_to_string(p).await.unwrap_or_default()
+            } else {
+                String::new()
+            };
 
             if enrichment.adapted_status.is_adapted && is_editing_split_file {
                 // User is editing a split file directly — syncFile already
@@ -313,10 +316,13 @@ pub async fn handle_compile_request(
                 // Read the original source saved at AI-split time.  Diff it
                 // against the user's new source, then transplant each changed
                 // line into the right split file (core/gui/shared).
-                // Read both `original_source` (diff baseline) and `architecture`
-                // (cached split doc — may be empty on pre-migration sidecars)
-                // from the same sidecar file in one pass.
-                let (original_source, architecture_md) = {
+                // Read `original_source` (diff baseline), `architecture`
+                // (cached split doc — may be empty on pre-migration sidecars),
+                // and `compile_manifest` (AI-synthesised build recipe from the
+                // universal split prompt — may be null on pre-Phase-3 sidecars,
+                // in which case downstream falls back to sdl2_default()) from
+                // the same sidecar file in one pass.
+                let (original_source, architecture_md, sidecar_manifest_json) = {
                     if let Ok(meta_raw) = tokio::fs::read_to_string(&sidecar_path).await {
                         match serde_json::from_str::<serde_json::Value>(&meta_raw) {
                             Ok(meta) => {
@@ -329,22 +335,27 @@ pub async fn handle_compile_request(
                                     .and_then(|s| s.as_str())
                                     .unwrap_or("")
                                     .to_string();
-                                (src, arch)
+                                let manifest = meta
+                                    .get("compile_manifest")
+                                    .cloned()
+                                    .unwrap_or(serde_json::Value::Null);
+                                (src, arch, manifest)
                             }
-                            Err(_) => (None, String::new()),
+                            Err(_) => (None, String::new(), serde_json::Value::Null),
                         }
                     } else {
-                        (None, String::new())
+                        (None, String::new(), serde_json::Value::Null)
                     }
                 };
                 // Log what came back so the user can verify the cache is
                 // round-tripping: the Proceed branch's "sidecar written: ...
                 // arch=NNNN chars" should match this read's "arch=NNNN chars".
                 eprintln!(
-                    "[HMR] sidecar read: {} (original_source={}, arch={} chars)",
+                    "[HMR] sidecar read: {} (original_source={}, arch={} chars, compile_manifest={})",
                     sidecar_path.display(),
                     if original_source.is_some() { "yes" } else { "no" },
-                    architecture_md.len()
+                    architecture_md.len(),
+                    if sidecar_manifest_json.is_null() { "no" } else { "yes" },
                 );
 
                 if let Some(old_source) = original_source {
@@ -399,8 +410,12 @@ pub async fn handle_compile_request(
                             Some(architecture_md.as_str())
                         };
 
-                        let (final_core, final_gui, final_shared) = if is_value_only {
-                            // Tier 1: pure value change — instant regex
+                        let (final_core, final_gui, final_shared, final_host_runner) = if is_value_only {
+                            // Tier 1: pure value change — instant regex.
+                            // patch_split_files only knows about core/gui/shared
+                            // (legacy 3-module patcher); host_runner is preserved
+                            // verbatim from disk because Tier 1 is always value
+                            // changes (never structural edits to the runner).
                             let patch = patch_split_files(
                                 &old_source, &req.source,
                                 &core_content, &gui_content, &shared_content,
@@ -411,6 +426,7 @@ pub async fn handle_compile_request(
                                     patch.core.unwrap_or_else(|| core_content.clone()),
                                     patch.gui.unwrap_or_else(|| gui_content.clone()),
                                     patch.shared.unwrap_or_else(|| shared_content.clone()),
+                                    host_runner_content.clone(),
                                 )
                             } else {
                                 // Regex couldn't find the value — fall through
@@ -421,11 +437,12 @@ pub async fn handle_compile_request(
                                     &core_content,
                                     &gui_content,
                                     &shared_content,
+                                    &host_runner_content,
                                     arch_hint,
                                 ).await {
                                     Ok(edits) => {
-                                        match apply_edit_list(&edits, &core_content, &gui_content, &shared_content) {
-                                            Ok((c, g, s)) => (c, g, s),
+                                        match apply_edit_list(&edits, &core_content, &gui_content, &shared_content, &host_runner_content) {
+                                            Ok((c, g, s, h)) => (c, g, s, h),
                                             Err(apply_err) => {
                                                 eprintln!(
                                                     "[HMR] Tier 2 (value-fallback) edit apply FAILED: {} → falling through to Tier 3 full re-split",
@@ -436,10 +453,15 @@ pub async fn handle_compile_request(
                                                     .get("_synthi_architecture")
                                                     .and_then(|v| v.as_str())
                                                     .unwrap_or("");
+                                                let fresh_manifest = result
+                                                    .get("_synthi_manifest")
+                                                    .cloned()
+                                                    .unwrap_or(serde_json::Value::Null);
                                                 let meta = serde_json::json!({
                                                     "split_hash": source_hash_str,
                                                     "original_source": req.source,
                                                     "architecture": fresh_arch,
+                                                    "compile_manifest": fresh_manifest,
                                                 });
                                                 write_sidecar_logged(&sidecar_path, &meta).await;
                                                 return Ok(result);
@@ -453,10 +475,15 @@ pub async fn handle_compile_request(
                                             .get("_synthi_architecture")
                                             .and_then(|v| v.as_str())
                                             .unwrap_or("");
+                                        let fresh_manifest = result
+                                            .get("_synthi_manifest")
+                                            .cloned()
+                                            .unwrap_or(serde_json::Value::Null);
                                         let meta = serde_json::json!({
                                             "split_hash": source_hash_str,
                                             "original_source": req.source,
                                             "architecture": fresh_arch,
+                                            "compile_manifest": fresh_manifest,
                                         });
                                         write_sidecar_logged(&sidecar_path, &meta).await;
                                         return Ok(result);
@@ -489,7 +516,7 @@ pub async fn handle_compile_request(
                             // On miss / timeout, take_matching_or_wait
                             // returns None and we fall through to the live
                             // AI call below with no extra latency.
-                            let speculative_applied: Option<(String, String, String)> = {
+                            let speculative_applied: Option<(String, String, String, String)> = {
                                 if let Some(cached_edits) =
                                     crate::hmr::speculative_diff_patch::take_matching_or_wait(
                                         spec_hash,
@@ -502,6 +529,7 @@ pub async fn handle_compile_request(
                                         &core_content,
                                         &gui_content,
                                         &shared_content,
+                                        &host_runner_content,
                                     ) {
                                         Ok(tuple) => {
                                             eprintln!(
@@ -528,21 +556,23 @@ pub async fn handle_compile_request(
                                 }
                             };
 
-                            if let Some(triple) = speculative_applied {
-                                triple
+                            if let Some(quad) = speculative_applied {
+                                quad
                             } else {
                                 // Live AI call (diff-only output format — ~100
                                 // output tokens, ~1s generation on pro).
                                 eprintln!(
-                                    "[HMR] Tier 2: AI diff_patch (diff={} bytes, arch={} chars)",
+                                    "[HMR] Tier 2: AI diff_patch (diff={} bytes, arch={} chars, host_runner={} bytes)",
                                     diff.len(),
-                                    architecture_md.len()
+                                    architecture_md.len(),
+                                    host_runner_content.len()
                                 );
                                 match perform_ai_diff_patch(
                                     &diff,
                                     &core_content,
                                     &gui_content,
                                     &shared_content,
+                                    &host_runner_content,
                                     arch_hint,
                                 ).await {
                                     Ok(edits) => {
@@ -550,16 +580,17 @@ pub async fn handle_compile_request(
                                             "[HMR] Tier 2: received {} edit(s), applying locally",
                                             edits.len()
                                         );
-                                        match apply_edit_list(&edits, &core_content, &gui_content, &shared_content) {
-                                            Ok((c, g, s)) => {
+                                        match apply_edit_list(&edits, &core_content, &gui_content, &shared_content, &host_runner_content) {
+                                            Ok((c, g, s, h)) => {
                                                 eprintln!(
-                                                    "[HMR] Tier 2 SUCCESS ({} edits, core_changed={} gui_changed={} shared_changed={})",
+                                                    "[HMR] Tier 2 SUCCESS ({} edits, core_changed={} gui_changed={} shared_changed={} host_runner_changed={})",
                                                     edits.len(),
                                                     c != core_content,
                                                     g != gui_content,
-                                                    s != shared_content
+                                                    s != shared_content,
+                                                    h != host_runner_content
                                                 );
-                                                (c, g, s)
+                                                (c, g, s, h)
                                             }
                                             Err(apply_err) => {
                                                 // Anchor missing / ambiguous / unknown module.
@@ -574,10 +605,15 @@ pub async fn handle_compile_request(
                                                     .get("_synthi_architecture")
                                                     .and_then(|v| v.as_str())
                                                     .unwrap_or("");
+                                                let fresh_manifest = result
+                                                    .get("_synthi_manifest")
+                                                    .cloned()
+                                                    .unwrap_or(serde_json::Value::Null);
                                                 let meta = serde_json::json!({
                                                     "split_hash": source_hash_str,
                                                     "original_source": req.source,
                                                     "architecture": fresh_arch,
+                                                    "compile_manifest": fresh_manifest,
                                                 });
                                                 write_sidecar_logged(&sidecar_path, &meta).await;
                                                 return Ok(result);
@@ -594,10 +630,15 @@ pub async fn handle_compile_request(
                                             .get("_synthi_architecture")
                                             .and_then(|v| v.as_str())
                                             .unwrap_or("");
+                                        let fresh_manifest = result
+                                            .get("_synthi_manifest")
+                                            .cloned()
+                                            .unwrap_or(serde_json::Value::Null);
                                         let meta = serde_json::json!({
                                             "split_hash": source_hash_str,
                                             "original_source": req.source,
                                             "architecture": fresh_arch,
+                                            "compile_manifest": fresh_manifest,
                                         });
                                         write_sidecar_logged(&sidecar_path, &meta).await;
                                         return Ok(result);
@@ -607,9 +648,11 @@ pub async fn handle_compile_request(
                         };
 
                         // Write patched files to disk + update sidecar. Preserve
-                        // the existing architecture cache — this is a diff-patch
-                        // apply, not a re-split, so the architecture is still
-                        // valid (same split modules, same contract).
+                        // the existing architecture cache AND compile manifest
+                        // — this is a diff-patch apply, not a re-split, so the
+                        // architecture is still valid (same split modules, same
+                        // contract) and the manifest hasn't changed (same
+                        // library, same link flags).
                         if let Some(ref p) = enrichment.adapted_status.core_path {
                             let _ = tokio::fs::write(p, &final_core).await;
                         }
@@ -619,17 +662,36 @@ pub async fn handle_compile_request(
                         if let Some(ref p) = enrichment.adapted_status.shared_path {
                             let _ = tokio::fs::write(p, &final_shared).await;
                         }
+                        // ULTRAPLAN Phase 5: persist host_runner.cpp if the
+                        // diff_patch produced edits targeting it. The hash
+                        // change vs `host_runner_content` will be picked up
+                        // by compile_runner downstream (its content cache
+                        // re-keys on this string), triggering a runner
+                        // rebuild only when the runner actually changed.
+                        if let Some(ref p) = enrichment.adapted_status.host_runner_path {
+                            if final_host_runner != host_runner_content {
+                                let _ = tokio::fs::write(p, &final_host_runner).await;
+                                eprintln!(
+                                    "[HMR] Tier 2: host_runner.cpp updated ({} → {} bytes)",
+                                    host_runner_content.len(),
+                                    final_host_runner.len()
+                                );
+                            }
+                        }
                         let meta = serde_json::json!({
                             "split_hash": source_hash_str,
                             "original_source": req.source,
                             "architecture": architecture_md,
+                            "compile_manifest": sidecar_manifest_json.clone(),
                         });
                         write_sidecar_logged(&sidecar_path, &meta).await;
 
                         serde_json::json!({
                             "shared": { "content": final_shared, "filename": "shared.h" },
                             "core": { "content": final_core, "filename": "core.cpp" },
-                            "gui": { "content": final_gui, "filename": "gui.cpp" }
+                            "gui": { "content": final_gui, "filename": "gui.cpp" },
+                            "host_runner": { "content": final_host_runner, "filename": "host_runner.cpp" },
+                            "_synthi_manifest": sidecar_manifest_json.clone(),
                         })
                     }
                 } else {
@@ -640,10 +702,15 @@ pub async fn handle_compile_request(
                         .get("_synthi_architecture")
                         .and_then(|v| v.as_str())
                         .unwrap_or("");
+                    let fresh_manifest = result
+                        .get("_synthi_manifest")
+                        .cloned()
+                        .unwrap_or(serde_json::Value::Null);
                     let meta = serde_json::json!({
                         "split_hash": source_hash_str,
                         "original_source": req.source,
                         "architecture": fresh_arch,
+                        "compile_manifest": fresh_manifest,
                     });
                     write_sidecar_logged(&sidecar_path, &meta).await;
                     result
@@ -834,6 +901,109 @@ pub async fn handle_compile_request(
         tokio::fs::write(ctx.workspace_path.join(shared_fname), &processed_shared).await?;
     }
 
+    // ULTRAPLAN Phase 3: resolve the compile manifest for this request.
+    //
+    // Three-layer lookup:
+    //   1. `split_data._synthi_manifest` — set by ai_utils Proceed branch
+    //      AND by the FallbackDeterministic Tier 2 success path (preserved
+    //      from sidecar). Covers the common happy-path flows.
+    //   2. sidecar `.synthi_split_meta.json::compile_manifest` — re-read
+    //      here to cover `AiBypassResult::UseCached` (where the cached
+    //      split content was reused but the manifest wasn't threaded
+    //      through) and any edge case where the split_data was built
+    //      without the manifest embedded.
+    //   3. None → downstream `compile_core` / `compile_gui` fall back to
+    //      `CompileManifest::sdl2_default()`, preserving exact backward
+    //      compatibility with pre-universal-prompt projects.
+    let compile_manifest: Option<CompileManifest> = {
+        let from_split_data = split_data
+            .get("_synthi_manifest")
+            .and_then(|v| if v.is_null() { None } else { Some(v) })
+            .and_then(CompileManifest::from_json_value);
+        if from_split_data.is_some() {
+            from_split_data
+        } else {
+            // Fallback: re-read sidecar. Cheap — tens of KB at most,
+            // and only on UseCached/edge paths that don't carry the
+            // manifest inside split_data.
+            match tokio::fs::read_to_string(&sidecar_path).await {
+                Ok(raw) => serde_json::from_str::<serde_json::Value>(&raw)
+                    .ok()
+                    .and_then(|meta| meta.get("compile_manifest").cloned())
+                    .and_then(|v| if v.is_null() { None } else { Some(v) })
+                    .and_then(|v| CompileManifest::from_json_value(&v)),
+                Err(_) => None,
+            }
+        }
+    };
+    match &compile_manifest {
+        Some(m) => eprintln!(
+            "[HMR] compile_manifest: compiler={}, std={}, gui_link={:?}, hot_reload={}",
+            m.compiler.executable(),
+            m.std,
+            m.gui_link_flags,
+            m.hot_reload_mode.as_str(),
+        ),
+        None => eprintln!("[HMR] compile_manifest: none (falling back to sdl2_default downstream)"),
+    }
+
+    // ULTRAPLAN Phase 8: forward the manifest + architecture cache to
+    // the frontend over the log data channel. The frontend's
+    // compilerClient.js bridges `{type: "compile-manifest", ...}` into
+    // a `synthi:compile-manifest` CustomEvent, and
+    // `useCompileManifestListener` populates the Redux slice that the
+    // StatusBar framework pill, CompileErrorCard and ConfidenceWarning
+    // components read from.
+    //
+    // We emit BEFORE compile starts so the frontend can show the
+    // detected framework + confidence nudge up-front, even if compile
+    // fails. The architecture cache is sourced from split_data first
+    // (fresh Proceed / Tier 3 path) and falls back to re-reading the
+    // sidecar (UseCached / Tier 2 path where split_data lacks it).
+    {
+        let arch_from_split_data = split_data
+            .get("_synthi_architecture")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        let architecture_for_frontend = if let Some(a) = arch_from_split_data {
+            a
+        } else {
+            match tokio::fs::read_to_string(&sidecar_path).await {
+                Ok(raw) => serde_json::from_str::<serde_json::Value>(&raw)
+                    .ok()
+                    .and_then(|meta| {
+                        meta.get("architecture")
+                            .and_then(|a| a.as_str())
+                            .map(|s| s.to_string())
+                    })
+                    .unwrap_or_default(),
+                Err(_) => String::new(),
+            }
+        };
+        // Serialize the compile_manifest struct back to JSON so the
+        // frontend receives the exact wire shape produced by the Python
+        // side. If resolution produced None (pre-Phase-3 project, split
+        // failure, etc.) emit null so the frontend knows there's no
+        // manifest available rather than showing stale data.
+        let manifest_json_for_frontend: serde_json::Value = compile_manifest
+            .as_ref()
+            .and_then(|m| serde_json::to_value(m).ok())
+            .unwrap_or(serde_json::Value::Null);
+        if !manifest_json_for_frontend.is_null() || !architecture_for_frontend.is_empty() {
+            let payload = serde_json::json!({
+                "sessionId": session_id.clone(),
+                "type": "compile-manifest",
+                "manifest": manifest_json_for_frontend,
+                "architecture": architecture_for_frontend,
+            });
+            let _ = ctx
+                .log_dc
+                .send_text(serde_json::to_string(&payload).unwrap_or_default())
+                .await;
+            eprintln!("[HMR] compile-manifest emitted to frontend data channel");
+        }
+    }
+
     // Compile Core
     let core_lib_path_opt = compile_core(
         ctx,
@@ -845,6 +1015,7 @@ pub async fn handle_compile_request(
         timestamp,
         ext,
         Some(session_id.clone()),
+        compile_manifest.as_ref(),
     )
     .await?;
 
@@ -863,12 +1034,140 @@ pub async fn handle_compile_request(
         ext,
         Some(session_id.clone()),
         req.is_gui,
+        compile_manifest.as_ref(),
     )
     .await?;
 
     // If GUI is not requested or failed (but core succeeded), we might proceed with just core?
     // But `gui_lib_path_opt` returns existing path if not rebuilt.
     let gui_lib_path = gui_lib_path_opt.unwrap_or(prev_gui_path.unwrap_or_default());
+
+    // ============================================================
+    // ULTRAPLAN PHASE 4: HOST RUNNER COMPILATION
+    // ============================================================
+    //
+    // The universal split prompt emits a 4th file alongside core/gui/
+    // shared: `host_runner.cpp`, the per-project main() that owns the
+    // window/event loop and dlopens libcore.so + libgui.so. We compile
+    // it as a build artifact here.
+    //
+    // V1 scope: BUILD only. The runtime-side runner spawn is still the
+    // shipped `runner_bin` binary (with its full HMR protocol + Xvfb /
+    // GStreamer video streaming). Switching the runtime spawn to the
+    // per-project compiled runner is a Phase 5+ concern because it has
+    // implications for how video gets out to the browser.
+    //
+    // BYOR mode: when `adapted_status.user_owned_runner` is true (the
+    // existing host_runner.cpp on disk starts with `// SYNTHI_USER_RUNNER`),
+    // we MUST NOT overwrite it with the AI's regenerated content — even
+    // on a fresh AI split. We just rebuild the user's existing file.
+    // See HMR_AGNOSTIC_ULTRAPLAN.md §5.2 (Mitigation 2B).
+    let host_runner_content: Option<String> = if enrichment.adapted_status.user_owned_runner {
+        // BYOR: read the user-authored runner from disk, ignore split_data.
+        if let Some(ref p) = enrichment.adapted_status.host_runner_path {
+            match tokio::fs::read_to_string(p).await {
+                Ok(content) => {
+                    eprintln!(
+                        "[HMR] host_runner: BYOR mode — reusing user-owned runner ({} bytes from {})",
+                        content.len(),
+                        p.display()
+                    );
+                    Some(content)
+                }
+                Err(e) => {
+                    eprintln!("[HMR] host_runner: BYOR sentinel set but read failed: {}", e);
+                    None
+                }
+            }
+        } else {
+            eprintln!("[HMR] host_runner: BYOR flag set but no host_runner_path — skipping");
+            None
+        }
+    } else {
+        // AI-owned: prefer fresh content from split_data (Proceed / Tier 3
+        // re-split paths), fall back to disk read (UseCached / Tier 2
+        // diff_patch apply paths where split_data was constructed without
+        // the host_runner field).
+        let from_split = split_data
+            .get("host_runner")
+            .and_then(|v| v.get("content"))
+            .and_then(|c| c.as_str())
+            .filter(|s| !s.trim().is_empty())
+            .map(|s| s.to_string());
+        if let Some(content) = from_split {
+            // Persist to workspace so detect_adapted_project picks it up
+            // on the next compile and the user can see / edit the file.
+            let host_runner_disk = ctx.workspace_path.join(HOST_RUNNER_FILENAME);
+            match tokio::fs::write(&host_runner_disk, &content).await {
+                Ok(()) => {
+                    eprintln!(
+                        "[HMR] host_runner: wrote {} bytes from split_data → {}",
+                        content.len(),
+                        host_runner_disk.display()
+                    );
+                }
+                Err(e) => {
+                    eprintln!("[HMR] host_runner: workspace write FAILED: {}", e);
+                }
+            }
+            Some(content)
+        } else if let Some(ref p) = enrichment.adapted_status.host_runner_path {
+            // No fresh content (cached / tier-2 diff_patch path) — read
+            // the on-disk copy. compile_runner's content cache will hit
+            // for unchanged files so this is cheap.
+            match tokio::fs::read_to_string(p).await {
+                Ok(content) => {
+                    eprintln!(
+                        "[HMR] host_runner: reusing on-disk runner ({} bytes from {})",
+                        content.len(),
+                        p.display()
+                    );
+                    Some(content)
+                }
+                Err(e) => {
+                    eprintln!("[HMR] host_runner: disk read failed: {}", e);
+                    None
+                }
+            }
+        } else {
+            eprintln!(
+                "[HMR] host_runner: no content from split_data or disk — skipping runner compile (pre-Phase-4 project)"
+            );
+            None
+        }
+    };
+
+    // Compile the runner if we have content. Errors here are non-fatal
+    // for V1 — the shipped runner_bin still launches at runtime, so a
+    // host_runner build failure is observability only. When Phase 5+
+    // wires runtime spawn to the per-project runner, this should bail
+    // hard on Err instead.
+    let host_runner_bin_path: Option<String> = if let Some(ref content) = host_runner_content {
+        match compile_runner(
+            ctx,
+            content,
+            &output_dir,
+            timestamp,
+            Some(session_id.clone()),
+            compile_manifest.as_ref(),
+        )
+        .await
+        {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!(
+                    "[HMR] compile_runner FAILED (non-fatal in V1, runtime still uses shipped runner): {}",
+                    e
+                );
+                None
+            }
+        }
+    } else {
+        None
+    };
+    if let Some(ref p) = host_runner_bin_path {
+        eprintln!("[HMR] host_runner binary: {}", p);
+    }
 
     // Manual logging
     debug_log!("[Compile] Step: Compilation finished");

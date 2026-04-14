@@ -153,6 +153,58 @@ fn truncate(s: &str, max_chars: usize) -> String {
     }
 }
 
+/// ULTRAPLAN Phase 5: apply a list of AI-produced edits to the four
+/// split modules. Returns the patched contents in source order
+/// `(core, gui, shared, host_runner)` or propagates the first error.
+///
+/// Each `Edit` carries its own `module` field; this dispatcher routes
+/// it to the matching string and calls `apply_edit`. Edits are applied
+/// in order; if edit N fails, edits 0..N-1 are already applied in the
+/// local copies but since we return `Err`, the caller MUST discard them
+/// and fall through to a full re-split — no partial state to disk.
+///
+/// Module field accepts `"core"`, `"gui"`, `"shared"`, or `"host_runner"`.
+/// Anything else returns an error mentioning the offending edit index
+/// so the caller can report which AI edit was malformed.
+///
+/// host_runner is the 4th module added in Phase 5. Pre-Phase-5 callers
+/// passed only 3 strings; Phase 5 callers pass 4. The Python diff_patch
+/// prompt was updated in lockstep so the AI knows host_runner is a
+/// valid target only when host_runner.cpp is present.
+pub fn apply_edit_list(
+    edits: &[Edit],
+    core: &str,
+    gui: &str,
+    shared: &str,
+    host_runner: &str,
+) -> Result<(String, String, String, String)> {
+    let mut c = core.to_string();
+    let mut g = gui.to_string();
+    let mut s = shared.to_string();
+    let mut h = host_runner.to_string();
+
+    for (i, edit) in edits.iter().enumerate() {
+        let updated = match edit.module.as_str() {
+            "core" => apply_edit(&c, edit)?,
+            "gui" => apply_edit(&g, edit)?,
+            "shared" => apply_edit(&s, edit)?,
+            "host_runner" => apply_edit(&h, edit)?,
+            other => {
+                bail!("edit #{} targets unknown module {:?}", i, other);
+            }
+        };
+        match edit.module.as_str() {
+            "core" => c = updated,
+            "gui" => g = updated,
+            "shared" => s = updated,
+            "host_runner" => h = updated,
+            _ => unreachable!(),
+        }
+    }
+
+    Ok((c, g, s, h))
+}
+
 // ────────────────────────────────────────────────────────────
 // Tests
 // ────────────────────────────────────────────────────────────

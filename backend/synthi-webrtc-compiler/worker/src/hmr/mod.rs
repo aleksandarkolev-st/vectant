@@ -17,6 +17,7 @@ pub mod ai_response_validator;
 pub mod ai_timeout_guardian;
 pub mod binary_state;
 pub mod build_manifest;
+pub mod compile_manifest;
 pub mod cache_writer;
 pub mod candidate;
 pub mod candidate_bridge;
@@ -96,6 +97,7 @@ pub mod state_type_id;
 pub mod swap_rollback;
 pub mod symbol_validation;
 pub mod telemetry;
+pub mod undef_symbols;
 
 #[cfg(test)]
 pub mod wave05_integration_tests;

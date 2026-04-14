@@ -5,6 +5,7 @@ import { useSelector } from 'react-redux';
 import { BranchSelector } from '@/components/git/BranchSelector';
 import { selectCursorPosition } from '@/redux/uiSlice';
 import { selectActiveFile } from '@/redux/workspaceSlice';
+import { selectLanguageAndFramework } from '@/redux/compileManifestSlice';
 import { getMonacoLanguage } from '@/utils/languageMapper';
 import { useCollabStatus } from '@/hooks/useCollabStatus';
 import { useCollabSession } from '@/hooks/useCollabSession';
@@ -48,6 +49,13 @@ function StatusBarInner({
   const currentBranch = useDeferredValue(currentBranchRaw);
   const activeFileRaw = useSelector(selectActiveFile);
   const activeFile = useDeferredValue(activeFileRaw);
+  // ULTRAPLAN Phase 8: show the AI-detected framework alongside the
+  // file-extension-derived language. Parsed from the arch cache at
+  // dispatch time so this read is O(1). Null when no compile has
+  // run yet or the arch cache didn't contain a "Language & Framework"
+  // section.
+  const languageAndFrameworkRaw = useSelector(selectLanguageAndFramework);
+  const languageAndFramework = useDeferredValue(languageAndFrameworkRaw);
 
   // Defer props that change frequently during typing
   const deferredSummary = useDeferredValue(diagnosticSummary);
@@ -277,6 +285,23 @@ function StatusBarInner({
           <Zap className="w-3.5 h-3.5" style={{ color: 'var(--accent-primary)' }} strokeWidth={2} />
           <span className="font-medium capitalize" style={{ color: 'var(--text-secondary)' }}>{language}</span>
         </div>
+
+        {/* ULTRAPLAN Phase 8: AI-detected framework pill. Only shown
+            when the arch cache contained a "## Language & Framework"
+            section — otherwise we fall back to the extension-derived
+            language pill above. */}
+        {languageAndFramework && (
+          <>
+            <div className="w-px h-4" style={{ background: 'var(--border-subtle)' }}></div>
+            <div
+              className="flex items-center gap-1.5 px-2 py-0.5 rounded-md cursor-default transition-all"
+              title={`Framework detected from AI architecture cache: ${languageAndFramework}`}
+            >
+              <Cpu className="w-3.5 h-3.5" style={{ color: 'var(--accent-primary)' }} strokeWidth={2} />
+              <span className="font-medium" style={{ color: 'var(--text-secondary)' }}>{languageAndFramework}</span>
+            </div>
+          </>
+        )}
       </div>
     </div>
   );
