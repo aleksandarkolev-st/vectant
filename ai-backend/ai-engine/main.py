@@ -39,8 +39,15 @@ from analyzer import get_analyzer
 from analyzer import supported_languages
 
 from llm.providers import get_provider
-from llm.prompts import SPLIT_GUI_PROMPT
+from llm.prompts import SPLIT_GUI_PROMPT, UNIVERSAL_SPLIT_PROMPT
 from llm.structural_prompts import format_heal_prompt
+from build_manifest import (
+    BuildManifest,
+    ManifestRejection,
+    parse_manifest,
+    validate_manifest_v1,
+    manifest_to_dict,
+)
 
 # New imports for enhanced architecture
 from job_queue import (
@@ -119,6 +126,89 @@ def extract_architecture(ai_response: str) -> Tuple[str, str]:
     json_part = re.sub(r"\n?```\s*$", "", json_part).rstrip()
     arch_part = (match.group("body") or "").strip()
     return json_part, arch_part
+
+
+# ══════════════════════════════════════════════════════════════
+# Build manifest extraction (for /refactor/split/verified V2 universal)
+# ══════════════════════════════════════════════════════════════
+#
+# The universal split prompt (UNIVERSAL_SPLIT_PROMPT) asks the AI to
+# emit a machine-readable JSON block inside the architecture cache,
+# wrapped in <synthi_build_manifest>...</synthi_build_manifest> tags.
+# We parse it with its own regex (nested inside the arch cache) and
+# validate with pydantic in build_manifest.py.
+#
+# Nested XML tags (rather than a fenced ```json block) chosen because:
+#   - Same regex shape as the outer <synthi_arch_cache> (easy to parse)
+#   - Impossible to collide with markdown prose in the arch doc
+#   - Fails cleanly on truncation (unmatched close → no match → no manifest)
+#
+# See HMR_AGNOSTIC_ULTRAPLAN.md §4 for the full schema.
+
+_MANIFEST_TAG_RE = re.compile(
+    r"""
+    <\s*synthi_build_manifest\s*>\s*\n?
+    (?P<body>.*?)
+    \n?\s*<\s*/\s*synthi_build_manifest\s*>
+    """,
+    re.IGNORECASE | re.VERBOSE | re.DOTALL,
+)
+
+
+def extract_architecture_and_manifest(
+    ai_response: str,
+) -> Tuple[str, str, Optional[dict]]:
+    """Parse the universal-split AI response into its three parts.
+
+    Returns `(json_part, architecture_md, manifest_dict)`:
+      - `json_part` — the LLM text BEFORE the arch cache, containing the
+        <JSON>{4 files}</JSON> block. Caller parses this separately.
+      - `architecture_md` — the markdown inside <synthi_arch_cache> (with
+        the <synthi_build_manifest> block stripped out). Empty string if
+        the tag was not present in the response.
+      - `manifest_dict` — the JSON dict inside <synthi_build_manifest>.
+        `None` if the tag was not present or the JSON failed to parse.
+
+    Never raises — all failures degrade to partial results so the caller
+    can decide whether to continue (pre-universal-prompt fallback) or
+    error out.
+    """
+    if not isinstance(ai_response, str) or not ai_response:
+        return (ai_response or ""), "", None
+
+    # First split at the arch cache boundary (same as legacy extractor).
+    json_part, arch_md = extract_architecture(ai_response)
+
+    # Then pull the manifest JSON out of the arch cache. The manifest tag
+    # lives INSIDE the arch cache, so we search the full original response
+    # (not just arch_md) because the legacy extractor already stripped the
+    # outer tags and the manifest may straddle whitespace edges.
+    manifest_dict: Optional[dict] = None
+    if arch_md:
+        manifest_match = _MANIFEST_TAG_RE.search(ai_response)
+        if manifest_match:
+            manifest_raw = (manifest_match.group("body") or "").strip()
+            try:
+                manifest_dict = json.loads(manifest_raw)
+            except json.JSONDecodeError as e:
+                logger.warning(
+                    f"[split/verified] <synthi_build_manifest> not valid JSON: {e}"
+                )
+                # Best-effort fallback: strip trailing commas some models emit
+                cleaned = re.sub(r",(\s*[}\]])", r"\1", manifest_raw)
+                try:
+                    manifest_dict = json.loads(cleaned)
+                    logger.info(
+                        "[split/verified] manifest recovered after trailing-comma cleanup"
+                    )
+                except Exception:
+                    manifest_dict = None
+
+            # Also strip the manifest block from the returned arch_md so the
+            # architecture markdown the worker stores doesn't duplicate JSON.
+            arch_md = _MANIFEST_TAG_RE.sub("", arch_md).strip()
+
+    return json_part, arch_md, manifest_dict
 # Proactive Analysis imports
 from analyzer.proactive import (
     ProactiveAnalyzer,
@@ -1392,11 +1482,16 @@ async def refactor_split_verified(req: VerifiedAiRequest):
         return None
 
     provider = get_provider(provider_name=select_provider_name(), use_custom=bool(req.api_key))
-    
-    prompt = SPLIT_GUI_PROMPT
+
+    # Use the universal library-agnostic split prompt (Phase 1 of ULTRAPLAN).
+    # It produces a 4-file split (shared / core / gui / host_runner) + a
+    # machine-readable build manifest inside the arch cache, for ANY C++
+    # library (not just SDL2). Substitute the user source into the template
+    # so it's inlined at request time.
+    prompt = UNIVERSAL_SPLIT_PROMPT.replace("{USER_CODE}", req.code)
     if req.prompt:
         prompt += "\nUser Instructions: " + req.prompt
-        
+
     try:
         ai_suggestion = await provider.ask_llm(
             req.code,
@@ -1405,8 +1500,8 @@ async def refactor_split_verified(req: VerifiedAiRequest):
             mode="split",
             files=req.files,
             focus=req.focus,
-            # Split needs stronger reasoning — 88K prompt, structured
-            # JSON output, must not drift. Pro model by default.
+            # Universal split with 4-file output + build manifest needs
+            # stronger reasoning; pro by default. Override via req.model.
             model=req.model or "gemini-3.1-flash-lite-preview",
             api_key=req.api_key,
         )
@@ -1421,23 +1516,65 @@ async def refactor_split_verified(req: VerifiedAiRequest):
             latency_ms=latency_ms,
         )
         tracker.update_output(provenance_id, ai_suggestion)
-        
+
     except Exception as e:
         tracker.mark_rejected(provenance_id, f"AI error: {e}")
         raise HTTPException(status_code=400, detail=str(e))
 
     # Parse and verify split result
     try:
-        # First, peel off the architecture cache block (if present). The split
-        # prompt asks the model to emit <synthi_arch_cache>...</synthi_arch_cache>
-        # AFTER the JSON. Extracting it first means the JSON parser never sees
-        # the trailer, and the architecture string flows through to the Rust
-        # worker for sidecar storage.
-        json_only_response, architecture_md = extract_architecture(ai_suggestion)
+        # Peel off the architecture cache AND the nested build manifest.
+        # Universal prompt emits:
+        #   <JSON>{4 files}</JSON>
+        #   <synthi_arch_cache># Architecture...<synthi_build_manifest>{...}</synthi_build_manifest></synthi_arch_cache>
+        # The extractor returns (json_part, arch_md, manifest_dict). The
+        # manifest is validated via pydantic below and forwarded to the
+        # Rust worker for compile dispatch.
+        json_only_response, architecture_md, manifest_dict = (
+            extract_architecture_and_manifest(ai_suggestion)
+        )
         if architecture_md:
-            logger.info(f"[split/verified] architecture cache captured ({len(architecture_md)} chars)")
+            logger.info(
+                f"[split/verified] architecture cache captured ({len(architecture_md)} chars)"
+            )
         else:
-            logger.info("[split/verified] no architecture cache in response (fallback to generic)")
+            logger.info(
+                "[split/verified] no architecture cache in response (fallback to generic)"
+            )
+
+        # Parse + validate the manifest (Phase 2). If malformed, log and
+        # return `manifest=None` so the Rust worker falls back to hardcoded
+        # SDL2 defaults (backward compat with pre-universal sidecars).
+        manifest_parsed: Optional[BuildManifest] = None
+        manifest_out: Optional[dict] = None
+        if manifest_dict is not None:
+            try:
+                manifest_parsed = parse_manifest(manifest_dict)
+                validate_manifest_v1(manifest_parsed)
+                manifest_out = manifest_to_dict(manifest_parsed)
+                logger.info(
+                    f"[split/verified] manifest parsed "
+                    f"(compiler={manifest_parsed.compiler}, "
+                    f"hot_reload_mode={manifest_parsed.hot_reload_mode}, "
+                    f"confidence={manifest_parsed.confidence.overall})"
+                )
+            except ManifestRejection as e:
+                # V1 can't execute this manifest (multi-step build, unknown
+                # compiler, etc.). Surface as HTTP 422 with the actionable
+                # error card text (see HMR_AGNOSTIC_ULTRAPLAN.md §5.3).
+                tracker.mark_rejected(provenance_id, f"Manifest rejected: {e.message}")
+                raise HTTPException(status_code=422, detail=e.message)
+            except Exception as e:
+                logger.warning(
+                    f"[split/verified] manifest validation failed: {e}. "
+                    "Proceeding with None (worker will fall back to SDL2 default)."
+                )
+                manifest_out = None
+        else:
+            logger.info(
+                "[split/verified] no <synthi_build_manifest> in response "
+                "(pre-universal prompt? worker falls back to SDL2 default)"
+            )
 
         # Clean up markdown if present
         result_str = json_only_response
@@ -1475,6 +1612,7 @@ async def refactor_split_verified(req: VerifiedAiRequest):
                 return {
                     "result": result_str,
                     "architecture": architecture_md,
+                    "manifest": manifest_out,
                     "lang": req.lang,
                     "verified": False,
                     "verification": verification_result.to_dict(),
@@ -1492,6 +1630,13 @@ async def refactor_split_verified(req: VerifiedAiRequest):
             # forgot to emit the <synthi_arch_cache> block). Worker stores it
             # in the split sidecar and re-injects into diff_patch calls.
             "architecture": architecture_md,
+            # Build manifest (ULTRAPLAN Phase 2): compiler flags, link flags,
+            # hot_reload_mode, and confidence fields — emitted by the AI
+            # inside <synthi_build_manifest>...</synthi_build_manifest>. May
+            # be None if the response didn't contain one (pre-universal
+            # prompt, or model failed to emit the block) — worker falls
+            # back to hardcoded SDL2 defaults.
+            "manifest": manifest_out,
             "lang": req.lang,
             "verified": True,
             "verification": verification_result.to_dict() if req.verify else None,
