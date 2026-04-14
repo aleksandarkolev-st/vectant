@@ -382,6 +382,21 @@ export class CompilerClient {
                 if (typeof window !== 'undefined' && window.dispatchEvent) {
                     window.dispatchEvent(new CustomEvent('synthi:gui-end', { detail: parsed }));
                 }
+            // ULTRAPLAN Phase 8 bridge point: when the Rust worker starts
+            // forwarding the AI-synthesised build manifest + architecture
+            // cache over the data channel, add a case here like:
+            //
+            //   } else if (parsed && parsed.type === 'compile-manifest') {
+            //       window.dispatchEvent(new CustomEvent('synthi:compile-manifest', {
+            //           detail: { manifest: parsed.manifest, architecture: parsed.architecture }
+            //       }));
+            //       return;
+            //   }
+            //
+            // The dormant listener in `useCompileManifestListener.js` picks
+            // up the CustomEvent and populates the Redux compileManifestSlice,
+            // which lights up the StatusBar framework pill, CompileErrorCard,
+            // and ConfidenceWarning components — no further frontend changes.
             } else if (parsed && parsed.type === 'compile-diagnostics') {
                 // Structured compile diagnostics - dispatch to error overlay
                 if (debugCompiler) console.log('[CompilerClient] Dispatching synthi:compile-diagnostics', parsed);

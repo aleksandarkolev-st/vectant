@@ -15,6 +15,8 @@ import {
   selectAutoSaveEnabled,
   toggleAutoCompletion,
   selectAutoCompletionEnabled,
+  toggleBringYourOwnRunner,
+  selectBringYourOwnRunnerEnabled,
 } from '@/redux/uiSlice';
 import { useThemePicker } from '@/components/ThemePicker';
 import { toast } from 'sonner';
@@ -55,6 +57,7 @@ export function SettingsPanelContent() {
   const autoSaveEnabled = useAppSelector(selectAutoSaveEnabled);
   const autoCompletionEnabled = useAppSelector(selectAutoCompletionEnabled);
   const healingEnabled = useAppSelector(selectHealingEnabled);
+  const byorEnabled = useAppSelector(selectBringYourOwnRunnerEnabled);
   const { open: openThemePicker } = useThemePicker();
 
   // ── Global GitHub Token state ───────
@@ -155,6 +158,35 @@ export function SettingsPanelContent() {
           <span
             className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform shadow-sm ${
               healingEnabled ? 'translate-x-5' : 'translate-x-0.5'
+            }`}
+          />
+        </button>
+      </div>
+
+      {/* ULTRAPLAN Phase 8: Bring Your Own Runner toggle. When ON, the
+          worker preserves any host_runner.cpp that starts with the
+          `// SYNTHI_USER_RUNNER` sentinel instead of regenerating it
+          on the next AI split. Power-user opt-in. */}
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex flex-col">
+          <span className="text-sm">Bring Your Own Runner</span>
+          <span className="text-[11px] leading-relaxed" style={{ color: 'var(--text-muted)' }}>
+            Preserve your own <code className="font-mono">host_runner.cpp</code> instead of regenerating it.
+            Requires <code className="font-mono">// SYNTHI_USER_RUNNER</code> on the first non-blank line.
+          </span>
+        </div>
+        <button
+          onClick={() => {
+            dispatch(toggleBringYourOwnRunner());
+            toast(byorEnabled ? 'Bring Your Own Runner disabled' : 'Bring Your Own Runner enabled', {
+              duration: 2000,
+            });
+          }}
+          className={`relative inline-flex h-5 w-9 items-center rounded-full transition-all flex-shrink-0 mt-0.5 ${byorEnabled ? 'th-toggle-on' : 'th-toggle-off'}`}
+        >
+          <span
+            className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform shadow-sm ${
+              byorEnabled ? 'translate-x-5' : 'translate-x-0.5'
             }`}
           />
         </button>

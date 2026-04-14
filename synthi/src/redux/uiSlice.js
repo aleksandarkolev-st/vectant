@@ -13,6 +13,12 @@ export const initialUiState = {
     treeOnRight: false,
     autoSaveEnabled: true,
     autoCompletionEnabled: true,
+    // ULTRAPLAN Phase 8: Bring Your Own Runner mode. When true, the
+    // next AI split preserves any existing host_runner.cpp on disk
+    // that starts with the `// SYNTHI_USER_RUNNER` sentinel instead
+    // of regenerating the runner. See HMR_AGNOSTIC_ULTRAPLAN.md §5.2
+    // (Mitigation 2B). Default OFF — only opt-in power users need it.
+    bringYourOwnRunnerEnabled: false,
     uiActionState: initialUiActionState,
     expandedFolders: [],
     // Collaboration presence settings
@@ -47,6 +53,10 @@ const uiSlice = createSlice({
         },
         toggleAutoCompletion: (state) => {
             state.autoCompletionEnabled = !state.autoCompletionEnabled;
+        },
+        // ULTRAPLAN Phase 8
+        toggleBringYourOwnRunner: (state) => {
+            state.bringYourOwnRunnerEnabled = !state.bringYourOwnRunnerEnabled;
         },
         toggleFolderExpansion: (state, action) => {
             const path = action.payload;
@@ -107,6 +117,7 @@ export const {
     setTreeOrientation,
     toggleAutoSave,
     toggleAutoCompletion,
+    toggleBringYourOwnRunner,
     startCreate,
     startRename,
     setUiActionName,
@@ -125,6 +136,7 @@ export const selectShowEmulatorPreview = (state) => state.ui.showEmulatorPreview
 export const selectTreeOnRight = (state) => state.ui.treeOnRight;
 export const selectAutoSaveEnabled = (state) => state.ui.autoSaveEnabled;
 export const selectAutoCompletionEnabled = (state) => state.ui.autoCompletionEnabled;
+export const selectBringYourOwnRunnerEnabled = (state) => state.ui.bringYourOwnRunnerEnabled;
 export const selectUiActionState = (state) => state.ui.uiActionState;
 export const selectExpandedFolders = (state) => state.ui.expandedFolders || [];
 export const selectShowAnonymousPresence = (state) => state.ui.showAnonymousPresence;
