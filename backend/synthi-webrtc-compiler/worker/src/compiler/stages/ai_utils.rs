@@ -318,6 +318,7 @@ pub async fn perform_ai_diff_patch(
     core_content: &str,
     gui_content: &str,
     shared_content: &str,
+    host_runner_content: &str,
     architecture: Option<&str>,
 ) -> Result<Vec<crate::hmr::edit_applier::Edit>> {
     let client = reqwest::Client::new();
@@ -325,10 +326,11 @@ pub async fn perform_ai_diff_patch(
     let url = format!("{}/refactor/diff_patch", backend_url);
 
     eprintln!(
-        "[AI DiffPatch] Calling {} with diff ({} bytes), arch={} chars",
+        "[AI DiffPatch] Calling {} with diff ({} bytes), arch={} chars, host_runner={} bytes",
         url,
         diff.len(),
-        architecture.map(|s| s.len()).unwrap_or(0)
+        architecture.map(|s| s.len()).unwrap_or(0),
+        host_runner_content.len(),
     );
 
     let payload = serde_json::json!({
@@ -336,6 +338,12 @@ pub async fn perform_ai_diff_patch(
         "core_content": core_content,
         "gui_content": gui_content,
         "shared_content": shared_content,
+        // ULTRAPLAN Phase 5: send host_runner.cpp as a 4th edit target
+        // alongside core/gui/shared. Empty string is the "no host runner
+        // in this project" sentinel — the Python prompt builder skips
+        // the host_runner section in that case to keep the prompt small
+        // for legacy 3-file projects.
+        "host_runner_content": host_runner_content,
         "architecture": architecture.unwrap_or(""),
     });
 

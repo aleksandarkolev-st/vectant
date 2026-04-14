@@ -68,44 +68,21 @@ async fn write_sidecar_logged(
     }
 }
 
-/// Apply a list of AI-produced edits to the current core/gui/shared
-/// module contents. Returns the patched contents, or propagates the
-/// first error encountered (caller falls through to Tier 3 full re-split).
-///
-/// Each `Edit` carries its own `module` field; this dispatcher just
-/// routes it to the matching string and calls `edit_applier::apply_edit`.
-/// Edits are applied in order; if edit N fails, edits 0..N-1 are
-/// already applied in the local copies but since we return `Err`, the
-/// caller discards them and falls through to Tier 3 — no partial state
-/// ever makes it to disk.
+/// Thin handler-side wrapper around `edit_applier::apply_edit_list`
+/// that adds per-edit eprintln logging for operator observability.
+/// The actual dispatch logic lives in `hmr::edit_applier::apply_edit_list`
+/// so it is independently unit-testable from integration tests without
+/// needing a CompileContext.
 fn apply_edit_list(
     edits: &[crate::hmr::edit_applier::Edit],
     core: &str,
     gui: &str,
     shared: &str,
-) -> anyhow::Result<(String, String, String)> {
-    use crate::hmr::edit_applier::apply_edit;
-    let mut c = core.to_string();
-    let mut g = gui.to_string();
-    let mut s = shared.to_string();
-
+    host_runner: &str,
+) -> anyhow::Result<(String, String, String, String)> {
     for (i, edit) in edits.iter().enumerate() {
-        let updated = match edit.module.as_str() {
-            "core" => apply_edit(&c, edit)?,
-            "gui" => apply_edit(&g, edit)?,
-            "shared" => apply_edit(&s, edit)?,
-            other => {
-                anyhow::bail!("edit #{} targets unknown module {:?}", i, other);
-            }
-        };
-        match edit.module.as_str() {
-            "core" => c = updated,
-            "gui" => g = updated,
-            "shared" => s = updated,
-            _ => unreachable!(),
-        }
         eprintln!(
-            "[HMR] Tier 2: applied edit #{} {:?} to {} (anchor {} chars, content {} chars)",
+            "[HMR] Tier 2: applying edit #{} {:?} to {} (anchor {} chars, content {} chars)",
             i,
             edit.operation,
             edit.module,
@@ -113,8 +90,7 @@ fn apply_edit_list(
             edit.content.len()
         );
     }
-
-    Ok((c, g, s))
+    crate::hmr::edit_applier::apply_edit_list(edits, core, gui, shared, host_runner)
 }
 
 use crate::hmr::loop_classifier::{classify_loop, LoopClassifierInput};
@@ -313,6 +289,16 @@ pub async fn handle_compile_request(
             } else {
                 String::new()
             };
+            // ULTRAPLAN Phase 5: read host_runner.cpp as a 4th edit target
+            // for Tier 2 diff_patch. Empty string when the project is a
+            // pre-Phase-4 3-file project (host_runner_path is None) — the
+            // diff_patch prompt builder skips the host_runner block in
+            // that case so the prompt stays small.
+            let host_runner_content = if let Some(ref p) = enrichment.adapted_status.host_runner_path {
+                tokio::fs::read_to_string(p).await.unwrap_or_default()
+            } else {
+                String::new()
+            };
 
             if enrichment.adapted_status.is_adapted && is_editing_split_file {
                 // User is editing a split file directly — syncFile already
@@ -424,8 +410,12 @@ pub async fn handle_compile_request(
                             Some(architecture_md.as_str())
                         };
 
-                        let (final_core, final_gui, final_shared) = if is_value_only {
-                            // Tier 1: pure value change — instant regex
+                        let (final_core, final_gui, final_shared, final_host_runner) = if is_value_only {
+                            // Tier 1: pure value change — instant regex.
+                            // patch_split_files only knows about core/gui/shared
+                            // (legacy 3-module patcher); host_runner is preserved
+                            // verbatim from disk because Tier 1 is always value
+                            // changes (never structural edits to the runner).
                             let patch = patch_split_files(
                                 &old_source, &req.source,
                                 &core_content, &gui_content, &shared_content,
@@ -436,6 +426,7 @@ pub async fn handle_compile_request(
                                     patch.core.unwrap_or_else(|| core_content.clone()),
                                     patch.gui.unwrap_or_else(|| gui_content.clone()),
                                     patch.shared.unwrap_or_else(|| shared_content.clone()),
+                                    host_runner_content.clone(),
                                 )
                             } else {
                                 // Regex couldn't find the value — fall through
@@ -446,11 +437,12 @@ pub async fn handle_compile_request(
                                     &core_content,
                                     &gui_content,
                                     &shared_content,
+                                    &host_runner_content,
                                     arch_hint,
                                 ).await {
                                     Ok(edits) => {
-                                        match apply_edit_list(&edits, &core_content, &gui_content, &shared_content) {
-                                            Ok((c, g, s)) => (c, g, s),
+                                        match apply_edit_list(&edits, &core_content, &gui_content, &shared_content, &host_runner_content) {
+                                            Ok((c, g, s, h)) => (c, g, s, h),
                                             Err(apply_err) => {
                                                 eprintln!(
                                                     "[HMR] Tier 2 (value-fallback) edit apply FAILED: {} → falling through to Tier 3 full re-split",
@@ -524,7 +516,7 @@ pub async fn handle_compile_request(
                             // On miss / timeout, take_matching_or_wait
                             // returns None and we fall through to the live
                             // AI call below with no extra latency.
-                            let speculative_applied: Option<(String, String, String)> = {
+                            let speculative_applied: Option<(String, String, String, String)> = {
                                 if let Some(cached_edits) =
                                     crate::hmr::speculative_diff_patch::take_matching_or_wait(
                                         spec_hash,
@@ -537,6 +529,7 @@ pub async fn handle_compile_request(
                                         &core_content,
                                         &gui_content,
                                         &shared_content,
+                                        &host_runner_content,
                                     ) {
                                         Ok(tuple) => {
                                             eprintln!(
@@ -563,21 +556,23 @@ pub async fn handle_compile_request(
                                 }
                             };
 
-                            if let Some(triple) = speculative_applied {
-                                triple
+                            if let Some(quad) = speculative_applied {
+                                quad
                             } else {
                                 // Live AI call (diff-only output format — ~100
                                 // output tokens, ~1s generation on pro).
                                 eprintln!(
-                                    "[HMR] Tier 2: AI diff_patch (diff={} bytes, arch={} chars)",
+                                    "[HMR] Tier 2: AI diff_patch (diff={} bytes, arch={} chars, host_runner={} bytes)",
                                     diff.len(),
-                                    architecture_md.len()
+                                    architecture_md.len(),
+                                    host_runner_content.len()
                                 );
                                 match perform_ai_diff_patch(
                                     &diff,
                                     &core_content,
                                     &gui_content,
                                     &shared_content,
+                                    &host_runner_content,
                                     arch_hint,
                                 ).await {
                                     Ok(edits) => {
@@ -585,16 +580,17 @@ pub async fn handle_compile_request(
                                             "[HMR] Tier 2: received {} edit(s), applying locally",
                                             edits.len()
                                         );
-                                        match apply_edit_list(&edits, &core_content, &gui_content, &shared_content) {
-                                            Ok((c, g, s)) => {
+                                        match apply_edit_list(&edits, &core_content, &gui_content, &shared_content, &host_runner_content) {
+                                            Ok((c, g, s, h)) => {
                                                 eprintln!(
-                                                    "[HMR] Tier 2 SUCCESS ({} edits, core_changed={} gui_changed={} shared_changed={})",
+                                                    "[HMR] Tier 2 SUCCESS ({} edits, core_changed={} gui_changed={} shared_changed={} host_runner_changed={})",
                                                     edits.len(),
                                                     c != core_content,
                                                     g != gui_content,
-                                                    s != shared_content
+                                                    s != shared_content,
+                                                    h != host_runner_content
                                                 );
-                                                (c, g, s)
+                                                (c, g, s, h)
                                             }
                                             Err(apply_err) => {
                                                 // Anchor missing / ambiguous / unknown module.
@@ -666,6 +662,22 @@ pub async fn handle_compile_request(
                         if let Some(ref p) = enrichment.adapted_status.shared_path {
                             let _ = tokio::fs::write(p, &final_shared).await;
                         }
+                        // ULTRAPLAN Phase 5: persist host_runner.cpp if the
+                        // diff_patch produced edits targeting it. The hash
+                        // change vs `host_runner_content` will be picked up
+                        // by compile_runner downstream (its content cache
+                        // re-keys on this string), triggering a runner
+                        // rebuild only when the runner actually changed.
+                        if let Some(ref p) = enrichment.adapted_status.host_runner_path {
+                            if final_host_runner != host_runner_content {
+                                let _ = tokio::fs::write(p, &final_host_runner).await;
+                                eprintln!(
+                                    "[HMR] Tier 2: host_runner.cpp updated ({} → {} bytes)",
+                                    host_runner_content.len(),
+                                    final_host_runner.len()
+                                );
+                            }
+                        }
                         let meta = serde_json::json!({
                             "split_hash": source_hash_str,
                             "original_source": req.source,
@@ -678,6 +690,7 @@ pub async fn handle_compile_request(
                             "shared": { "content": final_shared, "filename": "shared.h" },
                             "core": { "content": final_core, "filename": "core.cpp" },
                             "gui": { "content": final_gui, "filename": "gui.cpp" },
+                            "host_runner": { "content": final_host_runner, "filename": "host_runner.cpp" },
                             "_synthi_manifest": sidecar_manifest_json.clone(),
                         })
                     }

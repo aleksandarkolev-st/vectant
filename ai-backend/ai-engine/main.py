@@ -1845,278 +1845,32 @@ async def get_provenance_stats():
 #     in perform_ai_split — they were removed too.
 
 
-class DiffPatchRequest(BaseModel):
-    """Request for AI-powered diff patching of split modules.
-
-    As of the classify-removal refactor, there is only one mode: full
-    diff-patch with the cached architecture hint. The model receives all
-    three module contents + the user's diff + the architecture doc +
-    the priority rule, and returns updated content for whichever modules
-    changed. The previous targeted-mode optimization (pick ONE module
-    via an AI classifier, then send only that module) was removed —
-    classify was costing ~4s per edit for a lite call, which exceeded
-    the time saved by the smaller targeted prompt. One AI call per
-    edit, no classifier, no silent drops on classifier timeout.
-    """
-    diff: str              # Unified diff of the user's source changes
-    core_content: str = ""
-    gui_content: str = ""
-    shared_content: str = ""
-    # Cached split architecture doc (markdown) — captured at initial
-    # /refactor/split/verified time and re-injected here so the model
-    # does not have to re-derive the module contract on every edit.
-    # Empty string → fall back to the generic prompt (no regression).
-    architecture: Optional[str] = None
-    model: Optional[str] = None
-    api_key: Optional[str] = None
-
-
-# ══════════════════════════════════════════════════════════════
-# Diff-patch prompt builder (full 3-module mode)
-# ══════════════════════════════════════════════════════════════
-#
-# The prompt is assembled in a specific order to exploit the LLM's
-# attention bias ("lost in the middle" — models attend most to
-# start + end of the context window):
-#
-#   1. Role + task statement                         ← top
-#   2. Generic CRITICAL RULES (file scope, etc.)
-#   3. ARCHITECTURE section (cached markdown blob)   ← middle (long)
-#   4. CURRENT core / gui / shared contents
-#   5. PRIORITY RULE                                 ← bottom (recency boost)
-#   6. DIFF (user's raw source changes)              ← last thing before generation
-#   7. Output format instruction
-#
-# Putting the PRIORITY RULE immediately above the DIFF ensures it is
-# the LAST instruction the model reads before generating output. This
-# matters because the architecture cache is a HINT and can be stale
-# (user renamed a variable mid-session) — the priority rule reminds
-# the model to treat the diff as ground truth.
-#
-# The architecture doc itself tells the model which module to patch
-# ("Where User Code Goes: rendering → gui_on_render" etc.), so the
-# model does its own routing — we don't need an external classifier.
-
-_DIFF_PATCH_ARCH_HEADER = (
-    "ARCHITECTURE (cached from the initial split — describes how this\n"
-    "project's split modules are organized):"
+# DiffPatchRequest, the prompt builder, and the edit-list validator now
+# live in diff_patch_helpers.py so they can be unit-tested without
+# dragging in main.py's full import chain (model clients, telemetry,
+# etc.). Re-export them under the existing names so all the call sites
+# in this file (the @app.post handler below) need no changes.
+from diff_patch_helpers import (  # noqa: E402 — late import is intentional
+    DiffPatchRequest,
+    build_full_diff_patch_prompt as _build_full_diff_patch_prompt,
+    validate_edit_list as _validate_edit_list,
+    VALID_EDIT_MODULES as _VALID_EDIT_MODULES,
+    VALID_EDIT_OPS as _VALID_EDIT_OPS,
 )
 
-_DIFF_PATCH_PRIORITY_RULE = """PRIORITY RULE (read this carefully):
-The ARCHITECTURE section above was captured at initial split time. It
-describes how the ORIGINAL source's variables were relocated into the
-split modules. It is a HINT, not ground truth.
 
-If the user's DIFF (below) explicitly:
-  - renames a variable (e.g. changes `r` to `main_renderer`)
-  - redefines a type
-  - restructures a function
-  - introduces new fields or functions
-...then the DIFF is authoritative. Follow the diff. Do NOT apply stale
-mappings to references that no longer match the original form. The
-cached mapping only applies to references that remain UNCHANGED from
-the original source."""
+# ══════════════════════════════════════════════════════════════
+# Diff-patch prompt builder (full 4-module mode)
+# ══════════════════════════════════════════════════════════════
+#
+# The prompt builder + validator + DiffPatchRequest schema all live
+# in diff_patch_helpers.py (extracted in Phase 5 so they can be
+# unit-tested without dragging in main.py's import chain). The
+# original full docstring + ordering rationale is in that module.
+#
+# Below kept ONLY for the historical comment; the actual implementation
+# is in diff_patch_helpers.py and re-exported above.
 
-
-def _build_full_diff_patch_prompt(req: DiffPatchRequest) -> str:
-    """Assemble the full 3-module diff_patch prompt in edit-list format.
-
-    Instead of asking the model to regenerate full updated module files
-    (~2500-4000 output tokens per edit), we ask for a list of structured
-    edits — anchor + operation + content — which Rust applies locally
-    via `hmr::edit_applier::apply_edit`. Output tokens drop from ~3000
-    to ~100, which cuts pro-model generation time from ~30s to ~1s.
-
-    When `req.architecture` is empty, the ARCHITECTURE + PRIORITY_RULE
-    blocks are omitted and the prompt degrades to the generic form —
-    no regression for pre-migration sidecars that don't have a cached
-    architecture yet.
-    """
-    parts: List[str] = [
-        "You are generating EDIT INSTRUCTIONS for a SPLIT multi-module project.",
-        "Return a JSON object with an `edits` array. The Rust worker will apply",
-        "each edit locally by searching the current module content for `anchor`",
-        "and performing `operation` at that location. You do NOT return full",
-        "file contents — only the edits needed.",
-        "",
-        "CRITICAL RULES — these apply to any language/framework:",
-        "",
-        "1. The target files (core, gui, shared) are SPLIT modules, NOT standalone",
-        "   programs. They may not have a main entrypoint and they export specific",
-        "   lifecycle functions (e.g. *_on_load, *_on_update, *_on_render, etc.).",
-        "   STUDY the current module contents below to identify each file's",
-        "   existing function signatures — those are your template.",
-        "",
-        "2. The diff comes from the user's ORIGINAL source file, which may use raw",
-        "   idioms (local variables, inline entrypoint, direct API references). You",
-        "   must ADAPT those references to fit the split modules' existing structure:",
-        "     - Local variables in the original source usually live on a shared state",
-        "       object in the split modules. Look at the existing code to see how",
-        "       state is accessed (e.g. a cast like `State* s = (State*)state_ptr;`)",
-        "       and follow the same pattern.",
-        "     - API handles (renderer, window, audio, etc.) are typically stored on",
-        "       the state object — use the same field names the existing code uses.",
-        "",
-        "3. DECIDE which module(s) each diff hunk belongs to. The ARCHITECTURE",
-        "   section below tells you the routing rules — use its 'Where User Code",
-        "   Goes' section as the authoritative mapping. Each edit in your output",
-        "   must set the `module` field to one of `core`, `gui`, or `shared`.",
-        "",
-        "4. Do NOT emit edits that paste the diff verbatim at file scope (would cause",
-        "   declaration errors in C/C++ or top-level errors in Python/JS/Rust).",
-        "   Do NOT redeclare existing variables, add duplicate entrypoints, or",
-        "   create new top-level functions unless the existing file's convention",
-        "   demands it. Your edits should merge the change into an existing",
-        "   function body, or add to an existing struct definition, etc.",
-        "",
-    ]
-
-    arch = (req.architecture or "").strip()
-    if arch:
-        parts += [_DIFF_PATCH_ARCH_HEADER, "", arch, ""]
-
-    parts += [
-        "CURRENT core module content:",
-        "```",
-        req.core_content or "",
-        "```",
-        "",
-        "CURRENT gui module content:",
-        "```",
-        req.gui_content or "",
-        "```",
-        "",
-        "CURRENT shared module content:",
-        "```",
-        req.shared_content or "",
-        "```",
-        "",
-    ]
-
-    if arch:
-        # Priority rule sits AFTER the architecture + module contents and
-        # immediately before the diff — last thing the model reads before
-        # generating. Mitigates the "lost in the middle" effect.
-        parts += [_DIFF_PATCH_PRIORITY_RULE, ""]
-
-    parts += [
-        "DIFF (from user's source — use as INTENT, apply the priority rule above):",
-        "```",
-        req.diff,
-        "```",
-        "",
-        "# OUTPUT FORMAT",
-        "",
-        "Return a single JSON object with an `edits` array. Each edit has:",
-        "",
-        '  - `module`:    "core" | "gui" | "shared"',
-        '  - `operation`: "insert_after" | "insert_before" | "replace" | "delete"',
-        "  - `anchor`:    an EXACT substring of the current module content that",
-        "                 locates the edit. Rust will call `content.find(anchor)`.",
-        "                 The anchor MUST appear EXACTLY ONCE in the module — if",
-        "                 it is missing or ambiguous the whole edit fails and we",
-        "                 fall back to a full re-split. Include enough surrounding",
-        "                 context (usually 1-3 lines, or a full statement) to make",
-        "                 the anchor unique. Whitespace is preserved — copy the",
-        "                 anchor verbatim from the current content above.",
-        "  - `content`:   the new text. For insert_after / insert_before this is",
-        "                 the code to insert. For replace this is what replaces",
-        "                 the anchor. For delete this is ignored (use an empty",
-        "                 string). Preserve the surrounding indentation style.",
-        "",
-        "Operations:",
-        "  - insert_after:  put `content` immediately AFTER the anchor",
-        "  - insert_before: put `content` immediately BEFORE the anchor",
-        "  - replace:       replace the anchor with `content`",
-        "  - delete:        remove the anchor (content ignored)",
-        "",
-        "If no changes are needed, return `{\"edits\": []}`.",
-        "",
-        "# EXAMPLE",
-        "",
-        "Suppose the diff adds a red button after an existing blue button. The",
-        "current gui module contains:",
-        "",
-        "```",
-        "    SDL_Rect btn1 = {50, 50, 200, 60};",
-        "    SDL_SetRenderDrawColor(state->renderer, 60, 120, 220, 255);",
-        "    SDL_RenderFillRect(state->renderer, &btn1);",
-        "```",
-        "",
-        "A correct output would be:",
-        "",
-        "```",
-        "{",
-        '  "edits": [',
-        "    {",
-        '      "module": "gui",',
-        '      "operation": "insert_after",',
-        '      "anchor": "SDL_RenderFillRect(state->renderer, &btn1);",',
-        '      "content": "\\n\\n    SDL_Rect btn2 = {50, 130, 200, 60};\\n    SDL_SetRenderDrawColor(state->renderer, 220, 60, 60, 255);\\n    SDL_RenderFillRect(state->renderer, &btn2);"',
-        "    }",
-        "  ]",
-        "}",
-        "```",
-        "",
-        "Return ONLY the JSON object. No markdown fences, no prose, no explanation.",
-    ]
-    return "\n".join(parts)
-
-
-_VALID_EDIT_OPS = {"insert_after", "insert_before", "replace", "delete"}
-_VALID_EDIT_MODULES = {"core", "gui", "shared"}
-
-
-def _validate_edit_list(edits: object) -> List[dict]:
-    """Validate that the AI returned a well-formed list of edits.
-
-    Raises HTTPException(400) on any shape mismatch. Returns a cleaned
-    list with only the expected fields so the Rust worker's serde
-    deserializer sees exactly the schema it expects.
-    """
-    if not isinstance(edits, list):
-        raise HTTPException(
-            status_code=400,
-            detail=f"`edits` must be a JSON array, got {type(edits).__name__}",
-        )
-    cleaned: List[dict] = []
-    for i, e in enumerate(edits):
-        if not isinstance(e, dict):
-            raise HTTPException(
-                status_code=400,
-                detail=f"edit #{i} must be a JSON object, got {type(e).__name__}",
-            )
-        module = e.get("module")
-        op = e.get("operation")
-        anchor = e.get("anchor")
-        content = e.get("content", "")
-        if module not in _VALID_EDIT_MODULES:
-            raise HTTPException(
-                status_code=400,
-                detail=f"edit #{i}: `module` must be one of {_VALID_EDIT_MODULES}, got {module!r}",
-            )
-        if op not in _VALID_EDIT_OPS:
-            raise HTTPException(
-                status_code=400,
-                detail=f"edit #{i}: `operation` must be one of {_VALID_EDIT_OPS}, got {op!r}",
-            )
-        if not isinstance(anchor, str) or not anchor:
-            raise HTTPException(
-                status_code=400,
-                detail=f"edit #{i}: `anchor` must be a non-empty string",
-            )
-        if not isinstance(content, str):
-            raise HTTPException(
-                status_code=400,
-                detail=f"edit #{i}: `content` must be a string (use empty string for delete)",
-            )
-        cleaned.append({
-            "module": module,
-            "operation": op,
-            "anchor": anchor,
-            "content": content,
-        })
-    return cleaned
 
 
 @app.post("/refactor/diff_patch")
