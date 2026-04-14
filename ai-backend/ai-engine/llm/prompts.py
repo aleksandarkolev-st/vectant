@@ -2990,6 +2990,50 @@ User hints ALWAYS override your inference. Copy them VERBATIM.
 If a hint is present, set confidence.link_flags = "high" because the user
 told you what they need.
 
+# INCLUDE → LINK RULE (mandatory, generic — applies to ALL libraries)
+
+This rule is checked mechanically on the Python side. Manifests that
+violate it are REJECTED before reaching the worker — no exceptions, no
+"the AI knew best".
+
+For EVERY `#include <X.h>` (or `#include <X/Y.h>`, `#include "X"`) in
+the user's source that is NOT a C/C++ standard library header (stdio.h,
+stdlib.h, string, vector, memory, filesystem, iostream, cstdint, ... —
+the usual stdlib set), you MUST do exactly ONE of the following:
+
+  (A) Add a link flag to BOTH `gui_link_flags` AND `runner_link_flags`
+      whose name contains the library's identifier as a substring.
+      Examples (illustrative — the rule is generic):
+        #include <fmod.h>     -> some flag containing "fmod"   (e.g. "-lfmod")
+        #include <SDL2/SDL.h> -> some flag containing "SDL"    (e.g. "-lSDL2")
+        #include <GLFW/glfw3.h> -> some flag containing "glfw" (e.g. "-lglfw")
+        #include <raylib.h>   -> some flag containing "raylib" (e.g. "-lraylib")
+        #include <wx/wx.h>    -> some flag containing "wx"     (e.g. "-lwx_gtk3u_core-3.0")
+      The substring match is case-insensitive and uses the FIRST path
+      segment of the include (so `<SDL2/SDL.h>` matches "SDL", `<fmod/core.h>`
+      matches "fmod", etc.).
+
+  (B) If the include is genuinely header-only, system-bundled, or
+      otherwise needs no link flag, ADD AN EXPLICIT LINE to
+      `confidence.notes` of the form:
+        "Header-only: <header_name> (reason)"
+      For example:
+        "Header-only: stb_image.h (single-file header library, no .so to link)"
+        "Header-only: imgui.h (sources compiled directly into the module)"
+        "System: dlfcn.h (covered by -ldl boilerplate)"
+      The Python validator searches `confidence.notes` for the include
+      name as a substring when option (A) doesn't match.
+
+This rule exists because the AI was occasionally producing manifests with
+a correct gui_link_flags but a missing runner_link_flags entry, leading
+to undefined-reference errors at link time. By tying the rule to the
+literal `#include` directives in the source — which are easy to scan
+mechanically and don't require any library-specific knowledge — the
+check is library-agnostic and scales to any framework.
+
+The check is identical in spirit to a compiler's `-Wl,--no-undefined`:
+if you reference it, you must link it. We just enforce it pre-flight.
+
 # HOT-RELOAD SAFETY KNOWLEDGE
 
 Some libraries hold hidden global/static state that desyncs when their .so

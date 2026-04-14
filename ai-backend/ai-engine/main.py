@@ -46,6 +46,7 @@ from build_manifest import (
     ManifestRejection,
     parse_manifest,
     validate_manifest_v1,
+    validate_include_link_coverage,
     manifest_to_dict,
 )
 
@@ -1586,6 +1587,16 @@ async def refactor_split_verified(req: VerifiedAiRequest):
             try:
                 manifest_parsed = parse_manifest(manifest_dict)
                 validate_manifest_v1(manifest_parsed)
+                # ULTRAPLAN Phase 4.5: enforce the generic include→link rule
+                # against the user's source. This is library-agnostic — it
+                # scans the source's #include directives and checks that
+                # every non-stdlib header has a corresponding link flag in
+                # both runner_link_flags and gui_link_flags, OR is excused
+                # via confidence.notes. Catches the common AI flake of
+                # producing gui_link_flags=["-lSDL2"] but
+                # runner_link_flags=["-lSDL2"] for a project that also
+                # includes <fmod.h>, before the manifest reaches the worker.
+                validate_include_link_coverage(manifest_parsed, req.code)
                 manifest_out = manifest_to_dict(manifest_parsed)
                 logger.info(
                     f"[split/verified] manifest parsed "
@@ -1595,8 +1606,9 @@ async def refactor_split_verified(req: VerifiedAiRequest):
                 )
             except ManifestRejection as e:
                 # V1 can't execute this manifest (multi-step build, unknown
-                # compiler, etc.). Surface as HTTP 422 with the actionable
-                # error card text (see HMR_AGNOSTIC_ULTRAPLAN.md §5.3).
+                # compiler, missing link flag for an include, etc.). Surface
+                # as HTTP 422 with the actionable error card text (see
+                # HMR_AGNOSTIC_ULTRAPLAN.md §5.3).
                 tracker.mark_rejected(provenance_id, f"Manifest rejected: {e.message}")
                 raise HTTPException(status_code=422, detail=e.message)
             except Exception as e:
