@@ -154,6 +154,27 @@ _MANIFEST_TAG_RE = re.compile(
     re.IGNORECASE | re.VERBOSE | re.DOTALL,
 )
 
+# The universal split prompt wraps the 4-file JSON object in <JSON>...</JSON>
+# tags (see UNIVERSAL_SPLIT_PROMPT output format spec). The legacy
+# SPLIT_GUI_PROMPT didn't, so the handler's `result_str` json.loads call
+# used to work on raw JSON directly. With the universal prompt, we need to
+# unwrap the tags here before returning `json_part` or the downstream
+# json.loads explodes with a JSONDecodeError, the handler falls into its
+# error-catch branch, and the response comes back as
+# {result: None, error: ...} — which is exactly what the live test hit on
+# its first run (0/3 tests passing, handler returning error-shape dicts).
+#
+# Non-greedy match + first-match-wins because the prompt spec says the
+# <JSON> block comes FIRST in the response. Case-insensitive for forgiveness.
+_JSON_WRAPPER_RE = re.compile(
+    r"""
+    <\s*JSON\s*>\s*\n?
+    (?P<body>.*?)
+    \n?\s*<\s*/\s*JSON\s*>
+    """,
+    re.IGNORECASE | re.VERBOSE | re.DOTALL,
+)
+
 
 def extract_architecture_and_manifest(
     ai_response: str,
@@ -161,8 +182,10 @@ def extract_architecture_and_manifest(
     """Parse the universal-split AI response into its three parts.
 
     Returns `(json_part, architecture_md, manifest_dict)`:
-      - `json_part` — the LLM text BEFORE the arch cache, containing the
-        <JSON>{4 files}</JSON> block. Caller parses this separately.
+      - `json_part` — the JSON object containing the 4 files, with any
+        `<JSON>...</JSON>` wrapper stripped so the caller can pass it
+        directly to `json.loads`. If the AI didn't wrap it, returned
+        as-is (text before the arch cache, same as legacy extractor).
       - `architecture_md` — the markdown inside <synthi_arch_cache> (with
         the <synthi_build_manifest> block stripped out). Empty string if
         the tag was not present in the response.
@@ -207,6 +230,18 @@ def extract_architecture_and_manifest(
             # Also strip the manifest block from the returned arch_md so the
             # architecture markdown the worker stores doesn't duplicate JSON.
             arch_md = _MANIFEST_TAG_RE.sub("", arch_md).strip()
+
+    # Unwrap <JSON>...</JSON> from json_part so the caller's json.loads sees
+    # clean JSON. The universal split prompt wraps the 4-file object in these
+    # tags; without this step, the handler's json.loads raises JSONDecodeError,
+    # falls into its error branch, and returns {result: None, error: ...}
+    # with no architecture / manifest / verified fields — exactly what the
+    # live test hit before this fix. First-match-wins per the prompt spec
+    # (the <JSON> block comes FIRST in the response).
+    if isinstance(json_part, str) and json_part:
+        json_wrap_match = _JSON_WRAPPER_RE.search(json_part)
+        if json_wrap_match:
+            json_part = (json_wrap_match.group("body") or "").strip()
 
     return json_part, arch_md, manifest_dict
 # Proactive Analysis imports
