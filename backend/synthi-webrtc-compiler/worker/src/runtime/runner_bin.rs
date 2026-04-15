@@ -121,32 +121,29 @@ enum RunnerCommand {
     Ipc(process_isolation::IpcMessage),
 }
 
-/// ULTRAPLAN Lightning Phase 10g.1 — selector observability hook.
+/// ULTRAPLAN Lightning Phase 10g.2 — backend selection for runtime.
 ///
 /// Runs the WindowBackend selector against the real workspace
-/// sidecar + manifest so operators can see which backend would be
-/// picked for the current project. Pure observability in this
-/// commit — the selector's result is ONLY logged. runner_bin's
-/// actual SDL2 init path is unchanged.
-///
-/// Phase 10g follow-up commits will gradually move runner_bin's
-/// SDL calls behind the trait, using the selected backend instead
-/// of hardcoded SDL_*. Each migration step is risk-bounded because
-/// the observability shipped here validates the selector's
-/// decisions against real runtime data BEFORE anything breaks.
+/// sidecar + manifest AND returns the chosen backend so main() can
+/// actually use it for window creation. Supersedes the
+/// observability-only Phase 10g.1 helper (`log_phase10g_backend_selection`).
 ///
 /// Reads the sidecar at `./.synthi_split_meta.json` (relative to
-/// the runner's cwd, which is inherited from the worker's
-/// workspace_path). Extracts `architecture` (string) and
-/// `compile_manifest.runner_link_flags` (Vec<String>) and feeds
-/// them to `select_backend`. Logs the result + the matched
-/// selector layer for diagnostic clarity.
+/// the runner's cwd, inherited from the worker's workspace_path).
+/// Extracts `architecture` + `compile_manifest.runner_link_flags`
+/// and feeds them to `select_backend`.
 ///
-/// Failure modes are all soft: missing sidecar, parse failure,
-/// missing arch cache, missing manifest. Each just logs that
-/// observability is unavailable and the runner proceeds to the
-/// existing SDL2 init path.
-fn log_phase10g_backend_selection() {
+/// Returns:
+///   - `Some(SelectedBackend)` when the sidecar parsed cleanly
+///     and the selector produced a decision. The caller inspects
+///     `.backend.name()` to decide which init path to take.
+///   - `None` when the sidecar is missing, unparseable, or
+///     otherwise unusable. The caller falls back to the legacy
+///     `init_sdl()` path.
+///
+/// Side effects: logs the decision + inputs to stderr for
+/// observability. Every error path also logs before returning None.
+fn select_backend_for_runner() -> Option<worker::runtime::backends::selector::SelectedBackend> {
     use worker::runtime::backends::selector::{select_backend, SelectorInputs};
 
     let sidecar_path = std::path::PathBuf::from(".synthi_split_meta.json");
@@ -154,20 +151,20 @@ fn log_phase10g_backend_selection() {
         Ok(s) => s,
         Err(_) => {
             eprintln!(
-                "[Phase 10g] sidecar {} not found — skipping selector observability",
+                "[Phase 10g] sidecar {} not found — falling back to legacy init_sdl path",
                 sidecar_path.display()
             );
-            return;
+            return None;
         }
     };
     let sidecar: serde_json::Value = match serde_json::from_str(&raw) {
         Ok(v) => v,
         Err(e) => {
             eprintln!(
-                "[Phase 10g] sidecar parse failed ({}), skipping selector observability",
+                "[Phase 10g] sidecar parse failed ({}) — falling back to legacy init_sdl path",
                 e
             );
-            return;
+            return None;
         }
     };
 
@@ -204,18 +201,22 @@ fn log_phase10g_backend_selection() {
         architecture.len(),
         link_flags
     );
-    eprintln!(
-        "[Phase 10g] NOTE: selector result is observability-only. \
-         The runner still uses direct SDL2 calls; Phase 10g.2+ migrates the call sites."
-    );
+    Some(selected)
 }
 
 fn main() {
-    // ULTRAPLAN Lightning Phase 10g.1 — observability-only backend
-    // selector hook. Logs which backend WOULD be picked for the
-    // current project but does NOT use the result yet. See the
-    // function's doc comment for the migration plan.
-    log_phase10g_backend_selection();
+    // ULTRAPLAN Lightning Phase 10g.2 — run the backend selector
+    // and keep the result for window creation below. `None` means
+    // no sidecar was found (e.g. BYOR or pre-Phase-1 project);
+    // we fall back to the legacy `init_sdl()` path in that case.
+    //
+    // The Box<dyn WindowBackend> is held in `selected_runtime_backend`
+    // for the whole lifetime of main() — dropping it would unload
+    // any dlopen'd library the backend holds (GLFW/raylib/SFML in
+    // future wiring). For the SDL2 MVP this is belt-and-braces since
+    // sdl_defs.rs already static-links libSDL2, but the pattern is
+    // correct for the non-SDL backends we'll wire next.
+    let mut selected_runtime_backend = select_backend_for_runner();
 
     // ============================================================
     // EXECUTION MODE CHECK - PROCESS ISOLATION IS DEFAULT
@@ -391,11 +392,78 @@ fn main() {
         (0u32, ptr::null_mut())
     };
 
-    // Always init SDL2 — modules need a renderer to draw into.
-    // When worker manages display, the SDL window renders into the worker's Xvfb
-    // and the worker's GStreamer ximagesrc captures it automatically.
+    // ULTRAPLAN Lightning Phase 10g.2 — SDL2 init goes through the
+    // WindowBackend trait when the selector picked SDL2. This is the
+    // first commit where the trait's decision actually drives runtime
+    // behavior; the shape is identical to the legacy init_sdl() path
+    // (SDL_Init + SDL_CreateWindow + SDL_CreateRenderer) but routed
+    // through SDL2Backend::init + create_window so subsequent commits
+    // can migrate event polling, present, and shutdown to the trait
+    // incrementally.
+    //
+    // Non-SDL2 backends (GLFW/raylib/SFML) aren't wired here yet —
+    // the rest of runner_bin still casts window/renderer as SDL
+    // types, so a non-SDL window would crash downstream. Those
+    // backends fall back to init_sdl() with a warning; Phase 10g.3
+    // migrates the runtime downstream call sites.
     #[cfg(target_os = "linux")]
-    let (window, renderer) = unsafe { init_sdl() };
+    let (window, renderer) = {
+        use worker::runtime::window_backend::{WindowBackend, WindowFlags};
+        let use_trait = selected_runtime_backend
+            .as_ref()
+            .map(|s| s.backend.name() == "SDL2")
+            .unwrap_or(false);
+        if use_trait {
+            let selected = selected_runtime_backend.as_mut().unwrap();
+            match selected.backend.init() {
+                Ok(()) => {
+                    match selected.backend.create_window(
+                        "Synthi Runner",
+                        800,
+                        600,
+                        WindowFlags::default(),
+                    ) {
+                        Ok(handle) => {
+                            eprintln!(
+                                "[Phase 10g.2] WindowBackend trait created SDL2 window \
+                                 (win={:p}, renderer={:p})",
+                                handle.raw_ptr, handle.renderer_ptr
+                            );
+                            (
+                                handle.raw_ptr as *mut SDL_Window,
+                                handle.renderer_ptr,
+                            )
+                        }
+                        Err(e) => {
+                            eprintln!(
+                                "[Phase 10g.2] WindowBackend create_window failed ({}) — \
+                                 falling back to legacy init_sdl",
+                                e
+                            );
+                            unsafe { init_sdl() }
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!(
+                        "[Phase 10g.2] WindowBackend init failed ({}) — \
+                         falling back to legacy init_sdl",
+                        e
+                    );
+                    unsafe { init_sdl() }
+                }
+            }
+        } else {
+            if let Some(ref s) = selected_runtime_backend {
+                eprintln!(
+                    "[Phase 10g.2] selector picked {} — non-SDL2 backends aren't \
+                     wired to runner_bin yet; falling back to init_sdl (Phase 10g.3)",
+                    s.backend.name()
+                );
+            }
+            unsafe { init_sdl() }
+        }
+    };
 
     // Cache the SDL window ID for injected events (SDL assigns IDs starting from 1).
     // Using windowID=0 in injected events causes them to target a non-existent window.
