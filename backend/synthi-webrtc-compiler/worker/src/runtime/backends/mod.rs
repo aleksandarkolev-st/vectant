@@ -20,6 +20,7 @@ pub mod glfw_backend;
 pub mod raylib_backend;
 pub mod sdl2_backend;
 pub mod selector;
+pub mod sfml_backend;
 
 #[cfg(test)]
 mod tests {

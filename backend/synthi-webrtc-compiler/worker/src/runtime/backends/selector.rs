@@ -37,6 +37,7 @@
 use crate::runtime::backends::glfw_backend::GLFWBackend;
 use crate::runtime::backends::raylib_backend::RaylibBackend;
 use crate::runtime::backends::sdl2_backend::SDL2Backend;
+use crate::runtime::backends::sfml_backend::SFMLBackend;
 use crate::runtime::window_backend::WindowBackend;
 
 /// Result of running the selector. Returns the chosen backend
@@ -208,9 +209,10 @@ fn dispatch_by_framework_enum(framework: &str) -> Option<Box<dyn WindowBackend>>
         "sdl2" | "sdl" => Some(Box::new(SDL2Backend::new())),
         "glfw" => Some(Box::new(GLFWBackend::new())),
         "raylib" => Some(Box::new(RaylibBackend::new())),
-        // Future backends slot in here:
-        // "sokol"  => Some(Box::new(SokolBackend::new())),
-        // "sfml"   => Some(Box::new(SFMLBackend::new())),
+        "sfml" | "csfml" => Some(Box::new(SFMLBackend::new())),
+        // Sokol is NOT in this list — it's handled via Phase 12
+        // per-project runner (sokol is header-only, no .so to
+        // dlopen). See HMR_LIGHTNING_ULTRAPLAN.md §5 rev4 note.
         _ => None,
     }
 }
@@ -282,6 +284,9 @@ fn dispatch_by_framework_substring(text: &str) -> Option<Box<dyn WindowBackend>>
     if lower.contains("raylib") {
         return Some(Box::new(RaylibBackend::new()));
     }
+    if lower.contains("sfml") || lower.contains("csfml") {
+        return Some(Box::new(SFMLBackend::new()));
+    }
     None
 }
 
@@ -304,6 +309,16 @@ fn dispatch_by_link_flags(
             return Some((
                 Box::new(RaylibBackend::new()),
                 "raylib (link-flag)".to_string(),
+            ));
+        }
+        // csfml-* is the common link flag for projects using
+        // CSFML bindings; `sfml` as a substring also covers users
+        // who link against the SFML C++ libs directly (we'll still
+        // pick the SFMLBackend which goes through CSFML at runtime).
+        if lower.contains("csfml") || lower.contains("sfml") {
+            return Some((
+                Box::new(SFMLBackend::new()),
+                "SFML (link-flag)".to_string(),
             ));
         }
     }
@@ -388,6 +403,14 @@ mod tests {
         // Phase 10c
         assert!(dispatch_by_framework_enum("raylib").is_some());
         assert!(dispatch_by_framework_enum("RAYLIB").is_some());
+        // Phase 10e
+        assert!(dispatch_by_framework_enum("sfml").is_some());
+        assert!(dispatch_by_framework_enum("SFML").is_some());
+        assert!(dispatch_by_framework_enum("csfml").is_some());
+        // Sokol is explicitly NOT wired at Phase 10 — it goes
+        // through Phase 12 per-project runner because it's a
+        // header-only library with no .so to dlopen.
+        assert!(dispatch_by_framework_enum("sokol").is_none());
         assert!(dispatch_by_framework_enum("unknown_lib").is_none());
     }
 
@@ -398,6 +421,9 @@ mod tests {
         // Phase 10c — raylib is now a real option
         assert!(dispatch_by_framework_substring("C++ with raylib").is_some());
         assert!(dispatch_by_framework_substring("C++ with raylib 5.0").is_some());
+        // Phase 10e — SFML via CSFML bindings
+        assert!(dispatch_by_framework_substring("C++ with SFML").is_some());
+        assert!(dispatch_by_framework_substring("C++ with CSFML 2.6").is_some());
     }
 
     #[test]
@@ -407,6 +433,32 @@ mod tests {
         assert!(result.is_some());
         let (backend, _) = result.unwrap();
         assert_eq!(backend.name(), "raylib");
+    }
+
+    #[test]
+    fn dispatch_by_link_flags_finds_sfml() {
+        // CSFML's actual link flags split across subsystems
+        let flags = vec![
+            "-lcsfml-graphics".to_string(),
+            "-lcsfml-window".to_string(),
+            "-lcsfml-system".to_string(),
+        ];
+        let result = dispatch_by_link_flags(&flags);
+        assert!(result.is_some());
+        let (backend, _) = result.unwrap();
+        assert_eq!(backend.name(), "SFML");
+    }
+
+    #[test]
+    fn dispatch_by_link_flags_finds_sfml_via_cpp_sfml_flags() {
+        // A project that links the SFML C++ libs directly (e.g.
+        // `-lsfml-graphics`) still routes through the SFMLBackend;
+        // the backend uses CSFML under the hood at runtime.
+        let flags = vec!["-lsfml-graphics".to_string()];
+        let result = dispatch_by_link_flags(&flags);
+        assert!(result.is_some());
+        let (backend, _) = result.unwrap();
+        assert_eq!(backend.name(), "SFML");
     }
 
     #[test]

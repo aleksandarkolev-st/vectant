@@ -128,6 +128,57 @@ fn link_flags_only_picks_raylib() {
 }
 
 #[test]
+fn frontmatter_picks_sfml() {
+    // Phase 10e — SFML via CSFML bindings
+    let cache = "---\nframework: sfml\nframework_display: C++ with SFML 2.6\n---\n";
+    let selected = select_backend(SelectorInputs {
+        arch_cache: cache,
+        link_flags: &[],
+    });
+    assert_eq!(selected.matched_layer, SelectorLayer::StructuredFrontmatter);
+    assert_eq!(selected.backend.name(), "SFML");
+    assert_eq!(selected.framework_display, "C++ with SFML 2.6");
+}
+
+#[test]
+fn frontmatter_picks_csfml_alias() {
+    // Same backend when the AI used the C-binding name directly
+    let cache = "---\nframework: csfml\n---\n";
+    let selected = select_backend(SelectorInputs {
+        arch_cache: cache,
+        link_flags: &[],
+    });
+    assert_eq!(selected.matched_layer, SelectorLayer::StructuredFrontmatter);
+    assert_eq!(selected.backend.name(), "SFML");
+}
+
+#[test]
+fn markdown_header_picks_sfml() {
+    let cache = "## Language & Framework\nC++ with SFML\n";
+    let selected = select_backend(SelectorInputs {
+        arch_cache: cache,
+        link_flags: &[],
+    });
+    assert_eq!(selected.matched_layer, SelectorLayer::MarkdownHeader);
+    assert_eq!(selected.backend.name(), "SFML");
+}
+
+#[test]
+fn link_flags_only_picks_sfml() {
+    let flags = vec![
+        "-lcsfml-graphics".to_string(),
+        "-lcsfml-window".to_string(),
+        "-lcsfml-system".to_string(),
+    ];
+    let selected = select_backend(SelectorInputs {
+        arch_cache: "",
+        link_flags: &flags,
+    });
+    assert_eq!(selected.matched_layer, SelectorLayer::LinkFlagScan);
+    assert_eq!(selected.backend.name(), "SFML");
+}
+
+#[test]
 fn frontmatter_with_unknown_framework_falls_through_to_layer_1() {
     // Layer 0 doesn't match (sokol not yet implemented), so we
     // try Layer 1 → also doesn't match → Layer 2 → no link flags
