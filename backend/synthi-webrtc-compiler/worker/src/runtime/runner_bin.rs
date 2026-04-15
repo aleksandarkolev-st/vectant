@@ -393,19 +393,24 @@ fn main() {
     };
 
     // ULTRAPLAN Lightning Phase 10g.2 — SDL2 init goes through the
-    // WindowBackend trait when the selector picked SDL2. This is the
-    // first commit where the trait's decision actually drives runtime
-    // behavior; the shape is identical to the legacy init_sdl() path
-    // (SDL_Init + SDL_CreateWindow + SDL_CreateRenderer) but routed
-    // through SDL2Backend::init + create_window so subsequent commits
-    // can migrate event polling, present, and shutdown to the trait
-    // incrementally.
+    // WindowBackend trait when the selector picked SDL2.
     //
-    // Non-SDL2 backends (GLFW/raylib/SFML) aren't wired here yet —
-    // the rest of runner_bin still casts window/renderer as SDL
-    // types, so a non-SDL window would crash downstream. Those
-    // backends fall back to init_sdl() with a warning; Phase 10g.3
-    // migrates the runtime downstream call sites.
+    // Phase 10g.3a (THIS COMMIT) — also retain the `WindowHandle`
+    // alongside the `(window, renderer)` tuple so the main loop can
+    // route `SDL_RenderPresent` through the trait as well. The
+    // handle is held in `runtime_handle: Option<WindowHandle>`. When
+    // Some, present_frame goes through the trait; when None (fallback
+    // path or pre-10g.2 behavior) we still call SDL_RenderPresent
+    // directly. No semantic change for the SDL2 backend because
+    // SDL2Backend::present_frame just calls SDL_RenderPresent with
+    // the same renderer pointer, but the call site now exercises
+    // the trait path for the present operation.
+    //
+    // Non-SDL2 backends (GLFW/raylib/SFML) still fall back to
+    // init_sdl — the event-polling and shutdown call sites are not
+    // migrated yet (Phase 10g.3b + 10g.3c).
+    #[cfg(target_os = "linux")]
+    let mut runtime_handle: Option<worker::runtime::window_backend::WindowHandle> = None;
     #[cfg(target_os = "linux")]
     let (window, renderer) = {
         use worker::runtime::window_backend::{WindowBackend, WindowFlags};
@@ -429,10 +434,13 @@ fn main() {
                                  (win={:p}, renderer={:p})",
                                 handle.raw_ptr, handle.renderer_ptr
                             );
-                            (
-                                handle.raw_ptr as *mut SDL_Window,
-                                handle.renderer_ptr,
-                            )
+                            // Capture raw ptrs for legacy call sites,
+                            // then stash the full handle so present_frame
+                            // can route through the trait (10g.3a).
+                            let win = handle.raw_ptr as *mut SDL_Window;
+                            let ren = handle.renderer_ptr;
+                            runtime_handle = Some(handle);
+                            (win, ren)
                         }
                         Err(e) => {
                             eprintln!(
@@ -1346,12 +1354,40 @@ fn main() {
             }
         }
 
-        // Present the SDL renderer BEFORE capturing from Xvfb
-        // This ensures the plugin's rendering is visible in the capture
+        // Present the SDL renderer BEFORE capturing from Xvfb.
+        // This ensures the plugin's rendering is visible in the capture.
+        //
+        // ULTRAPLAN Lightning Phase 10g.3a — route through the
+        // WindowBackend trait when runtime_handle is Some (set by
+        // 10g.2 when the selector picked SDL2). For SDL2 the trait
+        // call is behaviorally identical to SDL_RenderPresent with
+        // the same renderer pointer, but it exercises the trait
+        // surface so future non-SDL backends can swap in without
+        // touching the main loop. Falls back to direct
+        // SDL_RenderPresent when no handle is held (sidecar-less
+        // path or non-SDL2 selector decision).
         #[cfg(target_os = "linux")]
-        if !renderer.is_null() {
-            unsafe {
-                SDL_RenderPresent(renderer);
+        {
+            use worker::runtime::window_backend::WindowBackend;
+            let mut presented_via_trait = false;
+            if let (Some(handle), Some(selected)) = (
+                runtime_handle.as_ref(),
+                selected_runtime_backend.as_mut(),
+            ) {
+                if let Err(e) = selected.backend.present_frame(handle) {
+                    eprintln!(
+                        "[Phase 10g.3a] WindowBackend present_frame failed ({}) — \
+                         falling back to direct SDL_RenderPresent for this frame",
+                        e
+                    );
+                } else {
+                    presented_via_trait = true;
+                }
+            }
+            if !presented_via_trait && !renderer.is_null() {
+                unsafe {
+                    SDL_RenderPresent(renderer);
+                }
             }
         }
 
