@@ -121,7 +121,102 @@ enum RunnerCommand {
     Ipc(process_isolation::IpcMessage),
 }
 
+/// ULTRAPLAN Lightning Phase 10g.1 — selector observability hook.
+///
+/// Runs the WindowBackend selector against the real workspace
+/// sidecar + manifest so operators can see which backend would be
+/// picked for the current project. Pure observability in this
+/// commit — the selector's result is ONLY logged. runner_bin's
+/// actual SDL2 init path is unchanged.
+///
+/// Phase 10g follow-up commits will gradually move runner_bin's
+/// SDL calls behind the trait, using the selected backend instead
+/// of hardcoded SDL_*. Each migration step is risk-bounded because
+/// the observability shipped here validates the selector's
+/// decisions against real runtime data BEFORE anything breaks.
+///
+/// Reads the sidecar at `./.synthi_split_meta.json` (relative to
+/// the runner's cwd, which is inherited from the worker's
+/// workspace_path). Extracts `architecture` (string) and
+/// `compile_manifest.runner_link_flags` (Vec<String>) and feeds
+/// them to `select_backend`. Logs the result + the matched
+/// selector layer for diagnostic clarity.
+///
+/// Failure modes are all soft: missing sidecar, parse failure,
+/// missing arch cache, missing manifest. Each just logs that
+/// observability is unavailable and the runner proceeds to the
+/// existing SDL2 init path.
+fn log_phase10g_backend_selection() {
+    use worker::runtime::backends::selector::{select_backend, SelectorInputs};
+
+    let sidecar_path = std::path::PathBuf::from(".synthi_split_meta.json");
+    let raw = match std::fs::read_to_string(&sidecar_path) {
+        Ok(s) => s,
+        Err(_) => {
+            eprintln!(
+                "[Phase 10g] sidecar {} not found — skipping selector observability",
+                sidecar_path.display()
+            );
+            return;
+        }
+    };
+    let sidecar: serde_json::Value = match serde_json::from_str(&raw) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!(
+                "[Phase 10g] sidecar parse failed ({}), skipping selector observability",
+                e
+            );
+            return;
+        }
+    };
+
+    let architecture = sidecar
+        .get("architecture")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+
+    let link_flags: Vec<String> = sidecar
+        .get("compile_manifest")
+        .and_then(|m| m.get("runner_link_flags"))
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|x| x.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let inputs = SelectorInputs {
+        arch_cache: architecture,
+        link_flags: &link_flags,
+    };
+    let selected = select_backend(inputs);
+
+    eprintln!(
+        "[Phase 10g] Backend selector: picked={} (layer={:?}, display={:?})",
+        selected.backend.name(),
+        selected.matched_layer,
+        selected.framework_display
+    );
+    eprintln!(
+        "[Phase 10g] Inputs: arch_cache={} chars, link_flags={:?}",
+        architecture.len(),
+        link_flags
+    );
+    eprintln!(
+        "[Phase 10g] NOTE: selector result is observability-only. \
+         The runner still uses direct SDL2 calls; Phase 10g.2+ migrates the call sites."
+    );
+}
+
 fn main() {
+    // ULTRAPLAN Lightning Phase 10g.1 — observability-only backend
+    // selector hook. Logs which backend WOULD be picked for the
+    // current project but does NOT use the result yet. See the
+    // function's doc comment for the migration plan.
+    log_phase10g_backend_selection();
+
     // ============================================================
     // EXECUTION MODE CHECK - PROCESS ISOLATION IS DEFAULT
     // ============================================================
