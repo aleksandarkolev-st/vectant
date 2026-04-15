@@ -1004,48 +1004,11 @@ pub async fn handle_compile_request(
         }
     }
 
-    // Compile Core
-    let core_lib_path_opt = compile_core(
-        ctx,
-        &split_data,
-        &processed_core,
-        rebuild_scope.clone(),
-        prev_core_path.clone(),
-        &output_dir,
-        timestamp,
-        ext,
-        Some(session_id.clone()),
-        compile_manifest.as_ref(),
-    )
-    .await?;
-
-    let core_lib_path = core_lib_path_opt
-        .ok_or_else(|| anyhow::anyhow!("Core compilation produced no output (no core module in split data or scope is GUI-only)"))?;
-
-    // Compile GUI
-    let gui_lib_path_opt = compile_gui(
-        ctx,
-        &split_data,
-        &processed_gui,
-        rebuild_scope.clone(),
-        core_lib_path.clone(),
-        &output_dir,
-        timestamp,
-        ext,
-        Some(session_id.clone()),
-        req.is_gui,
-        compile_manifest.as_ref(),
-    )
-    .await?;
-
-    // If GUI is not requested or failed (but core succeeded), we might proceed with just core?
-    // But `gui_lib_path_opt` returns existing path if not rebuilt.
-    let gui_lib_path = gui_lib_path_opt.unwrap_or(prev_gui_path.unwrap_or_default());
-
     // ============================================================
-    // ULTRAPLAN PHASE 4: HOST RUNNER COMPILATION
+    // ULTRAPLAN PHASE 4: HOST RUNNER CONTENT RESOLUTION
     // ============================================================
     //
+    // Resolve host_runner.cpp content BEFORE the parallel compile block.
     // The universal split prompt emits a 4th file alongside core/gui/
     // shared: `host_runner.cpp`, the per-project main() that owns the
     // window/event loop and dlopens libcore.so + libgui.so. We compile
@@ -1062,6 +1025,12 @@ pub async fn handle_compile_request(
     // we MUST NOT overwrite it with the AI's regenerated content — even
     // on a fresh AI split. We just rebuild the user's existing file.
     // See HMR_AGNOSTIC_ULTRAPLAN.md §5.2 (Mitigation 2B).
+    //
+    // ULTRAPLAN Phase 9d (Lightning): this resolution block is now
+    // hoisted ABOVE the compile dispatch so the three compile stages
+    // (core/gui/runner) can all run in parallel with a single
+    // tokio::join!. All three inputs (processed_core, processed_gui,
+    // host_runner_content) are fully materialised before dispatch.
     let host_runner_content: Option<String> = if enrichment.adapted_status.user_owned_runner {
         // BYOR: read the user-authored runner from disk, ignore split_data.
         if let Some(ref p) = enrichment.adapted_status.host_runner_path {
@@ -1137,22 +1106,101 @@ pub async fn handle_compile_request(
         }
     };
 
-    // Compile the runner if we have content. Errors here are non-fatal
-    // for V1 — the shipped runner_bin still launches at runtime, so a
-    // host_runner build failure is observability only. When Phase 5+
-    // wires runtime spawn to the per-project runner, this should bail
-    // hard on Err instead.
-    let host_runner_bin_path: Option<String> = if let Some(ref content) = host_runner_content {
-        match compile_runner(
+    // ============================================================
+    // ULTRAPLAN Lightning Phase 9d — PARALLEL COMPILE DISPATCH
+    // ============================================================
+    //
+    // compile_core, compile_gui, and compile_runner are independent
+    // once `shared.h` is on disk and `host_runner_content` is
+    // resolved. Run them concurrently via `tokio::join!` when the
+    // worker has ≥3 cores available — on multicore hosts the wall-
+    // clock drops from ~3×N serial to ~N parallel (capped by the
+    // slowest stage).
+    //
+    // Gated on `num_cpus::get() >= 3` per rev3 §13 so single-core
+    // container deployments don't pay the concurrent-compile overhead
+    // (task scheduling, disk contention) for zero speedup benefit.
+    //
+    // compile_gui's `core_lib_path` parameter is vestigial — the
+    // function only uses it inside a `_combined_hash` that's bound
+    // to `_`. No actual ordering dependency. We pass an empty
+    // String since it's unused downstream.
+    //
+    // Error reporting is deterministic: errors are collected in
+    // source order (core → gui → runner) after the join completes,
+    // so per-module diagnostics don't interleave on the log.
+    let use_parallel = num_cpus::get() >= 3;
+    if use_parallel {
+        eprintln!(
+            "[HMR] parallel compile enabled (num_cpus={}) — dispatching core/gui/runner concurrently",
+            num_cpus::get()
+        );
+    } else {
+        eprintln!(
+            "[HMR] parallel compile disabled (num_cpus={} < 3) — serial fallback",
+            num_cpus::get()
+        );
+    }
+
+    let (core_lib_path_opt, gui_lib_path_opt, host_runner_bin_path): (
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    ) = if use_parallel {
+        // ─── Parallel path ──────────────────────────────────────────
+        // Three futures run concurrently on the tokio runtime. The
+        // compile_runner future is Ok(None) when there's no runner
+        // content to compile — preserving the pre-Phase-9d semantics.
+        let core_fut = compile_core(
             ctx,
-            content,
+            &split_data,
+            &processed_core,
+            rebuild_scope.clone(),
+            prev_core_path.clone(),
             &output_dir,
             timestamp,
+            ext,
             Some(session_id.clone()),
             compile_manifest.as_ref(),
-        )
-        .await
-        {
+        );
+        let gui_fut = compile_gui(
+            ctx,
+            &split_data,
+            &processed_gui,
+            rebuild_scope.clone(),
+            String::new(),  // core_lib_path — vestigial in compile_gui
+            &output_dir,
+            timestamp,
+            ext,
+            Some(session_id.clone()),
+            req.is_gui,
+            compile_manifest.as_ref(),
+        );
+        let runner_fut = async {
+            if let Some(ref content) = host_runner_content {
+                compile_runner(
+                    ctx,
+                    content,
+                    &output_dir,
+                    timestamp,
+                    Some(session_id.clone()),
+                    compile_manifest.as_ref(),
+                )
+                .await
+            } else {
+                Ok(None)
+            }
+        };
+
+        let (core_res, gui_res, runner_res) =
+            tokio::join!(core_fut, gui_fut, runner_fut);
+
+        // Propagate core error first (it's the most load-bearing —
+        // without core we can't even attempt to load the .so chain).
+        let core_opt = core_res?;
+        let gui_opt = gui_res?;
+        // Runner errors are non-fatal in V1 (see below).
+        let runner_opt = match runner_res {
             Ok(p) => p,
             Err(e) => {
                 eprintln!(
@@ -1161,10 +1209,69 @@ pub async fn handle_compile_request(
                 );
                 None
             }
-        }
+        };
+        (core_opt, gui_opt, runner_opt)
     } else {
-        None
+        // ─── Serial fallback ───────────────────────────────────────
+        let core_opt = compile_core(
+            ctx,
+            &split_data,
+            &processed_core,
+            rebuild_scope.clone(),
+            prev_core_path.clone(),
+            &output_dir,
+            timestamp,
+            ext,
+            Some(session_id.clone()),
+            compile_manifest.as_ref(),
+        )
+        .await?;
+
+        let gui_opt = compile_gui(
+            ctx,
+            &split_data,
+            &processed_gui,
+            rebuild_scope.clone(),
+            String::new(),
+            &output_dir,
+            timestamp,
+            ext,
+            Some(session_id.clone()),
+            req.is_gui,
+            compile_manifest.as_ref(),
+        )
+        .await?;
+
+        let runner_opt = if let Some(ref content) = host_runner_content {
+            match compile_runner(
+                ctx,
+                content,
+                &output_dir,
+                timestamp,
+                Some(session_id.clone()),
+                compile_manifest.as_ref(),
+            )
+            .await
+            {
+                Ok(p) => p,
+                Err(e) => {
+                    eprintln!(
+                        "[HMR] compile_runner FAILED (non-fatal in V1, runtime still uses shipped runner): {}",
+                        e
+                    );
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        (core_opt, gui_opt, runner_opt)
     };
+
+    let core_lib_path = core_lib_path_opt
+        .ok_or_else(|| anyhow::anyhow!("Core compilation produced no output (no core module in split data or scope is GUI-only)"))?;
+    let gui_lib_path = gui_lib_path_opt.unwrap_or(prev_gui_path.unwrap_or_default());
+
     if let Some(ref p) = host_runner_bin_path {
         eprintln!("[HMR] host_runner binary: {}", p);
     }
