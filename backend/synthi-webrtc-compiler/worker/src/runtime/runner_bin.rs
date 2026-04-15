@@ -728,12 +728,83 @@ fn main() {
     }
 
     loop {
-        // Poll SDL2 events and pass them to loaded modules
+        // Poll SDL2 events and pass them to loaded modules.
+        //
+        // ULTRAPLAN Lightning Phase 10g.3b — route through the
+        // WindowBackend trait's pump_events when a runtime_handle
+        // was established (selector picked SDL2). Each event's
+        // Raw payload is a pointer into sdl2_backend's event_arena
+        // (stable until the NEXT pump_events call), which we cast
+        // back to *mut SDL_Event for dispatch to user modules.
+        // Behaviorally identical to the legacy SDL_PollEvent loop
+        // for SDL2, but the dispatch surface is now library-agnostic
+        // — a GLFW backend would pump glfw events, a raylib backend
+        // would pump raylib events, etc.
+        //
+        // Fallback: when no runtime_handle is held (no sidecar
+        // / non-SDL2 selector / trait init failure), run the
+        // legacy direct SDL_PollEvent path. Drained events go
+        // into a local Vec<SDL_Event> that outlives the pointer
+        // collection used for dispatch.
         #[cfg(target_os = "linux")]
         if !window.is_null() {
-            unsafe {
-                let mut event: SDL_Event = std::mem::zeroed();
-                while SDL_PollEvent(&mut event) != 0 {
+            // Collect event pointers from whichever source. The
+            // storage behind the pointers lives in either
+            // sdl2_backend's event_arena (trait path) or the local
+            // `legacy_drained` Vec (fallback path), both of which
+            // outlive `event_ptrs`.
+            let mut trait_events_buf: Vec<worker::runtime::window_backend::BackendEvent> =
+                Vec::new();
+            let mut legacy_drained: Vec<SDL_Event> = Vec::new();
+            let used_trait = {
+                use worker::runtime::window_backend::WindowBackend;
+                if let (Some(_handle), Some(selected)) = (
+                    runtime_handle.as_ref(),
+                    selected_runtime_backend.as_mut(),
+                ) {
+                    selected.backend.pump_events(&mut trait_events_buf);
+                    true
+                } else {
+                    false
+                }
+            };
+            let event_ptrs: Vec<*mut SDL_Event> = if used_trait {
+                use worker::runtime::window_backend::BackendEvent;
+                trait_events_buf
+                    .iter()
+                    .filter_map(|ev| match ev {
+                        BackendEvent::Raw { payload, .. } => {
+                            Some(*payload as *const SDL_Event as *mut SDL_Event)
+                        }
+                        // Quit and Resized don't carry a Raw SDL_Event
+                        // pointer; they're handled elsewhere by the
+                        // runner (Quit → on_event core state mutation
+                        // via the Raw counterpart that SDL2Backend
+                        // double-emits for SDL_QUIT).
+                        _ => None,
+                    })
+                    .collect()
+            } else {
+                unsafe {
+                    loop {
+                        let mut event: SDL_Event = std::mem::zeroed();
+                        if SDL_PollEvent(&mut event) == 0 {
+                            break;
+                        }
+                        legacy_drained.push(event);
+                    }
+                }
+                legacy_drained
+                    .iter()
+                    .map(|e| e as *const SDL_Event as *mut SDL_Event)
+                    .collect()
+            };
+
+            for &event_ptr in &event_ptrs {
+                unsafe {
+                    // (legacy dispatch-to-modules block follows unchanged,
+                    //  reading from `event_ptr` instead of `&mut event`)
+                    let event: &mut SDL_Event = &mut *event_ptr;
                     // SPLIT MODE: Events go to core module with core's state.
                     // Core handles button clicks, key presses, etc. that affect app state.
                     // GUI module can also receive events for hover/focus handling.
@@ -774,7 +845,14 @@ fn main() {
                                     set_current_lib_path(lib_path);
                                 }
                                 let state_ptr_wrapper = SendVoidPtr(state_ptr as usize);
-                                let event_ptr_wrapper = SendVoidPtr(&mut event as *mut SDL_Event as usize);
+                                // Phase 10g.3b: `event` is now a `&mut SDL_Event`
+                                // re-borrowed from an event pointer yielded by
+                                // pump_events / legacy drain, so the cast is
+                                // event_ptr (already *mut SDL_Event). We wrap
+                                // the raw pointer directly, skipping the
+                                // &mut → ptr re-cast the old stack-local path
+                                // used to do.
+                                let event_ptr_wrapper = SendVoidPtr(event_ptr as usize);
                                 let func_ptr = *f;
                                 let result = execute_with_protection(&module_name, move || {
                                     let sp = state_ptr_wrapper.0 as *mut std::ffi::c_void;
