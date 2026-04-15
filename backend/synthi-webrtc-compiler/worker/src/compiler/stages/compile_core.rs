@@ -104,13 +104,39 @@ pub async fn compile_core(
 
                 let core_obj = object_path_for_so(&core_out);
 
+                // ULTRAPLAN Phase 9c — prepare a workspace-local PCH
+                // before compiling. First hit generates `.synthi_pch.h` +
+                // `.synthi_pch.h.gch` next to the source; subsequent
+                // compiles in the same workspace (compile_gui, or a
+                // second compile_core after an edit) hit the `exists()`
+                // fast path and reuse the cached .gch for free.
+                //
+                // On any failure the helper returns None and we fall
+                // through to non-PCH compile — no regression.
+                let pch_include_name = crate::compiler::stages::pch::prepare_workspace_pch(
+                    dir_path,
+                    compiler_exe,
+                    &std_flag,
+                    &effective_manifest.common_flags,
+                    content,
+                )
+                .await;
+                let common_flags_with_pch: Vec<String> = {
+                    let mut v = effective_manifest.common_flags.clone();
+                    if let Some(ref name) = pch_include_name {
+                        v.push("-include".to_string());
+                        v.push(name.clone());
+                    }
+                    v
+                };
+
                 // Step 1: compile source → .o (ccache caches this)
                 let mut compile_cmd = compile_to_object_command(
                     compiler_exe,
                     fname,
                     &core_obj,
                     &std_flag,
-                    &effective_manifest.common_flags,
+                    &common_flags_with_pch,
                     dir_path,
                 );
                 eprintln!(

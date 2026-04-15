@@ -115,13 +115,36 @@ pub async fn compile_gui(
 
                 let gui_obj = object_path_for_so(&gui_out);
 
+                // ULTRAPLAN Phase 9c — workspace PCH. compile_core runs
+                // first in the parallel compile dispatch, so by the
+                // time we get here the .gch is typically already built
+                // and we hit the `exists()` fast path for free. If
+                // gui.cpp is first-in (edge case: core-less rebuild),
+                // we pay the one-time PCH generation cost here instead.
+                let pch_include_name = crate::compiler::stages::pch::prepare_workspace_pch(
+                    dir_path,
+                    compiler_exe,
+                    &std_flag,
+                    &effective_manifest.common_flags,
+                    content.as_str(),
+                )
+                .await;
+                let common_flags_with_pch: Vec<String> = {
+                    let mut v = effective_manifest.common_flags.clone();
+                    if let Some(ref name) = pch_include_name {
+                        v.push("-include".to_string());
+                        v.push(name.clone());
+                    }
+                    v
+                };
+
                 // Step 1: compile .cpp → .o (ccache caches this)
                 let mut compile_cmd = compile_to_object_command(
                     compiler_exe,
                     fname,
                     &gui_obj,
                     &std_flag,
-                    &effective_manifest.common_flags,
+                    &common_flags_with_pch,
                     dir_path,
                 );
                 eprintln!(

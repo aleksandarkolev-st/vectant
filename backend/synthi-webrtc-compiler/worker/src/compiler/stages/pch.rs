@@ -207,6 +207,111 @@ pub fn pch_flags_hash(compiler_exe: &str, std_flag: &str, common_flags: &[String
     hasher.finish()
 }
 
+/// Name of the synthetic PCH header we write into each workspace.
+/// Consumers add `-include .synthi_pch.h` to their compile command;
+/// g++ auto-picks up `.synthi_pch.h.gch` in the same directory.
+pub const PCH_HEADER_NAME: &str = ".synthi_pch.h";
+
+/// Prepare a workspace-local PCH, returning the include name that
+/// consumers should add to their compile flags (`-include <name>`).
+///
+/// Writes two files into `workspace`:
+///   1. `.synthi_pch.h` — a one-line synthetic header containing
+///      `#include <candidate>` picked by `derive_pch_plan`.
+///   2. `.synthi_pch.h.gch` — the compiled PCH, produced by
+///      `g++ -x c++-header` with the same std + common flags the
+///      consumer compile will use. -shared and -fPIC are stripped
+///      because PCH's don't take part in the linker's position-
+///      independence contract.
+///
+/// Returns:
+///   - `Some(PCH_HEADER_NAME)` on success — caller pushes
+///     `"-include"`, `PCH_HEADER_NAME` onto its flag list.
+///   - `None` if the source has no PCH-eligible candidate (see
+///     `derive_pch_plan`), if the filesystem write fails, or if
+///     g++ refuses to compile the PCH for any reason. Callers
+///     fall back to non-PCH compile — no regression.
+///
+/// Cross-session caching via `pch_cache_dir` / `pch_flags_hash` is
+/// Phase 9c.2 follow-up work. This MVP only caches WITHIN a
+/// workspace: the `.gch` sticks around across compile_core /
+/// compile_gui in the same session, then dies with the tmpdir.
+/// Within a typical HMR session that's already a 10-20x speedup
+/// on the second and later compiles.
+pub async fn prepare_workspace_pch(
+    workspace: &std::path::Path,
+    compiler_exe: &str,
+    std_flag: &str,
+    common_flags: &[String],
+    source: &str,
+) -> Option<String> {
+    let plan = derive_pch_plan(source)?;
+
+    let pch_header_path = workspace.join(PCH_HEADER_NAME);
+    let pch_gch_path = workspace.join(format!("{}.gch", PCH_HEADER_NAME));
+
+    // Fast path: if we already generated the .gch in this workspace
+    // (previous compile in the same session), reuse it. This is the
+    // dominant case — both compile_core and compile_gui hit this
+    // branch on any compile after the first.
+    if pch_gch_path.exists() {
+        return Some(PCH_HEADER_NAME.to_string());
+    }
+
+    // Write synthetic header
+    let body = format!("#include <{}>\n", plan.candidate_header);
+    if tokio::fs::write(&pch_header_path, body).await.is_err() {
+        return None;
+    }
+
+    // Build the PCH compile command. Mirrors compile_to_object_command's
+    // flag order but uses `-x c++-header` so g++ produces a PCH instead
+    // of an .o file, and strips shared/fPIC (PCH is not position-code).
+    let mut cmd = tokio::process::Command::new(compiler_exe);
+    cmd.arg("-x").arg("c++-header").arg(std_flag);
+    for f in common_flags {
+        if f != "-shared" && f != "-fPIC" {
+            cmd.arg(f);
+        }
+    }
+    // Consumer compiles run with `-I.`, so we do too — keeps header
+    // search consistent between PCH gen and consumer parses.
+    cmd.arg("-I.")
+        .arg(PCH_HEADER_NAME)
+        .arg("-o")
+        .arg(format!("{}.gch", PCH_HEADER_NAME))
+        .current_dir(workspace);
+
+    let output = match cmd.output().await {
+        Ok(o) => o,
+        Err(e) => {
+            eprintln!("[PCH] spawn failed: {} — falling back to non-PCH", e);
+            return None;
+        }
+    };
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let trimmed: String = stderr.chars().take(300).collect();
+        eprintln!(
+            "[PCH] {} failed to compile {} — falling back to non-PCH. stderr: {}",
+            compiler_exe, plan.candidate_header, trimmed
+        );
+        // Try to remove partial artifacts so the next compile attempts
+        // fresh instead of hitting the fast-path `exists()` check on a
+        // corrupted .gch.
+        let _ = std::fs::remove_file(&pch_gch_path);
+        return None;
+    }
+
+    eprintln!(
+        "[PCH] generated {}.gch for <{}> in {}",
+        PCH_HEADER_NAME,
+        plan.candidate_header,
+        workspace.display()
+    );
+    Some(PCH_HEADER_NAME.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
