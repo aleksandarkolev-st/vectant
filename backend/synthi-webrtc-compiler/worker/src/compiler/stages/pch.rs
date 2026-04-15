@@ -212,6 +212,16 @@ pub fn pch_flags_hash(compiler_exe: &str, std_flag: &str, common_flags: &[String
 /// g++ auto-picks up `.synthi_pch.h.gch` in the same directory.
 pub const PCH_HEADER_NAME: &str = ".synthi_pch.h";
 
+/// Cross-session PCH cache directory (Phase 9c.2). Lives on tmpfs
+/// for fast I/O and because PCH artifacts are derived (cheap to
+/// regenerate, expensive to transfer). Paths inside are keyed by
+/// (compiler, std, common_flags, candidate_header) so two projects
+/// with the same compile shape share a `.gch` across sessions.
+///
+/// Matches the parent directory of the incremental .o cache so
+/// operators only need to invalidate one thing on upgrade.
+pub const CROSS_SESSION_PCH_DIR: &str = "/dev/shm/synthi_compile_cache/pch";
+
 /// Prepare a workspace-local PCH, returning the include name that
 /// consumers should add to their compile flags (`-include <name>`).
 ///
@@ -227,17 +237,23 @@ pub const PCH_HEADER_NAME: &str = ".synthi_pch.h";
 /// Returns:
 ///   - `Some(PCH_HEADER_NAME)` on success — caller pushes
 ///     `"-include"`, `PCH_HEADER_NAME` onto its flag list.
-///   - `None` if the source has no PCH-eligible candidate (see
-///     `derive_pch_plan`), if the filesystem write fails, or if
-///     g++ refuses to compile the PCH for any reason. Callers
-///     fall back to non-PCH compile — no regression.
+///   - `None` if the source has no PCH-eligible candidate, if the
+///     filesystem write fails, or if g++ refuses to compile the PCH
+///     for any reason. Callers fall back to non-PCH compile — no
+///     regression.
 ///
-/// Cross-session caching via `pch_cache_dir` / `pch_flags_hash` is
-/// Phase 9c.2 follow-up work. This MVP only caches WITHIN a
-/// workspace: the `.gch` sticks around across compile_core /
-/// compile_gui in the same session, then dies with the tmpdir.
-/// Within a typical HMR session that's already a 10-20x speedup
-/// on the second and later compiles.
+/// Caching layers (Phase 9c MVP + Phase 9c.2 cross-session):
+///   1. Workspace fast path: if `.synthi_pch.h.gch` already exists
+///      in this workspace (previous compile in the same session),
+///      reuse it immediately.
+///   2. Cross-session fast path: if a `.gch` with a matching
+///      (compiler, std, common_flags, candidate) fingerprint
+///      exists in `/dev/shm/synthi_compile_cache/pch/`, copy it
+///      into the workspace and reuse. Amortizes the ~500ms PCH
+///      generation cost across sessions and projects.
+///   3. Slow path: generate fresh via g++ -x c++-header, then
+///      copy the result into the cross-session cache so future
+///      workspaces hit the fast path.
 pub async fn prepare_workspace_pch(
     workspace: &std::path::Path,
     compiler_exe: &str,
@@ -250,23 +266,64 @@ pub async fn prepare_workspace_pch(
     let pch_header_path = workspace.join(PCH_HEADER_NAME);
     let pch_gch_path = workspace.join(format!("{}.gch", PCH_HEADER_NAME));
 
-    // Fast path: if we already generated the .gch in this workspace
-    // (previous compile in the same session), reuse it. This is the
-    // dominant case — both compile_core and compile_gui hit this
-    // branch on any compile after the first.
+    // Fast path 1: workspace-local reuse.
     if pch_gch_path.exists() {
+        // Still need the synthetic header on disk for the
+        // consumer's `-include .synthi_pch.h` to find a matching
+        // file. Write it unconditionally (idempotent, tiny file).
+        let body = format!("#include <{}>\n", plan.candidate_header);
+        let _ = tokio::fs::write(&pch_header_path, body).await;
         return Some(PCH_HEADER_NAME.to_string());
     }
 
-    // Write synthetic header
+    // Compute the cross-session cache path. Hash depends on
+    // compiler + std + common_flags (via pch_flags_hash) to make
+    // sure a .gch produced with `-O0 -g` isn't reused by a compile
+    // that wants `-O2`.
+    let flags_hash = pch_flags_hash(compiler_exe, std_flag, common_flags);
+    let cross_cache_path = pch_output_path(
+        std::path::Path::new(CROSS_SESSION_PCH_DIR),
+        &plan.candidate_header,
+        flags_hash,
+    );
+
+    // Write the synthetic header unconditionally — consumers
+    // `-include .synthi_pch.h` so the file must exist next to
+    // the .gch regardless of which cache layer provided the .gch.
     let body = format!("#include <{}>\n", plan.candidate_header);
     if tokio::fs::write(&pch_header_path, body).await.is_err() {
         return None;
     }
 
-    // Build the PCH compile command. Mirrors compile_to_object_command's
-    // flag order but uses `-x c++-header` so g++ produces a PCH instead
-    // of an .o file, and strips shared/fPIC (PCH is not position-code).
+    // Fast path 2: cross-session cache hit. Copy the cached .gch
+    // into the workspace so g++ finds it next to the header.
+    if cross_cache_path.exists() {
+        match tokio::fs::copy(&cross_cache_path, &pch_gch_path).await {
+            Ok(bytes) => {
+                eprintln!(
+                    "[PCH] cross-session cache HIT: {} → {} ({} bytes, fingerprint {:016x})",
+                    cross_cache_path.display(),
+                    pch_gch_path.display(),
+                    bytes,
+                    flags_hash
+                );
+                return Some(PCH_HEADER_NAME.to_string());
+            }
+            Err(e) => {
+                eprintln!(
+                    "[PCH] cross-session cache copy failed ({}) — regenerating",
+                    e
+                );
+                // Fall through to slow path; don't remove the
+                // source file (might be a transient error).
+            }
+        }
+    }
+
+    // Slow path: g++ -x c++-header. Mirrors compile_to_object_command's
+    // flag order but uses `-x c++-header` so g++ produces a PCH
+    // instead of an .o file, and strips shared/fPIC (PCH is not
+    // position-code).
     let mut cmd = tokio::process::Command::new(compiler_exe);
     cmd.arg("-x").arg("c++-header").arg(std_flag);
     for f in common_flags {
@@ -296,19 +353,53 @@ pub async fn prepare_workspace_pch(
             "[PCH] {} failed to compile {} — falling back to non-PCH. stderr: {}",
             compiler_exe, plan.candidate_header, trimmed
         );
-        // Try to remove partial artifacts so the next compile attempts
-        // fresh instead of hitting the fast-path `exists()` check on a
-        // corrupted .gch.
+        // Try to remove partial artifacts so the next compile
+        // attempts fresh instead of hitting the fast-path
+        // `exists()` check on a corrupted .gch.
         let _ = std::fs::remove_file(&pch_gch_path);
         return None;
     }
 
     eprintln!(
-        "[PCH] generated {}.gch for <{}> in {}",
+        "[PCH] generated {}.gch for <{}> in {} (fingerprint {:016x})",
         PCH_HEADER_NAME,
         plan.candidate_header,
-        workspace.display()
+        workspace.display(),
+        flags_hash
     );
+
+    // Populate the cross-session cache so the next workspace with
+    // a matching fingerprint hits Fast Path 2 instead of paying
+    // the ~500ms g++ cost again. Best-effort: any failure here is
+    // logged but doesn't prevent the consumer from using the
+    // freshly-generated workspace .gch.
+    if let Some(parent) = cross_cache_path.parent() {
+        if let Err(e) = tokio::fs::create_dir_all(parent).await {
+            eprintln!(
+                "[PCH] cross-session cache mkdir {} failed ({}) — not caching across sessions",
+                parent.display(),
+                e
+            );
+        } else {
+            match tokio::fs::copy(&pch_gch_path, &cross_cache_path).await {
+                Ok(bytes) => {
+                    eprintln!(
+                        "[PCH] cross-session cache PUT: {} ({} bytes, fingerprint {:016x})",
+                        cross_cache_path.display(),
+                        bytes,
+                        flags_hash
+                    );
+                }
+                Err(e) => {
+                    eprintln!(
+                        "[PCH] cross-session cache PUT failed ({}) — not caching across sessions",
+                        e
+                    );
+                }
+            }
+        }
+    }
+
     Some(PCH_HEADER_NAME.to_string())
 }
 
