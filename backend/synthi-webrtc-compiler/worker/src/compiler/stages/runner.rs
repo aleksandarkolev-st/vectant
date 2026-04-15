@@ -39,6 +39,13 @@ pub async fn handle_runner_execution(
     core_lib_path: String,
     gui_lib_path: String,
     session_id: Option<String>,
+    // ULTRAPLAN Lightning Phase 12 — when Some, spawn the AI-generated
+    // per-project host_runner_<ts> binary instead of the shipped
+    // target/debug/runner. The per-project binary owns window/renderer
+    // lifecycle, dlopens libcore.so/libgui.so itself, and runs its own
+    // main loop. Worker still manages Xvfb + GStreamer + WebRTC around
+    // it (frame capture via ximagesrc on DISPLAY=:99 is unchanged).
+    host_runner_bin_path: Option<String>,
 ) -> Result<()> {
     // Unified Runner Logic
     if modules_to_load.is_empty() {
@@ -57,6 +64,14 @@ pub async fn handle_runner_execution(
     }
 
     let mut guard = ctx.runner_store.lock().await;
+
+    // ULTRAPLAN Lightning Phase 12 — hoisted so both the spawn block
+    // and the later stdin-command block can branch on it without
+    // re-resolving `host_runner_bin_path`. The spawn block uses it to
+    // pick the binary + cwd; the stdin block uses it to skip the
+    // `set_session`/`load` protocol that the per-project runner does
+    // not speak.
+    let use_per_project_runner = host_runner_bin_path.is_some();
 
     let req_width = req.width.unwrap_or(800);
     let req_height = req.height.unwrap_or(600);
@@ -409,14 +424,40 @@ pub async fn handle_runner_execution(
         }
 
         // Spawn Runner Process
-        let runner_path = std::env::current_exe()
-            .ok()
-            .and_then(|p| p.parent().map(|p| p.join("runner")))
-            .unwrap_or_else(|| std::path::PathBuf::from("runner"));
+        //
+        // ULTRAPLAN Lightning Phase 12 — per-project runner selection.
+        // When `host_runner_bin_path` is Some we spawn the AI-synthesised
+        // per-project binary directly. It owns SDL/window/renderer + the
+        // dlopen of libcore.so/libgui.so + its own main loop. cwd is set
+        // to the binary's parent dir so the AI's `./libcore.so` dlopen
+        // call resolves against the symlinks created in compile_core /
+        // compile_gui.
+        //
+        // When `host_runner_bin_path` is None we fall back to the shipped
+        // `target/debug/runner` — the legacy path that drives modules via
+        // stdin `load` commands and uses the SHIPPED ABI expectations.
+        // `use_per_project_runner` is hoisted at the top of this fn.
+        let runner_path: std::path::PathBuf = if let Some(ref p) = host_runner_bin_path {
+            std::path::PathBuf::from(p)
+        } else {
+            std::env::current_exe()
+                .ok()
+                .and_then(|p| p.parent().map(|p| p.join("runner")))
+                .unwrap_or_else(|| std::path::PathBuf::from("runner"))
+        };
 
-        debug_log!("Spawning runner: {:?}", runner_path);
+        debug_log!(
+            "Spawning runner ({}): {:?}",
+            if use_per_project_runner { "per-project" } else { "shipped" },
+            runner_path
+        );
+        eprintln!(
+            "[Main] Spawning runner ({}): {:?}",
+            if use_per_project_runner { "per-project" } else { "shipped" },
+            runner_path
+        );
 
-        let mut cmd = Command::new(runner_path);
+        let mut cmd = Command::new(&runner_path);
         cmd.env("DISPLAY", &wsl_display_str)
             .env(
                 "LD_LIBRARY_PATH",
@@ -432,6 +473,16 @@ pub async fn handle_runner_execution(
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
+
+        // Phase 12 — per-project runner needs cwd = build dir so its
+        // `dlopen("./libcore.so")` resolves via the symlinks created
+        // after link. Shipped runner doesn't care about cwd.
+        if use_per_project_runner {
+            if let Some(parent) = runner_path.parent() {
+                cmd.current_dir(parent);
+                eprintln!("[Main] per-project runner cwd: {}", parent.display());
+            }
+        }
 
         if let Some(sid) = &session_id {
             cmd.env("SYNTHI_SESSION_ID", sid);
@@ -654,8 +705,18 @@ pub async fn handle_runner_execution(
         // the next render frame, so batching ensures atomic multi-module
         // swap: no intermediate frame where new core state is rendered
         // by old GUI code (which would read corrupt data).
-        // ============================================================
-        if let Some(stdin_arc) = &state.stdin {
+        //
+        // ULTRAPLAN Lightning Phase 12 — the per-project host_runner
+        // dlopens libcore.so/libgui.so itself via its own code, so it
+        // does not speak the `set_session` / `load <name> <path>` stdin
+        // protocol. Skip the whole block in that mode. In-process HMR
+        // via stdin commands is followup work (Phase 12.5+).
+        if use_per_project_runner {
+            eprintln!(
+                "[Main] per-project runner: skipping stdin set_session/load commands \
+                 (binary loads modules internally)"
+            );
+        } else if let Some(stdin_arc) = &state.stdin {
             // Check if process is still alive before sending anything
             let mut process_alive = true;
             if let Some(child) = state.process.as_mut() {

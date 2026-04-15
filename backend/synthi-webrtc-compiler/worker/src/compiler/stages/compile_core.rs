@@ -307,6 +307,28 @@ pub async fn compile_core(
 
                 let path = core_out.to_string_lossy().to_string();
 
+                // ULTRAPLAN Lightning Phase 12 — stable symlink for per-project runner.
+                // The AI-generated host_runner.cpp dlopen's `./libcore.so`, but
+                // compile output is `libcore_<ts>.so`. Create a relative symlink
+                // so the host_runner can find the latest .so without knowing
+                // the timestamp. Remove any stale symlink first.
+                if let (Some(parent), Some(file_name)) = (core_out.parent(), core_out.file_name()) {
+                    let link_path = parent.join("libcore.so");
+                    let _ = std::fs::remove_file(&link_path);
+                    if let Err(e) = std::os::unix::fs::symlink(file_name, &link_path) {
+                        eprintln!(
+                            "[CompileCore] WARN: failed to create libcore.so → {:?} symlink: {}",
+                            file_name, e
+                        );
+                    } else {
+                        eprintln!(
+                            "[CompileCore] stable symlink: {} -> {:?}",
+                            link_path.display(),
+                            file_name
+                        );
+                    }
+                }
+
                 // Update persistent cache
                 if let Ok(so_data) = tokio::fs::read(&path).await {
                     let source_hash = content_hash;

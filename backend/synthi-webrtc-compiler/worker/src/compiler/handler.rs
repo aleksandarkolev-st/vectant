@@ -1645,6 +1645,11 @@ pub async fn handle_compile_request(
         core_lib_path,
         gui_lib_path,
         Some(session_id.clone()),
+        // ULTRAPLAN Lightning Phase 12 — when compile_runner produced
+        // a per-project host_runner binary, hand its path to the spawn
+        // stage so it becomes the live process instead of the shipped
+        // runner. None preserves pre-Phase-12 behavior.
+        host_runner_bin_path.clone(),
     )
     .await;
 

@@ -7,7 +7,8 @@
 ## Revision history
 
 - **rev1** (initial draft): four-phase structure, latency budgets, file lists, risks. Landed in commit `802170e5`.
-- **rev3** (this): second review pass. Fixes for multi-threaded patching soundness, Path C window discovery, structured arch cache field, SIGINT re-install periodicity, plus ~10 additional gaps found during my own re-review. New §14 "Agnosticism assessment" with an honest verdict on library and language agnosticism (agnostic-by-fallback, not agnostic-by-construction). Tier 0 hit rate estimate revised downward from "~60%" to "~30-45%" after the atomic-store-only restriction.
+- **rev4** (this): first partial implementation landed on branch `claude/hmr-lightning`. Phase 9 (a/b/d/e/f) shipped; Phase 10 (a/b/f/g.1) shipped; Phase 12 **Seed** (per-project runner spawn plumbing) shipped after live runtime testing revealed the shipped runner's ABI mismatch against the Phase 7 universal split contract. Phase 12 Seed is explicitly narrower than the full Phase 12 design in §7: no supervisor process, no IPC protocol, no in-process HMR — just "the per-project `host_runner_<ts>` binary actually runs, with worker-managed Xvfb/GStreamer/WebRTC unchanged around it." Full HMR via stdin reload commands + supervisor split are Phase 12.5 and Phase 12.6, scoped in §7.X (new). Also: bug fix for `hot_reload/v2.rs` `validate_state_magic` / `get_module_abi_version` — misaligned pointers from ABI-wrong modules now produce a magic mismatch instead of aborting the process. Phase 8 frontend stack overflow (`synthi:hmr-status` self-feed in `useHMR.js`) also fixed as part of this work.
+- **rev3**: second review pass. Fixes for multi-threaded patching soundness, Path C window discovery, structured arch cache field, SIGINT re-install periodicity, plus ~10 additional gaps found during my own re-review. New §14 "Agnosticism assessment" with an honest verdict on library and language agnosticism (agnostic-by-fallback, not agnostic-by-construction). Tier 0 hit rate estimate revised downward from "~60%" to "~30-45%" after the atomic-store-only restriction.
 - **rev2**: major revision pass after detailed technical review. Changes:
   - §1 Measurement point made explicit: we measure **runner-internal** (source-save → frame-rendered-inside-runner-process) and **user-visible** (runner-internal + video pipeline tax) as two separate metrics. Success criteria specify both.
   - §3 Latency budget rewritten to include: speculation-hit path AND speculation-miss path AND video pipeline tax AND filesystem jitter. Honest numbers replace the fiction.
@@ -139,7 +140,7 @@ Runtime is SDL2-centric. Concretely:
 
 - `worker/src/runtime/runner_bin.rs` — the shipped binary that spawns at runtime — creates an SDL2 window itself via X11/Xvfb, runs its own event loop, dlopens `libcore.so` + `libgui.so`, and streams video via GStreamer captured from the SDL2 window handle.
 - If the user's project is GLFW-based: the `.so` files get produced correctly (Phase 3 works), but at runtime the shipped `runner_bin` opens an SDL2 window. Inside `libgui.so`, the `gui_on_render` function tries to call `glfwSwapBuffers` against a window that doesn't exist → crash or hang.
-- The per-project `host_runner_<timestamp>` binary compiled in Phase 4 sits unused on disk.
+- ~~The per-project `host_runner_<timestamp>` binary compiled in Phase 4 sits unused on disk.~~ **Partially closed in rev4** — the worker now spawns `host_runner_<timestamp>` directly when `compile_runner` produced one (Phase 12 Seed, see §7). The shipped `runner_bin` is the fallback when no per-project runner exists (BYOR off + not an AI split path). This cleared the ABI mismatch that was making the runner crash on Phase 7 universal split output.
 
 The four phases in this plan close that gap — and, as a bonus, shave 90%+ off the latency floor for the common case.
 
@@ -1463,6 +1464,50 @@ Benchmark (in 9f's Harness B):
 ---
 
 ## 7. Phase 12 — Path C: Supervisor + Child Process
+
+### 7.0 Status (rev4)
+
+**Phase 12 Seed: SHIPPED** on branch `claude/hmr-lightning`. See §7.X for the deltas against the rest of §7. Short version:
+
+| Shipped in rev4 (Phase 12 Seed) | Still to do |
+|---|---|
+| Worker's `handle_runner_execution` picks per-project `host_runner_<ts>` when present (else falls back to shipped `runner_bin`) | Stdin-driven in-process reload protocol for per-project runner (Phase 12.5) |
+| `compile_core` / `compile_gui` create stable `libcore.so` / `libgui.so` symlinks so AI-generated `dlopen("./libcore.so")` resolves regardless of timestamp | Separate supervisor process with its own Xvfb per session (full §7.2 12a architecture) |
+| Per-project runner launches with `cwd = build_dir` + `DISPLAY=<worker-managed>` + `SYNTHI_UNSAFE_INPROCESS=1` (unchanged) | Versioned IPC protocol with handshake + capability negotiation (§7.2 12b) |
+| Worker skips `set_session` / `load <name> <path>` stdin commands in per-project mode (the binary does its own dlopen) | AI-generated `host_runner.cpp` template updated to read HMR commands from stdin + dlclose/dlopen for live reload (Phase 12.5) |
+| `runtime/hot_reload/v2.rs` `validate_state_magic` / `get_module_abi_version` use `ptr::read_unaligned` so ABI-mismatched modules produce a magic mismatch instead of aborting the process | Link-time `nm` check for `synthi_hmr_init` / `synthi_hmr_on_frame` symbols (§7.2 12b, post-compile gate) |
+| End-to-end smoke: per-project binary for the SDL2 canonical app runs for ≥4s in isolation, dlopens the symlinked .so files, opens the window at `DISPLAY=:99` without crashing | "Zero HMR reload" on the new path — each save currently requires a full process restart. Acceptable for MVP; blocks latency win until 12.5 lands |
+
+**What this unblocked**: the Phase 7 universal split output (which uses the new `void core_on_load(void*)` + dlsym'd global `app_state` ABI) no longer crashes the runtime path on load. Before rev4, the shipped runner received the AI's module, called `core_on_load` expecting a `void*` return, dereferenced RAX as a state pointer, and aborted inside `validate_state_magic`. Phase 12 Seed makes the per-project runner — which was generated by the SAME prompt and agrees on the same ABI — the actual runtime process.
+
+**What this explicitly didn't tackle**: the rest of Phase 12 as designed in §7.1-7.4 below is still valid and still needed. The Seed is scaffolding that proves the spawn mechanics work, not a replacement for the full supervisor + IPC design.
+
+### 7.X Follow-up phases (12.5 / 12.6)
+
+**Phase 12.5 — Per-project runner HMR reload loop**
+
+Goal: turn Seed's "full process restart per save" into real HMR so the latency numbers in §3 apply to per-project binaries, not just the shipped runner.
+
+- Update `UNIVERSAL_SPLIT_PROMPT` in `ai-backend/ai-engine/llm/prompts.py` so the AI-generated `host_runner.cpp` template includes:
+  - A stdin reader thread (non-blocking or line-buffered), protocol identical to the shipped runner's text format: `set_session <sid>` / `load <name> <path>` / `reload <name> <path>` / `quit`.
+  - dlclose-then-dlopen for each module slot on a reload command, calling `core_on_unload` on the old module before dlclose and `core_on_load(prev_state)` on the new module with the preserved pointer.
+  - Guardrails for the stdin thread → main thread handoff (atomics, single-writer queue, or a render-phase drain check — not a raw `tokio::sync::Mutex`, this is C++).
+- Worker's `handle_runner_execution` stops unconditionally skipping stdin commands in per-project mode; instead it sends the same batched protocol it already builds for the shipped runner path.
+- Add prompt-side guardrails so the AI doesn't forget the stdin loop on the one project that needs it.
+- Land when Phase 12 Seed has been live long enough that we have real "per-project-crashes-on-reload" signal from users — the AI's dlclose safety is the main risk.
+
+**Phase 12.6 — Per-project runner supervisor split**
+
+Goal: catch up to the full §7.2 12a / 12b design, where a supervisor process owns Xvfb + capture + lifecycle, and the child is just the user's code.
+
+- Introduce the supervisor binary (new target in `worker/src/bin/` or absorbed into `runner_bin.rs` with a mode switch).
+- Supervisor allocates per-session Xvfb (not the shared `:99` the worker uses today), spawns the child against that display, runs GStreamer capture against the same display.
+- IPC protocol from §7.2 12b (versioned handshake + capability negotiation) replaces the stdin text protocol from Phase 12.5.
+- Link-time `nm` gate on `synthi_hmr_init` / `synthi_hmr_on_frame` as described in §7.2 12b (rev2 review point #10).
+- This is the phase that unblocks Path C for libraries that can't share `:99` with other clients (Qt, some GLFW configurations, any library that grabs the X server).
+- Cost: full 12-16d estimate from §0 still applies — Phase 12 Seed only touched the plumbing around one shared Xvfb.
+
+**Sequencing**: 12.5 must land before 12.6. 12.6 assumes HMR already works on the per-project path; 12.5 delivers that. Reversing the order means implementing an IPC protocol around a binary that doesn't speak HMR yet, wasted work.
 
 ### 7.1 Intent (revised — honest about scope)
 

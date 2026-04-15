@@ -305,6 +305,27 @@ pub async fn compile_gui(
 
                 let gui_lib_path = gui_out.to_string_lossy().to_string();
 
+                // ULTRAPLAN Lightning Phase 12 — stable symlink for per-project runner.
+                // AI-generated host_runner.cpp dlopens `./libgui.so`; compile
+                // output is `libgui_<ts>.so`. Mirror compile_core.rs's symlink
+                // step so the same indirection works for both modules.
+                if let (Some(parent), Some(file_name)) = (gui_out.parent(), gui_out.file_name()) {
+                    let link_path = parent.join("libgui.so");
+                    let _ = std::fs::remove_file(&link_path);
+                    if let Err(e) = std::os::unix::fs::symlink(file_name, &link_path) {
+                        eprintln!(
+                            "[CompileGUI] WARN: failed to create libgui.so → {:?} symlink: {}",
+                            file_name, e
+                        );
+                    } else {
+                        eprintln!(
+                            "[CompileGUI] stable symlink: {} -> {:?}",
+                            link_path.display(),
+                            file_name
+                        );
+                    }
+                }
+
                 // Update persistent cache on success
                 if let Ok(so_data) = tokio::fs::read(&gui_lib_path).await {
                     let source_hash = calculate_hash(&content);
