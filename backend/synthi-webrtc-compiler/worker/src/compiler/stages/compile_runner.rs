@@ -52,7 +52,9 @@ pub const HOST_RUNNER_FILENAME: &str = "host_runner.cpp";
 ///     `gui_link_flags` (typically `-lSDL2 -ldl`, `-lglfw -ldl`,
 ///     `-lfmod -ldl`, etc. — whatever the AI synthesised for the runner's
 ///     own dlopen + window-init dependencies)
-///   - always appends `-ldl` (runner is the dlopen caller) and
+///   - always appends `-ldl` (runner is the dlopen caller),
+///     `-pthread` (Phase 12.5 — new host_runner template has a
+///     stdin reader thread for hot-reload commands), and
 ///     `-rdynamic` (for runner→module dlsym back-references)
 pub fn build_runner_flag_list(manifest: &CompileManifest) -> Vec<String> {
     let std_flag = format!("-std={}", manifest.std);
@@ -64,12 +66,13 @@ pub fn build_runner_flag_list(manifest: &CompileManifest) -> Vec<String> {
         .collect();
 
     let mut flags: Vec<String> = Vec::with_capacity(
-        runner_compile_flags.len() + manifest.runner_link_flags.len() + 3,
+        runner_compile_flags.len() + manifest.runner_link_flags.len() + 4,
     );
     flags.push(std_flag);
     flags.extend(runner_compile_flags);
     flags.extend(manifest.runner_link_flags.iter().cloned());
     flags.push("-ldl".to_string());
+    flags.push("-pthread".to_string());
     flags.push("-rdynamic".to_string());
     flags
 }
@@ -161,11 +164,19 @@ pub async fn compile_runner(
     // top of this function (Phase 3 quirk: executables can't carry
     // those flags), so we pass it verbatim through the helper which
     // will strip -shared again as a no-op safety net.
+    // ULTRAPLAN Lightning Phase 12.5 — add `-pthread` unconditionally.
+    // The new host_runner.cpp template emitted by UNIVERSAL_SPLIT_PROMPT
+    // has a stdin reader thread (std::thread / pthread_create) that
+    // handles hot-reload commands. Without -pthread the link fails.
+    // This is library-agnostic (pthread is the reloader, not the
+    // rendering backend) so we add it for every per-project runner
+    // regardless of what the manifest says.
     let mut link_flags: Vec<String> = Vec::with_capacity(
-        effective_manifest.runner_link_flags.len() + 2,
+        effective_manifest.runner_link_flags.len() + 3,
     );
     link_flags.extend(effective_manifest.runner_link_flags.iter().cloned());
     link_flags.push("-ldl".to_string());
+    link_flags.push("-pthread".to_string());
     link_flags.push("-rdynamic".to_string());
 
     let runner_obj = object_path_for_exec(&runner_out);
@@ -266,7 +277,9 @@ pub async fn compile_runner(
                 for f in &m.runner_link_flags {
                     cmd.arg(f);
                 }
-                cmd.arg("-ldl").arg("-rdynamic");
+                // Phase 12.5: -pthread for stdin reader thread in new
+                // host_runner template (must mirror build_runner_flag_list).
+                cmd.arg("-ldl").arg("-pthread").arg("-rdynamic");
                 cmd.current_dir(dir_path);
                 cmd
             },
@@ -337,7 +350,8 @@ pub async fn compile_runner(
                     for f in &effective_manifest.runner_link_flags {
                         retry_cmd.arg(f);
                     }
-                    retry_cmd.arg("-ldl").arg("-rdynamic");
+                    // Phase 12.5: -pthread mirrors build_runner_flag_list.
+                    retry_cmd.arg("-ldl").arg("-pthread").arg("-rdynamic");
                     retry_cmd.current_dir(dir_path);
                     retry_cmd.kill_on_drop(true);
                     if let Ok(retry_child) = retry_cmd.spawn() {

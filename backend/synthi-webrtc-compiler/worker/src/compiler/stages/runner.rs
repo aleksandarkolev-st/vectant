@@ -706,17 +706,16 @@ pub async fn handle_runner_execution(
         // swap: no intermediate frame where new core state is rendered
         // by old GUI code (which would read corrupt data).
         //
-        // ULTRAPLAN Lightning Phase 12 — the per-project host_runner
-        // dlopens libcore.so/libgui.so itself via its own code, so it
-        // does not speak the `set_session` / `load <name> <path>` stdin
-        // protocol. Skip the whole block in that mode. In-process HMR
-        // via stdin commands is followup work (Phase 12.5+).
-        if use_per_project_runner {
-            eprintln!(
-                "[Main] per-project runner: skipping stdin set_session/load commands \
-                 (binary loads modules internally)"
-            );
-        } else if let Some(stdin_arc) = &state.stdin {
+        // ULTRAPLAN Lightning Phase 12.5 — the per-project host_runner
+        // now speaks the same stdin text protocol as the shipped runner
+        // (set_session / load core <path> / load gui <path> / quit).
+        // The AI-generated template has a reader thread that drains the
+        // queue at the top of every frame and executes the 6-phase
+        // dlopen/dlclose sequence with prev_state preserved across
+        // reloads — see UNIVERSAL_SPLIT_PROMPT's HOST RUNNER GENERATION
+        // section. So we send the same commands in both modes, no
+        // branching needed.
+        if let Some(stdin_arc) = &state.stdin {
             // Check if process is still alive before sending anything
             let mut process_alive = true;
             if let Some(child) = state.process.as_mut() {
