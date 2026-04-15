@@ -14,3 +14,10 @@ pub mod supervisor;
 pub mod plugin_contract;
 
 pub mod runner;
+
+// ULTRAPLAN Lightning Phase 10a: WindowBackend trait + per-library
+// implementations. Currently dead code until runner_bin.rs is migrated
+// to dispatch through the trait — the modules suppress the warning
+// with `#[allow(dead_code)]`. See window_backend.rs for the migration plan.
+pub mod backends;
+pub mod window_backend;
