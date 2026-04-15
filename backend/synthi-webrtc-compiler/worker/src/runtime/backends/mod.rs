@@ -18,6 +18,7 @@
 
 pub mod glfw_backend;
 pub mod sdl2_backend;
+pub mod selector;
 
 #[cfg(test)]
 mod tests {
