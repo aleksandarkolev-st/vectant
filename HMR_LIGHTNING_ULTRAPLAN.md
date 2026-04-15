@@ -721,13 +721,19 @@ It keeps:
 - **Files**: `worker/src/runtime/window_backend.rs` (new — trait), `worker/src/runtime/backends/sdl2_backend.rs` (new — extracted SDL2 code wrapping existing runner_bin internals), `worker/src/runtime/runner_bin.rs` (refactor to `Box<dyn WindowBackend>`)
 - **Risk mitigation**: the current SDL2 code in runner_bin is intertwined with GStreamer capture via the SDL window handle. The refactor has to cleanly separate the X11 window ID (exposed via WindowHandle) from everything else (kept private in the backend). Extract in two commits: first pull all SDL2 code into the backend without moving capture, then move capture to consume `x11_window_id`.
 
-#### 10b-e. Backend implementations via runtime `dlopen` (~2 days each for GLFW/raylib/SFML, ~3-4 days for sokol)
+#### 10b-e. Backend implementations via runtime `dlopen` (~2 days each for GLFW/raylib/SFML)
+
+**rev4 note — sokol scope change**: the original plan listed sokol as a dlopen'd backend at ~3-4 days. That assumption was wrong: sokol is a single-header library (`sokol_app.h`) shipped via `#define SOKOL_IMPL` + `#include`. There is NO `libsokol-app.so` package in Debian/Ubuntu/Fedora/macOS repos — sokol is compiled INTO your executable by convention. The dlopen pattern fundamentally does not fit sokol.
+
+However, **Phase 12 (per-project runner) already covers sokol natively**. The AI generates `host_runner.cpp` that `#include`s sokol_app.h directly; compile_runner.rs builds it into the per-project binary; the per-project spawn path (Phase 12 Seed, shipped in `8c90188e`) runs it. Sokol gets HMR via the Phase 12 stdin reload loop (Phase 12.5, prompt in `2f3d029d`, worker in `216c0eee`) without ever touching the WindowBackend trait.
+
+**Verdict**: sokol is OUT of Phase 10's scope. The 3-4 day estimate is reclaimed. Coverage stays the same because Phase 12 handles it. If you want to confirm sokol end-to-end, the test is a sokol project in the Phase 7 corpus running through the per-project runner, NOT through the trait-based shipped runner.
 
 **Dependency strategy — `dlopen` at runtime, not cargo deps**:
 
 Rev2 review caught a significant issue: adding `glfw-sys`, `raylib-sys`, `sfml-sys`, and `sokol-app` as cargo dependencies bloats the worker build (raylib-sys compiles raylib from source — ~5-10 minutes) and adds hundreds of MB to the container image. For a deployment environment with many worker instances, that's unacceptable.
 
-**Fix**: don't link any of these libraries into the worker binary. Use `libloading` to `dlopen` the library at runtime when a backend is actually requested. The runner-side deployment environment must have the library installed (`libglfw3-dev`, `libraylib-dev`, `libsfml-dev`, `libsokol-app-dev` or equivalent); worker startup code checks for availability and logs which backends are usable.
+**Fix**: don't link any of these libraries into the worker binary. Use `libloading` to `dlopen` the library at runtime when a backend is actually requested. The runner-side deployment environment must have the library installed (`libglfw3-dev`, `libraylib-dev`, `libsfml-dev` or equivalent; sokol is NOT on this list — see rev4 note above); worker startup code checks for availability and logs which backends are usable.
 
 ```rust
 // worker/src/runtime/backends/glfw_backend.rs
