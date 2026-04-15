@@ -35,6 +35,7 @@
 // (runner_bin migration) makes this live.
 
 use crate::runtime::backends::glfw_backend::GLFWBackend;
+use crate::runtime::backends::raylib_backend::RaylibBackend;
 use crate::runtime::backends::sdl2_backend::SDL2Backend;
 use crate::runtime::window_backend::WindowBackend;
 
@@ -206,8 +207,8 @@ fn dispatch_by_framework_enum(framework: &str) -> Option<Box<dyn WindowBackend>>
     match key.as_str() {
         "sdl2" | "sdl" => Some(Box::new(SDL2Backend::new())),
         "glfw" => Some(Box::new(GLFWBackend::new())),
+        "raylib" => Some(Box::new(RaylibBackend::new())),
         // Future backends slot in here:
-        // "raylib" => Some(Box::new(RaylibBackend::new())),
         // "sokol"  => Some(Box::new(SokolBackend::new())),
         // "sfml"   => Some(Box::new(SFMLBackend::new())),
         _ => None,
@@ -278,6 +279,9 @@ fn dispatch_by_framework_substring(text: &str) -> Option<Box<dyn WindowBackend>>
     if lower.contains("glfw") {
         return Some(Box::new(GLFWBackend::new()));
     }
+    if lower.contains("raylib") {
+        return Some(Box::new(RaylibBackend::new()));
+    }
     None
 }
 
@@ -295,6 +299,12 @@ fn dispatch_by_link_flags(
         }
         if lower.contains("glfw") {
             return Some((Box::new(GLFWBackend::new()), "GLFW (link-flag)".to_string()));
+        }
+        if lower.contains("raylib") {
+            return Some((
+                Box::new(RaylibBackend::new()),
+                "raylib (link-flag)".to_string(),
+            ));
         }
     }
     None
@@ -375,6 +385,9 @@ mod tests {
         assert!(dispatch_by_framework_enum("sdl").is_some());
         assert!(dispatch_by_framework_enum("glfw").is_some());
         assert!(dispatch_by_framework_enum("GLFW").is_some());
+        // Phase 10c
+        assert!(dispatch_by_framework_enum("raylib").is_some());
+        assert!(dispatch_by_framework_enum("RAYLIB").is_some());
         assert!(dispatch_by_framework_enum("unknown_lib").is_none());
     }
 
@@ -382,7 +395,18 @@ mod tests {
     fn dispatch_by_framework_substring_recognises_text() {
         assert!(dispatch_by_framework_substring("C++ with SDL2").is_some());
         assert!(dispatch_by_framework_substring("C++ with GLFW + OpenGL").is_some());
-        assert!(dispatch_by_framework_substring("C++ with raylib").is_none());
+        // Phase 10c — raylib is now a real option
+        assert!(dispatch_by_framework_substring("C++ with raylib").is_some());
+        assert!(dispatch_by_framework_substring("C++ with raylib 5.0").is_some());
+    }
+
+    #[test]
+    fn dispatch_by_link_flags_finds_raylib() {
+        let flags = vec!["-lraylib".to_string(), "-ldl".to_string()];
+        let result = dispatch_by_link_flags(&flags);
+        assert!(result.is_some());
+        let (backend, _) = result.unwrap();
+        assert_eq!(backend.name(), "raylib");
     }
 
     #[test]

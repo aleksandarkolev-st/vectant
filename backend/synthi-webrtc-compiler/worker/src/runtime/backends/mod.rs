@@ -17,6 +17,7 @@
 // in `tests/phase10a_*` exercise the public surface.
 
 pub mod glfw_backend;
+pub mod raylib_backend;
 pub mod sdl2_backend;
 pub mod selector;
 

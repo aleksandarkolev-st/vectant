@@ -93,11 +93,47 @@ fn frontmatter_picks_glfw() {
 }
 
 #[test]
+fn frontmatter_picks_raylib() {
+    // Phase 10c — raylib is a real option.
+    let cache = "---\nframework: raylib\nframework_display: C++ with raylib 5.0\n---\n";
+    let selected = select_backend(SelectorInputs {
+        arch_cache: cache,
+        link_flags: &[],
+    });
+    assert_eq!(selected.matched_layer, SelectorLayer::StructuredFrontmatter);
+    assert_eq!(selected.backend.name(), "raylib");
+    assert_eq!(selected.framework_display, "C++ with raylib 5.0");
+}
+
+#[test]
+fn markdown_header_picks_raylib() {
+    let cache = "## Language & Framework\nC++ with raylib\n";
+    let selected = select_backend(SelectorInputs {
+        arch_cache: cache,
+        link_flags: &[],
+    });
+    assert_eq!(selected.matched_layer, SelectorLayer::MarkdownHeader);
+    assert_eq!(selected.backend.name(), "raylib");
+}
+
+#[test]
+fn link_flags_only_picks_raylib() {
+    let flags = vec!["-lraylib".to_string(), "-ldl".to_string()];
+    let selected = select_backend(SelectorInputs {
+        arch_cache: "",
+        link_flags: &flags,
+    });
+    assert_eq!(selected.matched_layer, SelectorLayer::LinkFlagScan);
+    assert_eq!(selected.backend.name(), "raylib");
+}
+
+#[test]
 fn frontmatter_with_unknown_framework_falls_through_to_layer_1() {
-    // Layer 0 doesn't match (raylib not yet implemented), so we
+    // Layer 0 doesn't match (sokol not yet implemented), so we
     // try Layer 1 → also doesn't match → Layer 2 → no link flags
-    // → Layer 3 fallback.
-    let cache = "---\nframework: raylib\n---\n";
+    // → Layer 3 fallback. Updated from `raylib` to `sokol` after
+    // Phase 10c wired raylib as a real backend.
+    let cache = "---\nframework: sokol\n---\n";
     let selected = select_backend(SelectorInputs {
         arch_cache: cache,
         link_flags: &[],
@@ -107,9 +143,10 @@ fn frontmatter_with_unknown_framework_falls_through_to_layer_1() {
 
 #[test]
 fn frontmatter_with_unknown_framework_falls_through_then_link_flag_match() {
-    // Layer 0 fails (raylib not in our enum yet), Layer 1 fails
+    // Layer 0 fails (sokol not in our enum yet), Layer 1 fails
     // (no markdown header), Layer 2 succeeds (`-lglfw` in link flags).
-    let cache = "---\nframework: raylib\n---\n";
+    // Updated from `raylib` to `sokol` after Phase 10c wired raylib.
+    let cache = "---\nframework: sokol\n---\n";
     let flags = vec!["-lglfw".to_string()];
     let selected = select_backend(SelectorInputs {
         arch_cache: cache,
