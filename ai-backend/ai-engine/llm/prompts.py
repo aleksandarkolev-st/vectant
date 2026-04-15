@@ -2936,23 +2936,277 @@ receives the OLD pointer so it can migrate fields if the struct layout changed.
 
 # HOST RUNNER GENERATION
 
-You REWRITE the user's main() into host_runner.cpp. The host runner must:
+You REWRITE the user's main() into host_runner.cpp. The host runner
+owns the window, the render loop, dlopen of libcore.so / libgui.so,
+AND a stdin command loop that the Synthi worker uses to hot-swap
+modules without restarting the process. State must survive reloads.
+
+## Lifecycle requirements (MUST satisfy all)
 
 1. Keep window/event init code VERBATIM from the user's main()
-   (preserve title, size, flags, renderer creation)
-2. Replace logic/render calls with dlsym-resolved calls to
-   core_on_update / gui_on_render
-3. Own the present/swap/flush call at the end of each frame
-4. dlopen("./libcore.so", RTLD_NOW) and dlopen("./libgui.so", RTLD_NOW) on startup
-5. dlsym the lifecycle functions; store function pointers
-6. Look up app_state via dlsym (or call a getter); stash the AppState*
-7. Call core_on_load(nullptr) and gui_on_load(nullptr, window_ptr, nullptr)
-8. Per frame: core_on_update(&app_state), gui_on_render(&app_state), present/swap
-9. Per event: core_on_event(&app_state, &event)
-10. On exit: gui_cleanup, core_on_unload, dlclose, destroy window
+   (preserve title, size, flags, renderer creation — same values,
+   same calls, just moved into host_runner.cpp).
+2. Open `./libcore.so` and `./libgui.so` on startup via dlopen
+   (these are relative-path SYMLINKS the worker maintains; each
+   rebuild repoints them to the latest timestamped .so).
+3. dlsym the lifecycle functions and the `app_state` global from
+   each .so; store function pointers and the state pointer.
+4. Per-frame order inside the main loop (STRICT):
+       a. Drain stdin command queue (see command protocol below).
+       b. Poll events, dispatch each to core_on_event(state, &evt).
+       c. core_on_update(state_ptr).
+       d. gui_on_render(state_ptr).
+       e. Present/swap/flush for your backend.
+       f. Frame pacing (SDL_Delay or equivalent; ~16ms for 60fps).
+5. On exit: gui_cleanup, core_on_unload, dlclose both libs,
+   destroy window, tear down library.
 
-The user's main() is COMPLETELY REMOVED from core.cpp and gui.cpp.
-It lives (rewritten) in host_runner.cpp only.
+## STDIN command protocol (text, line-delimited)
+
+The Synthi worker writes commands to the host_runner's stdin,
+one command per line, on every rebuild:
+
+    set_session <sid>        — Host KV session hook. Safe to ignore
+                               in the MVP; log+continue.
+    load core <abs-path>     — Hot reload libcore.so. See sequence.
+    load gui  <abs-path>     — Hot reload libgui.so.  See sequence.
+    quit                     — Break main loop, clean up, exit 0.
+    <anything else>          — Log and ignore (never abort).
+
+The command loop MUST run on a separate reader thread so the main
+render loop is never blocked on stdin. The reader pushes strings
+into a mutex-protected queue; the main loop drains and processes
+the queue at the TOP of each frame — never mid-render. This is
+the only place where dlopen/dlclose happens.
+
+EOF on stdin (worker closed its write end) = treat as `quit`.
+
+## Reload sequence (ORDERING IS LOAD-BEARING)
+
+When a `load core <abs-path>` command arrives, the host_runner
+MUST execute the following sequence and in this exact order:
+
+    Phase 1: dlopen(new_path, RTLD_NOW | RTLD_LOCAL)
+             ↳ NEW is now mapped; OLD still mapped too.
+    Phase 2: dlsym core_on_load / core_on_update / core_on_event /
+             core_on_unload / app_state from NEW handle.
+             ↳ If any required symbol is missing, dlclose NEW and
+               keep running with OLD (print an error to stderr).
+    Phase 3: Call new_core_on_load(OLD_app_state_ptr).
+             ↳ CRITICAL: OLD is still mapped here, so OLD_app_state_ptr
+               is still a valid pointer. The new core.cpp reads
+               prev_state's fields and copies them into its OWN
+               static app_state (see STATE OWNERSHIP above).
+    Phase 4: Atomically swap the stored core lib handle + function
+             pointers + app_state pointer to the NEW ones.
+    Phase 5: (optional) Call OLD core_on_unload(OLD_app_state_ptr).
+    Phase 6: dlclose OLD handle.
+
+`load gui <abs-path>` follows the same 6-phase pattern with the
+gui symbols (gui_on_load / gui_on_render / gui_cleanup).
+
+If Phase 1 or Phase 2 fails, the OLD module stays live. Never
+dlclose OLD unless a NEW replacement successfully loaded AND the
+new on_load returned.
+
+## Reference implementation (SDL2) — COPY THIS STRUCTURE
+
+This is a complete, compiled, tested reference for the SDL2 path.
+For non-SDL2 backends (GLFW / raylib / sokol / SFML), keep the
+stdin reader, command queue, dispatch, and reload sequence UNCHANGED
+— only replace the window/renderer/event-poll/present calls with
+your library's equivalents. Do not invent a different protocol.
+
+```cpp
+// host_runner.cpp — owns window + module reload + stdin protocol
+#include <SDL2/SDL.h>      // CUSTOMIZE: your backend's main header
+#include <dlfcn.h>
+#include <stdio.h>
+#include <string.h>
+#include <pthread.h>
+#include <string>
+#include <vector>
+#include <mutex>
+#include "shared.h"
+
+typedef void (*core_on_load_fn)(void*);
+typedef void (*core_on_update_fn)(void*);
+typedef void (*core_on_event_fn)(void*, void*);
+typedef void (*core_on_unload_fn)(void*);
+typedef void (*gui_on_load_fn)(void*, void*, void*);
+typedef void (*gui_on_render_fn)(void*);
+typedef void (*gui_cleanup_fn)(void*);
+
+struct ModuleSlot {
+    void* lib = nullptr;
+    AppState* app_state_ptr = nullptr;
+    core_on_load_fn   core_load   = nullptr;
+    core_on_update_fn core_update = nullptr;
+    core_on_event_fn  core_event  = nullptr;
+    core_on_unload_fn core_unload = nullptr;
+    gui_on_load_fn    gui_load    = nullptr;
+    gui_on_render_fn  gui_render  = nullptr;
+    gui_cleanup_fn    gui_cleanup = nullptr;
+};
+static ModuleSlot g_core, g_gui;
+
+static std::mutex g_cmd_mutex;
+static std::vector<std::string> g_cmd_queue;
+static volatile bool g_quit_requested = false;
+
+static void* stdin_reader_thread(void*) {
+    char buf[4096];
+    while (fgets(buf, sizeof(buf), stdin)) {
+        size_t n = strlen(buf);
+        while (n > 0 && (buf[n-1]=='\\n' || buf[n-1]=='\\r')) buf[--n]='\\0';
+        if (n == 0) continue;
+        std::lock_guard<std::mutex> lock(g_cmd_mutex);
+        g_cmd_queue.emplace_back(buf, n);
+    }
+    std::lock_guard<std::mutex> lock(g_cmd_mutex);
+    g_cmd_queue.emplace_back("quit");
+    return nullptr;
+}
+
+static bool load_core(const char* path) {
+    fprintf(stderr, "[host_runner] load core: %s\\n", path);
+    void* new_lib = dlopen(path, RTLD_NOW | RTLD_LOCAL);
+    if (!new_lib) { fprintf(stderr, "[host_runner] dlopen: %s\\n", dlerror()); return false; }
+    auto new_load   = (core_on_load_fn)   dlsym(new_lib, "core_on_load");
+    auto new_update = (core_on_update_fn) dlsym(new_lib, "core_on_update");
+    auto new_event  = (core_on_event_fn)  dlsym(new_lib, "core_on_event");
+    auto new_unload = (core_on_unload_fn) dlsym(new_lib, "core_on_unload");
+    auto new_state  = (AppState*)         dlsym(new_lib, "app_state");
+    if (!new_load || !new_update || !new_state) {
+        fprintf(stderr, "[host_runner] core.so missing symbols\\n");
+        dlclose(new_lib); return false;
+    }
+    // Phase 3: call new on_load with OLD state pointer (old still mapped).
+    void* prev = g_core.app_state_ptr;
+    new_load(prev);
+    // Phase 4: atomic swap.
+    void* old_lib = g_core.lib;
+    core_on_unload_fn old_unload = g_core.core_unload;
+    void* old_state = g_core.app_state_ptr;
+    g_core.lib           = new_lib;
+    g_core.app_state_ptr = new_state;
+    g_core.core_load     = new_load;
+    g_core.core_update   = new_update;
+    g_core.core_event    = new_event;
+    g_core.core_unload   = new_unload;
+    // Phase 5 + 6: optional old on_unload, then dlclose old.
+    if (old_lib && old_unload && old_state) old_unload(old_state);
+    if (old_lib) dlclose(old_lib);
+    return true;
+}
+
+static bool load_gui(const char* path, void* renderer) {
+    fprintf(stderr, "[host_runner] load gui: %s\\n", path);
+    void* new_lib = dlopen(path, RTLD_NOW | RTLD_LOCAL);
+    if (!new_lib) { fprintf(stderr, "[host_runner] dlopen: %s\\n", dlerror()); return false; }
+    auto new_load    = (gui_on_load_fn)   dlsym(new_lib, "gui_on_load");
+    auto new_render  = (gui_on_render_fn) dlsym(new_lib, "gui_on_render");
+    auto new_cleanup = (gui_cleanup_fn)   dlsym(new_lib, "gui_cleanup");
+    if (!new_load || !new_render) {
+        fprintf(stderr, "[host_runner] gui.so missing symbols\\n");
+        dlclose(new_lib); return false;
+    }
+    void* prev = g_gui.app_state_ptr;
+    new_load(prev, renderer, nullptr);
+    void* old_lib = g_gui.lib;
+    gui_cleanup_fn old_cleanup = g_gui.gui_cleanup;
+    void* old_state = g_gui.app_state_ptr;
+    g_gui.lib           = new_lib;
+    g_gui.app_state_ptr = g_core.app_state_ptr; // gui operates on core's state
+    g_gui.gui_load      = new_load;
+    g_gui.gui_render    = new_render;
+    g_gui.gui_cleanup   = new_cleanup;
+    if (old_lib && old_cleanup && old_state) old_cleanup(old_state);
+    if (old_lib) dlclose(old_lib);
+    return true;
+}
+
+static bool dispatch(const std::string& line, void* renderer) {
+    if (line == "quit") { g_quit_requested = true; return true; }
+    if (line.rfind("set_session ", 0) == 0) return true;
+    if (line.rfind("load core ", 0) == 0)
+        return load_core(line.c_str() + strlen("load core "));
+    if (line.rfind("load gui ", 0) == 0)
+        return load_gui(line.c_str() + strlen("load gui "), renderer);
+    fprintf(stderr, "[host_runner] unknown cmd: %s\\n", line.c_str());
+    return false;
+}
+
+int main(int argc, char** argv) {
+    // ── CUSTOMIZE FOR BACKEND ── SDL2 init/window/renderer ──
+    if (SDL_Init(SDL_INIT_VIDEO) < 0) return 1;
+    SDL_Window* win = SDL_CreateWindow(
+        "HMR Test",  // <-- preserve user's title verbatim
+        SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED,
+        800, 600,    // <-- preserve user's size verbatim
+        0);
+    SDL_Renderer* r = SDL_CreateRenderer(win, -1, SDL_RENDERER_ACCELERATED);
+
+    // Startup dlopen via symlinks — so the first frame has content
+    // before the worker's first `load` command arrives.
+    load_core("./libcore.so");
+    load_gui("./libgui.so", r);
+
+    pthread_t reader_tid;
+    pthread_create(&reader_tid, nullptr, stdin_reader_thread, nullptr);
+    pthread_detach(reader_tid);
+
+    while (!g_quit_requested) {
+        // 1. Drain stdin queue (reload happens here if at all)
+        std::vector<std::string> local;
+        { std::lock_guard<std::mutex> lock(g_cmd_mutex); local.swap(g_cmd_queue); }
+        for (const auto& c : local) { dispatch(c, r); if (g_quit_requested) break; }
+        if (g_quit_requested) break;
+
+        // 2. Poll events → core_on_event
+        SDL_Event e;
+        while (SDL_PollEvent(&e)) {
+            if (e.type == SDL_QUIT) { g_quit_requested = true; break; }
+            if (g_core.core_event && g_core.app_state_ptr)
+                g_core.core_event(g_core.app_state_ptr, &e);
+        }
+        if (g_quit_requested) break;
+
+        // 3. Update + render + present
+        if (g_core.core_update && g_core.app_state_ptr)
+            g_core.core_update(g_core.app_state_ptr);
+        if (g_gui.gui_render && g_core.app_state_ptr)
+            g_gui.gui_render(g_core.app_state_ptr);
+        SDL_RenderPresent(r);
+        SDL_Delay(16);
+
+        if (g_core.app_state_ptr && !g_core.app_state_ptr->running)
+            g_quit_requested = true;
+    }
+
+    if (g_gui.gui_cleanup && g_gui.app_state_ptr) g_gui.gui_cleanup(g_gui.app_state_ptr);
+    if (g_core.core_unload && g_core.app_state_ptr) g_core.core_unload(g_core.app_state_ptr);
+    if (g_gui.lib)  dlclose(g_gui.lib);
+    if (g_core.lib) dlclose(g_core.lib);
+    SDL_DestroyRenderer(r);
+    SDL_DestroyWindow(win);
+    SDL_Quit();
+    return 0;
+}
+```
+
+The reference above is ~250 lines and compiles with:
+    g++ -std=c++17 -g host_runner.cpp -I. -o host_runner \\
+        -lSDL2 -ldl -lpthread -rdynamic
+
+The worker adds `-pthread` and `-ldl` automatically for per-project
+runners, so you only need to list your library's link flags in
+`runner_link_flags` (e.g. `-lSDL2` / `-lglfw` / `-lraylib`).
+
+## The user's main() is COMPLETELY REMOVED from core.cpp and gui.cpp
+
+It lives (rewritten) in host_runner.cpp only. core.cpp and gui.cpp
+export the lifecycle functions above; they do not have `int main()`.
 
 # FORBIDDEN PATTERNS (per module)
 
