@@ -1169,6 +1169,13 @@ pub async fn handle_compile_request(
         eprintln!("[HMR] host_runner binary: {}", p);
     }
 
+    // ULTRAPLAN Phase 9e — emit cache hit-rate snapshot after every
+    // compile so operators can watch the rate live. Cheap: atomic
+    // loads only, no lock acquisition. Prints nothing on the first
+    // compile of a session (all zeros) and starts reporting from
+    // the second compile onward.
+    ctx.incremental_cache.log_hit_rate_snapshot();
+
     // Manual logging
     debug_log!("[Compile] Step: Compilation finished");
 
