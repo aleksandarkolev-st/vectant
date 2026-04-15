@@ -16,6 +16,7 @@
 // migrated to use the trait. Suppressed here; integration tests
 // in `tests/phase10a_*` exercise the public surface.
 
+pub mod glfw_backend;
 pub mod sdl2_backend;
 
 #[cfg(test)]
