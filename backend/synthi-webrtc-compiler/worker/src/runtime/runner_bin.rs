@@ -1149,9 +1149,36 @@ fn main() {
                 }
                 "quit" => {
                     debug_log!("[Runner] Quitting.");
+                    // ULTRAPLAN Lightning Phase 10g.3c — route
+                    // shutdown through the WindowBackend trait when
+                    // the trait path was taken (runtime_handle is
+                    // Some). Calls destroy_window with the stored
+                    // handle, then shutdown to release any dlopen'd
+                    // library (critical for GLFW/raylib/SFML future
+                    // wiring; a no-op for SDL2 since sdl_defs.rs
+                    // static-links libSDL2).
+                    //
+                    // Fallback path (no runtime_handle) still calls
+                    // SDL_Quit directly, preserving pre-10g.2
+                    // behavior for BYOR / sidecar-less runs.
                     #[cfg(target_os = "linux")]
-                    unsafe {
-                        SDL_Quit();
+                    {
+                        use worker::runtime::window_backend::WindowBackend;
+                        let handled_via_trait = if let (Some(handle), Some(selected)) = (
+                            runtime_handle.take(),
+                            selected_runtime_backend.as_mut(),
+                        ) {
+                            selected.backend.destroy_window(handle);
+                            selected.backend.shutdown();
+                            true
+                        } else {
+                            false
+                        };
+                        if !handled_via_trait {
+                            unsafe {
+                                SDL_Quit();
+                            }
+                        }
                     }
                     return;
                 }
