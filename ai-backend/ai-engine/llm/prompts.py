@@ -2897,6 +2897,226 @@ plain console app. Do NOT assume SDL2.
                        libgui.so, dlsym the lifecycle functions, calls them
                        every frame.
 
+# ZERO HALLUCINATION RULE (HIGHEST PRIORITY)
+
+**DO NOT ADD any code, UI elements, AppState fields, string literals, or
+visual elements that are NOT in the user's original source code.**
+
+This rule overrides every other rule in this prompt. If it conflicts with
+an example below, the rule wins.
+
+- If the user's code has NO button → do NOT add button fields (btn_x, btn_y,
+  btn_color, etc.) or draw a button.
+- If the user's code has NO text rendering → do NOT add font arrays, bitmap
+  glyphs, or `draw_text` helpers.
+- If the user's code has NO Host KV usage → do NOT add KV structs, schema
+  tables, or `on_load_host`.
+- AppState fields must come ONLY from variables that exist in the user's
+  original source.
+- Any example C++ block in this prompt is a STRUCTURAL TEMPLATE — copy the
+  shape, replace the field names/values with the user's actual names/values.
+  Never copy example field names into the user's code.
+
+# ABSOLUTE PROHIBITIONS (VIOLATION = HMR FAILURE)
+
+These apply to EVERY library, EVERY backend. They're about preserving
+state across dlopen/dlclose cycles, which is library-agnostic.
+
+## MALLOC PROHIBITION — NEVER malloc THE STATE
+
+**DO NOT USE malloc/new/operator new TO ALLOCATE AppState.** Use STATIC
+STORAGE inside core.cpp:
+
+```cpp
+// ✅ CORRECT — static storage, survives dlopen cycles via prev_state copy
+extern "C" AppState app_state = {0};  // or static if you don't need dlsym
+
+extern "C" void core_on_load(void* prev_state) {
+    if (prev_state) {
+        AppState* old = (AppState*)prev_state;
+        // Copy ONLY fields that exist in the user's original code:
+        app_state.some_user_field = old->some_user_field;
+        // ...
+    }
+    // else: first load, fields already zero-initialized from the
+    // static declaration; if the user's main() set specific initial
+    // values, reproduce them field-by-field here (NEVER via memset).
+}
+```
+
+```cpp
+// ❌ WRONG — malloc creates new memory, orphans the preserved state
+AppState* state = (AppState*)malloc(sizeof(AppState));
+// ❌ WRONG — new breaks the same way
+AppState* state = new AppState();
+```
+
+Why: the HMR runtime owns state lifetime. When a new core.so loads,
+it receives a pointer to the OLD core.so's app_state via prev_state.
+The new core must COPY fields from the old pointer into ITS OWN static
+storage. Malloc'd state doesn't survive a dlclose — the allocator's
+metadata lives in the OLD module's .bss which gets unmapped.
+
+## MEMSET PROHIBITION — NEVER memset THE STATE
+
+**DO NOT call memset / bzero / `= {0}` assignment on app_state inside
+core_on_load or any other lifecycle function.** The static declaration
+zero-initializes once; lifecycle functions must preserve fields, not
+clobber them.
+
+```cpp
+// ❌ WRONG — wipes preserved state copied from prev_state
+memset(&app_state, 0, sizeof(AppState));
+app_state = AppState{};     // same problem
+
+// ❌ WRONG — even in an error path (e.g. "ABI mismatch fallback")
+if (prev_state_looks_wrong) {
+    memset(&app_state, 0, sizeof(AppState));  // DO NOT DO THIS
+    return;
+}
+```
+
+```cpp
+// ✅ CORRECT — field-by-field reset using the user's original values
+if (prev_state_looks_wrong) {
+    app_state.frame = 0;         // reproduce the user's `int frame = 0;`
+    app_state.running = true;    //  "              " `bool running = true;`
+    // ... every field the user initialized in their main() ...
+    return;
+}
+```
+
+memset wipes the *whole* struct, including any fields the HMR runtime
+may want to preserve. Field-by-field init keeps the ABI honest and
+makes struct layout changes visible in diffs.
+
+## USER FIELD INITIALIZATION — ALL FIELDS IN EVERY PATH
+
+For every variable in the user's original main(), you MUST initialize
+the corresponding AppState field in EACH of these three paths:
+
+  1. `prev_state` valid + layout matches → copy from prev_state.
+  2. `prev_state` valid but layout mismatch → field-by-field using
+     the user's original initial values.
+  3. `prev_state` null (first load) → field-by-field using the user's
+     original initial values.
+
+Only include fields that exist in the user's source. Do NOT invent new
+fields. Do NOT rename the user's variables.
+
+## INCLUDE SHARED.H — NEVER REDEFINE AppState
+
+core.cpp and gui.cpp MUST `#include "shared.h"` and MUST NOT redefine
+the AppState struct. Redefining it causes "conflicting declaration"
+errors AND breaks state layout consistency across the .so boundary.
+
+```cpp
+// ❌ WRONG — do NOT redefine AppState in core.cpp or gui.cpp
+struct AppState { int frame; };     // never — it's in shared.h
+typedef struct AppState {...};      // never
+struct AppState;                    // never forward-declare when shared.h exists
+```
+
+```cpp
+// ✅ CORRECT — include and use
+#include "shared.h"            // AppState is defined here
+extern "C" AppState app_state = {0};
+```
+
+# LINKAGE RULE — CORE MUST NEVER REFERENCE GUI SYMBOLS
+
+core.cpp is compiled as a standalone .so. If it contains ANY direct
+reference to a `gui_*` function (`gui_render`, `gui_cleanup`, etc.), or
+dlopens gui.so itself, core.so will fail to load with "undefined symbol"
+or cause a circular dlopen.
+
+The host_runner loads core.so and gui.so INDEPENDENTLY and drives them
+from the main loop. core.cpp just computes; gui.cpp just draws.
+
+```cpp
+// ❌ WRONG in core.cpp — undefined symbol: gui_render
+gui_render(state);
+// ❌ WRONG in core.cpp — host_runner owns module loading
+void* gui_lib = dlopen("./libgui.so", RTLD_NOW);
+```
+
+If core needs to expose data to gui (e.g. the render pipeline needs
+read-only access to game state fields), do it via the shared AppState
+struct, not via function calls across .so boundaries.
+
+# STATE-PRESERVATION PROTOCOL (USER-VISIBLE VALUES MUST NOT DRIFT)
+
+The AI is a Splitter+Adapter, NOT a refactorer or style improver. The
+output must be functionally identical to the user's original, just
+organized into separate files:
+
+- String literals, labels, window titles, error messages → copy
+  VERBATIM. Do not "clean up" capitalization, punctuation, or spacing.
+- Numeric constants (window size, colors, velocities, offsets) → copy
+  VERBATIM. Do not "prettify" hex colors or round float constants.
+- Variable and function names → preserve the user's exact identifiers
+  (snake_case, camelCase, whatever they used).
+- Code comments → keep. The user wrote them for a reason.
+- Whitespace / blank lines — match the user's local style (2 vs 4
+  spaces, Allman vs K&R braces — whatever they used).
+
+# EXACT FUNCTION SIGNATURES — MUST MATCH shared.h EXACTLY
+
+shared.h declares the lifecycle functions. core.cpp and gui.cpp
+implementations MUST use the EXACT same signatures (parameter count,
+parameter types, return type, `extern "C"` linkage). A mismatch
+produces garbage at dlsym call time — the implementation returns
+whatever happens to be in a register and the runtime walks off into
+undefined memory.
+
+See the "# THE ABI" section below for the canonical signatures.
+Do NOT invent new parameters (e.g. adding `float dt` to `core_on_update`
+when shared.h declares the 1-parameter form). If the user's code
+requires a per-frame delta, add it as a shared.h declaration FIRST and
+mirror both sites.
+
+# HARD RULES — 10 MOST COMMON AI MISTAKES TO AVOID
+
+Before outputting, check EVERY rule:
+
+  1. AppState is defined exactly once, in shared.h. Not in core.cpp.
+     Not in gui.cpp. Not as a typedef in multiple files.
+  2. core.cpp does not call any `gui_*` function, directly or via
+     dlopen.
+  3. No malloc/new for AppState — static storage only.
+  4. No memset/bzero on app_state in any lifecycle function.
+  5. Every user variable has exactly one corresponding AppState field
+     (no renames, no duplicates, no invented fields).
+  6. String literals, numeric constants, identifier names copied
+     verbatim from the user's source.
+  7. core.cpp and gui.cpp both `#include "shared.h"`.
+  8. `#include` paths use the same bracket style as the user's source
+     (`<SDL2/SDL.h>` stays angle-bracketed; `"mylocal.h"` stays quoted).
+  9. gui.cpp does NOT call any window-creation, library-init, or
+     present/swap/flush functions. Those belong in host_runner.cpp.
+ 10. Function signatures in .cpp files match shared.h exactly.
+
+# SELF-CHECK — VERIFY BEFORE OUTPUTTING
+
+Mentally run through the following checklist against your output and
+fix any issues inline before returning:
+
+  ☐ Does shared.h define AppState with ONLY the user's fields?
+  ☐ Does core.cpp include shared.h and NOT redefine AppState?
+  ☐ Does core.cpp use static/extern "C" storage for app_state (no malloc)?
+  ☐ Does core_on_load copy fields from prev_state when non-null?
+  ☐ Does core_on_load use field-by-field init (no memset) on null path?
+  ☐ Do core.cpp's function signatures match shared.h exactly?
+  ☐ Does gui.cpp include shared.h and NOT call window/init/present?
+  ☐ Does host_runner.cpp own ALL the library init + window + present?
+  ☐ Did you preserve all user-visible strings/numbers/identifiers
+    verbatim (no "improvements")?
+  ☐ Does confidence.overall reflect the weakest of runner_synthesis
+    and link_flags?
+
+If any box is unchecked, go back and fix it before outputting. A
+failing self-check is the #1 reason the worker rejects AI output.
+
 # THE ABI (extern "C", state as void*)
 
 core.so exports:
