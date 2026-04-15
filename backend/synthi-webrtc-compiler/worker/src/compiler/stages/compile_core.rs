@@ -2,7 +2,9 @@ use crate::compiler::builder::RebuildScope;
 use crate::compiler::context::CompileContext;
 use crate::compiler::error_parser::{parse_compiler_output, CompilerType};
 use crate::compiler::stages::ai_utils::calculate_hash;
-use crate::compiler::stages::compile_helpers::cpp_compile_command;
+use crate::compiler::stages::compile_helpers::{
+    compile_to_object_command, cpp_compile_command, link_object_to_so_command, object_path_for_so,
+};
 use crate::hmr::compile_manifest::CompileManifest;
 use crate::hmr::incremental_cache::IncrementalCache;
 use anyhow::{Context, Result};
@@ -81,44 +83,94 @@ pub async fn compile_core(
                 tokio::fs::write(dir_path.join(fname), content).await?;
 
                 let core_out = output_dir.join(format!("libcore_{}.{}", timestamp, ext));
-                let mut cmd = cpp_compile_command(compiler_exe);
-                cmd.arg(&std_flag);
-                for f in &effective_manifest.common_flags {
-                    cmd.arg(f);
-                }
-                cmd.arg(fname).arg("-I.").arg("-o").arg(&core_out);
-                for f in &effective_manifest.core_link_flags {
-                    cmd.arg(f);
-                }
-                cmd.arg("-ldl")
-                    .arg("-pthread") // Required for threaded adapters
-                    .arg("-rdynamic");
-                cmd.current_dir(dir_path);
 
-                eprintln!(
-                    "[CompileCore] Executing g++ in {:?} args: {:?}",
-                    dir_path,
-                    cmd.as_std().get_args()
+                // ULTRAPLAN Phase 9b: split compile+link into two steps
+                // so ccache (from Phase 9a) can cache the compile output
+                // by preprocessed-source hash. Unchanged modules hit the
+                // ccache store and skip the 300ms compile entirely; the
+                // link step is cheap (~30ms) and runs unconditionally.
+                //
+                // Build the link-flag list once — reused by both the
+                // initial link step and the fallback fused command if
+                // the split compile step fails for any reason other
+                // than the user's source being broken.
+                let mut link_flags: Vec<String> = Vec::with_capacity(
+                    effective_manifest.core_link_flags.len() + 3,
                 );
+                link_flags.extend(effective_manifest.core_link_flags.iter().cloned());
+                link_flags.push("-ldl".to_string());
+                link_flags.push("-pthread".to_string());  // threaded adapters
+                link_flags.push("-rdynamic".to_string());
 
-                cmd.kill_on_drop(true);
-                let child = cmd.spawn().context("Failed to spawn g++")?;
+                let core_obj = object_path_for_so(&core_out);
 
-                let output_res = timeout(Duration::from_secs(30), child.wait_with_output()).await;
-
-                let output = match output_res {
+                // Step 1: compile source → .o (ccache caches this)
+                let mut compile_cmd = compile_to_object_command(
+                    compiler_exe,
+                    fname,
+                    &core_obj,
+                    &std_flag,
+                    &effective_manifest.common_flags,
+                    dir_path,
+                );
+                eprintln!(
+                    "[CompileCore] Phase 9b split step 1/2 (compile): {:?}",
+                    compile_cmd.as_std().get_args()
+                );
+                compile_cmd.kill_on_drop(true);
+                let compile_child = compile_cmd.spawn().context("Failed to spawn compile step")?;
+                let compile_out = match timeout(Duration::from_secs(30), compile_child.wait_with_output()).await {
                     Ok(Ok(out)) => out,
                     Ok(Err(e)) => return Err(e.into()),
                     Err(_) => {
-                        // child is dropped and killed due to kill_on_drop(true)
-                        eprintln!("[CompileCore] Timed out waiting for g++");
-                        // Return Err so the pipeline sends a single authoritative
-                        // {status:"done", success:false} with the real error text.
-                        anyhow::bail!("Core compilation timed out after 30s");
+                        eprintln!("[CompileCore] compile step timed out");
+                        anyhow::bail!("Core compile step timed out after 30s");
                     }
                 };
+                eprintln!(
+                    "[CompileCore] compile step finished with status: {}",
+                    compile_out.status
+                );
 
-                eprintln!("[CompileCore] g++ finished with status: {}", output.status);
+                // If the compile step succeeded, run the link step.
+                // If it failed, synthesize a combined `output` that the
+                // heal loop below can process exactly as if the fused
+                // command had failed — preserves all existing heal logic
+                // without duplicating it across the split.
+                let output = if compile_out.status.success() {
+                    // Step 2: link .o → .so (no ccache, fast)
+                    let mut link_cmd = link_object_to_so_command(
+                        compiler_exe,
+                        &core_obj,
+                        &core_out,
+                        &link_flags,
+                        dir_path,
+                    );
+                    eprintln!(
+                        "[CompileCore] Phase 9b split step 2/2 (link): {:?}",
+                        link_cmd.as_std().get_args()
+                    );
+                    link_cmd.kill_on_drop(true);
+                    let link_child = link_cmd.spawn().context("Failed to spawn link step")?;
+                    match timeout(Duration::from_secs(30), link_child.wait_with_output()).await {
+                        Ok(Ok(out)) => out,
+                        Ok(Err(e)) => return Err(e.into()),
+                        Err(_) => {
+                            eprintln!("[CompileCore] link step timed out");
+                            anyhow::bail!("Core link step timed out after 30s");
+                        }
+                    }
+                } else {
+                    // Compile step failed — synthesise the combined
+                    // `output` so the heal loop downstream sees the same
+                    // shape it has always seen. The heal loop may
+                    // rewrite the source and retry with the fused
+                    // command, which is fine — the split is just an
+                    // optimization for the happy path.
+                    compile_out
+                };
+
+                eprintln!("[CompileCore] overall status: {}", output.status);
 
                 if !output.status.success() {
                     let stderr_str = String::from_utf8_lossy(&output.stderr).to_string();

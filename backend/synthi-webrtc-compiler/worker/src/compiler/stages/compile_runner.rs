@@ -28,7 +28,10 @@
 use crate::compiler::context::CompileContext;
 use crate::compiler::error_parser::{parse_compiler_output, CompilerType};
 use crate::compiler::stages::ai_utils::calculate_hash;
-use crate::compiler::stages::compile_helpers::cpp_compile_command;
+use crate::compiler::stages::compile_helpers::{
+    compile_to_object_command, cpp_compile_command, link_object_to_exec_command,
+    object_path_for_exec,
+};
 use crate::hmr::compile_manifest::CompileManifest;
 use crate::hmr::incremental_cache::IncrementalCache;
 use anyhow::{Context, Result};
@@ -149,46 +152,85 @@ pub async fn compile_runner(
     // artifacts so cleanup is uniform.
     let runner_out = output_dir.join(format!("host_runner_{}", timestamp));
 
-    let mut cmd = cpp_compile_command(compiler_exe);
-    cmd.arg(&std_flag);
-    for f in &runner_compile_flags {
-        cmd.arg(f);
-    }
-    cmd.arg(HOST_RUNNER_FILENAME)
-        .arg("-I.")
-        .arg("-o")
-        .arg(&runner_out);
-    for f in &effective_manifest.runner_link_flags {
-        cmd.arg(f);
-    }
-    cmd.arg("-ldl").arg("-rdynamic");
-    cmd.current_dir(dir_path);
-
-    eprintln!(
-        "[CompileRunner] Executing {} in {:?} args: {:?}",
-        compiler_exe,
-        dir_path,
-        cmd.as_std().get_args()
+    // ULTRAPLAN Phase 9b: two-step split (see compile_core.rs for the
+    // rationale). compile_runner produces an EXECUTABLE (not a .so),
+    // so the link step uses `link_object_to_exec_command` instead of
+    // the shared-library helper — no `-shared` flag.
+    //
+    // runner_compile_flags already has -shared/-fPIC stripped at the
+    // top of this function (Phase 3 quirk: executables can't carry
+    // those flags), so we pass it verbatim through the helper which
+    // will strip -shared again as a no-op safety net.
+    let mut link_flags: Vec<String> = Vec::with_capacity(
+        effective_manifest.runner_link_flags.len() + 2,
     );
+    link_flags.extend(effective_manifest.runner_link_flags.iter().cloned());
+    link_flags.push("-ldl".to_string());
+    link_flags.push("-rdynamic".to_string());
 
-    cmd.kill_on_drop(true);
-    let child = cmd
+    let runner_obj = object_path_for_exec(&runner_out);
+
+    // Step 1: compile .cpp → .o (ccache caches this)
+    let mut compile_cmd = compile_to_object_command(
+        compiler_exe,
+        HOST_RUNNER_FILENAME,
+        &runner_obj,
+        &std_flag,
+        &runner_compile_flags,
+        dir_path,
+    );
+    eprintln!(
+        "[CompileRunner] Phase 9b split step 1/2 (compile): {:?}",
+        compile_cmd.as_std().get_args()
+    );
+    compile_cmd.kill_on_drop(true);
+    let compile_child = compile_cmd
         .spawn()
-        .context(format!("Failed to spawn {}", compiler_exe))?;
-
-    let output_res = timeout(Duration::from_secs(30), child.wait_with_output()).await;
-
-    let output = match output_res {
+        .context(format!("Failed to spawn {} compile step", compiler_exe))?;
+    let compile_out = match timeout(Duration::from_secs(30), compile_child.wait_with_output()).await {
         Ok(Ok(out)) => out,
         Ok(Err(e)) => return Err(e.into()),
         Err(_) => {
-            eprintln!("[CompileRunner] Timed out waiting for {}", compiler_exe);
-            anyhow::bail!("Runner compilation timed out after 30s");
+            eprintln!("[CompileRunner] compile step timed out");
+            anyhow::bail!("Runner compile step timed out after 30s");
         }
+    };
+    eprintln!(
+        "[CompileRunner] compile step finished with status: {}",
+        compile_out.status
+    );
+
+    // Step 2 (only if step 1 succeeded): link .o → executable.
+    let output = if compile_out.status.success() {
+        let mut link_cmd = link_object_to_exec_command(
+            compiler_exe,
+            &runner_obj,
+            &runner_out,
+            &link_flags,
+            dir_path,
+        );
+        eprintln!(
+            "[CompileRunner] Phase 9b split step 2/2 (link): {:?}",
+            link_cmd.as_std().get_args()
+        );
+        link_cmd.kill_on_drop(true);
+        let link_child = link_cmd
+            .spawn()
+            .context(format!("Failed to spawn {} link step", compiler_exe))?;
+        match timeout(Duration::from_secs(30), link_child.wait_with_output()).await {
+            Ok(Ok(out)) => out,
+            Ok(Err(e)) => return Err(e.into()),
+            Err(_) => {
+                eprintln!("[CompileRunner] link step timed out");
+                anyhow::bail!("Runner link step timed out after 30s");
+            }
+        }
+    } else {
+        compile_out
     };
 
     eprintln!(
-        "[CompileRunner] {} finished with status: {}",
+        "[CompileRunner] {} overall status: {}",
         compiler_exe, output.status
     );
 

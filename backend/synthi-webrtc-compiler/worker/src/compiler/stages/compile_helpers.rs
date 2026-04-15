@@ -122,6 +122,180 @@ pub fn cpp_compile_command(compiler_exe: &str) -> Command {
     cmd
 }
 
+// ============================================================
+// ULTRAPLAN Phase 9b — Two-step compile+link split
+// ============================================================
+//
+// The traditional fused invocation is:
+//
+//     g++ <common_flags> source.cpp -o lib.so <link_flags>
+//
+// where `common_flags` includes `-shared -fPIC -g -gdwarf-4 ...` so
+// g++ does both compile and link in one shot. That's a single
+// process spawn (~300-600ms cold), but `ccache` from Phase 9a can't
+// cache it — ccache only caches compilations invoked with the `-c`
+// flag.
+//
+// Phase 9b splits the invocation into:
+//
+//   (1) ccache g++ <compile_flags> -c source.cpp -o source.o
+//   (2)        g++ -shared source.o -o lib.so <link_flags>
+//
+// Step 1 is ccache-wrapped, so unchanged modules hit the ccache
+// store and return the cached `.o` in ~5ms. Step 2 is a pure link
+// invocation — fast (~30ms) regardless of caching.
+//
+// Net cost model:
+//   - Cold compile (first session build):         ~330ms (was ~330ms fused — neutral)
+//   - Incremental compile with unchanged module:   ~35ms (was ~330ms — 10x faster)
+//   - Incremental compile with changed module:    ~330ms (was ~330ms — neutral)
+//
+// The win is specifically for the N-1 unchanged modules on any
+// compile where only 1 of 3 changed. Phase 9d's parallel dispatch
+// stacks with this: unchanged modules get ccache hits AND run in
+// parallel with the changed one.
+//
+// ─── Design choices ─────────────────────────────────────────────
+//
+// - `-shared` is stripped from common_flags at the compile step
+//   (it's a link-only flag; g++ rejects `-c` + `-shared`). Every
+//   other flag passes through transparently.
+// - `-fPIC` STAYS in the compile step — it's required for PIC
+//   object files, which ARE valid inputs to a shared-library link.
+// - The link step uses plain `system_command(compiler)` — no
+//   ccache wrap. ccache can't cache link outputs, so wrapping just
+//   adds a wasted process spawn.
+// - Callers pass the OBJECT output path; this helper doesn't
+//   derive it from the .so path. Callers know the timestamp and
+//   filename conventions they want.
+
+/// Build a compile-only g++ invocation that produces a .o file.
+///
+/// The resulting command is meant to be spawned, awaited, and checked
+/// for success. Callers chain it with `link_object_to_so_command` to
+/// produce the final .so. On ccache-enabled hosts, the compile step
+/// is transparently cached by ccache's preprocessed-source hash —
+/// callers never touch ccache directly.
+///
+/// Parameters:
+///   - `compiler_exe`: `g++`, `clang++`, etc. from manifest
+///   - `source_file`: filename relative to `workspace_dir` (e.g. `"core.cpp"`)
+///   - `object_out`: absolute path where the .o should land
+///   - `std_flag`: e.g. `"-std=c++17"`, pre-formatted by the caller
+///   - `common_flags`: manifest `common_flags` — `-shared` is stripped
+///     automatically; everything else passes through
+///   - `workspace_dir`: set as the command's cwd
+pub fn compile_to_object_command(
+    compiler_exe: &str,
+    source_file: &str,
+    object_out: &std::path::Path,
+    std_flag: &str,
+    common_flags: &[String],
+    workspace_dir: &std::path::Path,
+) -> Command {
+    let mut cmd = cpp_compile_command(compiler_exe);
+    cmd.arg(std_flag);
+    // -c: compile only, produce object file. Without this, ccache
+    // doesn't recognise the invocation as cacheable.
+    cmd.arg("-c");
+    // Strip `-shared` from compile-step flags — g++ rejects `-c`
+    // + `-shared` as mutually exclusive. `-fPIC` and all other
+    // common flags pass through transparently.
+    for f in common_flags {
+        if f != "-shared" {
+            cmd.arg(f);
+        }
+    }
+    cmd.arg(source_file).arg("-I.");
+    cmd.arg("-o").arg(object_out);
+    cmd.current_dir(workspace_dir);
+    cmd
+}
+
+/// Build a link-only g++ invocation that links object file(s) into
+/// a shared library. No ccache wrap — ccache can't cache link
+/// invocations, so wrapping just wastes a process spawn.
+///
+/// Parameters:
+///   - `compiler_exe`: same as `compile_to_object_command` (g++/clang++)
+///   - `object_file`: absolute path to the .o input
+///   - `so_out`: absolute path where the linked .so should land
+///   - `link_flags`: all link-step args — manifest `core_link_flags`
+///     / `gui_link_flags` / `runner_link_flags`, plus any hardcoded
+///     boilerplate like `-ldl -pthread -rdynamic`
+///   - `workspace_dir`: set as the command's cwd
+pub fn link_object_to_so_command(
+    compiler_exe: &str,
+    object_file: &std::path::Path,
+    so_out: &std::path::Path,
+    link_flags: &[String],
+    workspace_dir: &std::path::Path,
+) -> Command {
+    // Plain system_command (not cpp_compile_command) — the link step
+    // isn't cachable by ccache, so we skip the wrapper entirely to
+    // avoid the extra process spawn.
+    let mut cmd = crate::infra::utils::system_command(compiler_exe);
+    cmd.arg("-shared");
+    cmd.arg(object_file);
+    cmd.arg("-o").arg(so_out);
+    for f in link_flags {
+        cmd.arg(f);
+    }
+    cmd.current_dir(workspace_dir);
+    cmd
+}
+
+/// Derive the .o output path that corresponds to a given .so output
+/// path. Convention: `libfoo_<ts>.so` → `foo_<ts>.o`. The `.o` lives
+/// in the same directory as the `.so` so both are easy to clean up
+/// together.
+pub fn object_path_for_so(so_path: &std::path::Path) -> std::path::PathBuf {
+    // Strip the "lib" prefix if present and replace the .so extension
+    // with .o. Fallback: just swap the extension.
+    let stem = so_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("out");
+    let stem_no_lib = stem.strip_prefix("lib").unwrap_or(stem);
+    let parent = so_path.parent().unwrap_or(std::path::Path::new("."));
+    parent.join(format!("{}.o", stem_no_lib))
+}
+
+/// Build a link-only g++ invocation that links an object file into
+/// an EXECUTABLE (not a shared library). Mirrors
+/// `link_object_to_so_command` but omits `-shared` — used by
+/// `compile_runner` to produce the per-project host_runner binary.
+///
+/// Same rationale for no ccache wrap as `link_object_to_so_command`.
+pub fn link_object_to_exec_command(
+    compiler_exe: &str,
+    object_file: &std::path::Path,
+    exec_out: &std::path::Path,
+    link_flags: &[String],
+    workspace_dir: &std::path::Path,
+) -> Command {
+    let mut cmd = crate::infra::utils::system_command(compiler_exe);
+    cmd.arg(object_file);
+    cmd.arg("-o").arg(exec_out);
+    for f in link_flags {
+        cmd.arg(f);
+    }
+    cmd.current_dir(workspace_dir);
+    cmd
+}
+
+/// Derive the .o output path for an executable target. Convention:
+/// `host_runner_<ts>` → `host_runner_<ts>.o`. Same directory as the
+/// executable for uniform cleanup.
+pub fn object_path_for_exec(exec_path: &std::path::Path) -> std::path::PathBuf {
+    let stem = exec_path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("out");
+    let parent = exec_path.parent().unwrap_or(std::path::Path::new("."));
+    parent.join(format!("{}.o", stem))
+}
+
 fn is_cpp_compiler(program: &str) -> bool {
     // Tolerate bare names and absolute paths — the manifest's
     // Compiler enum returns "g++" / "clang++" today but the user

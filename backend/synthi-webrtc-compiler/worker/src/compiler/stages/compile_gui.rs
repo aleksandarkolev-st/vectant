@@ -2,7 +2,9 @@ use crate::compiler::builder::RebuildScope;
 use crate::compiler::context::CompileContext;
 use crate::compiler::error_parser::{parse_compiler_output, CompilerType};
 use crate::compiler::serialization_utils::calculate_hash;
-use crate::compiler::stages::compile_helpers::cpp_compile_command;
+use crate::compiler::stages::compile_helpers::{
+    compile_to_object_command, cpp_compile_command, link_object_to_so_command, object_path_for_so,
+};
 use crate::hmr::compile_manifest::CompileManifest;
 use crate::hmr::incremental_cache::IncrementalCache;
 use anyhow::{Context, Result};
@@ -95,43 +97,80 @@ pub async fn compile_gui(
                 tokio::fs::write(dir_path.join(fname), &content).await?;
 
                 let gui_out = output_dir.join(format!("libgui_{}.{}", timestamp, ext));
-                let mut cmd = cpp_compile_command(compiler_exe);
-                cmd.arg(&std_flag);
-                for f in &effective_manifest.common_flags {
-                    cmd.arg(f);
-                }
-                cmd.arg(fname).arg("-I.").arg("-o").arg(&gui_out);
-                if req_is_gui {
-                    for f in &effective_manifest.gui_link_flags {
-                        cmd.arg(f);
-                    }
-                }
-                cmd.arg("-ldl").arg("-rdynamic");
 
-                cmd.current_dir(dir_path);
-
-                eprintln!(
-                    "[CompileGUI] Executing g++ in {:?} args: {:?}",
-                    dir_path,
-                    cmd.as_std().get_args()
+                // ULTRAPLAN Phase 9b: two-step split (see compile_core.rs
+                // for rationale). Same pattern: compile via ccache, link
+                // directly. Link flags for gui include `-ldl -rdynamic`
+                // plus the manifest's gui_link_flags when req_is_gui is
+                // set (headless projects skip them to avoid linking
+                // SDL2/GLFW/etc for a gui.so that won't render).
+                let mut link_flags: Vec<String> = Vec::with_capacity(
+                    effective_manifest.gui_link_flags.len() + 2,
                 );
+                if req_is_gui {
+                    link_flags.extend(effective_manifest.gui_link_flags.iter().cloned());
+                }
+                link_flags.push("-ldl".to_string());
+                link_flags.push("-rdynamic".to_string());
 
-                cmd.kill_on_drop(true);
-                let child = cmd.spawn().context("Failed to spawn g++")?;
+                let gui_obj = object_path_for_so(&gui_out);
 
-                let output_res = timeout(Duration::from_secs(30), child.wait_with_output()).await;
-
-                let output = match output_res {
+                // Step 1: compile .cpp → .o (ccache caches this)
+                let mut compile_cmd = compile_to_object_command(
+                    compiler_exe,
+                    fname,
+                    &gui_obj,
+                    &std_flag,
+                    &effective_manifest.common_flags,
+                    dir_path,
+                );
+                eprintln!(
+                    "[CompileGUI] Phase 9b split step 1/2 (compile): {:?}",
+                    compile_cmd.as_std().get_args()
+                );
+                compile_cmd.kill_on_drop(true);
+                let compile_child = compile_cmd.spawn().context("Failed to spawn compile step")?;
+                let compile_out = match timeout(Duration::from_secs(30), compile_child.wait_with_output()).await {
                     Ok(Ok(out)) => out,
                     Ok(Err(e)) => return Err(e.into()),
                     Err(_) => {
-                        // child is dropped and killed due to kill_on_drop(true)
-                        eprintln!("[CompileGUI] Timed out waiting for g++");
-                        anyhow::bail!("GUI compilation timed out after 30s");
+                        eprintln!("[CompileGUI] compile step timed out");
+                        anyhow::bail!("GUI compile step timed out after 30s");
                     }
                 };
+                eprintln!("[CompileGUI] compile step finished with status: {}", compile_out.status);
 
-                eprintln!("[CompileGUI] g++ finished with status: {}", output.status);
+                // Step 2 (only if step 1 succeeded): link .o → .so.
+                // On compile-step failure, propagate the compile_out as
+                // the overall `output` so the downstream heal loop sees
+                // the same failure shape it always has.
+                let output = if compile_out.status.success() {
+                    let mut link_cmd = link_object_to_so_command(
+                        compiler_exe,
+                        &gui_obj,
+                        &gui_out,
+                        &link_flags,
+                        dir_path,
+                    );
+                    eprintln!(
+                        "[CompileGUI] Phase 9b split step 2/2 (link): {:?}",
+                        link_cmd.as_std().get_args()
+                    );
+                    link_cmd.kill_on_drop(true);
+                    let link_child = link_cmd.spawn().context("Failed to spawn link step")?;
+                    match timeout(Duration::from_secs(30), link_child.wait_with_output()).await {
+                        Ok(Ok(out)) => out,
+                        Ok(Err(e)) => return Err(e.into()),
+                        Err(_) => {
+                            eprintln!("[CompileGUI] link step timed out");
+                            anyhow::bail!("GUI link step timed out after 30s");
+                        }
+                    }
+                } else {
+                    compile_out
+                };
+
+                eprintln!("[CompileGUI] overall status: {}", output.status);
 
                 if !output.status.success() {
                     let stderr_str = String::from_utf8_lossy(&output.stderr).to_string();
