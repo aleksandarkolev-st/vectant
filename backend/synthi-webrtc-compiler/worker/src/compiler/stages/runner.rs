@@ -96,35 +96,14 @@ pub async fn handle_runner_execution(
     // The on_update callback is optional — it just lets user code react
     // to the swap (e.g. migrate state).  Without it, the new module is
     // loaded and the next render frame picks up the new symbols.
-    //
-    // ULTRAPLAN Lightning Phase 12.5 — for per-project runners we always
-    // force a fresh process on every compile. The AI-generated
-    // host_runner.cpp does NOT speak the stdin reload protocol (that's
-    // Phase 12.5b follow-up), so an already-running per-project binary
-    // would keep its old dlopen'd modules and ignore the rebuilt .so
-    // files entirely. Cold restart is ~150-250ms — the Xvfb / GStreamer /
-    // WebRTC pipeline is still reused via `can_reuse` below, which is
-    // orthogonal to the runner HMR decision. This path is fully library-
-    // agnostic: kill + respawn works for any binary the AI synthesised
-    // regardless of backend (SDL2 / GLFW / raylib / ...).
     let existing_runner_can_hmr = if let Some(state) = guard.as_ref() {
-        if use_per_project_runner {
-            debug_log!(
-                "[Main] per-project runner: forcing cold restart (no stdin reload protocol yet)"
-            );
-            eprintln!(
-                "[Main] per-project runner: forcing cold restart on compile (Phase 12.5 MVP)"
-            );
-            false
-        } else {
-            let gui_mode_same = state.is_gui == req.is_gui;
-            let resolution_same = state.width == req_width && state.height == req_height;
-            debug_log!("[Main] Existing runner: is_gui={}, gui_mode_same={}, resolution_same={}, has_on_update={}",
-                state.is_gui, gui_mode_same, resolution_same, has_on_update);
+        let gui_mode_same = state.is_gui == req.is_gui;
+        let resolution_same = state.width == req_width && state.height == req_height;
+        debug_log!("[Main] Existing runner: is_gui={}, gui_mode_same={}, resolution_same={}, has_on_update={}",
+            state.is_gui, gui_mode_same, resolution_same, has_on_update);
 
-            // HMR enabled: reuse running process when GUI mode and resolution match.
-            gui_mode_same && resolution_same
-        }
+        // HMR enabled: reuse running process when GUI mode and resolution match.
+        gui_mode_same && resolution_same
     } else {
         false
     };
