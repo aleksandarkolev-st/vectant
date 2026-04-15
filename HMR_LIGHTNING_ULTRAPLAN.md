@@ -7,7 +7,8 @@
 ## Revision history
 
 - **rev1** (initial draft): four-phase structure, latency budgets, file lists, risks. Landed in commit `802170e5`.
-- **rev2** (this): major revision pass after detailed technical review. Changes:
+- **rev3** (this): second review pass. Fixes for multi-threaded patching soundness, Path C window discovery, structured arch cache field, SIGINT re-install periodicity, plus ~10 additional gaps found during my own re-review. New §14 "Agnosticism assessment" with an honest verdict on library and language agnosticism (agnostic-by-fallback, not agnostic-by-construction). Tier 0 hit rate estimate revised downward from "~60%" to "~30-45%" after the atomic-store-only restriction.
+- **rev2**: major revision pass after detailed technical review. Changes:
   - §1 Measurement point made explicit: we measure **runner-internal** (source-save → frame-rendered-inside-runner-process) and **user-visible** (runner-internal + video pipeline tax) as two separate metrics. Success criteria specify both.
   - §3 Latency budget rewritten to include: speculation-hit path AND speculation-miss path AND video pipeline tax AND filesystem jitter. Honest numbers replace the fiction.
   - §4 Phase 9: PCH macro extraction added (pre-include `#define` preservation), `.o` cache `headers_hash` spec pinned to `-M` output, ccache/ocache interaction documented, `num_cpus::get() >= 3` gate added, benchmark harness split into compile-only + end-to-end.
@@ -780,9 +781,75 @@ impl GLFWBackend {
 
 **Per-backend test**: `worker/tests/phase10_backend_<name>_smoke.rs` — spawn the backend in-process (skipped if the library isn't installed on the test host), create a window, pump one frame, shut down. Skip with a clear message when `libloading::Library::new` fails.
 
-#### 10f. Manifest-driven backend selection (~1 day — revised from 0.5)
+#### 10f. Backend selection — structured field + layered fallback (~2 days — revised up from 1)
 
-Rev2 review flagged that substring-scanning linker flags is fragile (`-lglfw3` vs `-lglfw` vs `/usr/local/lib/libglfw.so.3`, sokol has no flag). Use a layered approach:
+Rev3 fix (review point #3a): regex-parsing `## Language & Framework` from markdown is fragile. If the AI drifts to `### Language & Framework` or `## Framework` or writes it as a bulleted list, the selector misses and falls through incorrectly. Add a structured YAML-ish frontmatter block to the arch cache as the primary signal, with the markdown regex as fallback.
+
+**Updated universal split prompt** (Phase 1 of `HMR_AGNOSTIC_ULTRAPLAN.md`) instructs the AI to emit a frontmatter block BEFORE the markdown content:
+
+```
+<synthi_arch_cache>
+---
+# Structured fields (v1) — read by the runner's backend selector
+framework: glfw                              # enum: sdl2 | glfw | raylib | sokol | sfml | qt | imgui_sdl | custom
+framework_display: C++ with GLFW + OpenGL    # human-readable, shown in StatusBar pill
+hmr_mode_hint: swap                          # enum: swap | process_restart | auto
+window_initial_width: 800                    # for Xvfb sizing in Path C
+window_initial_height: 600
+---
+# Architecture
+
+## Language & Framework
+C++ with GLFW + OpenGL
+...
+```
+
+Parser reads the YAML frontmatter first; if present, uses `framework` directly. If the frontmatter is missing (pre-rev3 sidecars or AI drift), falls back to the markdown regex from rev2. If both fail, falls back to flag parsing. If all three fail, Path C.
+
+```rust
+fn select_backend(manifest: &CompileManifest, arch_cache: &str) -> Box<dyn WindowBackend> {
+    // Layer 0 (rev3 — PRIMARY): structured YAML frontmatter
+    if let Some(fw) = parse_structured_framework(arch_cache) {
+        if let Some(backend) = dispatch_by_framework_enum(&fw) {
+            return backend;
+        }
+    }
+
+    // Layer 1 (rev2): markdown `## Language & Framework` regex
+    if let Some(framework_text) = extract_framework_name_from_markdown(arch_cache) {
+        if let Some(backend) = dispatch_by_framework_substring(&framework_text) {
+            return backend;
+        }
+    }
+
+    // Layer 2 (rev2 fallback): scan link flags
+    if let Some(backend) = dispatch_by_link_flags(&manifest.runner_link_flags) {
+        return backend;
+    }
+
+    // Layer 3 (rev2 final fallback): Path C
+    Box::new(PathCBackend::new_from_manifest(manifest))
+}
+
+fn parse_structured_framework(arch_cache: &str) -> Option<StructuredFramework> {
+    // Match `---\n<yaml>\n---` at start of file
+    let re = regex::Regex::new(r"^---\n([\s\S]*?)\n---").ok()?;
+    let cap = re.captures(arch_cache)?;
+    let yaml = cap.get(1)?.as_str();
+    serde_yaml::from_str(yaml).ok()
+}
+```
+
+The structured field is also used to populate the StatusBar pill (Phase 8), which is more reliable than parsing the markdown line. Phase 8 components read `framework_display` for the user-facing string.
+
+**Migration**: pre-rev3 sidecars that don't have the YAML frontmatter still work via the markdown regex fallback. No backward-compatibility break. After rev3 ships, new splits get the structured block automatically (AI is trained on the updated prompt).
+
+- **Files**: `worker/src/runtime/backends/selector.rs` (layered dispatch), `ai-backend/ai-engine/llm/prompts.py` (universal split prompt YAML frontmatter instructions), `synthi/src/components/compile/compile-manifest-parser.js` (Phase 8 parser — read structured field first)
+- **Test**: table-driven test with sample arch caches — structured-only, markdown-only, flag-only, all-three, and all-fail scenarios
+
+---
+
+**rev2 10f content kept below for reference (now the fallback layer)**:
 
 ```rust
 fn select_backend(manifest: &CompileManifest, arch_cache: &str) -> Box<dyn WindowBackend> {
@@ -1113,7 +1180,122 @@ This is what lets Tier 0 safely distinguish:
 - **Files**: `worker/src/hmr/binary_patch/value_only_classifier.rs`, `Cargo.toml` (tree-sitter deps)
 - **Test**: scenario corpus covering all ValueEditKind variants + structural negatives
 
-#### 11d. Runtime memory patching (~3 days — revised from 2-3)
+#### 11d. Runtime memory patching — atomic-store-only restriction for thread safety (~4 days — revised up from 3 in rev2)
+
+**Thread-safety invariant (rev3 fix)**: rev2's `mprotect → memcpy → mprotect` sequence is sound only if the patch is a SINGLE atomic store. `memcpy` of multi-byte payloads is multiple store instructions that can tear if a background thread (audio callback, networking, library worker thread) reads the patched bytes mid-write. x86_64 guarantees atomic aligned loads/stores up to pointer-size (Intel SDM Vol 3A §8.1.1), nothing beyond.
+
+**Tier 0 is restricted to literals that can be patched via a SINGLE atomic store**:
+
+| Literal kind | Size | Alignment | Atomic safe? | Tier 0 eligible |
+|---|---|---|---|---|
+| `int8_t`, `uint8_t`, `char`, `bool` | 1 | 1 | yes | ✓ |
+| `int16_t`, `uint16_t` | 2 | 2 | yes | ✓ |
+| `int32_t`, `uint32_t`, `float`, `enum` | 4 | 4 | yes | ✓ |
+| `int64_t`, `uint64_t`, `double`, pointer | 8 | 8 | yes | ✓ |
+| `int64_t` at 4-byte alignment | 8 | 4 | **no** (crosses 8-byte boundary) | ✗ |
+| C string 1-7 bytes | ≤8 | any | yes (pack + single 8-byte store) | ✓ |
+| C string ≥8 bytes | >8 | any | no (multiple stores) | ✗ |
+| Struct literal / array | any | any | no | ✗ |
+| Instruction immediate bytes | varies | varies | **no** (i-cache coherency, instruction fetch race) | ✗ |
+
+Anything ✗ falls through to Tier 1 (compile path), silently.
+
+**5th layer in integrity check** (`verify_patch_target` from 11b):
+
+```rust
+pub fn check_atomic_store_safe(
+    loc: &LiteralLocation,
+) -> bool {
+    match loc.size {
+        1 => true,
+        2 => loc.runtime_addr % 2 == 0,
+        4 => loc.runtime_addr % 4 == 0,
+        8 => loc.runtime_addr % 8 == 0,
+        _ => false,
+    }
+}
+```
+
+Patches larger than 8 bytes, unaligned patches, and instruction immediates are rejected. No multi-step `mprotect → memcpy` — only a single typed store.
+
+**Thread-count defensive gate**: before patching, inspect `/proc/<runner_pid>/task` to count active threads. If > 1, defensively fall through to Tier 1 regardless of the atomic-store check. Rationale: even an atomic store is only safe against torn reads; compiler optimizations in the user's code may cache the literal in a register across thread boundaries (e.g., `for (int i = 0; i < LIMIT; i++)` in a background thread may load `LIMIT` once at function entry), and the patch won't take effect until that thread re-reads. For multi-threaded user code, correctness requires either volatile semantics or a stop-the-world pause — neither is compatible with the "instant" latency target.
+
+Multi-threaded user code accessing patched literals from background threads is documented as **undefined behavior** in Tier 0. v2 may add a stop-the-world path via `SIGSTOP/SIGCONT` or `ptrace(PTRACE_ATTACH)`.
+
+**Revised helper library** (`libsynthi_patcher.c`):
+
+```c
+// libsynthi_patcher.h
+#ifndef SYNTHI_PATCHER_H
+#define SYNTHI_PATCHER_H
+
+#include <stdint.h>
+
+/// Atomic store of exactly 1, 2, 4, or 8 bytes at the target address.
+/// Caller must ensure:
+///   - size is one of {1, 2, 4, 8}
+///   - addr is properly aligned for size
+///   - runner is single-threaded (/proc/<pid>/task count == 1)
+///   - page containing addr is already PROT_WRITE (call mprotect first)
+/// Returns 0 on success, negative errno otherwise.
+int synthi_patch_atomic(void* addr, const void* new_bytes, size_t size);
+
+int synthi_thread_count(void);  // reads /proc/self/task, returns count
+
+int synthi_make_writable(void* addr, size_t size);  // mprotect wrapper
+int synthi_make_readonly(void* addr, size_t size);  // mprotect wrapper
+
+#endif
+```
+
+Implementation uses `__atomic_store_n` with `__ATOMIC_RELEASE` memory ordering:
+
+```c
+int synthi_patch_atomic(void* addr, const void* new_bytes, size_t size) {
+    switch (size) {
+        case 1: {
+            uint8_t v;
+            memcpy(&v, new_bytes, 1);
+            __atomic_store_n((uint8_t*)addr, v, __ATOMIC_RELEASE);
+            return 0;
+        }
+        case 2: {
+            if ((uintptr_t)addr & 1) return -EINVAL;
+            uint16_t v;
+            memcpy(&v, new_bytes, 2);
+            __atomic_store_n((uint16_t*)addr, v, __ATOMIC_RELEASE);
+            return 0;
+        }
+        case 4: {
+            if ((uintptr_t)addr & 3) return -EINVAL;
+            uint32_t v;
+            memcpy(&v, new_bytes, 4);
+            __atomic_store_n((uint32_t*)addr, v, __ATOMIC_RELEASE);
+            return 0;
+        }
+        case 8: {
+            if ((uintptr_t)addr & 7) return -EINVAL;
+            uint64_t v;
+            memcpy(&v, new_bytes, 8);
+            __atomic_store_n((uint64_t*)addr, v, __ATOMIC_RELEASE);
+            return 0;
+        }
+        default:
+            return -EINVAL;
+    }
+}
+```
+
+`mprotect` still needed to flip the page writable before the atomic store. That's fine — `mprotect` is synchronous and the writable window is bounded to the duration of the single store (~nanoseconds).
+
+**Hit rate impact**: rev2 claimed "~60% of edits are value tweaks" (already removed). With the atomic-store-only restriction and multi-thread gate, Tier 0 now covers roughly:
+- All aligned int / float / bool / enum / char literal changes (~25-35% of value edits in practice)
+- Small C strings that fit in ≤8 bytes (~5% of value edits)
+- NOT: large strings, struct literals, multi-byte instruction immediate edits, anything in multi-threaded user code
+
+**Revised estimate**: Tier 0 hit rate on value-only edits in single-threaded user code: **~30-45%**. In multi-threaded user code: ~0%. Still worth doing — it turns ~30% of edits into "visually instant" and costs nothing when ineligible — but NOT the marketing "all value edits are instant" pitch rev2 hinted at.
+
+#### 11d.1. Architecture (the original section, kept for context)
 
 Architecture: a small helper library `libsynthi_patcher.so` that the runner dlopens at startup. Exposes:
 
@@ -1399,6 +1581,32 @@ In Path C, three parties want signal handlers:
 
 `libsynthi_hmr_runtime::synthi_hmr_init()` enforces this matrix by installing all child-side handlers and blocking conflicts via `sigaction` flags. If a user's library has already installed a conflicting handler before `synthi_hmr_init()` runs, the library wins — the docs for BYOR users explicitly say "call `synthi_hmr_init()` BEFORE any library init that might install signal handlers."
 
+**Rev3 fix — periodic re-install in on_frame**: `signal(SIGINT, SIG_IGN)` at init time is only effective until another `sigaction` call overrides it. Libraries like SDL2 and Qt often install their own SIGINT handlers AFTER `synthi_hmr_init()` returns. To keep the ownership matrix enforced:
+
+```c
+// Inside synthi_hmr_on_frame() — once per second at 60fps
+static int sigint_check_counter = 0;
+if (++sigint_check_counter >= 60) {
+    sigint_check_counter = 0;
+    struct sigaction current;
+    sigaction(SIGINT, NULL, &current);
+    if (current.sa_handler != SIG_IGN) {
+        // A library installed its own handler. Re-install SIG_IGN and
+        // log ONCE per session so developers see the fight.
+        static int warned_once = 0;
+        if (!warned_once) {
+            fprintf(stderr, "[synthi_hmr] SIGINT handler was overwritten by user library — re-installing SIG_IGN. This may be from SDL2/Qt/JUCE's own Ctrl-C handling; see docs for opting out.\n");
+            warned_once = 1;
+        }
+        struct sigaction ign = { .sa_handler = SIG_IGN, .sa_flags = 0 };
+        sigemptyset(&ign.sa_mask);
+        sigaction(SIGINT, &ign, NULL);
+    }
+}
+```
+
+Same treatment for SIGPIPE. Cost: 1 sigaction query per second per child process — negligible. Detects the overwrite and recovers, with a single log line so developers see what's happening. Not foolproof against a library that installs its handler every frame, but handles the realistic case where library init does it exactly once at startup.
+
 - **Files**: `worker/src/runtime/path_c/hmr_protocol.rs`, `worker/src/runtime/patcher/libsynthi_hmr_runtime.c`, `ai-backend/ai-engine/llm/prompts.py` (UNIVERSAL_SPLIT_PROMPT — emit `synthi_hmr_init()` at the VERY TOP of `main()`)
 
 #### 12c. BYOR compatibility + link-time check (~2 days — revised from 1-2)
@@ -1453,6 +1661,74 @@ When you synthesise host_runner.cpp in Path C mode, you MUST:
 Link-time check still runs on AI-generated runners as belt-and-suspenders.
 
 - **Files**: `worker/src/compiler/stages/compile_runner.rs` (link-time check), `ai-backend/ai-engine/llm/prompts.py` (prompt instructions), `synthi/src/components/compile/CompileErrorCard.jsx` (new error kind `BYOR_NO_HMR_INIT`)
+
+#### 12b.1. Path C window discovery — deferred handshake (rev3 fix)
+
+Rev2 bug: `PathCBackend::create_window` returns a `WindowHandle` but can't populate `x11_window_id` because the CHILD creates the window, not the supervisor. GStreamer capture needs the window ID. Rev2 had an unresolved gap here.
+
+**Rev3 fix — deferred handshake via first-frame callback**:
+
+The child's `libsynthi_hmr_runtime::synthi_hmr_init()` does NOT send the handshake at init time. Instead, the protocol becomes two-phase:
+
+**Phase 1 — socket connection** (synthi_hmr_init):
+- Child opens the Unix socket to supervisor
+- Sends `ClientHello { protocol_version, pid, capabilities }` — NO window ID yet
+- Supervisor acknowledges, but `PathCBackend::create_window` blocks on a promise waiting for the window ID
+
+**Phase 2 — window discovery** (first synthi_hmr_on_frame call):
+- By the time on_frame is called, the user's code has called `glfwCreateWindow` / `SDL_CreateWindow` / `sf::RenderWindow ctor` / etc. The window exists.
+- The child's runtime tries to discover the window ID via library-specific dlsym probing:
+  ```c
+  uint64_t synthi_discover_x11_window_id(void) {
+      // Try GLFW first
+      typedef unsigned long (*glfw_get_x11_win_t)(void*);
+      glfw_get_x11_win_t glfw_fn = dlsym(RTLD_DEFAULT, "glfwGetX11Window");
+      if (glfw_fn) {
+          // Need the window handle — GLFW has glfwGetCurrentContext() for GL
+          void* (*glfw_current)(void) = dlsym(RTLD_DEFAULT, "glfwGetCurrentContext");
+          if (glfw_current) {
+              void* ctx = glfw_current();
+              if (ctx) return glfw_fn(ctx);
+          }
+      }
+      // Try SDL2
+      typedef int (*sdl_get_wm_info_t)(void*, void*);
+      sdl_get_wm_info_t sdl_fn = dlsym(RTLD_DEFAULT, "SDL_GetWindowWMInfo");
+      if (sdl_fn) {
+          // ... similar probing for the active SDL window
+      }
+      // Try SFML shim
+      typedef uint64_t (*sfml_fn_t)(void*);
+      sfml_fn_t sfml_fn = dlsym(RTLD_DEFAULT, "sfml_window_get_system_handle");
+      if (sfml_fn) { /* ... */ }
+      // Fall back to XQueryTree: iterate root children, pick the largest
+      // non-transient client window
+      return xquery_largest_client_window();
+  }
+  ```
+- Child sends `WindowDiscovered { x11_window_id }` as the FIRST frame message over IPC
+- Supervisor's `PathCBackend::create_window` future completes with the window ID
+- GStreamer capture pipeline starts using the ID; the runner main loop unblocks
+
+**Latency impact**: ~50-200ms deferred on the FIRST frame of a Path C session. The child has to:
+1. Run library init (~50-200ms depending on library)
+2. Create window (~5-50ms)
+3. Query window ID via dlsym (~1ms)
+4. Send IPC message (~3ms)
+
+This is only paid ONCE per session (first frame) — amortized to zero across the session's edits. Budget allows it because Path C is already acknowledged as slower-first-compile territory.
+
+**Failure modes and their handling**:
+
+| Failure | Cause | Handling |
+|---|---|---|
+| Handshake timeout (>5s) | Child crashed during init, or library init hung | `CompileErrorCard` with rejection kind `PATH_C_HANDSHAKE_TIMEOUT`. Log includes `/tmp/synthi_hmr_<session>.log` stderr dump. |
+| Window discovery returns 0 | Library uses EGL surfaceless, no X11 window created | `CompileErrorCard` with rejection kind `PATH_C_NO_X11_WINDOW`. Points at the §7.4 EGL limitation doc. |
+| dlsym for all known libraries fails → XQueryTree fallback → no children | Headless library, no window at all | Same as above. |
+| Multiple client windows (e.g., ImGui viewport mode) | Post-V1 feature | Pick the largest; log warning. |
+| `glfwGetCurrentContext` returns NULL but glfw is loaded | User hasn't made any window current yet | Retry on next frame, up to 5 retries. |
+
+**Files**: `worker/src/runtime/patcher/libsynthi_hmr_runtime.c` (window discovery code), `worker/src/runtime/path_c/supervisor.rs` (handshake future + window ID promise), `worker/src/runtime/backends/path_c_backend.rs` (the WindowBackend impl that blocks on the promise)
 
 #### 12c.1. State marshaling budget fix (rev2 review point #25)
 
@@ -1875,9 +2151,271 @@ Per-user auto-rollback on detected corruption:
 4. Frontend toast explains the rollback
 5. On worker version bump, all block files older than 30 days clear automatically (assumption: fix landed)
 
+### 13.6 ccache concurrency (rev3 addition)
+
+Multiple worker processes on the same host share `$CCACHE_DIR` by default. ccache has file locking (via `CCACHE_NOCOMPRESS` and its own POSIX file locks) that handles concurrent access, but there are edge cases:
+
+- **Poisoning under concurrent writes**: two workers compiling the same preprocessed source at the same time both write to the cache. Last write wins, which is fine for identical outputs but ambiguous for outputs that differ due to timestamps, file paths embedded in debug info, etc.
+- **Lock contention**: heavy ccache writes bottleneck on the lock file, adding latency.
+
+**rev3 policy**: **per-worker cache dirs by default**, shared cache opt-in.
+
+```rust
+// Worker startup:
+let ccache_dir = match std::env::var("SYNTHI_CCACHE_DIR") {
+    Ok(shared) => shared,  // User explicitly opted in to shared cache
+    Err(_) => {
+        // Default: per-worker tmpdir
+        format!("/tmp/synthi-ccache-{}", std::process::id())
+    }
+};
+std::env::set_var("CCACHE_DIR", ccache_dir);
+```
+
+Downside: each worker rebuilds its cache on first compile. For short-lived workers (CI runs, ephemeral deployments), this is a miss — the cache doesn't amortize. For long-lived workers (typical production), first-compile cost amortizes over the session and concurrency isn't a concern.
+
+Users running multiple persistent workers with hot turnover can opt into a shared cache via `SYNTHI_CCACHE_DIR=/shared/cache` and accept the locking overhead.
+
+### 13.7 `.o` cache disk eviction (rev3 addition)
+
+§13.1 added in-memory eviction for DWARF / PCH. The `.o` cache is on disk and has no eviction in rev2 — it grows unboundedly on long-running workers.
+
+**rev3 policy**:
+
+- `.o` cache lives at `/tmp/synthi-o-cache-<session>` (per-session, cleaned on session end)
+- If a user has many sessions over time without restart, the per-session dirs accumulate. LRU eviction via a background task: every 15 minutes, scan all `/tmp/synthi-o-cache-*` dirs, delete any whose last-access time is >24 hours old
+- Hard disk cap: 500MB per session, oldest entries evicted LRU when exceeded
+- `SYNTHI_O_CACHE_MAX_MB` env var to tune
+
+- **Files**: `worker/src/hmr/session_cache_budget.rs` (extended)
+
+### 13.8 Xvfb resolution from arch cache (rev3 addition)
+
+§7 Phase 12 spawns Xvfb with `-screen 0 1280x720x24` — hardcoded. User code that wants a larger window (1920x1080 for a full-screen demo, 640x480 for a retro-pixel game) gets clipped or scaled.
+
+**rev3 fix**: read the initial window dimensions from the structured arch cache frontmatter (from §5 10f):
+
+```yaml
+window_initial_width: 1920
+window_initial_height: 1080
+```
+
+Supervisor spawns Xvfb with the requested resolution. Falls back to 1280x720 if the field is missing.
+
+**Risk**: user code may resize the window after creation. Xvfb doesn't support dynamic resolution changes mid-session. Mitigation: spawn Xvfb at the maximum of the requested size × 1.5 (reasonable upper bound) and the user's window fits inside. Post-V1 we can add proper resize support via xrandr-style host events.
+
+### 13.9 IPC socket security (rev3 addition)
+
+Rev2's `/tmp/synthi_hmr_<session>.sock` is in the public filesystem namespace — world-readable by default. Another process on the host could connect to it and send fake HMR commands to the child.
+
+**rev3 fix**: use Linux **abstract namespace sockets**:
+
+```rust
+// Supervisor creates listener
+let socket_name = format!("\0synthi_hmr_{}", session_id);
+let listener = UnixListener::bind(&socket_name)?;
+```
+
+Abstract namespace sockets (path starting with `\0`) don't appear in the filesystem at all and are automatically cleaned up when the process exits. They're still bound to the network namespace, so they're isolated between containers. Impossible to connect to from outside the container.
+
+**Additional check**: on `accept()`, verify the connecting process via `SO_PEERCRED`:
+
+```rust
+let creds = stream.peer_cred()?;
+if creds.pid != child_pid {
+    // Someone else connected to our socket — reject
+    return Err(...);
+}
+```
+
+Belt-and-suspenders against the edge case where a malicious process inside the same container guesses the session_id.
+
+- **Files**: `worker/src/runtime/path_c/supervisor.rs` (socket bind), `libsynthi_hmr_runtime.c` (client connect)
+
+### 13.10 Xvfb orphan cleanup (rev3 addition)
+
+If the supervisor is SIGKILL'd, its child Xvfb process becomes orphaned (parent becomes PID 1). Over time, zombie Xvfb processes accumulate.
+
+**rev3 fix**: use `PR_SET_PDEATHSIG` when spawning Xvfb so it dies automatically when the supervisor exits:
+
+```rust
+use nix::sys::prctl::set_pdeathsig;
+use nix::sys::signal::Signal;
+
+unsafe {
+    libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM);
+}
+// Then exec Xvfb — it inherits the pdeathsig
+```
+
+Linux-specific, but the plan is Linux-only. Same treatment for the child runner process.
+
+### 13.11 DWARF index invalidation (rev3 addition)
+
+Rev2 mentions "cached DWARF index" in §13.1 but doesn't specify the cache key. Without explicit invalidation, the index either:
+(a) Rebuilds on every compile (kills the caching benefit), or
+(b) Becomes stale after a recompile (patches the wrong offsets)
+
+**rev3 policy**: DWARF index cache key is `(so_content_hash, flags_hash)`. Rebuild when the `.so` content changes. Evict entries older than the corresponding `.so` file. Invalidate immediately on Phase 6 manifest heal (flags changed → `.so` rebuilt → index stale).
+
+```rust
+// worker/src/hmr/binary_patch/dwarf_index_cache.rs
+
+pub struct DwarfIndexCache {
+    // Keyed by (so content hash, flags hash) → index
+    entries: LruCache<(u64, u64), Arc<DwarfIndex>>,
+    max_entries: usize,
+}
+```
+
+- **Files**: `worker/src/hmr/binary_patch/dwarf_index_cache.rs` (new)
+
+### 13.12 SIGCHLD TOCTOU race (rev3 addition)
+
+Classic unix gotcha: a traditional `signal(SIGCHLD, handler)` handler runs on the signaled thread, which may be mid-way through updating supervisor state about the child. Race condition.
+
+**rev3 fix**: use `signalfd` for synchronous signal processing:
+
+```rust
+use nix::sys::signalfd::{SignalFd, SfdFlags, signal};
+
+let mut mask = SigSet::empty();
+mask.add(Signal::SIGCHLD);
+mask.add(Signal::SIGTERM);
+mask.thread_block()?;  // Block the signals
+let mut sfd = SignalFd::with_flags(&mask, SfdFlags::SFD_NONBLOCK)?;
+
+// In the supervisor's event loop, poll sfd alongside the IPC socket
+loop {
+    tokio::select! {
+        _ = sfd.readable() => {
+            if let Some(siginfo) = sfd.read_signal()? {
+                handle_signal(siginfo);  // now in normal code context, no race
+            }
+        }
+        _ = ipc_socket.readable() => { /* ... */ }
+    }
+}
+```
+
+- **Files**: `worker/src/runtime/path_c/supervisor.rs`
+
+### 13.13 Frontend HMR mode indicator (rev3 addition)
+
+Phase 8 StatusBar shows the detected framework name. Rev3 extends it to show the HMR mode — whether the session is running Path A (with which backend) or Path C. Helps developers debug and gives transparency.
+
+New field in `compileManifestSlice`:
+```javascript
+state.compileManifest.hmrMode  // 'path_a_sdl2' | 'path_a_glfw' | 'path_c' | null
+```
+
+StatusBar pill update:
+```jsx
+{languageAndFramework && (
+  <div className="flex items-center gap-1.5 px-2 py-0.5 rounded-md">
+    <Cpu className="w-3.5 h-3.5" />
+    <span>{languageAndFramework}</span>
+    {hmrMode && (
+      <span className="text-[10px] opacity-60 ml-1">
+        {hmrMode.startsWith('path_a') ? 'A' : 'C'}
+      </span>
+    )}
+  </div>
+)}
+```
+
+Hoverable tooltip: `"HMR mode: Path A (GLFW backend, in-process)"` or `"HMR mode: Path C (supervisor + child process)"`.
+
+- **Files**: `synthi/src/redux/compileManifestSlice.js` (hmrMode field), `synthi/src/app/workspace/StatusBar.jsx` (pill update), worker's `compile-manifest` payload (add `hmr_mode` field)
+
 ---
 
-## 14. Success = User Quotes
+## 14. Agnosticism Assessment (NEW in rev3)
+
+rev3 adds this section after re-reading the plan through the lens of "is this actually library and language agnostic?" and giving an honest verdict. Short version: **the plan is agnostic-by-fallback, not agnostic-by-construction**, and that's the right design for v1 — but rev2 overstated it in places, which rev3 tightens.
+
+### 14.1 Library agnosticism — honest verdict
+
+There are two meaningful flavors of agnosticism:
+
+**(A) Agnostic-by-construction**: one path that handles any library by definition. Adding library #N costs zero code because there's no library-specific code. Example: a JavaScript interpreter doesn't know React from Vue — it executes arbitrary JS.
+
+**(B) Agnostic-by-fallback**: specialized fast paths for common libraries + a generic slow path for everything else. Adding library #N to the fast path costs N days of backend work; library #N always works on the slow path. Example: V8 has Ignition (interpreter, universal) + TurboFan (JIT, hot-path specialized for common patterns).
+
+**The plan is firmly flavor (B).**
+
+Where the library-specific code lives:
+
+| Phase | Library-specific code | Library-agnostic code |
+|---|---|---|
+| 1-8 (HMR_AGNOSTIC_ULTRAPLAN, shipped) | AI's training-set knowledge of libraries | Universal split prompt, manifest schema, compile dispatch, validators, heal loop — all content-driven |
+| 9 (compile opt) | PCH candidate header extraction (trivially generic — uses biggest #include), optimizer-level assumptions | Everything else |
+| 10 (Path A backends) | **5 hardcoded backends**: SDL2, GLFW, raylib, sokol, SFML. Adding backend #6 costs ~2-3 days. | Trait design, selector, capture pipeline, event plumbing |
+| 11 (binary patch) | Tree-sitter-cpp grammar, constant pooling assumptions (gcc/clang-specific) | DWARF lookup, ASLR math, mprotect helper, integrity check framework |
+| 12 (Path C) | **AI's training-set knowledge** determines what Path C can host | Supervisor, Xvfb capture, IPC protocol, signal ownership, window discovery |
+
+**Phase 10 is the catalog**. Phase 12 is the generic fallback. Together they handle:
+- Known-popular libraries → Phase 10 fast path (~170ms user-visible p50)
+- Known-but-uncommon libraries → Phase 12 slow path (~230ms user-visible p50)
+- AI-unknown libraries → Phase 4 rejection (no runtime at all — refuses to compile)
+
+**Is this the right design?**
+
+Yes. Here's the reasoning:
+
+1. **Coverage is bounded by AI knowledge, not by backend code**. The main constraint on agnosticism is whether the AI can write a correct `host_runner.cpp` for a given library (Phase 4's `runner_synthesis` confidence gate). A hypothetical agnostic-by-construction system would still need this check — there's no way around the AI having to know the library well enough to write glue code.
+
+2. **The catalog size is bounded by the Pareto distribution of real usage**. For a tool targeting learn-to-code, small games, and graphics projects, the top ~5-10 libraries cover 90%+ of users. Maintaining a backend per library is tractable for this shape — maybe 1-2 new backends per year as libraries rise/fall in popularity.
+
+3. **The alternative — plugin-based Path A — is expensive upfront**. An agnostic-by-construction Path A would be a plugin system where each library describes its lifecycle via metadata (which functions to call, when, in what order). Implementing the plugin framework is ~3-4 weeks of scaffolding before the first library works. The per-library cost drops to ~1 day, but you need to ship ≥4 libraries to break even on the upfront investment. For v1, catalog + fallback wins on calendar time.
+
+4. **Phase 12 is the honest agnostic path**. Any library the AI confidently compiles + writes a runner for works on Path C. It's slower (IPC tax), but correct. The library coverage ceiling is "what the AI knows," not "what we've coded" — which matches user intuition about what the AI can handle.
+
+**What rev3 tightens**: rev2 occasionally used language like "any library" for Phase 10 coverage. That was overstated. rev3 is explicit that Phase 10 is a curated catalog and Phase 12 is the generic fallback. The combined system is agnostic-by-fallback. The documentation (§7.1, §14.1) now says this plainly.
+
+### 14.2 Language agnosticism — structure vs scope
+
+The plan scopes itself to C/C++ in §1.4. But I checked how much of the DESIGN would survive a port to another language.
+
+| Phase | Language-specific components | Language-agnostic components |
+|---|---|---|
+| 9 | PCH generation (`-x c++-header -o .gch` — GCC/Clang specific). Rust has rustc's incremental compilation; Go has its build cache; Zig has its cache. | ccache wrapping, `.o` caching, parallel compile, benchmark harness |
+| 10 | `WindowBackend` trait is Rust (host language) + calls C libraries via FFI. User `.so` files must export C ABI symbols (`extern "C"` for Rust user code). **SFML** needs a C++ shim. | Trait design, selector, capture pipeline, X11 window ID exposure |
+| 11 | **Tree-sitter-cpp** grammar for value-only classification. **Constant pooling rules** (rustc does not merge by default; gcc does). `libsynthi_patcher.c` (could be language-independent but currently C). | DWARF lookup (gimli parses DWARF from any language), ASLR math, mprotect helper, integrity check framework, Tier 0 handler |
+| 12 | `libsynthi_hmr_runtime.a` is C; Rust users would need a Rust binding rlib. **UNIVERSAL_SPLIT_PROMPT** is C++-specific. | IPC protocol, supervisor, Xvfb capture, signal ownership, version negotiation, window discovery |
+
+**Estimate**: ~70-80% of the design is language-agnostic. The 20-30% that's language-specific is cleanly separated into well-bounded modules — adding Rust support in v2 would mean:
+
+- Swap tree-sitter-cpp for tree-sitter-rust in Phase 11's classifier (~1 day)
+- Replace PCH logic with rustc's incremental state in Phase 9 (~3-5 days)
+- Add a Rust binding rlib alongside `libsynthi_hmr_runtime.a` in Phase 12 (~2-3 days)
+- Extend the universal split prompt with Rust-specific rules (~1-2 weeks, matching the original C++ prompt effort)
+
+Roughly 3-4 weeks of incremental work per new language, reusing ~70% of the existing infrastructure. That's a reasonable shape for a v2 language expansion — nowhere near a rewrite.
+
+**But rev3 has to document this explicitly**, otherwise a future engineer adding Rust support has to rediscover which pieces are language-specific. The table above lives in this section and in the file-touched list (§8) as annotations.
+
+### 14.3 What the plan does NOT claim
+
+- It does not claim agnostic-by-construction for libraries
+- It does not claim language agnosticism (scope is C/C++ only)
+- It does not claim to handle every C++ library (AI-unknown libraries are rejected)
+- It does not claim sub-frame latency for every scenario (only value-only edits in single-threaded user code)
+- It does not claim to work for libraries that render without an X11 window (EGL surfaceless, Wayland-native)
+
+These are all honest limitations. Users who need anything outside the envelope get a clear error pointing at the limitation, not a silent failure.
+
+### 14.4 When to revisit
+
+- If the Phase 10 catalog grows past ~10 libraries and maintenance becomes painful → consider pattern-based Path A (rev4+)
+- If a second language (Rust most likely) becomes a user priority → follow the language-agnostic components table to port
+- If the video pipeline becomes the dominant latency source (user-visible p50 is nearly all video tax) → consider canvas/bitmap streaming as a separate plan
+
+None of these are blocking for v1.
+
+---
+
+## 15. Success = User Quotes
 
 The plan is successful when users say, unprompted:
 
@@ -1891,4 +2429,4 @@ Any one of those quotes justifies the full 8-16 week investment.
 
 ---
 
-*rev1 authored after `HMR_AGNOSTIC_ULTRAPLAN.md` shipped (Phases 1-8) on branch `claude/hmr-agnostic-ultraplan`, commit `802170e5`. rev2 authored after detailed technical review identified ~20 correctness gaps, latency honesty issues, and cross-cutting design holes. This plan continues on a new branch (TBD) once approved.*
+*rev1 authored after `HMR_AGNOSTIC_ULTRAPLAN.md` shipped (Phases 1-8) on branch `claude/hmr-agnostic-ultraplan`, commit `802170e5`. rev2 authored after detailed technical review identified ~20 correctness gaps, latency honesty issues, and cross-cutting design holes. rev3 authored after a second review pass caught (a) the multi-threaded patching soundness issue, (b) Path C window discovery gap, (c) the extract_framework_name regex fragility, (d) SIGINT handler override, plus ~10 additional gaps found during a self-review. rev3 also adds §14 (Agnosticism Assessment) documenting the honest library + language agnosticism posture. This plan continues on a new branch (TBD) once approved.*
