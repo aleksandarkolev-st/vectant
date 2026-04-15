@@ -48,11 +48,33 @@ use std::ffi::{c_void, CString};
 
 pub struct SDL2Backend {
     initialized: bool,
+    /// Stable storage for events drained by `pump_events`. Each
+    /// call clears and refills this vec; BackendEvent::Raw payload
+    /// pointers in the caller's `out` vec reference into this
+    /// arena. Phase 10g.3b fix for the previous "pointer-to-stack-
+    /// local" bug in pump_events.
+    ///
+    /// Pre-allocated to hold up to a reasonable number of events
+    /// per frame — SDL2's queue rarely exceeds a few dozen entries
+    /// in practice (keyboard/mouse/window events). We reserve
+    /// capacity to avoid reallocation (which would invalidate all
+    /// the pointers in the caller's `out` vec).
+    event_arena: Vec<SDL_Event>,
 }
+
+/// Maximum events drained per pump cycle. This is the arena's
+/// reserved capacity; any event beyond this is dropped. 256 is
+/// well above the worst observed SDL2 queue length (~16 during
+/// heavy input) and keeps the arena's memory footprint bounded
+/// (~14 KB for 256 × 56-byte SDL_Event entries).
+const PUMP_EVENT_ARENA_CAPACITY: usize = 256;
 
 impl SDL2Backend {
     pub fn new() -> Self {
-        Self { initialized: false }
+        Self {
+            initialized: false,
+            event_arena: Vec::with_capacity(PUMP_EVENT_ARENA_CAPACITY),
+        }
     }
 }
 
@@ -138,47 +160,78 @@ impl WindowBackend for SDL2Backend {
 
     fn pump_events(&mut self, out: &mut Vec<BackendEvent>) {
         out.clear();
-        // SDL_PollEvent drains pending events from SDL2's queue.
-        // Loop until it returns 0 (no more events). Each event
-        // gets either a structured variant (Quit) or a Raw
-        // forwarding payload that the runner sends to the user's
-        // on_event callback.
+        // Phase 10g.3b — drain SDL2's queue into the backend-owned
+        // event_arena so BackendEvent::Raw pointers are valid until
+        // the NEXT pump_events call. Previously this function pushed
+        // pointers to stack-local SDL_Event values that went out of
+        // scope on the next iteration — undefined behavior the
+        // moment the runner tried to read any Raw event.
+        //
+        // Contract update: Raw.payload points into self.event_arena.
+        // The runner must process each event before the NEXT
+        // pump_events call (which clears the arena). This matches
+        // the existing main-loop shape (events drained + dispatched
+        // synchronously, THEN rendering, THEN next frame's pump).
+        self.event_arena.clear();
+
         loop {
+            // Stop draining if we hit the arena's reserved capacity.
+            // Pushing beyond it would reallocate and invalidate the
+            // Raw pointers the runner just read. 256 events/frame
+            // is well above any realistic SDL2 workload.
+            if self.event_arena.len() >= PUMP_EVENT_ARENA_CAPACITY {
+                eprintln!(
+                    "[SDL2Backend] pump_events arena full ({} events) — \
+                     dropping remaining events until next pump",
+                    PUMP_EVENT_ARENA_CAPACITY
+                );
+                break;
+            }
+
             // SAFETY: SDL_Event is repr(C, align(8)) with 128 bytes
-            // of padding (see sdl_defs.rs); zeroing it is safe.
+            // of padding (see sdl_defs.rs); zeroing is safe.
             let mut event: SDL_Event = unsafe { std::mem::zeroed() };
             let rc = unsafe { SDL_PollEvent(&mut event) };
             if rc == 0 {
                 break;
             }
-            // The first 4 bytes of SDL_Event are the event type as
-            // a u32. Read it directly from the data buffer.
+            // First 4 bytes of SDL_Event are the u32 event type.
             let kind = u32::from_ne_bytes([
                 event.data[0],
                 event.data[1],
                 event.data[2],
                 event.data[3],
             ]);
+
+            // Copy the event into the arena. Because we pre-reserved
+            // capacity AND we bail at the top of the loop if the
+            // arena is full, this push never reallocates, so every
+            // existing pointer into the arena stays valid.
+            debug_assert!(
+                self.event_arena.len() < self.event_arena.capacity(),
+                "arena push would reallocate — invariant broken"
+            );
+            self.event_arena.push(event);
+            let stored = self.event_arena.last().expect("just pushed");
+            let stored_ptr = stored as *const SDL_Event as *const c_void;
+
             if kind == SDL_QUIT {
                 out.push(BackendEvent::Quit);
-                continue;
+                // Still forward as Raw too, in case the runner wants
+                // to inspect window ID / timestamp. SDL_QUIT is rare
+                // enough that the double-emit cost is irrelevant.
+                out.push(BackendEvent::Raw {
+                    kind,
+                    payload: stored_ptr,
+                    payload_size: std::mem::size_of::<SDL_Event>(),
+                });
+            } else {
+                out.push(BackendEvent::Raw {
+                    kind,
+                    payload: stored_ptr,
+                    payload_size: std::mem::size_of::<SDL_Event>(),
+                });
             }
-            // Forward as Raw. The pointer is into the local stack
-            // copy of `event`, which the runner is expected to
-            // process before the next pump_events call.
-            //
-            // NOTE: this is a borrow-check fiction — &event becomes
-            // invalid after this iteration ends. The runner has to
-            // copy or process the payload before continuing the
-            // loop. For the trait's V1 contract, this is fine
-            // because the runner consumes events synchronously.
-            // A more robust v2 would use a backend-owned event
-            // arena that lives until the next pump_events call.
-            out.push(BackendEvent::Raw {
-                kind,
-                payload: &event as *const SDL_Event as *const c_void,
-                payload_size: std::mem::size_of::<SDL_Event>(),
-            });
         }
     }
 
