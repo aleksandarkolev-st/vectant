@@ -28,9 +28,9 @@
 use crate::compiler::context::CompileContext;
 use crate::compiler::error_parser::{parse_compiler_output, CompilerType};
 use crate::compiler::stages::ai_utils::calculate_hash;
+use crate::compiler::stages::compile_helpers::cpp_compile_command;
 use crate::hmr::compile_manifest::CompileManifest;
 use crate::hmr::incremental_cache::IncrementalCache;
-use crate::infra::utils::system_command;
 use anyhow::{Context, Result};
 use tokio::time::{timeout, Duration};
 
@@ -149,7 +149,7 @@ pub async fn compile_runner(
     // artifacts so cleanup is uniform.
     let runner_out = output_dir.join(format!("host_runner_{}", timestamp));
 
-    let mut cmd = system_command(compiler_exe);
+    let mut cmd = cpp_compile_command(compiler_exe);
     cmd.arg(&std_flag);
     for f in &runner_compile_flags {
         cmd.arg(f);
@@ -209,7 +209,7 @@ pub async fn compile_runner(
             "host_runner",
             host_runner_content,
             |m| {
-                let mut cmd = system_command(m.compiler.executable());
+                let mut cmd = cpp_compile_command(m.compiler.executable());
                 cmd.arg(format!("-std={}", m.std));
                 // Strip -shared / -fPIC (runner is an executable, not a .so)
                 for f in &m.common_flags {
@@ -282,7 +282,7 @@ pub async fn compile_runner(
             {
                 Ok(fixed) => {
                     tokio::fs::write(dir_path.join(HOST_RUNNER_FILENAME), &fixed).await?;
-                    let mut retry_cmd = system_command(compiler_exe);
+                    let mut retry_cmd = cpp_compile_command(compiler_exe);
                     retry_cmd.arg(&std_flag);
                     for f in &runner_compile_flags {
                         retry_cmd.arg(f);
