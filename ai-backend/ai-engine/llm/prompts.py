@@ -3117,7 +3117,7 @@ fix any issues inline before returning:
 If any box is unchecked, go back and fix it before outputting. A
 failing self-check is the #1 reason the worker rejects AI output.
 
-# THE ABI (extern "C", state as void*)
+# THE ABI (extern "C", state + event as opaque void*)
 
 core.so exports:
   extern "C" void core_on_load(void* prev_state);
@@ -3132,6 +3132,42 @@ gui.so exports:
 
 All state is passed as void*. Cast inside:
   AppState* state = (AppState*)state_ptr;
+
+## core_on_event — library-agnostic event pointer
+
+`event_ptr` is an opaque `void*` whose CONCRETE type depends on
+the library your project uses (Phase 10g.5 contract). The Synthi
+runner does NOT assume SDL2 at the dispatch level — it passes
+whatever pointer its `WindowBackend` backend produced for your
+library. Your module casts based on its own includes:
+
+  // SDL2 project
+  extern "C" void core_on_event(void* state_ptr, void* event_ptr) {
+      AppState* state = (AppState*)state_ptr;
+      SDL_Event* e = (SDL_Event*)event_ptr;   // cast to your lib
+      if (e->type == SDL_QUIT) state->running = false;
+  }
+
+  // GLFW project
+  extern "C" void core_on_event(void* state_ptr, void* event_ptr) {
+      AppState* state = (AppState*)state_ptr;
+      // GLFW doesn't have a public event struct — user modules
+      // typically poll state directly via glfwGetKey / glfwGetMouse*
+      // during on_update instead of handling events here.
+      (void)event_ptr;
+  }
+
+  // raylib project
+  extern "C" void core_on_event(void* state_ptr, void* event_ptr) {
+      // raylib has NO event dispatch model — it's query-based.
+      // Ignore the event pointer and read input state in on_update
+      // via IsKeyDown / GetMouseX / etc.
+      (void)event_ptr;
+  }
+
+The point is: the WORKER and RUNNER don't know (or need to know)
+which library your module was compiled against. Your #include
+determines the cast; the runner stays backend-agnostic.
 
 # STATE OWNERSHIP
 
