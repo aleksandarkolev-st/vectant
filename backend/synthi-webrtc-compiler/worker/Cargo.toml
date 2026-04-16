@@ -64,6 +64,8 @@ sha2 = "0.10"
 object = { version = "0.36", default-features = false, features = ["read", "elf"] }
 gimli = { version = "0.31", default-features = false, features = ["read", "std"] }
 memmap2 = "0.9"
+# Phase 11: x86-64 disassembly for integer immediate patching
+iced-x86 = { version = "1.21", default-features = false, features = ["decoder", "intel", "std"] }
 
 [build-dependencies]
 tonic-build = "0.11"
