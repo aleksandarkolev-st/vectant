@@ -7,7 +7,8 @@
 ## Revision history
 
 - **rev1** (initial draft): four-phase structure, latency budgets, file lists, risks. Landed in commit `802170e5`.
-- **rev5** (this): full implementation pass completed. Phase 9 done (compile acceleration + PCH with cross-session cache). Phase 10 done (4 backends + selector + runner_bin migration to WindowBackend trait — sokol carved out to Phase 12). Phase 10g.5 done (runner event dispatch ABI-agnostic: `*mut c_void` instead of `*mut SDL_Event`). Phase 11 MVP shipped (Tier 0 same-length string literal patcher with .so file patching, handler.rs telemetry, classification pipeline). Phase 12.6 partial (nm post-compile symbol check, versioned stdin handshake `handshake 1`). Spec pipeline fix: in-flight HTTP calls cancelled via `Notify` when newer triggers fire (previously 5-6 concurrent Gemini calls ran to completion and got discarded). Also: AI HTTP timeout unified to 180s, useHMR frontend loop fix, UNIVERSAL_SPLIT_PROMPT guardrail port + host_runner stdin reload skeleton, link-flag dedup. 23 commits total across two sessions on branch `claude/hmr-lightning`.
+- **rev6** (this): Phase 11 compile bypass WIRED — `try_tier0_bypass()` orchestrator patches .so files directly when classify_edit detects same-length string literal swaps, skipping g++ + ld entirely (~500ms saved per value-only save). Handler.rs short-circuits from Tier 0 → runner reload, falling through to Tier 1/2/3 on any failure. Phase 12.5 confirmed done — handler sends uniform stdin commands to both shipped and per-project runners (stale comment fixed). 21 end-to-end Tier 0 pipeline tests (classify → extract → patch) covering realistic C++ source edits. 28 commits total on branch `claude/hmr-lightning`.
+- **rev5**: full implementation pass completed. Phase 9 done (compile acceleration + PCH with cross-session cache). Phase 10 done (4 backends + selector + runner_bin migration to WindowBackend trait — sokol carved out to Phase 12). Phase 10g.5 done (runner event dispatch ABI-agnostic: `*mut c_void` instead of `*mut SDL_Event`). Phase 11 MVP shipped (Tier 0 same-length string literal patcher with .so file patching, handler.rs telemetry, classification pipeline). Phase 12.6 partial (nm post-compile symbol check, versioned stdin handshake `handshake 1`). Spec pipeline fix: in-flight HTTP calls cancelled via `Notify` when newer triggers fire (previously 5-6 concurrent Gemini calls ran to completion and got discarded). Also: AI HTTP timeout unified to 180s, useHMR frontend loop fix, UNIVERSAL_SPLIT_PROMPT guardrail port + host_runner stdin reload skeleton, link-flag dedup. 23 commits total across two sessions on branch `claude/hmr-lightning`.
 - **rev4**: first partial implementation landed on branch `claude/hmr-lightning`. Phase 9 (a/b/d/e/f) shipped; Phase 10 (a/b/f/g.1) shipped; Phase 12 **Seed** (per-project runner spawn plumbing) shipped after live runtime testing revealed the shipped runner's ABI mismatch against the Phase 7 universal split contract. Phase 12 Seed is explicitly narrower than the full Phase 12 design in §7: no supervisor process, no IPC protocol, no in-process HMR — just "the per-project `host_runner_<ts>` binary actually runs, with worker-managed Xvfb/GStreamer/WebRTC unchanged around it." Full HMR via stdin reload commands + supervisor split are Phase 12.5 and Phase 12.6, scoped in §7.X (new). Also: bug fix for `hot_reload/v2.rs` `validate_state_magic` / `get_module_abi_version` — misaligned pointers from ABI-wrong modules now produce a magic mismatch instead of aborting the process. Phase 8 frontend stack overflow (`synthi:hmr-status` self-feed in `useHMR.js`) also fixed as part of this work.
 - **rev3**: second review pass. Fixes for multi-threaded patching soundness, Path C window discovery, structured arch cache field, SIGINT re-install periodicity, plus ~10 additional gaps found during my own re-review. New §14 "Agnosticism assessment" with an honest verdict on library and language agnosticism (agnostic-by-fallback, not agnostic-by-construction). Tier 0 hit rate estimate revised downward from "~60%" to "~30-45%" after the atomic-store-only restriction.
 - **rev2**: major revision pass after detailed technical review. Changes:
@@ -960,6 +961,26 @@ Rev2 honesty reframe: this phase has the most correctness hazards of any in the 
 
 **"~60% of real-world edits are value tweaks"** was an unsupported claim in rev1. Removed. The rev2 justification is softer: value tweaks are A material fraction of edits (likely 30-50% based on anecdotal observation; we don't have production metrics yet). Phase 11 has high ROI on value tweaks and zero regression on other edits. Post-11g instrumentation will tell us whether to push further into this space.
 
+#### Phase 11 — Implementation status (rev6)
+
+| Sub-phase | Status | Commit(s) |
+|---|---|---|
+| Tier 0 same-length string literal extraction (`extract_string_swaps`) | ✅ SHIPPED | `fa0cf049` |
+| `.so` file patching (`patch_so_file`, atomic temp+rename) | ✅ SHIPPED | `fa0cf049` |
+| Candidate .so resolution (`candidate_so_paths`, symlink follow) | ✅ SHIPPED | `fa0cf049` |
+| Handler.rs classification telemetry | ✅ SHIPPED | `893c3e5e` |
+| `try_tier0_bypass` orchestrator (iterates candidates, handles not-found vs ambiguous) | ✅ SHIPPED | `07812899` |
+| **Handler.rs compile bypass** (Tier 0 success → skip g++ → use prev .so paths → reload) | ✅ SHIPPED | `202c0720` |
+| End-to-end pipeline tests (21 total, classify → extract → patch) | ✅ SHIPPED | `acd4f42e` |
+| Integer/float literal patching (x86-64 disassembly via `iced-x86`) | ❌ NOT DONE | — |
+| DWARF-driven literal location (11a) | ❌ NOT DONE | — |
+| Tree-sitter AST classifier (11b) | ❌ NOT DONE | — |
+| Live process memory patching (11d) | ❌ NOT DONE | — |
+
+**What shipped**: the MVP Tier 0 pipeline — value-only edits with same-length string literal changes bypass g++ entirely. The handler classifies the edit, extracts swaps, patches the .so on disk, and feeds the previous (now-patched) paths to the runner for dlclose+dlopen. ~500ms saved per qualifying edit.
+
+**What's left**: the full Phase 11 design (DWARF lookup, integer/float immediates, live memory patching) remains 2-3 weeks of implementation. The MVP covers the most common case (string literal tweaks in SDL_CreateWindow titles, printf format strings, UI labels, etc.).
+
 ### 6.2 Design
 
 #### 11a. DWARF-driven literal location with ASLR handling (~4-5 days — revised up from 3-4)
@@ -1481,7 +1502,7 @@ Benchmark (in 9f's Harness B):
 | Worker's `handle_runner_execution` picks per-project `host_runner_<ts>` when present (else falls back to shipped `runner_bin`) | Stdin-driven in-process reload protocol for per-project runner (Phase 12.5) |
 | `compile_core` / `compile_gui` create stable `libcore.so` / `libgui.so` symlinks so AI-generated `dlopen("./libcore.so")` resolves regardless of timestamp | Separate supervisor process with its own Xvfb per session (full §7.2 12a architecture) |
 | Per-project runner launches with `cwd = build_dir` + `DISPLAY=<worker-managed>` + `SYNTHI_UNSAFE_INPROCESS=1` (unchanged) | Versioned IPC protocol with handshake + capability negotiation (§7.2 12b) |
-| Worker skips `set_session` / `load <name> <path>` stdin commands in per-project mode (the binary does its own dlopen) | AI-generated `host_runner.cpp` template updated to read HMR commands from stdin + dlclose/dlopen for live reload (Phase 12.5) |
+| Worker sends uniform `set_session` / `load` / `handshake` stdin commands to both shipped and per-project runners (Phase 12.5 DONE) | AI-generated `host_runner.cpp` template includes stdin reader thread + 6-phase dlopen/dlclose lifecycle (UNIVERSAL_SPLIT_PROMPT, DONE) |
 | `runtime/hot_reload/v2.rs` `validate_state_magic` / `get_module_abi_version` use `ptr::read_unaligned` so ABI-mismatched modules produce a magic mismatch instead of aborting the process | Link-time `nm` check for `synthi_hmr_init` / `synthi_hmr_on_frame` symbols (§7.2 12b, post-compile gate) |
 | End-to-end smoke: per-project binary for the SDL2 canonical app runs for ≥4s in isolation, dlopens the symlinked .so files, opens the window at `DISPLAY=:99` without crashing | "Zero HMR reload" on the new path — each save currently requires a full process restart. Acceptable for MVP; blocks latency win until 12.5 lands |
 
@@ -1491,17 +1512,17 @@ Benchmark (in 9f's Harness B):
 
 ### 7.X Follow-up phases (12.5 / 12.6)
 
-**Phase 12.5 — Per-project runner HMR reload loop**
+**Phase 12.5 — Per-project runner HMR reload loop: DONE**
 
 Goal: turn Seed's "full process restart per save" into real HMR so the latency numbers in §3 apply to per-project binaries, not just the shipped runner.
 
-- Update `UNIVERSAL_SPLIT_PROMPT` in `ai-backend/ai-engine/llm/prompts.py` so the AI-generated `host_runner.cpp` template includes:
-  - A stdin reader thread (non-blocking or line-buffered), protocol identical to the shipped runner's text format: `set_session <sid>` / `load <name> <path>` / `reload <name> <path>` / `quit`.
-  - dlclose-then-dlopen for each module slot on a reload command, calling `core_on_unload` on the old module before dlclose and `core_on_load(prev_state)` on the new module with the preserved pointer.
-  - Guardrails for the stdin thread → main thread handoff (atomics, single-writer queue, or a render-phase drain check — not a raw `tokio::sync::Mutex`, this is C++).
-- Worker's `handle_runner_execution` stops unconditionally skipping stdin commands in per-project mode; instead it sends the same batched protocol it already builds for the shipped runner path.
-- Add prompt-side guardrails so the AI doesn't forget the stdin loop on the one project that needs it.
-- Land when Phase 12 Seed has been live long enough that we have real "per-project-crashes-on-reload" signal from users — the AI's dlclose safety is the main risk.
+All items shipped:
+- ✅ `UNIVERSAL_SPLIT_PROMPT` updated with ~250-line reference skeleton: stdin reader thread, command queue, 6-phase dlopen/dlclose lifecycle, `load_core`/`load_gui` helpers, `core_on_unload` → `core_on_load(prev_state)` state preservation (commit `2f3d029d`).
+- ✅ Worker's `handle_runner_execution` sends uniform `handshake` / `set_session` / `load` commands to both shipped and per-project runners — no branching on `use_per_project_runner` in the stdin command section (confirmed rev6, stale comment fixed in `f9a9bdd1`).
+- ✅ Prompt-side guardrails: ZERO HALLUCINATION RULE, MALLOC PROHIBITION, STATE-PRESERVATION PROTOCOL, EXACT FUNCTION SIGNATURES, HARD RULES (10 AI mistakes), SELF-CHECK — all ported to UNIVERSAL_SPLIT_PROMPT (commit `a5a5121f`).
+- ✅ Version handshake: `handshake 1` sent as first stdin command (Phase 12.6 partial, commit `3d8803f0`).
+
+Remaining risk: AI-generated code may not implement the stdin protocol correctly in all cases. This is a prompt quality issue, not a plumbing issue — the worker side is complete.
 
 **Phase 12.6 — Per-project runner supervisor split**
 
