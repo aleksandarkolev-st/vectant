@@ -563,7 +563,7 @@ pub async fn handle_compile_request(
                                 if let Some(cached_edits) =
                                     crate::hmr::speculative_diff_patch::take_matching_or_wait(
                                         spec_hash,
-                                        std::time::Duration::from_secs(15),
+                                        std::time::Duration::from_secs(25),
                                     )
                                     .await
                                 {
