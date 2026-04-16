@@ -2,9 +2,11 @@ use crate::compiler::builder::RebuildScope;
 use crate::compiler::context::CompileContext;
 use crate::compiler::error_parser::{parse_compiler_output, CompilerType};
 use crate::compiler::stages::ai_utils::calculate_hash;
+use crate::compiler::stages::compile_helpers::{
+    compile_to_object_command, cpp_compile_command, link_object_to_so_command, object_path_for_so,
+};
 use crate::hmr::compile_manifest::CompileManifest;
 use crate::hmr::incremental_cache::IncrementalCache;
-use crate::infra::utils::system_command;
 use anyhow::{Context, Result};
 use tokio::time::{timeout, Duration};
 
@@ -81,44 +83,120 @@ pub async fn compile_core(
                 tokio::fs::write(dir_path.join(fname), content).await?;
 
                 let core_out = output_dir.join(format!("libcore_{}.{}", timestamp, ext));
-                let mut cmd = system_command(compiler_exe);
-                cmd.arg(&std_flag);
-                for f in &effective_manifest.common_flags {
-                    cmd.arg(f);
-                }
-                cmd.arg(fname).arg("-I.").arg("-o").arg(&core_out);
-                for f in &effective_manifest.core_link_flags {
-                    cmd.arg(f);
-                }
-                cmd.arg("-ldl")
-                    .arg("-pthread") // Required for threaded adapters
-                    .arg("-rdynamic");
-                cmd.current_dir(dir_path);
 
-                eprintln!(
-                    "[CompileCore] Executing g++ in {:?} args: {:?}",
-                    dir_path,
-                    cmd.as_std().get_args()
+                // ULTRAPLAN Phase 9b: split compile+link into two steps
+                // so ccache (from Phase 9a) can cache the compile output
+                // by preprocessed-source hash. Unchanged modules hit the
+                // ccache store and skip the 300ms compile entirely; the
+                // link step is cheap (~30ms) and runs unconditionally.
+                //
+                // Build the link-flag list once — reused by both the
+                // initial link step and the fallback fused command if
+                // the split compile step fails for any reason other
+                // than the user's source being broken.
+                let mut link_flags: Vec<String> = Vec::with_capacity(
+                    effective_manifest.core_link_flags.len() + 3,
                 );
+                link_flags.extend(effective_manifest.core_link_flags.iter().cloned());
+                link_flags.push("-ldl".to_string());
+                link_flags.push("-pthread".to_string());  // threaded adapters
+                link_flags.push("-rdynamic".to_string());
 
-                cmd.kill_on_drop(true);
-                let child = cmd.spawn().context("Failed to spawn g++")?;
+                let core_obj = object_path_for_so(&core_out);
 
-                let output_res = timeout(Duration::from_secs(30), child.wait_with_output()).await;
+                // ULTRAPLAN Phase 9c — prepare a workspace-local PCH
+                // before compiling. First hit generates `.synthi_pch.h` +
+                // `.synthi_pch.h.gch` next to the source; subsequent
+                // compiles in the same workspace (compile_gui, or a
+                // second compile_core after an edit) hit the `exists()`
+                // fast path and reuse the cached .gch for free.
+                //
+                // On any failure the helper returns None and we fall
+                // through to non-PCH compile — no regression.
+                let pch_include_name = crate::compiler::stages::pch::prepare_workspace_pch(
+                    dir_path,
+                    compiler_exe,
+                    &std_flag,
+                    &effective_manifest.common_flags,
+                    content,
+                )
+                .await;
+                let common_flags_with_pch: Vec<String> = {
+                    let mut v = effective_manifest.common_flags.clone();
+                    if let Some(ref name) = pch_include_name {
+                        v.push("-include".to_string());
+                        v.push(name.clone());
+                    }
+                    v
+                };
 
-                let output = match output_res {
+                // Step 1: compile source → .o (ccache caches this)
+                let mut compile_cmd = compile_to_object_command(
+                    compiler_exe,
+                    fname,
+                    &core_obj,
+                    &std_flag,
+                    &common_flags_with_pch,
+                    dir_path,
+                );
+                eprintln!(
+                    "[CompileCore] Phase 9b split step 1/2 (compile): {:?}",
+                    compile_cmd.as_std().get_args()
+                );
+                compile_cmd.kill_on_drop(true);
+                let compile_child = compile_cmd.spawn().context("Failed to spawn compile step")?;
+                let compile_out = match timeout(Duration::from_secs(30), compile_child.wait_with_output()).await {
                     Ok(Ok(out)) => out,
                     Ok(Err(e)) => return Err(e.into()),
                     Err(_) => {
-                        // child is dropped and killed due to kill_on_drop(true)
-                        eprintln!("[CompileCore] Timed out waiting for g++");
-                        // Return Err so the pipeline sends a single authoritative
-                        // {status:"done", success:false} with the real error text.
-                        anyhow::bail!("Core compilation timed out after 30s");
+                        eprintln!("[CompileCore] compile step timed out");
+                        anyhow::bail!("Core compile step timed out after 30s");
                     }
                 };
+                eprintln!(
+                    "[CompileCore] compile step finished with status: {}",
+                    compile_out.status
+                );
 
-                eprintln!("[CompileCore] g++ finished with status: {}", output.status);
+                // If the compile step succeeded, run the link step.
+                // If it failed, synthesize a combined `output` that the
+                // heal loop below can process exactly as if the fused
+                // command had failed — preserves all existing heal logic
+                // without duplicating it across the split.
+                let output = if compile_out.status.success() {
+                    // Step 2: link .o → .so (no ccache, fast)
+                    let mut link_cmd = link_object_to_so_command(
+                        compiler_exe,
+                        &core_obj,
+                        &core_out,
+                        &link_flags,
+                        dir_path,
+                    );
+                    eprintln!(
+                        "[CompileCore] Phase 9b split step 2/2 (link): {:?}",
+                        link_cmd.as_std().get_args()
+                    );
+                    link_cmd.kill_on_drop(true);
+                    let link_child = link_cmd.spawn().context("Failed to spawn link step")?;
+                    match timeout(Duration::from_secs(30), link_child.wait_with_output()).await {
+                        Ok(Ok(out)) => out,
+                        Ok(Err(e)) => return Err(e.into()),
+                        Err(_) => {
+                            eprintln!("[CompileCore] link step timed out");
+                            anyhow::bail!("Core link step timed out after 30s");
+                        }
+                    }
+                } else {
+                    // Compile step failed — synthesise the combined
+                    // `output` so the heal loop downstream sees the same
+                    // shape it has always seen. The heal loop may
+                    // rewrite the source and retry with the fused
+                    // command, which is fine — the split is just an
+                    // optimization for the happy path.
+                    compile_out
+                };
+
+                eprintln!("[CompileCore] overall status: {}", output.status);
 
                 if !output.status.success() {
                     let stderr_str = String::from_utf8_lossy(&output.stderr).to_string();
@@ -137,7 +215,7 @@ pub async fn compile_core(
                         "core",
                         content,
                         |m| {
-                            let mut cmd = system_command(m.compiler.executable());
+                            let mut cmd = cpp_compile_command(m.compiler.executable());
                             cmd.arg(format!("-std={}", m.std));
                             for f in &m.common_flags {
                                 cmd.arg(f);
@@ -191,7 +269,7 @@ pub async fn compile_core(
                         ).await {
                             Ok(fixed) => {
                                 tokio::fs::write(dir_path.join(fname), &fixed).await?;
-                                let mut retry_cmd = system_command(compiler_exe);
+                                let mut retry_cmd = cpp_compile_command(compiler_exe);
                                 retry_cmd.arg(&std_flag);
                                 for f in &effective_manifest.common_flags {
                                     retry_cmd.arg(f);
@@ -254,6 +332,28 @@ pub async fn compile_core(
                 }
 
                 let path = core_out.to_string_lossy().to_string();
+
+                // ULTRAPLAN Lightning Phase 12 — stable symlink for per-project runner.
+                // The AI-generated host_runner.cpp dlopen's `./libcore.so`, but
+                // compile output is `libcore_<ts>.so`. Create a relative symlink
+                // so the host_runner can find the latest .so without knowing
+                // the timestamp. Remove any stale symlink first.
+                if let (Some(parent), Some(file_name)) = (core_out.parent(), core_out.file_name()) {
+                    let link_path = parent.join("libcore.so");
+                    let _ = std::fs::remove_file(&link_path);
+                    if let Err(e) = std::os::unix::fs::symlink(file_name, &link_path) {
+                        eprintln!(
+                            "[CompileCore] WARN: failed to create libcore.so → {:?} symlink: {}",
+                            file_name, e
+                        );
+                    } else {
+                        eprintln!(
+                            "[CompileCore] stable symlink: {} -> {:?}",
+                            link_path.display(),
+                            file_name
+                        );
+                    }
+                }
 
                 // Update persistent cache
                 if let Ok(so_data) = tokio::fs::read(&path).await {

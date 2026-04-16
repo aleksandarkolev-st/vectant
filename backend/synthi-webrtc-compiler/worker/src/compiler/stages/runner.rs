@@ -39,6 +39,13 @@ pub async fn handle_runner_execution(
     core_lib_path: String,
     gui_lib_path: String,
     session_id: Option<String>,
+    // ULTRAPLAN Lightning Phase 12 — when Some, spawn the AI-generated
+    // per-project host_runner_<ts> binary instead of the shipped
+    // target/debug/runner. The per-project binary owns window/renderer
+    // lifecycle, dlopens libcore.so/libgui.so itself, and runs its own
+    // main loop. Worker still manages Xvfb + GStreamer + WebRTC around
+    // it (frame capture via ximagesrc on DISPLAY=:99 is unchanged).
+    host_runner_bin_path: Option<String>,
 ) -> Result<()> {
     // Unified Runner Logic
     if modules_to_load.is_empty() {
@@ -57,6 +64,13 @@ pub async fn handle_runner_execution(
     }
 
     let mut guard = ctx.runner_store.lock().await;
+
+    // ULTRAPLAN Lightning Phase 12 — hoisted so both the spawn block
+    // and the later logging can reference it without re-resolving
+    // `host_runner_bin_path`. The spawn block uses it to pick the
+    // binary + cwd. Stdin HMR commands (set_session / load) are
+    // sent uniformly to both runner types (Phase 12.5).
+    let use_per_project_runner = host_runner_bin_path.is_some();
 
     let req_width = req.width.unwrap_or(800);
     let req_height = req.height.unwrap_or(600);
@@ -150,6 +164,21 @@ pub async fn handle_runner_execution(
         let mut xvfb_process: Option<tokio::process::Child> = reused_xvfb;
         let mut gst_pipeline: Option<gst::Pipeline> = reused_pipeline;
         let sdl_tx_opt: Option<mpsc::UnboundedSender<String>> = reused_sdl_tx;
+
+        // Phase 12.6: if a supervisor session exists with a per-session
+        // Xvfb display, override gst_display_str so ximagesrc captures
+        // from the supervisor's display instead of the shared :99.
+        {
+            let sup_guard = ctx.supervisor_store.lock().await;
+            if let Some(ref session) = *sup_guard {
+                eprintln!(
+                    "[Runner] Phase 12.6: using supervisor display {} (not :99)",
+                    session.display_str
+                );
+                wsl_display_str = session.display_str.clone();
+                gst_display_str = session.display_str.clone();
+            }
+        }
 
         if req.is_gui {
             let width = req_width;
@@ -409,14 +438,40 @@ pub async fn handle_runner_execution(
         }
 
         // Spawn Runner Process
-        let runner_path = std::env::current_exe()
-            .ok()
-            .and_then(|p| p.parent().map(|p| p.join("runner")))
-            .unwrap_or_else(|| std::path::PathBuf::from("runner"));
+        //
+        // ULTRAPLAN Lightning Phase 12 — per-project runner selection.
+        // When `host_runner_bin_path` is Some we spawn the AI-synthesised
+        // per-project binary directly. It owns SDL/window/renderer + the
+        // dlopen of libcore.so/libgui.so + its own main loop. cwd is set
+        // to the binary's parent dir so the AI's `./libcore.so` dlopen
+        // call resolves against the symlinks created in compile_core /
+        // compile_gui.
+        //
+        // When `host_runner_bin_path` is None we fall back to the shipped
+        // `target/debug/runner` — the legacy path that drives modules via
+        // stdin `load` commands and uses the SHIPPED ABI expectations.
+        // `use_per_project_runner` is hoisted at the top of this fn.
+        let runner_path: std::path::PathBuf = if let Some(ref p) = host_runner_bin_path {
+            std::path::PathBuf::from(p)
+        } else {
+            std::env::current_exe()
+                .ok()
+                .and_then(|p| p.parent().map(|p| p.join("runner")))
+                .unwrap_or_else(|| std::path::PathBuf::from("runner"))
+        };
 
-        debug_log!("Spawning runner: {:?}", runner_path);
+        debug_log!(
+            "Spawning runner ({}): {:?}",
+            if use_per_project_runner { "per-project" } else { "shipped" },
+            runner_path
+        );
+        eprintln!(
+            "[Main] Spawning runner ({}): {:?}",
+            if use_per_project_runner { "per-project" } else { "shipped" },
+            runner_path
+        );
 
-        let mut cmd = Command::new(runner_path);
+        let mut cmd = Command::new(&runner_path);
         cmd.env("DISPLAY", &wsl_display_str)
             .env(
                 "LD_LIBRARY_PATH",
@@ -432,6 +487,16 @@ pub async fn handle_runner_execution(
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
+
+        // Phase 12 — per-project runner needs cwd = build dir so its
+        // `dlopen("./libcore.so")` resolves via the symlinks created
+        // after link. Shipped runner doesn't care about cwd.
+        if use_per_project_runner {
+            if let Some(parent) = runner_path.parent() {
+                cmd.current_dir(parent);
+                eprintln!("[Main] per-project runner cwd: {}", parent.display());
+            }
+        }
 
         if let Some(sid) = &session_id {
             cmd.env("SYNTHI_SESSION_ID", sid);
@@ -654,7 +719,16 @@ pub async fn handle_runner_execution(
         // the next render frame, so batching ensures atomic multi-module
         // swap: no intermediate frame where new core state is rendered
         // by old GUI code (which would read corrupt data).
-        // ============================================================
+        //
+        // ULTRAPLAN Lightning Phase 12.5 — the per-project host_runner
+        // now speaks the same stdin text protocol as the shipped runner
+        // (set_session / load core <path> / load gui <path> / quit).
+        // The AI-generated template has a reader thread that drains the
+        // queue at the top of every frame and executes the 6-phase
+        // dlopen/dlclose sequence with prev_state preserved across
+        // reloads — see UNIVERSAL_SPLIT_PROMPT's HOST RUNNER GENERATION
+        // section. So we send the same commands in both modes, no
+        // branching needed.
         if let Some(stdin_arc) = &state.stdin {
             // Check if process is still alive before sending anything
             let mut process_alive = true;
@@ -672,15 +746,37 @@ pub async fn handle_runner_execution(
                 let mut stdin = stdin_arc.lock().await;
                 let mut send_failed = false;
 
-                // Send set_session first (required for Host KV support).
+                // ULTRAPLAN Lightning Phase 12.6 — version handshake.
+                // Send `handshake <version>` as the FIRST command on every
+                // stdin session. The runner's command dispatcher ignores
+                // unknown commands gracefully (Phase 12.5 contract), so
+                // old runners that don't understand "handshake" just log
+                // and continue. Future versions use the handshake for
+                // capability negotiation (e.g. "supports binary state
+                // transfer", "supports widget-level reload", etc.).
+                //
+                // Protocol version 1: set_session + load + quit. That's
+                // all the runner needs to speak today.
+                {
+                    let handshake = "handshake 1\n";
+                    debug_log!("[Main] Sending handshake: {}", handshake.trim());
+                    if let Err(e) = stdin.write_all(handshake.as_bytes()).await {
+                        eprintln!("[Main] Failed to write handshake to runner stdin: {}", e);
+                        send_failed = true;
+                    }
+                }
+
+                // Send set_session (required for Host KV support).
                 // The runner needs the session ID before any module load
                 // so modules can read/write persistent key-value state.
-                if let Some(ref sid) = session_id {
-                    let session_cmd = format!("set_session {}\n", sid);
-                    debug_log!("[Main] Sending session to runner: {}", session_cmd.trim());
-                    if let Err(e) = stdin.write_all(session_cmd.as_bytes()).await {
-                        eprintln!("[Main] Failed to write set_session to runner stdin: {}", e);
-                        send_failed = true;
+                if !send_failed {
+                    if let Some(ref sid) = session_id {
+                        let session_cmd = format!("set_session {}\n", sid);
+                        debug_log!("[Main] Sending session to runner: {}", session_cmd.trim());
+                        if let Err(e) = stdin.write_all(session_cmd.as_bytes()).await {
+                            eprintln!("[Main] Failed to write set_session to runner stdin: {}", e);
+                            send_failed = true;
+                        }
                     }
                 }
 

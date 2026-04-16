@@ -1,4 +1,7 @@
 pub mod abi_detect;
+pub mod binary_patch;
+pub mod tier0_unified;
+pub mod ts_value_classifier;
 pub mod adapted_project;
 pub mod adapter_matrix;
 pub mod adapter_lifecycle_fsm;
@@ -36,6 +39,7 @@ pub mod dirty_classifier;
 pub mod edit_applier;
 pub mod edit_classifier;
 pub mod speculative_diff_patch;
+pub mod tier0_literal_patch;
 pub mod dynlib_adapter;
 pub mod dynlib_abi_contract;
 pub mod dynlib_build_hooks;

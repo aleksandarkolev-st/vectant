@@ -7,6 +7,13 @@ use crate::compiler::builder::{
 use crate::compiler::context::CompileContext;
 use crate::infra::messages::CompileRequest;
 
+// ULTRAPLAN Lightning Phase 11 — per-process Tier 0 bypass counters.
+// Atomic so they're safe across concurrent compile requests (unlikely
+// in practice — single worker — but correct by construction).
+static TIER0_HITS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static TIER0_MISSES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static TIER0_INELIGIBLE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 // Import our new modular stages
 use crate::compiler::stages::ai_utils::{perform_ai_split, perform_ai_diff_patch};
 use crate::compiler::stages::compile_core::compile_core;
@@ -210,6 +217,13 @@ pub async fn handle_compile_request(
     // PHASE 1: AI SPLIT & PROCESSING (routed through ai_bypass)
     // ============================================================
 
+    // ULTRAPLAN Lightning Phase 11 — Tier 0 v2 state.
+    // `tier0_v2_eligible`: tree-sitter AST classifier confirmed value-only
+    // `tier0_old_source`: baseline source for the v2 classifier at bypass time
+    // Both populated inside FallbackDeterministic when classify_edit says value-only.
+    let mut tier0_v2_eligible = false;
+    let mut tier0_old_source: Option<String> = None;
+
     let split_data = match ai_bypass_result {
         AiBypassResult::Proceed => {
             // Loop B: AI call allowed — perform the split
@@ -404,6 +418,35 @@ pub async fn handle_compile_request(
                             is_value_only
                         );
 
+                        // ULTRAPLAN Lightning Phase 11 — Tier 0 v2 eligibility.
+                        // Run tree-sitter AST classifier to confirm the edit is
+                        // purely value changes (strings, integers). The regex
+                        // `is_value_only` is a fast pre-filter; tree-sitter is
+                        // the authoritative check that also detects integer
+                        // literal changes for DWARF+iced-x86 patching.
+                        if is_value_only {
+                            use crate::hmr::ts_value_classifier::{classify_ast, AstClassification};
+                            match classify_ast(&old_source, &req.source) {
+                                AstClassification::ValueOnly { ref changes } if !changes.is_empty() => {
+                                    eprintln!(
+                                        "[HMR] Tier 0 v2 ELIGIBLE: {} value change(s) (tree-sitter confirmed)",
+                                        changes.len()
+                                    );
+                                    tier0_v2_eligible = true;
+                                    tier0_old_source = Some(old_source.clone());
+                                }
+                                AstClassification::ValueOnly { .. } => {
+                                    eprintln!("[HMR] Tier 0 v2: value-only but no literal changes");
+                                }
+                                AstClassification::Structural => {
+                                    eprintln!("[HMR] Tier 0 v2: tree-sitter says structural (regex disagreed)");
+                                }
+                                AstClassification::ParseError(e) => {
+                                    eprintln!("[HMR] Tier 0 v2: parse error ({}), falling back to regex path", e);
+                                }
+                            }
+                        }
+
                         let arch_hint: Option<&str> = if architecture_md.is_empty() {
                             None
                         } else {
@@ -520,7 +563,7 @@ pub async fn handle_compile_request(
                                 if let Some(cached_edits) =
                                     crate::hmr::speculative_diff_patch::take_matching_or_wait(
                                         spec_hash,
-                                        std::time::Duration::from_secs(15),
+                                        std::time::Duration::from_secs(25),
                                     )
                                     .await
                                 {
@@ -936,13 +979,28 @@ pub async fn handle_compile_request(
             }
         }
     };
+    // ULTRAPLAN Lightning Phase 11 — inject -O0 and -fno-merge-constants
+    // so Tier 0 literal patching is safe. Applied unconditionally to ALL
+    // compiles — these are dev-mode flags, and HMR is a dev-only feature.
+    let compile_manifest: Option<CompileManifest> = compile_manifest.map(|m| {
+        if m.tier0_safe() {
+            m
+        } else {
+            eprintln!(
+                "[HMR] compile_manifest: injecting -O0/-fno-merge-constants for Tier 0 safety"
+            );
+            m.with_tier0_flags()
+        }
+    });
+
     match &compile_manifest {
         Some(m) => eprintln!(
-            "[HMR] compile_manifest: compiler={}, std={}, gui_link={:?}, hot_reload={}",
+            "[HMR] compile_manifest: compiler={}, std={}, gui_link={:?}, hot_reload={}, tier0_safe={}",
             m.compiler.executable(),
             m.std,
             m.gui_link_flags,
             m.hot_reload_mode.as_str(),
+            m.tier0_safe(),
         ),
         None => eprintln!("[HMR] compile_manifest: none (falling back to sdl2_default downstream)"),
     }
@@ -1004,48 +1062,11 @@ pub async fn handle_compile_request(
         }
     }
 
-    // Compile Core
-    let core_lib_path_opt = compile_core(
-        ctx,
-        &split_data,
-        &processed_core,
-        rebuild_scope.clone(),
-        prev_core_path.clone(),
-        &output_dir,
-        timestamp,
-        ext,
-        Some(session_id.clone()),
-        compile_manifest.as_ref(),
-    )
-    .await?;
-
-    let core_lib_path = core_lib_path_opt
-        .ok_or_else(|| anyhow::anyhow!("Core compilation produced no output (no core module in split data or scope is GUI-only)"))?;
-
-    // Compile GUI
-    let gui_lib_path_opt = compile_gui(
-        ctx,
-        &split_data,
-        &processed_gui,
-        rebuild_scope.clone(),
-        core_lib_path.clone(),
-        &output_dir,
-        timestamp,
-        ext,
-        Some(session_id.clone()),
-        req.is_gui,
-        compile_manifest.as_ref(),
-    )
-    .await?;
-
-    // If GUI is not requested or failed (but core succeeded), we might proceed with just core?
-    // But `gui_lib_path_opt` returns existing path if not rebuilt.
-    let gui_lib_path = gui_lib_path_opt.unwrap_or(prev_gui_path.unwrap_or_default());
-
     // ============================================================
-    // ULTRAPLAN PHASE 4: HOST RUNNER COMPILATION
+    // ULTRAPLAN PHASE 4: HOST RUNNER CONTENT RESOLUTION
     // ============================================================
     //
+    // Resolve host_runner.cpp content BEFORE the parallel compile block.
     // The universal split prompt emits a 4th file alongside core/gui/
     // shared: `host_runner.cpp`, the per-project main() that owns the
     // window/event loop and dlopens libcore.so + libgui.so. We compile
@@ -1062,6 +1083,12 @@ pub async fn handle_compile_request(
     // we MUST NOT overwrite it with the AI's regenerated content — even
     // on a fresh AI split. We just rebuild the user's existing file.
     // See HMR_AGNOSTIC_ULTRAPLAN.md §5.2 (Mitigation 2B).
+    //
+    // ULTRAPLAN Phase 9d (Lightning): this resolution block is now
+    // hoisted ABOVE the compile dispatch so the three compile stages
+    // (core/gui/runner) can all run in parallel with a single
+    // tokio::join!. All three inputs (processed_core, processed_gui,
+    // host_runner_content) are fully materialised before dispatch.
     let host_runner_content: Option<String> = if enrichment.adapted_status.user_owned_runner {
         // BYOR: read the user-authored runner from disk, ignore split_data.
         if let Some(ref p) = enrichment.adapted_status.host_runner_path {
@@ -1137,22 +1164,258 @@ pub async fn handle_compile_request(
         }
     };
 
-    // Compile the runner if we have content. Errors here are non-fatal
-    // for V1 — the shipped runner_bin still launches at runtime, so a
-    // host_runner build failure is observability only. When Phase 5+
-    // wires runtime spawn to the per-project runner, this should bail
-    // hard on Err instead.
-    let host_runner_bin_path: Option<String> = if let Some(ref content) = host_runner_content {
-        match compile_runner(
+    // ============================================================
+    // ULTRAPLAN Lightning Phase 9d — PARALLEL COMPILE DISPATCH
+    // ============================================================
+    //
+    // compile_core, compile_gui, and compile_runner are independent
+    // once `shared.h` is on disk and `host_runner_content` is
+    // resolved. Run them concurrently via `tokio::join!` when the
+    // worker has ≥3 cores available — on multicore hosts the wall-
+    // clock drops from ~3×N serial to ~N parallel (capped by the
+    // slowest stage).
+    //
+    // Gated on `num_cpus::get() >= 3` per rev3 §13 so single-core
+    // container deployments don't pay the concurrent-compile overhead
+    // (task scheduling, disk contention) for zero speedup benefit.
+    //
+    // compile_gui's `core_lib_path` parameter is vestigial — the
+    // function only uses it inside a `_combined_hash` that's bound
+    // to `_`. No actual ordering dependency. We pass an empty
+    // String since it's unused downstream.
+    //
+    // Error reporting is deterministic: errors are collected in
+    // source order (core → gui → runner) after the join completes,
+    // so per-module diagnostics don't interleave on the log.
+    // ── ULTRAPLAN Lightning Phase 11 — Tier 0 v2 compile bypass ──
+    //
+    // When tree-sitter classified the edit as value-only, run the
+    // unified Tier 0 patcher: string byte-scan + DWARF line map +
+    // iced-x86 integer immediate patching. Skips g++ entirely.
+    // Gate: Tier 0 is only safe when compile flags prevent the
+    // compiler from merging/folding string literals. Without -O0
+    // and -fno-merge-constants, a literal that appears once in
+    // source can end up shared or relocated in the binary, making
+    // the byte-scan patch silently wrong.
+    let tier0_flags_safe = compile_manifest
+        .as_ref()
+        .map(|m| m.tier0_safe())
+        .unwrap_or(false);
+    if tier0_v2_eligible && !tier0_flags_safe {
+        eprintln!(
+            "[HMR] Tier 0 BLOCKED: compile manifest missing -O0/-fno-merge-constants — \
+             falling through to g++ (safe but slower)"
+        );
+    }
+
+    let tier0_bypassed = if tier0_v2_eligible
+        && rebuild_scope != RebuildScope::None
+        && tier0_flags_safe
+    {
+        use crate::hmr::tier0_unified::{try_tier0_v2, Tier0V2Outcome};
+        let t0_start = std::time::Instant::now();
+        let old_src = tier0_old_source.as_deref().unwrap_or("");
+        let source_files: &[(&str, &str)] = &[("core", "core.cpp"), ("gui", "gui.cpp")];
+        match try_tier0_v2(&output_dir, old_src, &req.source, source_files) {
+            Tier0V2Outcome::Patched(result) => {
+                let t0_ms = t0_start.elapsed().as_millis();
+                let total_ms = compile_start.elapsed().as_millis();
+
+                // Phase 11d: try live memory patching to skip dlclose/dlopen.
+                // If the runner is alive and we have patch_records with
+                // file offsets, write directly to the runner's memory via
+                // /proc/pid/mem. Eliminates the ~20ms dlopen cost.
+                let live_patched = if !result.patch_records.is_empty() {
+                    let guard = ctx.runner_store.lock().await;
+                    if let Some(ref state) = *guard {
+                        if let Some(ref child) = state.process {
+                            if let Some(pid) = child.id() {
+                                use crate::hmr::binary_patch::proc_mem_patcher::patch_live;
+                                let mut all_ok = true;
+                                for rec in &result.patch_records {
+                                    match patch_live(
+                                        pid,
+                                        &rec.so_path,
+                                        rec.file_offset,
+                                        &rec.old_bytes,
+                                        &rec.new_bytes,
+                                    ) {
+                                        Ok(()) => {}
+                                        Err(e) => {
+                                            eprintln!(
+                                                "[HMR] Tier 0 live patch failed at {:#x}: {} — will reload",
+                                                rec.file_offset, e
+                                            );
+                                            all_ok = false;
+                                            break;
+                                        }
+                                    }
+                                }
+                                if all_ok {
+                                    eprintln!(
+                                        "[HMR] Tier 0 LIVE: patched {} record(s) in runner pid={}",
+                                        result.patch_records.len(), pid
+                                    );
+                                }
+                                all_ok
+                            } else { false }
+                        } else { false }
+                    } else { false }
+                } else { false };
+
+                let method = if live_patched { "live-mem" } else { "disk+reload" };
+                eprintln!(
+                    "[HMR] Tier 0 v2 SUCCESS ({}): {} string + {} integer + {} float patch(es) in {}ms (total: {}ms)",
+                    method,
+                    result.string_patches,
+                    result.integer_patches,
+                    result.float_patches,
+                    t0_ms,
+                    total_ms
+                );
+                if !result.skipped.is_empty() {
+                    eprintln!("[HMR] Tier 0 v2 skipped: {}", result.skipped.join("; "));
+                }
+                TIER0_HITS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let payload = serde_json::json!({
+                    "sessionId": session_id.clone(),
+                    "type": "stderr",
+                    "line": format!(
+                        "[HMR] Tier 0 ({}): {}s + {}i + {}f in {}ms\n",
+                        method, result.string_patches, result.integer_patches, result.float_patches, t0_ms
+                    )
+                });
+                let _ = ctx.log_dc.send_text(serde_json::to_string(&payload).unwrap_or_default()).await;
+                true
+            }
+            Tier0V2Outcome::Ineligible(reason) => {
+                TIER0_INELIGIBLE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                eprintln!("[HMR] Tier 0 v2 ineligible: {}", reason);
+                false
+            }
+            Tier0V2Outcome::Failed(reason) => {
+                TIER0_MISSES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                eprintln!("[HMR] Tier 0 v2 failed: {} — falling through to g++", reason);
+                false
+            }
+        }
+    } else {
+        if !tier0_v2_eligible {
+            TIER0_INELIGIBLE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+        false
+    };
+
+    // Log cumulative Tier 0 hit rate after every compile.
+    {
+        let hits = TIER0_HITS.load(std::sync::atomic::Ordering::Relaxed);
+        let misses = TIER0_MISSES.load(std::sync::atomic::Ordering::Relaxed);
+        let ineligible = TIER0_INELIGIBLE.load(std::sync::atomic::Ordering::Relaxed);
+        let total = hits + misses + ineligible;
+        if total > 0 {
+            eprintln!(
+                "[HMR] Tier 0 cumulative: {}/{} hits ({}%), {} misses, {} ineligible",
+                hits,
+                total,
+                if total > 0 { hits * 100 / total } else { 0 },
+                misses,
+                ineligible
+            );
+        }
+    }
+
+    let use_parallel = num_cpus::get() >= 3;
+    if !tier0_bypassed {
+        if use_parallel {
+            eprintln!(
+                "[HMR] parallel compile enabled (num_cpus={}) — dispatching core/gui/runner concurrently",
+                num_cpus::get()
+            );
+        } else {
+            eprintln!(
+                "[HMR] parallel compile disabled (num_cpus={} < 3) — serial fallback",
+                num_cpus::get()
+            );
+        }
+    }
+
+    let (core_lib_path_opt, gui_lib_path_opt, host_runner_bin_path): (
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    ) = if tier0_bypassed {
+        // Tier 0 patched existing .so files in place — skip g++.
+        // Resolve paths from stable symlinks (cheap — two stat calls).
+        // Prefer prev paths from runner_store, fall back to symlink
+        // resolution for resilience against runner_store being cleared.
+        let mut core_opt = prev_core_path.clone();
+        let mut gui_opt = prev_gui_path.clone();
+        if core_opt.is_none() || gui_opt.is_none() {
+            for p in crate::hmr::tier0_literal_patch::candidate_so_paths(&output_dir) {
+                let name = p.file_name().unwrap_or_default().to_string_lossy();
+                if name.contains("core") && core_opt.is_none() {
+                    core_opt = Some(p.to_string_lossy().to_string());
+                } else if name.contains("gui") && gui_opt.is_none() {
+                    gui_opt = Some(p.to_string_lossy().to_string());
+                }
+            }
+        }
+        (core_opt, gui_opt, None)
+    } else if use_parallel {
+        // ─── Parallel path ──────────────────────────────────────────
+        // Three futures run concurrently on the tokio runtime. The
+        // compile_runner future is Ok(None) when there's no runner
+        // content to compile — preserving the pre-Phase-9d semantics.
+        let core_fut = compile_core(
             ctx,
-            content,
+            &split_data,
+            &processed_core,
+            rebuild_scope.clone(),
+            prev_core_path.clone(),
             &output_dir,
             timestamp,
+            ext,
             Some(session_id.clone()),
             compile_manifest.as_ref(),
-        )
-        .await
-        {
+        );
+        let gui_fut = compile_gui(
+            ctx,
+            &split_data,
+            &processed_gui,
+            rebuild_scope.clone(),
+            String::new(),  // core_lib_path — vestigial in compile_gui
+            &output_dir,
+            timestamp,
+            ext,
+            Some(session_id.clone()),
+            req.is_gui,
+            compile_manifest.as_ref(),
+        );
+        let runner_fut = async {
+            if let Some(ref content) = host_runner_content {
+                compile_runner(
+                    ctx,
+                    content,
+                    &output_dir,
+                    timestamp,
+                    Some(session_id.clone()),
+                    compile_manifest.as_ref(),
+                )
+                .await
+            } else {
+                Ok(None)
+            }
+        };
+
+        let (core_res, gui_res, runner_res) =
+            tokio::join!(core_fut, gui_fut, runner_fut);
+
+        // Propagate core error first (it's the most load-bearing —
+        // without core we can't even attempt to load the .so chain).
+        let core_opt = core_res?;
+        let gui_opt = gui_res?;
+        // Runner errors are non-fatal in V1 (see below).
+        let runner_opt = match runner_res {
             Ok(p) => p,
             Err(e) => {
                 eprintln!(
@@ -1161,13 +1424,79 @@ pub async fn handle_compile_request(
                 );
                 None
             }
-        }
+        };
+        (core_opt, gui_opt, runner_opt)
     } else {
-        None
+        // ─── Serial fallback ───────────────────────────────────────
+        let core_opt = compile_core(
+            ctx,
+            &split_data,
+            &processed_core,
+            rebuild_scope.clone(),
+            prev_core_path.clone(),
+            &output_dir,
+            timestamp,
+            ext,
+            Some(session_id.clone()),
+            compile_manifest.as_ref(),
+        )
+        .await?;
+
+        let gui_opt = compile_gui(
+            ctx,
+            &split_data,
+            &processed_gui,
+            rebuild_scope.clone(),
+            String::new(),
+            &output_dir,
+            timestamp,
+            ext,
+            Some(session_id.clone()),
+            req.is_gui,
+            compile_manifest.as_ref(),
+        )
+        .await?;
+
+        let runner_opt = if let Some(ref content) = host_runner_content {
+            match compile_runner(
+                ctx,
+                content,
+                &output_dir,
+                timestamp,
+                Some(session_id.clone()),
+                compile_manifest.as_ref(),
+            )
+            .await
+            {
+                Ok(p) => p,
+                Err(e) => {
+                    eprintln!(
+                        "[HMR] compile_runner FAILED (non-fatal in V1, runtime still uses shipped runner): {}",
+                        e
+                    );
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        (core_opt, gui_opt, runner_opt)
     };
+
+    let core_lib_path = core_lib_path_opt
+        .ok_or_else(|| anyhow::anyhow!("Core compilation produced no output (no core module in split data or scope is GUI-only)"))?;
+    let gui_lib_path = gui_lib_path_opt.unwrap_or(prev_gui_path.unwrap_or_default());
+
     if let Some(ref p) = host_runner_bin_path {
         eprintln!("[HMR] host_runner binary: {}", p);
     }
+
+    // ULTRAPLAN Phase 9e — emit cache hit-rate snapshot after every
+    // compile so operators can watch the rate live. Cheap: atomic
+    // loads only, no lock acquisition. Prints nothing on the first
+    // compile of a session (all zeros) and starts reporting from
+    // the second compile onward.
+    ctx.incremental_cache.log_hit_rate_snapshot();
 
     // Manual logging
     debug_log!("[Compile] Step: Compilation finished");
@@ -1520,19 +1849,101 @@ pub async fn handle_compile_request(
         return Ok(serde_json::json!({ "status": "ok", "hmr": "adapter_handled" }));
     }
 
+    // ── ULTRAPLAN Lightning Phase 12.6 — supervisor dispatch ──
+    //
+    // When SYNTHI_PATH_C_SUPERVISOR=1 and a per-project runner binary
+    // exists, route through the supervisor (typed IPC, per-session Xvfb)
+    // instead of the legacy stdin text protocol. The supervisor owns
+    // the child lifecycle and Xvfb display, while GStreamer/WebRTC
+    // remain in the worker (captured from the per-session display).
+    let use_supervisor = std::env::var("SYNTHI_PATH_C_SUPERVISOR")
+        .map(|v| v == "1")
+        .unwrap_or(false)
+        && host_runner_bin_path.is_some();
+
     let runtime_reload_start = std::time::Instant::now();
-    let runner_result = handle_runner_execution(
-        ctx,
-        &req,
-        modules_to_load,
-        has_on_update,
-        enrichment.use_ai_split,
-        new_hashes,
-        core_lib_path,
-        gui_lib_path,
-        Some(session_id.clone()),
-    )
-    .await;
+    let runner_result = if use_supervisor {
+        use crate::runtime::path_c::supervisor::spawn_supervised;
+
+        let bin_path = host_runner_bin_path.as_ref().unwrap();
+        let req_width = req.width.unwrap_or(800);
+        let req_height = req.height.unwrap_or(600);
+
+        let mut sup_guard = ctx.supervisor_store.lock().await;
+        let result = if let Some(ref mut session) = *sup_guard {
+            // Existing supervisor session — send reload commands via IPC
+            eprintln!("[HMR] Phase 12.6: reusing supervised session (IPC reload)");
+            let mut ok = true;
+            for (name, path) in &modules_to_load {
+                if let Err(e) = session.reload_module(name, path).await {
+                    eprintln!("[HMR] Phase 12.6: IPC reload failed for {}: {}", name, e);
+                    ok = false;
+                    break;
+                }
+            }
+            if ok { Ok(()) } else { anyhow::bail!("supervisor IPC reload failed") }
+        } else {
+            // First compile — spawn supervised session
+            eprintln!("[HMR] Phase 12.6: spawning supervised session");
+            let mut alloc = ctx.xvfb_allocator.lock().await;
+            match spawn_supervised(
+                &mut alloc,
+                &session_id,
+                std::path::Path::new(bin_path),
+                &output_dir,
+                req_width,
+                req_height,
+            )
+            .await
+            {
+                Ok(mut session) => {
+                    // Set session and load initial modules
+                    let _ = session.set_session(&session_id).await;
+                    let mut ok = true;
+                    for (name, path) in &modules_to_load {
+                        if let Err(e) = session.load_module(name, path).await {
+                            eprintln!("[HMR] Phase 12.6: initial load failed for {}: {}", name, e);
+                            ok = false;
+                            break;
+                        }
+                    }
+                    *sup_guard = Some(session);
+                    if ok { Ok(()) } else { anyhow::bail!("supervisor initial load failed") }
+                }
+                Err(e) => {
+                    eprintln!(
+                        "[HMR] Phase 12.6: supervisor spawn failed: {} — falling back to legacy",
+                        e
+                    );
+                    drop(sup_guard);
+                    drop(alloc);
+                    handle_runner_execution(
+                        ctx, &req, modules_to_load, has_on_update,
+                        enrichment.use_ai_split, new_hashes,
+                        core_lib_path.clone(), gui_lib_path.clone(),
+                        Some(session_id.clone()), host_runner_bin_path.clone(),
+                    )
+                    .await
+                    .map_err(|e| e.into())
+                }
+            }
+        };
+        result
+    } else {
+        handle_runner_execution(
+            ctx,
+            &req,
+            modules_to_load,
+            has_on_update,
+            enrichment.use_ai_split,
+            new_hashes,
+            core_lib_path,
+            gui_lib_path,
+            Some(session_id.clone()),
+            host_runner_bin_path.clone(),
+        )
+        .await
+    };
 
     match runner_result {
         Ok(()) => {

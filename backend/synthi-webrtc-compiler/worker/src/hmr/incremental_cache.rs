@@ -306,6 +306,17 @@ pub struct IncrementalCache {
     index: RwLock<HashMap<String, CacheEntry>>,
     /// Total cache size
     total_size: RwLock<u64>,
+    /// ULTRAPLAN Phase 9e — hit rate instrumentation.
+    /// Atomic counters + atomic-read periodic reporting, zero lock
+    /// contention on the hot path. Per-miss-reason breakdown so we
+    /// can tell a "fresh compile" miss from a "cache corruption"
+    /// miss from a "stale entry" miss at a glance.
+    hits: std::sync::atomic::AtomicU64,
+    misses_not_in_index: std::sync::atomic::AtomicU64,
+    misses_file_gone: std::sync::atomic::AtomicU64,
+    misses_stale: std::sync::atomic::AtomicU64,
+    misses_corrupt: std::sync::atomic::AtomicU64,
+    misses_unreadable: std::sync::atomic::AtomicU64,
 }
 
 impl IncrementalCache {
@@ -332,7 +343,63 @@ impl IncrementalCache {
             cache_dir,
             index: RwLock::new(index),
             total_size: RwLock::new(total_size),
+            hits: std::sync::atomic::AtomicU64::new(0),
+            misses_not_in_index: std::sync::atomic::AtomicU64::new(0),
+            misses_file_gone: std::sync::atomic::AtomicU64::new(0),
+            misses_stale: std::sync::atomic::AtomicU64::new(0),
+            misses_corrupt: std::sync::atomic::AtomicU64::new(0),
+            misses_unreadable: std::sync::atomic::AtomicU64::new(0),
         })
+    }
+
+    /// ULTRAPLAN Phase 9e — log the current cache hit/miss snapshot.
+    /// Called from handler.rs after every compile request so the
+    /// running operator can watch the rate live. Cheap: only atomic
+    /// loads, no lock acquisition. Opportunistic — prints nothing
+    /// until at least one lookup has happened.
+    ///
+    /// Breakdown:
+    ///   hit   — cached .so returned, compile skipped
+    ///   miss.not_in_index — first compile of this content (expected cold path)
+    ///   miss.file_gone    — index entry stale, file deleted externally
+    ///   miss.stale        — entry older than MAX_CACHE_AGE_SECS
+    ///   miss.corrupt      — CRC32 mismatch at read time (alarm)
+    ///   miss.unreadable   — entry exists but file read failed (I/O fault)
+    ///
+    /// A healthy incremental session should look like: hit count growing,
+    /// miss.not_in_index bumping only on genuine content changes, other
+    /// miss reasons at zero. If miss.corrupt > 0 we have a filesystem
+    /// or concurrent-write bug worth investigating.
+    pub fn log_hit_rate_snapshot(&self) {
+        use std::sync::atomic::Ordering::Relaxed;
+        let hits = self.hits.load(Relaxed);
+        let m_idx = self.misses_not_in_index.load(Relaxed);
+        let m_gone = self.misses_file_gone.load(Relaxed);
+        let m_stale = self.misses_stale.load(Relaxed);
+        let m_corrupt = self.misses_corrupt.load(Relaxed);
+        let m_unread = self.misses_unreadable.load(Relaxed);
+        let total_misses = m_idx + m_gone + m_stale + m_corrupt + m_unread;
+        let total = hits + total_misses;
+        if total == 0 {
+            return;
+        }
+        let pct = (hits as f64) / (total as f64) * 100.0;
+        eprintln!(
+            "[Cache] hit_rate={:.1}% ({}/{}) | hit={} miss: not_in_index={} file_gone={} stale={} corrupt={} unreadable={}",
+            pct, hits, total, hits, m_idx, m_gone, m_stale, m_corrupt, m_unread,
+        );
+    }
+
+    /// Reset the hit/miss counters. Used by tests and by session
+    /// boundaries where a cold-cache comparison is meaningful.
+    pub fn reset_hit_stats(&self) {
+        use std::sync::atomic::Ordering::Relaxed;
+        self.hits.store(0, Relaxed);
+        self.misses_not_in_index.store(0, Relaxed);
+        self.misses_file_gone.store(0, Relaxed);
+        self.misses_stale.store(0, Relaxed);
+        self.misses_corrupt.store(0, Relaxed);
+        self.misses_unreadable.store(0, Relaxed);
     }
 
     /// Generate cache key from source content and compiler flags
@@ -457,64 +524,83 @@ impl IncrementalCache {
 
     /// Check if a compiled object exists in cache
     /// LEGACY: Does not validate toolchain compatibility
+    ///
+    /// ULTRAPLAN Phase 9e — every exit point bumps an atomic counter
+    /// so `log_hit_rate_snapshot` can report hit rate with per-reason
+    /// miss breakdown. Counters use `Relaxed` ordering (we're just
+    /// counting, no visibility constraints on other state).
     pub async fn get(&self, key: &str) -> Option<PathBuf> {
+        use std::sync::atomic::Ordering::Relaxed;
         let mut index = self.index.write().await;
 
-        if let Some(entry) = index.get_mut(key) {
-            // Check if object file still exists
-            if entry.object_path.exists() {
-                // Check age
-                let now = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
-                    .as_secs();
+        let Some(entry) = index.get_mut(key) else {
+            self.misses_not_in_index.fetch_add(1, Relaxed);
+            return None;
+        };
 
-                if now - entry.created_at < MAX_CACHE_AGE_SECS {
-                    // SAFETY: Validate integrity with checksum before returning
-                    if entry.checksum != 0 {
-                        match std::fs::read(&entry.object_path) {
-                            Ok(data) => {
-                                let actual_checksum = calculate_crc32(&data);
-                                if actual_checksum != entry.checksum {
-                                    eprintln!(
-                                        "[Cache] CORRUPTED: {} (expected CRC32 {:08X}, got {:08X})",
-                                        entry.object_path.display(),
-                                        entry.checksum,
-                                        actual_checksum
-                                    );
-                                    // Remove corrupted entry
-                                    let size = entry.size_bytes;
-                                    let path = entry.object_path.clone();
-                                    index.remove(key);
-                                    *self.total_size.write().await -= size;
-                                    let _ = std::fs::remove_file(&path);
-                                    return None;
-                                }
-                            }
-                            Err(e) => {
-                                eprintln!("[Cache] Failed to read for integrity check: {}", e);
-                                // File unreadable, remove entry
-                                let size = entry.size_bytes;
-                                index.remove(key);
-                                *self.total_size.write().await -= size;
-                                return None;
-                            }
-                        }
-                    }
-
-                    // Update last accessed
-                    entry.last_accessed = now;
-                    return Some(entry.object_path.clone());
-                }
-            }
-
-            // Entry is stale or missing, remove it
+        // Check if object file still exists
+        if !entry.object_path.exists() {
+            // Entry's file was deleted from under us — purge and miss
             let size = entry.size_bytes;
             index.remove(key);
             *self.total_size.write().await -= size;
+            self.misses_file_gone.fetch_add(1, Relaxed);
+            return None;
         }
 
-        None
+        // Check age
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        if now - entry.created_at >= MAX_CACHE_AGE_SECS {
+            // Entry is stale, remove it
+            let size = entry.size_bytes;
+            index.remove(key);
+            *self.total_size.write().await -= size;
+            self.misses_stale.fetch_add(1, Relaxed);
+            return None;
+        }
+
+        // SAFETY: Validate integrity with checksum before returning
+        if entry.checksum != 0 {
+            match std::fs::read(&entry.object_path) {
+                Ok(data) => {
+                    let actual_checksum = calculate_crc32(&data);
+                    if actual_checksum != entry.checksum {
+                        eprintln!(
+                            "[Cache] CORRUPTED: {} (expected CRC32 {:08X}, got {:08X})",
+                            entry.object_path.display(),
+                            entry.checksum,
+                            actual_checksum
+                        );
+                        // Remove corrupted entry
+                        let size = entry.size_bytes;
+                        let path = entry.object_path.clone();
+                        index.remove(key);
+                        *self.total_size.write().await -= size;
+                        let _ = std::fs::remove_file(&path);
+                        self.misses_corrupt.fetch_add(1, Relaxed);
+                        return None;
+                    }
+                }
+                Err(e) => {
+                    eprintln!("[Cache] Failed to read for integrity check: {}", e);
+                    // File unreadable, remove entry
+                    let size = entry.size_bytes;
+                    index.remove(key);
+                    *self.total_size.write().await -= size;
+                    self.misses_unreadable.fetch_add(1, Relaxed);
+                    return None;
+                }
+            }
+        }
+
+        // HIT path
+        entry.last_accessed = now;
+        self.hits.fetch_add(1, Relaxed);
+        Some(entry.object_path.clone())
     }
 
     /// Store a compiled object in cache

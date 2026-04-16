@@ -29,6 +29,12 @@ export function useHMR() {
     const [hmrHistory, setHmrHistory] = useState([]);
     // Track mounted state to prevent updates after unmount
     const isMountedRef = useRef(true);
+    // Loop guard: handleHMRMessage listens on synthi:hmr-status AND
+    // dispatchHMRStatus emits on synthi:hmr-status. Without this set
+    // we'd re-enter the handler on every status message and recurse
+    // until the stack overflows. We add each CustomEvent we emit to
+    // this WeakSet and the listener early-returns on membership.
+    const ownDispatchedEvents = useRef(new WeakSet());
 
     // New subsystem states from HMR pipeline stores
     const [aiLoopStatus, setAiLoopStatus] = useState(getAiLoopStatus);
@@ -40,9 +46,11 @@ export function useHMR() {
     // Dispatch HMR status event for UI components
     const dispatchHMRStatus = useCallback((statusData) => {
         if (typeof window !== 'undefined') {
-            window.dispatchEvent(new CustomEvent('synthi:hmr-status', {
+            const ev = new CustomEvent('synthi:hmr-status', {
                 detail: statusData
-            }));
+            });
+            ownDispatchedEvents.current.add(ev);
+            window.dispatchEvent(ev);
         }
     }, []);
 
@@ -89,7 +97,11 @@ export function useHMR() {
         const handleHMRMessage = (event) => {
             // SAFETY: Check if still mounted
             if (!isMountedRef.current) return;
-            
+            // SAFETY: Skip events this hook just dispatched, otherwise
+            // dispatchHMRStatus → synthi:hmr-status → handleHMRMessage
+            // forms an infinite loop for any hmr-status branch.
+            if (ownDispatchedEvents.current.has(event)) return;
+
             const message = event.detail;
             if (runtimeRef.current) {
                 console.log('[HMR] Received message:', message);

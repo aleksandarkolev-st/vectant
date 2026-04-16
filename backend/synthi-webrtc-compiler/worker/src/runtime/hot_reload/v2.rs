@@ -399,18 +399,29 @@ pub fn save_state_msgpack_v2(hot_state: &HotModuleState) -> Option<Vec<u8>> {
 }
 
 // Validation helper: check state header magic and size
+//
+// SAFETY: Uses `read_unaligned` because `state` may come from a module
+// whose `core_on_load` has the wrong ABI signature (returns void, so
+// whatever was in RAX gets misinterpreted as a state pointer). A
+// non-null, misaligned pointer would otherwise trip Rust's runtime
+// alignment check and abort the process. With read_unaligned the
+// caller just sees a magic mismatch and continues down the legacy
+// path — see runner_logic.rs:796.
 pub unsafe fn validate_state_magic(state: *mut c_void, expected_magic: u32) -> bool {
     if state.is_null() {
         return false;
     }
-    let magic = *(state as *const u32);
+    let magic = std::ptr::read_unaligned(state as *const u32);
     magic == expected_magic
 }
 
 // Extract ABI version from state header (third u32 field)
+//
+// SAFETY: see `validate_state_magic` — uses `read_unaligned` for the
+// same reason (resilient to ABI-mismatched modules returning garbage).
 pub unsafe fn get_module_abi_version(state: *mut c_void) -> u32 {
     if state.is_null() {
         return 0;
     }
-    *((state as *const u32).add(2))
+    std::ptr::read_unaligned((state as *const u32).add(2))
 }
