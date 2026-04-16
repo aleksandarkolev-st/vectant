@@ -320,6 +320,64 @@ pub fn candidate_so_paths(build_dir: &Path) -> Vec<PathBuf> {
     out
 }
 
+/// Attempt Tier 0 bypass on all candidate .so files in `build_dir`.
+///
+/// Tries `patch_so_file` on each candidate (libcore.so, libgui.so
+/// symlinks → resolved timestamped files). A "not found" result on
+/// one .so is expected (the literal lives in the other module) and
+/// is not a failure. An ambiguous match or I/O error is a hard
+/// failure that aborts the bypass.
+///
+/// Returns `Some(patched_paths)` when at least one .so was patched
+/// successfully, `None` when the bypass should be abandoned (caller
+/// falls through to the normal compile path).
+pub fn try_tier0_bypass(
+    build_dir: &Path,
+    swaps: &[LiteralSwap],
+) -> Option<Vec<PathBuf>> {
+    if swaps.is_empty() {
+        return None;
+    }
+    let candidates = candidate_so_paths(build_dir);
+    if candidates.is_empty() {
+        return None;
+    }
+
+    let mut patched_paths: Vec<PathBuf> = Vec::new();
+
+    for so_path in &candidates {
+        match patch_so_file(so_path, swaps) {
+            Tier0Outcome::Patched { offsets } => {
+                eprintln!(
+                    "[HMR] Tier 0: patched {} ({} offset(s))",
+                    so_path.display(),
+                    offsets.len()
+                );
+                patched_paths.push(so_path.clone());
+            }
+            Tier0Outcome::PatchFailed(ref reason) if reason.contains("not found") => {
+                // Literal not in this .so — expected when the edit
+                // targets only one module. Try the next candidate.
+            }
+            Tier0Outcome::PatchFailed(reason) => {
+                eprintln!(
+                    "[HMR] Tier 0: hard failure on {}: {}",
+                    so_path.display(),
+                    reason
+                );
+                return None;
+            }
+            Tier0Outcome::SkippedIneligible(_) => {}
+        }
+    }
+
+    if patched_paths.is_empty() {
+        None
+    } else {
+        Some(patched_paths)
+    }
+}
+
 // ─── Unit tests ─────────────────────────────────────────────
 
 #[cfg(test)]
@@ -449,6 +507,83 @@ mod tests {
         }];
         let outcome = patch_so_file(&path, &swaps);
         assert!(matches!(outcome, Tier0Outcome::PatchFailed(_)));
+    }
+
+    // ── try_tier0_bypass ──
+
+    #[test]
+    fn bypass_patches_single_so() {
+        let dir = tempfile::tempdir().unwrap();
+        let actual = dir.path().join("libcore_999.so");
+        std::fs::write(&actual, b"...HMR Test...more stuff...").unwrap();
+        std::os::unix::fs::symlink("libcore_999.so", dir.path().join("libcore.so")).unwrap();
+
+        let swaps = vec![LiteralSwap {
+            old: b"HMR Test".to_vec(),
+            new: b"HMR Prod".to_vec(),
+            kind: LiteralKind::String,
+        }];
+        let result = try_tier0_bypass(dir.path(), &swaps);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().len(), 1);
+        let data = std::fs::read(&actual).unwrap();
+        assert!(data.windows(8).any(|w| w == b"HMR Prod"));
+    }
+
+    #[test]
+    fn bypass_returns_none_when_no_candidates() {
+        let dir = tempfile::tempdir().unwrap();
+        let swaps = vec![LiteralSwap {
+            old: b"test".to_vec(),
+            new: b"prod".to_vec(),
+            kind: LiteralKind::String,
+        }];
+        assert!(try_tier0_bypass(dir.path(), &swaps).is_none());
+    }
+
+    #[test]
+    fn bypass_returns_none_on_ambiguous() {
+        let dir = tempfile::tempdir().unwrap();
+        let actual = dir.path().join("libcore_999.so");
+        std::fs::write(&actual, b"ABC padding ABC").unwrap();
+        std::os::unix::fs::symlink("libcore_999.so", dir.path().join("libcore.so")).unwrap();
+
+        let swaps = vec![LiteralSwap {
+            old: b"ABC".to_vec(),
+            new: b"XYZ".to_vec(),
+            kind: LiteralKind::String,
+        }];
+        assert!(try_tier0_bypass(dir.path(), &swaps).is_none());
+    }
+
+    #[test]
+    fn bypass_patches_only_matching_so() {
+        let dir = tempfile::tempdir().unwrap();
+        let core_f = dir.path().join("libcore_999.so");
+        let gui_f = dir.path().join("libgui_999.so");
+        std::fs::write(&core_f, b"...HMR Test...core stuff...").unwrap();
+        std::fs::write(&gui_f, b"...gui stuff only...").unwrap();
+        std::os::unix::fs::symlink("libcore_999.so", dir.path().join("libcore.so")).unwrap();
+        std::os::unix::fs::symlink("libgui_999.so", dir.path().join("libgui.so")).unwrap();
+
+        let swaps = vec![LiteralSwap {
+            old: b"HMR Test".to_vec(),
+            new: b"HMR Prod".to_vec(),
+            kind: LiteralKind::String,
+        }];
+        let result = try_tier0_bypass(dir.path(), &swaps);
+        assert!(result.is_some());
+        let paths = result.unwrap();
+        assert_eq!(paths.len(), 1);
+        assert!(paths[0].to_string_lossy().contains("core"));
+        // gui untouched
+        assert_eq!(std::fs::read(&gui_f).unwrap(), b"...gui stuff only...");
+    }
+
+    #[test]
+    fn bypass_empty_swaps_returns_none() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(try_tier0_bypass(dir.path(), &[]).is_none());
     }
 
     #[test]

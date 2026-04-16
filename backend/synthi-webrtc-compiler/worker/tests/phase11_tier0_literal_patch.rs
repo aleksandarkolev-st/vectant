@@ -6,7 +6,7 @@
 // from tier0_literal_patch.rs.
 
 use worker::hmr::tier0_literal_patch::{
-    extract_string_swaps, patch_so_file, candidate_so_paths,
+    extract_string_swaps, patch_so_file, candidate_so_paths, try_tier0_bypass,
     LiteralKind, LiteralSwap, Tier0Outcome,
 };
 use worker::hmr::edit_classifier::classify_edit;
@@ -143,4 +143,80 @@ fn candidate_paths_empty_when_no_files() {
     let dir = tempfile::tempdir().unwrap();
     let paths = candidate_so_paths(dir.path());
     assert!(paths.is_empty());
+}
+
+// ── try_tier0_bypass ──
+
+#[test]
+fn bypass_patches_core_and_skips_gui() {
+    let dir = tempfile::tempdir().unwrap();
+    let core = dir.path().join("libcore_777.so");
+    let gui = dir.path().join("libgui_777.so");
+    std::fs::write(&core, b"...HMR Test...core logic...").unwrap();
+    std::fs::write(&gui, b"...gui rendering only...").unwrap();
+    std::os::unix::fs::symlink("libcore_777.so", dir.path().join("libcore.so")).unwrap();
+    std::os::unix::fs::symlink("libgui_777.so", dir.path().join("libgui.so")).unwrap();
+
+    let swaps = vec![LiteralSwap {
+        old: b"HMR Test".to_vec(),
+        new: b"HMR Live".to_vec(),
+        kind: LiteralKind::String,
+    }];
+    let result = try_tier0_bypass(dir.path(), &swaps);
+    assert!(result.is_some());
+    let paths = result.unwrap();
+    assert_eq!(paths.len(), 1);
+    // Core was patched, gui untouched.
+    let core_data = std::fs::read(&core).unwrap();
+    assert!(core_data.windows(8).any(|w| w == b"HMR Live"));
+    let gui_data = std::fs::read(&gui).unwrap();
+    assert_eq!(gui_data, b"...gui rendering only...");
+}
+
+#[test]
+fn bypass_returns_none_on_empty_dir() {
+    let dir = tempfile::tempdir().unwrap();
+    let swaps = vec![LiteralSwap {
+        old: b"X".to_vec(),
+        new: b"Y".to_vec(),
+        kind: LiteralKind::String,
+    }];
+    assert!(try_tier0_bypass(dir.path(), &swaps).is_none());
+}
+
+#[test]
+fn bypass_returns_none_on_ambiguous_literal() {
+    let dir = tempfile::tempdir().unwrap();
+    let core = dir.path().join("libcore_777.so");
+    std::fs::write(&core, b"dup dup").unwrap();
+    std::os::unix::fs::symlink("libcore_777.so", dir.path().join("libcore.so")).unwrap();
+
+    let swaps = vec![LiteralSwap {
+        old: b"dup".to_vec(),
+        new: b"uni".to_vec(),
+        kind: LiteralKind::String,
+    }];
+    assert!(try_tier0_bypass(dir.path(), &swaps).is_none());
+}
+
+#[test]
+fn bypass_patches_both_sos_when_literal_in_both() {
+    let dir = tempfile::tempdir().unwrap();
+    let core = dir.path().join("libcore_777.so");
+    let gui = dir.path().join("libgui_777.so");
+    std::fs::write(&core, b"SHARED_LIT...core").unwrap();
+    std::fs::write(&gui, b"SHARED_LIT...gui_").unwrap();
+    std::os::unix::fs::symlink("libcore_777.so", dir.path().join("libcore.so")).unwrap();
+    std::os::unix::fs::symlink("libgui_777.so", dir.path().join("libgui.so")).unwrap();
+
+    let swaps = vec![LiteralSwap {
+        old: b"SHARED_LIT".to_vec(),
+        new: b"PATCHED_OK".to_vec(),
+        kind: LiteralKind::String,
+    }];
+    let result = try_tier0_bypass(dir.path(), &swaps);
+    assert!(result.is_some());
+    assert_eq!(result.unwrap().len(), 2);
+    assert!(std::fs::read(&core).unwrap().windows(10).any(|w| w == b"PATCHED_OK"));
+    assert!(std::fs::read(&gui).unwrap().windows(10).any(|w| w == b"PATCHED_OK"));
 }
