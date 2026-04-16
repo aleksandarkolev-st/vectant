@@ -972,13 +972,28 @@ pub async fn handle_compile_request(
             }
         }
     };
+    // ULTRAPLAN Lightning Phase 11 — inject -O0 and -fno-merge-constants
+    // so Tier 0 literal patching is safe. Applied unconditionally to ALL
+    // compiles — these are dev-mode flags, and HMR is a dev-only feature.
+    let compile_manifest: Option<CompileManifest> = compile_manifest.map(|m| {
+        if m.tier0_safe() {
+            m
+        } else {
+            eprintln!(
+                "[HMR] compile_manifest: injecting -O0/-fno-merge-constants for Tier 0 safety"
+            );
+            m.with_tier0_flags()
+        }
+    });
+
     match &compile_manifest {
         Some(m) => eprintln!(
-            "[HMR] compile_manifest: compiler={}, std={}, gui_link={:?}, hot_reload={}",
+            "[HMR] compile_manifest: compiler={}, std={}, gui_link={:?}, hot_reload={}, tier0_safe={}",
             m.compiler.executable(),
             m.std,
             m.gui_link_flags,
             m.hot_reload_mode.as_str(),
+            m.tier0_safe(),
         ),
         None => eprintln!("[HMR] compile_manifest: none (falling back to sdl2_default downstream)"),
     }
@@ -1174,8 +1189,25 @@ pub async fn handle_compile_request(
     // Prerequisites: tier0_swaps populated, rebuild_scope is not None
     // (source actually changed), and at least one previous .so exists
     // on disk (not a cold start).
+    // Gate: Tier 0 is only safe when compile flags prevent the
+    // compiler from merging/folding string literals. Without -O0
+    // and -fno-merge-constants, a literal that appears once in
+    // source can end up shared or relocated in the binary, making
+    // the byte-scan patch silently wrong.
+    let tier0_flags_safe = compile_manifest
+        .as_ref()
+        .map(|m| m.tier0_safe())
+        .unwrap_or(false);
+    if !tier0_swaps.is_empty() && !tier0_flags_safe {
+        eprintln!(
+            "[HMR] Tier 0 BLOCKED: compile manifest missing -O0/-fno-merge-constants — \
+             falling through to g++ (safe but slower)"
+        );
+    }
+
     let tier0_bypassed = if !tier0_swaps.is_empty()
         && rebuild_scope != RebuildScope::None
+        && tier0_flags_safe
     {
         use crate::hmr::tier0_literal_patch::try_tier0_bypass;
         let t0_start = std::time::Instant::now();
