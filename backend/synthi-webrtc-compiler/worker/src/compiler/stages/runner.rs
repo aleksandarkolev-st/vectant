@@ -732,15 +732,37 @@ pub async fn handle_runner_execution(
                 let mut stdin = stdin_arc.lock().await;
                 let mut send_failed = false;
 
-                // Send set_session first (required for Host KV support).
+                // ULTRAPLAN Lightning Phase 12.6 — version handshake.
+                // Send `handshake <version>` as the FIRST command on every
+                // stdin session. The runner's command dispatcher ignores
+                // unknown commands gracefully (Phase 12.5 contract), so
+                // old runners that don't understand "handshake" just log
+                // and continue. Future versions use the handshake for
+                // capability negotiation (e.g. "supports binary state
+                // transfer", "supports widget-level reload", etc.).
+                //
+                // Protocol version 1: set_session + load + quit. That's
+                // all the runner needs to speak today.
+                {
+                    let handshake = "handshake 1\n";
+                    debug_log!("[Main] Sending handshake: {}", handshake.trim());
+                    if let Err(e) = stdin.write_all(handshake.as_bytes()).await {
+                        eprintln!("[Main] Failed to write handshake to runner stdin: {}", e);
+                        send_failed = true;
+                    }
+                }
+
+                // Send set_session (required for Host KV support).
                 // The runner needs the session ID before any module load
                 // so modules can read/write persistent key-value state.
-                if let Some(ref sid) = session_id {
-                    let session_cmd = format!("set_session {}\n", sid);
-                    debug_log!("[Main] Sending session to runner: {}", session_cmd.trim());
-                    if let Err(e) = stdin.write_all(session_cmd.as_bytes()).await {
-                        eprintln!("[Main] Failed to write set_session to runner stdin: {}", e);
-                        send_failed = true;
+                if !send_failed {
+                    if let Some(ref sid) = session_id {
+                        let session_cmd = format!("set_session {}\n", sid);
+                        debug_log!("[Main] Sending session to runner: {}", session_cmd.trim());
+                        if let Err(e) = stdin.write_all(session_cmd.as_bytes()).await {
+                            eprintln!("[Main] Failed to write set_session to runner stdin: {}", e);
+                            send_failed = true;
+                        }
                     }
                 }
 
