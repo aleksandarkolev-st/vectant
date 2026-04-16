@@ -464,6 +464,42 @@ mod tests {
     }
 
     #[test]
+    fn extract_string_literals_multiple_on_one_line() {
+        let line = r#"    printf("fmt: %s %d", "val");"#;
+        let s = extract_string_literals(line);
+        assert_eq!(s, vec!["fmt: %s %d".to_string(), "val".to_string()]);
+    }
+
+    #[test]
+    fn extract_string_literals_empty_string() {
+        let line = r#"    const char* s = "";"#;
+        let s = extract_string_literals(line);
+        assert_eq!(s, vec!["".to_string()]);
+    }
+
+    #[test]
+    fn extract_string_literals_no_strings() {
+        let line = "    int x = 42;";
+        let s = extract_string_literals(line);
+        assert!(s.is_empty());
+    }
+
+    #[test]
+    fn extract_string_literals_char_literal_not_captured() {
+        let line = r#"    char c = 'A'; const char* s = "B";"#;
+        let s = extract_string_literals(line);
+        assert_eq!(s, vec!["B".to_string()]);
+    }
+
+    #[test]
+    fn extract_string_literals_escaped_backslash() {
+        let line = r#"    puts("path\\dir");"#;
+        let s = extract_string_literals(line);
+        assert_eq!(s.len(), 1);
+        assert!(s[0].contains("path\\\\dir"));
+    }
+
+    #[test]
     fn patch_so_file_unique_match() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("lib.so");
