@@ -155,7 +155,6 @@ fn extract_string_literals(line: &str) -> Vec<String> {
         if bytes[i] == b'"' {
             i += 1;
             let start = i;
-            let mut end = start;
             while i < bytes.len() && bytes[i] != b'"' {
                 if bytes[i] == b'\\' && i + 1 < bytes.len() {
                     i += 2;
@@ -163,23 +162,17 @@ fn extract_string_literals(line: &str) -> Vec<String> {
                 }
                 i += 1;
             }
-            end = i.min(bytes.len()); // the position of the closing "
-            if end >= start {
-                if let Ok(s) = std::str::from_utf8(&bytes[start..end]) {
-                    out.push(s.to_string());
-                }
+            let end = i.min(bytes.len());
+            if let Ok(s) = std::str::from_utf8(&bytes[start..end]) {
+                out.push(s.to_string());
             }
             if i < bytes.len() {
-                i += 1; // skip closing "
+                i += 1;
             }
             continue;
         }
         i += 1;
     }
-    // Suppress unused-variable warning for `end` in the case where
-    // the loop exits through the != '"' path — a bit ugly but avoids
-    // restructuring for a diagnostic that's covered by the tests.
-    let _ = 0;
     out
 }
 
