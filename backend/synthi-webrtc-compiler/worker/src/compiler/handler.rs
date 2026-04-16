@@ -1221,9 +1221,10 @@ pub async fn handle_compile_request(
                 let t0_ms = t0_start.elapsed().as_millis();
                 let total_ms = compile_start.elapsed().as_millis();
                 eprintln!(
-                    "[HMR] Tier 0 v2 SUCCESS: {} string + {} integer patch(es) in {}ms (total: {}ms)",
+                    "[HMR] Tier 0 v2 SUCCESS: {} string + {} integer + {} float patch(es) in {}ms (total: {}ms)",
                     result.string_patches,
                     result.integer_patches,
+                    result.float_patches,
                     t0_ms,
                     total_ms
                 );
@@ -1235,8 +1236,8 @@ pub async fn handle_compile_request(
                     "sessionId": session_id.clone(),
                     "type": "stderr",
                     "line": format!(
-                        "[HMR] Tier 0: {}s + {}i patched in {}ms (skipped g++)\n",
-                        result.string_patches, result.integer_patches, t0_ms
+                        "[HMR] Tier 0: {}s + {}i + {}f patched in {}ms (skipped g++)\n",
+                        result.string_patches, result.integer_patches, result.float_patches, t0_ms
                     )
                 });
                 let _ = ctx.log_dc.send_text(serde_json::to_string(&payload).unwrap_or_default()).await;

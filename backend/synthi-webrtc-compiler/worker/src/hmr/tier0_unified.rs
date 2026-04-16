@@ -1,16 +1,17 @@
 // ============================================================
-// TIER 0 UNIFIED PATCHER (Phase 11 — strings + integers)
+// TIER 0 UNIFIED PATCHER (Phase 11 — strings + integers + floats)
 // ============================================================
 //
-// Orchestrates both string literal and integer immediate patching
-// using the tree-sitter AST classifier, DWARF line map, and
-// iced-x86 disassembler.
+// Orchestrates string, integer, and float literal patching using
+// the tree-sitter AST classifier, DWARF line map, iced-x86
+// disassembler, and IEEE 754 float patcher.
 //
 // Flow:
 //   1. classify_ast(old, new) → ValueOnly { changes }
 //   2. For each LiteralChange:
 //      - StringLiteral: same-length check → byte-scan in .rodata
-//      - NumberLiteral: DWARF line→addr → iced-x86 find_immediates → patch
+//      - NumberLiteral (int): DWARF line→addr → iced-x86 find_immediates → patch
+//      - NumberLiteral (float): DWARF line→addr → find_float_loads → patch IEEE 754
 //   3. Returns Tier0V2Outcome with per-change results
 
 use crate::hmr::ts_value_classifier::{classify_ast, AstClassification, LiteralChange, LiteralKind};
@@ -19,12 +20,16 @@ use crate::hmr::tier0_literal_patch::{
 };
 use crate::hmr::binary_patch::dwarf_line_map::line_to_addresses;
 use crate::hmr::binary_patch::imm_patcher::{find_immediates, patch_immediate};
+use crate::hmr::binary_patch::float_patcher::{
+    find_float_loads, patch_float, parse_c_float, is_float_literal,
+};
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone)]
 pub struct Tier0V2Result {
     pub string_patches: usize,
     pub integer_patches: usize,
+    pub float_patches: usize,
     pub patched_paths: Vec<PathBuf>,
     pub skipped: Vec<String>,
 }
@@ -72,6 +77,7 @@ pub fn try_tier0_v2(
 
     let mut string_changes: Vec<&LiteralChange> = Vec::new();
     let mut integer_changes: Vec<&LiteralChange> = Vec::new();
+    let mut float_changes: Vec<&LiteralChange> = Vec::new();
     let mut skipped: Vec<String> = Vec::new();
 
     for change in &changes {
@@ -89,7 +95,11 @@ pub fn try_tier0_v2(
                 }
             }
             LiteralKind::NumberLiteral => {
-                integer_changes.push(change);
+                if is_float_literal(&change.old_text) || is_float_literal(&change.new_text) {
+                    float_changes.push(change);
+                } else {
+                    integer_changes.push(change);
+                }
             }
             LiteralKind::CharLiteral | LiteralKind::True | LiteralKind::False => {
                 skipped.push(format!("unsupported literal kind: {:?}", change.kind));
@@ -97,7 +107,7 @@ pub fn try_tier0_v2(
         }
     }
 
-    if string_changes.is_empty() && integer_changes.is_empty() {
+    if string_changes.is_empty() && integer_changes.is_empty() && float_changes.is_empty() {
         return Tier0V2Outcome::Ineligible(format!(
             "no patchable changes (skipped: {})",
             skipped.join("; ")
@@ -199,6 +209,71 @@ pub fn try_tier0_v2(
         }
     }
 
+    // ── Float patches (DWARF + movss/movsd → .rodata IEEE 754) ──
+    let mut float_patch_count = 0;
+    for change in &float_changes {
+        let old_val = match parse_c_float(&change.old_text) {
+            Some(v) => v,
+            None => {
+                skipped.push(format!("unparseable old float: {:?}", change.old_text));
+                continue;
+            }
+        };
+        let new_val = match parse_c_float(&change.new_text) {
+            Some(v) => v,
+            None => {
+                skipped.push(format!("unparseable new float: {:?}", change.new_text));
+                continue;
+            }
+        };
+        let is_f32 = change.old_text.ends_with('f') || change.old_text.ends_with('F');
+
+        let mut patched_this = false;
+        for so_path in &candidates {
+            for &(_module, filename) in source_files {
+                let addrs = match line_to_addresses(so_path, filename, change.line as u32) {
+                    Ok(a) => a,
+                    Err(_) => continue,
+                };
+                if addrs.is_empty() {
+                    continue;
+                }
+
+                let va_list: Vec<u64> = addrs.iter().map(|a| a.address).collect();
+                let locs = match find_float_loads(so_path, &va_list, Some(old_val), is_f32) {
+                    Ok(l) => l,
+                    Err(_) => continue,
+                };
+
+                if locs.len() == 1 {
+                    if let Err(e) = patch_float(so_path, &locs[0], new_val, is_f32) {
+                        return Tier0V2Outcome::Failed(format!("float patch: {}", e));
+                    }
+                    float_patch_count += 1;
+                    if !patched_paths.contains(so_path) {
+                        patched_paths.push(so_path.clone());
+                    }
+                    patched_this = true;
+                    break;
+                } else if locs.len() > 1 {
+                    skipped.push(format!(
+                        "ambiguous: {} float loads with value={} at line {}",
+                        locs.len(), old_val, change.line
+                    ));
+                }
+            }
+            if patched_this {
+                break;
+            }
+        }
+        if !patched_this && !skipped.iter().any(|s| s.contains("ambiguous")) {
+            skipped.push(format!(
+                "float {} not found in any .so at line {}",
+                old_val, change.line
+            ));
+        }
+    }
+
     if patched_paths.is_empty() {
         Tier0V2Outcome::Failed(format!(
             "no patches applied (skipped: {})",
@@ -208,6 +283,7 @@ pub fn try_tier0_v2(
         Tier0V2Outcome::Patched(Tier0V2Result {
             string_patches: string_patch_count,
             integer_patches: integer_patch_count,
+            float_patches: float_patch_count,
             patched_paths,
             skipped,
         })
