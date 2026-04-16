@@ -404,6 +404,31 @@ pub async fn handle_compile_request(
                             is_value_only
                         );
 
+                        // ULTRAPLAN Lightning Phase 11 — Tier 0 telemetry.
+                        // Log whether the edit qualifies for same-length string
+                        // literal patching. The actual .so patching + compile
+                        // bypass is wired in the next commit; this commit gives
+                        // operators visibility into the Tier 0 hit rate so we
+                        // know how many edits the patcher will accelerate once
+                        // the bypass lands.
+                        if is_value_only {
+                            use crate::hmr::tier0_literal_patch::extract_string_swaps;
+                            match extract_string_swaps(&sync_classification) {
+                                Some(swaps) if !swaps.is_empty() => {
+                                    eprintln!(
+                                        "[HMR] Tier 0 ELIGIBLE: {} same-length string swap(s) detected \
+                                         (bypass not yet wired — falling through to Tier 1/2)",
+                                        swaps.len()
+                                    );
+                                }
+                                _ => {
+                                    eprintln!(
+                                        "[HMR] Tier 0 ineligible (value-only but no same-length string swaps)"
+                                    );
+                                }
+                            }
+                        }
+
                         let arch_hint: Option<&str> = if architecture_md.is_empty() {
                             None
                         } else {
