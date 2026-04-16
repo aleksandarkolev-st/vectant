@@ -165,6 +165,21 @@ pub async fn handle_runner_execution(
         let mut gst_pipeline: Option<gst::Pipeline> = reused_pipeline;
         let sdl_tx_opt: Option<mpsc::UnboundedSender<String>> = reused_sdl_tx;
 
+        // Phase 12.6: if a supervisor session exists with a per-session
+        // Xvfb display, override gst_display_str so ximagesrc captures
+        // from the supervisor's display instead of the shared :99.
+        {
+            let sup_guard = ctx.supervisor_store.lock().await;
+            if let Some(ref session) = *sup_guard {
+                eprintln!(
+                    "[Runner] Phase 12.6: using supervisor display {} (not :99)",
+                    session.display_str
+                );
+                wsl_display_str = session.display_str.clone();
+                gst_display_str = session.display_str.clone();
+            }
+        }
+
         if req.is_gui {
             let width = req_width;
             let height = req_height;
