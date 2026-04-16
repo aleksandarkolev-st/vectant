@@ -7,6 +7,13 @@ use crate::compiler::builder::{
 use crate::compiler::context::CompileContext;
 use crate::infra::messages::CompileRequest;
 
+// ULTRAPLAN Lightning Phase 11 — per-process Tier 0 bypass counters.
+// Atomic so they're safe across concurrent compile requests (unlikely
+// in practice — single worker — but correct by construction).
+static TIER0_HITS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static TIER0_MISSES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static TIER0_INELIGIBLE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 // Import our new modular stages
 use crate::compiler::stages::ai_utils::{perform_ai_split, perform_ai_diff_patch};
 use crate::compiler::stages::compile_core::compile_core;
@@ -1171,23 +1178,54 @@ pub async fn handle_compile_request(
         && rebuild_scope != RebuildScope::None
     {
         use crate::hmr::tier0_literal_patch::try_tier0_bypass;
+        let t0_start = std::time::Instant::now();
         match try_tier0_bypass(&output_dir, &tier0_swaps) {
             Some(patched_paths) => {
+                let t0_ms = t0_start.elapsed().as_millis();
+                let total_ms = compile_start.elapsed().as_millis();
                 eprintln!(
-                    "[HMR] Tier 0 SUCCESS: bypassed g++ — patched {} .so file(s) in {:?}",
+                    "[HMR] Tier 0 SUCCESS: patched {} .so file(s) in {}ms (total since handler start: {}ms, g++ saved: ~500ms)",
                     patched_paths.len(),
-                    compile_start.elapsed()
+                    t0_ms,
+                    total_ms
                 );
+                TIER0_HITS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let payload = serde_json::json!({
+                    "sessionId": session_id.clone(),
+                    "type": "stderr",
+                    "line": format!("[HMR] Tier 0: literal patch in {}ms (skipped g++)\n", t0_ms)
+                });
+                let _ = ctx.log_dc.send_text(serde_json::to_string(&payload).unwrap_or_default()).await;
                 true
             }
             None => {
+                TIER0_MISSES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 eprintln!("[HMR] Tier 0 failed — falling through to g++ compile");
                 false
             }
         }
     } else {
+        TIER0_INELIGIBLE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         false
     };
+
+    // Log cumulative Tier 0 hit rate after every compile.
+    {
+        let hits = TIER0_HITS.load(std::sync::atomic::Ordering::Relaxed);
+        let misses = TIER0_MISSES.load(std::sync::atomic::Ordering::Relaxed);
+        let ineligible = TIER0_INELIGIBLE.load(std::sync::atomic::Ordering::Relaxed);
+        let total = hits + misses + ineligible;
+        if total > 0 {
+            eprintln!(
+                "[HMR] Tier 0 cumulative: {}/{} hits ({}%), {} misses, {} ineligible",
+                hits,
+                total,
+                if total > 0 { hits * 100 / total } else { 0 },
+                misses,
+                ineligible
+            );
+        }
+    }
 
     let use_parallel = num_cpus::get() >= 3;
     if !tier0_bypassed {
