@@ -3309,6 +3309,108 @@ static ModuleSlot g_core, g_gui;
 static std::mutex g_cmd_mutex;
 static std::vector<std::string> g_cmd_queue;
 static volatile bool g_quit_requested = false;
+static int g_ipc_sock = -1;  // Phase 12.6: Unix socket IPC (or -1 for stdin)
+
+// ── Phase 12.6 IPC helpers ──────────────────────────────
+// Length-prefix (4-byte LE) + JSON framing over Unix socket.
+// Used when SYNTHI_HMR_SOCKET env var is set; falls back to
+// stdin text protocol when absent.
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <unistd.h>
+
+static bool ipc_send(int sock, const char* json) {
+    uint32_t len = (uint32_t)strlen(json);
+    uint32_t le_len = len; // already LE on x86-64
+    if (send(sock, &le_len, 4, MSG_NOSIGNAL) != 4) return false;
+    if (send(sock, json, len, MSG_NOSIGNAL) != (ssize_t)len) return false;
+    return true;
+}
+
+static std::string ipc_recv(int sock) {
+    uint32_t len = 0;
+    if (recv(sock, &len, 4, MSG_WAITALL) != 4) return "";
+    if (len > 1048576) return ""; // 1MB sanity limit
+    std::string buf(len, '\\0');
+    if (recv(sock, &buf[0], len, MSG_WAITALL) != (ssize_t)len) return "";
+    return buf;
+}
+
+static int ipc_connect(const char* path) {
+    int sock = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (sock < 0) return -1;
+    struct sockaddr_un addr = {};
+    addr.sun_family = AF_UNIX;
+    strncpy(addr.sun_path, path, sizeof(addr.sun_path) - 1);
+    if (connect(sock, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
+        close(sock); return -1;
+    }
+    return sock;
+}
+
+static void ipc_send_ack(int sock, uint64_t cmd_id) {
+    char buf[256];
+    snprintf(buf, sizeof(buf),
+        "{\"type\":\"Ack\",\"command_id\":%lu}", (unsigned long)cmd_id);
+    ipc_send(sock, buf);
+}
+
+// IPC reader thread — reads commands from Unix socket,
+// parses JSON minimally, pushes to the same g_cmd_queue
+// that the stdin path uses. Sends Ack/HandshakeAck back.
+static void* ipc_reader_thread(void* arg) {
+    int sock = (int)(intptr_t)arg;
+    // Wait for Handshake from supervisor
+    std::string msg = ipc_recv(sock);
+    if (msg.empty()) return nullptr;
+    // Send HandshakeAck
+    const char* ack = "{\"type\":\"HandshakeAck\","
+        "\"child_version\":1,\"child_min_supported\":1,"
+        "\"child_capabilities\":[\"load\",\"reload\",\"window_discovery\"]}";
+    ipc_send(sock, ack);
+    fprintf(stderr, "[host_runner] IPC handshake complete\\n");
+
+    while (true) {
+        msg = ipc_recv(sock);
+        if (msg.empty()) break;
+        // Minimal JSON parse: extract "type" and route
+        uint64_t cmd_id = 0;
+        // Find command_id
+        const char* cid = strstr(msg.c_str(), "\"command_id\":");
+        if (cid) cmd_id = strtoull(cid + 13, nullptr, 10);
+
+        if (msg.find("\"Shutdown\"") != std::string::npos) {
+            ipc_send_ack(sock, cmd_id);
+            std::lock_guard<std::mutex> lock(g_cmd_mutex);
+            g_cmd_queue.emplace_back("quit");
+            break;
+        } else if (msg.find("\"Load\"") != std::string::npos ||
+                   msg.find("\"Reload\"") != std::string::npos) {
+            // Extract module_name and so_path
+            const char* mn = strstr(msg.c_str(), "\"module_name\":\"");
+            const char* sp = strstr(msg.c_str(), "\"so_path\":\"");
+            if (mn && sp) {
+                mn += 15; const char* mn_end = strchr(mn, '"');
+                sp += 11; const char* sp_end = strchr(sp, '"');
+                if (mn_end && sp_end) {
+                    std::string name(mn, mn_end - mn);
+                    std::string path(sp, sp_end - sp);
+                    std::string cmd = "load " + name + " " + path;
+                    { std::lock_guard<std::mutex> lock(g_cmd_mutex);
+                      g_cmd_queue.push_back(cmd); }
+                    ipc_send_ack(sock, cmd_id);
+                }
+            }
+        } else if (msg.find("\"SetSession\"") != std::string::npos) {
+            ipc_send_ack(sock, cmd_id);
+        } else {
+            // Unknown command — ack anyway (forward compat)
+            ipc_send_ack(sock, cmd_id);
+        }
+    }
+    close(sock);
+    return nullptr;
+}
 
 static void* stdin_reader_thread(void*) {
     char buf[4096];
@@ -3408,8 +3510,23 @@ int main(int argc, char** argv) {
     load_core("./libcore.so");
     load_gui("./libgui.so", r);
 
+    // Phase 12.6: prefer IPC socket when SYNTHI_HMR_SOCKET is set,
+    // fall back to stdin text protocol otherwise.
     pthread_t reader_tid;
-    pthread_create(&reader_tid, nullptr, stdin_reader_thread, nullptr);
+    const char* hmr_socket = getenv("SYNTHI_HMR_SOCKET");
+    if (hmr_socket && hmr_socket[0]) {
+        g_ipc_sock = ipc_connect(hmr_socket);
+        if (g_ipc_sock >= 0) {
+            fprintf(stderr, "[host_runner] IPC connected to %s\\n", hmr_socket);
+            pthread_create(&reader_tid, nullptr, ipc_reader_thread,
+                           (void*)(intptr_t)g_ipc_sock);
+        } else {
+            fprintf(stderr, "[host_runner] IPC connect failed, falling back to stdin\\n");
+            pthread_create(&reader_tid, nullptr, stdin_reader_thread, nullptr);
+        }
+    } else {
+        pthread_create(&reader_tid, nullptr, stdin_reader_thread, nullptr);
+    }
     pthread_detach(reader_tid);
 
     while (!g_quit_requested) {
