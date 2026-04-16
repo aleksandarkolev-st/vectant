@@ -210,6 +210,13 @@ pub async fn handle_compile_request(
     // PHASE 1: AI SPLIT & PROCESSING (routed through ai_bypass)
     // ============================================================
 
+    // ULTRAPLAN Lightning Phase 11 — Tier 0 literal swap accumulator.
+    // Populated inside the FallbackDeterministic branch when
+    // classify_edit detects a value-only edit with same-length
+    // string swaps. Read after Phase 2 (rebuild scope) to decide
+    // whether to bypass g++ and patch the .so directly.
+    let mut tier0_swaps: Vec<crate::hmr::tier0_literal_patch::LiteralSwap> = Vec::new();
+
     let split_data = match ai_bypass_result {
         AiBypassResult::Proceed => {
             // Loop B: AI call allowed — perform the split
@@ -404,22 +411,19 @@ pub async fn handle_compile_request(
                             is_value_only
                         );
 
-                        // ULTRAPLAN Lightning Phase 11 — Tier 0 telemetry.
-                        // Log whether the edit qualifies for same-length string
-                        // literal patching. The actual .so patching + compile
-                        // bypass is wired in the next commit; this commit gives
-                        // operators visibility into the Tier 0 hit rate so we
-                        // know how many edits the patcher will accelerate once
-                        // the bypass lands.
+                        // ULTRAPLAN Lightning Phase 11 — Tier 0 eligibility.
+                        // Extract same-length string swaps for direct .so
+                        // patching. Populated swaps are consumed after Phase 2
+                        // (rebuild scope) to bypass g++ when possible.
                         if is_value_only {
                             use crate::hmr::tier0_literal_patch::extract_string_swaps;
                             match extract_string_swaps(&sync_classification) {
                                 Some(swaps) if !swaps.is_empty() => {
                                     eprintln!(
-                                        "[HMR] Tier 0 ELIGIBLE: {} same-length string swap(s) detected \
-                                         (bypass not yet wired — falling through to Tier 1/2)",
+                                        "[HMR] Tier 0 ELIGIBLE: {} same-length string swap(s)",
                                         swaps.len()
                                     );
+                                    tier0_swaps = swaps;
                                 }
                                 _ => {
                                     eprintln!(
@@ -1154,24 +1158,75 @@ pub async fn handle_compile_request(
     // Error reporting is deterministic: errors are collected in
     // source order (core → gui → runner) after the join completes,
     // so per-module diagnostics don't interleave on the log.
-    let use_parallel = num_cpus::get() >= 3;
-    if use_parallel {
-        eprintln!(
-            "[HMR] parallel compile enabled (num_cpus={}) — dispatching core/gui/runner concurrently",
-            num_cpus::get()
-        );
+    // ── ULTRAPLAN Lightning Phase 11 — Tier 0 compile bypass ──
+    //
+    // When the edit classifier detected same-length string literal
+    // swaps, try patching the existing .so files directly instead of
+    // running g++ + ld. This saves ~500ms per value-only save.
+    //
+    // Prerequisites: tier0_swaps populated, rebuild_scope is not None
+    // (source actually changed), and at least one previous .so exists
+    // on disk (not a cold start).
+    let tier0_bypassed = if !tier0_swaps.is_empty()
+        && rebuild_scope != RebuildScope::None
+    {
+        use crate::hmr::tier0_literal_patch::try_tier0_bypass;
+        match try_tier0_bypass(&output_dir, &tier0_swaps) {
+            Some(patched_paths) => {
+                eprintln!(
+                    "[HMR] Tier 0 SUCCESS: bypassed g++ — patched {} .so file(s) in {:?}",
+                    patched_paths.len(),
+                    compile_start.elapsed()
+                );
+                true
+            }
+            None => {
+                eprintln!("[HMR] Tier 0 failed — falling through to g++ compile");
+                false
+            }
+        }
     } else {
-        eprintln!(
-            "[HMR] parallel compile disabled (num_cpus={} < 3) — serial fallback",
-            num_cpus::get()
-        );
+        false
+    };
+
+    let use_parallel = num_cpus::get() >= 3;
+    if !tier0_bypassed {
+        if use_parallel {
+            eprintln!(
+                "[HMR] parallel compile enabled (num_cpus={}) — dispatching core/gui/runner concurrently",
+                num_cpus::get()
+            );
+        } else {
+            eprintln!(
+                "[HMR] parallel compile disabled (num_cpus={} < 3) — serial fallback",
+                num_cpus::get()
+            );
+        }
     }
 
     let (core_lib_path_opt, gui_lib_path_opt, host_runner_bin_path): (
         Option<String>,
         Option<String>,
         Option<String>,
-    ) = if use_parallel {
+    ) = if tier0_bypassed {
+        // Tier 0 patched existing .so files in place — skip g++.
+        // Resolve paths from stable symlinks (cheap — two stat calls).
+        // Prefer prev paths from runner_store, fall back to symlink
+        // resolution for resilience against runner_store being cleared.
+        let mut core_opt = prev_core_path.clone();
+        let mut gui_opt = prev_gui_path.clone();
+        if core_opt.is_none() || gui_opt.is_none() {
+            for p in crate::hmr::tier0_literal_patch::candidate_so_paths(&output_dir) {
+                let name = p.file_name().unwrap_or_default().to_string_lossy();
+                if name.contains("core") && core_opt.is_none() {
+                    core_opt = Some(p.to_string_lossy().to_string());
+                } else if name.contains("gui") && gui_opt.is_none() {
+                    gui_opt = Some(p.to_string_lossy().to_string());
+                }
+            }
+        }
+        (core_opt, gui_opt, None)
+    } else if use_parallel {
         // ─── Parallel path ──────────────────────────────────────────
         // Three futures run concurrently on the tokio runtime. The
         // compile_runner future is Ok(None) when there's no runner
