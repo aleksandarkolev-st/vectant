@@ -91,6 +91,13 @@ struct SpeculativeState {
     /// superseded. Handlers waiting on speculation for their source
     /// hash block on this notification.
     completion: Arc<Notify>,
+    /// Woken (via `notify_waiters`) by `trigger_speculative` on EVERY
+    /// new invocation, so any in-flight spec task can abort its
+    /// HTTP call early via `tokio::select!`. Prior to this, old tasks
+    /// kept their HTTP calls running to completion and only discarded
+    /// the result after it came back — wasting Gemini tokens + seconds
+    /// of latency for every save in a typing burst.
+    cancel_notify: Arc<Notify>,
 }
 
 static STATE: OnceLock<Mutex<SpeculativeState>> = OnceLock::new();
@@ -102,6 +109,7 @@ fn get_state() -> &'static Mutex<SpeculativeState> {
             latest_result: None,
             in_flight_hash: None,
             completion: Arc::new(Notify::new()),
+            cancel_notify: Arc::new(Notify::new()),
         })
     })
 }
@@ -130,10 +138,23 @@ const CACHE_MAX_AGE: Duration = Duration::from_secs(30);
 /// just written by the file-sync message.
 pub fn trigger_speculative(workspace_path: PathBuf, new_source: String) {
     tokio::spawn(async move {
-        // Take a generation ticket.
+        // Take a generation ticket AND wake any in-flight tasks'
+        // cancellation notified-futures so their `tokio::select!`
+        // drops the HTTP call mid-request. Previously old tasks
+        // ran their HTTP to completion and then discarded the
+        // result — wasting Gemini tokens + seconds of latency
+        // for every save in a typing burst (see gen=10/12/15/18
+        // cascade in the live-test log from 2026-04-16).
         let my_gen = {
             let mut s = get_state().lock().await;
             s.generation += 1;
+            // Fire cancel_notify FIRST, then swap in a fresh
+            // Notify for our own task to race against. Any task
+            // currently awaiting `.notified()` on the old arc
+            // wakes immediately and aborts. Tasks that haven't
+            // yet entered their select! will grab the new one.
+            s.cancel_notify.notify_waiters();
+            s.cancel_notify = Arc::new(Notify::new());
             s.generation
         };
 
@@ -259,16 +280,47 @@ pub fn trigger_speculative(workspace_path: PathBuf, new_source: String) {
             } else {
                 Some(arch_md.as_str())
             };
+
+            // Race the AI call against the cancellation notify.
+            // `cancel_notified` is created BEFORE the select! so
+            // any notify that fires during the HTTP call lands
+            // on a registered waiter (Tokio::Notify semantics —
+            // calling `.notified()` registers a permit slot).
+            // A newer `trigger_speculative` call fires
+            // `notify_waiters()` on the SAME Arc, immediately
+            // waking this future and dropping the HTTP call.
+            let cancel_notify_arc = {
+                let s = get_state().lock().await;
+                s.cancel_notify.clone()
+            };
+            let cancel_notified = cancel_notify_arc.notified();
+            tokio::pin!(cancel_notified);
+
             let start = Instant::now();
-            let ai_result = crate::compiler::stages::ai_utils::perform_ai_diff_patch(
-                &diff,
-                &core_content,
-                &gui_content,
-                &shared_content,
-                &host_runner_content,
-                arch_hint,
-            )
-            .await;
+            let ai_result = tokio::select! {
+                biased;
+                // `biased` gives cancel priority if both arms
+                // complete in the same poll — ensures a late-
+                // firing cancel still wins over a just-completed
+                // HTTP result.
+                _ = &mut cancel_notified => {
+                    eprintln!(
+                        "[Spec] cancelled mid-HTTP for gen={} after {:?} \
+                         (newer trigger fired — dropping in-flight AI call \
+                         without waiting for response)",
+                        my_gen, start.elapsed()
+                    );
+                    break 'speculation;
+                }
+                r = crate::compiler::stages::ai_utils::perform_ai_diff_patch(
+                    &diff,
+                    &core_content,
+                    &gui_content,
+                    &shared_content,
+                    &host_runner_content,
+                    arch_hint,
+                ) => r,
+            };
 
             match ai_result {
                 Ok(edits) => {
@@ -276,7 +328,10 @@ pub fn trigger_speculative(workspace_path: PathBuf, new_source: String) {
                     let num_edits = edits.len();
                     let mut s = get_state().lock().await;
                     if s.generation != my_gen {
-                        // Superseded while waiting for AI. Discard result.
+                        // Superseded AFTER the HTTP call returned
+                        // but BEFORE we took the lock. Rare — the
+                        // select! cancel arm normally catches this
+                        // first. Discard the result for correctness.
                         eprintln!(
                             "[Spec] superseded during AI call, discarding {} edit(s) (gen={}, current={}, took {:?})",
                             num_edits, my_gen, s.generation, elapsed
