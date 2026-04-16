@@ -20,4 +20,5 @@ pub mod runner;
 // to dispatch through the trait — the modules suppress the warning
 // with `#[allow(dead_code)]`. See window_backend.rs for the migration plan.
 pub mod backends;
+pub mod path_c;
 pub mod window_backend;
