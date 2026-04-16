@@ -217,12 +217,12 @@ pub async fn handle_compile_request(
     // PHASE 1: AI SPLIT & PROCESSING (routed through ai_bypass)
     // ============================================================
 
-    // ULTRAPLAN Lightning Phase 11 — Tier 0 literal swap accumulator.
-    // Populated inside the FallbackDeterministic branch when
-    // classify_edit detects a value-only edit with same-length
-    // string swaps. Read after Phase 2 (rebuild scope) to decide
-    // whether to bypass g++ and patch the .so directly.
-    let mut tier0_swaps: Vec<crate::hmr::tier0_literal_patch::LiteralSwap> = Vec::new();
+    // ULTRAPLAN Lightning Phase 11 — Tier 0 v2 state.
+    // `tier0_v2_eligible`: tree-sitter AST classifier confirmed value-only
+    // `tier0_old_source`: baseline source for the v2 classifier at bypass time
+    // Both populated inside FallbackDeterministic when classify_edit says value-only.
+    let mut tier0_v2_eligible = false;
+    let mut tier0_old_source: Option<String> = None;
 
     let split_data = match ai_bypass_result {
         AiBypassResult::Proceed => {
@@ -418,24 +418,31 @@ pub async fn handle_compile_request(
                             is_value_only
                         );
 
-                        // ULTRAPLAN Lightning Phase 11 — Tier 0 eligibility.
-                        // Extract same-length string swaps for direct .so
-                        // patching. Populated swaps are consumed after Phase 2
-                        // (rebuild scope) to bypass g++ when possible.
+                        // ULTRAPLAN Lightning Phase 11 — Tier 0 v2 eligibility.
+                        // Run tree-sitter AST classifier to confirm the edit is
+                        // purely value changes (strings, integers). The regex
+                        // `is_value_only` is a fast pre-filter; tree-sitter is
+                        // the authoritative check that also detects integer
+                        // literal changes for DWARF+iced-x86 patching.
                         if is_value_only {
-                            use crate::hmr::tier0_literal_patch::extract_string_swaps;
-                            match extract_string_swaps(&sync_classification) {
-                                Some(swaps) if !swaps.is_empty() => {
+                            use crate::hmr::ts_value_classifier::{classify_ast, AstClassification};
+                            match classify_ast(&old_source, &req.source) {
+                                AstClassification::ValueOnly { ref changes } if !changes.is_empty() => {
                                     eprintln!(
-                                        "[HMR] Tier 0 ELIGIBLE: {} same-length string swap(s)",
-                                        swaps.len()
+                                        "[HMR] Tier 0 v2 ELIGIBLE: {} value change(s) (tree-sitter confirmed)",
+                                        changes.len()
                                     );
-                                    tier0_swaps = swaps;
+                                    tier0_v2_eligible = true;
+                                    tier0_old_source = Some(old_source.clone());
                                 }
-                                _ => {
-                                    eprintln!(
-                                        "[HMR] Tier 0 ineligible (value-only but no same-length string swaps)"
-                                    );
+                                AstClassification::ValueOnly { .. } => {
+                                    eprintln!("[HMR] Tier 0 v2: value-only but no literal changes");
+                                }
+                                AstClassification::Structural => {
+                                    eprintln!("[HMR] Tier 0 v2: tree-sitter says structural (regex disagreed)");
+                                }
+                                AstClassification::ParseError(e) => {
+                                    eprintln!("[HMR] Tier 0 v2: parse error ({}), falling back to regex path", e);
                                 }
                             }
                         }
@@ -1198,46 +1205,62 @@ pub async fn handle_compile_request(
         .as_ref()
         .map(|m| m.tier0_safe())
         .unwrap_or(false);
-    if !tier0_swaps.is_empty() && !tier0_flags_safe {
+    if tier0_v2_eligible && !tier0_flags_safe {
         eprintln!(
             "[HMR] Tier 0 BLOCKED: compile manifest missing -O0/-fno-merge-constants — \
              falling through to g++ (safe but slower)"
         );
     }
 
-    let tier0_bypassed = if !tier0_swaps.is_empty()
+    let tier0_bypassed = if tier0_v2_eligible
         && rebuild_scope != RebuildScope::None
         && tier0_flags_safe
     {
-        use crate::hmr::tier0_literal_patch::try_tier0_bypass;
+        use crate::hmr::tier0_unified::{try_tier0_v2, Tier0V2Outcome};
         let t0_start = std::time::Instant::now();
-        match try_tier0_bypass(&output_dir, &tier0_swaps) {
-            Some(patched_paths) => {
+        let old_src = tier0_old_source.as_deref().unwrap_or("");
+        let source_files: &[(&str, &str)] = &[("core", "core.cpp"), ("gui", "gui.cpp")];
+        match try_tier0_v2(&output_dir, old_src, &req.source, source_files) {
+            Tier0V2Outcome::Patched(result) => {
                 let t0_ms = t0_start.elapsed().as_millis();
                 let total_ms = compile_start.elapsed().as_millis();
                 eprintln!(
-                    "[HMR] Tier 0 SUCCESS: patched {} .so file(s) in {}ms (total since handler start: {}ms, g++ saved: ~500ms)",
-                    patched_paths.len(),
+                    "[HMR] Tier 0 v2 SUCCESS: {} string + {} integer patch(es) in {}ms (total: {}ms)",
+                    result.string_patches,
+                    result.integer_patches,
                     t0_ms,
                     total_ms
                 );
+                if !result.skipped.is_empty() {
+                    eprintln!("[HMR] Tier 0 v2 skipped: {}", result.skipped.join("; "));
+                }
                 TIER0_HITS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 let payload = serde_json::json!({
                     "sessionId": session_id.clone(),
                     "type": "stderr",
-                    "line": format!("[HMR] Tier 0: literal patch in {}ms (skipped g++)\n", t0_ms)
+                    "line": format!(
+                        "[HMR] Tier 0: {}s + {}i patched in {}ms (skipped g++)\n",
+                        result.string_patches, result.integer_patches, t0_ms
+                    )
                 });
                 let _ = ctx.log_dc.send_text(serde_json::to_string(&payload).unwrap_or_default()).await;
                 true
             }
-            None => {
+            Tier0V2Outcome::Ineligible(reason) => {
+                TIER0_INELIGIBLE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                eprintln!("[HMR] Tier 0 v2 ineligible: {}", reason);
+                false
+            }
+            Tier0V2Outcome::Failed(reason) => {
                 TIER0_MISSES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                eprintln!("[HMR] Tier 0 failed — falling through to g++ compile");
+                eprintln!("[HMR] Tier 0 v2 failed: {} — falling through to g++", reason);
                 false
             }
         }
     } else {
-        TIER0_INELIGIBLE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if !tier0_v2_eligible {
+            TIER0_INELIGIBLE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
         false
     };
 
