@@ -36,6 +36,7 @@ pub mod dirty_classifier;
 pub mod edit_applier;
 pub mod edit_classifier;
 pub mod speculative_diff_patch;
+pub mod tier0_literal_patch;
 pub mod dynlib_adapter;
 pub mod dynlib_abi_contract;
 pub mod dynlib_build_hooks;
