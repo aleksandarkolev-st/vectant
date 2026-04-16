@@ -71,10 +71,30 @@ pub fn build_runner_flag_list(manifest: &CompileManifest) -> Vec<String> {
     flags.push(std_flag);
     flags.extend(runner_compile_flags);
     flags.extend(manifest.runner_link_flags.iter().cloned());
-    flags.push("-ldl".to_string());
-    flags.push("-pthread".to_string());
-    flags.push("-rdynamic".to_string());
+    // Dedup-on-push: only add -ldl / -pthread / -rdynamic if the
+    // manifest's runner_link_flags didn't already carry them. The
+    // linker tolerates duplicates but logs look like "-ldl -ldl
+    // -pthread -lpthread -rdynamic" otherwise, which confuses
+    // operators reading compile diagnostics.
+    push_if_absent(&mut flags, "-ldl");
+    // -pthread and -lpthread are equivalent for the GNU linker;
+    // treat either in the manifest as satisfying our -pthread
+    // requirement to avoid the duplicate pair.
+    if !flags.iter().any(|f| f == "-pthread" || f == "-lpthread") {
+        flags.push("-pthread".to_string());
+    }
+    push_if_absent(&mut flags, "-rdynamic");
     flags
+}
+
+/// Push `flag` onto `flags` only if an exact match isn't already
+/// present. Used by the runner flag builders + heal retry paths so
+/// manifest-supplied `-ldl` / `-rdynamic` / `-pthread` don't get
+/// duplicated by the defensive unconditional appends.
+fn push_if_absent(flags: &mut Vec<String>, flag: &str) {
+    if !flags.iter().any(|f| f == flag) {
+        flags.push(flag.to_string());
+    }
 }
 
 /// Compile the host_runner.cpp into a per-project executable.
@@ -175,9 +195,12 @@ pub async fn compile_runner(
         effective_manifest.runner_link_flags.len() + 3,
     );
     link_flags.extend(effective_manifest.runner_link_flags.iter().cloned());
-    link_flags.push("-ldl".to_string());
-    link_flags.push("-pthread".to_string());
-    link_flags.push("-rdynamic".to_string());
+    // Dedup-on-push — same shape as build_runner_flag_list.
+    push_if_absent(&mut link_flags, "-ldl");
+    if !link_flags.iter().any(|f| f == "-pthread" || f == "-lpthread") {
+        link_flags.push("-pthread".to_string());
+    }
+    push_if_absent(&mut link_flags, "-rdynamic");
 
     let runner_obj = object_path_for_exec(&runner_out);
 
