@@ -392,34 +392,30 @@ fn main() {
         (0u32, ptr::null_mut())
     };
 
-    // ULTRAPLAN Lightning Phase 10g.2 — SDL2 init goes through the
-    // WindowBackend trait when the selector picked SDL2.
+    // ULTRAPLAN Lightning Phase 10g.2-10g.4 — backend init via
+    // WindowBackend trait. The selector picks a backend from the
+    // sidecar; the trait's init + create_window run. For SDL2 we
+    // also extract the raw_ptr/renderer_ptr into the legacy
+    // `(window, renderer)` tuple so the existing SDL-specific
+    // downstream code (sdl_window_id lookup, xdotool input
+    // injection, etc.) keeps working. For non-SDL2 backends the
+    // `window`/`renderer` tuple stays null — the runner operates
+    // through the trait surface only, and SDL-specific downstream
+    // code is gated on the null check (Phase 10g.4 — sdl_window_id
+    // and the deleted _sdl_texture block).
     //
-    // Phase 10g.3a (THIS COMMIT) — also retain the `WindowHandle`
-    // alongside the `(window, renderer)` tuple so the main loop can
-    // route `SDL_RenderPresent` through the trait as well. The
-    // handle is held in `runtime_handle: Option<WindowHandle>`. When
-    // Some, present_frame goes through the trait; when None (fallback
-    // path or pre-10g.2 behavior) we still call SDL_RenderPresent
-    // directly. No semantic change for the SDL2 backend because
-    // SDL2Backend::present_frame just calls SDL_RenderPresent with
-    // the same renderer pointer, but the call site now exercises
-    // the trait path for the present operation.
-    //
-    // Non-SDL2 backends (GLFW/raylib/SFML) still fall back to
-    // init_sdl — the event-polling and shutdown call sites are not
-    // migrated yet (Phase 10g.3b + 10g.3c).
+    // When the selector returns None (no sidecar — BYOR or smoke
+    // test path) we fall back to the legacy init_sdl() path with
+    // a null runtime_handle. Non-SDL backends have no legacy
+    // fallback (the host needs to know the library shape) so an
+    // init failure just propagates and the runner exits.
     #[cfg(target_os = "linux")]
     let mut runtime_handle: Option<worker::runtime::window_backend::WindowHandle> = None;
     #[cfg(target_os = "linux")]
     let (window, renderer) = {
         use worker::runtime::window_backend::{WindowBackend, WindowFlags};
-        let use_trait = selected_runtime_backend
-            .as_ref()
-            .map(|s| s.backend.name() == "SDL2")
-            .unwrap_or(false);
-        if use_trait {
-            let selected = selected_runtime_backend.as_mut().unwrap();
+        if let Some(selected) = selected_runtime_backend.as_mut() {
+            let backend_name = selected.backend.name().to_string();
             match selected.backend.init() {
                 Ok(()) => {
                     match selected.backend.create_window(
@@ -430,23 +426,34 @@ fn main() {
                     ) {
                         Ok(handle) => {
                             eprintln!(
-                                "[Phase 10g.2] WindowBackend trait created SDL2 window \
-                                 (win={:p}, renderer={:p})",
-                                handle.raw_ptr, handle.renderer_ptr
+                                "[Phase 10g.4] WindowBackend trait created {} window \
+                                 (win={:p}, renderer={:p}, x11_id={:?})",
+                                backend_name,
+                                handle.raw_ptr,
+                                handle.renderer_ptr,
+                                handle.x11_window_id,
                             );
-                            // Capture raw ptrs for legacy call sites,
-                            // then stash the full handle so present_frame
-                            // can route through the trait (10g.3a).
-                            let win = handle.raw_ptr as *mut SDL_Window;
-                            let ren = handle.renderer_ptr;
+                            // For SDL2, extract raw pointers for the
+                            // legacy downstream call sites; for non-SDL
+                            // backends the SDL-specific pointers stay
+                            // null and downstream code branches on
+                            // sdl_window_id / runtime_handle accordingly.
+                            let (win, ren) = if backend_name == "SDL2" {
+                                (
+                                    handle.raw_ptr as *mut SDL_Window,
+                                    handle.renderer_ptr,
+                                )
+                            } else {
+                                (ptr::null_mut(), ptr::null_mut())
+                            };
                             runtime_handle = Some(handle);
                             (win, ren)
                         }
                         Err(e) => {
                             eprintln!(
-                                "[Phase 10g.2] WindowBackend create_window failed ({}) — \
-                                 falling back to legacy init_sdl",
-                                e
+                                "[Phase 10g.4] WindowBackend create_window failed for {} ({}) — \
+                                 falling back to legacy init_sdl (only safe for SDL2 projects)",
+                                backend_name, e
                             );
                             unsafe { init_sdl() }
                         }
@@ -454,50 +461,59 @@ fn main() {
                 }
                 Err(e) => {
                     eprintln!(
-                        "[Phase 10g.2] WindowBackend init failed ({}) — \
-                         falling back to legacy init_sdl",
-                        e
+                        "[Phase 10g.4] WindowBackend init failed for {} ({}) — \
+                         falling back to legacy init_sdl (only safe for SDL2 projects)",
+                        backend_name, e
                     );
                     unsafe { init_sdl() }
                 }
             }
         } else {
-            if let Some(ref s) = selected_runtime_backend {
-                eprintln!(
-                    "[Phase 10g.2] selector picked {} — non-SDL2 backends aren't \
-                     wired to runner_bin yet; falling back to init_sdl (Phase 10g.3)",
-                    s.backend.name()
-                );
-            }
+            // No sidecar. Happens on BYOR projects, smoke tests,
+            // and any manual runner invocation without a workspace.
+            // Default to SDL2 via the legacy init_sdl path — this
+            // preserves pre-Phase-10g behavior for anything the
+            // selector can't inspect.
+            eprintln!(
+                "[Phase 10g.4] No selector decision (no sidecar) — \
+                 defaulting to legacy init_sdl path"
+            );
             unsafe { init_sdl() }
         }
     };
 
-    // Cache the SDL window ID for injected events (SDL assigns IDs starting from 1).
-    // Using windowID=0 in injected events causes them to target a non-existent window.
+    // Cache the SDL window ID for injected events (SDL assigns IDs starting
+    // from 1). Using windowID=0 in injected events causes them to target a
+    // non-existent window.
+    //
+    // ULTRAPLAN Lightning Phase 10g.4 — this ID is ONLY meaningful when
+    // the backend is SDL2. Non-SDL backends (GLFW/raylib/SFML) don't speak
+    // SDL_Event and won't receive xdotool-style input forwarding through
+    // this ID; they use the X11-level input injection via x11_conn + XTest
+    // instead. For those backends we leave sdl_window_id=0 and the event
+    // injection path skips SDL entirely.
     #[cfg(target_os = "linux")]
-    let sdl_window_id: u32 = if !window.is_null() {
-        unsafe { SDL_GetWindowID(window as *mut SDL_Window) }
-    } else {
-        0
+    let sdl_window_id: u32 = {
+        let backend_is_sdl2 = selected_runtime_backend
+            .as_ref()
+            .map(|s| s.backend.name() == "SDL2")
+            .unwrap_or(true); // legacy init_sdl fallback is SDL2 by construction
+        if backend_is_sdl2 && !window.is_null() {
+            unsafe { SDL_GetWindowID(window as *mut SDL_Window) }
+        } else {
+            0
+        }
     };
     #[cfg(not(target_os = "linux"))]
     let sdl_window_id: u32 = 0;
 
-    #[cfg(target_os = "linux")]
-    let _sdl_texture = unsafe {
-        if !renderer.is_null() {
-            SDL_CreateTexture(
-                renderer,
-                SDL_PIXELFORMAT_RGBA8888,
-                SDL_TEXTUREACCESS_STREAMING,
-                800,
-                600,
-            )
-        } else {
-            ptr::null_mut()
-        }
-    };
+    // Phase 10g.4 — the SDL_CreateTexture block was dead code. The
+    // texture handle was bound to `_sdl_texture` and never read
+    // downstream (actual frame capture uses XShmGetImage via the
+    // worker-managed GStreamer pipeline). Dropped entirely. If a
+    // future rev needs an in-runner SDL texture pipeline for
+    // headless-runner capture mode, it should go behind the
+    // WindowBackend trait so non-SDL backends have an equivalent.
 
     // Initialize GStreamer
     if let Err(e) = gstreamer::init() {
