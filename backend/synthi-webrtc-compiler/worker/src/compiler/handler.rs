@@ -1804,24 +1804,101 @@ pub async fn handle_compile_request(
         return Ok(serde_json::json!({ "status": "ok", "hmr": "adapter_handled" }));
     }
 
+    // ── ULTRAPLAN Lightning Phase 12.6 — supervisor dispatch ──
+    //
+    // When SYNTHI_PATH_C_SUPERVISOR=1 and a per-project runner binary
+    // exists, route through the supervisor (typed IPC, per-session Xvfb)
+    // instead of the legacy stdin text protocol. The supervisor owns
+    // the child lifecycle and Xvfb display, while GStreamer/WebRTC
+    // remain in the worker (captured from the per-session display).
+    let use_supervisor = std::env::var("SYNTHI_PATH_C_SUPERVISOR")
+        .map(|v| v == "1")
+        .unwrap_or(false)
+        && host_runner_bin_path.is_some();
+
     let runtime_reload_start = std::time::Instant::now();
-    let runner_result = handle_runner_execution(
-        ctx,
-        &req,
-        modules_to_load,
-        has_on_update,
-        enrichment.use_ai_split,
-        new_hashes,
-        core_lib_path,
-        gui_lib_path,
-        Some(session_id.clone()),
-        // ULTRAPLAN Lightning Phase 12 — when compile_runner produced
-        // a per-project host_runner binary, hand its path to the spawn
-        // stage so it becomes the live process instead of the shipped
-        // runner. None preserves pre-Phase-12 behavior.
-        host_runner_bin_path.clone(),
-    )
-    .await;
+    let runner_result = if use_supervisor {
+        use crate::runtime::path_c::supervisor::spawn_supervised;
+
+        let bin_path = host_runner_bin_path.as_ref().unwrap();
+        let req_width = req.width.unwrap_or(800);
+        let req_height = req.height.unwrap_or(600);
+
+        let mut sup_guard = ctx.supervisor_store.lock().await;
+        let result = if let Some(ref mut session) = *sup_guard {
+            // Existing supervisor session — send reload commands via IPC
+            eprintln!("[HMR] Phase 12.6: reusing supervised session (IPC reload)");
+            let mut ok = true;
+            for (name, path) in &modules_to_load {
+                if let Err(e) = session.reload_module(name, path).await {
+                    eprintln!("[HMR] Phase 12.6: IPC reload failed for {}: {}", name, e);
+                    ok = false;
+                    break;
+                }
+            }
+            if ok { Ok(()) } else { anyhow::bail!("supervisor IPC reload failed") }
+        } else {
+            // First compile — spawn supervised session
+            eprintln!("[HMR] Phase 12.6: spawning supervised session");
+            let mut alloc = ctx.xvfb_allocator.lock().await;
+            match spawn_supervised(
+                &mut alloc,
+                &session_id,
+                std::path::Path::new(bin_path),
+                &output_dir,
+                req_width,
+                req_height,
+            )
+            .await
+            {
+                Ok(mut session) => {
+                    // Set session and load initial modules
+                    let _ = session.set_session(&session_id).await;
+                    let mut ok = true;
+                    for (name, path) in &modules_to_load {
+                        if let Err(e) = session.load_module(name, path).await {
+                            eprintln!("[HMR] Phase 12.6: initial load failed for {}: {}", name, e);
+                            ok = false;
+                            break;
+                        }
+                    }
+                    *sup_guard = Some(session);
+                    if ok { Ok(()) } else { anyhow::bail!("supervisor initial load failed") }
+                }
+                Err(e) => {
+                    eprintln!(
+                        "[HMR] Phase 12.6: supervisor spawn failed: {} — falling back to legacy",
+                        e
+                    );
+                    drop(sup_guard);
+                    drop(alloc);
+                    handle_runner_execution(
+                        ctx, &req, modules_to_load, has_on_update,
+                        enrichment.use_ai_split, new_hashes,
+                        core_lib_path.clone(), gui_lib_path.clone(),
+                        Some(session_id.clone()), host_runner_bin_path.clone(),
+                    )
+                    .await
+                    .map_err(|e| e.into())
+                }
+            }
+        };
+        result
+    } else {
+        handle_runner_execution(
+            ctx,
+            &req,
+            modules_to_load,
+            has_on_update,
+            enrichment.use_ai_split,
+            new_hashes,
+            core_lib_path,
+            gui_lib_path,
+            Some(session_id.clone()),
+            host_runner_bin_path.clone(),
+        )
+        .await
+    };
 
     match runner_result {
         Ok(()) => {

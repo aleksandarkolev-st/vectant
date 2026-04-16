@@ -3476,6 +3476,10 @@ async fn handle_compile(
         metrics_aggregator,
         restart_controller,
         ipc_config,
+        supervisor_store: Arc::new(tokio::sync::Mutex::new(None)),
+        xvfb_allocator: Arc::new(tokio::sync::Mutex::new(
+            crate::runtime::path_c::xvfb_allocator::XvfbAllocator::new(),
+        )),
     };
 
     // Call the unified handler
