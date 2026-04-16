@@ -784,19 +784,33 @@ fn main() {
                     false
                 }
             };
-            let event_ptrs: Vec<*mut SDL_Event> = if used_trait {
+            // ULTRAPLAN Lightning Phase 10g.5 — event_ptrs is now
+            // typed as `*mut c_void` rather than `*mut SDL_Event`.
+            // The pointer content is unchanged (it still points at
+            // an SDL_Event for the SDL2 backend, and at GLFW /
+            // raylib / SFML event data for those backends when the
+            // runner is eventually paired with library-specific
+            // user modules via Phase 10g.5 prompt changes). User
+            // modules cast the `void*` to their library's event
+            // type based on which library they were compiled
+            // against — the same contract every library-agnostic
+            // HMR runtime uses. SDL2 modules stay backward-compat
+            // because `void core_on_event(void* state, void* evt)`
+            // already takes a void*; only the Rust-side Symbol
+            // type changed.
+            let event_ptrs: Vec<*mut c_void> = if used_trait {
                 use worker::runtime::window_backend::BackendEvent;
                 trait_events_buf
                     .iter()
                     .filter_map(|ev| match ev {
                         BackendEvent::Raw { payload, .. } => {
-                            Some(*payload as *const SDL_Event as *mut SDL_Event)
+                            Some(*payload as *mut c_void)
                         }
-                        // Quit and Resized don't carry a Raw SDL_Event
-                        // pointer; they're handled elsewhere by the
-                        // runner (Quit → on_event core state mutation
-                        // via the Raw counterpart that SDL2Backend
-                        // double-emits for SDL_QUIT).
+                        // Quit and Resized don't carry a Raw pointer;
+                        // they're handled elsewhere by the runner
+                        // (Quit → core state mutation via the Raw
+                        // counterpart that SDL2Backend double-emits
+                        // for SDL_QUIT).
                         _ => None,
                     })
                     .collect()
@@ -812,24 +826,23 @@ fn main() {
                 }
                 legacy_drained
                     .iter()
-                    .map(|e| e as *const SDL_Event as *mut SDL_Event)
+                    .map(|e| e as *const SDL_Event as *mut c_void)
                     .collect()
             };
 
             for &event_ptr in &event_ptrs {
                 unsafe {
-                    // (legacy dispatch-to-modules block follows unchanged,
-                    //  reading from `event_ptr` instead of `&mut event`)
-                    let event: &mut SDL_Event = &mut *event_ptr;
                     // SPLIT MODE: Events go to core module with core's state.
                     // Core handles button clicks, key presses, etc. that affect app state.
                     // GUI module can also receive events for hover/focus handling.
-                    // Pass SDL_Event to all loaded modules that export on_event
-                    // The plugin's on_event expects SDL_Event* (not XEvent*)
-                    // Plugins MUST be compiled to expect SDL_Event, not XEvent
+                    // Pass the opaque event pointer to every loaded module that
+                    // exports on_event. The module casts to its library's
+                    // event type (SDL_Event for SDL2 projects, GLFW event
+                    // payload for GLFW projects, etc.) — the runner stays
+                    // library-agnostic (Phase 10g.5).
                     for (name, lib) in modules.iter() {
                         let event_func: Result<
-                            Symbol<unsafe extern "C" fn(*mut c_void, *mut SDL_Event)>,
+                            Symbol<unsafe extern "C" fn(*mut c_void, *mut c_void)>,
                             _,
                         > = lib.get(b"on_event");
                         if let Ok(f) = event_func {
@@ -872,7 +885,11 @@ fn main() {
                                 let func_ptr = *f;
                                 let result = execute_with_protection(&module_name, move || {
                                     let sp = state_ptr_wrapper.0 as *mut std::ffi::c_void;
-                                    let ep = event_ptr_wrapper.0 as *mut SDL_Event;
+                                    // Phase 10g.5 — opaque void* so the
+                                    // same dispatch path works for any
+                                    // backend's event payload. Module
+                                    // casts based on its own #include.
+                                    let ep = event_ptr_wrapper.0 as *mut std::ffi::c_void;
                                     func_ptr(sp, ep);
                                 });
                                 if let Err(crash_info) = result {
