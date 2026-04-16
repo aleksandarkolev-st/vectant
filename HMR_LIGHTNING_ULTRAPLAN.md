@@ -7,7 +7,8 @@
 ## Revision history
 
 - **rev1** (initial draft): four-phase structure, latency budgets, file lists, risks. Landed in commit `802170e5`.
-- **rev6** (this): Phase 11 compile bypass WIRED — `try_tier0_bypass()` orchestrator patches .so files directly when classify_edit detects same-length string literal swaps, skipping g++ + ld entirely (~500ms saved per value-only save). Handler.rs short-circuits from Tier 0 → runner reload, falling through to Tier 1/2/3 on any failure. Phase 12.5 confirmed done — handler sends uniform stdin commands to both shipped and per-project runners (stale comment fixed). 21 end-to-end Tier 0 pipeline tests (classify → extract → patch) covering realistic C++ source edits. 28 commits total on branch `claude/hmr-lightning`.
+- **rev7** (this): Phase 11 COMPLETE (except live memory patching). Full Tier 0 v2 pipeline: tree-sitter AST classifier replaces regex heuristic. DWARF line-to-address mapping via gimli. Integer immediate patching via iced-x86 disassembly — `int width = 800 → 900` now bypasses g++ the same way string changes do. Unified `try_tier0_v2()` orchestrates both string byte-scan and DWARF+imm patching from one entry point. `-O0 -fno-merge-constants` enforced at manifest level for Tier 0 safety. Cancel_notify race fix in speculative diff_patch. 56 tests across 7 test files. 32 commits total on branch `claude/hmr-lightning`.
+- **rev6**: Phase 11 compile bypass WIRED — `try_tier0_bypass()` orchestrator patches .so files directly when classify_edit detects same-length string literal swaps, skipping g++ + ld entirely (~500ms saved per value-only save). Handler.rs short-circuits from Tier 0 → runner reload, falling through to Tier 1/2/3 on any failure. Phase 12.5 confirmed done — handler sends uniform stdin commands to both shipped and per-project runners (stale comment fixed). 21 end-to-end Tier 0 pipeline tests (classify → extract → patch) covering realistic C++ source edits. 28 commits total on branch `claude/hmr-lightning`.
 - **rev5**: full implementation pass completed. Phase 9 done (compile acceleration + PCH with cross-session cache). Phase 10 done (4 backends + selector + runner_bin migration to WindowBackend trait — sokol carved out to Phase 12). Phase 10g.5 done (runner event dispatch ABI-agnostic: `*mut c_void` instead of `*mut SDL_Event`). Phase 11 MVP shipped (Tier 0 same-length string literal patcher with .so file patching, handler.rs telemetry, classification pipeline). Phase 12.6 partial (nm post-compile symbol check, versioned stdin handshake `handshake 1`). Spec pipeline fix: in-flight HTTP calls cancelled via `Notify` when newer triggers fire (previously 5-6 concurrent Gemini calls ran to completion and got discarded). Also: AI HTTP timeout unified to 180s, useHMR frontend loop fix, UNIVERSAL_SPLIT_PROMPT guardrail port + host_runner stdin reload skeleton, link-flag dedup. 23 commits total across two sessions on branch `claude/hmr-lightning`.
 - **rev4**: first partial implementation landed on branch `claude/hmr-lightning`. Phase 9 (a/b/d/e/f) shipped; Phase 10 (a/b/f/g.1) shipped; Phase 12 **Seed** (per-project runner spawn plumbing) shipped after live runtime testing revealed the shipped runner's ABI mismatch against the Phase 7 universal split contract. Phase 12 Seed is explicitly narrower than the full Phase 12 design in §7: no supervisor process, no IPC protocol, no in-process HMR — just "the per-project `host_runner_<ts>` binary actually runs, with worker-managed Xvfb/GStreamer/WebRTC unchanged around it." Full HMR via stdin reload commands + supervisor split are Phase 12.5 and Phase 12.6, scoped in §7.X (new). Also: bug fix for `hot_reload/v2.rs` `validate_state_magic` / `get_module_abi_version` — misaligned pointers from ABI-wrong modules now produce a magic mismatch instead of aborting the process. Phase 8 frontend stack overflow (`synthi:hmr-status` self-feed in `useHMR.js`) also fixed as part of this work.
 - **rev3**: second review pass. Fixes for multi-threaded patching soundness, Path C window discovery, structured arch cache field, SIGINT re-install periodicity, plus ~10 additional gaps found during my own re-review. New §14 "Agnosticism assessment" with an honest verdict on library and language agnosticism (agnostic-by-fallback, not agnostic-by-construction). Tier 0 hit rate estimate revised downward from "~60%" to "~30-45%" after the atomic-store-only restriction.
@@ -961,25 +962,30 @@ Rev2 honesty reframe: this phase has the most correctness hazards of any in the 
 
 **"~60% of real-world edits are value tweaks"** was an unsupported claim in rev1. Removed. The rev2 justification is softer: value tweaks are A material fraction of edits (likely 30-50% based on anecdotal observation; we don't have production metrics yet). Phase 11 has high ROI on value tweaks and zero regression on other edits. Post-11g instrumentation will tell us whether to push further into this space.
 
-#### Phase 11 — Implementation status (rev6)
+#### Phase 11 — Implementation status (rev7)
 
 | Sub-phase | Status | Commit(s) |
 |---|---|---|
 | Tier 0 same-length string literal extraction (`extract_string_swaps`) | ✅ SHIPPED | `fa0cf049` |
 | `.so` file patching (`patch_so_file`, atomic temp+rename) | ✅ SHIPPED | `fa0cf049` |
 | Candidate .so resolution (`candidate_so_paths`, symlink follow) | ✅ SHIPPED | `fa0cf049` |
-| Handler.rs classification telemetry | ✅ SHIPPED | `893c3e5e` |
-| `try_tier0_bypass` orchestrator (iterates candidates, handles not-found vs ambiguous) | ✅ SHIPPED | `07812899` |
-| **Handler.rs compile bypass** (Tier 0 success → skip g++ → use prev .so paths → reload) | ✅ SHIPPED | `202c0720` |
-| End-to-end pipeline tests (21 total, classify → extract → patch) | ✅ SHIPPED | `acd4f42e` |
-| Integer/float literal patching (x86-64 disassembly via `iced-x86`) | ❌ NOT DONE | — |
-| DWARF-driven literal location (11a) | ❌ NOT DONE | — |
-| Tree-sitter AST classifier (11b) | ❌ NOT DONE | — |
+| Handler.rs classification telemetry + cumulative hit rate | ✅ SHIPPED | `893c3e5e`, `efa173a3` |
+| `try_tier0_bypass` orchestrator (string-only, iterates candidates) | ✅ SHIPPED | `07812899` |
+| Handler.rs compile bypass (Tier 0 success → skip g++ → use prev .so paths) | ✅ SHIPPED | `202c0720` |
+| `-O0 -fno-merge-constants` enforcement (`tier0_safe()` + handler gate) | ✅ SHIPPED | `01acc065`, `04c0ab56` |
+| **DWARF line-to-address mapping** (11a, gimli-based) | ✅ SHIPPED | `235f1051` |
+| **Integer immediate patcher** (iced-x86 disassembly + imm32 patch) | ✅ SHIPPED | `d1b41a4c` |
+| **Tree-sitter AST classifier** (11b, replaces regex value-only heuristic) | ✅ SHIPPED | `dbb7d9ae` |
+| **Unified Tier 0 patcher** (`try_tier0_v2`, strings + integers in one pass) | ✅ SHIPPED | `033ca102` |
+| **Handler v2 wiring** (tree-sitter → try_tier0_v2 replaces old regex path) | ✅ SHIPPED | `1d0e7b69` |
+| Cancel_notify race fix (speculative diff_patch `Notified::enable`) | ✅ SHIPPED | `1638291c` |
+| End-to-end tests (56 total across 7 test files) | ✅ SHIPPED | various |
 | Live process memory patching (11d) | ❌ NOT DONE | — |
+| Float literal patching | ❌ NOT DONE | — |
 
-**What shipped**: the MVP Tier 0 pipeline — value-only edits with same-length string literal changes bypass g++ entirely. The handler classifies the edit, extracts swaps, patches the .so on disk, and feeds the previous (now-patched) paths to the runner for dlclose+dlopen. ~500ms saved per qualifying edit.
+**What shipped**: the full Tier 0 v2 pipeline — both string AND integer value edits bypass g++ entirely. Tree-sitter AST classifier confirms value-only changes; string literals are byte-scanned in .rodata; integer literals are located via DWARF line→address mapping and patched via iced-x86 disassembly of imm32 operands. Handler runs the unified patcher before compile dispatch.
 
-**What's left**: the full Phase 11 design (DWARF lookup, integer/float immediates, live memory patching) remains 2-3 weeks of implementation. The MVP covers the most common case (string literal tweaks in SDL_CreateWindow titles, printf format strings, UI labels, etc.).
+**What's left**: live process memory patching (11d, patching the runner's in-memory .so without dlclose+dlopen — eliminates the ~20ms dlopen cost) and float literal patching (needs FP immediate detection in x86-64 encoding). Both are incremental extensions of the shipped infrastructure.
 
 ### 6.2 Design
 

@@ -1187,15 +1187,11 @@ pub async fn handle_compile_request(
     // Error reporting is deterministic: errors are collected in
     // source order (core → gui → runner) after the join completes,
     // so per-module diagnostics don't interleave on the log.
-    // ── ULTRAPLAN Lightning Phase 11 — Tier 0 compile bypass ──
+    // ── ULTRAPLAN Lightning Phase 11 — Tier 0 v2 compile bypass ──
     //
-    // When the edit classifier detected same-length string literal
-    // swaps, try patching the existing .so files directly instead of
-    // running g++ + ld. This saves ~500ms per value-only save.
-    //
-    // Prerequisites: tier0_swaps populated, rebuild_scope is not None
-    // (source actually changed), and at least one previous .so exists
-    // on disk (not a cold start).
+    // When tree-sitter classified the edit as value-only, run the
+    // unified Tier 0 patcher: string byte-scan + DWARF line map +
+    // iced-x86 integer immediate patching. Skips g++ entirely.
     // Gate: Tier 0 is only safe when compile flags prevent the
     // compiler from merging/folding string literals. Without -O0
     // and -fno-merge-constants, a literal that appears once in
