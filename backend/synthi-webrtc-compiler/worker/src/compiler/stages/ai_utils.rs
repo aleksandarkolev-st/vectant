@@ -40,6 +40,26 @@ fn get_ai_backend_url() -> String {
     "http://localhost:8000".to_string()
 }
 
+/// HTTP timeout for AI backend calls (diff_patch, heal, manifest heal, split).
+///
+/// Previously hardcoded per call site (60s for diff_patch/heal/manifest_heal,
+/// 150s for split). Raised and unified after live Gemini calls were observed
+/// taking 63s on diff_patch — the 60s bound was tripping a timeout AFTER the
+/// AI had already produced a correct answer, falling through to Tier 3 full
+/// re-split and wasting ~60s per save.
+///
+/// 180s is the worst-case ceiling for any Gemini model we currently call.
+/// Operators can override with `SYNTHI_AI_HTTP_TIMEOUT_SECS` if a slower
+/// model or degraded service requires more headroom, or set it lower to
+/// fail fast in CI.
+fn ai_http_timeout() -> std::time::Duration {
+    let secs: u64 = std::env::var("SYNTHI_AI_HTTP_TIMEOUT_SECS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(180);
+    std::time::Duration::from_secs(secs)
+}
+
 
 // NOTE: `detect_structural_additions` and `perform_structural_ai_update`
 // were removed together with the `Level 2.75` shortcut in `perform_ai_split`.
@@ -103,7 +123,7 @@ pub async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value>
         let resp = client
             .post(&verified_url)
             .json(&payload)
-            .timeout(std::time::Duration::from_secs(150))
+            .timeout(ai_http_timeout())
             .send()
             .await?
             .error_for_status()?;
@@ -118,7 +138,7 @@ pub async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value>
             client
                 .post(&split_url)
                 .json(&payload)
-                .timeout(std::time::Duration::from_secs(150))
+                .timeout(ai_http_timeout())
                 .send()
                 .await?
                 .json::<serde_json::Value>()
@@ -129,7 +149,7 @@ pub async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value>
             let resp = client
                 .post(&split_url)
                 .json(&payload)
-                .timeout(std::time::Duration::from_secs(150))
+                .timeout(ai_http_timeout())
                 .send()
                 .await?
                 .error_for_status()?;
@@ -350,11 +370,11 @@ pub async fn perform_ai_diff_patch(
     let res: serde_json::Value = client
         .post(&url)
         .json(&payload)
-        // 60s — diff_patch with diff-only output format. Output tokens
-        // dropped from ~3000 (full file regen) to ~100 (edit instructions)
-        // so the pro-model call should normally be 1-2s. 60s is very
-        // generous headroom for network flakes.
-        .timeout(std::time::Duration::from_secs(60))
+        // Unified AI HTTP timeout — see `ai_http_timeout` at the top of
+        // this file. The previous hardcoded 60s tripped on a live 63s
+        // Gemini response and fell through to Tier 3 full re-split
+        // while the correct diff was already in flight.
+        .timeout(ai_http_timeout())
         .send()
         .await?
         .json::<serde_json::Value>()
@@ -435,10 +455,10 @@ pub async fn perform_ai_heal(
     let res = client
         .post(&url)
         .json(&payload)
-        // 60s — heal sends the broken module + g++ errors back to the AI
-        // for repair. Uses pro model by default (was previously lite but
-        // promoted for quality). Typical 3-6s; 60s is generous headroom.
-        .timeout(std::time::Duration::from_secs(60))
+        // Unified AI HTTP timeout — see `ai_http_timeout` at the top of
+        // this file. Heal sends the broken module + g++ errors back to
+        // the AI for repair (pro model). Typical 3-6s.
+        .timeout(ai_http_timeout())
         .send()
         .await?
         .json::<serde_json::Value>()
@@ -767,10 +787,11 @@ pub async fn perform_ai_heal_manifest(
     let res: serde_json::Value = client
         .post(&url)
         .json(&payload)
-        // 60s — manifest heal output is tiny (~100-300 tokens of JSON)
-        // so this should normally be 1-2s. 60s is generous headroom for
-        // network flakes.
-        .timeout(std::time::Duration::from_secs(60))
+        // Unified AI HTTP timeout — see `ai_http_timeout` at the top of
+        // this file. Manifest heal output is tiny (~100-300 tokens of
+        // JSON) so this is normally 1-2s; the generous ceiling covers
+        // degraded-service tail latencies.
+        .timeout(ai_http_timeout())
         .send()
         .await?
         .error_for_status()?

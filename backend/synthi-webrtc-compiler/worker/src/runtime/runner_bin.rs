@@ -121,7 +121,103 @@ enum RunnerCommand {
     Ipc(process_isolation::IpcMessage),
 }
 
+/// ULTRAPLAN Lightning Phase 10g.2 — backend selection for runtime.
+///
+/// Runs the WindowBackend selector against the real workspace
+/// sidecar + manifest AND returns the chosen backend so main() can
+/// actually use it for window creation. Supersedes the
+/// observability-only Phase 10g.1 helper (`log_phase10g_backend_selection`).
+///
+/// Reads the sidecar at `./.synthi_split_meta.json` (relative to
+/// the runner's cwd, inherited from the worker's workspace_path).
+/// Extracts `architecture` + `compile_manifest.runner_link_flags`
+/// and feeds them to `select_backend`.
+///
+/// Returns:
+///   - `Some(SelectedBackend)` when the sidecar parsed cleanly
+///     and the selector produced a decision. The caller inspects
+///     `.backend.name()` to decide which init path to take.
+///   - `None` when the sidecar is missing, unparseable, or
+///     otherwise unusable. The caller falls back to the legacy
+///     `init_sdl()` path.
+///
+/// Side effects: logs the decision + inputs to stderr for
+/// observability. Every error path also logs before returning None.
+fn select_backend_for_runner() -> Option<worker::runtime::backends::selector::SelectedBackend> {
+    use worker::runtime::backends::selector::{select_backend, SelectorInputs};
+
+    let sidecar_path = std::path::PathBuf::from(".synthi_split_meta.json");
+    let raw = match std::fs::read_to_string(&sidecar_path) {
+        Ok(s) => s,
+        Err(_) => {
+            eprintln!(
+                "[Phase 10g] sidecar {} not found — falling back to legacy init_sdl path",
+                sidecar_path.display()
+            );
+            return None;
+        }
+    };
+    let sidecar: serde_json::Value = match serde_json::from_str(&raw) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!(
+                "[Phase 10g] sidecar parse failed ({}) — falling back to legacy init_sdl path",
+                e
+            );
+            return None;
+        }
+    };
+
+    let architecture = sidecar
+        .get("architecture")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+
+    let link_flags: Vec<String> = sidecar
+        .get("compile_manifest")
+        .and_then(|m| m.get("runner_link_flags"))
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|x| x.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let inputs = SelectorInputs {
+        arch_cache: architecture,
+        link_flags: &link_flags,
+    };
+    let selected = select_backend(inputs);
+
+    eprintln!(
+        "[Phase 10g] Backend selector: picked={} (layer={:?}, display={:?})",
+        selected.backend.name(),
+        selected.matched_layer,
+        selected.framework_display
+    );
+    eprintln!(
+        "[Phase 10g] Inputs: arch_cache={} chars, link_flags={:?}",
+        architecture.len(),
+        link_flags
+    );
+    Some(selected)
+}
+
 fn main() {
+    // ULTRAPLAN Lightning Phase 10g.2 — run the backend selector
+    // and keep the result for window creation below. `None` means
+    // no sidecar was found (e.g. BYOR or pre-Phase-1 project);
+    // we fall back to the legacy `init_sdl()` path in that case.
+    //
+    // The Box<dyn WindowBackend> is held in `selected_runtime_backend`
+    // for the whole lifetime of main() — dropping it would unload
+    // any dlopen'd library the backend holds (GLFW/raylib/SFML in
+    // future wiring). For the SDL2 MVP this is belt-and-braces since
+    // sdl_defs.rs already static-links libSDL2, but the pattern is
+    // correct for the non-SDL backends we'll wire next.
+    let mut selected_runtime_backend = select_backend_for_runner();
+
     // ============================================================
     // EXECUTION MODE CHECK - PROCESS ISOLATION IS DEFAULT
     // ============================================================
@@ -296,37 +392,128 @@ fn main() {
         (0u32, ptr::null_mut())
     };
 
-    // Always init SDL2 — modules need a renderer to draw into.
-    // When worker manages display, the SDL window renders into the worker's Xvfb
-    // and the worker's GStreamer ximagesrc captures it automatically.
+    // ULTRAPLAN Lightning Phase 10g.2-10g.4 — backend init via
+    // WindowBackend trait. The selector picks a backend from the
+    // sidecar; the trait's init + create_window run. For SDL2 we
+    // also extract the raw_ptr/renderer_ptr into the legacy
+    // `(window, renderer)` tuple so the existing SDL-specific
+    // downstream code (sdl_window_id lookup, xdotool input
+    // injection, etc.) keeps working. For non-SDL2 backends the
+    // `window`/`renderer` tuple stays null — the runner operates
+    // through the trait surface only, and SDL-specific downstream
+    // code is gated on the null check (Phase 10g.4 — sdl_window_id
+    // and the deleted _sdl_texture block).
+    //
+    // When the selector returns None (no sidecar — BYOR or smoke
+    // test path) we fall back to the legacy init_sdl() path with
+    // a null runtime_handle. Non-SDL backends have no legacy
+    // fallback (the host needs to know the library shape) so an
+    // init failure just propagates and the runner exits.
     #[cfg(target_os = "linux")]
-    let (window, renderer) = unsafe { init_sdl() };
+    let mut runtime_handle: Option<worker::runtime::window_backend::WindowHandle> = None;
+    #[cfg(target_os = "linux")]
+    let (window, renderer) = {
+        use worker::runtime::window_backend::{WindowBackend, WindowFlags};
+        if let Some(selected) = selected_runtime_backend.as_mut() {
+            let backend_name = selected.backend.name().to_string();
+            match selected.backend.init() {
+                Ok(()) => {
+                    match selected.backend.create_window(
+                        "Synthi Runner",
+                        800,
+                        600,
+                        WindowFlags::default(),
+                    ) {
+                        Ok(handle) => {
+                            eprintln!(
+                                "[Phase 10g.4] WindowBackend trait created {} window \
+                                 (win={:p}, renderer={:p}, x11_id={:?})",
+                                backend_name,
+                                handle.raw_ptr,
+                                handle.renderer_ptr,
+                                handle.x11_window_id,
+                            );
+                            // For SDL2, extract raw pointers for the
+                            // legacy downstream call sites; for non-SDL
+                            // backends the SDL-specific pointers stay
+                            // null and downstream code branches on
+                            // sdl_window_id / runtime_handle accordingly.
+                            let (win, ren) = if backend_name == "SDL2" {
+                                (
+                                    handle.raw_ptr as *mut SDL_Window,
+                                    handle.renderer_ptr,
+                                )
+                            } else {
+                                (ptr::null_mut(), ptr::null_mut())
+                            };
+                            runtime_handle = Some(handle);
+                            (win, ren)
+                        }
+                        Err(e) => {
+                            eprintln!(
+                                "[Phase 10g.4] WindowBackend create_window failed for {} ({}) — \
+                                 falling back to legacy init_sdl (only safe for SDL2 projects)",
+                                backend_name, e
+                            );
+                            unsafe { init_sdl() }
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!(
+                        "[Phase 10g.4] WindowBackend init failed for {} ({}) — \
+                         falling back to legacy init_sdl (only safe for SDL2 projects)",
+                        backend_name, e
+                    );
+                    unsafe { init_sdl() }
+                }
+            }
+        } else {
+            // No sidecar. Happens on BYOR projects, smoke tests,
+            // and any manual runner invocation without a workspace.
+            // Default to SDL2 via the legacy init_sdl path — this
+            // preserves pre-Phase-10g behavior for anything the
+            // selector can't inspect.
+            eprintln!(
+                "[Phase 10g.4] No selector decision (no sidecar) — \
+                 defaulting to legacy init_sdl path"
+            );
+            unsafe { init_sdl() }
+        }
+    };
 
-    // Cache the SDL window ID for injected events (SDL assigns IDs starting from 1).
-    // Using windowID=0 in injected events causes them to target a non-existent window.
+    // Cache the SDL window ID for injected events (SDL assigns IDs starting
+    // from 1). Using windowID=0 in injected events causes them to target a
+    // non-existent window.
+    //
+    // ULTRAPLAN Lightning Phase 10g.4 — this ID is ONLY meaningful when
+    // the backend is SDL2. Non-SDL backends (GLFW/raylib/SFML) don't speak
+    // SDL_Event and won't receive xdotool-style input forwarding through
+    // this ID; they use the X11-level input injection via x11_conn + XTest
+    // instead. For those backends we leave sdl_window_id=0 and the event
+    // injection path skips SDL entirely.
     #[cfg(target_os = "linux")]
-    let sdl_window_id: u32 = if !window.is_null() {
-        unsafe { SDL_GetWindowID(window as *mut SDL_Window) }
-    } else {
-        0
+    let sdl_window_id: u32 = {
+        let backend_is_sdl2 = selected_runtime_backend
+            .as_ref()
+            .map(|s| s.backend.name() == "SDL2")
+            .unwrap_or(true); // legacy init_sdl fallback is SDL2 by construction
+        if backend_is_sdl2 && !window.is_null() {
+            unsafe { SDL_GetWindowID(window as *mut SDL_Window) }
+        } else {
+            0
+        }
     };
     #[cfg(not(target_os = "linux"))]
     let sdl_window_id: u32 = 0;
 
-    #[cfg(target_os = "linux")]
-    let _sdl_texture = unsafe {
-        if !renderer.is_null() {
-            SDL_CreateTexture(
-                renderer,
-                SDL_PIXELFORMAT_RGBA8888,
-                SDL_TEXTUREACCESS_STREAMING,
-                800,
-                600,
-            )
-        } else {
-            ptr::null_mut()
-        }
-    };
+    // Phase 10g.4 — the SDL_CreateTexture block was dead code. The
+    // texture handle was bound to `_sdl_texture` and never read
+    // downstream (actual frame capture uses XShmGetImage via the
+    // worker-managed GStreamer pipeline). Dropped entirely. If a
+    // future rev needs an in-runner SDL texture pipeline for
+    // headless-runner capture mode, it should go behind the
+    // WindowBackend trait so non-SDL backends have an equivalent.
 
     // Initialize GStreamer
     if let Err(e) = gstreamer::init() {
@@ -557,21 +744,105 @@ fn main() {
     }
 
     loop {
-        // Poll SDL2 events and pass them to loaded modules
+        // Poll SDL2 events and pass them to loaded modules.
+        //
+        // ULTRAPLAN Lightning Phase 10g.3b — route through the
+        // WindowBackend trait's pump_events when a runtime_handle
+        // was established (selector picked SDL2). Each event's
+        // Raw payload is a pointer into sdl2_backend's event_arena
+        // (stable until the NEXT pump_events call), which we cast
+        // back to *mut SDL_Event for dispatch to user modules.
+        // Behaviorally identical to the legacy SDL_PollEvent loop
+        // for SDL2, but the dispatch surface is now library-agnostic
+        // — a GLFW backend would pump glfw events, a raylib backend
+        // would pump raylib events, etc.
+        //
+        // Fallback: when no runtime_handle is held (no sidecar
+        // / non-SDL2 selector / trait init failure), run the
+        // legacy direct SDL_PollEvent path. Drained events go
+        // into a local Vec<SDL_Event> that outlives the pointer
+        // collection used for dispatch.
         #[cfg(target_os = "linux")]
         if !window.is_null() {
-            unsafe {
-                let mut event: SDL_Event = std::mem::zeroed();
-                while SDL_PollEvent(&mut event) != 0 {
+            // Collect event pointers from whichever source. The
+            // storage behind the pointers lives in either
+            // sdl2_backend's event_arena (trait path) or the local
+            // `legacy_drained` Vec (fallback path), both of which
+            // outlive `event_ptrs`.
+            let mut trait_events_buf: Vec<worker::runtime::window_backend::BackendEvent> =
+                Vec::new();
+            let mut legacy_drained: Vec<SDL_Event> = Vec::new();
+            let used_trait = {
+                use worker::runtime::window_backend::WindowBackend;
+                if let (Some(_handle), Some(selected)) = (
+                    runtime_handle.as_ref(),
+                    selected_runtime_backend.as_mut(),
+                ) {
+                    selected.backend.pump_events(&mut trait_events_buf);
+                    true
+                } else {
+                    false
+                }
+            };
+            // ULTRAPLAN Lightning Phase 10g.5 — event_ptrs is now
+            // typed as `*mut c_void` rather than `*mut SDL_Event`.
+            // The pointer content is unchanged (it still points at
+            // an SDL_Event for the SDL2 backend, and at GLFW /
+            // raylib / SFML event data for those backends when the
+            // runner is eventually paired with library-specific
+            // user modules via Phase 10g.5 prompt changes). User
+            // modules cast the `void*` to their library's event
+            // type based on which library they were compiled
+            // against — the same contract every library-agnostic
+            // HMR runtime uses. SDL2 modules stay backward-compat
+            // because `void core_on_event(void* state, void* evt)`
+            // already takes a void*; only the Rust-side Symbol
+            // type changed.
+            let event_ptrs: Vec<*mut c_void> = if used_trait {
+                use worker::runtime::window_backend::BackendEvent;
+                trait_events_buf
+                    .iter()
+                    .filter_map(|ev| match ev {
+                        BackendEvent::Raw { payload, .. } => {
+                            Some(*payload as *mut c_void)
+                        }
+                        // Quit and Resized don't carry a Raw pointer;
+                        // they're handled elsewhere by the runner
+                        // (Quit → core state mutation via the Raw
+                        // counterpart that SDL2Backend double-emits
+                        // for SDL_QUIT).
+                        _ => None,
+                    })
+                    .collect()
+            } else {
+                unsafe {
+                    loop {
+                        let mut event: SDL_Event = std::mem::zeroed();
+                        if SDL_PollEvent(&mut event) == 0 {
+                            break;
+                        }
+                        legacy_drained.push(event);
+                    }
+                }
+                legacy_drained
+                    .iter()
+                    .map(|e| e as *const SDL_Event as *mut c_void)
+                    .collect()
+            };
+
+            for &event_ptr in &event_ptrs {
+                unsafe {
                     // SPLIT MODE: Events go to core module with core's state.
                     // Core handles button clicks, key presses, etc. that affect app state.
                     // GUI module can also receive events for hover/focus handling.
-                    // Pass SDL_Event to all loaded modules that export on_event
-                    // The plugin's on_event expects SDL_Event* (not XEvent*)
-                    // Plugins MUST be compiled to expect SDL_Event, not XEvent
+                    // Pass the opaque event pointer to every loaded module that
+                    // exports on_event. The module casts to its library's
+                    // event type (SDL_Event for SDL2 projects, GLFW event
+                    // payload for GLFW projects, etc.) — the runner stays
+                    // library-agnostic (Phase 10g.5).
                     for (name, lib) in modules.iter() {
                         let event_func: Result<
-                            Symbol<unsafe extern "C" fn(*mut c_void, *mut SDL_Event)>,
+                            Symbol<unsafe extern "C" fn(*mut c_void, *mut c_void)>,
                             _,
                         > = lib.get(b"on_event");
                         if let Ok(f) = event_func {
@@ -603,11 +874,22 @@ fn main() {
                                     set_current_lib_path(lib_path);
                                 }
                                 let state_ptr_wrapper = SendVoidPtr(state_ptr as usize);
-                                let event_ptr_wrapper = SendVoidPtr(&mut event as *mut SDL_Event as usize);
+                                // Phase 10g.3b: `event` is now a `&mut SDL_Event`
+                                // re-borrowed from an event pointer yielded by
+                                // pump_events / legacy drain, so the cast is
+                                // event_ptr (already *mut SDL_Event). We wrap
+                                // the raw pointer directly, skipping the
+                                // &mut → ptr re-cast the old stack-local path
+                                // used to do.
+                                let event_ptr_wrapper = SendVoidPtr(event_ptr as usize);
                                 let func_ptr = *f;
                                 let result = execute_with_protection(&module_name, move || {
                                     let sp = state_ptr_wrapper.0 as *mut std::ffi::c_void;
-                                    let ep = event_ptr_wrapper.0 as *mut SDL_Event;
+                                    // Phase 10g.5 — opaque void* so the
+                                    // same dispatch path works for any
+                                    // backend's event payload. Module
+                                    // casts based on its own #include.
+                                    let ep = event_ptr_wrapper.0 as *mut std::ffi::c_void;
                                     func_ptr(sp, ep);
                                 });
                                 if let Err(crash_info) = result {
@@ -900,9 +1182,36 @@ fn main() {
                 }
                 "quit" => {
                     debug_log!("[Runner] Quitting.");
+                    // ULTRAPLAN Lightning Phase 10g.3c — route
+                    // shutdown through the WindowBackend trait when
+                    // the trait path was taken (runtime_handle is
+                    // Some). Calls destroy_window with the stored
+                    // handle, then shutdown to release any dlopen'd
+                    // library (critical for GLFW/raylib/SFML future
+                    // wiring; a no-op for SDL2 since sdl_defs.rs
+                    // static-links libSDL2).
+                    //
+                    // Fallback path (no runtime_handle) still calls
+                    // SDL_Quit directly, preserving pre-10g.2
+                    // behavior for BYOR / sidecar-less runs.
                     #[cfg(target_os = "linux")]
-                    unsafe {
-                        SDL_Quit();
+                    {
+                        use worker::runtime::window_backend::WindowBackend;
+                        let handled_via_trait = if let (Some(handle), Some(selected)) = (
+                            runtime_handle.take(),
+                            selected_runtime_backend.as_mut(),
+                        ) {
+                            selected.backend.destroy_window(handle);
+                            selected.backend.shutdown();
+                            true
+                        } else {
+                            false
+                        };
+                        if !handled_via_trait {
+                            unsafe {
+                                SDL_Quit();
+                            }
+                        }
                     }
                     return;
                 }
@@ -1183,12 +1492,40 @@ fn main() {
             }
         }
 
-        // Present the SDL renderer BEFORE capturing from Xvfb
-        // This ensures the plugin's rendering is visible in the capture
+        // Present the SDL renderer BEFORE capturing from Xvfb.
+        // This ensures the plugin's rendering is visible in the capture.
+        //
+        // ULTRAPLAN Lightning Phase 10g.3a — route through the
+        // WindowBackend trait when runtime_handle is Some (set by
+        // 10g.2 when the selector picked SDL2). For SDL2 the trait
+        // call is behaviorally identical to SDL_RenderPresent with
+        // the same renderer pointer, but it exercises the trait
+        // surface so future non-SDL backends can swap in without
+        // touching the main loop. Falls back to direct
+        // SDL_RenderPresent when no handle is held (sidecar-less
+        // path or non-SDL2 selector decision).
         #[cfg(target_os = "linux")]
-        if !renderer.is_null() {
-            unsafe {
-                SDL_RenderPresent(renderer);
+        {
+            use worker::runtime::window_backend::WindowBackend;
+            let mut presented_via_trait = false;
+            if let (Some(handle), Some(selected)) = (
+                runtime_handle.as_ref(),
+                selected_runtime_backend.as_mut(),
+            ) {
+                if let Err(e) = selected.backend.present_frame(handle) {
+                    eprintln!(
+                        "[Phase 10g.3a] WindowBackend present_frame failed ({}) — \
+                         falling back to direct SDL_RenderPresent for this frame",
+                        e
+                    );
+                } else {
+                    presented_via_trait = true;
+                }
+            }
+            if !presented_via_trait && !renderer.is_null() {
+                unsafe {
+                    SDL_RenderPresent(renderer);
+                }
             }
         }
 

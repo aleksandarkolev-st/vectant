@@ -10,6 +10,8 @@ use crate::hmr::incremental_cache::IncrementalCache;
 use crate::hmr::orchestrator::HmrOrchestrator;
 use crate::infra::observability::{MetricsAggregator, StructuredLogger};
 use crate::runtime::runner_state::RunnerState;
+use crate::runtime::path_c::supervisor::SupervisedSession;
+use crate::runtime::path_c::xvfb_allocator::XvfbAllocator;
 use crate::safety::hardened_ipc::IpcConfig;
 use crate::safety::restart_control::RestartController;
 
@@ -28,6 +30,9 @@ pub struct CompileContext {
     pub metrics_aggregator: Arc<Mutex<MetricsAggregator>>,
     pub restart_controller: Arc<Mutex<RestartController>>,
     pub ipc_config: Arc<IpcConfig>,
+    // Phase 12.6: per-session supervisor (typed IPC, per-session Xvfb)
+    pub supervisor_store: Arc<Mutex<Option<SupervisedSession>>>,
+    pub xvfb_allocator: Arc<Mutex<XvfbAllocator>>,
 }
 
 impl Clone for CompileContext {
@@ -47,6 +52,8 @@ impl Clone for CompileContext {
             metrics_aggregator: self.metrics_aggregator.clone(),
             restart_controller: self.restart_controller.clone(),
             ipc_config: self.ipc_config.clone(),
+            supervisor_store: self.supervisor_store.clone(),
+            xvfb_allocator: self.xvfb_allocator.clone(),
         }
     }
 }

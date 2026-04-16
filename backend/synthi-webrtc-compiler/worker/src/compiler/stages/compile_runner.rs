@@ -28,9 +28,12 @@
 use crate::compiler::context::CompileContext;
 use crate::compiler::error_parser::{parse_compiler_output, CompilerType};
 use crate::compiler::stages::ai_utils::calculate_hash;
+use crate::compiler::stages::compile_helpers::{
+    compile_to_object_command, cpp_compile_command, link_object_to_exec_command,
+    object_path_for_exec,
+};
 use crate::hmr::compile_manifest::CompileManifest;
 use crate::hmr::incremental_cache::IncrementalCache;
-use crate::infra::utils::system_command;
 use anyhow::{Context, Result};
 use tokio::time::{timeout, Duration};
 
@@ -49,7 +52,9 @@ pub const HOST_RUNNER_FILENAME: &str = "host_runner.cpp";
 ///     `gui_link_flags` (typically `-lSDL2 -ldl`, `-lglfw -ldl`,
 ///     `-lfmod -ldl`, etc. — whatever the AI synthesised for the runner's
 ///     own dlopen + window-init dependencies)
-///   - always appends `-ldl` (runner is the dlopen caller) and
+///   - always appends `-ldl` (runner is the dlopen caller),
+///     `-pthread` (Phase 12.5 — new host_runner template has a
+///     stdin reader thread for hot-reload commands), and
 ///     `-rdynamic` (for runner→module dlsym back-references)
 pub fn build_runner_flag_list(manifest: &CompileManifest) -> Vec<String> {
     let std_flag = format!("-std={}", manifest.std);
@@ -61,14 +66,35 @@ pub fn build_runner_flag_list(manifest: &CompileManifest) -> Vec<String> {
         .collect();
 
     let mut flags: Vec<String> = Vec::with_capacity(
-        runner_compile_flags.len() + manifest.runner_link_flags.len() + 3,
+        runner_compile_flags.len() + manifest.runner_link_flags.len() + 4,
     );
     flags.push(std_flag);
     flags.extend(runner_compile_flags);
     flags.extend(manifest.runner_link_flags.iter().cloned());
-    flags.push("-ldl".to_string());
-    flags.push("-rdynamic".to_string());
+    // Dedup-on-push: only add -ldl / -pthread / -rdynamic if the
+    // manifest's runner_link_flags didn't already carry them. The
+    // linker tolerates duplicates but logs look like "-ldl -ldl
+    // -pthread -lpthread -rdynamic" otherwise, which confuses
+    // operators reading compile diagnostics.
+    push_if_absent(&mut flags, "-ldl");
+    // -pthread and -lpthread are equivalent for the GNU linker;
+    // treat either in the manifest as satisfying our -pthread
+    // requirement to avoid the duplicate pair.
+    if !flags.iter().any(|f| f == "-pthread" || f == "-lpthread") {
+        flags.push("-pthread".to_string());
+    }
+    push_if_absent(&mut flags, "-rdynamic");
     flags
+}
+
+/// Push `flag` onto `flags` only if an exact match isn't already
+/// present. Used by the runner flag builders + heal retry paths so
+/// manifest-supplied `-ldl` / `-rdynamic` / `-pthread` don't get
+/// duplicated by the defensive unconditional appends.
+fn push_if_absent(flags: &mut Vec<String>, flag: &str) {
+    if !flags.iter().any(|f| f == flag) {
+        flags.push(flag.to_string());
+    }
 }
 
 /// Compile the host_runner.cpp into a per-project executable.
@@ -149,46 +175,96 @@ pub async fn compile_runner(
     // artifacts so cleanup is uniform.
     let runner_out = output_dir.join(format!("host_runner_{}", timestamp));
 
-    let mut cmd = system_command(compiler_exe);
-    cmd.arg(&std_flag);
-    for f in &runner_compile_flags {
-        cmd.arg(f);
-    }
-    cmd.arg(HOST_RUNNER_FILENAME)
-        .arg("-I.")
-        .arg("-o")
-        .arg(&runner_out);
-    for f in &effective_manifest.runner_link_flags {
-        cmd.arg(f);
-    }
-    cmd.arg("-ldl").arg("-rdynamic");
-    cmd.current_dir(dir_path);
-
-    eprintln!(
-        "[CompileRunner] Executing {} in {:?} args: {:?}",
-        compiler_exe,
-        dir_path,
-        cmd.as_std().get_args()
+    // ULTRAPLAN Phase 9b: two-step split (see compile_core.rs for the
+    // rationale). compile_runner produces an EXECUTABLE (not a .so),
+    // so the link step uses `link_object_to_exec_command` instead of
+    // the shared-library helper — no `-shared` flag.
+    //
+    // runner_compile_flags already has -shared/-fPIC stripped at the
+    // top of this function (Phase 3 quirk: executables can't carry
+    // those flags), so we pass it verbatim through the helper which
+    // will strip -shared again as a no-op safety net.
+    // ULTRAPLAN Lightning Phase 12.5 — add `-pthread` unconditionally.
+    // The new host_runner.cpp template emitted by UNIVERSAL_SPLIT_PROMPT
+    // has a stdin reader thread (std::thread / pthread_create) that
+    // handles hot-reload commands. Without -pthread the link fails.
+    // This is library-agnostic (pthread is the reloader, not the
+    // rendering backend) so we add it for every per-project runner
+    // regardless of what the manifest says.
+    let mut link_flags: Vec<String> = Vec::with_capacity(
+        effective_manifest.runner_link_flags.len() + 3,
     );
+    link_flags.extend(effective_manifest.runner_link_flags.iter().cloned());
+    // Dedup-on-push — same shape as build_runner_flag_list.
+    push_if_absent(&mut link_flags, "-ldl");
+    if !link_flags.iter().any(|f| f == "-pthread" || f == "-lpthread") {
+        link_flags.push("-pthread".to_string());
+    }
+    push_if_absent(&mut link_flags, "-rdynamic");
 
-    cmd.kill_on_drop(true);
-    let child = cmd
+    let runner_obj = object_path_for_exec(&runner_out);
+
+    // Step 1: compile .cpp → .o (ccache caches this)
+    let mut compile_cmd = compile_to_object_command(
+        compiler_exe,
+        HOST_RUNNER_FILENAME,
+        &runner_obj,
+        &std_flag,
+        &runner_compile_flags,
+        dir_path,
+    );
+    eprintln!(
+        "[CompileRunner] Phase 9b split step 1/2 (compile): {:?}",
+        compile_cmd.as_std().get_args()
+    );
+    compile_cmd.kill_on_drop(true);
+    let compile_child = compile_cmd
         .spawn()
-        .context(format!("Failed to spawn {}", compiler_exe))?;
-
-    let output_res = timeout(Duration::from_secs(30), child.wait_with_output()).await;
-
-    let output = match output_res {
+        .context(format!("Failed to spawn {} compile step", compiler_exe))?;
+    let compile_out = match timeout(Duration::from_secs(30), compile_child.wait_with_output()).await {
         Ok(Ok(out)) => out,
         Ok(Err(e)) => return Err(e.into()),
         Err(_) => {
-            eprintln!("[CompileRunner] Timed out waiting for {}", compiler_exe);
-            anyhow::bail!("Runner compilation timed out after 30s");
+            eprintln!("[CompileRunner] compile step timed out");
+            anyhow::bail!("Runner compile step timed out after 30s");
         }
+    };
+    eprintln!(
+        "[CompileRunner] compile step finished with status: {}",
+        compile_out.status
+    );
+
+    // Step 2 (only if step 1 succeeded): link .o → executable.
+    let output = if compile_out.status.success() {
+        let mut link_cmd = link_object_to_exec_command(
+            compiler_exe,
+            &runner_obj,
+            &runner_out,
+            &link_flags,
+            dir_path,
+        );
+        eprintln!(
+            "[CompileRunner] Phase 9b split step 2/2 (link): {:?}",
+            link_cmd.as_std().get_args()
+        );
+        link_cmd.kill_on_drop(true);
+        let link_child = link_cmd
+            .spawn()
+            .context(format!("Failed to spawn {} link step", compiler_exe))?;
+        match timeout(Duration::from_secs(30), link_child.wait_with_output()).await {
+            Ok(Ok(out)) => out,
+            Ok(Err(e)) => return Err(e.into()),
+            Err(_) => {
+                eprintln!("[CompileRunner] link step timed out");
+                anyhow::bail!("Runner link step timed out after 30s");
+            }
+        }
+    } else {
+        compile_out
     };
 
     eprintln!(
-        "[CompileRunner] {} finished with status: {}",
+        "[CompileRunner] {} overall status: {}",
         compiler_exe, output.status
     );
 
@@ -209,7 +285,7 @@ pub async fn compile_runner(
             "host_runner",
             host_runner_content,
             |m| {
-                let mut cmd = system_command(m.compiler.executable());
+                let mut cmd = cpp_compile_command(m.compiler.executable());
                 cmd.arg(format!("-std={}", m.std));
                 // Strip -shared / -fPIC (runner is an executable, not a .so)
                 for f in &m.common_flags {
@@ -224,7 +300,9 @@ pub async fn compile_runner(
                 for f in &m.runner_link_flags {
                     cmd.arg(f);
                 }
-                cmd.arg("-ldl").arg("-rdynamic");
+                // Phase 12.5: -pthread for stdin reader thread in new
+                // host_runner template (must mirror build_runner_flag_list).
+                cmd.arg("-ldl").arg("-pthread").arg("-rdynamic");
                 cmd.current_dir(dir_path);
                 cmd
             },
@@ -282,7 +360,7 @@ pub async fn compile_runner(
             {
                 Ok(fixed) => {
                     tokio::fs::write(dir_path.join(HOST_RUNNER_FILENAME), &fixed).await?;
-                    let mut retry_cmd = system_command(compiler_exe);
+                    let mut retry_cmd = cpp_compile_command(compiler_exe);
                     retry_cmd.arg(&std_flag);
                     for f in &runner_compile_flags {
                         retry_cmd.arg(f);
@@ -295,7 +373,8 @@ pub async fn compile_runner(
                     for f in &effective_manifest.runner_link_flags {
                         retry_cmd.arg(f);
                     }
-                    retry_cmd.arg("-ldl").arg("-rdynamic");
+                    // Phase 12.5: -pthread mirrors build_runner_flag_list.
+                    retry_cmd.arg("-ldl").arg("-pthread").arg("-rdynamic");
                     retry_cmd.current_dir(dir_path);
                     retry_cmd.kill_on_drop(true);
                     if let Ok(retry_child) = retry_cmd.spawn() {
@@ -360,6 +439,68 @@ pub async fn compile_runner(
     }
 
     let path = runner_out.to_string_lossy().to_string();
+
+    // ULTRAPLAN Lightning Phase 12.6 — post-compile `nm` check.
+    // Verify the compiled host_runner binary has the required dynamic
+    // symbols (dlopen, dlsym) in its dependency graph. If `-ldl` was
+    // silently dropped during the AI's manifest generation or the
+    // heal loop trimmed it away, the binary COMPILES but segfaults
+    // at runtime on the first dlopen call — a hard-to-debug failure
+    // that this pre-flight check catches cheaply (~10ms vs ~minutes
+    // of user confusion).
+    //
+    // We also check for `main` as a basic sanity that the link
+    // produced a valid executable, and for `pthread_create` since
+    // the Phase 12.5 stdin reader thread depends on it.
+    //
+    // Failure is a WARNING (eprintln), not a hard error, because
+    // the check is best-effort and `nm -D` may not be installed in
+    // every container image. The runner will still crash clearly
+    // at runtime if the symbol is truly missing.
+    {
+        let nm_path = runner_out.to_string_lossy().to_string();
+        match tokio::process::Command::new("nm")
+            .arg("-D")
+            .arg(&nm_path)
+            .output()
+            .await
+        {
+            Ok(output) if output.status.success() => {
+                let symbols = String::from_utf8_lossy(&output.stdout);
+                let required = ["dlopen", "dlsym", "pthread_create"];
+                let mut missing: Vec<&str> = Vec::new();
+                for sym in &required {
+                    if !symbols.contains(sym) {
+                        missing.push(sym);
+                    }
+                }
+                if !missing.is_empty() {
+                    eprintln!(
+                        "[Phase 12.6] WARNING: host_runner binary missing required dynamic \
+                         symbols: {:?}. The runner may crash at runtime. Check link flags \
+                         (need -ldl -pthread).",
+                        missing
+                    );
+                } else {
+                    eprintln!(
+                        "[Phase 12.6] nm check: all required symbols present (dlopen, dlsym, pthread_create)"
+                    );
+                }
+            }
+            Ok(output) => {
+                eprintln!(
+                    "[Phase 12.6] nm check: nm -D exited with {} (non-fatal, skipping check)",
+                    output.status
+                );
+            }
+            Err(e) => {
+                eprintln!(
+                    "[Phase 12.6] nm check: failed to run nm ({}) — skipping (nm may not be installed)",
+                    e
+                );
+            }
+        }
+    }
 
     // Update the persistent cache so subsequent identical builds are instant.
     if let Ok(bin_data) = tokio::fs::read(&path).await {
