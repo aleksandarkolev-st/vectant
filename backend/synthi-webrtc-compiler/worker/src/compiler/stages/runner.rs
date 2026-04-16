@@ -66,11 +66,10 @@ pub async fn handle_runner_execution(
     let mut guard = ctx.runner_store.lock().await;
 
     // ULTRAPLAN Lightning Phase 12 — hoisted so both the spawn block
-    // and the later stdin-command block can branch on it without
-    // re-resolving `host_runner_bin_path`. The spawn block uses it to
-    // pick the binary + cwd; the stdin block uses it to skip the
-    // `set_session`/`load` protocol that the per-project runner does
-    // not speak.
+    // and the later logging can reference it without re-resolving
+    // `host_runner_bin_path`. The spawn block uses it to pick the
+    // binary + cwd. Stdin HMR commands (set_session / load) are
+    // sent uniformly to both runner types (Phase 12.5).
     let use_per_project_runner = host_runner_bin_path.is_some();
 
     let req_width = req.width.unwrap_or(800);
