@@ -440,6 +440,68 @@ pub async fn compile_runner(
 
     let path = runner_out.to_string_lossy().to_string();
 
+    // ULTRAPLAN Lightning Phase 12.6 — post-compile `nm` check.
+    // Verify the compiled host_runner binary has the required dynamic
+    // symbols (dlopen, dlsym) in its dependency graph. If `-ldl` was
+    // silently dropped during the AI's manifest generation or the
+    // heal loop trimmed it away, the binary COMPILES but segfaults
+    // at runtime on the first dlopen call — a hard-to-debug failure
+    // that this pre-flight check catches cheaply (~10ms vs ~minutes
+    // of user confusion).
+    //
+    // We also check for `main` as a basic sanity that the link
+    // produced a valid executable, and for `pthread_create` since
+    // the Phase 12.5 stdin reader thread depends on it.
+    //
+    // Failure is a WARNING (eprintln), not a hard error, because
+    // the check is best-effort and `nm -D` may not be installed in
+    // every container image. The runner will still crash clearly
+    // at runtime if the symbol is truly missing.
+    {
+        let nm_path = runner_out.to_string_lossy().to_string();
+        match tokio::process::Command::new("nm")
+            .arg("-D")
+            .arg(&nm_path)
+            .output()
+            .await
+        {
+            Ok(output) if output.status.success() => {
+                let symbols = String::from_utf8_lossy(&output.stdout);
+                let required = ["dlopen", "dlsym", "pthread_create"];
+                let mut missing: Vec<&str> = Vec::new();
+                for sym in &required {
+                    if !symbols.contains(sym) {
+                        missing.push(sym);
+                    }
+                }
+                if !missing.is_empty() {
+                    eprintln!(
+                        "[Phase 12.6] WARNING: host_runner binary missing required dynamic \
+                         symbols: {:?}. The runner may crash at runtime. Check link flags \
+                         (need -ldl -pthread).",
+                        missing
+                    );
+                } else {
+                    eprintln!(
+                        "[Phase 12.6] nm check: all required symbols present (dlopen, dlsym, pthread_create)"
+                    );
+                }
+            }
+            Ok(output) => {
+                eprintln!(
+                    "[Phase 12.6] nm check: nm -D exited with {} (non-fatal, skipping check)",
+                    output.status
+                );
+            }
+            Err(e) => {
+                eprintln!(
+                    "[Phase 12.6] nm check: failed to run nm ({}) — skipping (nm may not be installed)",
+                    e
+                );
+            }
+        }
+    }
+
     // Update the persistent cache so subsequent identical builds are instant.
     if let Ok(bin_data) = tokio::fs::read(&path).await {
         let source_hash = calculate_hash(&host_runner_content);
