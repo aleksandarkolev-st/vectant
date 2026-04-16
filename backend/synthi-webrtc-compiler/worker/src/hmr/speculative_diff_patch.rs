@@ -282,19 +282,21 @@ pub fn trigger_speculative(workspace_path: PathBuf, new_source: String) {
             };
 
             // Race the AI call against the cancellation notify.
-            // `cancel_notified` is created BEFORE the select! so
-            // any notify that fires during the HTTP call lands
-            // on a registered waiter (Tokio::Notify semantics —
-            // calling `.notified()` registers a permit slot).
-            // A newer `trigger_speculative` call fires
-            // `notify_waiters()` on the SAME Arc, immediately
-            // waking this future and dropping the HTTP call.
+            // Clone the Arc, create a Notified future, and eagerly
+            // register via `enable()` so a `notify_waiters()` that
+            // fires between the lock release and the `select!` poll
+            // is not lost. Without `enable()`, there was a narrow
+            // race where a newer trigger could fire `notify_waiters()`
+            // after clone but before the first `select!` poll —
+            // dropping the notification and letting the HTTP call
+            // run to completion (wasting Gemini tokens).
             let cancel_notify_arc = {
                 let s = get_state().lock().await;
                 s.cancel_notify.clone()
             };
             let cancel_notified = cancel_notify_arc.notified();
             tokio::pin!(cancel_notified);
+            cancel_notified.as_mut().enable();
 
             let start = Instant::now();
             let ai_result = tokio::select! {
@@ -474,4 +476,60 @@ pub async fn take_matching_or_wait(source_hash: u64, timeout: Duration) -> Optio
 /// the same source string for the cache lookup to work.
 pub fn hash_source(s: &str) -> u64 {
     hash_str(s)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    #[tokio::test]
+    async fn cancel_notify_enable_catches_early_fire() {
+        let notify = Arc::new(Notify::new());
+        let notify_clone = notify.clone();
+
+        let was_cancelled = Arc::new(AtomicBool::new(false));
+        let was_cancelled_clone = was_cancelled.clone();
+
+        let handle = tokio::spawn(async move {
+            let notified = notify_clone.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+
+            // Yield so the main task can fire notify_waiters()
+            // AFTER enable() but BEFORE select! poll.
+            tokio::task::yield_now().await;
+
+            tokio::select! {
+                biased;
+                _ = &mut notified => {
+                    was_cancelled_clone.store(true, Ordering::SeqCst);
+                }
+                _ = tokio::time::sleep(Duration::from_secs(5)) => {}
+            }
+        });
+
+        // Give the spawned task time to reach yield_now
+        tokio::task::yield_now().await;
+        tokio::task::yield_now().await;
+
+        // Fire notification — with enable(), this reaches the waiter
+        // even though select! hasn't polled yet.
+        notify.notify_waiters();
+
+        handle.await.unwrap();
+        assert!(
+            was_cancelled.load(Ordering::SeqCst),
+            "enable() should register the waiter eagerly so notify_waiters() is not lost"
+        );
+    }
+
+    #[tokio::test]
+    async fn hash_source_deterministic() {
+        let h1 = hash_source("hello world");
+        let h2 = hash_source("hello world");
+        let h3 = hash_source("hello world!");
+        assert_eq!(h1, h2);
+        assert_ne!(h1, h3);
+    }
 }
