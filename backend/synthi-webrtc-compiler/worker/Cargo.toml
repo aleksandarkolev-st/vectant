@@ -66,6 +66,9 @@ gimli = { version = "0.31", default-features = false, features = ["read", "std"]
 memmap2 = "0.9"
 # Phase 11: x86-64 disassembly for integer immediate patching
 iced-x86 = { version = "1.21", default-features = false, features = ["decoder", "intel", "std"] }
+# Phase 11: AST-based value-only classification
+tree-sitter = "0.24"
+tree-sitter-cpp = "0.23"
 
 [build-dependencies]
 tonic-build = "0.11"
