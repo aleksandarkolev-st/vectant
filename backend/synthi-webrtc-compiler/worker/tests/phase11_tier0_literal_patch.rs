@@ -220,3 +220,148 @@ fn bypass_patches_both_sos_when_literal_in_both() {
     assert!(std::fs::read(&core).unwrap().windows(10).any(|w| w == b"PATCHED_OK"));
     assert!(std::fs::read(&gui).unwrap().windows(10).any(|w| w == b"PATCHED_OK"));
 }
+
+// ── End-to-end pipeline tests ──
+//
+// Realistic C++ source edits → classify_edit → extract_string_swaps
+// → try_tier0_bypass. Validates the entire Tier 0 pipeline from
+// source-level diff to binary patch.
+
+#[test]
+fn e2e_sdl_window_title_change() {
+    let old = r#"#include "shared.h"
+void core_on_load(void* state) {
+    SDL_Init(SDL_INIT_VIDEO);
+    SDL_CreateWindow("My Game", 0, 0, 800, 600, 0);
+}
+"#;
+    let new = r#"#include "shared.h"
+void core_on_load(void* state) {
+    SDL_Init(SDL_INIT_VIDEO);
+    SDL_CreateWindow("My App!", 0, 0, 800, 600, 0);
+}
+"#;
+    let cls = classify_edit(old, new);
+    assert!(cls.is_value_only);
+    let swaps = extract_string_swaps(&cls).expect("eligible");
+    assert_eq!(swaps.len(), 1);
+    assert_eq!(swaps[0].old, b"My Game");
+    assert_eq!(swaps[0].new, b"My App!");
+
+    let dir = tempfile::tempdir().unwrap();
+    let so = dir.path().join("libcore_100.so");
+    std::fs::write(&so, b"\0\0My Game\0\0rest of binary").unwrap();
+    std::os::unix::fs::symlink("libcore_100.so", dir.path().join("libcore.so")).unwrap();
+
+    let result = try_tier0_bypass(dir.path(), &swaps).expect("should patch");
+    assert_eq!(result.len(), 1);
+    let data = std::fs::read(&so).unwrap();
+    assert!(data.windows(7).any(|w| w == b"My App!"));
+    assert!(!data.windows(7).any(|w| w == b"My Game"));
+}
+
+#[test]
+fn e2e_multiple_literals_same_line() {
+    let old = r#"    printf("Hello %s", "World");"#;
+    let new = r#"    printf("Hallo %s", "Welt!");"#;
+    let cls = classify_edit(old, new);
+    let swaps = extract_string_swaps(&cls);
+    // "Hello %s"→"Hallo %s" is same length (8 chars each)
+    // "World"→"Welt!" is same length (5 chars each)
+    assert!(swaps.is_some());
+    let swaps = swaps.unwrap();
+    assert_eq!(swaps.len(), 2);
+}
+
+#[test]
+fn e2e_structural_edit_rejects() {
+    let old = r#"void core_on_load(void* state) {
+    int x = 42;
+}
+"#;
+    let new = r#"void core_on_load(void* state) {
+    int x = 42;
+    printf("added line");
+}
+"#;
+    let cls = classify_edit(old, new);
+    assert!(!cls.is_value_only);
+    assert!(extract_string_swaps(&cls).is_none());
+}
+
+#[test]
+fn e2e_different_length_literal_rejects() {
+    let old = r#"    const char* msg = "Short";"#;
+    let new = r#"    const char* msg = "Loong";"#;
+    let cls = classify_edit(old, new);
+    let swaps = extract_string_swaps(&cls);
+    // Same length (5 chars each) — should be eligible
+    assert!(swaps.is_some());
+    assert_eq!(swaps.unwrap().len(), 1);
+
+    // Now test actually different lengths
+    let old2 = r#"    const char* msg = "Short";"#;
+    let new2 = r#"    const char* msg = "Much Longer";"#;
+    let cls2 = classify_edit(old2, new2);
+    assert!(extract_string_swaps(&cls2).is_none());
+}
+
+#[test]
+fn e2e_escaped_quotes_in_literal() {
+    let old = r#"    puts("say \"hi\"");"#;
+    let new = r#"    puts("say \"yo\"");"#;
+    let cls = classify_edit(old, new);
+    let swaps = extract_string_swaps(&cls);
+    assert!(swaps.is_some());
+    let s = swaps.unwrap();
+    assert_eq!(s.len(), 1);
+    // The escaped content "say \"hi\"" vs "say \"yo\""
+    assert_eq!(s[0].old.len(), s[0].new.len());
+}
+
+#[test]
+fn e2e_integer_only_change_no_string_swaps() {
+    let old = r#"    int width = 800;
+    int height = 600;"#;
+    let new = r#"    int width = 900;
+    int height = 700;"#;
+    let cls = classify_edit(old, new);
+    assert!(cls.is_value_only);
+    let swaps = extract_string_swaps(&cls);
+    // Value-only but no string literals → Some(empty)
+    match swaps {
+        Some(v) => assert!(v.is_empty()),
+        None => {} // also acceptable
+    }
+}
+
+#[test]
+fn e2e_multiline_value_edit() {
+    let old = r#"#include "shared.h"
+void setup() {
+    set_title("Title A");
+    set_bg_color("red__");
+}
+"#;
+    let new = r#"#include "shared.h"
+void setup() {
+    set_title("Title B");
+    set_bg_color("blue_");
+}
+"#;
+    let cls = classify_edit(old, new);
+    assert!(cls.is_value_only);
+    let swaps = extract_string_swaps(&cls).expect("eligible");
+    assert_eq!(swaps.len(), 2);
+
+    let dir = tempfile::tempdir().unwrap();
+    let so = dir.path().join("libcore_200.so");
+    std::fs::write(&so, b"\0Title A\0\0red__\0rest").unwrap();
+    std::os::unix::fs::symlink("libcore_200.so", dir.path().join("libcore.so")).unwrap();
+
+    let result = try_tier0_bypass(dir.path(), &swaps).expect("should patch");
+    assert_eq!(result.len(), 1);
+    let data = std::fs::read(&so).unwrap();
+    assert!(data.windows(7).any(|w| w == b"Title B"));
+    assert!(data.windows(5).any(|w| w == b"blue_"));
+}
