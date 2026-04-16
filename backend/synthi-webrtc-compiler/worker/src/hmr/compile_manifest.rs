@@ -195,6 +195,8 @@ impl CompileManifest {
             common_flags: vec![
                 "-shared".to_string(),
                 "-fPIC".to_string(),
+                "-O0".to_string(),
+                "-fno-merge-constants".to_string(),
                 "-D_POSIX_C_SOURCE=199309L".to_string(),
                 "-g".to_string(),
                 "-gdwarf-4".to_string(),
@@ -228,6 +230,45 @@ impl CompileManifest {
     /// Handler.rs uses this to decide dlclose-swap vs process kill+respawn.
     pub fn requires_process_restart(&self) -> bool {
         matches!(self.hot_reload_mode, HotReloadMode::ProcessRestart)
+    }
+
+    /// Whether the compile flags are safe for Tier 0 literal patching.
+    ///
+    /// Tier 0 patches .so bytes directly. This is only safe when:
+    ///   - `-O0` prevents constant folding/inlining that moves literals
+    ///   - `-fno-merge-constants` prevents GCC from pooling identical
+    ///     string literals into a single .rodata entry
+    ///
+    /// Without these, the compiler may merge "Hello" used in two places
+    /// into one copy — Tier 0 would patch both call sites when only one
+    /// changed, producing a silently wrong binary.
+    pub fn tier0_safe(&self) -> bool {
+        let has_o0 = self.common_flags.iter().any(|f| f == "-O0");
+        let no_higher_opt = !self.common_flags.iter().any(|f| {
+            f.starts_with("-O") && f != "-O0" && f != "-Os" // -Os is separate check
+                || f == "-Os"
+        });
+        let has_no_merge = self.common_flags.iter().any(|f| f == "-fno-merge-constants");
+        (has_o0 || no_higher_opt) && has_no_merge
+    }
+
+    /// Ensure the manifest has Tier 0 safety flags. Returns a new
+    /// manifest with `-O0` and `-fno-merge-constants` injected if
+    /// missing. Removes any `-O1`/`-O2`/`-O3`/`-Os` that would
+    /// conflict. Used by the handler before compile dispatch.
+    pub fn with_tier0_flags(&self) -> Self {
+        let mut m = self.clone();
+        // Remove any optimization flags that conflict with -O0
+        m.common_flags.retain(|f| {
+            !(f.starts_with("-O") && f != "-O0")
+        });
+        if !m.common_flags.iter().any(|f| f == "-O0") {
+            m.common_flags.push("-O0".to_string());
+        }
+        if !m.common_flags.iter().any(|f| f == "-fno-merge-constants") {
+            m.common_flags.push("-fno-merge-constants".to_string());
+        }
+        m
     }
 }
 
@@ -395,5 +436,43 @@ mod tests {
         let m: CompileManifest = serde_json::from_str(json).unwrap();
         assert!(m.build_steps.is_some());
         assert_eq!(m.build_steps.unwrap().len(), 1);
+    }
+
+    #[test]
+    fn sdl2_default_is_tier0_safe() {
+        let m = CompileManifest::sdl2_default();
+        assert!(m.tier0_safe(), "sdl2_default must include -O0 and -fno-merge-constants");
+    }
+
+    #[test]
+    fn tier0_safe_rejects_o2() {
+        let mut m = CompileManifest::sdl2_default();
+        m.common_flags.push("-O2".to_string());
+        assert!(!m.tier0_safe());
+    }
+
+    #[test]
+    fn tier0_safe_rejects_missing_no_merge() {
+        let mut m = CompileManifest::sdl2_default();
+        m.common_flags.retain(|f| f != "-fno-merge-constants");
+        assert!(!m.tier0_safe());
+    }
+
+    #[test]
+    fn with_tier0_flags_injects_missing() {
+        let mut m = CompileManifest::sdl2_default();
+        m.common_flags.retain(|f| f != "-O0" && f != "-fno-merge-constants");
+        assert!(!m.tier0_safe());
+        let fixed = m.with_tier0_flags();
+        assert!(fixed.tier0_safe());
+    }
+
+    #[test]
+    fn with_tier0_flags_strips_o2() {
+        let mut m = CompileManifest::sdl2_default();
+        m.common_flags.push("-O2".to_string());
+        let fixed = m.with_tier0_flags();
+        assert!(fixed.tier0_safe());
+        assert!(!fixed.common_flags.contains(&"-O2".to_string()));
     }
 }
