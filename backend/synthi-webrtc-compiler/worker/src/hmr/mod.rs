@@ -1,5 +1,6 @@
 pub mod abi_detect;
 pub mod binary_patch;
+pub mod tier0_unified;
 pub mod ts_value_classifier;
 pub mod adapted_project;
 pub mod adapter_matrix;
