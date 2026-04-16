@@ -1220,8 +1220,53 @@ pub async fn handle_compile_request(
             Tier0V2Outcome::Patched(result) => {
                 let t0_ms = t0_start.elapsed().as_millis();
                 let total_ms = compile_start.elapsed().as_millis();
+
+                // Phase 11d: try live memory patching to skip dlclose/dlopen.
+                // If the runner is alive and we have patch_records with
+                // file offsets, write directly to the runner's memory via
+                // /proc/pid/mem. Eliminates the ~20ms dlopen cost.
+                let live_patched = if !result.patch_records.is_empty() {
+                    let guard = ctx.runner_store.lock().await;
+                    if let Some(ref state) = *guard {
+                        if let Some(ref child) = state.process {
+                            if let Some(pid) = child.id() {
+                                use crate::hmr::binary_patch::proc_mem_patcher::patch_live;
+                                let mut all_ok = true;
+                                for rec in &result.patch_records {
+                                    match patch_live(
+                                        pid,
+                                        &rec.so_path,
+                                        rec.file_offset,
+                                        &rec.old_bytes,
+                                        &rec.new_bytes,
+                                    ) {
+                                        Ok(()) => {}
+                                        Err(e) => {
+                                            eprintln!(
+                                                "[HMR] Tier 0 live patch failed at {:#x}: {} — will reload",
+                                                rec.file_offset, e
+                                            );
+                                            all_ok = false;
+                                            break;
+                                        }
+                                    }
+                                }
+                                if all_ok {
+                                    eprintln!(
+                                        "[HMR] Tier 0 LIVE: patched {} record(s) in runner pid={}",
+                                        result.patch_records.len(), pid
+                                    );
+                                }
+                                all_ok
+                            } else { false }
+                        } else { false }
+                    } else { false }
+                } else { false };
+
+                let method = if live_patched { "live-mem" } else { "disk+reload" };
                 eprintln!(
-                    "[HMR] Tier 0 v2 SUCCESS: {} string + {} integer + {} float patch(es) in {}ms (total: {}ms)",
+                    "[HMR] Tier 0 v2 SUCCESS ({}): {} string + {} integer + {} float patch(es) in {}ms (total: {}ms)",
+                    method,
                     result.string_patches,
                     result.integer_patches,
                     result.float_patches,
@@ -1236,8 +1281,8 @@ pub async fn handle_compile_request(
                     "sessionId": session_id.clone(),
                     "type": "stderr",
                     "line": format!(
-                        "[HMR] Tier 0: {}s + {}i + {}f patched in {}ms (skipped g++)\n",
-                        result.string_patches, result.integer_patches, result.float_patches, t0_ms
+                        "[HMR] Tier 0 ({}): {}s + {}i + {}f in {}ms\n",
+                        method, result.string_patches, result.integer_patches, result.float_patches, t0_ms
                     )
                 });
                 let _ = ctx.log_dc.send_text(serde_json::to_string(&payload).unwrap_or_default()).await;

@@ -25,12 +25,22 @@ use crate::hmr::binary_patch::float_patcher::{
 };
 use std::path::{Path, PathBuf};
 
+/// A single file-offset patch that was applied (for live memory patching).
+#[derive(Debug, Clone)]
+pub struct PatchRecord {
+    pub so_path: PathBuf,
+    pub file_offset: u64,
+    pub old_bytes: Vec<u8>,
+    pub new_bytes: Vec<u8>,
+}
+
 #[derive(Debug, Clone)]
 pub struct Tier0V2Result {
     pub string_patches: usize,
     pub integer_patches: usize,
     pub float_patches: usize,
     pub patched_paths: Vec<PathBuf>,
+    pub patch_records: Vec<PatchRecord>,
     pub skipped: Vec<String>,
 }
 
@@ -115,6 +125,7 @@ pub fn try_tier0_v2(
     }
 
     let mut patched_paths: Vec<PathBuf> = Vec::new();
+    let mut patch_records: Vec<PatchRecord> = Vec::new();
     let mut string_patch_count = 0;
     let mut integer_patch_count = 0;
 
@@ -285,6 +296,7 @@ pub fn try_tier0_v2(
             integer_patches: integer_patch_count,
             float_patches: float_patch_count,
             patched_paths,
+            patch_records,
             skipped,
         })
     }
