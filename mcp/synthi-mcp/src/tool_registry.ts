@@ -20,6 +20,8 @@ export const ADVERTISED_TOOLS = [
   "synthi_wait",
   "synthi_wait_hmr",
   // Input
+  "synthi_mouse",
+  "synthi_keyboard",
   "synthi_click",
   "synthi_type",
   // Semantic addressing

@@ -16,6 +16,8 @@ import { clickTool } from "./tools/click.js";
 import { typeTool } from "./tools/type.js";
 import { locateTool } from "./tools/locate.js";
 import { waitTool } from "./tools/wait.js";
+import { mouseTool } from "./tools/mouse.js";
+import { keyboardTool } from "./tools/keyboard.js";
 import type { ToolContext } from "./tools/shared.js";
 
 export interface SynthiServerOptions {
@@ -222,6 +224,68 @@ const TOOLS = [
     inputSchema: { type: "object", properties: {}, required: [] },
   },
   {
+    name: "synthi_mouse",
+    description:
+      "Playwright-style mouse tool. Actions: click, double_click, move, down, up, drag, wheel. Coordinates come from explicit x/y OR a handle (resolved via synthi_locate, bbox center is used). Optional auto-wait via waitFor:{condition,...} runs a synthi_wait before the action.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        action: { type: "string", enum: ["click", "double_click", "move", "down", "up", "drag", "wheel"] },
+        x: { type: "number" },
+        y: { type: "number" },
+        toX: { type: "number", description: "Drag destination x." },
+        toY: { type: "number", description: "Drag destination y." },
+        deltaY: { type: "number", description: "Wheel delta (positive = scroll down)." },
+        button: { type: "string", enum: ["left", "middle", "right"] },
+        handle: {
+          type: "object",
+          properties: {
+            handle_id: { type: "string" },
+            reuse: { type: "boolean" },
+            description: { type: "string" },
+          },
+          required: ["handle_id"],
+        },
+        waitFor: {
+          type: "object",
+          description: "Optional pre-action wait. Same shape as synthi_wait input.",
+        },
+      },
+      required: ["action"],
+    },
+  },
+  {
+    name: "synthi_keyboard",
+    description:
+      "Keyboard tool. Actions: type (string), key (single named key like Enter/Tab), chord (array of keys pressed simultaneously, released in reverse). Optional confirm:{pattern,timeoutMs} waits for a log-pattern match after the action.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        action: { type: "string", enum: ["type", "key", "chord"] },
+        text: { type: "string", description: "For action=type." },
+        key: { type: "string", description: "For action=key. Uses JS DOM ev.key semantics (\"Enter\", \"Tab\", \"a\")." },
+        keys: {
+          type: "array",
+          items: { type: "string" },
+          description: "For action=chord (e.g., [\"Control\", \"c\"]).",
+        },
+        confirm: {
+          type: "object",
+          properties: {
+            pattern: { type: "string" },
+            timeoutMs: { type: "number" },
+          },
+          required: ["pattern"],
+        },
+        waitFor: {
+          type: "object",
+          description: "Optional pre-action wait. Same shape as synthi_wait input.",
+        },
+      },
+      required: ["action"],
+    },
+  },
+  {
     name: "synthi_locate",
     description:
       "Resolve a natural-language element description into a {bbox, handle_id, region_phash} handle. Phase-0.5 spike tool: with `preferred_vision_backend:\"mock\"` (default) or an explicit `hints.prefer_region`, the server uses the hint as the answer; `agent_side` returns an unresolved-handle signal so the agent runs its own vision; `claude_api` is a phase-1 stub today. Passing `handle_id` + `reuse_handle:true` enables the region-pHash cache.",
@@ -335,6 +399,10 @@ export function createSynthiServer(options: SynthiServerOptions): Server {
         return (await getSourceStateTool(args)) as CallToolResult;
       case "synthi_wait":
         return (await waitTool(args)) as CallToolResult;
+      case "synthi_mouse":
+        return (await mouseTool(args)) as CallToolResult;
+      case "synthi_keyboard":
+        return (await keyboardTool(args)) as CallToolResult;
       default:
         return {
           content: [
