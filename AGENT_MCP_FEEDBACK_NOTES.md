@@ -834,4 +834,43 @@ Wave 7 adds two candidate meta-principles:
 
 No new memory items from Wave 7.
 
+---
+
+## 41. Wave 8 (v4.3) — two tightenings from post-v4.2 review
+
+Small round. Two items, both legitimate gaps rather than new design. Shipping as v4.3 alone per the "ship the patch, then batch the next round" cadence (Wave 6) — explicit user override from Wave 7 ("every single feedback at once") does not carry forward; colleague asked for tightenings, not a bundled round.
+
+### 41.1 Prometheus gap: locator re-resolution reasons
+
+**The bet colleague caught.** v4.2 exposes `locator_resolution` on every handle dispatch with `{mode, reason, latency_ms, pHash_distance_region}`. Per-response payload is correct — agents get full context. But the data is per-response, not aggregated server-side. Tuning region-pHash thresholds (padding %, 8-px floor, trigger distance) post-launch requires knowing the aggregate distribution: what fraction of re-resolves fire for `region_changed` vs `expired_ttl` vs `frame_seq_advanced_beyond_cache` vs `explicit_reresolve`, and how that breakdown shifts across fixtures and threshold adjustments. Per-response logs live only in agent-side tooling; fleet-wide tuning can't reach them.
+
+This is the exact gap my own instrumentation list missed — I added `envelope_bytes_by_level`, `vision_cost_usd_estimate`, `frame_age_p50/p95/p99`, but nothing at the locator-cache layer. E2/E2b are phase-0.5 one-shots, not ongoing telemetry.
+
+**Resolution.** Two new Prometheus counters, both session × agent labeled, in the cost-observability table:
+
+- `locator_reresolutions_by_reason{reason=…}` — one bucket per reason enum value; every re-resolve increments exactly one. Derived ratios (`region_changed / total_dispatches`) feed tuning decisions.
+- `locator_cache_dispatches_by_mode{mode=…}` — `cached | region_match | re_resolved`. Cache-effectiveness complement.
+
+Labels carry session + agent so operators can attribute hot spots. Cheap counters, no scrape-load impact. Ship with phase 1.
+
+Added test `locator_metrics.test.ts` asserts counter increments on a 50-dispatch mixed workload.
+
+### 41.2 Reconnect ordering: subsequent-state invariant
+
+**The bet colleague caught.** v4.2 committed: "reconnect observes state at ICE-restart completion, not at call arrival." Correct and closes the `running → migrating`-during-reconnect race. Silent on the next race: between reconnect completion and the agent's next tool call, a `migrating → ready` (or any other valid transition) can land. Agent's next call sees different state than reconnect reported.
+
+**Resolution.** Not a new ordering commitment — the correct behavior is already in place (every tool call re-observes state via its envelope's `session.state`, standard error priority fires). Gap was documentary: the colleague's point is that the doc should state this, so agents building retry loops around reconnect don't mistakenly treat `reconnect.session.state == "ready"` as a precondition-holds-for-N-calls guarantee.
+
+New subsection added under §Reconnect preservation: "Subsequent-state invariant (v4.3)." Explicit statement that reconnect's reported state is a snapshot at ICE-restart completion, not a commitment that persists; next tool call's envelope governs actual state; standard lifecycle error priority fires on that next call. Added test `reconnect_subsequent_state.test.ts` — reconnect reports `ready`, induce `ready → migrating` transition, assert next tool call returns `session_migrating` per normal priority ladder.
+
+### 41.3 Cadence
+
+v4.3 ships as a small patch per Wave 6 cadence rule, not bundled with a next larger round. Colleague's v4.2 review was explicitly two items ("two tightenings"), not a full round — shipping them alone keeps the document from accreting.
+
+## 42. Memory-worthy?
+
+Wave 8 meta-principle candidate: **"Per-response fields need aggregate metrics too."** Already covered by general instrumentation principles; no new memory.
+
+No new memory items from Wave 8.
+
 **Not adding memory.** Project memory (`project_agent_mcp_work`) updated to reflect v4.1 on disk.

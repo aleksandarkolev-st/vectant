@@ -1,6 +1,6 @@
-# AGENT MCP ULTRAPLAN — v4.2
+# AGENT MCP ULTRAPLAN — v4.3
 
-**Status:** v4.2 drafted, supersedes v4.1/v4/v3.1/v3/v2. Awaiting approval to execute Phase 0.5 spike.
+**Status:** v4.3 drafted, supersedes v4.2/v4.1/v4/v3.1/v3/v2. Awaiting approval to execute Phase 0.5 spike.
 **Author:** Claude Opus 4.7 (1M context)
 **Date:** 2026-04-17
 **Branch:** `claude/agent-mcp`
@@ -191,6 +191,35 @@ Wave-7 review surfaced eight specific issues and one research-driven finding tha
 - Core Universal: **13 unchanged** (no tools added or removed from Core).
 - Operational: **7 → 6** (`synthi_set_goal` removed).
 - Escape: **3 unchanged**.
+
+---
+
+## What changed from v4.2 → v4.3
+
+Two tightenings from post-v4.2 review. No new primary-axis design; observability gap closed; reconnect ordering commitment made complete.
+
+### Prometheus gap: locator re-resolution causes
+
+v4.2 exposes `locator_resolution` on every handle dispatch (cached hits included) with `{mode, reason, latency_ms, pHash_distance_region}`. That's the right per-response shape — agents get full context per call. But it's **per-response**, not aggregated. Post-launch tuning of region-pHash thresholds (padding %, 8-px floor, re-resolution trigger distance) needs the aggregate distribution over time — what fraction of re-resolves fired for `region_changed` vs `expired_ttl` vs `frame_seq_advanced_beyond_cache` vs `explicit_reresolve`, how that breakdown shifts per-fixture, how it trends as we tighten thresholds in phase 2+. Without server-side counters, that data lives only in per-agent response logs and can't feed fleet-wide tuning decisions.
+
+**Resolution.** Two new Prometheus counters:
+
+- `locator_reresolutions_by_reason` — counter, labeled by `reason ∈ {region_changed, expired_ttl, frame_seq_advanced_beyond_cache, explicit_reresolve}` + `session_id`. Every re-resolve increments exactly one bucket. Derived ratios (e.g., `region_changed / total_dispatches`) are the threshold-tuning primary signal.
+- `locator_cache_dispatches_by_mode` — counter, labeled by `mode ∈ {cached, region_match, re_resolved}` + `session_id`. Cache-effectiveness complement: hit-rate = (cached + region_match) / total.
+
+Together these tell us: "how often does the cache work," "when it fails, why," and "is tuning x pushing failures into y bucket." v4.2's E2/E2b experiments feed initial thresholds; post-launch metrics feed ongoing tuning. Ship with phase 1 alongside existing vision-cost + envelope-bytes metrics; no extra scrape-load (both are cheap counters).
+
+### Reconnect ordering: subsequent-race invariant
+
+v4.2 committed: "`synthi_reconnect` observes state at the moment ICE restart completes (or immediately if no ICE restart is needed), not at the moment the reconnect call arrives." This closes the `running → migrating` race that can straddle the reconnect call itself. It does **not** close — and was silent on — the race between reconnect completion and the agent's next tool call. A `migrating → ready` transition landing in that window means the agent calls its next tool expecting the reconnect's reported state, and the state has moved on.
+
+**Resolution.** Call out the invariant that makes this OK: every tool call re-observes session state. The reconnect response's `session.state` is a snapshot at ICE-restart completion, not a commitment that persists. The agent's next tool call receives the *current* envelope with the current `session.state`, and the standard lifecycle error priority (`session_terminated` → `session_crashed` → `session_migrating` → `process_hung` → `session_not_ready`) fires normally on that next call. Reconnect does not grant state immunity; it only declares what state is, at the moment reconnect was observable.
+
+This is correct behavior — but it should be stated so agents building retry loops don't mistakenly assume `reconnect.session.state == "ready"` guarantees `ready` for the next tool call. Added to §Reconnect preservation.
+
+### Net change
+
+Two spot additions: Prometheus table grows by two rows; reconnect ordering section grows by one paragraph. No scope or tool-count change.
 
 ---
 
@@ -948,6 +977,16 @@ Rationale: an agent call that races a server-side transition (e.g., `running →
 
 Concretely: server holds the reconnect response pending until (ICE restart completes) OR (session transitions to `terminated`), whichever first. Timeout on pending reconnect is bounded by `session.reconnect_timeout_ms` (default 10s) — past that, server returns `session_terminated` with `required_tool_call: synthi_attach`.
 
+#### Subsequent-state invariant (v4.3)
+
+The ordering commitment above closes the `running → migrating` race that can straddle the reconnect call itself. It does **not** close the race between reconnect completion and the agent's next tool call. A `migrating → ready` (or `ready → migrating`, or any other valid transition) landing in that window means the agent's next tool call sees a session state that differs from what reconnect reported.
+
+This is correct — and the invariant agents need to understand is: **every tool call re-observes session state**. Reconnect's reported `session.state` is a snapshot at ICE-restart completion, not a commitment that persists. The agent's next tool call receives the *current* `session` envelope, and the standard lifecycle error priority (`session_terminated` → `session_crashed` → `session_migrating` → `process_hung` → `session_not_ready` → …) fires normally on that next call.
+
+Implication: agents should not cache `reconnect.session.state` as an assumed precondition for the next N tool calls. Treat it as "this is what the session was when the peer link restabilized"; let the next tool call's envelope govern actual behavior. This is already how the tool-call contract works for *any* two consecutive tool calls — reconnect does not grant special state-immunity, it just re-establishes the transport.
+
+Stated so agents building retry loops around reconnect don't mistakenly assume `reconnect.session.state == "ready"` guarantees `ready` on the very next tool call. Post-reconnect error handling should be identical to post-any-tool-call error handling: dispatch, check envelope, branch on `session.state` / errors.
+
 ### Agent-facing pattern
 
 ```
@@ -1045,17 +1084,19 @@ Path A remains documented as design space in case a future deployment needs a st
 
 Phase 1 ships metrics + `synthi_get_usage`. Phase 2 adds enforcement.
 
-| Metric                         | Scope               | Exposure                                       |
-|--------------------------------|---------------------|------------------------------------------------|
-| `tool_calls_by_tool`           | session × agent     | Prometheus, `synthi_get_usage`                  |
-| `vision_inferences`            | session × agent     | Prometheus, `synthi_get_usage`                  |
-| `vision_cost_usd_estimate`     | session × agent     | Prometheus, `synthi_get_usage`                  |
-| `egress_bytes`                 | session × agent     | Prometheus                                      |
-| `worker_hot_ms_attributed`     | session × agent     | Prometheus                                      |
-| `frame_age_p50/p95/p99`        | session             | Prometheus                                      |
-| `envelope_bytes_by_level`      | session             | Prometheus (tracks envelope-tax)                |
-| `quota_utilization_%`          | session × agent     | Envelope field (`quota_headroom`)               |
-| `unsafe_mode_sessions`         | server              | Prometheus (counts sessions with unsafe_mode)   |
+| Metric                             | Scope               | Exposure                                                                                          |
+|------------------------------------|---------------------|---------------------------------------------------------------------------------------------------|
+| `tool_calls_by_tool`               | session × agent     | Prometheus, `synthi_get_usage`                                                                    |
+| `vision_inferences`                | session × agent     | Prometheus, `synthi_get_usage`                                                                    |
+| `vision_cost_usd_estimate`         | session × agent     | Prometheus, `synthi_get_usage`                                                                    |
+| `egress_bytes`                     | session × agent     | Prometheus                                                                                        |
+| `worker_hot_ms_attributed`         | session × agent     | Prometheus                                                                                        |
+| `frame_age_p50/p95/p99`            | session             | Prometheus                                                                                        |
+| `envelope_bytes_by_level`          | session             | Prometheus (tracks envelope-tax)                                                                  |
+| `quota_utilization_%`              | session × agent     | Envelope field (`quota_headroom`)                                                                 |
+| `unsafe_mode_sessions`             | server              | Prometheus (counts sessions with unsafe_mode)                                                     |
+| `locator_reresolutions_by_reason`  | session × agent     | Prometheus (labeled: `region_changed | expired_ttl | frame_seq_advanced_beyond_cache | explicit_reresolve`). Feeds post-launch tuning of region-pHash thresholds. *(v4.3)* |
+| `locator_cache_dispatches_by_mode` | session × agent     | Prometheus (labeled: `cached | region_match | re_resolved`). Cache-effectiveness complement. *(v4.3)* |
 
 **Quota knobs (phase 2 enforcement, phase 1 metric-only):**
 - `MAX_SCREENSHOTS_PER_MIN = 60`
@@ -1444,6 +1485,8 @@ One test per correctness-table row, minimum. Plus:
 - `multi_peer_signaling.test.ts` *(v4.2 — Path B committed)* — MCP attaches while human browser is connected; both receive SDP/ICE; both get data-channels; `attached_humans=1, attached_agents=1` on envelope.
 - `frame_advance_message.test.ts` *(v4.2)* — `{type:"frame-advance", frame_seq, ts_ms}` emitted on `build-log` DC under load; MCP's `synthi_wait(hmr)` consumes it; fallback frame-interval path still passes when messages are dropped.
 - `vision_cost_measurement.test.ts` *(v4.2 — phase 0.5 probe)* — drives a 30-min Claude Code loop on counter_sdl2; asserts `vision_cost_usd_estimate` computed per window; feeds E4 output file.
+- `locator_metrics.test.ts` *(v4.3)* — drive a 50-dispatch locator workload with a mix of cached / region-match / re-resolve outcomes; assert Prometheus `locator_reresolutions_by_reason{reason=…}` and `locator_cache_dispatches_by_mode{mode=…}` counters increment exactly once per dispatch into the correct bucket; labels carry `session_id`.
+- `reconnect_subsequent_state.test.ts` *(v4.3)* — reconnect returns `session.state: "ready"`; induce `ready → migrating` transition before agent's next tool call; assert next tool call returns `session_migrating` error per standard priority (not stale "ready" assumption).
 
 ### Layer 3 — end-to-end (real agent harnesses)
 
@@ -1521,6 +1564,8 @@ Invariant: no agent makes a decision on stale data. Either structured error or t
 **Tier-1 items resolved in v4.1:** structural-change race closure (new error codes + `pHash_region` hint), `synthi_reconnect` preserved-state discriminated shape + zero-survivors rule, region-pHash locator cache with padding + `locator_resolution` on all dispatches, E1/E2/E2b/E3 named falsification experiments with explicit thresholds, E3 documentation-cascade avoidance via pre-drafted README variants.
 
 **Tier-1 items resolved in v4.2:** `synthi_verify.scene_matches` deferred (scope discipline) + predicate depth/clause caps; `synthi_set_goal` removed (tool-surface discipline); Tier-1 CI scope tightened to Claude Code + `J1` ticket; `attached_humans` demoted to observability + agent-behavior contract moved to `I2`; `synthi_reconnect` state-observation ordering committed; MCP process failure modes section added; WebRTC pipeline reuse audit resolved pre-work #1 + #4 partial; E4 vision-cost reality check added to Phase 0.5.
+
+**Tier-1 items resolved in v4.3:** locator re-resolution Prometheus counters added (`locator_reresolutions_by_reason`, `locator_cache_dispatches_by_mode`) for post-launch region-pHash tuning; `synthi_reconnect` subsequent-state invariant documented (every tool call re-observes state; reconnect response is a snapshot, not a commitment).
 
 **Still open (pre-Phase-0.5):**
 
