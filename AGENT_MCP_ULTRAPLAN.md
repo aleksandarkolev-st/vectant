@@ -173,8 +173,8 @@ Wave-7 review surfaced eight specific issues and one research-driven finding tha
   - **Signaling is strictly 1:1** — `PeerKey = (session_id, role)` with binary `"browser" | "worker"` roles (`signaling-server/src/main.rs:82,266-302,311-315`). Zero infrastructure for a second browser peer today. An MCP peer joining an existing session either (a) takes the human's browser slot (human detaches first) or (b) signaling-server adds an `"observer"` role with SDP/ICE fan-out — not one line, ~20-50 lines of Rust + test coverage.
   - **Worker has a single `RTCPeerConnection`.** Fan-out to N peers requires worker changes or SFU-style media relay. Phase 1 keeps 1:1 — phase 2 broker handles fan-out.
   - **Frame-seq is NOT currently in the data-channel protocol.** RTP sequence + GStreamer `pts` are internal to the video track (`video_pipeline.rs:600-700`). The HMR frame-seq gate depends on bridging encoder timestamps / RTP seq into a new data-channel message (`{type: "frame-advance", frame_seq, ts_ms}` or similar). This is a worker addition — NOT reuse.
-  - **What *can* be reused:** signaling register/SDP/ICE flow as-is for the 1:1 case; data-channel labels + JSON wire format for input (`gui-input`, `terminal`, `emulator-input`); build-log JSON HMR events (`{type: "hmr-status"}`); `compilerClient.js` as a reference pattern for Node adaptation.
-- **MVP impact.** `AGENT_MCP_MVP.md` says "zero backend changes" with the caveat that two-browser-peer may require a small fix. The empirical answer is **known**: it does. MVP Path A (agent takes browser slot; human detaches first) preserves "zero backend changes" and keeps the 2-4 day estimate. Path B (add `observer` role) adds ~1-2 days of signaling-server work. v4.2 documents both paths in §WebRTC pipeline reuse and leaves the MVP choice for user confirmation — no unilateral MVP scope change.
+  - **What *can* be reused:** signaling register/SDP/ICE flow (extended from 1:1 to 1:N on SDP/ICE routing for the observer role); data-channel labels + JSON wire format for input (`gui-input`, `terminal`, `emulator-input`); build-log JSON HMR events (`{type: "hmr-status"}`); `compilerClient.js` as a reference pattern for Node adaptation.
+- **MVP impact (resolved 2026-04-17).** User picked **Path B** for both phase 1 and MVP. `AGENT_MCP_MVP.md` updated: "zero backend changes" claim removed; estimate 2-4 days → ~3-5 days to cover `signaling-server` observer role + SDP/ICE fan-out + integration test. The MVP's originally-listed contingency ("add a second-peer allowance on the signaling server as a one-line fix") was optimistic on size; actual change is ~20-50 LOC Rust + tests.
 
 ### New falsification experiment
 
@@ -1019,14 +1019,20 @@ Research against the current Synthi WebRTC infrastructure (`signaling-server/src
 | **Frame-seq / encoder timestamp on DC** | RTP seq + GStreamer `pts` are internal to the video track (`video_pipeline.rs:600-700`). The HMR frame-seq gate needs `{type:"frame-advance", frame_seq, ts_ms}` on a data-channel (`build-log` or new `sync` channel) so the MCP can wait for `frame_seq ≥ frame_seq_at_applied`. | Phase 1 required. Worker emission tied to RTP write. Small addition. |
 | **Multi-peer data-channel fan-out**     | Worker has a single `RTCPeerConnection`. Phase 2 broker handles per-session fan-out.              | Phase 2+ (ticket `PHASE_2_PLUS_BACKLOG.md:G3`).                     |
 
-### MVP path choice (not resolved unilaterally in v4.2)
+### Path decision: **Path B, committed 2026-04-17**
 
-`AGENT_MCP_MVP.md` says "zero backend changes" and flags two-browser-peer as empirically unknown with two fallbacks. The empirical answer is **known as of v4.2 research: signaling strictly rejects two `"browser"` peers**. MVP has two paths:
+`AGENT_MCP_MVP.md` originally said "zero backend changes" and flagged two-browser-peer as empirically unknown with two fallbacks. The empirical answer is **known as of v4.2 research: signaling strictly rejects two `"browser"` peers**. Two paths existed:
 
-- **Path A (preserves zero-backend-change + 2-4 day estimate):** when the MCP attaches, the existing browser is detached (signaling evicts the prior peer). UX: the human who started the session loses visual feedback while the agent is attached. Agent runs as **replacement**, not **observer**. Still zero backend changes.
-- **Path B (adds ~1-2 days of signaling work):** signaling-server gets an `"observer"` role with SDP/ICE fan-out. Human + agent co-attached. Agent runs as **observer**. Breaks the "zero backend changes" claim but is the target shape for phase 1 anyway.
+- **Path A:** MCP takes browser slot; human detaches first. Preserves zero-backend-change claim. UX: human loses visual feedback while agent is attached. Agent runs as **replacement**, not **observer**.
+- **Path B — SELECTED:** signaling-server gets an `"observer"` role with SDP/ICE fan-out. Human + agent co-attached. Agent runs as **observer**. Matches the agent-as-observer product intent across phase 1 and MVP.
 
-v4.2 does **not** change MVP scope unilaterally. User picks path; either is consistent with the MVP-as-scope-locked contract. Ultraplan recommends Path B for phase 1 (matches the agent-as-observer model) and Path A for MVP (keeps the 2-4 day budget honest).
+**User confirmed Path B** for both phase 1 and MVP. Consequences:
+
+- "Zero backend changes" claim removed from MVP + phase 1 scoping. Explicitly ~20-50 LOC Rust change in `signaling-server/src/main.rs` + integration test.
+- **Phase 1:** signaling `PeerKey` refactor + fan-out is in scope, tracked in the Modified-backend table.
+- **MVP:** estimate shifts from 2-4 days → ~3-5 days. Extra ~1-2 days covers signaling-server observer role, SDP/ICE fan-out, integration test of 1 browser + 1 MCP on same session.
+
+Path A remains documented as design space in case a future deployment needs a strict 1:1 posture (e.g., regulated environments where session isolation is non-negotiable). Not a phase-1/MVP code path.
 
 ### Existing pre-work items resolved
 
@@ -1188,7 +1194,7 @@ mcp/synthi-mcp/
 
 | File                                                                                      | Change                                                                                                   |
 |-------------------------------------------------------------------------------------------|----------------------------------------------------------------------------------------------------------|
-| `signaling-server/src/main.rs`                                                            | Protocol version handshake. Presence count reporting (humans/agents per session). **Multi-peer support (v4.2)**: `PeerKey` refactor from `(session_id, role)` to allow N peers per `observer` role OR keep 1:1 with MVP Path A (human detaches when MCP attaches). Route decided via Open item #7. **Known prior to phase 1: strictly 1:1 today** (research, v4.2). |
+| `signaling-server/src/main.rs`                                                            | Protocol version handshake. Presence count reporting (humans/agents per session). **Multi-peer support (v4.2, Path B committed 2026-04-17)**: add `observer` role; `PeerKey` refactor from `(session_id, role)` to `(session_id, role, peer_id)` with SDP/ICE fan-out across all peers of target role; unchanged routing for non-SDP/ICE messages. ~20-50 LOC Rust + 1 integration test (1 browser + 1 observer on same session). |
 | `worker/src/**`                                                                            | Input dispatch ack; window-tree-aware focus lock; WM_CLASS spoof check against `/proc/<pid>/exe`; encoder-timestamp frame tagging on `build-log`; **new `{type:"frame-advance", frame_seq, ts_ms}` data-channel message emitted alongside RTP writes (v4.2 — bridges frame-seq to MCP wire)**; per-session usage counters; context-aware sensitive-action; seccomp profile (permissive default); source-state reporter with `last_changed_files`; reset-guest support; synthetic HMR-overlay calibration hook; warming-progress reporter; migrating-state propagation; **structural-change pHash gate at HMR `applied` (full-frame + region-pHash paths, v4.1); pHash-unavailable fail-closed path; frame-at-queue capture for structural-change comparison (v4.1)**. |
 | `worker/src/compiler/stages/runner.rs`                                                    | Capture guest root PID + track descendant windows; binary-fingerprint registry; seccomp wrapper.          |
 | `collab-server/SessionManager.js`, `collabSessionService.js`                              | Session lifecycle state queryable via REST; warm endpoint; migrating-state hook.                         |
@@ -1350,7 +1356,7 @@ Everything in this document lands in phase 1 *except* items in "deferred" below.
 
 Findings published in `PHASE1_PREWORK.md` before we commit to phase-1 scope. Each is 0.5–1 day.
 
-1. **~~Two-`"browser"`-peer allowance~~. RESOLVED (v4.2 research).** `signaling-server/src/main.rs:82,266-302,311-315` — `PeerKey = (session_id, role)`, strict binary `browser|worker`, zero multi-peer infra. Outcome: phase 1 requires either (a) `observer` role with SDP/ICE fan-out (~20-50 LOC Rust + tests) OR (b) MVP Path A (human detaches when MCP attaches). Ultraplan recommends (a) for phase 1; MVP user decides.
+1. **~~Two-`"browser"`-peer allowance~~. RESOLVED (v4.2 research + 2026-04-17 user decision).** `signaling-server/src/main.rs:82,266-302,311-315` — `PeerKey = (session_id, role)`, strict binary `browser|worker`, zero multi-peer infra today. **Path B committed:** phase 1 + MVP ship an `observer` role with SDP/ICE fan-out (~20-50 LOC Rust + integration test). MVP estimate shifts 2-4 → ~3-5 days; "zero backend changes" claim dropped.
 2. **HMR status emission audit.** Grep worker for emission sites of each of the 10 statuses in `HMRStatusIndicator.jsx`. Reconcile. If <10 actually emitted → plan depends on statuses that don't exist, and either worker work moves into phase 1 or the correctness table shrinks.
 3. **Existing usage counters.** Does collab-server or worker already count tool calls / egress / hot-time? If yes, extend; if no, add fresh.
 4. **Encoder timestamp availability.** Partial resolution (v4.2 research): RTP packet counter at `video_pipeline.rs:609`, GStreamer `pts` available. Still needs bridging to a new data-channel message (`{type:"frame-advance", ...}`). Phase 0.5 confirms the bridging hook works under load; seq-count fallback remains.
@@ -1435,8 +1441,7 @@ One test per correctness-table row, minimum. Plus:
 - `region_phash_animated.test.ts` *(v4.1)* — particle-demo fixture; region-pHash cache hit rate > threshold; full-frame <30%. Also asserts re-resolution cost distribution captured.
 - `pHash_region_hint.test.ts` *(v4.1)* — raw-coord input queued with `pHash_region` hint; structural change in unrelated panel passes through; structural change in hint region flushes.
 - `locator_resolution_cached_hits.test.ts` *(v4.1)* — cached-mode dispatch still emits `locator_resolution` with distance field; agents can aggregate hit-rate client-side.
-- `multi_peer_signaling.test.ts` *(v4.2 — Path B only)* — MCP attaches while human browser is connected; both receive SDP/ICE; both get data-channels; `attached_humans=1, attached_agents=1` on envelope.
-- `mcp_replaces_browser.test.ts` *(v4.2 — Path A only)* — MCP attach evicts human browser with `[UNSAFE HUMAN-REPLACE]` banner; human reconnect restores; event log records the swap.
+- `multi_peer_signaling.test.ts` *(v4.2 — Path B committed)* — MCP attaches while human browser is connected; both receive SDP/ICE; both get data-channels; `attached_humans=1, attached_agents=1` on envelope.
 - `frame_advance_message.test.ts` *(v4.2)* — `{type:"frame-advance", frame_seq, ts_ms}` emitted on `build-log` DC under load; MCP's `synthi_wait(hmr)` consumes it; fallback frame-interval path still passes when messages are dropped.
 - `vision_cost_measurement.test.ts` *(v4.2 — phase 0.5 probe)* — drives a 30-min Claude Code loop on counter_sdl2; asserts `vision_cost_usd_estimate` computed per window; feeds E4 output file.
 
@@ -1480,7 +1485,7 @@ Invariant: no agent makes a decision on stale data. Either structured error or t
 | `@roamhq/wrtc` bus-factor                                            | M          | H      | `werift` fallback, env-selectable.                                                                                      |
 | Claude API vision cost                                               | M          | M      | Frame-seq caching; agent-side mode documented; per-session selection; cost metric surfaced; quota planned phase 2.      |
 | Claude API privacy                                                   | M          | H      | `SYNTHI_VISION_BACKEND=agent_side\|disabled` day one; per-attach override; loud README section.                          |
-| ~~Signaling rejects two `"browser"` peers~~                          | Known      | M      | Confirmed rejected (v4.2 research). Path A (MCP takes browser slot) preserves MVP budget; Path B (add `observer` role) adds ~1-2 days to phase 1 signaling work. Open item #7 resolves pick.     |
+| ~~Signaling rejects two `"browser"` peers~~                          | Known      | M      | Confirmed rejected (v4.2 research). **Path B committed 2026-04-17**: add `observer` role + SDP/ICE fan-out. ~1-2 days signaling-server work in phase 1 + MVP scope.                               |
 | Multi-peer signaling refactor lands buggy                            | M          | M      | Minimal change: `PeerKey` refactor + fan-out only to SDP/ICE messages, unchanged for other types. Integration test for 1 browser + 1 MCP on same session before phase 1 closes.                  |
 | MCP Node process crashes leave session unreachable                   | M          | M      | Documented contract: stdio EOF → clean MCP error → client respawns → fresh `synthi_attach`. Session state loss is expected, not a bug. Persistence layer is `L1` if/when usage evidence demands.   |
 | Vision cost default (`MAX_VISION_COST_USD_PER_HR`) misses realistic usage | M     | L      | E4 pressure-tests the default on a realistic 30-min Claude Code loop before phase 1 freeze. Ship the measured default, not the $5 guess.                                                        |
@@ -1525,7 +1530,7 @@ Invariant: no agent makes a decision on stale data. Either structured error or t
 4. **Operator UI scope for phase 2.** Minimum (badge + kill switch) or full (badge + feed + action-preview + audit + kill + unsafe-mode indicator)? Proposal: full — this is what "trust for hours unattended" needs.
 5. **Binary fingerprint registry seed (v4).** Phase-1 initial registry contents — who maintains it, how it grows per-fixture? Proposal: `worker/src/security/binary_registry.rs` with starting list + per-fixture CI check that new languages add their entry.
 6. **Structural-change pHash thresholds (v4.1).** Asymmetric 16 (full-frame flush) vs 8 (region-scoped flush) are initial guesses. E1-adjacent measurements in phase 0.5 inform. Currently a plan-commit with empirical-validation-required label.
-7. **Multi-peer signaling path (v4.2).** Path A (MCP takes browser slot; human detaches) vs Path B (signaling-server `observer` role with SDP/ICE fan-out). Ultraplan recommends **Path B** for phase 1 (matches agent-as-observer product model); MVP user chooses for the 2-4 day build. Decision informs `signaling-server/src/main.rs` scope + `AGENT_MCP_MVP.md` scope clarity.
+7. **~~Multi-peer signaling path~~ (v4.2). RESOLVED 2026-04-17: Path B.** Signaling-server `observer` role with SDP/ICE fan-out lands in phase 1 and MVP. Scope update applied to `signaling-server/src/main.rs` row in Modified-backend table and `AGENT_MCP_MVP.md` estimate (2-4 → ~3-5 days).
 8. **Presence observability surface (v4.2).** PTY log line vs host-UI badge vs both for `attached_humans/agents` observability. Proposal: both — a PTY line on attach/detach (trivial; surfaces in existing terminal) plus a small badge in the existing host session toolbar (reuses `SessionToolbar.*`). No new UI component required.
 9. **E4 default for `MAX_VISION_COST_USD_PER_HR` (v4.2).** Phase 0.5 measures; decision is data-input for phase 2 enforcement, not a phase 1 behavior change. Phase 0.5 output sets the post-measurement default in `PHASE_0_5_FINDINGS.md`.
 10. **MCP process crash pattern per top-4 clients (v4.2).** Pre-work #8 verifies Claude Code, Codex, Cursor, Gemini CLI, Windsurf all handle stdio EOF → respawn → fresh `synthi_attach` without stuck sockets. Best-effort verification during Tier-1 manual QA.
@@ -1543,7 +1548,7 @@ Before Phase 0.5:
 - [ ] Phase 0.5 falsification experiments (E1, E2, E2b, E3, **E4** — v4.2) acknowledged — each can invalidate a phase-1 commitment or quota default (frame-seq gate, locator cache, region-pHash, vision-backend default, vision cost budget).
 - [ ] Particle-demo SDL2 fixture scoped for E2b (new fixture may add 0.5 day).
 - [ ] Both README variants (claude_api-default + agent_side-default) drafted during spike to pre-empt E3 documentation cascade.
-- [ ] **Multi-peer signaling path decided (v4.2)** — Path A (MCP replaces browser) or Path B (`observer` role with fan-out). Affects `signaling-server` + MVP scope.
+- [x] **Multi-peer signaling path decided (v4.2)** — **Path B selected 2026-04-17.** `observer` role + SDP/ICE fan-out in phase 1 + MVP. "Zero backend changes" claim dropped; MVP estimate 2-4 → ~3-5 days.
 - [ ] **`synthi_verify` predicate surface acknowledged (v4.2)** — phase 1 kinds = `ocr`/`pixel`/`element_visible`/`log`/`and`/`or`; `scene_matches` deferred to `K1`; depth ≤ 4, clauses ≤ 8 per level.
 - [ ] **`synthi_set_goal` removal acknowledged (v4.2)** — Operational drops 7 → 6; `synthi_checkpoint` absorbs intent-tagging; graduation to phase 2 gated on operator-UI use case (`L2`).
 - [ ] **Tier-1 CI scope acknowledged (v4.2)** — phase 1 = Claude Code CI-automated; others best-effort manual. `J1` ticket tracks CI retrofit.
@@ -1562,7 +1567,7 @@ Before Phase 1:
 - [ ] **E4 output sets `MAX_VISION_COST_USD_PER_HR` default for phase 2 enforcement (v4.2)** — phase 1 behavior unchanged (metric-only); phase 2 enforces the measured value, not $5.
 - [ ] Phase 1 scope confirmed (up from ~10 days in v2 to ~4 weeks realistic).
 - [ ] Worker changes in scope accepted (dispatch ack, window-tree focus, WM_CLASS spoof check, encoder-timestamp tagging + synthetic-HMR calibration hook, source-state reporter with file list, seccomp, context-aware sensitive-action, usage counters, reset-guest, warming-progress reporter, migrating-state propagation, presence-count emission, region-pHash capture on locator handles, structural-change pHash gate on queued inputs, **`frame-advance` data-channel emission (v4.2)**).
-- [ ] **Signaling-server changes in scope accepted (v4.2)** — multi-peer support per Path B, OR Path A documentation + UX work.
+- [ ] **Signaling-server changes in scope accepted (v4.2, Path B)** — `observer` role + SDP/ICE fan-out in phase 1 Modified-backend scope. Integration test (1 browser + 1 MCP observer on same session) in phase 1 test plan.
 - [ ] Vision-backend default confirmed (per E3 outcome); per-attach override shape accepted.
 
 On green light: Phase 0.5 → findings → Phase 1 spec freeze → Phase 1 execute → demo against SDL2 + Swing fixtures → phase 2 gate.

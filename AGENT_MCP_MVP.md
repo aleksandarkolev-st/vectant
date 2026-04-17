@@ -3,7 +3,7 @@
 **Status:** scope-locked. This is the current build target.
 **Supersedes:** `AGENT_MCP_ULTRAPLAN.md` as the implementation plan (the ultraplan is kept as future-scope / design-space reference).
 **Branch:** `claude/agent-mcp`
-**Date:** 2026-04-16
+**Date:** 2026-04-16 (v1), updated 2026-04-17 (Path B decision — see below).
 
 ---
 
@@ -75,7 +75,14 @@ Those are good designs and they may ship later. They do not block MVP. If real a
                       └─ listens to "build-log" DC for HMR events
 ```
 
-**Zero backend changes.** synthi-mcp registers with signaling as `role: "browser"`, completes SDP exchange, opens data channels — mirrors the existing browser exactly. If two-browser-peer registration turns out to be blocked by the signaling server (empirical unknown), we document it and either (a) kick the human when the agent attaches, or (b) add a second-peer allowance on the signaling server as a one-line fix.
+**Small backend change** *(updated 2026-04-17 per research + user decision; see Path B below).* synthi-mcp registers with signaling as `role: "observer"`, completes SDP exchange, opens data channels. Human browser + MCP observer are co-attached on the same session — no peer eviction.
+
+**Two-browser-peer question — resolved.** Research confirmed (2026-04-17) that `signaling-server` is strictly 1:1 today: `PeerKey = (session_id, role)` with binary `browser|worker`, zero multi-peer infra. The MVP's originally-listed "one-line fix" was optimistic. The agreed change is:
+
+- **`signaling-server/src/main.rs`** — add `observer` role; refactor `PeerKey` to `(session_id, role, peer_id)` OR keep per-role and allow multiple entries for `observer`; fan out SDP/ICE messages to all peers of the target role; unchanged routing for non-SDP/ICE messages. ~20-50 LOC Rust + one integration test (1 browser + 1 observer on same session).
+- **Worker side** — new `{type:"frame-advance", frame_seq, ts_ms}` data-channel message alongside RTP writes, so MCP can gate `synthi_wait_hmr` on frame-seq (see ultraplan §WebRTC pipeline reuse for details). For MVP's simpler `synthi_wait_hmr` that resolves on status alone (no frame-seq gate), this message is not strictly required — MVP can ship without it if we accept a small stale-frame risk documented in the ultraplan's E1 experiment.
+
+**Frame-seq gate for MVP.** Optional. MVP's `synthi_wait_hmr` resolves on the `hmr-status` message alone (`applied`/`rejected`/`compile-error`/`full-reload-required`) — per ultraplan E1 experiment, whether the status-only gate is sufficient depends on observed stale-frame rate. MVP ships status-only; if agents hit stale frames in practice, ultraplan phase 1 adds the frame-seq gate.
 
 ---
 
@@ -127,7 +134,14 @@ Fixture: keep it dead simple — the existing Swing counter fixture from the ult
 
 ## Estimate
 
-**2–4 days of focused work.** WebRTC peer is ~150 LOC; MCP plumbing is thin; the bulk is the integration test and the Claude-Code smoke loop.
+**~3–5 days of focused work** *(updated 2026-04-17 for Path B; was 2-4 days under the "zero backend changes" assumption).*
+
+- WebRTC peer: ~150 LOC (unchanged).
+- MCP plumbing: thin (unchanged).
+- Signaling-server `observer` role + SDP/ICE fan-out: ~20-50 LOC Rust + integration test (1 browser + 1 observer on one session). ~1-1.5 days.
+- Three-layer MVP test suite + Claude-Code smoke loop. ~1 day.
+
+The extra ~1-2 days over the original 2-4 day estimate covers the signaling-server change. This is the cost of keeping the human + agent co-attached (agent-as-observer product intent) rather than having the agent evict the human (Path A, which would keep the 2-4 day budget but break the UX).
 
 ---
 
@@ -145,8 +159,9 @@ Lean: **5 tools** — matches the original prompt, adds <½ day. Happy to go vie
 ## On green light
 
 1. Scaffold `mcp/synthi-mcp/` package.
-2. Signaling client + WebRTC peer + data channels.
-3. Five tool handlers.
-4. Three-layer test suite.
-5. Demo against a Claude Code session using the counter fixture.
-6. Stop there. Revisit the ultraplan only if a real agent loop hits a real limit.
+2. **Add `observer` role + SDP/ICE fan-out to `signaling-server/src/main.rs`** *(v4.2 — Path B)*.
+3. Signaling client + WebRTC peer + data channels (MCP registers as `observer`, not `browser`).
+4. Five tool handlers.
+5. Three-layer test suite (integration test exercises 1 browser + 1 observer co-attached).
+6. Demo against a Claude Code session using the counter fixture, human browser kept attached.
+7. Stop there. Revisit the ultraplan only if a real agent loop hits a real limit.
