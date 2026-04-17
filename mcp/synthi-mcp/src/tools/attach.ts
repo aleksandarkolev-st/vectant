@@ -85,7 +85,9 @@ export async function attachTool(args: unknown, ctx: ToolContext): Promise<ToolR
     if (!classification.local) {
       session.markUnsafeMode();
     }
-    const manifest = buildManifest(ADVERTISED_TOOLS);
+    const manifest = buildManifest(ADVERTISED_TOOLS, {
+      frame_seq_gate_enabled: session.frameSeqGateEnabled(),
+    });
     return jsonResponse({
       ok: true,
       connected: true,

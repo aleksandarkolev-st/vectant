@@ -36,14 +36,49 @@ export async function runWait(args: WaitArgs, timeoutMs: number = DEFAULT_TIMEOU
       if (res.status === "timeout") {
         return { status: "timeout", elapsedMs: res.elapsedMs, condition: "hmr", last_evidence: { source: res.source } };
       }
+
+      // Frame-seq gate: for positive outcomes (applied / state-migrated),
+      // only resolve once a post-reload frame-advance has landed. The
+      // caller can then safely `synthi_screenshot` and be sure it sees
+      // the new frame. For rejected / compile-error / etc., nothing on
+      // screen changed so the gate doesn't apply.
+      let frameGate: Record<string, unknown> | undefined;
+      const tHmr = Date.now();
+      if (res.status === "applied") {
+        const budget = session.pipelineBudgetMs();
+        if (session.frameSeqGateEnabled()) {
+          const remaining = Math.max(0, timeoutMs - (Date.now() - start));
+          const satisfiedBy = await session.awaitFrameAdvanceAtOrAfter(tHmr + budget, remaining);
+          frameGate = satisfiedBy
+            ? {
+                status: "satisfied",
+                frame_seq: satisfiedBy.frame_seq,
+                ts_ms: satisfiedBy.ts_ms,
+                pipeline_budget_ms: budget,
+              }
+            : {
+                status: "timeout",
+                pipeline_budget_ms: budget,
+                note: "no post-budget frame_advance observed; screenshot may reflect pre-reload frame",
+              };
+        } else {
+          frameGate = {
+            status: "disabled",
+            reason: "no_frame_advance_observed",
+            pipeline_budget_ms: budget,
+          };
+        }
+      }
+
       return {
         status: "resolved",
-        elapsedMs: res.elapsedMs,
+        elapsedMs: Date.now() - start,
         condition: "hmr",
         evidence: {
           hmr_status: res.status,
           source: res.source,
           ...(res.detail !== undefined ? { detail: res.detail } : {}),
+          ...(frameGate !== undefined ? { frame_gate: frameGate } : {}),
         },
       };
     }

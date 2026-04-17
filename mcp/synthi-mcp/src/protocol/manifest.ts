@@ -31,6 +31,10 @@ export interface CapabilityManifest {
   frame_seq_gate: {
     available: boolean;
     reason: string;
+    /** Pipeline-shim applied after HMR resolution before the server will
+     * agree the next screenshot reflects the change. Derived from
+     * SYNTHI_PIPELINE_BUDGET_MS env (default 80 ms). */
+    pipeline_budget_ms: number;
   };
   region_phash_cache: {
     available: boolean;
@@ -63,17 +67,31 @@ export interface CapabilityManifest {
  * `server.ts` advertises (no reflection — gives us compile-time guards
  * against drift). `resolveManifest` merges in runtime-only fields.
  */
-export const STATIC_MANIFEST: Omit<CapabilityManifest, "tools"> = {
+export const DEFAULT_PIPELINE_BUDGET_MS = 80;
+
+export function resolvePipelineBudgetMs(): number {
+  const raw = process.env["SYNTHI_PIPELINE_BUDGET_MS"];
+  if (raw === undefined) return DEFAULT_PIPELINE_BUDGET_MS;
+  const n = Number.parseInt(raw, 10);
+  if (!Number.isFinite(n) || n < 0) return DEFAULT_PIPELINE_BUDGET_MS;
+  return n;
+}
+
+export interface ManifestRuntime {
+  /** Whether the session has observed a worker-emitted `frame-advance`
+   *  message recently (live worker → gate active). */
+  frame_seq_gate_enabled?: boolean;
+  /** Override the gate reason for callers that already know the state. */
+  frame_seq_gate_reason?: string;
+}
+
+export const STATIC_MANIFEST: Omit<CapabilityManifest, "tools" | "frame_seq_gate"> = {
   vision_backends: ["mock", "agent_side", "claude_api"],
   wait_conditions: ["hmr", "log", "source_state", "pixel", "motion_settled", "scene_change", "element"],
   verify_predicates: ["pixel", "log", "element_visible", "and", "or"],
   enriched_tier: {
     available: false,
     reason: "phase_2_plus_only",
-  },
-  frame_seq_gate: {
-    available: false,
-    reason: "pending_E1",
   },
   region_phash_cache: {
     available: true,
@@ -98,10 +116,22 @@ export const STATIC_MANIFEST: Omit<CapabilityManifest, "tools"> = {
   },
 };
 
-export function buildManifest(advertisedTools: readonly string[]): CapabilityManifest {
+export function buildManifest(
+  advertisedTools: readonly string[],
+  runtime: ManifestRuntime = {}
+): CapabilityManifest {
+  const enabled = runtime.frame_seq_gate_enabled ?? false;
+  const reason =
+    runtime.frame_seq_gate_reason ??
+    (enabled ? "frame_advance_observed" : "no_frame_advance_seen_yet");
   return {
     tools: [...advertisedTools],
     ...STATIC_MANIFEST,
+    frame_seq_gate: {
+      available: enabled,
+      reason,
+      pipeline_budget_ms: resolvePipelineBudgetMs(),
+    },
   };
 }
 

@@ -5,5 +5,7 @@ export {
   buildManifest,
   negotiateProtocol,
   ProtocolNegotiationError,
+  DEFAULT_PIPELINE_BUDGET_MS,
+  resolvePipelineBudgetMs,
 } from "./manifest.js";
-export type { CapabilityManifest } from "./manifest.js";
+export type { CapabilityManifest, ManifestRuntime } from "./manifest.js";
