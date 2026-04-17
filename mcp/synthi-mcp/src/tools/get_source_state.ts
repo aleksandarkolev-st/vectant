@@ -6,13 +6,17 @@ import { errorResponse, jsonResponse, type ToolResponse } from "./shared.js";
 /**
  * Report the session's source-state summary, sourced from the event log.
  *
- * Phase-1 reality: the worker doesn't emit source-state messages today; the
- * MCP has no producer wired yet (ticket tracked in ultraplan §4.2). So this
- * tool returns a well-shaped placeholder plus whatever source_state events
- * the log may already carry (e.g., if a future producer retroactively
- * injects them). Agents can poll this tool, branch on `last_change_seq ===
- * null`, and know they need to rely on their own Edit tool's provenance
- * until the producer ships.
+ * Producers today:
+ *   - `synthi_compile`               — auto-emits a source_state event with
+ *                                      last_changed_files + content_hash on
+ *                                      every dispatched compile.
+ *   - `synthi_report_source_state`   — agent-driven explicit producer; the
+ *                                      agent calls this after editing files
+ *                                      without also driving the compile.
+ *
+ * Future worker/collab-server-side producers (human-driven edits, frontend
+ * saves) land via AGENT_MCP_STATUS §4.3 follow-up; the shape is already
+ * stable so those additions are purely additive.
  */
 export async function getSourceStateTool(_args: unknown): Promise<ToolResponse> {
   const attached = session.get();
@@ -25,9 +29,7 @@ export async function getSourceStateTool(_args: unknown): Promise<ToolResponse> 
     last_changed_files: last?.last_changed_files ?? [],
     last_change_seq: last?.seq ?? null,
     last_change_ts: last?.ts ?? null,
-    note:
-      last === undefined
-        ? "No source_state events have been emitted yet. Phase 1 will wire a producer from collab-server / compile pipeline."
-        : undefined,
+    content_hash: last?.content_hash ?? null,
+    source_state_event_count: entries.length,
   });
 }

@@ -33,6 +33,7 @@ export const ADVERTISED_TOOLS = [
   // Event log / telemetry / source state
   "synthi_get_event_log",
   "synthi_get_source_state",
+  "synthi_report_source_state",
   // Operational
   "synthi_get_usage",
   "synthi_set_quality",

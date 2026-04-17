@@ -37,6 +37,7 @@ import { getCrashInfoTool } from "./tools/get_crash_info.js";
 import { resetGuestTool } from "./tools/reset_guest.js";
 import { verifyTool } from "./tools/verify.js";
 import { compileTool } from "./tools/compile.js";
+import { reportSourceStateTool } from "./tools/report_source_state.js";
 import type { ToolContext } from "./tools/shared.js";
 
 export interface SynthiServerOptions {
@@ -298,8 +299,31 @@ const TOOLS = [
   {
     name: "synthi_get_source_state",
     description:
-      "Report the session's source-state summary (last_changed_files, last_change_seq, last_change_ts). Sourced from the event log. Returns a note field when no source_state events have been emitted yet.",
+      "Report the session's source-state summary (last_changed_files, last_change_seq, last_change_ts, content_hash). Sourced from the event log. Producers: synthi_compile (auto), synthi_report_source_state (agent-side).",
     inputSchema: { type: "object", properties: {}, required: [] },
+  },
+  {
+    name: "synthi_report_source_state",
+    description:
+      "Declare that the agent has edited the given files. Emits a source_state event so synthi_get_source_state + wait({condition:\"source_state\"}) see the change. Use after Edit/Write calls when you're NOT also driving a compile — otherwise synthi_compile emits this automatically.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        files: {
+          type: "array",
+          items: { type: "string" },
+          description: "Repo-relative paths of files that were edited.",
+        },
+        content_hash: {
+          type: "string",
+          description: "Optional caller-computed hash. Server falls back to hashing the concatenated file names if omitted.",
+        },
+        detail: {
+          description: "Free-form structured context; passed through in the event's detail field.",
+        },
+      },
+      required: ["files"],
+    },
   },
   {
     name: "synthi_get_usage",
@@ -628,6 +652,8 @@ export function createSynthiServer(options: SynthiServerOptions): Server {
         return (await verifyTool(args)) as CallToolResult;
       case "synthi_compile":
         return (await compileTool(args)) as CallToolResult;
+      case "synthi_report_source_state":
+        return (await reportSourceStateTool(args)) as CallToolResult;
       default:
         return {
           content: [

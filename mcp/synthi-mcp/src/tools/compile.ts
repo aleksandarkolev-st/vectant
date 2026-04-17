@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { eventLog } from "../events/index.js";
 import { session } from "../session.js";
 import { checkInputGate } from "../correctness/index.js";
@@ -7,6 +8,19 @@ import {
   jsonResponse,
   type ToolResponse,
 } from "./shared.js";
+
+function computeContentHash(source: string, files: Array<{ name: string; content: string }>): string {
+  const hasher = createHash("sha256");
+  hasher.update("primary:");
+  hasher.update(source);
+  for (const f of files) {
+    hasher.update("\n::file::");
+    hasher.update(f.name);
+    hasher.update("::");
+    hasher.update(f.content);
+  }
+  return hasher.digest("hex").slice(0, 16);
+}
 
 /**
  * MCP-driven compile trigger. Sends a CompileRequest on the `compile` DC
@@ -122,6 +136,20 @@ export async function compileTool(args: unknown): Promise<ToolResponse> {
       ...(typeof a.target === "string" ? { target: a.target } : {}),
     },
   });
+
+  // Source-state producer: every MCP-driven compile declares which files
+  // made up the compile input, so `synthi_get_source_state` and
+  // `wait({condition:"source_state"})` see real data instead of a
+  // "producer not wired" placeholder.
+  const lastChangedFiles = [filename, ...files.map((f) => f.name)];
+  const contentHash = computeContentHash(a.source as string, files);
+  eventLog.push({
+    kind: "source_state",
+    last_changed_files: lastChangedFiles,
+    content_hash: contentHash,
+    detail: { source: "synthi_compile", dispatched_at: dispatchedAt },
+  });
+
   session.touch();
 
   return jsonResponse({
