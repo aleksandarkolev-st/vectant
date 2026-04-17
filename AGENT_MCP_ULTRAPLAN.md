@@ -1,6 +1,6 @@
-# AGENT MCP ULTRAPLAN — v4
+# AGENT MCP ULTRAPLAN — v4.1
 
-**Status:** v4 drafted, supersedes v3.1/v3/v2. Awaiting approval to execute Phase 0.5 spike.
+**Status:** v4.1 drafted, supersedes v4/v3.1/v3/v2. Awaiting approval to execute Phase 0.5 spike.
 **Author:** Claude Opus 4.7 (1M context)
 **Date:** 2026-04-17
 **Branch:** `claude/agent-mcp`
@@ -98,6 +98,49 @@ Applied definitional-bug fixes, security gaps, and the obvious Tier-2 wins from 
 - **H1** — Performance regression CI (envelope size, frame-age p95, vision latency p50, tool-call count per fixture run).
 - **H5** — Distributed tracing (trace-id propagation MCP → signaling → worker → guest hook where possible).
 - **I2** — Agent-prompting guide (per-client MCP config + system-prompt patterns that play well with server-enforced correctness).
+
+---
+
+## What changed from v4 → v4.1
+
+Post-v4 review surfaced three correctness gaps and one architecture-level miss on the locator cache. v4.1 closes them. No tool-count change; semantics sharpened; three new error codes; Phase 0.5 gets four named falsification experiments.
+
+### Correctness gaps closed
+
+- **Structural-change race on queued inputs (was: implicit).** v4's queue-and-apply left the case where HMR `applied` lands on a structurally changed UI undefined. Queued inputs could land on a moved button, wrong panel, or deleted element. v4.1:
+  - **Locator-based queued inputs:** re-resolve at dispatch via region-pHash (see below). No new wire.
+  - **Raw-coord queued inputs, no hint:** full-frame pHash(frame-at-queue, frame-at-applied); if distance > 16 → flush-and-reject with new error `input_rejected_hmr_structural_change` + emit new event `hmr_structural_change_detected`. Threshold 16 (not 8) because flush = full agent re-reasoning cycle; tighter threshold over-triggers on layout-adjacent edits.
+  - **Raw-coord queued inputs with `pHash_region` hint:** region-pHash of the hint bbox, threshold 8 (tighter because scoped). Inputs outside the hint region's structural-change envelope pass through even if the rest of the frame changed. Mirrors the locator fix: inputs without scope get conservative gating; inputs with scope get precise gating.
+  - **pHash computation fails at `applied`** (decoder hiccup, dropped frame): fail closed with distinct `input_rejected_phash_unavailable` error so agents don't conflate decoder failure with real UI change.
+
+- **`synthi_reconnect` preserved-state shape (was: `preserved: string[]`).** Partial preservation is the common case on real network blips; string-list said nothing about which handles survived fully vs needed re-resolve vs were gone. v4.1 replaces with per-category discriminated shape:
+  - `event_log: {from_seq, resumed_at_seq, events_missed_count, truncated, oldest_available_seq}` — agent can tell a 200ms blip from a buffer-overflowing 30s gap.
+  - `locator_handles: {handle_id, status: "cached" | "stale_requires_reresolve" | "expired"}[]` — agent pre-filters without trial-and-error.
+  - `subscriptions: {resource, resumed_from_seq}[]` — clean resume semantics for delta streams.
+  - **Zero-survivors rule:** reconnect with no preservable state returns `{error: "session_terminated"}`, not `{ok: true, preserved: {…all empty}}` — prevents silent "successful no-op reconnect" pitfall.
+
+- **Locator cache viability on animated UIs (was: collapses to every-click-is-a-vision-call).** v4 used full-frame pHash as cache invalidation signal. On any animated UI (games, streaming video, rotating scenes), full-frame pHash fires on motion unrelated to the handle's bbox, collapsing the cache. v4.1:
+  - **Region-pHash:** cache `pHash(frame[padded_bbox])` instead of `pHash(full_frame)`. Padded bbox = original ±20% per dimension, floor 8px. A "Save" button in a 3D game UI stays cached even as the scene rotates around it. Agrees with Playwright's element-context locator semantics.
+  - **`locator_resolution` on every handle dispatch** (cached hits included, not only re-resolves): `{mode: "cached" | "region_match" | "re_resolved", reason?, latency_ms, pHash_distance_region?}`. Agents track hit rate + cost without server-side aggregation; occlusion surfaces via `reason: "region_changed"`.
+  - **New reason codes:** `region_changed`, `expired_ttl`, `frame_seq_advanced_beyond_cache`, `explicit_reresolve`.
+
+### Phase 0.5 gets falsification experiments, not just measurements
+
+- **E1 — Frame-seq gate necessity.** 100 naive `wait_hmr` cycles on counter_sdl2 @ 60fps. Falsify gate if ≤2 stale-frame bugs observed (commit as-is); commit gate if ≥10. Marginal 3–9 → commit gate **and** add **E1b** (re-run at 30fps + VFR) to phase 1 exit criteria.
+- **E2 — Locator cache hit rate (static).** pHash-tracked dispatches across 50 edit cycles on counter_sdl2. Falsify cache if <30%; commit if >70%; tune between.
+- **E2b — Region-pHash vs full-frame vs `agent_side` (animated).** Particle-demo SDL2 fixture. Three outputs: (i) full-frame vs region-pHash hit-rate delta; (ii) re-resolution cost distribution p50/p95/p99 (tail is what agents hit in loops, not means); (iii) head-to-head dispatch latency of `claude_api + region-pHash` vs `agent_side`. Ships region-pHash if delta is meaningful; decides default backend on convenience-vs-latency head-to-head, not isolated measurements.
+- **E3 — `claude_api` p99 under load.** 10 parallel locates × 10 iterations. Falsify default if p99 > 5s (flip to `agent_side`); confirm if <2.5s. **Remediation prep:** pre-write both README variants during spike so freeze-time is documentation-pick, not cascade.
+
+### New wire surface
+
+- **`synthi_mouse` gains optional `pHash_region?: BBox`** for raw-coord queued inputs (structural-change hint).
+- **`synthi_locate` response handles carry padded-bbox + region-pHash internally** (no agent-visible shape change beyond the semantic note).
+- **Error codes added:** `input_rejected_hmr_structural_change`, `input_rejected_phash_unavailable`.
+- **Event types added:** `hmr_structural_change_detected`.
+
+### Measurement flags table extended
+
+Phase 0.5 measurement flags table now includes `E1`, `E2`, `E2b`, `E3` alongside `B2`, `F2`, `F4`. Same kind of commitment (decision method, not value) — kept in the same visibility slot so the approval checklist's "Phase 0.5 measure flags" covers all of them.
 
 ---
 
@@ -295,15 +338,15 @@ The `required_tool_call` field is load-bearing: agents self-heal from the error 
 |---------------------------|----------|-----------------------------------------------------------------------------------------------------------------------------|------------------------------------------------------------------------------------------------|
 | `synthi_attach`           | full     | `{sessionId?, signalingUrl?, clientVersion, supportedProtocols: number[], preferred_vision_backend?}` → capability manifest | Negotiates protocol version. Warms hibernated workers. Per-session vision backend selection (v4). Returns immediately with warming progress when session is cold. |
 | `synthi_detach`           | full     | `{}` → `{ok}`                                                                                                               | Graceful: closes DC, PC, WS.                                                                   |
-| `synthi_reconnect` *(v4)* | full     | `{}` → `{ok, preserved: string[]}`                                                                                          | Reattaches peer (ICE restart → DC re-open → subscription replay) without losing session identity or locator handles. Returns which state survived (`event_log_seq`, `locator_handles`, `subscriptions`). |
+| `synthi_reconnect` *(v4.1)* | full   | `{}` → `{ok, preserved: {event_log, locator_handles, subscriptions}}` — see §Reconnect preservation                             | Reattaches peer (ICE restart → DC re-open → subscription replay). Per-category preservation status with discriminated handle states (`cached` / `stale_requires_reresolve` / `expired`); zero survivors → `session_terminated`, not empty-ok. |
 | `synthi_health`           | delta    | `{}` → `{frame_age_ms, dc_rtt_ms, last_hmr_age_ms, decoder_state, process_state, quota_headroom}`                           | Backoff-signal tool.                                                                           |
 | `synthi_get_event_log`    | delta    | `{sinceSeq?, types?}` → `{events: Event[]}`                                                                                 | Ring buffer of HMR transitions, console lines, input dispatches, lifecycle, source-state changes, unsafe-mode warnings, wm_class_mismatch. |
 | `synthi_get_source_state` | full     | `{}` → `{last_mtime, last_changed_files: {path,mtime}[], last_compile_ts, last_hmr_ts, compile_result}` *(v4 expanded)*      | `last_changed_files` bounded to 16 most-recent changes. Agent's causal-attribution handle.     |
-| `synthi_mouse`            | full     | `{action, x?, y?, handle?, x2?, y2?, button?, delta?, waitFor?, waitTimeoutMs?, retry?}`                                    | Compound. Auto-waits per `waitFor`. Returns `dispatch_id` from worker ack.                     |
+| `synthi_mouse`            | full     | `{action, x?, y?, handle?, x2?, y2?, button?, delta?, waitFor?, waitTimeoutMs?, retry?, pHash_region?}` *(v4.1 hint)*          | Compound. Auto-waits per `waitFor`. Returns `dispatch_id` + `locator_resolution` on handle-based calls (v4.1). Optional `pHash_region?: BBox` scopes structural-change gating for raw-coord inputs queued during `compiling` (see Correctness §). |
 | `synthi_keyboard`         | full     | `{action, text?, key?, chord?, confirm?, retry?}`                                                                           | `confirm` required in sensitive contexts (see Security §).                                     |
 | `synthi_screenshot`       | full     | `{format?, region?, max_dim?, freshness_max_ms?}`                                                                           | PNG default. Rejects with `frame_stale` if freshness SLA violated.                             |
 | `synthi_wait`             | full     | `{condition, …, timeoutMs?: 30000}`                                                                                         | Unified wait. `hmr` resolves only after frame-seq gate clears (for `applied`/`state-migrated` only). |
-| `synthi_locate`           | full     | `{description, hints?, top_k?}` → `{handles: LocatorHandle[]}`                                                              | Vision-backed. Handles re-resolve at action time (see Semantic Addressing §). Hint schema: `{prefer_region, exclude_bbox, containing_text, nth}`. |
+| `synthi_locate`           | full     | `{description, hints?, top_k?}` → `{handles: LocatorHandle[]}`                                                              | Vision-backed. Handles cache region-pHash (v4.1: `pHash(frame[bbox ±20% padding, floor 8px])`, not full-frame) and re-resolve at dispatch via region-pHash delta. Hint schema: `{prefer_region, exclude_bbox, containing_text, nth}`. |
 | `synthi_describe`         | full     | `{mode?}` → `{summary, entities, frame_seq}` *(server_side)* or `{screenshot, frame_seq, entities: WorkerEntity[]}` *(agent_side, v4)* | VLM narration in server mode; worker-computed entity hints in agent_side mode. Cached per frame-seq. |
 | `synthi_verify`           | full     | `{predicate, within_ms?: 5000}` → `{ok, evidence, confidence}`                                                              | Check predicate against current preview. Composes locate/OCR/pixel/log/scene.                  |
 
@@ -417,6 +460,9 @@ Every case has a defined server response with `required_tool_call` where remedia
 | Input while session `migrating`              | `{error:"session_migrating", estimated_ready_at, retry_after_ms}` — worker pod being relocated; agent backs off.     |
 | `wait(hmr)` when `applied`→paint→encode pending | Resolve only after sink frame-seq ≥ frame-seq-at-`applied` event. Never return on bare status alone.              |
 | `wait(hmr)` on terminal failure status       | Resolve immediately on status for `rejected` / `compile-error` / `full-reload-required` / `crash-fatal` — no new UI to observe. |
+| Input queued during `compiling`; HMR `applied` with structural frame change | **Default (raw coords, no hint):** full-frame pHash(frame-at-queue, frame-at-applied); if distance > 16 → flush queue with `{error:"input_rejected_hmr_structural_change", pHash_distance, original_frame_seq, applied_frame_seq}` + emit `hmr_structural_change_detected` event. **Handle-based inputs:** re-resolve at dispatch via region-pHash (see Locator lifecycle §). **Raw coords with `pHash_region` hint:** region-pHash of hint bbox, threshold 8 (tighter because scoped); inputs outside hint region pass through even if rest of frame changed. Asymmetric thresholds (16 full-frame vs 8 scoped) reflect asymmetric cost: flush = full agent re-reasoning cycle; locator re-resolve = cheap fallback. |
+| pHash unavailable at `applied` (decoder hiccup, dropped frame) | **Fail closed:** flush queue with `{error:"input_rejected_phash_unavailable", reason, required_tool_call:{name:"synthi_health"}}` — distinct error code so agents don't conflate decoder failure with real UI change. |
+| `synthi_reconnect` with zero survivors       | `{error:"session_terminated", required_tool_call:{name:"synthi_attach"}}` — do not return `{ok:true, preserved:{all empty}}`. Empty-success would invite agents to treat it as a no-op reconnect and proceed with stale assumptions. |
 | Quota exceeded                               | `{error:"quota_exceeded", quota:"screenshots_per_min", retry_after_ms}` — never silent.                             |
 | Protocol version mismatch                    | `{error:"unsupported_protocol", server_supports:[1,2,...]}` — fail attach loudly.                                   |
 | Sensitive-action input without `confirm:true`| `{error:"confirmation_required", matched_patterns:[...], context:{focused_window_class, window_role, wm_class_verified}, required_tool_call:{name:"synthi_keyboard", suggested_args:{...prior..., confirm:true}}}` |
@@ -437,7 +483,7 @@ When multiple conditions apply to a single request, the server returns the error
 3. **Security.** `unsafe_signaling` → `confirmation_required`.
 4. **Quota.** `quota_exceeded`.
 5. **Input validation.** `click_out_of_bounds`, `no_focus_target`, `capability_not_available`, `locator_expired`, `locator_unresolved`, `locator_drift`, `locator_ambiguous`.
-6. **Freshness / resource.** `frame_stale`, `input_queue_full`, `input_rejected_awaiting_ack`, `input_rejected_hmr_pending`, `input_rejected_hmr_terminal_failed`.
+6. **Freshness / resource.** `frame_stale`, `input_queue_full`, `input_rejected_awaiting_ack`, `input_rejected_hmr_pending`, `input_rejected_hmr_terminal_failed`, `input_rejected_hmr_structural_change`, `input_rejected_phash_unavailable` *(v4.1)*.
 
 `error_priority.test.ts` asserts ordering is deterministic across every combination that can co-occur (e.g., `{session_crashed + frame_stale + quota_exceeded}` → `session_crashed`; `{session_migrating + process_hung}` → `session_migrating`).
 
@@ -633,22 +679,42 @@ synthi_locate({
  }}
 ```
 
-### Locator lifecycle (committed semantics)
+### Locator lifecycle (v4.1 — region-pHash, committed semantics)
 
-- Handle `expires_ts` = 30 seconds from creation **or** first frame-seq where pHash distance > 12 from the original frame, whichever comes first.
-- `synthi_mouse({handle})` at dispatch time:
-  - If current frame-seq == original frame-seq: use cached bbox.
-  - Else if pHash distance < 8 from original: use cached bbox (frame changed but minimally).
-  - Else: re-resolve via vision pass.
-- Re-resolution results:
-  - Single candidate, bbox distance from original < 25% viewport: proceed silently.
-  - Single candidate, distance ≥ 25%: error `locator_drift` with both bboxes; agent decides whether to re-confirm.
-  - Zero candidates: error `locator_unresolved`.
-  - Multiple candidates: error `locator_ambiguous`, return all candidates + hint suggestion.
+**Region capture at locate time.** Alongside each handle, cache `region_phash = pHash(frame[padded_bbox])` where `padded_bbox` = original bbox expanded by ±20% per dimension, floor 8px per side. The padding absorbs minor UI shifts (≤20% of bbox size) without triggering re-resolve; the 8px floor ensures thin elements (menu items, toolbar icons) still get useful slack. **Full-frame pHash is explicitly rejected as the invalidation signal** — on any animated UI (games, video, rotating scenes) it collapses the cache to every-click-is-a-vision-call, defeating the point. Scoping the hash to the handle's region is closer to how Playwright locators work (resolved in element context, not viewport context).
+
+**Expiry.** Handle `expires_ts` = 30 seconds from creation **or** first frame-seq where region-pHash distance > 12, whichever comes first.
+
+**Dispatch-time resolution (`synthi_mouse({handle})`):**
+1. Compute `current_region_phash = pHash(current_frame[handle.padded_bbox])`.
+2. If current frame-seq == original frame-seq: use cached bbox (`mode: "cached"`).
+3. Else if region-pHash distance < 8: use cached bbox (`mode: "region_match"`).
+4. Else: re-resolve via vision pass (`mode: "re_resolved"`, `reason: "region_changed"`).
+
+If handle is past `expires_ts` at step 1: re-resolve with `reason: "expired_ttl"`. If a caller explicitly passes `{force_resolve: true}`: `reason: "explicit_reresolve"`.
+
+**Re-resolution results** (unchanged from v4):
+- Single candidate, bbox distance from original < 25% viewport: proceed silently.
+- Single candidate, distance ≥ 25%: error `locator_drift` with both bboxes; agent decides whether to re-confirm.
+- Zero candidates: error `locator_unresolved`.
+- Multiple candidates: error `locator_ambiguous`, return all candidates + hint suggestion.
+
+**Dispatch response emits `locator_resolution` on every handle-based call** (v4.1 — cached hits included, not only re-resolves; agents track hit-rate + cost distribution without server-side aggregation):
+
+```ts
+locator_resolution: {
+  mode: "cached" | "region_match" | "re_resolved",
+  reason?: "region_changed" | "expired_ttl" | "frame_seq_advanced_beyond_cache" | "explicit_reresolve",
+  latency_ms: number,
+  pHash_distance_region?: number   // present whenever region-pHash was computed
+}
+```
+
+**Occlusion distinction.** When a modal dialog covers the handle's bbox, region-pHash fires (region changed drastically) and surfaces with `reason: "region_changed"`. Agents can cross-check with `synthi_describe` or `synthi_get_event_log` to distinguish "UI moved" from "something covered my target" — the reason code gives the starting hypothesis.
 
 ### What this costs
 
-Under `claude_api`, every re-resolution is an API call. Agents doing long loops on animated UIs can burn significant vision cost. Phase 0.5 will measure this; phase-1 documented defaults tune expiry and pHash threshold accordingly.
+Under `claude_api`, re-resolutions are API calls (p50 0.8–1.5s, p99 worse — see E3). Region-pHash materially cuts re-resolve frequency on animated UIs (E2b measures actual hit rates AND re-resolution cost distribution p50/p95/p99 — tail latency matters more than means because that's what agents hit in loops). For tight interactive loops, `agent_side` sidesteps server-side resolve cost entirely; phase-1 README will document it as "preferred for animated/interactive loops" (exact wording depends on E3 outcome — see Phase 0.5 §).
 
 ---
 
@@ -768,6 +834,67 @@ Tools called during warming return `session_not_ready` with current `warming_pro
 
 ---
 
+## Reconnect preservation (v4.1)
+
+`synthi_reconnect` response shape:
+
+```ts
+{
+  ok: true,
+  preserved: {
+    event_log: {
+      from_seq: number,              // what the agent had before the disconnect
+      resumed_at_seq: number,         // where the event log now resumes from
+      events_missed_count: number,    // 0 on clean resume
+      truncated: boolean,             // ring buffer overflowed during disconnect; missed_count is a lower bound
+      oldest_available_seq: number    // floor of what can still be fetched via synthi_get_event_log
+    },
+    locator_handles: {
+      handle_id: string,
+      status: "cached" | "stale_requires_reresolve" | "expired"
+    }[],
+    subscriptions: {
+      resource: string,
+      resumed_from_seq: number
+    }[]
+  }
+}
+```
+
+### Per-handle status semantics
+
+- **`cached`** — handle's region-pHash still matches within threshold. Next `synthi_mouse({handle})` is a silent cache hit.
+- **`stale_requires_reresolve`** — handle exists; region-pHash advanced past threshold during disconnect. Next dispatch re-resolves transparently (one extra vision-call latency). Agent can pre-call `synthi_locate` to front-load that cost or let it happen at click time.
+- **`expired`** — handle is gone (past 30s TTL or eligible for cache eviction). Must call `synthi_locate` with the original description to re-acquire.
+
+### Event-log degradation awareness
+
+`events_missed_count` and `truncated` together tell the agent how degraded its view is. A 200ms disconnect with `events_missed_count: 3, truncated: false` is a clean resume; a 30-second disconnect with `events_missed_count: 800, truncated: true` is "re-read session state from authoritative sources." `oldest_available_seq` tells the agent what it can still pull from the ring buffer — closes the "how far back can I rewind" question without a probe round-trip.
+
+### Zero-survivors rule
+
+If reconnect finds no preservable state — all handles expired, event-log buffer fully truncated, no subscriptions recoverable, session state itself invalidated — the server returns:
+
+```
+{error: "session_terminated", required_tool_call: {name: "synthi_attach"}}
+```
+
+…not `{ok: true, preserved: {…all empty}}`. Returning success with empty preservation would invite agents to treat it as a successful no-op reconnect and proceed with stale assumptions; the error closes that footgun.
+
+### Agent-facing pattern
+
+```
+const r = await synthi_reconnect();
+for (const h of r.preserved.locator_handles) {
+  if (h.status === "expired") queueRelocateFor(h.handle_id);
+  // "stale_requires_reresolve" is fine to leave alone — next dispatch handles it.
+}
+```
+
+Agents pre-filter handles pre-dispatch — no trial-and-error on expired handles, no surprise latency spikes from transparent re-resolves.
+
+---
+
 ## Cost observability
 
 Phase 1 ships metrics + `synthi_get_usage`. Phase 2 adds enforcement.
@@ -835,17 +962,21 @@ Phase-2 re-scoping is in `PHASE_2_PLUS_BACKLOG.md:G3`.
 
 ---
 
-## Phase 0.5 measurement flags (v4)
+## Phase 0.5 measurement flags (v4 + v4.1 falsification)
 
-Items where v4 commits to a **decision method**, not a value. Phase 0.5 data fills them in before phase 1 freezes. Explicitly called out so reviewers can check that "measure in phase 0.5" doesn't silently become "guess in phase 1."
+Items where the plan commits to a **decision method**, not a value. Phase 0.5 data fills them in before phase 1 freezes. Explicitly called out so reviewers can check that "measure in phase 0.5" doesn't silently become "guess in phase 1." **v4.1 adds E1/E2/E2b/E3 as named falsification experiments — each can invalidate a phase-1 commitment, not just tune it.**
 
 | Flag | Item                                | What phase 0.5 must produce                                                    |
 |------|-------------------------------------|--------------------------------------------------------------------------------|
 | B2   | Input queue cap (currently 16)      | Measured compile duration × input frequency distribution on SDL2 fixture. Recommended cap with p99 headroom. |
 | F2   | Pipeline-budget recal cadence       | Frame-rate drift observation over 30-min spike run. Determines if one-shot calibration is enough or periodic recal is needed. |
 | F4   | Frame-interval precision            | Fall-back-path frame-interval distribution under VFR + frame drops. Decides p95 vs. p99 vs. dynamic tracking. |
+| E1   | Frame-seq gate necessity            | 100 naive `wait_hmr` cycles on counter_sdl2 @ 60fps. **Falsify** gate if ≤2 observable stale-frame bugs (drop gate). **Commit** gate if ≥10. **Marginal (3–9)** → commit gate AND add **E1b** (re-run at 30fps + VFR content) to phase 1 exit criteria. |
+| E2   | Locator cache hit rate (static)     | pHash-tracked handle dispatches across 50 realistic edit cycles on counter_sdl2. **Falsify** cache if hit rate <30% (ship stateless-per-call locator). **Commit** if >70%. Tune pHash thresholds between. |
+| E2b  | Region-pHash vs full-frame vs `agent_side` (animated) | Particle-demo SDL2 fixture. Three outputs: (i) full-frame vs region-pHash hit-rate delta; (ii) re-resolution cost distribution p50/p95/p99 (tail is what agents hit in loops); (iii) head-to-head dispatch latency of `claude_api + region-pHash cache` vs `agent_side`. **Ships region-pHash** if full-frame <30% and region >70%. **Keeps `claude_api` default** if p99 dispatch latency < `agent_side` p99 + 200ms; otherwise flips to `agent_side`. |
+| E3   | `claude_api` p99 under load         | 10 parallel `synthi_locate` × 10 iterations. **Falsify** default if p99 > 5s (flip to `agent_side`). **Confirm** if p99 < 2.5s. **Marginal (2.5–5s)** → stay `claude_api` default but phase-1 README carries "for interactive loops, set `preferred_vision_backend: 'agent_side'`" recommendation. **Remediation prep:** pre-write both README variants during spike so freeze-time is documentation-pick, not cascade. |
 
-`PHASE_0_5_FINDINGS.md` will carry these values before phase 1 kickoff.
+`PHASE_0_5_FINDINGS.md` will carry all flag values + E1/E2/E2b/E3 outcomes (falsify / commit / marginal) before phase 1 kickoff.
 
 ---
 
@@ -915,7 +1046,7 @@ mcp/synthi-mcp/
 | File                                                                                      | Change                                                                                                   |
 |-------------------------------------------------------------------------------------------|----------------------------------------------------------------------------------------------------------|
 | `signaling-server/src/main.rs`                                                            | Protocol version handshake. Presence count reporting (humans/agents per session). Verify two-`"browser"`-peer allowance (pre-work #1); fix if needed. |
-| `worker/src/**`                                                                            | Input dispatch ack; window-tree-aware focus lock; WM_CLASS spoof check against `/proc/<pid>/exe`; encoder-timestamp frame tagging on `build-log`; per-session usage counters; context-aware sensitive-action; seccomp profile (permissive default); source-state reporter with `last_changed_files`; reset-guest support; synthetic HMR-overlay calibration hook; warming-progress reporter; migrating-state propagation. |
+| `worker/src/**`                                                                            | Input dispatch ack; window-tree-aware focus lock; WM_CLASS spoof check against `/proc/<pid>/exe`; encoder-timestamp frame tagging on `build-log`; per-session usage counters; context-aware sensitive-action; seccomp profile (permissive default); source-state reporter with `last_changed_files`; reset-guest support; synthetic HMR-overlay calibration hook; warming-progress reporter; migrating-state propagation; **structural-change pHash gate at HMR `applied` (full-frame + region-pHash paths, v4.1); pHash-unavailable fail-closed path; frame-at-queue capture for structural-change comparison (v4.1)**. |
 | `worker/src/compiler/stages/runner.rs`                                                    | Capture guest root PID + track descendant windows; binary-fingerprint registry; seccomp wrapper.          |
 | `collab-server/SessionManager.js`, `collabSessionService.js`                              | Session lifecycle state queryable via REST; warm endpoint; migrating-state hook.                         |
 
@@ -934,24 +1065,57 @@ mcp/synthi-mcp/
 - Branch `claude/agent-mcp` exists.
 - Package scaffold + `synthi_ping` smoke test via `@modelcontextprotocol/inspector`.
 
-### Phase 0.5 — Spike *(~5 days, before phase 1 spec freezes)*
+### Phase 0.5 — Spike *(~5–6 days, before phase 1 spec freezes)*
 
-Deliberately minimal. Goal: surface assumptions before committing architecture.
+Deliberately minimal. Goal: surface assumptions before committing architecture. **v4.1 adds four named falsification experiments (E1/E2/E2b/E3) with explicit thresholds so the spike can invalidate the plan, not just measure it.**
 
-- Stdio MCP server with: `synthi_attach`, `synthi_screenshot` (no freshness SLA), `synthi_mouse.click` (coords only, no locator), `synthi_wait({condition:"hmr"})` **without** frame-seq gate, `synthi_keyboard.type` (no sensitive-action check).
+**Spike tool surface (deliberately partial):** stdio MCP server with `synthi_attach`, `synthi_screenshot` (no freshness SLA), `synthi_mouse.click` (coords only, no locator), `synthi_wait({condition:"hmr"})` **without** frame-seq gate, `synthi_keyboard.type` (no sensitive-action check). **Plus E1–E3 instrumentation probes** — these require locator + region-pHash tracking wired in the spike, because without them E2/E2b are unmeasurable. Instrumentation is probe-only (no semantic layer commitments beyond what's needed to produce E2/E2b data).
+
 - Attaches as `"browser"` peer on LAN signaling. No security. No enriched tier. No observability.
-- Fixture: `counter_sdl2` (universal tier).
-- Point Claude Code at it. Prompt: "Edit this SDL2 counter to start at 10 instead of 0, then verify visually."
-- Instrument everything. Measure:
-  - `synthi_locate` feasibility if we wire it up vs hardcoded coords.
-  - `claude_api` vision p50/p99 on realistic SDL2 frames.
-  - Whether naive `wait_hmr` (no frame-seq gate) is good enough or actually produces stale-frame bugs in practice.
+- Fixtures: `counter_sdl2` (static universal tier — E1, E2, E3) **and** a **particle-demo SDL2** fixture (animated — E2b). The particle fixture may need to be added in phase 0.5 if not already present (~0.5 day; flagged in Open items).
+- Point Claude Code at `counter_sdl2`. Prompt: "Edit this SDL2 counter to start at 10 instead of 0, then verify visually."
+
+**Ad-hoc measurements** (feed the flags table directly):
+  - `synthi_locate` feasibility vs hardcoded coords.
+  - `claude_api` vision p50/p99 on realistic SDL2 frames (feeds E3).
   - Frame-age distribution end-to-end on local docker-compose.
   - Signaling-server behavior with two `"browser"` peers (pre-work #1).
   - `pipeline_budget_ms` components (paint / encode / transport) via HMR round-trip calibration — informs the 80ms fallback default.
   - **B2**: real input-queue depth required for queue-and-apply under realistic compile durations.
   - **F2**: whether one-shot calibration suffices or periodic recal is needed.
   - **F4**: frame-interval distribution under VFR — determines seq-count fallback precision target.
+
+#### Falsification experiments (v4.1)
+
+Each has a named threshold that either commits, falsifies, or marginally commits the corresponding plan decision. Spike does not conclude until all four produce findings; each finding recorded in `PHASE_0_5_FINDINGS.md`.
+
+**E1 — Frame-seq gate necessity.**
+- Protocol: 100 `wait_hmr` cycles on counter_sdl2 @ 60fps **without** the frame-seq gate (status-only wait). After each wait, immediately screenshot; compare against known post-HMR pixel signature (counter digit changed).
+- **≤2 stale screenshots** → **falsify** the gate. Over-engineering; phase 1 drops it; `synthi_wait({condition:"hmr"})` returns on status alone.
+- **≥10 stale screenshots** → **commit** the gate. Encoder-timestamp approach goes into phase 1 as planned.
+- **3–9** → **marginal**. Commit the gate, AND add **E1b** to phase 1 exit criteria: re-run E1 at 30fps and under VFR content before phase 1 closes. If E1b shows similar rates → gate stays; if below 2 → re-evaluate before ship.
+
+**E2 — Locator cache hit rate (static UI, edit cycles).**
+- Protocol: Wire `synthi_locate` + handle cache (region-pHash, v4.1 semantics) into the spike. 50 realistic edit cycles on counter_sdl2 (HMR after each edit; agent dispatches `synthi_mouse({handle})` before + after). Track (cached + region_match) / total.
+- **<30% hit** → **falsify** the cache design. Phase 1 ships `synthi_locate` as stateless-per-call (no cache).
+- **>70% hit** → **commit** cache.
+- **30–70%** → tune TTL, pHash thresholds, and padding; ship tuned version.
+
+**E2b — Region-pHash vs full-frame vs `agent_side` (animated UI).**
+- Protocol: Particle-demo SDL2 fixture (moving particles, 60fps). Across 50 dispatches, measure three things:
+  - **Hit rate delta:** full-frame pHash cache vs region-pHash cache (±20% padding, 8px floor). Same handles, different hashing strategy. Expect region-pHash materially higher.
+  - **Re-resolution cost distribution:** on cache misses, latency p50/p95/p99. A 70% hit rate with p99 6s tails is worse than a 50% hit rate with p99 2s tails — tails are what agents hit in loops. Report full distribution, not just means.
+  - **Head-to-head vs `agent_side`:** same workload with `preferred_vision_backend: "agent_side"`. End-to-end dispatch latency p50/p95/p99. Real question is no longer "is claude_api fast enough" — it's "does region-pHash cache close the gap enough that `claude_api`'s convenience (no client-side vision pipeline setup) wins over `agent_side`'s latency for the 60fps loop case?"
+- **Region-pHash ships** if full-frame <30% hit AND region >70% hit.
+- **Default backend stays `claude_api`** if region-pHash p99 dispatch latency < `agent_side` p99 + 200ms (agent_side overhead threshold — below this, claude_api convenience wins).
+- **Default backend flips to `agent_side`** otherwise.
+
+**E3 — `claude_api` p99 under load.**
+- Protocol: 10 parallel `synthi_locate` calls × 10 iterations = 100 measurements under realistic contention (counter_sdl2, not particle-demo — we want the standard case).
+- **p99 > 5s** → **falsify** `claude_api` default. Flip default to `agent_side` in phase 1 README + per-client configs.
+- **p99 < 2.5s** → **confirm** default.
+- **2.5–5s** → stays `claude_api` default, but phase-1 README carries "for interactive loops, set `preferred_vision_backend: 'agent_side'`" recommendation (not a default flip).
+- **Remediation prep (documentation-cascade avoidance):** during the spike, pre-write **both** README variants and both example per-client config snippets (`claude_api`-default, `agent_side`-default). At phase 1 freeze time, picking a variant is a 5-minute documentation choice, not a 2-day cascade through README / TESTING / per-client configs / example prompts.
 
 Output: `PHASE_0_5_FINDINGS.md`. Re-anchors phase 1 scope if measurements surprise us.
 
@@ -962,8 +1126,9 @@ Everything in this document lands in phase 1 *except* items in "deferred" below.
 **In scope:**
 - Universal-tier core 13 + operational 7 + escape hatches (wire) + arbitration wire (no enforcement).
 - Capability manifest + protocol version negotiation + lazy tool advertisement.
-- Playwright-style compound actions; lazy locators with committed semantics; hint schema; auto-waiting.
-- Unified `synthi_wait` with frame-seq gate (encoder-timestamp approach) — applied only for `applied`/`state-migrated`; error-terminal statuses resolve on status alone.
+- Playwright-style compound actions; lazy locators with committed semantics; region-pHash cache with ±20% padding + 8px floor; `locator_resolution` on every handle dispatch; hint schema; auto-waiting.
+- Queue-and-apply input handling with structural-change gate on HMR `applied` (full-frame pHash threshold 16, region-pHash threshold 8 with `pHash_region` hint; fail-closed on decoder failure).
+- Unified `synthi_wait` with frame-seq gate (encoder-timestamp approach) — applied only for `applied`/`state-migrated`; error-terminal statuses resolve on status alone. (Ship decision gated on E1 outcome.)
 - `synthi_verify` with the five predicate kinds and discriminated evidence shape; `log` uses `since_seq`.
 - `synthi_get_source_state` with `last_changed_files` + source-state events in event log.
 - `synthi_reconnect` for transient-failure recovery.
@@ -1064,6 +1229,11 @@ Three, compiled and run in the worker:
 - `reconnect.test.ts` — ICE restart, DC re-open, subscription replay; locator handles survive.
 - `lazy_advertise.test.ts` — core 13 always present; enriched advertised only when manifest declares; re-advertisement on capability change.
 - `warming_progress.test.ts` — attach returns immediately; progress fields update monotonically; tools called during warming return structured error with progress.
+- `structural_change_race.test.ts` *(v4.1)* — pHash-delta thresholds (full-frame 16, region 8); `pHash_region` hint scopes gate to bbox; flush vs pass-through decisions; event emission.
+- `phash_unavailable.test.ts` *(v4.1)* — force decoder hiccup at applied; assert distinct error code (not conflated with structural change).
+- `reconnect_shape.test.ts` *(v4.1)* — per-handle status enum transitions; event-log degradation fields; zero-survivors → `session_terminated` (not empty-ok).
+- `region_phash_cache.test.ts` *(v4.1)* — padded-bbox capture; cached / region_match / re_resolved modes; reason codes; 8px floor on thin elements.
+- `locator_resolution_exposure.test.ts` *(v4.1)* — `locator_resolution` emitted on cached hits, not just re-resolves; distance field present when computed.
 
 ### Layer 2 — integration (real docker-compose)
 
@@ -1095,6 +1265,12 @@ One test per correctness-table row, minimum. Plus:
 - `pipeline_budget_calibration.test.ts` — synthetic HMR-overlay calibration completes in bounded time; measured p95 within fallback ballpark.
 - `locator_hints.test.ts` — hint schema narrowing; `locator_ambiguous` suggests concrete hints.
 - `presence_counts.test.ts` — humans/agents counts reflect actual peer set; transitions propagate within SLA.
+- `input_structural_change.test.ts` *(v4.1)* — queue inputs during compiling; HMR applied with simulated UI layout change (moved button via test harness); assert flush + event + `input_rejected_hmr_structural_change`.
+- `input_phash_unavailable.test.ts` *(v4.1)* — force decoder hiccup at applied boundary; assert fail-closed distinct error, agent directed to `synthi_health`.
+- `reconnect_zero_survivors.test.ts` *(v4.1)* — session state fully dropped during disconnect; assert reconnect returns `session_terminated`, not empty-ok.
+- `region_phash_animated.test.ts` *(v4.1)* — particle-demo fixture; region-pHash cache hit rate > threshold; full-frame <30%. Also asserts re-resolution cost distribution captured.
+- `pHash_region_hint.test.ts` *(v4.1)* — raw-coord input queued with `pHash_region` hint; structural change in unrelated panel passes through; structural change in hint region flushes.
+- `locator_resolution_cached_hits.test.ts` *(v4.1)* — cached-mode dispatch still emits `locator_resolution` with distance field; agents can aggregate hit-rate client-side.
 
 ### Layer 3 — end-to-end (real agent harnesses)
 
@@ -1150,6 +1326,10 @@ Invariant: no agent makes a decision on stale data. Either structured error or t
 | Reconnect preserves too much / too little state                      | M          | M      | `synthi_reconnect` response declares which state survived; agent branches accordingly.                                  |
 | Warming progress stalls silently                                     | L          | M      | Warming events emit to event log on stage transition; no-transition-for-N timeout → `session_warming_stalled` event.    |
 | WM_CLASS binary fingerprint registry drift                           | M          | L      | Registry is a starting set + heuristic; mismatch falls conservative, not block. Registry grows per-fixture.              |
+| Region-pHash padding too tight on thin elements (v4.1)               | M          | L      | ±20% + 8px floor; tune per fixture in phase 0.5. Falls back to re-resolve (cheap fallback, not a correctness bug).        |
+| Structural-change flush thresholds (16 full-frame / 8 region) wrong (v4.1) | M    | M      | Asymmetric thresholds are phase-0.5 tunable. E1-adjacent measurements feed the decision. Fail-mode is over-flushing (conservative — agent re-reasons, not a silent wrong click).   |
+| E3 lands marginal (2.5–5s p99) (v4.1)                                | M          | L      | `claude_api` stays default but README adds "interactive loops → `agent_side`" note. Both README variants pre-drafted during spike so freeze is instant.                     |
+| Locator cache collapses on animated UIs if region-pHash insufficient (v4.1) | L  | M      | E2b falsification experiment gates region-pHash ship decision. Fallback: document `agent_side` as preferred for animated loops.                                             |
 
 ---
 
@@ -1161,12 +1341,16 @@ Invariant: no agent makes a decision on stale data. Either structured error or t
 
 **Deferred to `PHASE_2_PLUS_BACKLOG.md` with explicit tickets:** D6 (local vision architecture), G3 (phase 2 re-scope), H1 (perf regression CI), H5 (distributed tracing), I2 (agent-prompting guide).
 
+**Tier-1 items resolved in v4.1:** structural-change race closure (new error codes + `pHash_region` hint), `synthi_reconnect` preserved-state discriminated shape + zero-survivors rule, region-pHash locator cache with padding + `locator_resolution` on all dispatches, E1/E2/E2b/E3 named falsification experiments with explicit thresholds, E3 documentation-cascade avoidance via pre-drafted README variants.
+
 **Still open (pre-Phase-0.5):**
 
 1. **SDL2 fixture toolchain.** Is the worker pod ready to compile a minimal C++ SDL2 program? If not, phase 0.5 adds toolchain setup (~0.5 day).
-2. **Seccomp target posture.** Permissive-by-default tightened over phase 1, or a specific hardening level out of the gate? Proposal: permissive.
-3. **Operator UI scope for phase 2.** Minimum (badge + kill switch) or full (badge + feed + action-preview + audit + kill + unsafe-mode indicator)? Proposal: full — this is what "trust for hours unattended" needs.
-4. **Binary fingerprint registry seed (v4).** Phase-1 initial registry contents — who maintains it, how it grows per-fixture? Proposal: `worker/src/security/binary_registry.rs` with starting list + per-fixture CI check that new languages add their entry.
+2. **Particle-demo SDL2 fixture (v4.1).** Required for E2b. If not already present → add in phase 0.5 (~0.5 day). If `counter_sdl2` is the only SDL2 fixture, particle-demo gets built alongside.
+3. **Seccomp target posture.** Permissive-by-default tightened over phase 1, or a specific hardening level out of the gate? Proposal: permissive.
+4. **Operator UI scope for phase 2.** Minimum (badge + kill switch) or full (badge + feed + action-preview + audit + kill + unsafe-mode indicator)? Proposal: full — this is what "trust for hours unattended" needs.
+5. **Binary fingerprint registry seed (v4).** Phase-1 initial registry contents — who maintains it, how it grows per-fixture? Proposal: `worker/src/security/binary_registry.rs` with starting list + per-fixture CI check that new languages add their entry.
+6. **Structural-change pHash thresholds (v4.1).** Asymmetric 16 (full-frame flush) vs 8 (region-scoped flush) are initial guesses. E1-adjacent measurements in phase 0.5 inform. Currently a plan-commit with empirical-validation-required label.
 
 ---
 
@@ -1174,18 +1358,26 @@ Invariant: no agent makes a decision on stale data. Either structured error or t
 
 Before Phase 0.5:
 
-- [ ] Phase 0.5 scope acceptable as a 1-week deliberate-crap spike.
+- [ ] Phase 0.5 scope acceptable as a ~5–6 day deliberate-crap spike with E1/E2/E2b/E3 instrumentation.
 - [ ] Pre-work items 1–7 scheduled before phase 1 spec freezes.
-- [ ] 4 open items above answered (or "your call").
+- [ ] 6 open items above answered (or "your call").
 - [ ] Phase 0.5 measure flags (B2, F2, F4) acknowledged as values filled by spike, not phase 1 guesses.
+- [ ] Phase 0.5 falsification experiments (E1, E2, E2b, E3) acknowledged — each can invalidate a phase-1 commitment (frame-seq gate, locator cache, region-pHash, vision-backend default).
+- [ ] Particle-demo SDL2 fixture scoped for E2b (new fixture may add 0.5 day).
+- [ ] Both README variants (claude_api-default + agent_side-default) drafted during spike to pre-empt E3 documentation cascade.
 - [ ] Phase 2+ backlog items (D6, G3, H1, H5, I2) reviewed in `PHASE_2_PLUS_BACKLOG.md`.
 
 Before Phase 1:
 
 - [ ] Phase 0.5 findings reviewed.
+- [ ] E1/E2/E2b/E3 outcomes decided (falsify / commit / marginal) and phase 1 scope reflects outcomes.
+- [ ] If E1 marginal: **E1b** (re-run at 30fps + VFR) added to phase 1 exit criteria.
+- [ ] If E2 falsifies: locator cache dropped from phase 1 (stateless-per-call).
+- [ ] If E2b ships region-pHash: region-pHash implementation accepted in worker + MCP.
+- [ ] If E3 flips default: `agent_side` README variant picked; `claude_api` variant archived.
 - [ ] Phase 1 scope confirmed (up from ~10 days in v2 to ~4 weeks realistic).
-- [ ] Worker changes in scope accepted (dispatch ack, window-tree focus, WM_CLASS spoof check, encoder-timestamp tagging + synthetic-HMR calibration hook, source-state reporter with file list, seccomp, context-aware sensitive-action, usage counters, reset-guest, warming-progress reporter, migrating-state propagation, presence-count emission).
-- [ ] Vision-backend default confirmed; per-attach override shape accepted.
+- [ ] Worker changes in scope accepted (dispatch ack, window-tree focus, WM_CLASS spoof check, encoder-timestamp tagging + synthetic-HMR calibration hook, source-state reporter with file list, seccomp, context-aware sensitive-action, usage counters, reset-guest, warming-progress reporter, migrating-state propagation, presence-count emission, region-pHash capture on locator handles, structural-change pHash gate on queued inputs).
+- [ ] Vision-backend default confirmed (per E3 outcome); per-attach override shape accepted.
 
 On green light: Phase 0.5 → findings → Phase 1 spec freeze → Phase 1 execute → demo against SDL2 + Swing fixtures → phase 2 gate.
 

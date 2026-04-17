@@ -680,3 +680,74 @@ The v4 triage pattern ("now / measure / defer with tickets") is a refinement of 
 - `server_enforces_correctness` covers most of the Tier-2 definitional wins.
 
 Project memory (`project_agent_mcp_work`) gets updated to reflect v4 being on disk.
+
+---
+
+# Wave 6 — v4.1: correctness gaps + locator cache viability (2026-04-17)
+
+## 36. Colleague review of v4 surfaced four sharp issues. All applied in v4.1.
+
+Single batched commit. Each issue was concrete, architecturally load-bearing, and had a proposed shape that survived critique.
+
+### 36.1 Structural-change race on queued inputs (correctness gap)
+
+**The gap.** v4's queue-and-apply left undefined what happens when HMR `applied` lands on a UI that has structurally changed. Queued inputs (especially raw coords) could land on moved buttons, wrong panels, or deleted elements. Colleague framed it: "For a counter increment, fine. For 'click the Save button' when HMR moved it, the input lands on the wrong thing."
+
+**Three options surfaced.** (a) Flush-and-reject on structural change. (b) Require re-resolve of locator handles at dispatch. (c) Document as caller's problem + event.
+
+**Resolution.** (a)+(b) combined, with asymmetric threshold refinement suggested by colleague on second pass:
+- Locator-based inputs: re-resolve at dispatch via region-pHash (cheap fallback exists).
+- Raw-coord inputs without hint: full-frame pHash, threshold 16 (loose — flush = full agent re-reasoning, tighter threshold over-triggers on layout-adjacent edits).
+- Raw-coord inputs with optional `pHash_region` hint: region-pHash of hint bbox, threshold 8 (tight — scoped, safe to flush).
+- pHash-computation-failure at `applied`: fail closed with distinct error code `input_rejected_phash_unavailable` so agents don't conflate decoder failure with real UI change.
+
+**New wire:** `input_rejected_hmr_structural_change` + `input_rejected_phash_unavailable` error codes; `hmr_structural_change_detected` event; `pHash_region?: BBox` hint on `synthi_mouse`.
+
+### 36.2 `synthi_reconnect` preserved-state under-specification
+
+**The gap.** v4's `preserved: string[]` said nothing about partial preservation. What if locator handles exist but bbox is stale because frames advanced during the disconnect? Partial preservation is the common case on a real network blip — trial-and-error routing is an antipattern.
+
+**Resolution.** Per-category discriminated shape with per-handle status enum:
+- `event_log: {from_seq, resumed_at_seq, events_missed_count, truncated, oldest_available_seq}` — agents distinguish 200ms blip from 30s buffer-overflow.
+- `locator_handles: {handle_id, status: "cached" | "stale_requires_reresolve" | "expired"}[]` — agents pre-filter without trial-and-error.
+- `subscriptions: {resource, resumed_from_seq}[]` — clean resume for delta streams.
+
+**Zero-survivors rule (colleague's call):** reconnect with no preservable state returns `{error: "session_terminated"}`, not `{ok: true, preserved: {…all empty}}`. Empty-success would invite agents to treat it as a no-op and proceed with stale assumptions.
+
+### 36.3 Phase 0.5 too loosely scoped to falsify the plan
+
+**The gap.** v4 Phase 0.5 named B2/F2/F4 as "measure," but omitted tools for the things the plan actually bets on. Colleague surfaced three specific falsification experiments — the right bets to test:
+- Frame-seq gate necessity (naive `wait_hmr` stale-frame rate).
+- Locator cache hit rate under realistic edit cycles.
+- `claude_api` p99 under load.
+
+**Resolution.** E1/E2/E2b/E3 added as **named experiments with falsification thresholds**, not just "measure." Each can invalidate a phase-1 commitment. Colleague's follow-on refinements applied:
+- E1 threshold boundary spec: 3–9 is "marginal" (commit + add **E1b** to phase 1 exit criteria: re-run under 30fps + VFR content).
+- E2b adds re-resolution cost distribution (p50/p95/p99 — tail is what agents hit in loops) AND head-to-head `claude_api + region-pHash` vs `agent_side` dispatch latency (the real question is "does cache close the gap enough for claude_api convenience to win," not "is claude_api fast enough").
+- E3 adds documentation-cascade avoidance: pre-write both README variants during spike so freeze-time is a 5-min pick, not a 2-day cascade through README / TESTING / per-client configs / example prompts.
+
+### 36.4 Locator cache viability on animated UIs (architecture-level miss)
+
+**The gap.** v4 used full-frame pHash as cache invalidation signal. Colleague's sharp point: on any animated UI (games, video, spinners), threshold 8 fires on frame-to-frame motion unrelated to the button under the handle. Every click becomes a vision call. Cache is dead weight.
+
+**Resolution.** Region-pHash, not full-frame:
+- Cache `pHash(frame[padded_bbox])` at locate time where `padded_bbox = original ±20% per dimension, floor 8px per side`.
+- Padding absorbs minor shifts (5px drift on 100px button → 20px pad → stays within).
+- Floor ensures thin elements (menu items, toolbar icons) get useful slack.
+- Agrees with Playwright's element-context locator semantics.
+
+Colleague's follow-on refinements applied:
+- Reason codes on re-resolve: `region_changed | expired_ttl | frame_seq_advanced_beyond_cache | explicit_reresolve` — lets agents distinguish "UI moved" from "something covered my target" (occlusion).
+- `locator_resolution` exposed on **all** dispatches (cached hits included), not only re-resolves. Agents compute hit-rate distribution client-side without needing server-side telemetry retrofit.
+- E2b scope expansion: measure `claude_api + region-pHash` head-to-head against `agent_side` on the animated fixture (not just each in isolation) — the real question is convenience-vs-latency tradeoff.
+
+## 37. Colleague meta-points
+
+- **Commit cadence:** "Commit as v4.1 now. Batching with additional colleague input risks the v3→v3.1→v4 pattern where each round is well-scoped but the document accretes. Ship the patch, then batch the next round." Applied.
+- **Measurement-flag visibility:** E1/E2/E2b/E3 belong in the same "Phase 0.5 measurement flags" table slot as B2/F2/F4 (top-of-doc visibility), not just buried in prose. Applied — table extended to 7 rows.
+
+## 38. Memory-worthy?
+
+The Wave 5 decision-method triage pattern ("apply now / measure later / defer with ticket") carries through Wave 6 — no new meta-principle emerged. Wave 6 is three correctness patches + one architecture patch, applied without scope inflation. The commit-cadence point ("ship the patch, then batch the next round") is useful but arguably covered by the existing `critique_clarifies_design_space_not_mvp_scope` memory — which already warns against letting documents accrete under iterative critique.
+
+**Not adding memory.** Project memory (`project_agent_mcp_work`) updated to reflect v4.1 on disk.
