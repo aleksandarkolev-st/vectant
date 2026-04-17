@@ -563,3 +563,120 @@ Every v2 design choice measured against that sentence. Wire-format purity is a t
 - **feedback**: *"Prompt-injection-via-rendered-content is a Day-One threat for any vision-enabled agent system rendering untrusted content. Why: user called out guest programs in Synthi are user-compiled/untrusted; can render 'Ignore previous instructions' strings the agent will execute. How to apply: assume any content the agent sees may be adversarial. Constrain input focus, sandbox guests, gate shell-metachar inputs behind explicit confirmation."*
 - **feedback**: *"For autonomous-system work, write a one-page vision doc above the technical plan that names what the system actually is (not just its wire-level interface). Why: user critiqued the MCP plan optimizing for 'wire compatibility with browser' as north star rather than 'does an agent running in a loop produce reliable work?'. How to apply: before finalizing an architecture plan for an autonomous system, draft a vision statement and measure every design choice against it."*
 - **feedback**: *"Borrow from mature adjacent ecosystems explicitly (Playwright/Appium for UI automation, etc.) rather than rediscovering their lessons. Auto-waiting actions, lazy locators, retry policies — ten-year lessons encoded in their APIs. Why: user critiqued MCP plan for reinventing dumb-pixel-poke tools instead of compound verbs with built-in waits. How to apply: when designing a new system, identify the closest mature analog and read its docs asking 'why does this API look like this?' before committing your shape."*
+
+---
+
+# Wave 3 — Cross-process edit coordination gap (2026-04-16)
+
+## 31. External agents don't edit source through Synthi MCP
+
+Agents consuming Synthi MCP edit source files through *their own* tools: Claude Code `Edit`, Codex file ops, Cursor inline, etc. — writing to the worker filesystem via collab-server / Y-Sweet / mount, a path Synthi MCP never sees. Synthi MCP observes only downstream consequences: watcher → compile → HMR → frame.
+
+v2 gates the last two hops (HMR status + frame-seq). Hops 1–3 (edit-propagation, watcher fire, compile) were silent. When `synthi_wait({condition:"hmr"})` timed out after an edit, the agent couldn't distinguish 5 stuck-at stages:
+
+1. Edit never reached the worker filesystem.
+2. Edit reached, watcher didn't fire.
+3. Watcher fired, compile hung/failed.
+4. Compile succeeded, HMR didn't apply.
+5. HMR applied, frame pipeline stuck *(v2 already gated this)*.
+
+**Fix landed in ULTRAPLAN v2:**
+
+- New core tool `synthi_get_source_state()` — read-only timestamps the worker already tracks for HMR: `last_mtime`, `last_mtime_path`, `last_watch_event_ts`, `last_compile_start/end_ts`, `last_compile_status`, `last_hmr_ts`, `last_hmr_status`, `frame_seq_at_last_hmr`, `watched_roots`.
+- New `synthi_wait` condition `source_reflected` — composite gate on `{since_ts}` that resolves only when every stage has advanced past `since_ts` AND the frame-seq gate is satisfied.
+- Structured timeout error names which stage is stuck: `stuck_at: "edit_propagation" | "file_watcher" | "compile" | "hmr_apply" | "frame_sync"`.
+
+**Why minimal, not owning:** Synthi MCP does *not* take ownership of the edit path. It exposes read-only state the worker already tracks. The agent remains responsible for editing (via whatever tool it uses) and merely asks synthi-mcp "has the running frame caught up to the time of my edit?". Tightest possible interface; solves the real problem.
+
+New phase-1 pre-work item: confirm the worker's HMR watcher already aggregates these timestamps in an accessible place, or add the aggregation alongside the existing HMR emission path.
+
+**Memory-worthy?** Marginal. The principle is already covered by the existing `feedback_server_enforces_correctness` memory (this is another instance of "server exposes authoritative state so callers don't have to guess"). Not adding a new memory unless the pattern recurs outside this project.
+
+---
+
+# Wave 4 — v3 authored + adopted (2026-04-17)
+
+## 32. User authored v3; v2 ultraplan replaced
+
+After my v2 ultraplan and the MVP scope-cut, the user wrote and submitted a v3 draft. v3 was materially better than v2 and replaced it on disk on 2026-04-17. MVP (`AGENT_MCP_MVP.md`) remains unchanged as the build target; v3 is the design-space reference.
+
+**Key v3 improvements over v2** (condensed):
+
+- `required_tool_call` field in every structured error — turns server-enforced correctness into an agent-consumable self-heal signal. v2 missed this entirely.
+- `synthi_verify` compound predicate tool (OCR / pixel / element_visible / log / scene_matches + and/or). v2 forced agents to orchestrate these manually.
+- Response envelope levels (`full` / `light` / `delta`) — acknowledges subscription-stream egress bloat that v2 would've hit at scale.
+- Vision backend configurable day one (`claude_api | agent_side | local | disabled`) with `agent_side` documented as preferred for vision-capable agents. v2 hardcoded Claude API.
+- Context-aware sensitive-action keyed on focused window `WM_CLASS` rather than raw shell metacharacters. v2's naive approach would fire in editor windows.
+- `--i-understand-no-auth` flag enforcement for non-local signaling. v2 stopped at "loud README banner."
+- Encoder-timestamp frame-seq gate with seq-count fallback. v2 was hand-wavy on the gate mechanism.
+- Phase 0.5 spike (1 week, deliberately-crap spike) before phase 1 architecture freezes. Measure-before-commit instead of v2's verify-what-the-plan-already-assumes.
+- Window-tree-aware focus lock via root PID + `_NET_WM_PID` descent — handles modals/file pickers. v2's "primary window only" was too restrictive.
+- `synthi_reset_guest` as phase-1 80/20 alternative to full snapshot/restore. v2 deferred the whole class to phase 3.
+- Committed locator lifecycle semantics (30s expiry OR pHash > 12; pHash < 8 cache-hit at dispatch; 25% drift threshold; distinct `locator_expired | locator_unresolved | locator_drift | locator_ambiguous`). v2 was vague.
+- Timeline honesty: phase 1 = 4 weeks (not v2's optimistic 10–14 days).
+- `source_state` as a wait predicate (more flexible than v2's `source_reflected` composite).
+
+**Residual concerns identified in post-adoption review** (addressed in conversation):
+
+- **Tier 1 (affects Phase 0.5 kickoff / Phase 1 architecture):** v3 vs MVP scope reconciliation; `synthi_verify` evidence shape under-specified; tool-list bloat (22+ tools × schema per prompt); error composition priority unspecified; error-status HMR (rejected/compile-error) bypass of frame-seq gate; paint-budget component of `pipeline_budget_ms`; "local" signaling definition; vision backend per-session negotiation for broker forward-compat.
+- **Tier 2 (worth having in Phase 1):** source_state file-list detail; log predicate `since_ts` → `since_seq`; describe semantics in agent_side mode; locator hint schema; reconnection primitive; `process_hung` error code; `capability_not_available` error code; adversarial-content audit log; WM_CLASS spoof surface; flag persistence warning; vision caching key (frame_seq, normalized_description_hash); `migrating` session state; human+agent presence model; warming-progress specification; dynamic pipeline recalibration; Phase 0.5 → reshape budget; composition tests; modal/long-hmr fixtures.
+- **Tier 3 (phase 2+):** model-update refresh policy; local vision pod-size; phase 2 overpacking; deprecation/rollback policy; perf regression CI; trace propagation; lazy tool loading; agent-prompting guide.
+
+**Not memory-worthy independently.** The concerns are project-specific iterations of principles already captured in existing feedback memories (`server_enforces_correctness`, `agents_as_automation_clients`, `verify_load_bearing_claims`, `critique_clarifies_design_space_not_mvp_scope`). They live in the plan + this history; they don't generalize further.
+
+---
+
+# Wave 5 — v4 tier-1 + tier-2 sweep + backlog separation (2026-04-17)
+
+## 33. User directed v4 update: triage ingested critique into act-now / measure-later / defer
+
+After v3.1 landed, post-adoption review surfaced a larger backlog than v3.1 itself. User's response avoided the v1→v2 overbuild failure mode by explicitly partitioning items by when they should land:
+
+- **Apply now (v4)** — definitional bugs + security gaps + the obvious Tier-2 wins.
+- **Flag as Phase 0.5 measures** — items where v4 commits to a *decision method* (spike measurement), not a value. Lets reviewers catch "measure later" silently becoming "guess later."
+- **Defer to Phase 2+ with explicit tickets** — items sized > 1 week or dependent on phase 1 landing. Tickets live in `PHASE_2_PLUS_BACKLOG.md`, not in the ultraplan — keeps the plan focused on near-term execution.
+
+This triage pattern is the pattern-of-patterns. Critique without triage inflates MVPs; critique triaged with "now / measure / defer" doesn't.
+
+## 34. v4 change summary (on disk)
+
+**Definitional bugs + security (applied):**
+- `synthi_reconnect` added as 13th Core tool — transient failure recovery without cold re-attach.
+- `--i-understand-no-auth` is per-attach, not session-persistent; `[UNSAFE SIGNALING]` warning on every attach; `session.unsafe_mode: true` in every envelope.
+- Vision backend per-attach via `synthi_attach({preferred_vision_backend})`; required shape for broker retrofit.
+- `WM_CLASS` spoof-resistance via binary fingerprint (`/proc/<pid>/exe` hash cross-check); fallback to conservative classification + `wm_class_mismatch` event on mismatch.
+
+**Tier-2 wins (applied):**
+- `synthi_get_source_state` shape expanded: `last_changed_files: {path, mtime}[]` bounded to 16.
+- `synthi_verify.log` uses `since_seq` instead of `since_ts` (wall-clock drift immune).
+- `synthi_describe` agent-side returns `{screenshot, frame_seq, entities: WorkerEntity[]}` — worker-computed entities give the agent grounding hints.
+- Tool-list lazy advertisement: core 13 always visible; enriched/operational/escape advertised only when capability manifest declares them.
+- Locator hint schema: `{prefer_region, exclude_bbox, containing_text, nth}`; `locator_ambiguous` errors suggest concrete hints.
+- New error codes: `process_hung`, `capability_not_available`, `session_migrating`.
+- `migrating` added to `SessionState` enum.
+- Presence model: `session.attached_humans`, `session.attached_agents`.
+- Warming progress: `synthi_attach` returns immediately with `warming_progress`; tools during warming return structured error with progress.
+- Error priority ladder updated: `capability_not_available` → input validation; `process_hung`/`session_migrating` → lifecycle.
+
+**Phase 0.5 measures (deferred until spike data):**
+- **B2** — Input queue cap (currently 16) — measure real compile × input frequency.
+- **F2** — Pipeline-budget recal cadence — one-shot or periodic.
+- **F4** — Frame-interval precision — p95 or p99 or dynamic under VFR.
+
+**Phase 2+ tickets (deferred to `PHASE_2_PLUS_BACKLOG.md`):**
+- **D6** — Local vision backend architecture (model, pod, mount, cold-start, eviction).
+- **G3** — Phase 2 re-scoping (decompose into a–e with independent gates).
+- **H1** — Performance regression CI (frame-age, vision latency, tool-count baselines).
+- **H5** — Distributed tracing (trace-id propagation across 5 processes).
+- **I2** — Agent-prompting guide (per-client configs, system-prompt patterns, anti-patterns).
+
+## 35. Memory-worthy?
+
+The v4 triage pattern ("now / measure / defer with tickets") is a refinement of the already-captured `critique_clarifies_design_space_not_mvp_scope` memory. Specifically: that memory says "critique clarifies design space; MVP comes from the ask." V4 adds: *even for post-MVP plans*, partition critique explicitly so "defer" never becomes "silently never." Not yet a new memory — the existing one arguably covers this if I read it carefully. If this triage gets resisted or misapplied in a future session, upgrade to a standalone memory.
+
+**Not adding memory** on the basis that:
+- `critique_clarifies_design_space_not_mvp_scope` covers the spirit.
+- `verify_load_bearing_claims` covers Phase 0.5 measurement flagging.
+- `server_enforces_correctness` covers most of the Tier-2 definitional wins.
+
+Project memory (`project_agent_mcp_work`) gets updated to reflect v4 being on disk.
