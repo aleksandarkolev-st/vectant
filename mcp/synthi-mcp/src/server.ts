@@ -21,7 +21,7 @@ const TOOLS = [
   {
     name: "synthi_attach",
     description:
-      "Connect as a WebRTC peer to an existing Synthi preview session. Required before any other tool call. Evicts any existing browser peer on that session (MVP Path A).",
+      "Connect as a WebRTC peer to an existing Synthi preview session. Returns a protocol version + capability manifest + session envelope (state, unsafe_mode, presence). Evicts any existing browser peer on that session (MVP Path A). Required before any other tool call.",
     inputSchema: {
       type: "object",
       properties: {
@@ -32,6 +32,14 @@ const TOOLS = [
         signalingUrl: {
           type: "string",
           description: "WebSocket URL for the signaling server. Defaults to SYNTHI_SIGNALING_URL env or ws://localhost:9000.",
+        },
+        requested_protocol_version: {
+          type: "number",
+          description: "Agent's preferred protocol version. Server returns unsupported_protocol with server_supports[] if the version is not implemented. Omit to get the default.",
+        },
+        "i-understand-no-auth": {
+          type: "boolean",
+          description: "Required when signalingUrl is non-local (e.g., a remote hostname). Set true to acknowledge that the MCP has no authentication and the session is exposed over the network.",
         },
       },
       required: [],

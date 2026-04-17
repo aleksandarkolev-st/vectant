@@ -1,0 +1,134 @@
+/**
+ * Protocol version + capability manifest. Returned from `synthi_attach` so
+ * agents can branch on feature availability instead of trial-and-error
+ * against the tool surface.
+ *
+ * Invariants (ultraplan §4.8, §4.17):
+ *   - `protocol.version` is a single integer; the server also advertises
+ *     `server_supports:[...]` so a client on an older version can fall
+ *     back gracefully.
+ *   - Unknown enum values from the worker (e.g., a new HMR status we don't
+ *     recognize, a new SessionState) are NEVER crashes — they're passed
+ *     through as the literal string `"unknown"` plus the original value
+ *     in a sibling `raw_value` field when we can preserve it.
+ *   - Lazy tool advertisement: the core 13 are always present; enriched-
+ *     tier entries appear only when `capabilities.enriched_tier.available`
+ *     is true (phase-2+ feature; today always false).
+ */
+
+export const PROTOCOL_VERSION = 1;
+export const SERVER_SUPPORTS: readonly number[] = [1];
+
+export interface CapabilityManifest {
+  tools: string[];
+  vision_backends: string[];
+  wait_conditions: string[];
+  verify_predicates: string[];
+  enriched_tier: {
+    available: boolean;
+    reason: string;
+  };
+  frame_seq_gate: {
+    available: boolean;
+    reason: string;
+  };
+  region_phash_cache: {
+    available: boolean;
+    ttl_ms: number;
+    drift_threshold: number;
+  };
+  security: {
+    unsafe_signaling_flag_supported: boolean;
+    focus_lock: boolean;
+    wm_class_spoof_check: boolean;
+    injection_heuristic_prescreen: boolean;
+    sensitive_action_interstitial: boolean;
+    keystroke_rate_cap_per_sec: number;
+  };
+  arbitration: {
+    input_lease_supported: boolean;
+    enforcement: "none" | "server" | "wire-only";
+  };
+  limits: {
+    event_log_capacity: number;
+    max_screenshot_dim: number;
+  };
+}
+
+/**
+ * Current manifest. This is the authoritative description of what this
+ * build of the MCP supports. Update whenever a capability ships.
+ *
+ * The tool list is maintained by hand so it matches exactly what
+ * `server.ts` advertises (no reflection — gives us compile-time guards
+ * against drift). `resolveManifest` merges in runtime-only fields.
+ */
+export const STATIC_MANIFEST: Omit<CapabilityManifest, "tools"> = {
+  vision_backends: ["mock", "agent_side", "claude_api"],
+  wait_conditions: ["hmr"],
+  verify_predicates: [],
+  enriched_tier: {
+    available: false,
+    reason: "phase_2_plus_only",
+  },
+  frame_seq_gate: {
+    available: false,
+    reason: "pending_E1",
+  },
+  region_phash_cache: {
+    available: true,
+    ttl_ms: 30_000,
+    drift_threshold: 12,
+  },
+  security: {
+    unsafe_signaling_flag_supported: false,
+    focus_lock: false,
+    wm_class_spoof_check: false,
+    injection_heuristic_prescreen: false,
+    sensitive_action_interstitial: false,
+    keystroke_rate_cap_per_sec: 500,
+  },
+  arbitration: {
+    input_lease_supported: false,
+    enforcement: "none",
+  },
+  limits: {
+    event_log_capacity: 1024,
+    max_screenshot_dim: 3840,
+  },
+};
+
+export function buildManifest(advertisedTools: readonly string[]): CapabilityManifest {
+  return {
+    tools: [...advertisedTools],
+    ...STATIC_MANIFEST,
+  };
+}
+
+/**
+ * Negotiate a protocol version against a client request. Returns the
+ * agreed version, or throws with `unsupported_protocol` when the client
+ * insists on a version we don't implement.
+ */
+export function negotiateProtocol(requested?: number): {
+  agreed: number;
+  server_supports: number[];
+} {
+  if (requested === undefined) {
+    return { agreed: PROTOCOL_VERSION, server_supports: [...SERVER_SUPPORTS] };
+  }
+  if (!Number.isInteger(requested) || requested < 1) {
+    throw new ProtocolNegotiationError(requested, [...SERVER_SUPPORTS]);
+  }
+  if (SERVER_SUPPORTS.includes(requested)) {
+    return { agreed: requested, server_supports: [...SERVER_SUPPORTS] };
+  }
+  throw new ProtocolNegotiationError(requested, [...SERVER_SUPPORTS]);
+}
+
+export class ProtocolNegotiationError extends Error {
+  readonly code = "unsupported_protocol";
+  constructor(public requested: number, public server_supports: number[]) {
+    super(`unsupported_protocol (requested=${requested}, supports=${server_supports.join(",")})`);
+  }
+}
