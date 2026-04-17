@@ -24,6 +24,7 @@ import { checkpointTool } from "./tools/checkpoint.js";
 import { acknowledgeDisruptionTool } from "./tools/acknowledge_disruption.js";
 import { getCrashInfoTool } from "./tools/get_crash_info.js";
 import { resetGuestTool } from "./tools/reset_guest.js";
+import { verifyTool } from "./tools/verify.js";
 import type { ToolContext } from "./tools/shared.js";
 
 export interface SynthiServerOptions {
@@ -347,6 +348,21 @@ const TOOLS = [
     },
   },
   {
+    name: "synthi_verify",
+    description:
+      "Evaluate a predicate against the current session state. Predicate kinds: pixel, log, element_visible, ocr, scene_matches, and, or. ocr returns ocr_backend_not_implemented (phase 1); scene_matches returns verify_scene_matches_unsupported with required_tool_call:\"synthi_describe\". and/or compose up to depth 4, 8 clauses per level.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        predicate: {
+          type: "object",
+          description: "Tagged predicate object. See PhasePredicate types.",
+        },
+      },
+      required: ["predicate"],
+    },
+  },
+  {
     name: "synthi_locate",
     description:
       "Resolve a natural-language element description into a {bbox, handle_id, region_phash} handle. Phase-0.5 spike tool: with `preferred_vision_backend:\"mock\"` (default) or an explicit `hints.prefer_region`, the server uses the hint as the answer; `agent_side` returns an unresolved-handle signal so the agent runs its own vision; `claude_api` is a phase-1 stub today. Passing `handle_id` + `reuse_handle:true` enables the region-pHash cache.",
@@ -476,6 +492,8 @@ export function createSynthiServer(options: SynthiServerOptions): Server {
         return (await getCrashInfoTool(args)) as CallToolResult;
       case "synthi_reset_guest":
         return (await resetGuestTool(args)) as CallToolResult;
+      case "synthi_verify":
+        return (await verifyTool(args)) as CallToolResult;
       default:
         return {
           content: [

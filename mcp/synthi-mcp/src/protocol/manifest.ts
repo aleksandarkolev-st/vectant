@@ -65,8 +65,8 @@ export interface CapabilityManifest {
  */
 export const STATIC_MANIFEST: Omit<CapabilityManifest, "tools"> = {
   vision_backends: ["mock", "agent_side", "claude_api"],
-  wait_conditions: ["hmr"],
-  verify_predicates: [],
+  wait_conditions: ["hmr", "log", "source_state", "pixel", "motion_settled", "scene_change", "element"],
+  verify_predicates: ["pixel", "log", "element_visible", "and", "or"],
   enriched_tier: {
     available: false,
     reason: "phase_2_plus_only",
