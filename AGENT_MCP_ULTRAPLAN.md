@@ -1,6 +1,6 @@
-# AGENT MCP ULTRAPLAN — v4.3
+# AGENT MCP ULTRAPLAN — v4.4
 
-**Status:** v4.3 drafted, supersedes v4.2/v4.1/v4/v3.1/v3/v2. Awaiting approval to execute Phase 0.5 spike.
+**Status:** v4.4 drafted, supersedes v4.3/v4.2/v4.1/v4/v3.1/v3/v2. Awaiting approval to execute Phase 0.5 spike.
 **Author:** Claude Opus 4.7 (1M context)
 **Date:** 2026-04-17
 **Branch:** `claude/agent-mcp`
@@ -220,6 +220,34 @@ This is correct behavior — but it should be stated so agents building retry lo
 ### Net change
 
 Two spot additions: Prometheus table grows by two rows; reconnect ordering section grows by one paragraph. No scope or tool-count change.
+
+---
+
+## What changed from v4.3 → v4.4
+
+Three tightenings from post-v4.3 review. No new primary-axis design; generalization + operational discipline + a test-invariant sharpening.
+
+### Snapshot-not-commitment invariant generalized (was reconnect-specific)
+
+v4.3 added the "Subsequent-state invariant" subsection under §Reconnect preservation. The property it describes — the reconnect response's `session.state` is a snapshot at ICE-restart completion, not a commitment that persists to the next tool call — is **not reconnect-specific**. The same race exists for `synthi_attach`: attach reports `ready`, state flips to `migrating` before the first real tool call, agent's retry logic hits an unexpected envelope. Any lifecycle-reporting call has the property. Scoping the statement to reconnect understates it.
+
+**Resolution.** Promoted the invariant to §Session lifecycle as a universal property ("State-reporting is a snapshot, not a commitment"). The reconnect subsection now references it and retains only the reconnect-specific retry-loop guidance (what agents building reconnect-retry loops should do differently because of the invariant). Cross-refs from `synthi_attach` semantics. No behavior change — the invariant was always true; the doc now says so once, authoritatively.
+
+### Prometheus cardinality retention
+
+v4.3 added `locator_reresolutions_by_reason` (session × agent × reason, 4 reason values) and `locator_cache_dispatches_by_mode` (session × agent × mode, 3 mode values). At current scale — dozens of sessions, single-digit concurrent agents per session — cardinality is fine. At fleet scale (thousands of `(session_id, agent_id)` pairs landing in the scrape window over a day), label cardinality explodes, Prometheus server-side storage degrades, and alert-query latencies balloon. v4.3 is silent on retention; v4.4 states the operational discipline.
+
+**Resolution.** Operational note appended below the cost-observability table. Recommended retention: 24 h for per-`(session_id, agent_id)` series; aggregate-only (reason/mode without session/agent) beyond that. Applies to all per-session-labeled counters in the table (the pattern isn't unique to the v4.3 pair — v4 rows like `tool_calls_by_tool`, `vision_inferences`, `egress_bytes` have the same cardinality profile). Retention policy lands in the Prometheus recording-rule config, not in the counter emission path.
+
+### `locator_metrics.test.ts` sum invariant
+
+v4.3's test asserts counters increment into the correct bucket per dispatch. That's correct as a smoke test but doesn't catch a specific class of bug: when someone later adds a fourth mode (or fifth reason), they have to remember to increment on every code path that dispatches — and forgetting one produces a silent under-count that per-bucket assertions don't notice.
+
+**Resolution.** Add sum-invariant assertions: `sum(locator_cache_dispatches_by_mode[*]) == total_dispatch_count` and `sum(locator_reresolutions_by_reason[*]) == total_reresolution_count`. Two extra lines, catches missing increments on future code-path additions. Same discipline applied to any future labeled counter in this family.
+
+### Net change
+
+Three spot refinements: one subsection promoted to §Session lifecycle (reconnect subsection pruned + cross-ref); one operational paragraph below the Prometheus table; one assertion added to `locator_metrics.test.ts` entry. No scope or tool-count change.
 
 ---
 
@@ -879,6 +907,20 @@ SessionState =
 - `crashed` → `{error:"session_crashed", required_tool_call:{name:"synthi_get_crash_info"}}` first, then `{required_tool_call:{name:"synthi_acknowledge_disruption"}}`.
 - `terminated` → `{error:"session_terminated"}` — no remediation; agent stops trying.
 
+### State-reporting is a snapshot, not a commitment (v4.4)
+
+**Universal invariant across every tool that reports session state.** The `session.state` field on any response envelope — `synthi_attach`, `synthi_reconnect`, `synthi_health`, any regular tool's envelope — is a snapshot of the state at the moment the server composed that response, not a commitment that persists into the agent's next tool call. A valid state transition (e.g., `ready → migrating` on pod drain, `running → crashed` on worker OOM) can land in the gap between two consecutive tool calls.
+
+This is correct behavior by design: the server doesn't promise a state window, and agents don't need it to. The contract that makes this work is:
+
+1. **Every tool call re-observes state** via its `session` envelope field, regardless of whether the previous call reported something different.
+2. **The standard lifecycle error priority ladder** (`session_terminated` → `session_crashed` → `session_migrating` → `process_hung` → `session_not_ready` → tool-specific errors) fires on whatever state the session is in at call dispatch, not at the previous response.
+3. **No tool grants state immunity.** `synthi_attach` returning `ready` does not guarantee the next call sees `ready`. `synthi_reconnect` returning `ready` does not either. These calls re-establish (or declare) the transport and state-at-that-moment; they do not bind future state.
+
+**Implication for agents.** Do not cache `session.state` from a lifecycle-reporting call as a precondition that holds for N subsequent tool calls. Treat it as "here's what state was at the moment this response was composed"; let each subsequent tool call's envelope govern actual behavior. Retry loops around `synthi_attach` or `synthi_reconnect` should handle lifecycle errors on the tool call that follows the reconnect, not assume the reported state persists.
+
+**Why stated once, here.** The invariant applies to every lifecycle-reporting path; scoping it to any single tool (as v4.3 did for reconnect) understates the property. §Reconnect preservation and `synthi_attach` both cross-reference this subsection for retry-loop guidance specific to each. Tests live per-tool (e.g., `reconnect_subsequent_state.test.ts`); the invariant is one.
+
 ### Presence model (v4 + v4.2 scope)
 
 Every `full` envelope carries:
@@ -977,15 +1019,17 @@ Rationale: an agent call that races a server-side transition (e.g., `running →
 
 Concretely: server holds the reconnect response pending until (ICE restart completes) OR (session transitions to `terminated`), whichever first. Timeout on pending reconnect is bounded by `session.reconnect_timeout_ms` (default 10s) — past that, server returns `session_terminated` with `required_tool_call: synthi_attach`.
 
-#### Subsequent-state invariant (v4.3)
+#### Post-reconnect subsequent-state guidance (v4.3, generalized v4.4)
 
-The ordering commitment above closes the `running → migrating` race that can straddle the reconnect call itself. It does **not** close the race between reconnect completion and the agent's next tool call. A `migrating → ready` (or `ready → migrating`, or any other valid transition) landing in that window means the agent's next tool call sees a session state that differs from what reconnect reported.
+The ICE-restart-completion ordering commitment above closes the `running → migrating` race that can straddle the reconnect call itself. It does **not** close the race between reconnect completion and the agent's next tool call — a `migrating → ready` (or any other valid transition) landing in that window means the next call sees different state than reconnect reported. **This is an application of the universal state-reporting invariant; see [§Session lifecycle — State-reporting is a snapshot, not a commitment (v4.4)](#state-reporting-is-a-snapshot-not-a-commitment-v44) for the general statement.**
 
-This is correct — and the invariant agents need to understand is: **every tool call re-observes session state**. Reconnect's reported `session.state` is a snapshot at ICE-restart completion, not a commitment that persists. The agent's next tool call receives the *current* `session` envelope, and the standard lifecycle error priority (`session_terminated` → `session_crashed` → `session_migrating` → `process_hung` → `session_not_ready` → …) fires normally on that next call.
+**Reconnect-specific retry-loop guidance** (the piece that's not universal):
 
-Implication: agents should not cache `reconnect.session.state` as an assumed precondition for the next N tool calls. Treat it as "this is what the session was when the peer link restabilized"; let the next tool call's envelope govern actual behavior. This is already how the tool-call contract works for *any* two consecutive tool calls — reconnect does not grant special state-immunity, it just re-establishes the transport.
+- Retry loops wrapped around `synthi_reconnect` typically look like `while (error transient) { await synthi_reconnect(); retry prior call }`. These loops must handle the case where `synthi_reconnect` returns `{ok: true, session.state: "ready"}` but the retried prior call still fails with a lifecycle error (e.g., `session_migrating`). That's not a contract violation — it's the invariant in action. Retry-loop logic should branch on the *next call's* envelope, not the reconnect response's.
+- Do not cache `reconnect.session.state` as a precondition for the next N tool calls. Treat it as "this is what state was when the peer link restabilized"; let the next tool call's envelope govern.
+- Post-reconnect error handling is identical to post-any-tool-call error handling: dispatch, check envelope, branch on `session.state` / errors. Reconnect does not grant special state immunity; it only re-establishes the transport and declares state-at-that-moment.
 
-Stated so agents building retry loops around reconnect don't mistakenly assume `reconnect.session.state == "ready"` guarantees `ready` on the very next tool call. Post-reconnect error handling should be identical to post-any-tool-call error handling: dispatch, check envelope, branch on `session.state` / errors.
+The test `reconnect_subsequent_state.test.ts` (Layer 2, v4.3) exercises this specifically: reconnect reports `ready`, induce `ready → migrating` transition before next call, assert next call returns `session_migrating` per standard priority ladder.
 
 ### Agent-facing pattern
 
@@ -1097,6 +1141,8 @@ Phase 1 ships metrics + `synthi_get_usage`. Phase 2 adds enforcement.
 | `unsafe_mode_sessions`             | server              | Prometheus (counts sessions with unsafe_mode)                                                     |
 | `locator_reresolutions_by_reason`  | session × agent     | Prometheus (labeled: `region_changed | expired_ttl | frame_seq_advanced_beyond_cache | explicit_reresolve`). Feeds post-launch tuning of region-pHash thresholds. *(v4.3)* |
 | `locator_cache_dispatches_by_mode` | session × agent     | Prometheus (labeled: `cached | region_match | re_resolved`). Cache-effectiveness complement. *(v4.3)* |
+
+**Cardinality retention (v4.4).** Per-`(session_id, agent_id)` series on any row above is retained for scrape-time attribution at the **24-hour** horizon; beyond that, recording rules fold session and agent labels off and keep the aggregate dimensions (for the v4.3 rows: `reason` / `mode` alone; for `tool_calls_by_tool`: `tool` alone; etc.). Rationale: at fleet scale (thousands of concurrent or recently-concurrent `(session, agent)` pairs over a day), the labeled series count outgrows a single Prometheus node's index. Policy lives in the Prometheus recording-rule config, not in the counter emission path — the server always emits fully-labeled; the scrape pipeline enforces retention. Operator dashboards binned over ≤24 h see full attribution; fleet-tuning queries over weeks/months use the aggregate-only series.
 
 **Quota knobs (phase 2 enforcement, phase 1 metric-only):**
 - `MAX_SCREENSHOTS_PER_MIN = 60`
@@ -1485,7 +1531,7 @@ One test per correctness-table row, minimum. Plus:
 - `multi_peer_signaling.test.ts` *(v4.2 — Path B committed)* — MCP attaches while human browser is connected; both receive SDP/ICE; both get data-channels; `attached_humans=1, attached_agents=1` on envelope.
 - `frame_advance_message.test.ts` *(v4.2)* — `{type:"frame-advance", frame_seq, ts_ms}` emitted on `build-log` DC under load; MCP's `synthi_wait(hmr)` consumes it; fallback frame-interval path still passes when messages are dropped.
 - `vision_cost_measurement.test.ts` *(v4.2 — phase 0.5 probe)* — drives a 30-min Claude Code loop on counter_sdl2; asserts `vision_cost_usd_estimate` computed per window; feeds E4 output file.
-- `locator_metrics.test.ts` *(v4.3)* — drive a 50-dispatch locator workload with a mix of cached / region-match / re-resolve outcomes; assert Prometheus `locator_reresolutions_by_reason{reason=…}` and `locator_cache_dispatches_by_mode{mode=…}` counters increment exactly once per dispatch into the correct bucket; labels carry `session_id`.
+- `locator_metrics.test.ts` *(v4.3, sum invariants added v4.4)* — drive a 50-dispatch locator workload with a mix of cached / region-match / re-resolve outcomes; assert Prometheus `locator_reresolutions_by_reason{reason=…}` and `locator_cache_dispatches_by_mode{mode=…}` counters increment exactly once per dispatch into the correct bucket; labels carry `session_id`. **Sum invariants (v4.4):** assert `sum(locator_cache_dispatches_by_mode[*]) == total_dispatch_count` and `sum(locator_reresolutions_by_reason[*]) == total_reresolution_count` over the 50-dispatch run — catches a future contributor's "forgot to increment on the new code path" when modes/reasons are extended.
 - `reconnect_subsequent_state.test.ts` *(v4.3)* — reconnect returns `session.state: "ready"`; induce `ready → migrating` transition before agent's next tool call; assert next tool call returns `session_migrating` error per standard priority (not stale "ready" assumption).
 
 ### Layer 3 — end-to-end (real agent harnesses)
@@ -1566,6 +1612,8 @@ Invariant: no agent makes a decision on stale data. Either structured error or t
 **Tier-1 items resolved in v4.2:** `synthi_verify.scene_matches` deferred (scope discipline) + predicate depth/clause caps; `synthi_set_goal` removed (tool-surface discipline); Tier-1 CI scope tightened to Claude Code + `J1` ticket; `attached_humans` demoted to observability + agent-behavior contract moved to `I2`; `synthi_reconnect` state-observation ordering committed; MCP process failure modes section added; WebRTC pipeline reuse audit resolved pre-work #1 + #4 partial; E4 vision-cost reality check added to Phase 0.5.
 
 **Tier-1 items resolved in v4.3:** locator re-resolution Prometheus counters added (`locator_reresolutions_by_reason`, `locator_cache_dispatches_by_mode`) for post-launch region-pHash tuning; `synthi_reconnect` subsequent-state invariant documented (every tool call re-observes state; reconnect response is a snapshot, not a commitment).
+
+**Tier-1 items resolved in v4.4:** snapshot-not-commitment invariant promoted from reconnect-specific to universal property of any lifecycle-reporting tool (lives in §Session lifecycle; reconnect subsection references it and retains only reconnect-specific retry-loop guidance); Prometheus cardinality retention policy stated (24-hour per-`(session_id, agent_id)` retention; aggregate-only beyond — applies to all per-session-labeled rows in the cost-observability table); `locator_metrics.test.ts` gains sum-invariant assertions (`sum(mode[*]) == total_dispatches`; `sum(reason[*]) == total_reresolutions`) to catch forgotten increments when modes/reasons are extended.
 
 **Still open (pre-Phase-0.5):**
 

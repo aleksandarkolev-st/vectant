@@ -874,3 +874,55 @@ Wave 8 meta-principle candidate: **"Per-response fields need aggregate metrics t
 No new memory items from Wave 8.
 
 **Not adding memory.** Project memory (`project_agent_mcp_work`) updated to reflect v4.1 on disk.
+
+---
+
+## 43. Wave 9 (v4.4) — three small tightenings from post-v4.3 review
+
+Small round. Three items, all legitimate sharpenings rather than new design. Shipping as v4.4 alone per Wave 6 cadence rule — colleague sent a bounded review (three points, explicitly framed as refinements), not a full round.
+
+### 43.1 Snapshot-not-commitment invariant scoped wrong in v4.3
+
+**The bet colleague caught.** v4.3's "Subsequent-state invariant" subsection lives under §Reconnect preservation. Scoping makes the statement sound reconnect-specific when the property is universal: `synthi_attach` has the same race (attach reports `ready`, state transitions to `migrating` before first real tool call, agent's retry logic may or may not handle it). Any lifecycle-reporting tool — `synthi_attach`, `synthi_reconnect`, `synthi_health`, regular tools with envelope `session.state` — reports state as a snapshot, not a commitment.
+
+Colleague's framing: "if 41.2's 'state reported by lifecycle-changing calls is a snapshot, not a commitment' is a general invariant, it should be stated once (probably under §Session lifecycle) and referenced from reconnect, rather than scoped to reconnect. If it's reconnect-specific for some reason, note why."
+
+It is not reconnect-specific. I had the right property framed in the wrong place.
+
+**Resolution.** Promoted to §Session lifecycle as a named subsection: "State-reporting is a snapshot, not a commitment (v4.4)." Full universal statement there (invariant, contract that makes it work, agent implications). Reconnect subsection renamed to "Post-reconnect subsequent-state guidance (v4.3, generalized v4.4)" — opens with a cross-ref to §Session lifecycle, then keeps only the reconnect-specific retry-loop guidance (how agents building reconnect-retry loops should branch on the *next* call's envelope, not the reconnect response). The reconnect test (`reconnect_subsequent_state.test.ts`) stays — it exercises the invariant in the reconnect path, which is still worth testing directly.
+
+Cost of the mistake: one subsection relocation. No behavior change, no new tool, no new error code. Property was always true in the implementation; doc now states it at the right level.
+
+### 43.2 Prometheus cardinality bounds unstated
+
+**The bet colleague caught.** v4.3's new counters don't state cardinality bounds. `session × agent × reason` (4 values) and `session × agent × mode` (3 values) is fine at current scale. At fleet scale — thousands of `(session_id, agent_id)` pairs landing in a scrape window over a day — label cardinality explodes, Prometheus index storage degrades, alert-query latency balloons. Colleague's one-liner: "session and agent labels retained for scrape-time attribution; recommended retention 24h for per-session series; aggregate-only beyond."
+
+The colleague noted this is consistent with existing doc discipline around operational notes. Checking the doc confirms: no existing rows state retention either. So v4.4 adds the note, applies to all per-session-labeled rows (not just v4.3's two), and lands it as an operational paragraph below the cost-observability table.
+
+**Resolution.** New paragraph "Cardinality retention (v4.4)" below the Prometheus table. 24-h per-`(session_id, agent_id)` retention; recording rules fold labels off for aggregate-only series beyond that. Policy lives in Prometheus recording-rule config, not counter emission path — server always emits fully-labeled; scrape pipeline enforces retention. Covers v4.3's `locator_*` rows plus v4's `tool_calls_by_tool`, `vision_inferences`, `egress_bytes`, etc. — all of which have the same `session × agent` profile.
+
+This is the kind of note that should have been in v4.3 alongside the counter additions; v4.4 retroactively fixes the omission.
+
+### 43.3 `locator_metrics.test.ts` missing sum invariant
+
+**The bet colleague caught.** v4.3's test asserts "counter increments exactly once per dispatch into the correct bucket." That's correct as a smoke test but doesn't catch a specific bug class: when someone extends the mode/reason enum later (say, adding a `region_match_expanded` mode after E2b findings), they must remember to increment on every code path that dispatches. Forgetting one increment path silently under-counts — per-bucket assertions don't notice because they check each bucket independently.
+
+The colleague's fix is dead simple: add a sum invariant. `sum(locator_cache_dispatches_by_mode[*]) == total_dispatch_count` catches any forgotten increment regardless of which mode was missed. Same pattern for `sum(locator_reresolutions_by_reason[*]) == total_reresolution_count`. Two extra assertion lines, catches real regressions.
+
+**Resolution.** `locator_metrics.test.ts` entry updated with both sum invariants. Pattern applies to any future labeled counter that partitions a total by a bucket — adding the invariant should be the default shape for new labeled-counter tests, not opt-in.
+
+### 43.4 Cadence
+
+v4.4 ships as a small patch per Wave 6 cadence rule, same as v4.3. Colleague's v4.3 review was three bounded items, not a full round. Shipping alone keeps the document from accreting.
+
+Observation: v4.3 and v4.4 are both small post-review patches, shipped separately on consecutive colleague reviews. This is the Wave 6 rule working as intended — tight review → tight patch → back to user. The Wave 7 explicit-batch override was an explicit user directive ("every single feedback at once"), not a default.
+
+## 44. Memory-worthy?
+
+Wave 9 meta-principle candidate: **"When an invariant feels scoped-correct but applies universally, state it once at the general level and reference from specifics."** This is a well-known doc-writing principle (DRY for normative statements); not novel enough to merit its own memory entry. The existing `feedback_server_enforces_correctness` memory ("server enforces correctness, not docs") covers the adjacent property — authoritative statements live in one canonical place.
+
+Wave 9 meta-principle candidate: **"Labeled counters need sum invariants in tests, not just per-bucket."** Useful testing discipline but too specific/tactical for memory — it's a standard testing pattern, not a user-directed preference.
+
+No new memory items from Wave 9.
+
+**Not adding memory.** Project memory (`project_agent_mcp_work`) updated to reflect v4.4 on disk.
