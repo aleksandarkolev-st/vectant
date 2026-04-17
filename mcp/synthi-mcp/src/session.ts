@@ -3,7 +3,15 @@ import { SignalingClient } from "./signaling.js";
 import { Peer } from "./peer.js";
 import { FrameSink } from "./frames.js";
 import { SessionChannels } from "./channels.js";
+import { eventLog } from "./events/index.js";
+import type { SessionState as WireSessionState } from "./events/index.js";
+import { locateEngine } from "./locate/index.js";
 
+/**
+ * MCP-local connection state. Distinct from the wire-level `SessionState`
+ * that gets reported in the envelope (see `events/types.ts`): the MCP can
+ * be `detached` while the wire state is `ready`/`running`.
+ */
 export type SessionState = "detached" | "attaching" | "attached" | "closed";
 
 export interface AttachOptions {
@@ -41,9 +49,61 @@ class SessionManager {
   private attached: AttachedSession | null = null;
   private state: SessionState = "detached";
   private attachPromise: Promise<AttachedSession> | null = null;
+  private wireState: WireSessionState = "ready";
+  private wireStateTs: number = Date.now();
+  private wireUnsafeMode = false;
+  private attachedAt: number | null = null;
+  private lastActivityAt: number = Date.now();
+  private unsubscribers: Array<() => void> = [];
 
   getState(): SessionState {
     return this.state;
+  }
+
+  getWireState(): WireSessionState {
+    return this.wireState;
+  }
+
+  getWireStateTs(): number {
+    return this.wireStateTs;
+  }
+
+  isUnsafeMode(): boolean {
+    return this.wireUnsafeMode;
+  }
+
+  getAttachedAt(): number | null {
+    return this.attachedAt;
+  }
+
+  getLastActivityAt(): number {
+    return this.lastActivityAt;
+  }
+
+  touch(): void {
+    this.lastActivityAt = Date.now();
+  }
+
+  setWireState(state: WireSessionState, detail?: Record<string, unknown>): void {
+    if (state === this.wireState) return;
+    const previous = this.wireState;
+    this.wireState = state;
+    this.wireStateTs = Date.now();
+    eventLog.push({
+      kind: "lifecycle",
+      state,
+      previous_state: previous,
+      ...(detail !== undefined ? { detail } : {}),
+    });
+  }
+
+  markUnsafeMode(): void {
+    if (this.wireUnsafeMode) return;
+    this.wireUnsafeMode = true;
+    eventLog.push({
+      kind: "security",
+      code: "unsafe_attach",
+    });
   }
 
   get(): AttachedSession | null {
@@ -123,12 +183,61 @@ class SessionManager {
     };
     this.attached = attached;
     this.state = "attached";
+    this.attachedAt = Date.now();
+    this.lastActivityAt = this.attachedAt;
+    this.setWireState("running");
+
+    // Wire event-log taps.
+    const unsubHmr = channels.hmr.onMessage((msg) => {
+      // Only tap terminal events to the log — intermediate ones flood the
+      // ring. Classification happens in the normalizer; we mirror a short
+      // label for observability without re-parsing.
+      const status = typeof msg["status"] === "string" ? (msg["status"] as string) : undefined;
+      const evType = typeof msg["event"] === "string" ? (msg["event"] as string) : undefined;
+      const msgType = typeof msg["type"] === "string" ? (msg["type"] as string) : undefined;
+      const label = status ?? evType ?? msgType ?? "unknown";
+      const isTerminal = status === "applied" || status === "rejected" ||
+        status === "compile-error" || status === "full-reload-required" ||
+        status === "state-migrated" || evType === "Promoted" || evType === "RolledBack" ||
+        evType === "Discarded";
+      eventLog.push({
+        kind: "hmr",
+        status: isTerminal ? (label as "applied") : "intermediate",
+        source: msgType ?? "build-log",
+        raw: msg,
+      });
+    });
+    this.unsubscribers.push(unsubHmr);
+
+    const unsubLocator = locateEngine.onResolution((ev) => {
+      eventLog.push({
+        kind: "locator_resolution",
+        handle_id: ev.handle_id,
+        description: ev.description,
+        resolved_via: ev.resolved_via,
+        reason: ev.reason,
+        bbox: ev.bbox,
+        region_phash: ev.region_phash,
+        ...(ev.hamming_distance !== undefined ? { hamming_distance: ev.hamming_distance } : {}),
+      });
+    });
+    this.unsubscribers.push(unsubLocator);
+
     return attached;
   }
 
   async close(): Promise<void> {
     if (this.state === "closed") return;
     this.state = "closed";
+    this.setWireState("terminated");
+    for (const unsub of this.unsubscribers) {
+      try {
+        unsub();
+      } catch {
+        // ignored
+      }
+    }
+    this.unsubscribers = [];
     if (this.attached) {
       try {
         this.attached.channels.dispose();
@@ -153,6 +262,22 @@ class SessionManager {
       this.attached = null;
     }
     this.attachPromise = null;
+  }
+
+  /** Reset to a fresh state — used between tests. */
+  _resetForTests(): void {
+    this.attached = null;
+    this.attachPromise = null;
+    this.state = "detached";
+    this.wireState = "ready";
+    this.wireStateTs = Date.now();
+    this.wireUnsafeMode = false;
+    this.attachedAt = null;
+    this.lastActivityAt = Date.now();
+    for (const unsub of this.unsubscribers) {
+      try { unsub(); } catch { /* ignored */ }
+    }
+    this.unsubscribers = [];
   }
 }
 
