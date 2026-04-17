@@ -15,6 +15,7 @@ import { waitHmrTool } from "./tools/wait_hmr.js";
 import { clickTool } from "./tools/click.js";
 import { typeTool } from "./tools/type.js";
 import { locateTool } from "./tools/locate.js";
+import { waitTool } from "./tools/wait.js";
 import type { ToolContext } from "./tools/shared.js";
 
 export interface SynthiServerOptions {
@@ -125,6 +126,45 @@ const TOOLS = [
         text: { type: "string", description: "Text to type." },
       },
       required: ["text"],
+    },
+  },
+  {
+    name: "synthi_wait",
+    description:
+      "Block until a named condition is satisfied, or the timeout elapses. Conditions: hmr, log, source_state, pixel, motion_settled, scene_change, element. `text` is an ultraplan condition — phase 1 returns text_wait_requires_ocr_backend with a required_tool_call:\"synthi_wait\" suggesting condition:\"log\" as a fallback until an OCR backend ships.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        condition: {
+          type: "string",
+          enum: ["hmr", "log", "source_state", "pixel", "motion_settled", "scene_change", "element", "text"],
+          description: "Which condition to wait for.",
+        },
+        timeoutMs: {
+          type: "number",
+          description: "Maximum wait time in milliseconds. Default 60000.",
+        },
+        region: {
+          type: "object",
+          properties: { x: { type: "number" }, y: { type: "number" }, w: { type: "number" }, h: { type: "number" } },
+          description: "Bbox for motion_settled / scene_change / text.",
+        },
+        still_for_ms: { type: "number", description: "motion_settled: how long the frame must remain within `threshold` hamming before resolving." },
+        threshold: { type: "number", description: "motion_settled: hamming distance below which two frames are considered 'still'. Default 4." },
+        min_hamming: { type: "number", description: "scene_change: minimum hamming distance between baseline and current frame. Default 8." },
+        sample_interval_ms: { type: "number", description: "motion_settled/pixel/scene_change: poll interval. Default 100." },
+        x: { type: "number", description: "pixel: x coordinate." },
+        y: { type: "number", description: "pixel: y coordinate." },
+        expected_rgb: { type: "array", items: { type: "number" }, description: "pixel: resolve when pixel matches this RGB (within tolerance)." },
+        not_rgb: { type: "array", items: { type: "number" }, description: "pixel: resolve when pixel differs from this RGB." },
+        tolerance: { type: "number", description: "pixel: per-channel tolerance. Default 0." },
+        substring: { type: "string", description: "text: substring to wait for on-screen." },
+        pattern: { type: "string", description: "log: regex to match event entries." },
+        since_seq: { type: "number", description: "log/source_state: only consider entries with seq > this." },
+        handle_id: { type: "string", description: "element: handle id previously returned from synthi_locate." },
+        any_change: { type: "boolean", description: "source_state: resolve on any source_state event (default true)." },
+      },
+      required: ["condition"],
     },
   },
   {
@@ -293,6 +333,8 @@ export function createSynthiServer(options: SynthiServerOptions): Server {
         return (await getEventLogTool(args)) as CallToolResult;
       case "synthi_get_source_state":
         return (await getSourceStateTool(args)) as CallToolResult;
+      case "synthi_wait":
+        return (await waitTool(args)) as CallToolResult;
       default:
         return {
           content: [

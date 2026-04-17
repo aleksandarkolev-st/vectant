@@ -17,6 +17,7 @@ export const ADVERTISED_TOOLS = [
   "synthi_health",
   // Observation
   "synthi_screenshot",
+  "synthi_wait",
   "synthi_wait_hmr",
   // Input
   "synthi_click",
