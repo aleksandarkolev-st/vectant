@@ -13,7 +13,7 @@
 
 Three load-bearing claims in the MVP need adjustment before code lands. These are not fatal — each has a concrete resolution — but they invalidate some "thin wrapper" framing.
 
-### F1. Input wire format in MVP doc is wrong (blocker, easy fix)
+### F1. Input wire format in MVP doc is wrong — `gui-event` envelope is for user code (blocker, easy fix)
 
 **MVP says:**
 > Click/key: `{type: 'mouse'|'key', action, x, y, button, key}` on the `"terminal"` DC.
@@ -27,34 +27,43 @@ Three load-bearing claims in the MVP need adjustment before code lands. These ar
     event: { type: 'mouse'|'key', action, x, y, button, key, deltaY? }
   }
   ```
-- Worker parses the outer `gui-event` envelope at `backend/synthi-webrtc-compiler/worker/src/main.rs:1690` and the inner `event.{type, action, x, y, button, key}` at lines 1753-1790.
+- Worker parses the outer `gui-event` envelope at `backend/synthi-webrtc-compiler/worker/src/main.rs:1690` and the inner `event.{type, action, x, y, button, key}` at lines 1753-1790. The inner `event` is translated to an `xdotool` command and injected into the guest program running under Xvfb (the "user code" layer — the compiled SDL2/Swing/etc. program). Hence the name: `gui-event` is the envelope for *user-code-directed* input.
 
 **Implication for MCP:** the `click` and `type` tool handlers must wrap payloads in the `gui-event` envelope and carry a `sessionId`. The flat shape in the MVP doc would be silently dropped by the worker.
 
 **Resolution:** encode correctly on day one; unit test asserts golden-byte match against a captured browser frame.
 
-### F2. HMR `applied`/`rejected`/`compile-error` are NOT emitted as canonical `{type:"hmr-status"}` messages (blocker, two options)
+### F2. HMR status wire format is bare `{status:...}` JSON, not `{type:"hmr-status"}` (MVP wire-format correction)
 
-**MVP says** `synthi_wait_hmr` resolves on `{type:"hmr-status", data:{status,…}}` where status ∈ {applied, rejected, compile-error, full-reload-required, crash-fatal, state-migrated}.
+**MVP says** `synthi_wait_hmr` resolves on `{type:"hmr-status", data:{status,…}}` where status ∈ {applied, rejected, compile-error, full-reload-required, crash-fatal, state-migrated}. That outer `type:"hmr-status"` wrapping is **not what the worker actually sends** for those statuses.
 
-**Actual emission sites** (grep of `worker/src/**/*.rs` for `hmr-status`):
-- `worker/src/hmr/planner_glue.rs:51` → `status: "reload-planned"`
-- `worker/src/hmr/rollback_notification.rs:41` → rollback status
+**Actual emission path, traced end-to-end:**
 
-That is **the complete set of worker-side `{type:"hmr-status"}` emissions.** No code path emits `applied`, `rejected`, `compile-error`, `full-reload-required`, or `crash-fatal` under that wire shape today.
+1. **Emit point — `worker/src/runtime/runner_logic.rs`** (the child runner process that hosts the compiled program). `HmrStatus::applied()`/`rejected()`/`compile_error()`/etc. (defined in `worker/src/runtime/capability.rs:755-818` as a `#[serde(tag = "status", rename_all = "kebab-case")]` enum) is serialized and written to **stderr** as `[Runner] [HMR-STATUS] <json>`. Example: `runner_logic.rs:909` — `eprintln!("[Runner] [HMR-STATUS] {}", status.to_json());`.
 
-**How those statuses actually reach the UI** (from `synthi/src/services/compilerClient.js:400-460`):
-1. `{type:"hmr-status", ...}` — passed through verbatim (only `reload-planned` + rollback today).
-2. `{type:"compile-diagnostics", error_count, ...}` — browser synthesizes a `status:"compile-error"` event when `error_count > 0`.
-3. Bare `{status: "applied"|"rejected"|"compile-error"|"crash-recovered"|"state-migrated"|"crash-fatal", ...}` — a "direct HMR status object from runner" shape (no outer `type` field). Browser normalizes by checking `parsed.status` matches the known set.
+2. **Parser — `worker/src/compiler/stages/runner.rs:22-30`.** `extract_structured_runner_message` strips the `[Runner] [HMR-STATUS] ` prefix (or accepts bare `{...}` lines) and extracts the JSON body.
 
-**Implication for MCP:** subscribing only to `{type:"hmr-status"}` on the `build-log` DC would cause `wait_hmr` to **hang forever** on real builds — `applied` would never arrive. The MVP's "listens to `build-log` DC for HMR events" is true; the status wire shape is not what the MVP says it is.
+3. **Forwarder — `worker/src/compiler/stages/runner.rs:547-559`.** The worker's stderr reader loop forwards every parsed structured line **verbatim** to the `build-log` data channel (`log_dc.send_text(structured)`). Non-structured lines get wrapped in `{sessionId, type:"stderr", line}` instead.
 
-**Two options to resolve:**
-- **Option A (recommended — MCP-only work).** `hmr.ts` replicates the browser normalizer: handle all three shapes (`{type:"hmr-status"}`, `{status:...}` bare, `{type:"compile-diagnostics", error_count>0}`). Golden-byte unit test against recorded build-log traffic. ~½ day.
-- **Option B (worker-side fix).** Wrap all runner-side status emissions in canonical `{type:"hmr-status", data:{status, ...}}` on the worker before writing to `build-log`. Cleaner wire protocol; requires auditing every emission site (ultraplan pre-work #2) and updating browser + MCP. ~1–2 days, bigger blast radius.
+4. **On the wire, MCP sees on `build-log` DC:**
+   - `{"status":"applied", "module":..., "capability":..., "state_preserved":true}` — bare, kebab-case variant tag.
+   - `{"status":"rejected", "module":..., "reason":..., "fallback":...}` — bare.
+   - `{"status":"compile-error", "module":..., "errors":[...]}` — bare.
+   - `{"status":"full-reload-required", "reason":...}` — bare.
+   - `{"status":"state-migrated", "module":..., "preserved_count":..., ...}` — bare.
+   - `{"status":"host-kv-preserved"|"host-kv-reset-schema-mismatch"|...}` — bare (other variants).
 
-Plan assumes **Option A** for MVP (scope discipline — MVP is "visual feedback loop, nothing more"). Revisit Option B if post-MVP tooling wants one canonical wire.
+5. **Separately, two producers use the wrapped `{type:"hmr-status",...}` shape**:
+   - `worker/src/hmr/planner_glue.rs:51` → `{type:"hmr-status", status:"reload-planned", decision, ...}`.
+   - `worker/src/hmr/rollback_notification.rs:41` → `{type:"hmr-status", status:"rejected", ...}`.
+
+6. **A third shape** — `{type:"compile-diagnostics", error_count, ...}` — is emitted for structured compiler errors; the **browser synthesizes** a `compile-error` hmr-status from it (`synthi/src/services/compilerClient.js:404-421`) because the diagnostics path doesn't round-trip through the runner's `HmrStatus::compile_error`.
+
+**Implication for MCP:** the MVP doc's wire-format sketch is only partially right. `hmr.ts` must listen for the **bare `{status:"..."}` shape as the primary path** (that's where `applied` comes from on a compiled-language preview) and also handle `{type:"hmr-status", status:"..."}` and `{type:"compile-diagnostics", error_count:>0}`. Listening only for `{type:"hmr-status"}` would hang `wait_hmr` forever on real compiled-language builds.
+
+**ai-backend role — downstream consumer only.** The ai-backend *consumes* HMR failures for healing via REST endpoints (`ai-engine/main.py:3406` `/heal/agentic/observability/hmr-failure`, `main.py:2577` `/heal/ai/runtime` for runtime-error fix-up) but does **not** carry or re-shape HMR events on any channel the MCP would tap. The canonical shape to implement against lives in the worker's `HmrStatus` enum (`worker/src/runtime/capability.rs:755`), serialized via `status.to_json()`.
+
+**Resolution — one option, not two.** `hmr.ts` implements the three-shape normalizer. No worker-side canonicalization needed — the existing bare-`{status}` wire is the worker's authoritative HMR status shape and both the browser and the MCP just need to consume it. ~½ day implementation + golden-byte unit test against captured build-log traffic.
 
 ### F3. "Observer" role in signaling-server is not only a signaling-server change (blocker, material scope shift)
 
@@ -110,7 +119,7 @@ Five MCP tools, Node/TypeScript package, local dev only. Everything outside this
 
 | # | Milestone | Owner surface | Gate |
 |---|-----------|---------------|------|
-| M0 | Preflight resolutions | MVP / Path decision | User chooses F3 path (A' / B) + confirms F2 Option A |
+| M0 | Preflight resolutions | MVP / Path decision | User chooses F3 path (A' / B) |
 | M1 | Signaling `observer` role (if Path B) | Rust `signaling-server` | Integration test: 1 browser + 1 observer co-attach |
 | M2 | Worker multi-PC support (if Path B only) | Rust `worker` | Worker answers two offers simultaneously, delivers media to both |
 | M3 | MCP package scaffold | TS `mcp/synthi-mcp/` | `node dist/index.js` starts, MCP inspector lists 5 tools |
@@ -130,7 +139,7 @@ Paths relative to repo root (`/home/dev/synthi/synthi-test/synthi-whole/`).
 
 ### M0 — Preflight resolutions (no code; decision only)
 
-No files created. User resolves the three questions in §0 and §Open items. M0 exit = a one-line amendment to `AGENT_MCP_MVP.md` that records the Path choice (A' or B) and the HMR-normalizer approach (Option A in `hmr.ts` or Option B worker-side fix).
+No files created. User resolves the open questions in §0 and §Open items — chiefly the F3 Path choice (A' vs. B). M0 exit = a one-line amendment to `AGENT_MCP_MVP.md` recording the Path choice + a pointer to this plan.
 
 ### M1 — Signaling `observer` role (Rust) — **Path B only**
 
@@ -188,7 +197,7 @@ Skip if Path A'. This is the material scope the ultraplan v4.2 deferred to phase
 | Path | Purpose | Key responsibilities |
 |------|---------|----------------------|
 | `mcp/synthi-mcp/src/wire/input.ts` *(new)* | Input wire format. | Encodes mouse/key events per the **verified** worker wire: `{type:"gui-event", sessionId, event:{type:"mouse"\|"key", action, x, y, button, key}}` — **not** the flat shape from the MVP doc (see §F1). Functions: `encodeClick(x, y, button, sessionId)`, `encodeKey(key, action, sessionId)`, `encodeType(text, sessionId)` (expands a string into `key down/up` pairs per character). |
-| `mcp/synthi-mcp/src/hmr.ts` *(new)* | HMR status normalizer + subscription. | Subscribes to `build-log` DC text messages; tries three wire shapes (§F2 Option A): (1) `{type:"hmr-status", data:{status,...}}` → status; (2) bare `{status:"applied"\|"rejected"\|"compile-error"\|"crash-recovered"\|"state-migrated"\|"crash-fatal",...}` → status; (3) `{type:"compile-diagnostics", error_count:>0}` → synthesized `compile-error`. Exposes `onStatus(cb)` and `waitForTerminal({timeoutMs}) → {status, elapsedMs}` resolving on any of {`applied`, `rejected`, `compile-error`, `full-reload-required`, `crash-fatal`, `state-migrated`}. ~120 LOC + comprehensive unit test. |
+| `mcp/synthi-mcp/src/hmr.ts` *(new)* | HMR status normalizer + subscription. | Subscribes to `build-log` DC text messages; parses three wire shapes (§F2): (1) **primary** — bare `{status:"applied"\|"rejected"\|"compile-error"\|"full-reload-required"\|"state-migrated"\|...}` (kebab-case variant tags produced by `HmrStatus::to_json()` on the worker runner and forwarded verbatim through the stderr→build-log bridge at `worker/src/compiler/stages/runner.rs:547-559`); (2) `{type:"hmr-status", status:"reload-planned"\|"rejected", ...}` (planner_glue + rollback); (3) `{type:"compile-diagnostics", error_count:>0}` → synthesized `compile-error`. Ignore everything else (stderr lines, build-status progress, adapter health, compile manifest). Exposes `onStatus(cb)` and `waitForTerminal({timeoutMs}) → {status, elapsedMs}` resolving on any of {`applied`, `rejected`, `compile-error`, `full-reload-required`, `crash-fatal`, `state-migrated`}. ~120 LOC + comprehensive unit test. |
 | `mcp/synthi-mcp/src/channels.ts` *(new)* | DC handle registry. | Collects `{build-log, terminal}` once the PC data channels open. `build-log` is created by the worker (incoming via `on_datachannel` on the MCP's PC); `terminal` is created by the MCP (outgoing). Order matters: see the browser's `compilerClient.js:905-912` for the canonical creation order. |
 
 **Commit after M5:** `feat(agent-mcp): wire input + HMR normalization with three-shape handling`.
@@ -246,7 +255,7 @@ Anything on the ultraplan's "Files — added/modified" list that's not in this p
 ## 5. Open items requiring user decision before M1 starts
 
 1. **F3 Path choice — A' (observer replaces browser) vs. B (true co-attach).** Path B is the product-correct answer but is ~5-7 days larger than the MVP's 3-5 day estimate because of the worker second-PC work that v4.2 deferred to `G3`. Path A' matches the MVP estimate and defers co-attach to post-MVP.
-2. **F2 HMR normalization — Option A (MCP-side, MVP scope) vs. Option B (worker-side canonical emission, larger scope).** Recommended: A. Flag if user wants B.
+2. **F2 HMR normalization.** Resolved in code audit: the bare `{status:...}` wire is authoritative, ai-backend is downstream-only, no worker change needed. MCP implements the three-shape normalizer in `hmr.ts`. (No open question — captured here so reviewers can re-check F2 before M5 if they want.)
 3. **Where should `mcp/synthi-mcp/` live in the monorepo?** The MVP + ultraplan say `mcp/synthi-mcp/`; that's a new top-level directory. If the user prefers `packages/synthi-mcp/` or `backend/synthi-mcp/`, say so before M3.
 4. **Golden-byte fixtures** (`browser_gui_payloads.json`, `counter_swing/`) — record once from a live session. Before M7, user confirms which workspace/session to record against.
 5. **Frame-seq gate in MVP?** MVP currently ships status-only. Plan matches. If user wants to add the gate for MVP (low risk on static counter fixtures per ultraplan E1), it's a ~½-day add to `hmr.ts` and requires a new worker `{type:"frame-advance"}` DC message (scope creep into worker).
