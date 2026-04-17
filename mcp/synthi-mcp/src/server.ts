@@ -1,9 +1,20 @@
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import {
   CallToolRequestSchema,
+  ListResourcesRequestSchema,
   ListToolsRequestSchema,
+  ReadResourceRequestSchema,
+  SubscribeRequestSchema,
+  UnsubscribeRequestSchema,
   type CallToolResult,
 } from "@modelcontextprotocol/sdk/types.js";
+import { eventLog } from "./events/index.js";
+import {
+  RESOURCES,
+  RESOURCE_URIS,
+  readResource,
+  resourceUrisForEvent,
+} from "./resources/index.js";
 import { attachTool } from "./tools/attach.js";
 import { detachTool } from "./tools/detach.js";
 import { healthTool } from "./tools/health.js";
@@ -429,6 +440,7 @@ export function createSynthiServer(options: SynthiServerOptions): Server {
     {
       capabilities: {
         tools: {},
+        resources: { subscribe: true, listChanged: false },
       },
     }
   );
@@ -447,6 +459,66 @@ export function createSynthiServer(options: SynthiServerOptions): Server {
       inputSchema: t.inputSchema,
     })),
   }));
+
+  // ---------------------------------------------------------------------
+  // Resources (subscribable state streams).
+  // ---------------------------------------------------------------------
+  const subscriptions = new Set<string>();
+
+  server.setRequestHandler(ListResourcesRequestSchema, async () => ({
+    resources: RESOURCES.map((r) => ({
+      uri: r.uri,
+      name: r.name,
+      description: r.description,
+      mimeType: r.mimeType,
+    })),
+  }));
+
+  server.setRequestHandler(ReadResourceRequestSchema, async (req) => {
+    const uri = req.params.uri;
+    const contents = await readResource(uri);
+    if (!contents) throw new Error(`unknown_resource: ${uri}`);
+    const out: Record<string, unknown> = { uri: contents.uri, mimeType: contents.mimeType };
+    if (contents.text !== undefined) out["text"] = contents.text;
+    if (contents.blob !== undefined) out["blob"] = contents.blob;
+    return { contents: [out] };
+  });
+
+  server.setRequestHandler(SubscribeRequestSchema, async (req) => {
+    subscriptions.add(req.params.uri);
+    return {};
+  });
+
+  server.setRequestHandler(UnsubscribeRequestSchema, async (req) => {
+    subscriptions.delete(req.params.uri);
+    return {};
+  });
+
+  // Feed: when an event lands, notify any subscribers whose URI overlaps.
+  // Rate-limit screenshot notifications to <= 2 Hz so a chatty pipeline
+  // doesn't blow out the agent's inbox.
+  let lastScreenshotPushTs = 0;
+  const SCREENSHOT_PUSH_MIN_INTERVAL_MS = 500;
+
+  eventLog.onAppend(async (entry) => {
+    const uris = new Set(resourceUrisForEvent(entry));
+    for (const uri of uris) {
+      if (!subscriptions.has(uri)) continue;
+      if (uri === RESOURCE_URIS.screenshot) {
+        const now = Date.now();
+        if (now - lastScreenshotPushTs < SCREENSHOT_PUSH_MIN_INTERVAL_MS) continue;
+        lastScreenshotPushTs = now;
+      }
+      try {
+        await server.notification({
+          method: "notifications/resources/updated",
+          params: { uri },
+        });
+      } catch {
+        // ignore notification errors — transport may be disconnected
+      }
+    }
+  });
 
   server.setRequestHandler(CallToolRequestSchema, async (request): Promise<CallToolResult> => {
     const toolName = request.params.name;
