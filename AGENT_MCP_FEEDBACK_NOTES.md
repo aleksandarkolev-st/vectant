@@ -750,4 +750,88 @@ Colleague's follow-on refinements applied:
 
 The Wave 5 decision-method triage pattern ("apply now / measure later / defer with ticket") carries through Wave 6 — no new meta-principle emerged. Wave 6 is three correctness patches + one architecture patch, applied without scope inflation. The commit-cadence point ("ship the patch, then batch the next round") is useful but arguably covered by the existing `critique_clarifies_design_space_not_mvp_scope` memory — which already warns against letting documents accrete under iterative critique.
 
+---
+
+## 39. Wave 7 (v4.2) — user said "every single feedback at once"
+
+v4.1 was committed with the colleague's "ship the patch, then batch the next round" cadence. Wave 7 is the next round plus a research dependency, consolidated into v4.2 per the user's explicit override: *"i want every single feedback to be implemented at once."* Eight items of feedback + one research task → one commit.
+
+### 39.1 `synthi_verify` scope creep — scene_matches strip
+
+**The bet colleague caught.** `synthi_verify` with a `scene_matches` VLM predicate turns the server into a black-box reasoning engine. Agents should be reasoning; the server should be giving them eyes. Stacking VLM calls inside verify (potentially composed under `and`/`or` depth-4) destroys the latency + cost budget the rest of the tool surface was sized against.
+
+**Resolution.** Strip `scene_matches` from phase 1. `synthi_verify` restricted to `ocr`, `pixel`, `element_visible`, `log`, and `and`/`or`. Complex visual reasoning routes through `synthi_describe` (agent or server vision) + agent-side reasoning. `scene_matches` graduates to Phase 2+ as `K1`, gated on usage evidence that a server-side predicate would be a clean win over the describe + reason pattern (cost ratio ≥ 2x required before implementation).
+
+**Wire impact.** Evidence shape drops `scene_matches` variant. Predicate shape drops it. New error `verify_scene_matches_unsupported` with `required_tool_call: synthi_describe` handles agents that still send it (helpful remediation, not silent rejection).
+
+### 39.2 Predicate recursion cap
+
+**The bet colleague caught.** Discriminated evidence shape lets `and`/`or` clauses be recursive; nothing in v4.1 bounded depth or per-level clause count. A 10-deep tree with 8 clauses per level = 10^8 predicate evaluations. Even at 1μs each, that's 100s of server time per DoS request.
+
+**Resolution.** Cap depth at 4 and per-level clause count at 8. Violation returns `verify_predicate_too_deep` or `verify_predicate_too_many_clauses`, both with `required_tool_call` suggesting decomposition into multiple sequential verifies with agent-side `and`/`or` of results. Predicate validation happens at parse time — no engine cycles spent on pathological trees. Added to error priority ladder under new tier 7 (predicate validation, fires pre-execution).
+
+### 39.3 Tier-1 coverage — CI honesty
+
+**The bet colleague caught.** v4.1 said "Universal across MCP clients: Claude Code, Codex, Cursor, Gemini CLI, Windsurf." In reality, only Claude Code was going to be CI-automated in phase 1; the others were best-effort manual. Under-testing guarantees regressions across MCP implementations' stdio framing / tool-call streaming / context-window behavior.
+
+**Resolution.** Phase 1 README: "CI-automated for Claude Code. Best-effort manual for Codex, Cursor, Gemini CLI, Windsurf." Added `J1` Phase 2+ ticket (headless mock harnesses across four clients, ~2 weeks).
+
+### 39.4 `attached_humans` — observability only
+
+**The bet colleague caught.** v4.1 implied agents "scale back aggression" when humans are attached. LLMs don't infer that without prompt-level instruction; without an enforced contract, `attached_humans: 1` is trivia.
+
+**Resolution.** v4.2 phase 1 carries the envelope field for pure observability (operator sees zombie attaches, optional PTY log-line / UI badge for humans to see agents). Agent-behavior contract (e.g., "confirm before destructive actions if `attached_humans > 0`") moves to `I2` where it can be written as concrete prompt templates. PTY/UI surface is user-preference (Open item #8).
+
+### 39.5 `synthi_set_goal` — delete
+
+**The bet colleague caught.** `synthi_set_goal` had no auto-verification and no operator-UI contract — operators get the same signal from the tool-call feed. Tool-surface bloat on vision-limited clients pays prompt tax for nothing.
+
+**Resolution.** Remove from phase 1 Operational tools (Operational drops 7 → 6). `synthi_checkpoint` absorbs intent-tagging. Re-introduction is `L2` in Phase 2+, gated on operator-UI committing ≥2 concrete goal-aware features (goal timeline, per-goal audit export, kill-on-goal-deviation).
+
+### 39.6 `synthi_reconnect` ordering
+
+**The bet colleague caught.** Race between agent-issued `synthi_reconnect` and server-side `running → migrating` transition — does `preserved` reflect pre- or post-transition? v4.1 didn't say.
+
+**Resolution.** Reconnect observes state at the moment the ICE restart completes (or immediately if no restart is needed), NOT at the moment the call arrives. Post-transition semantics. This is the only ordering that makes `preserved` an actionable contract for the agent's next move. Bounded by `session.reconnect_timeout_ms` (default 10s) — past that, `session_terminated`.
+
+### 39.7 MCP process failure modes — new section
+
+**The bet colleague caught.** Extensive treatment of guest, worker, network, signaling failures — silence on MCP process own crashes. If Node OOMs, does the agent see clean error or stuck socket? Does `synthi_reconnect` work across subprocess boundaries?
+
+**Resolution.** New section §MCP process failure modes. Node OOM/crash → stdio EOF → MCP client sees clean connection-closed error → agent reconnects (respawns subprocess) → calls fresh `synthi_attach`. `synthi_reconnect` is WebRTC-layer only; session state lives in process memory (phase 1); cross-subprocess persistence is `L1` ticket. Documented so agents building retry loops don't conflate WebRTC recovery with process recovery.
+
+### 39.8 Vision cost budget — pressure test
+
+**The bet colleague caught.** `MAX_VISION_COST_USD_PER_HR = 5` is either too tight (blocks phase-2 enforcement from being usable for interactive loops — 300-500 locate calls before quota) or too loose (real abuse slips through). Either way, it's a guess.
+
+**Resolution.** E4 falsification experiment added to Phase 0.5. 30-min Claude Code loop on counter_sdl2 under realistic agent usage; record hourly projections; adjust default before phase 1 freeze. Landed in Phase 0.5 measurement flags table alongside E1/E2/E2b/E3 — same top-of-doc visibility the colleague asked for in Wave 6.
+
+### 39.9 WebRTC pipeline reuse — falsification
+
+**The user asked** me to reason about the existing Synthi WebRTC pipeline and what parts could be reused. Dispatched an Explore agent against `signaling-server/src/main.rs`, `worker/src/**`, `worker/src/android/webrtc/video_pipeline.rs`, `synthi/src/services/compilerClient.js`. Findings invalidate the "zero backend changes" claim from v4.1 / MVP:
+
+- **Signaling is strictly 1:1** — `PeerKey = (session_id, role)` with binary `browser|worker`. Zero multi-peer infra today. MVP's "one-line fix if needed" caveat is optimistic; actual change is ~20-50 LOC Rust + tests for `PeerKey` refactor or new `observer` role.
+- **Worker has a single `RTCPeerConnection`.** Fan-out requires worker changes or SFU. Phase 2 broker handles this.
+- **Frame-seq is NOT in the data-channel protocol** — RTP seq + GStreamer `pts` are internal to the video track. The HMR frame-seq gate the plan depends on needs a new `{type:"frame-advance", frame_seq, ts_ms}` data-channel message. Worker addition, not reuse.
+
+**What IS reusable as-is:** signaling register/SDP/ICE flow (1:1 case), data-channel labels + JSON wire format, build-log JSON HMR events (`{msg_type: "hmr-status", ...}`), `compilerClient.js` as reference pattern. MCP extracts + adapts; no new wire formats for the reuse portion.
+
+**MVP impact.** Path A (MCP takes browser slot; human detaches) preserves "zero backend changes" and keeps 2-4 day MVP estimate. Path B (add `observer` role with fan-out) adds ~1-2 days of signaling work but matches the agent-as-observer product intent. v4.2 does NOT change MVP scope unilaterally — user picks.
+
+### 39.10 Cadence note (Wave 7 meta)
+
+Colleague's Wave 6 commit-cadence rule ("ship the patch, then batch the next round") was explicitly overridden by user: "i want every single feedback to be implemented at once." v4.2 bundles eight items + one research finding into a single commit. This is a legitimate user-directed exception to the cadence rule, not drift. The drift risk the rule warns about is *self-motivated* batching — "I got one more idea, let me fold it in." Here, the user gave a single batch with explicit batch-scope-as-stated.
+
+Recognition cue: if the user had said "commit what you have now, here are some more thoughts for later," Wave 6 rule applies. If the user said "bundle all this into one commit," Wave 6 rule is superseded.
+
+## 40. Memory-worthy?
+
+Wave 7 adds two candidate meta-principles:
+
+1. **"User-directed batch vs self-directed batch."** Worth saving? The existing `critique_clarifies_design_space_not_mvp_scope` memory covers "don't let your own momentum expand scope." This new principle is "when user explicitly directs batch scope, honor the batch." Slightly different axis. Lean no: the `critique_clarifies` memory already carries the cue "MVP scope comes from user's actual ask" — batch size is a special case of that rule.
+
+2. **"Verify load-bearing architectural claims against the codebase."** Already covered by the `verify_load_bearing_claims` memory — "'zero backend changes' etc. often false; budget 15–30min to verify." This wave is an application of that rule, not a new one.
+
+No new memory items from Wave 7.
+
 **Not adding memory.** Project memory (`project_agent_mcp_work`) updated to reflect v4.1 on disk.

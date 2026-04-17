@@ -190,6 +190,148 @@ Without a guide, every first-time integrator re-learns the same traps.
 
 ---
 
+## J1 — Headless mock harnesses for non-Claude-Code MCP clients
+
+### Context
+
+Phase 1 claims "Tier-1 support" across Claude Code, Codex, Cursor, Gemini CLI, and Windsurf, but CI-automates only Claude Code. v4.2 tightened the README to "CI-automated for Claude Code; best-effort manual for others," which is honest but leaves a regression risk: MCP clients handle tool-call streaming, markdown parsing, context windows, and stdio EOF differently. A semantic change landing in phase 1.5 or phase 2 could silently break one of the four manual clients.
+
+### Scope
+
+Build headless mock harnesses that drive each of Codex, Cursor, Gemini CLI, Windsurf against `synthi-mcp`. "Headless" = no real client UI; replay recorded tool-call sequences that exercise the semantics each client cares about (stdio buffering, partial-response handling, tool-list refresh, stderr capture, connection drop behavior).
+
+1. **Harness base.** Common test runner. Per-client adapter reuses the client's actual MCP transport (stdio subprocess) with a recorded-trace driver instead of the real LLM.
+2. **Trace catalog.** 5-10 representative agent loops per client (attach → screenshot → click → wait_hmr → verify). Captured once from live sessions; re-played deterministically in CI.
+3. **Per-client quirks tested.**
+   - Codex: different abort semantics on long-running tool calls.
+   - Cursor: aggressive caching of tool results across turns.
+   - Gemini CLI: stdio framing differences.
+   - Windsurf: smaller context window → tool-list compression matters.
+4. **CI integration.** Runs nightly; PR-optional. Regression threshold: any client that passed last commit must pass this commit.
+
+### Done criteria
+
+- Harness runs all four clients in CI without a live LLM.
+- Regression catches a deliberately-broken MCP change (e.g., tool-list message format flip).
+- Failure output points at the client-specific symptom, not a generic "MCP connection failed."
+
+### Dependencies
+
+- Phase 1 ships (there's nothing to harness against until then).
+- Each client's MCP transport layer documented well enough to emulate.
+
+### Effort estimate
+
+**2 weeks** — one week of base harness + trace catalog, one week of per-client adapters and CI integration.
+
+---
+
+## K1 — `synthi_verify.scene_matches` VLM predicate
+
+### Context
+
+v4.2 stripped `scene_matches` from phase 1 `synthi_verify` to keep the server from becoming a black-box VLM reasoning engine. Agents route complex visual reasoning through `synthi_describe` + their own reasoning. If usage evidence from phase 1 + phase 2a-c shows agents repeatedly reconstructing "verify a scene description" via describe + post-hoc reasoning AND the pattern is stable enough that pushing it server-side would be a clean win (caching, shared vision), reintroduce `scene_matches`.
+
+### Scope
+
+1. **Usage audit.** Before implementing: log (with agent consent) tool-call traces that pair `synthi_describe` with agent-side reasoning about the returned summary. Identify traces that are effectively "is scene X described in the frame?" queries.
+2. **Cost analysis.** Would a server-side `scene_matches` reduce the total vision inference count per query (cache once, predicate many) vs. current pattern (agent re-describes on each retry)? If <2x reduction, don't implement.
+3. **Predicate design.**
+   - Input: `{kind: "scene_matches", description: string, threshold?: number}`.
+   - Output: `{kind: "scene_matches", matched_phrase, confidence, describe_trace_id}` — describe_trace_id lets agents pull the underlying VLM output for debug.
+   - Depth/clause bounds (v4.2): counts as 1 against the depth-4 budget.
+4. **Cost control.** Share the same cache key as `synthi_describe` so repeated verify-of-describe patterns share the underlying vision call.
+5. **Opt-in behind capability flag.** `capability_manifest.synthi_verify_supports_scene_matches: true` — clients without vision-capable backend don't see the predicate.
+
+### Done criteria
+
+- Usage evidence documented in `docs/K1_USAGE_EVIDENCE.md` before implementation.
+- Predicate re-enabled behind capability flag.
+- Cost analysis shows ≥2x reduction in vision inferences for the targeted pattern.
+- Integration test: `verify({kind:"scene_matches", description:"counter shows 10"})` passes on SDL2 fixture after appropriate HMR cycle.
+
+### Dependencies
+
+- Phase 1 shipped.
+- At least 3 months of real agent usage data from phase 1 + 2a deployments.
+
+### Effort estimate
+
+**Usage audit:** ongoing. **Implementation (if greenlit):** 3-5 days.
+
+---
+
+## L1 — Cross-subprocess MCP session persistence
+
+### Context
+
+Phase 1 `synthi-mcp` keeps all session state (capability manifest, event log, locator handles, subscriptions) in Node process memory. A crashed or respawned MCP subprocess starts fresh — agents cannot resume via `synthi_reconnect` because the new process has no session to reconnect to; they must call `synthi_attach`. This is documented (v4.2 §MCP process failure modes), not a bug. But for long-running agent loops (hours of autonomous work), a single Node OOM eats all accumulated session state — locator handles, event-log history, capability manifest — and agents restart reasoning from zero.
+
+### Scope
+
+1. **Decide what's safe to persist.**
+   - Event log (safe — it's a ring buffer of serializable events).
+   - Locator handles (partially — bboxes + region-pHash can persist; but the underlying `frame_seq` is meaningless across subprocess boundaries without WebRTC-state continuity).
+   - Capability manifest (safe — immutable per session).
+   - Subscription state (safe — just resource list + seq).
+   - RTCPeerConnection (NOT safe — cannot serialize).
+2. **Persistence transport.** SQLite file per session in `~/.synthi/sessions/<session_id>.db`. Write-through on every meaningful state change (event-log append, handle resolve, subscription update).
+3. **Subprocess handoff for WebRTC.** The hard problem. Options:
+   - (a) Keep `RTCPeerConnection` in a long-lived helper daemon; MCP subprocess connects to daemon via Unix socket. Daemon-crash = full reconnect.
+   - (b) Fresh subprocess always re-establishes WebRTC (full `synthi_attach`), but inherits session metadata from SQLite — agents don't lose event-log context.
+   - (c) File-descriptor passing over Unix socket — transfer the underlying UDP socket to the new subprocess. Feasible on Linux; complicates `@roamhq/wrtc` internals.
+4. **`synthi_reconnect` extension.** New mode `synthi_reconnect({subprocess_restart: true})` reads persisted state, reconstructs session metadata, performs fresh `synthi_attach` to pick up a new peer — agents see a coherent session even across process crashes.
+
+### Done criteria
+
+- `~/.synthi/sessions/` persistence layer.
+- Option (b) minimum: session metadata persists; WebRTC re-establishes; agent-visible state coherent.
+- Integration test: kill MCP mid-session; restart; call `synthi_reconnect({subprocess_restart: true})`; assert event-log history present, capability manifest unchanged, handles marked `stale_requires_reresolve` (not `expired`).
+
+### Dependencies
+
+- Phase 1 shipped.
+- Real usage data showing process-crash frequency high enough to justify complexity (if agents never crash MCP subprocesses in practice, this is wasted work).
+
+### Effort estimate
+
+**1.5 weeks** for option (b); **2-3 weeks** for options (a) or (c).
+
+---
+
+## L2 — Reinstate `synthi_set_goal` with operator-UI use case
+
+### Context
+
+v4.2 removed `synthi_set_goal` from phase 1 because declarative intent with no auto-verification and no committed operator-UI contract was tool-surface bloat. If phase 2 operator UI commits to concrete goal-aware features (goal-scoped audit filter, goal-timeline pane, per-goal session summary), `synthi_set_goal` graduates back.
+
+### Scope
+
+1. **Operator-UI commitment first.** Before reintroducing the tool, commit to ≥2 concrete UI features that use the goal field:
+   - **Goal timeline:** vertical pane showing goal-scoped session segments with nested tool calls + event log.
+   - **Per-goal audit export:** filter session audit log by goal label.
+   - **Kill-on-goal-deviation:** operator sets expected-outcome per goal; agent drift triggers alert.
+2. **Tool shape.** `synthi_set_goal({description, expected_outcome?})` → `{ok, goal_id, goal_started_at}`. Goals are stack-scoped (nested goals supported); `synthi_end_goal({goal_id})` closes.
+3. **Event-log tagging.** All events between `set_goal` and `end_goal` carry `goal_id` field; audit filter uses it.
+4. **No auto-verification.** Still agent-driven; `expected_outcome` is advisory (operator sees agent's own claim, can cross-check against reality).
+
+### Done criteria
+
+- Operator UI ships at least 2 of the 3 features above.
+- `synthi_set_goal` + `synthi_end_goal` live as Operational tools.
+- Integration test: agent sets goal, drives 5 tool calls, ends goal; audit export filtered by `goal_id` returns exactly those 5 + the set/end markers.
+
+### Dependencies
+
+- Phase 2 operator observability UI (`G3` sub-phase 2d).
+- Event log carries custom tags (trivial extension).
+
+### Effort estimate
+
+**1 week** for the tool + event-log tagging; operator-UI work counted separately under `G3:2d`.
+
+---
+
 ## Notes on backlog hygiene
 
 - Each ticket above owns its own "Done criteria." When the work lands, the ticket collapses into a commit + a removal from this file.

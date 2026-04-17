@@ -1,6 +1,6 @@
-# AGENT MCP ULTRAPLAN — v4.1
+# AGENT MCP ULTRAPLAN — v4.2
 
-**Status:** v4.1 drafted, supersedes v4/v3.1/v3/v2. Awaiting approval to execute Phase 0.5 spike.
+**Status:** v4.2 drafted, supersedes v4.1/v4/v3.1/v3/v2. Awaiting approval to execute Phase 0.5 spike.
 **Author:** Claude Opus 4.7 (1M context)
 **Date:** 2026-04-17
 **Branch:** `claude/agent-mcp`
@@ -144,6 +144,56 @@ Phase 0.5 measurement flags table now includes `E1`, `E2`, `E2b`, `E3` alongside
 
 ---
 
+## What changed from v4.1 → v4.2
+
+Wave-7 review surfaced eight specific issues and one research-driven finding that invalidates a load-bearing MVP claim. v4.2 closes them in a single commit per user direction ("i want every single feedback to be implemented at once"). No new primary-axis design; tool surface shrinks by one; scope tightens at several edges.
+
+### Tool-surface discipline
+
+- **`synthi_verify.scene_matches` predicate deferred.** VLM-based `scene_matches` turned `synthi_verify` into a black-box reasoning engine on the server side — stacks VLM calls on the server, defeats the "agent does the reasoning, server gives it eyes" split, and inflates server-side latency + cost budgets. v4.2 restricts phase-1 `synthi_verify` to deterministic/cheap predicate kinds (`ocr`, `pixel`, `element_visible`, `log`, `and`/`or`). Complex visual reasoning goes through `synthi_describe` (agent or server vision) and the agent decides. `scene_matches` moves to Phase 2+ backlog as `K1`, gated on usage evidence that justifies re-introducing server-side VLM predicates.
+- **`synthi_set_goal` removed from phase 1.** Declarative-intent tagging with no auto-verification and no operator contract is tool-surface bloat — vision-limited MCP clients pay prompt tax for a tool agents don't need to function and operators get the same signal from the tool-call feed. If operator-UI work in phase 2 commits a concrete use (e.g., goal-scoped audit filter, goal-timeline pane), `synthi_set_goal` graduates back from `L2` ticket. Operational tools drop 7 → 6. `synthi_checkpoint` absorbs the "named marker" use case.
+- **Predicate recursion cap.** `synthi_verify` predicate depth bounded to 4; per-level clause count bounded to 8. Prevents a pathological `and/or` tree from DoS-ing the verify engine. New errors `verify_predicate_too_deep` + `verify_predicate_too_many_clauses` with remediation pointing at predicate decomposition.
+
+### Scope honesty on client coverage
+
+- **Tier-1 CI = Claude Code only.** v4.1 language implied universal coverage across Claude Code / Codex / Cursor / Gemini CLI / Windsurf; only Claude Code is CI-automated in phase 1. Codex / Cursor / Gemini CLI / Windsurf are **best-effort manual QA** in phase 1. Headless mock harnesses for the other four are a Phase 2+ ticket (`J1`). README + approval checklist both reflect this.
+
+### Semantics tightening
+
+- **`attached_humans` is observability, not an agent contract.** v4.1 implied agents would "scale back aggression" when humans are attached. LLMs don't implicitly know what that means without prompt-level definition. v4.2 phase-1 deliverable for presence is observability only: envelope field + log line to worker stderr + optional badge in the existing PTY / UI surface. The "agent behavior modification given presence" contract moves into the `I2` agent-prompting guide (per-client prompt templates), where it can be expressed concretely (e.g., "If `session.attached_humans > 0`, ask for confirmation before destructive actions").
+- **`synthi_reconnect` ordering committed.** Reconnect observes session state at the moment the ICE restart completes (or immediately if no restart is needed), **not** at the moment the reconnect call arrives. Cures the `running → migrating` mid-transition race where preserved-state semantics were ambiguous. Documented inline in §Reconnect preservation.
+
+### Newly-surfaced failure mode
+
+- **MCP process own failure modes.** v4.1 treated guest / worker / network / signaling failures comprehensively and ignored the MCP Node process itself. v4.2 adds §MCP process failure modes: Node OOM/crash → stdio EOF → client sees clean MCP protocol error; session state lives in MCP process memory only (phase 1); agent's MCP client spawning a new `synthi-mcp` subprocess = new session, not resumable via `synthi_reconnect`. Cross-process session persistence is Phase 2+ ticket `L1`. Documented explicitly so agents building retry loops don't assume `synthi_reconnect` works across subprocess boundaries.
+
+### Load-bearing claim falsified (WebRTC research)
+
+- **"Zero backend changes" claim held to scrutiny.** Research on current Synthi WebRTC infrastructure (signaling-server, worker, data-channel protocol) finds:
+  - **Signaling is strictly 1:1** — `PeerKey = (session_id, role)` with binary `"browser" | "worker"` roles (`signaling-server/src/main.rs:82,266-302,311-315`). Zero infrastructure for a second browser peer today. An MCP peer joining an existing session either (a) takes the human's browser slot (human detaches first) or (b) signaling-server adds an `"observer"` role with SDP/ICE fan-out — not one line, ~20-50 lines of Rust + test coverage.
+  - **Worker has a single `RTCPeerConnection`.** Fan-out to N peers requires worker changes or SFU-style media relay. Phase 1 keeps 1:1 — phase 2 broker handles fan-out.
+  - **Frame-seq is NOT currently in the data-channel protocol.** RTP sequence + GStreamer `pts` are internal to the video track (`video_pipeline.rs:600-700`). The HMR frame-seq gate depends on bridging encoder timestamps / RTP seq into a new data-channel message (`{type: "frame-advance", frame_seq, ts_ms}` or similar). This is a worker addition — NOT reuse.
+  - **What *can* be reused:** signaling register/SDP/ICE flow as-is for the 1:1 case; data-channel labels + JSON wire format for input (`gui-input`, `terminal`, `emulator-input`); build-log JSON HMR events (`{type: "hmr-status"}`); `compilerClient.js` as a reference pattern for Node adaptation.
+- **MVP impact.** `AGENT_MCP_MVP.md` says "zero backend changes" with the caveat that two-browser-peer may require a small fix. The empirical answer is **known**: it does. MVP Path A (agent takes browser slot; human detaches first) preserves "zero backend changes" and keeps the 2-4 day estimate. Path B (add `observer` role) adds ~1-2 days of signaling-server work. v4.2 documents both paths in §WebRTC pipeline reuse and leaves the MVP choice for user confirmation — no unilateral MVP scope change.
+
+### New falsification experiment
+
+- **E4 — Vision cost budget reality check.** `MAX_VISION_COST_USD_PER_HR = 5` with Claude Opus pricing implies 300-500 `synthi_locate` calls/hour depending on frame size — enough for ~5-8 minutes of tight interactive loop before quota. Either the default is too low for realistic agent loops or the expected usage model is much thinner than a naive Playwright-style cadence. E4 traces realistic agent loops on the spike's counter_sdl2 fixture, computes hourly cost distributions at p50/p95, and adjusts `MAX_VISION_COST_USD_PER_HR` before phase 1 freeze. Budget is a phase-0.5-measure input, not a phase-1 guess.
+
+### New error codes (v4.2)
+
+- `verify_predicate_too_deep` — predicate depth > 4.
+- `verify_predicate_too_many_clauses` — single-level clause count > 8.
+- `verify_scene_matches_unsupported` *(phase 1 only)* — scene_matches predicate sent; suggested remediation = `synthi_describe` + agent-side reasoning.
+
+### Net tool-surface change
+
+- Core Universal: **13 unchanged** (no tools added or removed from Core).
+- Operational: **7 → 6** (`synthi_set_goal` removed).
+- Escape: **3 unchanged**.
+
+---
+
 ## TL;DR
 
 Build `@synthi/mcp-server` — a Node/TypeScript MCP package that attaches to a running Synthi session and gives AI coding agents a faithful, correctly-synchronized view of the running program, plus hands to drive it.
@@ -154,7 +204,7 @@ Agents bring their own code editor. Synthi MCP brings eyes, hands, and the sync 
 
 Server enforces correctness. Structured errors tell agents what to call next. Day-one: tiered capability model, protocol versioning, lifecycle states, cost observability, guest-to-agent security, per-session vision-backend selection, graceful reconnect.
 
-Universal across MCP clients: Claude Code, Codex, Cursor, Gemini CLI, Windsurf.
+Tier-1 support: Claude Code (CI-automated) in phase 1. Best-effort manual QA for Codex, Cursor, Gemini CLI, Windsurf (CI coverage deferred to phase 2 — ticket `J1`).
 
 ---
 
@@ -348,21 +398,24 @@ The `required_tool_call` field is load-bearing: agents self-heal from the error 
 | `synthi_wait`             | full     | `{condition, …, timeoutMs?: 30000}`                                                                                         | Unified wait. `hmr` resolves only after frame-seq gate clears (for `applied`/`state-migrated` only). |
 | `synthi_locate`           | full     | `{description, hints?, top_k?}` → `{handles: LocatorHandle[]}`                                                              | Vision-backed. Handles cache region-pHash (v4.1: `pHash(frame[bbox ±20% padding, floor 8px])`, not full-frame) and re-resolve at dispatch via region-pHash delta. Hint schema: `{prefer_region, exclude_bbox, containing_text, nth}`. |
 | `synthi_describe`         | full     | `{mode?}` → `{summary, entities, frame_seq}` *(server_side)* or `{screenshot, frame_seq, entities: WorkerEntity[]}` *(agent_side, v4)* | VLM narration in server mode; worker-computed entity hints in agent_side mode. Cached per frame-seq. |
-| `synthi_verify`           | full     | `{predicate, within_ms?: 5000}` → `{ok, evidence, confidence}`                                                              | Check predicate against current preview. Composes locate/OCR/pixel/log/scene.                  |
+| `synthi_verify`           | full     | `{predicate, within_ms?: 5000}` → `{ok, evidence, confidence}`                                                              | Check predicate against current preview. Phase 1 kinds: `ocr`, `pixel`, `element_visible`, `log`, `and`/`or` (depth ≤ 4, clauses ≤ 8 per level). `scene_matches` deferred to Phase 2+ (`K1`); agents route complex visual reasoning through `synthi_describe`. |
 
-**`synthi_verify` predicate shape** (v4 `log` uses `since_seq`):
+**`synthi_verify` predicate shape** (v4.2 — `scene_matches` deferred; recursion bounded):
 
 ```ts
 Predicate =
   | {kind: "ocr", region?, pattern: string}
   | {kind: "pixel", x, y, color, tolerance?}
   | {kind: "element_visible", description: string}
-  | {kind: "log", pattern: string, since_seq?: number}       // v4: seq not ts
-  | {kind: "scene_matches", description: string}              // VLM-based
-  | {kind: "and"|"or", clauses: Predicate[]}
+  | {kind: "log", pattern: string, since_seq?: number}        // v4: seq not ts
+  | {kind: "and"|"or", clauses: Predicate[]}                  // v4.2: depth ≤ 4, clauses ≤ 8 per level
 ```
 
-**`synthi_verify` evidence shape** (discriminated by predicate kind):
+Phase 1 ships **deterministic / cheap** predicates only. `scene_matches` (VLM-based) is deferred to Phase 2+ (`PHASE_2_PLUS_BACKLOG.md:K1`); for complex visual reasoning, agents call `synthi_describe` (server-side VLM) or use `agent_side` vision and reason client-side. Rationale: `synthi_verify` must not become a black-box reasoning engine that stacks VLM calls server-side — that defeats the server-gives-eyes / agent-reasons split and blows the latency + cost budgets the rest of the tool surface is sized against.
+
+**Recursion bounds (v4.2).** `and`/`or` nesting is capped: depth ≤ 4 and clause count ≤ 8 per level. Violating either returns `verify_predicate_too_deep` or `verify_predicate_too_many_clauses` with `required_tool_call` suggesting predicate decomposition (multiple sequential verifies). Prevents pathological trees from DoS-ing the verify engine.
+
+**`synthi_verify` evidence shape** (discriminated by predicate kind, v4.2 — `scene_matches` removed):
 
 ```ts
 Evidence =
@@ -370,8 +423,7 @@ Evidence =
   | {kind: "pixel", x: number, y: number, observed_color: string, matched: boolean}
   | {kind: "element_visible", handle_id: string, resolved_bbox: BBox, confidence: number}
   | {kind: "log", line: string, matched_groups: string[], seq: number}
-  | {kind: "scene_matches", summary: string, matched_phrase: string, confidence: number}
-  | {kind: "and"|"or", clauses: Evidence[]}
+  | {kind: "and"|"or", clauses: Evidence[]}                    // depth ≤ 4, clauses ≤ 8 per level
 ```
 
 Every predicate kind yields a typed evidence shape. Agents extract "what was matched" directly from the result without re-running the predicate. `ok: false` responses still populate `evidence` where partial match was observed.
@@ -389,17 +441,18 @@ hints: {
 
 `locator_ambiguous` error responses populate `required_tool_call.suggested_args.hints` with a concrete narrowing suggestion (e.g., `{containing_text: "Submit"}` when the ambiguous candidates differed in text content).
 
-### Operational (7) — phase 1, lazy-advertised
+### Operational (6) — phase 1, lazy-advertised
 
 | Tool                              | Envelope | Purpose                                                                       |
 |-----------------------------------|----------|-------------------------------------------------------------------------------|
 | `synthi_get_usage`                | full     | Per-session counters: tool calls, vision inferences, egress, hot-time.        |
 | `synthi_set_quality`              | full     | `{target_fps?, target_bitrate?, target_resolution?}` — bandwidth knobs.       |
-| `synthi_set_goal`                 | full     | `{description}` — declarative intent for operator observability + event log tagging. No auto-verification (agent owns its own loop). |
-| `synthi_checkpoint`               | full     | Named marker in event log.                                                    |
+| `synthi_checkpoint`               | full     | `{label, description?}` — named marker in event log. Absorbs the intent-tagging use case that `synthi_set_goal` had in v4/v4.1. |
 | `synthi_acknowledge_disruption`   | full     | Required after `crash-recovered`/`full-reload-required`. Error responses pre-fill `required_tool_call` with this. |
 | `synthi_get_crash_info`           | full     | `{crashed_at_ts, signal, last_hmr_state, stderr_tail}`                        |
 | `synthi_reset_guest`              | full     | Restart guest program only (not worker). 80% of snapshot-restore for 5% of the work. Phase 1. |
+
+`synthi_set_goal` was removed in v4.2. Rationale: declarative intent with no auto-verification and no committed operator-UI use case is tool-surface bloat — vision-limited MCP clients pay prompt tax for a tool agents don't need and operators get the same signal from the tool-call feed. Re-introduce in phase 2 if and only if operator-UI work commits to a concrete use (ticket `L2`).
 
 ### Input arbitration (phase 1 wire, phase 2 enforcement)
 
@@ -463,6 +516,9 @@ Every case has a defined server response with `required_tool_call` where remedia
 | Input queued during `compiling`; HMR `applied` with structural frame change | **Default (raw coords, no hint):** full-frame pHash(frame-at-queue, frame-at-applied); if distance > 16 → flush queue with `{error:"input_rejected_hmr_structural_change", pHash_distance, original_frame_seq, applied_frame_seq}` + emit `hmr_structural_change_detected` event. **Handle-based inputs:** re-resolve at dispatch via region-pHash (see Locator lifecycle §). **Raw coords with `pHash_region` hint:** region-pHash of hint bbox, threshold 8 (tighter because scoped); inputs outside hint region pass through even if rest of frame changed. Asymmetric thresholds (16 full-frame vs 8 scoped) reflect asymmetric cost: flush = full agent re-reasoning cycle; locator re-resolve = cheap fallback. |
 | pHash unavailable at `applied` (decoder hiccup, dropped frame) | **Fail closed:** flush queue with `{error:"input_rejected_phash_unavailable", reason, required_tool_call:{name:"synthi_health"}}` — distinct error code so agents don't conflate decoder failure with real UI change. |
 | `synthi_reconnect` with zero survivors       | `{error:"session_terminated", required_tool_call:{name:"synthi_attach"}}` — do not return `{ok:true, preserved:{all empty}}`. Empty-success would invite agents to treat it as a no-op reconnect and proceed with stale assumptions. |
+| `synthi_verify` with `scene_matches` predicate (phase 1) | `{error:"verify_scene_matches_unsupported", required_tool_call:{name:"synthi_describe", suggested_args:{}}, detail:"phase 1 restricts synthi_verify to ocr/pixel/element_visible/log; route visual reasoning through synthi_describe"}` — prevents server-side VLM stacking inside verify. |
+| `synthi_verify` predicate tree deeper than 4 | `{error:"verify_predicate_too_deep", max_depth:4, observed_depth:N, required_tool_call:{name:"synthi_verify", suggested_args:{predicate:"<decomposed leaf>"}, reason:"split into multiple sequential verifies"}}` |
+| `synthi_verify` single-level clause count > 8 | `{error:"verify_predicate_too_many_clauses", max_clauses:8, observed_clauses:N, required_tool_call:{name:"synthi_verify", suggested_args:{...}, reason:"run two verifies, and the results agent-side"}}` |
 | Quota exceeded                               | `{error:"quota_exceeded", quota:"screenshots_per_min", retry_after_ms}` — never silent.                             |
 | Protocol version mismatch                    | `{error:"unsupported_protocol", server_supports:[1,2,...]}` — fail attach loudly.                                   |
 | Sensitive-action input without `confirm:true`| `{error:"confirmation_required", matched_patterns:[...], context:{focused_window_class, window_role, wm_class_verified}, required_tool_call:{name:"synthi_keyboard", suggested_args:{...prior..., confirm:true}}}` |
@@ -484,6 +540,7 @@ When multiple conditions apply to a single request, the server returns the error
 4. **Quota.** `quota_exceeded`.
 5. **Input validation.** `click_out_of_bounds`, `no_focus_target`, `capability_not_available`, `locator_expired`, `locator_unresolved`, `locator_drift`, `locator_ambiguous`.
 6. **Freshness / resource.** `frame_stale`, `input_queue_full`, `input_rejected_awaiting_ack`, `input_rejected_hmr_pending`, `input_rejected_hmr_terminal_failed`, `input_rejected_hmr_structural_change`, `input_rejected_phash_unavailable` *(v4.1)*.
+7. **Predicate validation (v4.2).** `verify_scene_matches_unsupported`, `verify_predicate_too_deep`, `verify_predicate_too_many_clauses` — fire before execution so agents don't eat latency before learning the predicate was ill-formed.
 
 `error_priority.test.ts` asserts ordering is deterministic across every combination that can co-occur (e.g., `{session_crashed + frame_stale + quota_exceeded}` → `session_crashed`; `{session_migrating + process_hung}` → `session_migrating`).
 
@@ -793,7 +850,7 @@ SessionState =
 - `crashed` → `{error:"session_crashed", required_tool_call:{name:"synthi_get_crash_info"}}` first, then `{required_tool_call:{name:"synthi_acknowledge_disruption"}}`.
 - `terminated` → `{error:"session_terminated"}` — no remediation; agent stops trying.
 
-### Presence model (v4)
+### Presence model (v4 + v4.2 scope)
 
 Every `full` envelope carries:
 
@@ -802,10 +859,12 @@ session.attached_humans: number    // browser peers on this session
 session.attached_agents: number    // MCP peers on this session
 ```
 
-Motivation:
-- Agents can detect humans-watching and scale back aggression (fewer screenshots, fewer speculative inputs).
+**Phase 1 is observability-only** (v4.2 clarification). Uses:
 - Operators can spot zombie agent attaches (`attached_agents: 4` when expecting 1).
-- Phase-2 broker uses these for fan-out sizing.
+- Operators see when a human is watching (`attached_humans: 1`) — surfaced via existing PTY terminal banner (`[synthi] agent attached`) on the workspace session and/or a small badge in the host UI. No new operator UI required in phase 1.
+- Phase-2 broker uses these for fan-out sizing (wire-ready).
+
+**Agent-behavior modification is explicitly NOT a phase-1 contract** (v4.2 correction). v4.1 implied agents would "scale back aggression" when a human is attached. LLMs don't infer what that means without prompt-level definition. Defining per-client prompt templates that act on presence counts (e.g., "if `attached_humans > 0`, ask for confirmation before destructive actions") is the job of the agent-prompting guide — `PHASE_2_PLUS_BACKLOG.md:I2`. The envelope field is trivia to the agent until a prompt template makes it actionable; phase 1 ships the trivia, phase 2 ships the prompt contract.
 
 Counts are sourced from signaling-server's peer registry, authoritative per session.
 
@@ -881,6 +940,14 @@ If reconnect finds no preservable state — all handles expired, event-log buffe
 
 …not `{ok: true, preserved: {…all empty}}`. Returning success with empty preservation would invite agents to treat it as a successful no-op reconnect and proceed with stale assumptions; the error closes that footgun.
 
+### State-observation ordering (v4.2)
+
+`synthi_reconnect` observes session state at the moment the **ICE restart completes** (or immediately, if no ICE restart is needed and the data-channel is still open). It does **not** observe at the moment the reconnect call arrives from the agent.
+
+Rationale: an agent call that races a server-side transition (e.g., `running → migrating`) would otherwise have ambiguous preserved-state semantics — does `preserved` reflect the pre-transition or post-transition state? v4.2 commits to post-transition. The agent sees whatever state the session is in once the peer is actually reconnected, which is the state that will govern the next tool call. This is the only ordering that makes the preserved-state shape an actionable contract: if `session.state == "migrating"` after reconnect, the agent knows it must back off; if it raced an `applied` transition, the preserved event log includes the post-transition `state_ts`.
+
+Concretely: server holds the reconnect response pending until (ICE restart completes) OR (session transitions to `terminated`), whichever first. Timeout on pending reconnect is bounded by `session.reconnect_timeout_ms` (default 10s) — past that, server returns `session_terminated` with `required_tool_call: synthi_attach`.
+
 ### Agent-facing pattern
 
 ```
@@ -892,6 +959,79 @@ for (const h of r.preserved.locator_handles) {
 ```
 
 Agents pre-filter handles pre-dispatch — no trial-and-error on expired handles, no surprise latency spikes from transparent re-resolves.
+
+---
+
+## MCP process failure modes (v4.2)
+
+v4.1 documents guest, worker, network, and signaling failure modes exhaustively. The MCP Node process itself — `synthi-mcp` — also fails, and v4.1 was silent on it. v4.2 makes the contract explicit.
+
+### The failure surface
+
+- **Node OOM** (e.g., unbounded frame ring buffer, vision response stacked in memory).
+- **Uncaught exception** (unexpected WebRTC stack state, `@roamhq/wrtc` crash).
+- **Explicit kill** (SIGKILL from host, SIGTERM from shutdown, user quits agent session).
+- **Agent client subprocess relaunch** (agent-client restart → new `synthi-mcp` process).
+
+### Client-visible contract
+
+MCP protocol runs on stdio. Any MCP process failure closes stdin/stdout, which the agent's MCP client sees as **stdio EOF** → surfaces as a clean MCP-transport-level error (not a stuck socket, not a hung tool call). In-flight tool calls are cancelled with the standard MCP "connection closed" error; the agent's MCP client either reconnects (respawns the subprocess) or surfaces the failure to the agent's outer loop. Claude Code, Codex, Cursor, and Gemini CLI all handle stdio EOF cleanly in their MCP client implementations.
+
+**Non-contract:** nothing guarantees a specific in-flight-tool-call error code. The error surface is "connection closed"; the agent cannot distinguish OOM from SIGKILL from planned shutdown.
+
+### Session state lifetime
+
+Session state — capability manifest, event log ring buffer, locator handles, subscriptions — lives in `synthi-mcp`'s process memory in phase 1. **There is no durable session store.** Consequences:
+
+- A new `synthi-mcp` subprocess cannot resume the prior subprocess's session. It starts from nothing.
+- `synthi_reconnect` is **WebRTC-layer** recovery (ICE restart, DC flap, WS drop) — **not** MCP-process-layer recovery. Calling `synthi_reconnect` against a freshly-spawned MCP subprocess returns `session_terminated` because the subprocess has no session to reconnect.
+- Agents whose harness respawns the MCP subprocess (e.g., after a crash-detected heartbeat gap) must call `synthi_attach` fresh, not `synthi_reconnect`. This is how the MCP client should be coded.
+
+### Cross-subprocess session persistence (deferred)
+
+A session-persistence layer (`synthi-mcp` writes session state to a sidecar file / SQLite / Unix socket that survives subprocess crashes) is Phase 2+ ticket `L1`. Preconditions include: committed answers to what state is safe to persist (event log yes; RTCPeerConnection no), how the new subprocess takes over the WebRTC peer handle without re-attaching at the signaling layer (non-trivial), and whether agents actually hit this failure often enough to justify the complexity. Phase 1 ships without it.
+
+### Documented in README + agent-prompting guide
+
+README agent-integration section + `PHASE_2_PLUS_BACKLOG.md:I2` both carry: *"If your agent harness respawns `synthi-mcp`, treat it as a fresh session. `synthi_reconnect` recovers from network-layer failures only; process-layer failures require a fresh `synthi_attach`."* Explicit so agents writing retry loops don't conflate the two.
+
+---
+
+## WebRTC pipeline reuse (v4.2)
+
+Research against the current Synthi WebRTC infrastructure (`signaling-server/src/main.rs`, `worker/src/**`, `worker/src/android/webrtc/video_pipeline.rs`, `synthi/src/services/compilerClient.js`) resolves the "zero backend changes" claim from v4.1 and sharpens the phase-1 architecture.
+
+### What the MCP can reuse as-is
+
+| Reuse                                   | Source                                                                                       | Notes                                                                                          |
+|-----------------------------------------|----------------------------------------------------------------------------------------------|------------------------------------------------------------------------------------------------|
+| Signaling register/SDP/ICE flow         | `signaling-server/src/main.rs:266-302`                                                       | For 1:1 peer case only. Uses existing `{type:"register", role, session_id}` envelope.          |
+| Data-channel labels + JSON wire format  | `worker/src/main.rs:1283-1315, 1315-1432`                                                    | `gui-input`, `terminal`, `emulator-input`, `build-log`, `compile`, `file-sync`, `vscode-server` — MCP reads/writes without new format. |
+| HMR events on `build-log`               | `worker/src/compiler/handler.rs:1693-1706`, `worker/src/hmr/planner_glue.rs:17-61`           | `{msg_type:"hmr-status", status:"applied|rejected|compile-error|..."}`. MCP listens; no new transport. |
+| `compilerClient.js` as reference        | `synthi/src/services/compilerClient.js:884-946, 905-915, 933-938, 424-461`                   | Not imported; adapted for Node. Connection lifecycle, DC setup, HMR message parsing patterns.  |
+| Input wire format (reuse verbatim)      | Browser dispatch in `compilerClient.js:985-1027`; Android input handler in `android/webrtc/input.rs:107-127` | `{sessionId, type:"mouse|key|terminal-input", action, x, y, ...}` — MCP emits identical JSON. |
+
+### What the MCP requires as a new backend addition
+
+| Addition                                | Why                                                                                              | Scope impact                                                        |
+|-----------------------------------------|--------------------------------------------------------------------------------------------------|---------------------------------------------------------------------|
+| **Multi-peer signaling support**        | `signaling-server` uses `PeerKey = (session_id, role)` with strict binary `browser`/`worker`. A second browser is rejected today. To attach as MCP while a human browser is connected, signaling needs an `"observer"` role (or `peer_id` per `role`) with SDP/ICE fan-out.    | Phase 1 required unless MVP chooses Path A (below). ~20-50 LOC Rust + tests. |
+| **Frame-seq / encoder timestamp on DC** | RTP seq + GStreamer `pts` are internal to the video track (`video_pipeline.rs:600-700`). The HMR frame-seq gate needs `{type:"frame-advance", frame_seq, ts_ms}` on a data-channel (`build-log` or new `sync` channel) so the MCP can wait for `frame_seq ≥ frame_seq_at_applied`. | Phase 1 required. Worker emission tied to RTP write. Small addition. |
+| **Multi-peer data-channel fan-out**     | Worker has a single `RTCPeerConnection`. Phase 2 broker handles per-session fan-out.              | Phase 2+ (ticket `PHASE_2_PLUS_BACKLOG.md:G3`).                     |
+
+### MVP path choice (not resolved unilaterally in v4.2)
+
+`AGENT_MCP_MVP.md` says "zero backend changes" and flags two-browser-peer as empirically unknown with two fallbacks. The empirical answer is **known as of v4.2 research: signaling strictly rejects two `"browser"` peers**. MVP has two paths:
+
+- **Path A (preserves zero-backend-change + 2-4 day estimate):** when the MCP attaches, the existing browser is detached (signaling evicts the prior peer). UX: the human who started the session loses visual feedback while the agent is attached. Agent runs as **replacement**, not **observer**. Still zero backend changes.
+- **Path B (adds ~1-2 days of signaling work):** signaling-server gets an `"observer"` role with SDP/ICE fan-out. Human + agent co-attached. Agent runs as **observer**. Breaks the "zero backend changes" claim but is the target shape for phase 1 anyway.
+
+v4.2 does **not** change MVP scope unilaterally. User picks path; either is consistent with the MVP-as-scope-locked contract. Ultraplan recommends Path B for phase 1 (matches the agent-as-observer model) and Path A for MVP (keeps the 2-4 day budget honest).
+
+### Existing pre-work items resolved
+
+- **Pre-work #1 (Two-`"browser"`-peer allowance)** — RESOLVED. Signaling rejects. MVP path decision pending user; phase 1 requires Path B.
+- **Pre-work #4 (Encoder timestamp availability)** — partially resolved. RTP packet counter exists at `video_pipeline.rs:609`; GStreamer `pts` tags available. Surfacing to data-channel is the new work. Fallback-seq approach still valid.
 
 ---
 
@@ -915,9 +1055,11 @@ Phase 1 ships metrics + `synthi_get_usage`. Phase 2 adds enforcement.
 - `MAX_SCREENSHOTS_PER_MIN = 60`
 - `MAX_VISION_CALLS_PER_HR = 240`
 - `MAX_EGRESS_MB_PER_HR = 500`
-- `MAX_VISION_COST_USD_PER_HR = 5`
+- `MAX_VISION_COST_USD_PER_HR = 5` *(v4.2: initial guess, Phase 0.5 measures via E4 — see below)*
 
 Exceed → `quota_exceeded` error with `retry_after_ms`.
+
+**Vision cost default is pressure-tested by E4 (v4.2).** $5/hr against Claude Opus pricing implies 300-500 `synthi_locate` calls/hour depending on frame size — that's 5-8 minutes of a tight interactive loop before quota, which is either too low for realistic agent work or signals that the expected agent loop is much less vision-heavy than a naive Playwright-style cadence. E4 traces realistic Claude Code loops on counter_sdl2 during the spike, computes hourly cost distribution at p50/p95, and proposes a revised default before phase 1 freeze. Final default lands in `PHASE_0_5_FINDINGS.md`; phase 2 enforcement uses the measured value, not the $5 guess.
 
 ---
 
@@ -975,8 +1117,9 @@ Items where the plan commits to a **decision method**, not a value. Phase 0.5 da
 | E2   | Locator cache hit rate (static)     | pHash-tracked handle dispatches across 50 realistic edit cycles on counter_sdl2. **Falsify** cache if hit rate <30% (ship stateless-per-call locator). **Commit** if >70%. Tune pHash thresholds between. |
 | E2b  | Region-pHash vs full-frame vs `agent_side` (animated) | Particle-demo SDL2 fixture. Three outputs: (i) full-frame vs region-pHash hit-rate delta; (ii) re-resolution cost distribution p50/p95/p99 (tail is what agents hit in loops); (iii) head-to-head dispatch latency of `claude_api + region-pHash cache` vs `agent_side`. **Ships region-pHash** if full-frame <30% and region >70%. **Keeps `claude_api` default** if p99 dispatch latency < `agent_side` p99 + 200ms; otherwise flips to `agent_side`. |
 | E3   | `claude_api` p99 under load         | 10 parallel `synthi_locate` × 10 iterations. **Falsify** default if p99 > 5s (flip to `agent_side`). **Confirm** if p99 < 2.5s. **Marginal (2.5–5s)** → stay `claude_api` default but phase-1 README carries "for interactive loops, set `preferred_vision_backend: 'agent_side'`" recommendation. **Remediation prep:** pre-write both README variants during spike so freeze-time is documentation-pick, not cascade. |
+| E4 *(v4.2)* | Vision cost budget reality check | Trace a 30-minute Claude Code loop on counter_sdl2 under realistic agent usage (edit → wait_hmr → screenshot → locate → click cycle, ≥5 edit rounds). Record `vision_inference_count` + `vision_cost_usd_estimate` per 10-minute window. **Falsify** `MAX_VISION_COST_USD_PER_HR = 5` if p50 hourly projection > 4 (guess is too tight — raise default) OR p50 < 1.5 (guess is way too loose — lower default). **Confirm** if p50 is 1.5-4. Proposed default lands in `PHASE_0_5_FINDINGS.md`; phase 2 enforcement uses it, not the guess. |
 
-`PHASE_0_5_FINDINGS.md` will carry all flag values + E1/E2/E2b/E3 outcomes (falsify / commit / marginal) before phase 1 kickoff.
+`PHASE_0_5_FINDINGS.md` will carry all flag values + E1/E2/E2b/E3/E4 outcomes (falsify / commit / marginal) before phase 1 kickoff.
 
 ---
 
@@ -1021,7 +1164,7 @@ mcp/synthi-mcp/
 │   │   ├── locate.ts, describe.ts
 │   │   ├── get_event_log.ts, get_source_state.ts
 │   │   ├── get_usage.ts, set_quality.ts
-│   │   ├── set_goal.ts, checkpoint.ts
+│   │   ├── checkpoint.ts
 │   │   ├── acknowledge_disruption.ts, get_crash_info.ts, reset_guest.ts
 │   │   ├── acquire_input.ts, release_input.ts
 │   │   └── request_human.ts, annotate_and_ask.ts, recent_human_actions.ts
@@ -1045,8 +1188,8 @@ mcp/synthi-mcp/
 
 | File                                                                                      | Change                                                                                                   |
 |-------------------------------------------------------------------------------------------|----------------------------------------------------------------------------------------------------------|
-| `signaling-server/src/main.rs`                                                            | Protocol version handshake. Presence count reporting (humans/agents per session). Verify two-`"browser"`-peer allowance (pre-work #1); fix if needed. |
-| `worker/src/**`                                                                            | Input dispatch ack; window-tree-aware focus lock; WM_CLASS spoof check against `/proc/<pid>/exe`; encoder-timestamp frame tagging on `build-log`; per-session usage counters; context-aware sensitive-action; seccomp profile (permissive default); source-state reporter with `last_changed_files`; reset-guest support; synthetic HMR-overlay calibration hook; warming-progress reporter; migrating-state propagation; **structural-change pHash gate at HMR `applied` (full-frame + region-pHash paths, v4.1); pHash-unavailable fail-closed path; frame-at-queue capture for structural-change comparison (v4.1)**. |
+| `signaling-server/src/main.rs`                                                            | Protocol version handshake. Presence count reporting (humans/agents per session). **Multi-peer support (v4.2)**: `PeerKey` refactor from `(session_id, role)` to allow N peers per `observer` role OR keep 1:1 with MVP Path A (human detaches when MCP attaches). Route decided via Open item #7. **Known prior to phase 1: strictly 1:1 today** (research, v4.2). |
+| `worker/src/**`                                                                            | Input dispatch ack; window-tree-aware focus lock; WM_CLASS spoof check against `/proc/<pid>/exe`; encoder-timestamp frame tagging on `build-log`; **new `{type:"frame-advance", frame_seq, ts_ms}` data-channel message emitted alongside RTP writes (v4.2 — bridges frame-seq to MCP wire)**; per-session usage counters; context-aware sensitive-action; seccomp profile (permissive default); source-state reporter with `last_changed_files`; reset-guest support; synthetic HMR-overlay calibration hook; warming-progress reporter; migrating-state propagation; **structural-change pHash gate at HMR `applied` (full-frame + region-pHash paths, v4.1); pHash-unavailable fail-closed path; frame-at-queue capture for structural-change comparison (v4.1)**. |
 | `worker/src/compiler/stages/runner.rs`                                                    | Capture guest root PID + track descendant windows; binary-fingerprint registry; seccomp wrapper.          |
 | `collab-server/SessionManager.js`, `collabSessionService.js`                              | Session lifecycle state queryable via REST; warm endpoint; migrating-state hook.                         |
 
@@ -1067,7 +1210,7 @@ mcp/synthi-mcp/
 
 ### Phase 0.5 — Spike *(~5–6 days, before phase 1 spec freezes)*
 
-Deliberately minimal. Goal: surface assumptions before committing architecture. **v4.1 adds four named falsification experiments (E1/E2/E2b/E3) with explicit thresholds so the spike can invalidate the plan, not just measure it.**
+Deliberately minimal. Goal: surface assumptions before committing architecture. **v4.1 adds four named falsification experiments (E1/E2/E2b/E3) with explicit thresholds so the spike can invalidate the plan, not just measure it. v4.2 adds E4 (vision cost budget reality check) as a fifth experiment — gates phase-2 enforcement thresholds, not phase-1 behavior.**
 
 **Spike tool surface (deliberately partial):** stdio MCP server with `synthi_attach`, `synthi_screenshot` (no freshness SLA), `synthi_mouse.click` (coords only, no locator), `synthi_wait({condition:"hmr"})` **without** frame-seq gate, `synthi_keyboard.type` (no sensitive-action check). **Plus E1–E3 instrumentation probes** — these require locator + region-pHash tracking wired in the spike, because without them E2/E2b are unmeasurable. Instrumentation is probe-only (no semantic layer commitments beyond what's needed to produce E2/E2b data).
 
@@ -1087,7 +1230,7 @@ Deliberately minimal. Goal: surface assumptions before committing architecture. 
 
 #### Falsification experiments (v4.1)
 
-Each has a named threshold that either commits, falsifies, or marginally commits the corresponding plan decision. Spike does not conclude until all four produce findings; each finding recorded in `PHASE_0_5_FINDINGS.md`.
+Each has a named threshold that either commits, falsifies, or marginally commits the corresponding plan decision. Spike does not conclude until all five produce findings (E4 was added in v4.2); each finding recorded in `PHASE_0_5_FINDINGS.md`.
 
 **E1 — Frame-seq gate necessity.**
 - Protocol: 100 `wait_hmr` cycles on counter_sdl2 @ 60fps **without** the frame-seq gate (status-only wait). After each wait, immediately screenshot; compare against known post-HMR pixel signature (counter digit changed).
@@ -1117,6 +1260,14 @@ Each has a named threshold that either commits, falsifies, or marginally commits
 - **2.5–5s** → stays `claude_api` default, but phase-1 README carries "for interactive loops, set `preferred_vision_backend: 'agent_side'`" recommendation (not a default flip).
 - **Remediation prep (documentation-cascade avoidance):** during the spike, pre-write **both** README variants and both example per-client config snippets (`claude_api`-default, `agent_side`-default). At phase 1 freeze time, picking a variant is a 5-minute documentation choice, not a 2-day cascade through README / TESTING / per-client configs / example prompts.
 
+**E4 — Vision cost budget reality check (v4.2).**
+- Protocol: run a 30-minute Claude Code loop on counter_sdl2 under realistic agent usage — minimum 5 edit-HMR-screenshot-verify cycles with locator usage mixed in. Record `vision_inference_count` + `vision_cost_usd_estimate` per 10-minute window, extrapolate to an hourly projection at p50 and p95 across windows.
+- Why: `MAX_VISION_COST_USD_PER_HR = 5` is currently a guess. 5/hr against Opus pricing maps to ~300-500 `synthi_locate` calls/hour depending on frame size — potentially only 5-8 minutes of tight loop before quota. If realistic agent usage burns through $5/hr in 10 minutes, the default silently blocks phase-2 enforcement from being usable; if realistic usage barely touches $0.50/hr, the default is orders of magnitude high and real abuse slips through.
+- **p50 hourly projection > 4** → raise default (e.g., to ceiling(p95 + 25% headroom)). Phase-2 enforcement will surprise users at $5.
+- **p50 < 1.5** → lower default (e.g., to ceiling(p95 + 50% headroom)). Current default waves too much through.
+- **1.5 ≤ p50 ≤ 4** → confirm $5 default; note p95 in README so operators understand tail behavior.
+- **Remediation prep:** `PHASE_0_5_FINDINGS.md` carries the proposed default for phase-2 enforcement. Phase 1 is metric-only (unchanged), so E4's output is an enforcement-threshold input, not a phase-1 behavior change.
+
 Output: `PHASE_0_5_FINDINGS.md`. Re-anchors phase 1 scope if measurements surprise us.
 
 ### Phase 1 — MVP with correctness, security, versioning, observability *(~4 weeks)*
@@ -1124,26 +1275,28 @@ Output: `PHASE_0_5_FINDINGS.md`. Re-anchors phase 1 scope if measurements surpri
 Everything in this document lands in phase 1 *except* items in "deferred" below.
 
 **In scope:**
-- Universal-tier core 13 + operational 7 + escape hatches (wire) + arbitration wire (no enforcement).
+- Universal-tier core 13 + operational 6 *(v4.2: down from 7; `synthi_set_goal` removed)* + escape hatches (wire) + arbitration wire (no enforcement).
 - Capability manifest + protocol version negotiation + lazy tool advertisement.
 - Playwright-style compound actions; lazy locators with committed semantics; region-pHash cache with ±20% padding + 8px floor; `locator_resolution` on every handle dispatch; hint schema; auto-waiting.
 - Queue-and-apply input handling with structural-change gate on HMR `applied` (full-frame pHash threshold 16, region-pHash threshold 8 with `pHash_region` hint; fail-closed on decoder failure).
 - Unified `synthi_wait` with frame-seq gate (encoder-timestamp approach) — applied only for `applied`/`state-migrated`; error-terminal statuses resolve on status alone. (Ship decision gated on E1 outcome.)
-- `synthi_verify` with the five predicate kinds and discriminated evidence shape; `log` uses `since_seq`.
+- `synthi_verify` with **four** deterministic predicate kinds (`ocr`, `pixel`, `element_visible`, `log`) + `and`/`or` (depth ≤ 4, clauses ≤ 8 per level) and discriminated evidence shape; `log` uses `since_seq`. *(v4.2: `scene_matches` deferred to `K1`.)*
 - `synthi_get_source_state` with `last_changed_files` + source-state events in event log.
-- `synthi_reconnect` for transient-failure recovery.
+- `synthi_reconnect` for transient-failure recovery (WebRTC-layer only; process-crash requires fresh `synthi_attach` — documented).
 - Vision backend config: `claude_api` default, `agent_side` supported; per-session override via `synthi_attach`; `local` deferred to `PHASE_2_PLUS_BACKLOG.md:D6`.
 - Event log ring buffer + MCP resource subscriptions (`delta` envelope).
 - Server-enforced correctness table + error priority ladder — every row has worker/MCP enforcement + integration test + `required_tool_call` populated.
 - Security: focus lock (window-tree aware), WM_CLASS spoof check, guest seccomp (permissive default), context-aware sensitive-action, injection-heuristic pre-screen, rate limits, non-local signaling flag enforcement with per-attach persistence and envelope `unsafe_mode` flag.
 - Cost observability: Prometheus + `synthi_get_usage` + vision-cost estimate.
-- Session lifecycle enum (including `migrating`) + presence model + warming progress + warm endpoint + `synthi_reset_guest`.
+- Session lifecycle enum (including `migrating`) + presence model (observability-only in phase 1; agent-behavior contract deferred to `I2`) + warming progress + warm endpoint + `synthi_reset_guest`.
 - PNG default, perceptual-hash diff, `synthi_set_quality`.
 - Workspace package for shared letterbox math.
 - Dispatch-ack from worker on every input.
 - Request-id registry + cancellation (including in-flight Claude API call abort).
-- Graceful shutdown.
-- README with security banner, privacy notes, per-client config snippets.
+- Graceful shutdown + documented MCP-process crash semantics (§MCP process failure modes).
+- **Multi-peer signaling support** *(v4.2)* — `observer` role in signaling-server with SDP/ICE fan-out, OR explicit documentation that MCP takes browser slot (final choice tracked as open item 7 below).
+- **Frame-seq data-channel message** *(v4.2)* — `{type:"frame-advance", frame_seq, ts_ms}` emitted on `build-log` DC alongside RTP writes; bridges encoder-timestamp frame-seq into the MCP wire protocol.
+- README with security banner, privacy notes, per-client config snippets, Tier-1 CI scope clarity (Claude Code automated; others best-effort manual — `J1` tracks CI retrofit), MCP-process-crash guidance.
 
 **Deferred (phase 2+):**
 - Quota enforcement (metrics only in phase 1).
@@ -1160,6 +1313,10 @@ Everything in this document lands in phase 1 *except* items in "deferred" below.
 - Performance regression CI (see `PHASE_2_PLUS_BACKLOG.md:H1`).
 - Distributed tracing (see `PHASE_2_PLUS_BACKLOG.md:H5`).
 - Agent-prompting guide (see `PHASE_2_PLUS_BACKLOG.md:I2`).
+- Headless mock harnesses for Codex / Cursor / Gemini CLI / Windsurf CI coverage *(v4.2 — `PHASE_2_PLUS_BACKLOG.md:J1`)*.
+- `synthi_verify.scene_matches` VLM predicate *(v4.2 — `PHASE_2_PLUS_BACKLOG.md:K1`)*.
+- Cross-subprocess MCP session persistence *(v4.2 — `PHASE_2_PLUS_BACKLOG.md:L1`)*.
+- Reinstated `synthi_set_goal` with operator-UI use case *(v4.2 — `PHASE_2_PLUS_BACKLOG.md:L2`)*.
 
 ### Phase 2 — Distribution, enrichment, arbitration, operator UI *(~3 weeks — re-scope per `PHASE_2_PLUS_BACKLOG.md:G3`)*
 
@@ -1193,13 +1350,14 @@ Everything in this document lands in phase 1 *except* items in "deferred" below.
 
 Findings published in `PHASE1_PREWORK.md` before we commit to phase-1 scope. Each is 0.5–1 day.
 
-1. **Two-`"browser"`-peer allowance.** Read `signaling-server/src/main.rs` peer-routing; run two browser tabs on one session; observe. If disallowed → phase-4 `mcp-agent` role moves into phase 1 (material scope bump).
+1. **~~Two-`"browser"`-peer allowance~~. RESOLVED (v4.2 research).** `signaling-server/src/main.rs:82,266-302,311-315` — `PeerKey = (session_id, role)`, strict binary `browser|worker`, zero multi-peer infra. Outcome: phase 1 requires either (a) `observer` role with SDP/ICE fan-out (~20-50 LOC Rust + tests) OR (b) MVP Path A (human detaches when MCP attaches). Ultraplan recommends (a) for phase 1; MVP user decides.
 2. **HMR status emission audit.** Grep worker for emission sites of each of the 10 statuses in `HMRStatusIndicator.jsx`. Reconcile. If <10 actually emitted → plan depends on statuses that don't exist, and either worker work moves into phase 1 or the correctness table shrinks.
 3. **Existing usage counters.** Does collab-server or worker already count tool calls / egress / hot-time? If yes, extend; if no, add fresh.
-4. **Encoder timestamp availability.** Confirm GStreamer pipeline configuration can expose capture timestamps on outgoing H.264 frames (RTP `abs-capture-time` extension or equivalent). If not → fallback to seq-count approach; document.
+4. **Encoder timestamp availability.** Partial resolution (v4.2 research): RTP packet counter at `video_pipeline.rs:609`, GStreamer `pts` available. Still needs bridging to a new data-channel message (`{type:"frame-advance", ...}`). Phase 0.5 confirms the bridging hook works under load; seq-count fallback remains.
 5. **Guest root-PID capture.** Does `runner.rs` already track the guest process PID at program start? If yes, wire to focus-lock; if no, small addition.
 6. **Binary fingerprint registry (v4).** Does the worker already record the exec path of the guest program? If yes, extend for WM_CLASS cross-check; if no, small addition on program-start path.
 7. **Presence count source (v4).** Signaling-server maintains per-session peer map for registration; confirm it can emit peer-count deltas without additive latency.
+8. **MCP process crash recovery pattern *(v4.2)*.** Confirm each top-client MCP implementation (Claude Code, Codex, Cursor, Gemini CLI, Windsurf) handles stdio EOF cleanly — auto-respawns subprocess + marks in-flight tool call as failed. Known for Claude Code; others best-effort-verify during Tier-1 manual QA.
 
 ---
 
@@ -1234,6 +1392,12 @@ Three, compiled and run in the worker:
 - `reconnect_shape.test.ts` *(v4.1)* — per-handle status enum transitions; event-log degradation fields; zero-survivors → `session_terminated` (not empty-ok).
 - `region_phash_cache.test.ts` *(v4.1)* — padded-bbox capture; cached / region_match / re_resolved modes; reason codes; 8px floor on thin elements.
 - `locator_resolution_exposure.test.ts` *(v4.1)* — `locator_resolution` emitted on cached hits, not just re-resolves; distance field present when computed.
+- `verify_predicate_kinds.test.ts` *(v4.2)* — phase 1 accepts `ocr|pixel|element_visible|log|and|or`; rejects `scene_matches` with `verify_scene_matches_unsupported` and `required_tool_call: synthi_describe`.
+- `verify_predicate_bounds.test.ts` *(v4.2)* — depth 5 trees rejected with `verify_predicate_too_deep`; 9-clause levels rejected with `verify_predicate_too_many_clauses`; both carry `required_tool_call` suggesting decomposition.
+- `reconnect_ordering.test.ts` *(v4.2)* — race `running → migrating` transition against `synthi_reconnect`; assert reconnect response reflects post-transition `session.state` (not pre-transition snapshot).
+- `mcp_process_crash.test.ts` *(v4.2)* — kill MCP subprocess mid-tool-call; assert client sees stdio EOF; new subprocess must call `synthi_attach`, not `synthi_reconnect`; assert `synthi_reconnect` against fresh subprocess returns `session_terminated`.
+- `presence_observability.test.ts` *(v4.2)* — envelope carries `attached_humans/agents` but server emits **no** behavior-modification contract; PTY log-line fires on attach/detach of humans and agents.
+- `operational_count.test.ts` *(v4.2)* — Operational tool list has exactly 6 (set_goal absent); capability manifest reflects count.
 
 ### Layer 2 — integration (real docker-compose)
 
@@ -1271,6 +1435,10 @@ One test per correctness-table row, minimum. Plus:
 - `region_phash_animated.test.ts` *(v4.1)* — particle-demo fixture; region-pHash cache hit rate > threshold; full-frame <30%. Also asserts re-resolution cost distribution captured.
 - `pHash_region_hint.test.ts` *(v4.1)* — raw-coord input queued with `pHash_region` hint; structural change in unrelated panel passes through; structural change in hint region flushes.
 - `locator_resolution_cached_hits.test.ts` *(v4.1)* — cached-mode dispatch still emits `locator_resolution` with distance field; agents can aggregate hit-rate client-side.
+- `multi_peer_signaling.test.ts` *(v4.2 — Path B only)* — MCP attaches while human browser is connected; both receive SDP/ICE; both get data-channels; `attached_humans=1, attached_agents=1` on envelope.
+- `mcp_replaces_browser.test.ts` *(v4.2 — Path A only)* — MCP attach evicts human browser with `[UNSAFE HUMAN-REPLACE]` banner; human reconnect restores; event log records the swap.
+- `frame_advance_message.test.ts` *(v4.2)* — `{type:"frame-advance", frame_seq, ts_ms}` emitted on `build-log` DC under load; MCP's `synthi_wait(hmr)` consumes it; fallback frame-interval path still passes when messages are dropped.
+- `vision_cost_measurement.test.ts` *(v4.2 — phase 0.5 probe)* — drives a 30-min Claude Code loop on counter_sdl2; asserts `vision_cost_usd_estimate` computed per window; feeds E4 output file.
 
 ### Layer 3 — end-to-end (real agent harnesses)
 
@@ -1312,7 +1480,11 @@ Invariant: no agent makes a decision on stale data. Either structured error or t
 | `@roamhq/wrtc` bus-factor                                            | M          | H      | `werift` fallback, env-selectable.                                                                                      |
 | Claude API vision cost                                               | M          | M      | Frame-seq caching; agent-side mode documented; per-session selection; cost metric surfaced; quota planned phase 2.      |
 | Claude API privacy                                                   | M          | H      | `SYNTHI_VISION_BACKEND=agent_side\|disabled` day one; per-attach override; loud README section.                          |
-| Signaling rejects two `"browser"` peers                              | M          | M      | Pre-work #1 resolves before commit. If false: phase 4 moves up.                                                         |
+| ~~Signaling rejects two `"browser"` peers~~                          | Known      | M      | Confirmed rejected (v4.2 research). Path A (MCP takes browser slot) preserves MVP budget; Path B (add `observer` role) adds ~1-2 days to phase 1 signaling work. Open item #7 resolves pick.     |
+| Multi-peer signaling refactor lands buggy                            | M          | M      | Minimal change: `PeerKey` refactor + fan-out only to SDP/ICE messages, unchanged for other types. Integration test for 1 browser + 1 MCP on same session before phase 1 closes.                  |
+| MCP Node process crashes leave session unreachable                   | M          | M      | Documented contract: stdio EOF → clean MCP error → client respawns → fresh `synthi_attach`. Session state loss is expected, not a bug. Persistence layer is `L1` if/when usage evidence demands.   |
+| Vision cost default (`MAX_VISION_COST_USD_PER_HR`) misses realistic usage | M     | L      | E4 pressure-tests the default on a realistic 30-min Claude Code loop before phase 1 freeze. Ship the measured default, not the $5 guess.                                                        |
+| Pathological `synthi_verify` predicate DoS                           | L          | M      | Depth ≤ 4, clause count ≤ 8 per level enforced at predicate-parse time. Violation returns structured error; no engine cycles spent on pathological trees.                                       |
 | HMR status coverage incomplete                                       | M          | M      | Pre-work #2 audits now. Unknown statuses are forward-compat by design.                                                  |
 | Encoder timestamps unavailable on current GStreamer                  | L          | M      | Pre-work #4. Fallback: seq-count approach with measured frame interval.                                                 |
 | Synthetic HMR-overlay calibration hook unavailable                   | L          | M      | Fall back to 80ms default; Phase 0.5 measures whether this default is sufficient.                                       |
@@ -1339,9 +1511,11 @@ Invariant: no agent makes a decision on stale data. Either structured error or t
 
 **Flagged as Phase 0.5 measures in v4:** B2 (input queue cap), F2 (recal cadence), F4 (frame-interval precision).
 
-**Deferred to `PHASE_2_PLUS_BACKLOG.md` with explicit tickets:** D6 (local vision architecture), G3 (phase 2 re-scope), H1 (perf regression CI), H5 (distributed tracing), I2 (agent-prompting guide).
+**Deferred to `PHASE_2_PLUS_BACKLOG.md` with explicit tickets:** D6 (local vision architecture), G3 (phase 2 re-scope), H1 (perf regression CI), H5 (distributed tracing), I2 (agent-prompting guide), **J1 (Tier-1 CI retrofit for non-Claude-Code clients, v4.2)**, **K1 (`scene_matches` VLM predicate, v4.2)**, **L1 (cross-subprocess session persistence, v4.2)**, **L2 (`synthi_set_goal` with operator-UI use case, v4.2)**.
 
 **Tier-1 items resolved in v4.1:** structural-change race closure (new error codes + `pHash_region` hint), `synthi_reconnect` preserved-state discriminated shape + zero-survivors rule, region-pHash locator cache with padding + `locator_resolution` on all dispatches, E1/E2/E2b/E3 named falsification experiments with explicit thresholds, E3 documentation-cascade avoidance via pre-drafted README variants.
+
+**Tier-1 items resolved in v4.2:** `synthi_verify.scene_matches` deferred (scope discipline) + predicate depth/clause caps; `synthi_set_goal` removed (tool-surface discipline); Tier-1 CI scope tightened to Claude Code + `J1` ticket; `attached_humans` demoted to observability + agent-behavior contract moved to `I2`; `synthi_reconnect` state-observation ordering committed; MCP process failure modes section added; WebRTC pipeline reuse audit resolved pre-work #1 + #4 partial; E4 vision-cost reality check added to Phase 0.5.
 
 **Still open (pre-Phase-0.5):**
 
@@ -1351,6 +1525,10 @@ Invariant: no agent makes a decision on stale data. Either structured error or t
 4. **Operator UI scope for phase 2.** Minimum (badge + kill switch) or full (badge + feed + action-preview + audit + kill + unsafe-mode indicator)? Proposal: full — this is what "trust for hours unattended" needs.
 5. **Binary fingerprint registry seed (v4).** Phase-1 initial registry contents — who maintains it, how it grows per-fixture? Proposal: `worker/src/security/binary_registry.rs` with starting list + per-fixture CI check that new languages add their entry.
 6. **Structural-change pHash thresholds (v4.1).** Asymmetric 16 (full-frame flush) vs 8 (region-scoped flush) are initial guesses. E1-adjacent measurements in phase 0.5 inform. Currently a plan-commit with empirical-validation-required label.
+7. **Multi-peer signaling path (v4.2).** Path A (MCP takes browser slot; human detaches) vs Path B (signaling-server `observer` role with SDP/ICE fan-out). Ultraplan recommends **Path B** for phase 1 (matches agent-as-observer product model); MVP user chooses for the 2-4 day build. Decision informs `signaling-server/src/main.rs` scope + `AGENT_MCP_MVP.md` scope clarity.
+8. **Presence observability surface (v4.2).** PTY log line vs host-UI badge vs both for `attached_humans/agents` observability. Proposal: both — a PTY line on attach/detach (trivial; surfaces in existing terminal) plus a small badge in the existing host session toolbar (reuses `SessionToolbar.*`). No new UI component required.
+9. **E4 default for `MAX_VISION_COST_USD_PER_HR` (v4.2).** Phase 0.5 measures; decision is data-input for phase 2 enforcement, not a phase 1 behavior change. Phase 0.5 output sets the post-measurement default in `PHASE_0_5_FINDINGS.md`.
+10. **MCP process crash pattern per top-4 clients (v4.2).** Pre-work #8 verifies Claude Code, Codex, Cursor, Gemini CLI, Windsurf all handle stdio EOF → respawn → fresh `synthi_attach` without stuck sockets. Best-effort verification during Tier-1 manual QA.
 
 ---
 
@@ -1358,25 +1536,33 @@ Invariant: no agent makes a decision on stale data. Either structured error or t
 
 Before Phase 0.5:
 
-- [ ] Phase 0.5 scope acceptable as a ~5–6 day deliberate-crap spike with E1/E2/E2b/E3 instrumentation.
-- [ ] Pre-work items 1–7 scheduled before phase 1 spec freezes.
-- [ ] 6 open items above answered (or "your call").
+- [ ] Phase 0.5 scope acceptable as a ~5–6 day deliberate-crap spike with E1/E2/E2b/E3/E4 instrumentation.
+- [ ] Pre-work items 1–8 scheduled before phase 1 spec freezes (item 1 + 4 partially resolved by v4.2 research; items 2–3, 5–8 remain to do).
+- [ ] 10 open items above answered (or "your call").
 - [ ] Phase 0.5 measure flags (B2, F2, F4) acknowledged as values filled by spike, not phase 1 guesses.
-- [ ] Phase 0.5 falsification experiments (E1, E2, E2b, E3) acknowledged — each can invalidate a phase-1 commitment (frame-seq gate, locator cache, region-pHash, vision-backend default).
+- [ ] Phase 0.5 falsification experiments (E1, E2, E2b, E3, **E4** — v4.2) acknowledged — each can invalidate a phase-1 commitment or quota default (frame-seq gate, locator cache, region-pHash, vision-backend default, vision cost budget).
 - [ ] Particle-demo SDL2 fixture scoped for E2b (new fixture may add 0.5 day).
 - [ ] Both README variants (claude_api-default + agent_side-default) drafted during spike to pre-empt E3 documentation cascade.
-- [ ] Phase 2+ backlog items (D6, G3, H1, H5, I2) reviewed in `PHASE_2_PLUS_BACKLOG.md`.
+- [ ] **Multi-peer signaling path decided (v4.2)** — Path A (MCP replaces browser) or Path B (`observer` role with fan-out). Affects `signaling-server` + MVP scope.
+- [ ] **`synthi_verify` predicate surface acknowledged (v4.2)** — phase 1 kinds = `ocr`/`pixel`/`element_visible`/`log`/`and`/`or`; `scene_matches` deferred to `K1`; depth ≤ 4, clauses ≤ 8 per level.
+- [ ] **`synthi_set_goal` removal acknowledged (v4.2)** — Operational drops 7 → 6; `synthi_checkpoint` absorbs intent-tagging; graduation to phase 2 gated on operator-UI use case (`L2`).
+- [ ] **Tier-1 CI scope acknowledged (v4.2)** — phase 1 = Claude Code CI-automated; others best-effort manual. `J1` ticket tracks CI retrofit.
+- [ ] **Presence model observability-only in phase 1 (v4.2)** — agent-behavior contract deferred to `I2`. PTY log-line + optional badge deliverable confirmed.
+- [ ] **MCP process failure modes section (v4.2)** — reviewed; `synthi_reconnect` WebRTC-layer-only vs fresh-attach-on-subprocess-crash distinction clear.
+- [ ] Phase 2+ backlog items (D6, G3, H1, H5, I2, **J1, K1, L1, L2** — v4.2) reviewed in `PHASE_2_PLUS_BACKLOG.md`.
 
 Before Phase 1:
 
 - [ ] Phase 0.5 findings reviewed.
-- [ ] E1/E2/E2b/E3 outcomes decided (falsify / commit / marginal) and phase 1 scope reflects outcomes.
+- [ ] E1/E2/E2b/E3/E4 outcomes decided (falsify / commit / marginal) and phase 1 scope reflects outcomes.
 - [ ] If E1 marginal: **E1b** (re-run at 30fps + VFR) added to phase 1 exit criteria.
 - [ ] If E2 falsifies: locator cache dropped from phase 1 (stateless-per-call).
 - [ ] If E2b ships region-pHash: region-pHash implementation accepted in worker + MCP.
 - [ ] If E3 flips default: `agent_side` README variant picked; `claude_api` variant archived.
+- [ ] **E4 output sets `MAX_VISION_COST_USD_PER_HR` default for phase 2 enforcement (v4.2)** — phase 1 behavior unchanged (metric-only); phase 2 enforces the measured value, not $5.
 - [ ] Phase 1 scope confirmed (up from ~10 days in v2 to ~4 weeks realistic).
-- [ ] Worker changes in scope accepted (dispatch ack, window-tree focus, WM_CLASS spoof check, encoder-timestamp tagging + synthetic-HMR calibration hook, source-state reporter with file list, seccomp, context-aware sensitive-action, usage counters, reset-guest, warming-progress reporter, migrating-state propagation, presence-count emission, region-pHash capture on locator handles, structural-change pHash gate on queued inputs).
+- [ ] Worker changes in scope accepted (dispatch ack, window-tree focus, WM_CLASS spoof check, encoder-timestamp tagging + synthetic-HMR calibration hook, source-state reporter with file list, seccomp, context-aware sensitive-action, usage counters, reset-guest, warming-progress reporter, migrating-state propagation, presence-count emission, region-pHash capture on locator handles, structural-change pHash gate on queued inputs, **`frame-advance` data-channel emission (v4.2)**).
+- [ ] **Signaling-server changes in scope accepted (v4.2)** — multi-peer support per Path B, OR Path A documentation + UX work.
 - [ ] Vision-backend default confirmed (per E3 outcome); per-attach override shape accepted.
 
 On green light: Phase 0.5 → findings → Phase 1 spec freeze → Phase 1 execute → demo against SDL2 + Swing fixtures → phase 2 gate.
