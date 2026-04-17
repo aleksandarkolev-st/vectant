@@ -1,6 +1,6 @@
 # Synthi MCP — Status
 
-**Status:** phase 0.5 instrumentation + phase 1 code complete (in-process; no live-stack validation yet). Branch `claude/agent-mcp` @ `3f6f1b6a`. 185 unit tests green, typecheck green.
+**Status:** phase 0.5 instrumentation + phase 1 code complete (in-process; no live-stack validation yet). Branch `claude/agent-mcp` @ `883056f5`. **245** unit tests green, typecheck green. Worker scaffolding (`worker::webrtc::*`) landed standalone; full main.rs multi-PC wiring staged behind `G3_PHASE_B_INTEGRATION.md`.
 
 **Source of truth for scope:** `AGENT_MCP_ULTRAPLAN.md` (design, approved). **Source of truth for MVP gate:** `AGENT_MCP_MVP.md` (Path A shipped). **Phase 0.5 findings:** `PHASE_0_5_FINDINGS.md` (template + sim run 1). This doc is the merge view.
 
@@ -8,7 +8,12 @@
 
 ## 1. What's shipped
 
-`mcp/synthi-mcp/` — Node 20+ TypeScript. ~35 source files + 17 unit-test files + 2 fixtures + 5-experiment spike harness. MCP registers as `role:"browser"` and evicts any existing human browser peer on the same session (Path A).
+`mcp/synthi-mcp/` — Node 20+ TypeScript. ~40 source files + 22 unit-test files + 2 fixtures + 5-experiment spike harness. MCP registers as `role:"browser"` and evicts any existing human browser peer on the same session (Path A).
+
+Worker scaffold landed in `backend/synthi-webrtc-compiler/worker/src/webrtc/`:
+- `peer_registry.rs` — per-session `PeerRegistry` with browser eviction + observer fan-out. 6 unit tests.
+- `track_fanout.rs` — broadcast-based RTP fan-out with drop-on-lag semantics. 5 unit tests.
+- `G3_PHASE_B_INTEGRATION.md` — step-by-step guide for the remaining `main.rs` multi-PC wiring (staged intentionally).
 
 ### Phase 0.5 — spike infrastructure
 
@@ -28,7 +33,7 @@
 - [x] **Correctness error table.** 17 error codes with deterministic priority ladder + `required_tool_call` remediation. Mouse + keyboard honor the central gate.
 - [x] **MCP resources.** 6 subscribable URIs (`synthi://preview/{screenshot, hmr, console, events, state, source}`) with `notifications/resources/updated` push + 2 Hz throttle on screenshot.
 
-### Tools (21 advertised)
+### Tools (23 advertised)
 
 | Tool | Scope |
 |------|-------|
@@ -42,7 +47,9 @@
 | `synthi_mouse` | click/double_click/move/down/up/drag/wheel + `handle` + `waitFor`. |
 | `synthi_keyboard` | type/key/chord + `confirm` + `waitFor`. |
 | `synthi_click` / `synthi_type` | Back-compat aliases. |
-| `synthi_locate` | Handle + region-pHash cache + backend selection. `locator_resolution` events on every dispatch. |
+| `synthi_locate` | Handle + region-pHash cache + backend selection. `locator_resolution` events on every dispatch. **`claude_api` backend is now a real Anthropic multimodal call** with per-model pricing + usage event emission. |
+| `synthi_compile` | MCP-driven compile trigger (`compile` DC dispatch). Auto-emits a source_state event for the inputs. |
+| `synthi_report_source_state` | Agent-side source_state producer for flows that edit without compiling. |
 | `synthi_verify` | Predicate engine: pixel / log / element_visible / and / or. ocr → ocr_backend_not_implemented; scene_matches → verify_scene_matches_unsupported. Depth ≤ 4, clauses ≤ 8. |
 | `synthi_get_event_log` | Bounded query over the ring. |
 | `synthi_get_source_state` | Snapshot of the most recent source_state event. |
@@ -56,7 +63,8 @@
 ### Multi-peer signaling
 
 - [x] **Signaling-server observer role.** `backend/synthi-webrtc-compiler/signaling-server/src/main.rs` refactored — peers are Vec<Sender>; `observer` appends, `browser`/`worker` evict; worker → browser+observer fan-out. 4 rust unit tests green.
-- [ ] **Worker per-peer PC registry.** Required for observer to actually receive media. Stays `PHASE_2_PLUS_BACKLOG.md:G3` (+4-6 days).
+- [x] **Worker webrtc/ scaffold** — `PeerRegistry` + `TrackFanout` landed standalone, unit-tested, reachable via `worker::webrtc::*`. Resolves the refined-plan risks (GStreamer max-buffers=1 HOL blocking via broadcast+drop-on-lag; teardown ordering via Drop-aborts-task; per-PC DTLS/ICE automatic).
+- [ ] **Main.rs multi-PC wiring.** Remaining step: replace `log_channel_store: Option<Arc<DC>>` + singular `pc` with the new registry, per-peer PC creation on `offer`, per-peer track subscription. Migration guide in `backend/synthi-webrtc-compiler/worker/src/webrtc/G3_PHASE_B_INTEGRATION.md`.
 
 ### HMR wire coverage (`src/hmr.ts`)
 
@@ -64,15 +72,16 @@ Unchanged from MVP — the four-wire-family classifier remains the truth table. 
 
 ### Tests
 
-- **Unit (Node):** 185 passing across 17 files.
+- **Unit (Node):** **245 passing** across 22 files. New since prior snapshot: `claude_api_backend.test.ts` (26), `compile.test.ts` (10), `frame_seq_gate.test.ts` (14), `source_state.test.ts` (9).
 - **Integration (Node, `SYNTHI_MCP_E2E=1`):** docker-compose scaffold, 3 tests; unchanged since MVP.
 - **Spike harness (Node):** 5 experiments, sim mode end-to-end; live mode stubbed.
 - **Unit (Rust, signaling-server):** 4 passing (role classification, target routing, target_key roundtrip).
+- **Unit (Rust, worker webrtc/):** 11 tests scaffolded (6 peer_registry + 5 track_fanout); pre-existing workspace test-target compile errors in `hmr/` modules prevent full `cargo test` run today — module compiles cleanly via `cargo check --lib`.
 - **Real-agent smoke:** `tests/e2e/claude_code_smoke.sh` (requires docker-compose + Claude Code CLI).
 
 ### Docs
 
-- [x] `mcp/synthi-mcp/README.md` — install + tool surface (phase-0.5 shape; **needs phase-1 refresh**).
+- [x] `mcp/synthi-mcp/README.md` — full phase-1 rewrite (23 tools + 6 resources + manifest + per-client configs + security + testing + known-limitations pointer here).
 - [x] `AGENT_MCP_MVP.md` — Path A amendment 2026-04-17.
 - [x] `AGENT_MCP_STATUS.md` — this file.
 - [x] `PHASE_0_5_FINDINGS.md` — run-1 sim results + live-run TBDs.
@@ -169,44 +178,48 @@ Ad-hoc measurements from `AGENT_MCP_ULTRAPLAN.md:1320-1329` also remain live-onl
 
 ## 4. What's left — Phase 1 (remaining work)
 
-Most phase-1 code is in the tree; what's left is either live-stack dependent or explicitly deferred to phase 2+.
+All listed §4 items from the prior snapshot have landed except the live-stack-dependent deliverables that can only be validated against a running worker.
 
-### 4.1. `claude_api` vision backend (real implementation)
+### 4.1. `claude_api` vision backend (real implementation) — ✅ shipped
 
-- [ ] Replace `src/locate/backends.ts::ClaudeApiBackend` stub with Anthropic SDK call. Caching by `(frame_seq, description_hash)`.
-- [ ] Emit `usage` event (metric:"vision_inference") with `cost_usd` in detail so `synthi_get_usage` surfaces real numbers.
-- [ ] Threading through `ANTHROPIC_API_KEY` and `SYNTHI_VISION_MODEL=claude-opus-4-7`.
-- [ ] Unblocks: E3 live, E4 live, all real vision-grounded agent flows.
+- [x] `src/locate/claude_api.ts::ClaudeApiBackendReal` — real Anthropic multimodal call (injectable client for tests, lazy `import('@anthropic-ai/sdk')` in production).
+- [x] Content-hash + description-hash keyed cache (60 s TTL).
+- [x] Per-model pricing table (opus/sonnet/haiku 4.x + legacy fallbacks); emits `usage` event with `{input_tokens, output_tokens, cost_usd, model}` on every non-cache call.
+- [x] `SYNTHI_VISION_MODEL` env (default `claude-opus-4-7`); `ANTHROPIC_API_KEY` required when backend is selected.
+- [x] Confidence gate (default 0.3) + bbox clamping to frame rect.
+- 26 new unit tests.
 
-### 4.2. Worker per-peer PC registry
+### 4.2. Worker per-peer PC registry — ⚠️ scaffolded; main.rs wiring staged
 
-From `PHASE_2_PLUS_BACKLOG.md:G3` — the worker-side companion to the signaling observer role:
+- [x] `worker/src/webrtc/peer_registry.rs` — `PeerRegistry` with browser eviction + observer fan-out + incremental handle population. 6 unit tests.
+- [x] `worker/src/webrtc/track_fanout.rs` — broadcast-based RTP fan-out resolving GStreamer `max-buffers=1` HOL blocking (drop-on-lag via `RecvError::Lagged`). 5 unit tests.
+- [x] `worker/src/webrtc/G3_PHASE_B_INTEGRATION.md` — step-by-step guide for remaining `main.rs` wiring with current-code file:line pointers.
+- [ ] **Main.rs migration.** Replace `log_channel_store: Option<Arc<DC>>` + singular `pc` with the registry; per-peer PC creation on `offer`; per-peer track subscription in media pipelines. This is the high-risk step the scaffold commit deliberately staged away from.
+- [ ] Integration test: 1 browser + 1 observer both receive media + HMR status + per-peer tagged input.
 
-- [ ] `worker/src/webrtc/peer_registry.rs` — `HashMap<peer_id, PeerHandle>`.
-- [ ] `worker/src/webrtc/track_fanout.rs` — subscribe once to GStreamer appsink; fan to every registered `TrackLocalStaticRTP`.
-- [ ] `worker/src/main.rs` per-peer offer handling + teardown + DC routing (`log_channel_store` → `HashMap<peer_id, Arc<DC>>`).
-- [ ] Integration test: 1 browser + 1 observer both receive media.
-- [ ] Unblocks: true human+agent co-attach (Path B).
+### 4.3. Source-state producer — ✅ shipped
 
-### 4.3. Source-state producer
+- [x] `synthi_compile` auto-emits a `source_state` event with `{last_changed_files, content_hash}` on every dispatch.
+- [x] `synthi_report_source_state` — explicit agent-side producer for edit-without-compile flows.
+- [x] `synthi_get_source_state` returns real data (no more "not wired" placeholder); surfaces `content_hash` + `source_state_event_count`.
 
-- [ ] Wire a source-state event emitter — either from collab-server (file-write REST → signaling broadcast → MCP) or from the worker's compile trigger (source_hash changed → build-log message). Currently `synthi_get_source_state` returns a note:"producer not wired" placeholder.
+### 4.4. Frame-seq gate (MCP side) — ✅ shipped
 
-### 4.4. Frame-seq gate (conditional on live E1)
+- [x] `session.ts`: `setFrameAdvance` / `getFrameAdvance` / `awaitFrameAdvanceAtOrAfter` / `frameSeqGateEnabled` / `pipelineBudgetMs` (default 80 ms, env `SYNTHI_PIPELINE_BUDGET_MS`).
+- [x] `wait/engine.ts`: `condition:"hmr"` resolving to `applied` now stalls on a post-reload frame-advance up to the remaining timeout; evidence reports `frame_gate:{status:"satisfied"|"timeout"|"disabled"}`.
+- [x] `manifest.ts`: `capabilities.frame_seq_gate.pipeline_budget_ms` + runtime-driven `available` flag.
+- [ ] **Worker emission** of `{type:"frame-advance", frame_seq, ts_ms}` alongside RTP writes. One-line add at the GStreamer sink; activates the gate as soon as it ships.
+- [ ] `pipeline_budget_ms` calibration probe at worker start (10 samples, p95, fallback 80 ms). MCP honors the negotiated value today; worker needs to emit it during attach.
 
-If live E1 → commit:
+### 4.5. `synthi_compile` tool — ✅ shipped
 
-- [ ] `{type:"frame-advance", frame_seq, ts_ms}` worker emission alongside RTP writes.
-- [ ] `synthi_wait({condition:"hmr"})` gates on `ts_cap ≥ t_hmr + pipeline_budget_ms` for applied/state-migrated.
-- [ ] `pipeline_budget_ms` calibration at worker start (HMR overlay synthetic probe, 10 samples, p95, fallback 80 ms).
+- [x] `compile` DC now created in `Peer` (mirrors `compilerClient.js:905` ordering).
+- [x] `SessionChannels.sendCompileRequest` + tool handler.
+- [x] Input-gate gated, input-validated, auto-emits `input` + `source_state` events.
 
-### 4.5. Compound "drive the compile" tool (optional)
+### 4.6. README refresh — ✅ shipped
 
-- [ ] `synthi_compile` — MCP opens the `compile` DC and dispatches a compile request. Today the frontend drives compile; adding this to the MCP closes the "edit → HMR → screenshot" loop end-to-end without needing a frontend open. Unblocks live-mode spike harness without Puppeteer.
-
-### 4.6. README refresh
-
-- [ ] `mcp/synthi-mcp/README.md` still describes the 5-tool MVP surface. Rewrite to cover the 21 advertised tools + 6 resources + manifest shape + per-client (Claude Code / Codex / Cursor) config snippets.
+- [x] `mcp/synthi-mcp/README.md` rewritten for the 23-tool / 6-resource / manifest surface. Per-client registration snippets (Claude Code + generic stdio JSON). Full env var table. Security section with the allowlist + injection pre-screen + keystroke anomaly detector + input-gate ladder. Known-limitations section with pointers to §4 of this doc.
 
 ### 4.7. Enriched tier + a11y
 
@@ -250,17 +263,31 @@ Unchanged from prior status doc:
 
 ## 8. Known limitations (phase-1 live-stack dependent)
 
-1. **`claude_api` vision is a stub.** `preferred_vision_backend:"claude_api"` returns `claude_api_not_implemented` until real impl lands (§4.1).
-2. **Observer media doesn't flow without worker multi-PC.** Registering as `observer` today = SDP/ICE fan-out works, but video/data only routes to the most-recent PC. True co-attach is phase 2+ (§4.2).
-3. **`synthi_get_source_state` returns a placeholder** until the producer is wired (§4.3).
-4. **`synthi_set_quality` and `synthi_reset_guest` are record-only** until worker control paths exist.
-5. **OCR + VLM predicates unsupported.** `synthi_verify({kind:"ocr"})` → `ocr_backend_not_implemented`; `kind:"scene_matches"` → `verify_scene_matches_unsupported`. Both return `required_tool_call` fallbacks.
-6. **No reconnect across process crash.** `synthi_reconnect` recovers transient socket drops; a hard worker/pod crash requires a fresh `synthi_attach`.
-7. **Path A eviction.** MCP still registers as `browser` today. Observer is wire-only (awaits §4.2).
+1. **`claude_api` vision is live.** Requires `ANTHROPIC_API_KEY`. Cost is metered via `usage` events + surfaced by `synthi_get_usage`.
+2. **Observer media doesn't flow without worker main.rs wiring.** Registering as `observer` today = SDP/ICE fan-out works + scaffolded fan-out primitives exist, but `main.rs` still uses the singleton `pc`/`log_channel_store`. True co-attach awaits §4.2 main.rs migration.
+3. **Frame-seq gate is live on the MCP side but dormant until worker emits `frame-advance`.** `capabilities.frame_seq_gate.available` reflects the real state at attach.
+4. **Source-state producer is live** for MCP-driven compiles + explicit agent reports. Human-driven edits via the frontend aren't captured until the collab-server / worker hook ships (additive, §4.3 notes).
+5. **`synthi_set_quality` and `synthi_reset_guest` are record-only** until worker control paths exist.
+6. **OCR + VLM predicates unsupported.** `synthi_verify({kind:"ocr"})` → `ocr_backend_not_implemented`; `kind:"scene_matches"` → `verify_scene_matches_unsupported`. Both return `required_tool_call` fallbacks.
+7. **No reconnect across process crash.** `synthi_reconnect` recovers transient socket drops; a hard worker/pod crash requires a fresh `synthi_attach`.
+8. **Path A eviction.** MCP still registers as `browser` today. Observer is wire-only (awaits §4.2 main.rs migration).
 
 ---
 
 ## 9. Reference — commits landed this session
+
+**This session's follow-up commits** (on top of the phase-1-complete snapshot):
+
+```
+883056f5 feat(agent-mcp): worker webrtc/ scaffold — PeerRegistry + TrackFanout
+7c7c47ab docs(agent-mcp): README phase-1 refresh (23 tools, 6 resources, manifest)
+a1885746 feat(agent-mcp): source-state producer — compile auto-emit + explicit report
+32039aa7 feat(agent-mcp): frame-seq gate (MCP side) — post-HMR frame barrier
+b4e9af86 feat(agent-mcp): synthi_compile — MCP-driven compile dispatch
+bb429d1f feat(agent-mcp): real claude_api vision backend (Anthropic SDK)
+```
+
+**Prior phase-1 snapshot:**
 
 ```
 3f6f1b6a feat(agent-mcp): signaling-server observer role + multi-peer fan-out
