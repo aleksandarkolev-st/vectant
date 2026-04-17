@@ -31,6 +31,7 @@ export interface AttachedSession {
   readonly channels: SessionChannels;
   readonly buildLogDC: wrtc.RTCDataChannel;
   readonly terminalDC: wrtc.RTCDataChannel;
+  readonly compileDC: wrtc.RTCDataChannel;
   readonly resolution: { width: number; height: number };
 }
 
@@ -174,11 +175,12 @@ class SessionManager {
     const peer = new Peer({ signaling, connectTimeoutMs: attachTimeoutMs });
     await peer.start();
 
-    // Wait for the peer connection to reach connected + build-log + terminal.
-    const [, buildLogDC, terminalDC] = await Promise.all([
+    // Wait for the peer connection to reach connected + build-log + terminal + compile.
+    const [, buildLogDC, terminalDC, compileDC] = await Promise.all([
       peer.ready.connected,
       peer.ready.buildLogDC,
       peer.ready.terminalDC,
+      peer.ready.compileDC,
     ]);
 
     const videoTrack = await peer.ready.videoTrack;
@@ -190,7 +192,7 @@ class SessionManager {
       throw new Error("no_frame_after_wait");
     }
 
-    const channels = new SessionChannels(terminalDC, buildLogDC);
+    const channels = new SessionChannels(terminalDC, buildLogDC, compileDC);
 
     const attached: AttachedSession = {
       sessionId: opts.sessionId,
@@ -201,6 +203,7 @@ class SessionManager {
       channels,
       buildLogDC,
       terminalDC,
+      compileDC,
       resolution: dims,
     };
     this.attached = attached;

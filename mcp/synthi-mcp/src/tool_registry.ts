@@ -19,6 +19,8 @@ export const ADVERTISED_TOOLS = [
   "synthi_screenshot",
   "synthi_wait",
   "synthi_wait_hmr",
+  // Build control
+  "synthi_compile",
   // Input
   "synthi_mouse",
   "synthi_keyboard",

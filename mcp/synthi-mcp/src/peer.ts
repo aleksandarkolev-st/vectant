@@ -25,6 +25,9 @@ export interface PeerReadyState {
   buildLogDC: Promise<wrtc.RTCDataChannel>;
   /** Resolves with the MCP-created `terminal` DC once it opens. */
   terminalDC: Promise<wrtc.RTCDataChannel>;
+  /** Resolves with the MCP-created `compile` DC once it opens.
+   *  Needed for `synthi_compile` to dispatch CompileRequest payloads. */
+  compileDC: Promise<wrtc.RTCDataChannel>;
 }
 
 interface Deferred<T> {
@@ -76,6 +79,7 @@ export class Peer {
   private readonly videoTrackD = deferred<wrtc.MediaStreamTrack>();
   private readonly buildLogDcD = deferred<wrtc.RTCDataChannel>();
   private readonly terminalDcD = deferred<wrtc.RTCDataChannel>();
+  private readonly compileDcD = deferred<wrtc.RTCDataChannel>();
   private offerRetryTimer: ReturnType<typeof setInterval> | null = null;
   private closed = false;
   private pendingCandidates: RTCIceCandidateInit[] = [];
@@ -93,6 +97,7 @@ export class Peer {
       videoTrack: this.videoTrackD.promise,
       buildLogDC: this.buildLogDcD.promise,
       terminalDC: this.terminalDcD.promise,
+      compileDC: this.compileDcD.promise,
     };
 
     this.wirePeerEvents();
@@ -220,6 +225,17 @@ export class Peer {
     // recvonly transceivers — without these, worker's m=video/audio won't arrive.
     this.pc.addTransceiver("video", { direction: "recvonly" });
     this.pc.addTransceiver("audio", { direction: "recvonly" });
+
+    // Order mirrors `compilerClient.js:905-911` — compile first, terminal
+    // second. WebRTC DC IDs are auto-assigned in creation order so matching
+    // the browser's sequence is the lowest-risk default (worker dispatches
+    // on label, not id, but uniform ordering keeps debugging sane).
+    const compileDC = this.pc.createDataChannel("compile", { ordered: true });
+    if (compileDC.readyState === "open") {
+      this.compileDcD.resolve(compileDC);
+    } else {
+      compileDC.addEventListener("open", () => this.compileDcD.resolve(compileDC));
+    }
 
     const terminalDC = this.pc.createDataChannel("terminal", { ordered: true });
     if (terminalDC.readyState === "open") {

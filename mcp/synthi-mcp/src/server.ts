@@ -36,6 +36,7 @@ import { acknowledgeDisruptionTool } from "./tools/acknowledge_disruption.js";
 import { getCrashInfoTool } from "./tools/get_crash_info.js";
 import { resetGuestTool } from "./tools/reset_guest.js";
 import { verifyTool } from "./tools/verify.js";
+import { compileTool } from "./tools/compile.js";
 import type { ToolContext } from "./tools/shared.js";
 
 export interface SynthiServerOptions {
@@ -115,6 +116,65 @@ const TOOLS = [
         },
       },
       required: [],
+    },
+  },
+  {
+    name: "synthi_compile",
+    description:
+      "Dispatch a CompileRequest on the worker's `compile` data channel. Fire-and-forget — the HMR status streams on `build-log`, so follow up with synthi_wait({condition:\"hmr\"}) to block on applied/compile-error/etc. Closes the edit→HMR→screenshot loop without a frontend open.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        language: {
+          type: "string",
+          description: "Source language (e.g. 'cpp', 'rust', 'go', 'java'). Matches worker CompileRequest.language.",
+        },
+        source: {
+          type: "string",
+          description: "Primary source file content.",
+        },
+        filename: {
+          type: "string",
+          description: "Primary source filename. Defaults to main.<language>.",
+        },
+        files: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              name: { type: "string" },
+              content: { type: "string" },
+            },
+            required: ["name", "content"],
+          },
+          description: "Additional source files keyed by relative path.",
+        },
+        is_gui: {
+          type: "boolean",
+          description: "Whether this compile emits a GUI (Xvfb + media pipeline). Default true.",
+        },
+        width: { type: "number" },
+        height: { type: "number" },
+        use_ai_split: {
+          type: "boolean",
+          description: "Let the worker decide split via AI (Tier 2/3). Default false.",
+        },
+        user_requested_ai: {
+          type: "boolean",
+          description: "Explicit opt-in to the AI-split (Loop B). Default false.",
+        },
+        user_requested_deterministic: {
+          type: "boolean",
+          description: "Explicit opt-in to deterministic split (Loop A). Default false.",
+        },
+        target: {
+          type: "string",
+          description: "Target platform. Default 'native'; mobile uses 'react-native-emulator'.",
+        },
+        project_root: { type: "string" },
+        slug: { type: "string" },
+      },
+      required: ["language", "source"],
     },
   },
   {
@@ -566,6 +626,8 @@ export function createSynthiServer(options: SynthiServerOptions): Server {
         return (await resetGuestTool(args)) as CallToolResult;
       case "synthi_verify":
         return (await verifyTool(args)) as CallToolResult;
+      case "synthi_compile":
+        return (await compileTool(args)) as CallToolResult;
       default:
         return {
           content: [
