@@ -2,8 +2,19 @@
 //  Signaling Server v2 — session-multiplexed with Redis Pub/Sub relay
 // ─────────────────────────────────────────────────────────────────────────────
 //
-//  Each peer registers with  { type: "register", role: "browser"|"worker",
+//  Each peer registers with  { type: "register", role: "browser"|"worker"|"observer",
 //                               session_id: "<workspace>-<user>" }
+//
+//  Role semantics:
+//    - browser: singleton per session. Re-registering evicts the prior
+//      sender (Path A eviction).
+//    - worker:  singleton per session.
+//    - observer: any number per session. Worker SDP/ICE is fanned to
+//      every browser + observer in the session. Routes from observer/
+//      browser land at the worker one-to-one. Worker-side per-peer PC
+//      registry is phase-2 (ultraplan §4.16 + PHASE_2_PLUS_BACKLOG.md:G3);
+//      without it, only the most-recently-set-up peer actually receives
+//      media. The signaling fan-out is prerequisite for that work.
 //
 //  SDP / ICE messages are routed **only** between peers sharing the same
 //  `session_id`.  Redis Pub/Sub lets any signaling pod forward a message
@@ -78,13 +89,30 @@ struct RelayEnvelope {
 
 // ── Shared state ───────────────────────────────────────────────────────────
 
-/// Composite key: (session_id, role) → per-connection sender.
+/// Composite key: (session_id, role) → ordered list of per-connection senders.
+/// Roles `browser` and `worker` enforce a single peer (Path A eviction on
+/// re-register); role `observer` allows N peers per session so agents can
+/// co-attach with humans.
 type PeerKey = (String, String); // (session_id, role)
+
+/// Recognised roles. Anything else is accepted verbatim for forward-compat
+/// but treated as a singleton (like `browser`). Keep the list here so the
+/// register + forward paths share one source of truth.
+const ROLE_BROWSER: &str = "browser";
+const ROLE_WORKER: &str = "worker";
+const ROLE_OBSERVER: &str = "observer";
+
+/// Roles that are allowed multiple peers per session.
+fn role_is_multi_peer(role: &str) -> bool {
+    role == ROLE_OBSERVER
+}
 
 /// Shared across all connection tasks on this pod.
 struct AppState {
-    /// Local peers connected to **this** pod.
-    peers: RwLock<HashMap<PeerKey, mpsc::UnboundedSender<Message>>>,
+    /// Local peers connected to **this** pod. Vec length enforced per role:
+    ///   browser/worker: 1 (re-register evicts the prior sender).
+    ///   observer:       N.
+    peers: RwLock<HashMap<PeerKey, Vec<mpsc::UnboundedSender<Message>>>>,
     /// Maps a `__legacy__` worker to the real session it is currently serving.
     /// Used in local dev when the worker has no SESSION_ID set.
     legacy_session: RwLock<Option<String>>,
@@ -94,6 +122,17 @@ struct AppState {
     node_id: String,
     /// Base URL of the collab server for spawner webhooks.
     collab_url: Option<String>,
+}
+
+/// Pick the peer roles that should receive a message sent by `sender_role`.
+/// Worker messages fan out to browser + observer; everything else targets
+/// the worker.
+fn target_roles_for(sender_role: &str) -> &'static [&'static str] {
+    if sender_role == ROLE_WORKER {
+        &[ROLE_BROWSER, ROLE_OBSERVER]
+    } else {
+        &[ROLE_WORKER]
+    }
 }
 
 // ── Redis channel name helper ──────────────────────────────────────────────
@@ -198,11 +237,14 @@ async fn redis_subscribe_loop(state: &AppState) -> anyhow::Result<()> {
             continue;
         }
 
-        // Parse the target_key → (session_id, role).
+        // Parse the target_key → (session_id, role). Fan to all local peers
+        // of that role (observer case can have many; browser/worker at most 1).
         if let Some((session_id, role)) = parse_target_key(&envelope.target_key) {
             let peers = state.peers.read().await;
-            if let Some(tx) = peers.get(&(session_id, role)) {
-                let _ = tx.send(Message::text(envelope.payload));
+            if let Some(senders) = peers.get(&(session_id, role)) {
+                for tx in senders {
+                    let _ = tx.send(Message::text(envelope.payload.clone()));
+                }
             }
         }
     }
@@ -280,24 +322,33 @@ async fn handle_connection(
 
             // Remove previous registration if the connection re-registers.
             if let (Some(old_sid), Some(old_role)) = (&my_session, &my_role) {
-                state
-                    .peers
-                    .write()
-                    .await
-                    .remove(&(old_sid.clone(), old_role.clone()));
+                let mut peers = state.peers.write().await;
+                if let Some(v) = peers.get_mut(&(old_sid.clone(), old_role.clone())) {
+                    v.retain(|tx| !tx.same_channel(&out_tx));
+                    if v.is_empty() {
+                        peers.remove(&(old_sid.clone(), old_role.clone()));
+                    }
+                }
             }
 
             my_session = Some(session_id.clone());
             my_role = Some(role.clone());
 
-            state
-                .peers
-                .write()
-                .await
-                .insert((session_id.clone(), role.clone()), out_tx.clone());
+            // Singleton roles evict prior senders (Path A); observer appends.
+            let key = (session_id.clone(), role.clone());
+            let is_multi = role_is_multi_peer(&role);
+            {
+                let mut peers = state.peers.write().await;
+                let entry = peers.entry(key).or_default();
+                if !is_multi {
+                    entry.clear();
+                }
+                entry.push(out_tx.clone());
+            }
 
+            let count_msg = if is_multi { " (observer slot)" } else { "" };
             println!(
-                "[Signaling] Registered {role} for session '{session_id}' (addr={addr})"
+                "[Signaling] Registered {role}{count_msg} for session '{session_id}' (addr={addr})"
             );
             continue;
         }
@@ -308,64 +359,66 @@ async fn handle_connection(
             _ => continue, // not registered yet — drop
         };
 
-        let target_role = if role == "browser" {
-            "worker"
-        } else {
-            "browser"
-        };
-
         // ── Legacy-worker bridging ─────────────────────────────────────
         // In local dev the worker runs without SESSION_ID and registers
         // as "__legacy__".  When the __legacy__ worker sends a response
         // (answer / candidate), rewrite the target session to whichever
         // real browser session it is serving.
-        let effective_session = if session_id == "__legacy__" && role == "worker" {
-            // Worker responding — route to the real browser session.
+        let effective_session = if session_id == "__legacy__" && role == ROLE_WORKER {
             state.legacy_session.read().await.clone().unwrap_or(session_id.clone())
         } else {
             session_id.clone()
         };
 
-        // Try local delivery first.
-        let delivered_locally = {
-            let peers = state.peers.read().await;
-            // Look for exact session match first, then fall back to the
-            // __legacy__ worker.  This lets a single local-dev worker
-            // (no SESSION_ID set) serve any browser session.
-            let fell_back_to_legacy;
-            let target_tx = match peers.get(&(effective_session.clone(), target_role.to_string())) {
-                Some(tx) => { fell_back_to_legacy = false; Some(tx) }
-                None if target_role == "worker" => {
-                    fell_back_to_legacy = true;
-                    peers.get(&("__legacy__".to_string(), "worker".to_string()))
-                }
-                None => { fell_back_to_legacy = false; None }
-            };
-            if let Some(tx) = target_tx {
-                let ok = tx.send(Message::text(text.clone())).is_ok();
-                // Remember which real session the legacy worker is serving.
-                if ok && fell_back_to_legacy && effective_session != "__legacy__" {
-                    drop(peers); // release read lock before taking write lock
-                    *state.legacy_session.write().await = Some(effective_session.clone());
-                }
-                ok
-            } else {
-                false
-            }
-        };
+        let target_roles = target_roles_for(&role);
 
-        if delivered_locally {
-            log_forward(&parsed.msg_type, &effective_session, &role, target_role, "local");
-        } else {
-            // Target peer is not on this pod — publish via Redis for
-            // whichever pod holds the other end.
-            publish_to_redis(
-                &state,
-                &make_target_key(&effective_session, target_role),
-                &text,
-            )
-            .await;
-            log_forward(&parsed.msg_type, &effective_session, &role, target_role, "redis");
+        // Fan out across every target role. For worker → [browser, observer]
+        // this routes the same message to both sets so every attached peer
+        // gets the SDP/ICE. WebRTC semantics at the peer layer ignore what
+        // isn't theirs; phase-2 worker per-peer PC registry tightens this.
+        for target_role in target_roles {
+            let delivered_locally = {
+                let peers = state.peers.read().await;
+                let primary = peers.get(&(effective_session.clone(), target_role.to_string()));
+                // Legacy worker fallback — only when the target role is worker and
+                // there is no exact match.
+                let legacy_fallback = match primary {
+                    Some(v) if !v.is_empty() => None,
+                    _ if *target_role == ROLE_WORKER => {
+                        peers.get(&("__legacy__".to_string(), ROLE_WORKER.to_string()))
+                    }
+                    _ => None,
+                };
+                let senders = primary.filter(|v| !v.is_empty()).or(legacy_fallback);
+
+                if let Some(senders) = senders {
+                    let mut any_ok = false;
+                    for tx in senders {
+                        if tx.send(Message::text(text.clone())).is_ok() {
+                            any_ok = true;
+                        }
+                    }
+                    if any_ok && legacy_fallback.is_some() && effective_session != "__legacy__" {
+                        drop(peers);
+                        *state.legacy_session.write().await = Some(effective_session.clone());
+                    }
+                    any_ok
+                } else {
+                    false
+                }
+            };
+
+            if delivered_locally {
+                log_forward(&parsed.msg_type, &effective_session, &role, target_role, "local");
+            } else {
+                publish_to_redis(
+                    &state,
+                    &make_target_key(&effective_session, target_role),
+                    &text,
+                )
+                .await;
+                log_forward(&parsed.msg_type, &effective_session, &role, target_role, "redis");
+            }
         }
     }
 
@@ -373,12 +426,17 @@ async fn handle_connection(
     if let (Some(sid), Some(role)) = (&my_session, &my_role) {
         let session_empty = {
             let mut peers = state.peers.write().await;
-            peers.remove(&(sid.clone(), role.clone()));
-
-            // Check if any peer in this session remains (browser or worker).
-            let has_browser = peers.contains_key(&(sid.clone(), "browser".to_string()));
-            let has_worker = peers.contains_key(&(sid.clone(), "worker".to_string()));
-            !has_browser && !has_worker
+            // Remove this specific sender from the role's Vec; drop empty entry.
+            if let Some(v) = peers.get_mut(&(sid.clone(), role.clone())) {
+                v.retain(|tx| !tx.same_channel(&out_tx));
+                if v.is_empty() {
+                    peers.remove(&(sid.clone(), role.clone()));
+                }
+            }
+            // Session empty when no role has any peer.
+            !peers
+                .iter()
+                .any(|((sid2, _r), v)| sid2 == sid && !v.is_empty())
         };
 
         println!("[Signaling] Unregistered {role} for session '{sid}' (addr={addr})");
@@ -452,4 +510,37 @@ fn log_forward(msg_type: &str, session: &str, from: &str, to: &str, via: &str) {
     println!(
         "[Signaling] {msg_type}: session={session} {from}→{to} via {via}"
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn role_multi_peer_classification() {
+        assert!(!role_is_multi_peer(ROLE_BROWSER));
+        assert!(!role_is_multi_peer(ROLE_WORKER));
+        assert!(role_is_multi_peer(ROLE_OBSERVER));
+        assert!(!role_is_multi_peer("some_future_role"));
+    }
+
+    #[test]
+    fn target_roles_for_worker_is_fanout() {
+        let t = target_roles_for(ROLE_WORKER);
+        assert_eq!(t, &[ROLE_BROWSER, ROLE_OBSERVER]);
+    }
+
+    #[test]
+    fn target_roles_for_browser_and_observer_route_to_worker() {
+        assert_eq!(target_roles_for(ROLE_BROWSER), &[ROLE_WORKER]);
+        assert_eq!(target_roles_for(ROLE_OBSERVER), &[ROLE_WORKER]);
+    }
+
+    #[test]
+    fn parse_target_key_roundtrip() {
+        let key = make_target_key("abc123", "observer");
+        let (sid, role) = parse_target_key(&key).unwrap();
+        assert_eq!(sid, "abc123");
+        assert_eq!(role, "observer");
+    }
 }
