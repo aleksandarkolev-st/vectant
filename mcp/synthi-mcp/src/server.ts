@@ -53,10 +53,30 @@ const TOOLS = [
   {
     name: "synthi_screenshot",
     description:
-      "Return the latest video frame from the attached preview session as a PNG. Requires a prior synthi_attach call and at least one received frame.",
+      "Return the latest video frame as a PNG. Optional {region,max_dim,freshness_max_ms}. region crops; max_dim downscales the longest edge; freshness_max_ms returns frame_stale if the most recent frame is older than the SLA. Emits a `usage` event for every call.",
     inputSchema: {
       type: "object",
-      properties: {},
+      properties: {
+        region: {
+          type: "object",
+          properties: {
+            x: { type: "number" },
+            y: { type: "number" },
+            w: { type: "number" },
+            h: { type: "number" },
+          },
+          required: ["x", "y", "w", "h"],
+          description: "Optional crop bbox in pixels. Clamped to the frame.",
+        },
+        max_dim: {
+          type: "number",
+          description: "Downscale so longest edge <= max_dim. Positive integer.",
+        },
+        freshness_max_ms: {
+          type: "number",
+          description: "SLA: return frame_stale if latest frame's age exceeds this many ms.",
+        },
+      },
       required: [],
     },
   },
