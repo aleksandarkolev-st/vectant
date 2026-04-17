@@ -19,7 +19,13 @@
     "test": "vitest run",
     "test:unit": "vitest run --project unit",
     "test:integration": "vitest run --project integration",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "spike:all": "tsx tests/spike/run_all.ts",
+    "spike:E1": "tsx tests/spike/E1_frame_seq.ts",
+    "spike:E2": "tsx tests/spike/E2_locator_cache.ts",
+    "spike:E2b": "tsx tests/spike/E2b_region_phash.ts",
+    "spike:E3": "tsx tests/spike/E3_p99_load.ts",
+    "spike:E4": "tsx tests/spike/E4_cost_budget.ts"
   },
   "engines": {
     "node": ">=18.0.0"
