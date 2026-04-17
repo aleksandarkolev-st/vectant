@@ -84,6 +84,18 @@ Those are good designs and they may ship later. They do not block MVP. If real a
 
 **Frame-seq gate for MVP.** Optional. MVP's `synthi_wait_hmr` resolves on the `hmr-status` message alone (`applied`/`rejected`/`compile-error`/`full-reload-required`) — per ultraplan E1 experiment, whether the status-only gate is sufficient depends on observed stale-frame rate. MVP ships status-only; if agents hit stale frames in practice, ultraplan phase 1 adds the frame-seq gate.
 
+### Implementation amendment — 2026-04-17 (Path A shipped)
+
+A code audit during the implementation-plan pass (`AGENT_MCP_IMPLEMENTATION_PLAN.md:F3`) established that the MVP's "~20-50 LOC Rust + one integration test" estimate for Path B (observer co-attach) is broken: a WebRTC peer connection is 1:1, so signaling-server fan-out alone does not grant a second peer access to worker media. Enabling true co-attach requires per-peer `RTCPeerConnection` support in the worker (~250-450 LOC, ultraplan phase 2+ ticket `G3`), shifting MVP from ~3-5 days to ~7-10 days.
+
+To preserve the 3-5 day MVP budget, **the implementation ships Path A**: `synthi-mcp` registers with signaling as `role: "browser"` and evicts any existing human browser peer on that session. The human can re-attach after the agent detaches. This mirrors the worker's existing 1:1 reality with zero backend changes. Co-attach stays deferred to ultraplan `G3`.
+
+The `{type:"frame-advance", frame_seq, ts_ms}` worker emission described above remains out of scope — MVP uses the status-only `synthi_wait_hmr` path.
+
+The normalizer's HMR terminal-event set was also widened from the MVP's single-shape `{type:"hmr-status", data:{status}}` to four wire families (see `AGENT_MCP_IMPLEMENTATION_PLAN.md:F2` for the verified truth table). `synthi_wait_hmr` default timeout is **60 s** (up from 30 s) to accommodate Tier 3 AI-split + compile + healing latency.
+
+See `mcp/synthi-mcp/README.md` for installation + `claude mcp add` usage.
+
 ---
 
 ## Implementation
