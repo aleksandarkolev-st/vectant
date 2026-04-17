@@ -1,5 +1,6 @@
 import type { BBox } from "../util/phash.js";
 import type { LocateHints, LocateBackendName } from "./types.js";
+import { ClaudeApiBackendReal, type ClaudeApiBackendOptions } from "./claude_api.js";
 
 export interface BackendResolution {
   bbox: BBox;
@@ -84,16 +85,23 @@ export class AgentSideBackend implements VisionBackend {
 }
 
 /**
- * `claude_api` backend. Phase 0.5 stub — logs the intended call but does not
- * hit Anthropic's API. Phase 1 replaces this with a real multi-modal call;
- * gated on E3 (p99 measurement) and E4 (cost measurement).
+ * `claude_api` backend. Thin wrapper around {@link ClaudeApiBackendReal}:
+ * honors `hints.prefer_region` without spending a vision call when given,
+ * otherwise delegates to the real Anthropic client (lazy-loaded on first
+ * use). Tests inject a mock client via the `options` ctor arg.
  *
- * The stub returns an error unless `hints.prefer_region` is provided (in
- * which case it acts like MockBackend). This keeps the spike harness
- * deterministic until E3/E4 are wired.
+ * `prefer_region` short-circuit is intentional: a planner that already
+ * knows the exact bbox (e.g., from a previous handle) shouldn't pay a
+ * vision call. This preserves spike-harness determinism and the MockBackend
+ * equivalence when the caller supplies a hint.
  */
 export class ClaudeApiBackend implements VisionBackend {
   readonly name = "claude_api" as const;
+  private readonly real: ClaudeApiBackendReal;
+
+  constructor(options?: ClaudeApiBackendOptions) {
+    this.real = new ClaudeApiBackendReal(options ?? {});
+  }
 
   async resolve(args: {
     description: string;
@@ -105,13 +113,30 @@ export class ClaudeApiBackend implements VisionBackend {
       return {
         bbox: args.hints.prefer_region,
         confidence: 1,
-        trace: "claude_api_stub_used_prefer_region",
+        trace: "claude_api_used_prefer_region",
       };
     }
-    throw new Error(
-      "claude_api_not_implemented: phase 0.5 stub — real vision call lands in phase 1 gated on E3/E4"
-    );
+    return this.real.resolve(args);
   }
+}
+
+/**
+ * Per-process singleton shared by `selectBackend` so the content-hash cache
+ * is meaningful across tool calls. Tests that want a fresh backend can
+ * instantiate {@link ClaudeApiBackend} directly with an injected client.
+ */
+let defaultClaudeApiBackend: ClaudeApiBackend | undefined;
+
+function getDefaultClaudeApiBackend(): ClaudeApiBackend {
+  if (!defaultClaudeApiBackend) {
+    defaultClaudeApiBackend = new ClaudeApiBackend();
+  }
+  return defaultClaudeApiBackend;
+}
+
+/** Test-only: reset the shared backend so one test's cache doesn't leak to another. */
+export function _resetDefaultClaudeApiBackendForTests(): void {
+  defaultClaudeApiBackend = undefined;
 }
 
 /**
@@ -129,7 +154,7 @@ export function selectBackend(override?: LocateBackendName): VisionBackend {
     case "agent_side":
       return new AgentSideBackend();
     case "claude_api":
-      return new ClaudeApiBackend();
+      return getDefaultClaudeApiBackend();
     default:
       return new MockBackend();
   }

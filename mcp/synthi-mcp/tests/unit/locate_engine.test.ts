@@ -79,14 +79,40 @@ describe("LocateEngine", () => {
     ).rejects.toThrow(/agent_side_vision_required/);
   });
 
-  it("claude_api backend is a phase-0.5 stub", async () => {
+  it("claude_api backend short-circuits on hints.prefer_region without calling the API", async () => {
     const engine = new LocateEngine();
     const frame = await testPng();
-    await expect(
-      engine.resolve(
-        { description: "counter digit", preferred_vision_backend: "claude_api" },
-        { frame, frameDims: { w: 200, h: 200 } }
-      )
-    ).rejects.toThrow(/claude_api_not_implemented/);
+    const bbox = { x: 10, y: 20, w: 30, h: 40 };
+    const result = await engine.resolve(
+      {
+        description: "counter digit",
+        preferred_vision_backend: "claude_api",
+        hints: { prefer_region: bbox },
+      },
+      { frame, frameDims: { w: 200, h: 200 } }
+    );
+    expect(result.bbox).toEqual(bbox);
+    expect(result.backend).toBe("claude_api");
+    expect(result.reason).toContain("claude_api_used_prefer_region");
+  });
+
+  it("claude_api backend without ANTHROPIC_API_KEY surfaces claude_api_no_key", async () => {
+    const prev = process.env["ANTHROPIC_API_KEY"];
+    delete process.env["ANTHROPIC_API_KEY"];
+    const { _resetDefaultClaudeApiBackendForTests } = await import("../../src/locate/backends.js");
+    _resetDefaultClaudeApiBackendForTests();
+    try {
+      const engine = new LocateEngine();
+      const frame = await testPng();
+      await expect(
+        engine.resolve(
+          { description: "counter digit", preferred_vision_backend: "claude_api" },
+          { frame, frameDims: { w: 200, h: 200 } }
+        )
+      ).rejects.toThrow(/claude_api_no_key/);
+    } finally {
+      if (prev !== undefined) process.env["ANTHROPIC_API_KEY"] = prev;
+      _resetDefaultClaudeApiBackendForTests();
+    }
   });
 });

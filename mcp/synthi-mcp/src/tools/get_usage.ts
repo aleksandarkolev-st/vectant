@@ -9,8 +9,9 @@ import { jsonResponse, type ToolResponse } from "./shared.js";
  * persistent store. Event log is a ring buffer so numbers reset when
  * events age out of the window.
  *
- * Vision inference count + cost are present but zero until the
- * claude_api backend lands and emits metric:"vision_inference" events.
+ * Vision inference cost is computed per-model using
+ * `claude_api.ts::PRICING_USD_PER_MILLION`, with an opus-rate fallback for
+ * models not in the table (conservative — never silently underbills).
  */
 export async function getUsageTool(_args: unknown): Promise<ToolResponse> {
   const usages = eventLog.query({ kind: "usage" }) as UsageEvent[];

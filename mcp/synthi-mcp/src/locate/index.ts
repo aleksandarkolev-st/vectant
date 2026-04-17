@@ -152,7 +152,35 @@ export class LocateEngine {
 }
 
 export { LocateCache } from "./cache.js";
-export { selectBackend, MockBackend, AgentSideBackend, ClaudeApiBackend } from "./backends.js";
+export {
+  selectBackend,
+  MockBackend,
+  AgentSideBackend,
+  ClaudeApiBackend,
+  _resetDefaultClaudeApiBackendForTests,
+} from "./backends.js";
+export {
+  ClaudeApiBackendReal,
+  PRICING_USD_PER_MILLION,
+  computeCostUsd,
+  contentHash,
+  descriptionHash,
+  parseBboxResponse,
+  clampBboxToFrame,
+  buildSystemPrompt,
+  buildUserText,
+} from "./claude_api.js";
+export type {
+  AnthropicLike,
+  AnthropicContentBlock,
+  AnthropicImageBlock,
+  AnthropicTextBlock,
+  AnthropicMessagesCreateParams,
+  AnthropicMessagesResponse,
+  ClaudeApiBackendOptions,
+  CachedVisionEntry,
+  ParsedVisionResult,
+} from "./claude_api.js";
 export type {
   LocateArgs,
   LocateResult,
