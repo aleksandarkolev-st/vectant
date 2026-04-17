@@ -231,7 +231,7 @@ Three tightenings from post-v4.3 review. No new primary-axis design; generalizat
 
 v4.3 added the "Subsequent-state invariant" subsection under §Reconnect preservation. The property it describes — the reconnect response's `session.state` is a snapshot at ICE-restart completion, not a commitment that persists to the next tool call — is **not reconnect-specific**. The same race exists for `synthi_attach`: attach reports `ready`, state flips to `migrating` before the first real tool call, agent's retry logic hits an unexpected envelope. Any lifecycle-reporting call has the property. Scoping the statement to reconnect understates it.
 
-**Resolution.** Promoted the invariant to §Session lifecycle as a universal property ("State-reporting is a snapshot, not a commitment"). The reconnect subsection now references it and retains only the reconnect-specific retry-loop guidance (what agents building reconnect-retry loops should do differently because of the invariant). Cross-refs from `synthi_attach` semantics. No behavior change — the invariant was always true; the doc now says so once, authoritatively.
+**Resolution.** Promoted the invariant to §Session lifecycle as a universal property ("State-reporting is a snapshot, not a commitment"). The reconnect subsection now references it and retains only the reconnect-specific retry-loop guidance (what agents building reconnect-retry loops should do differently because of the invariant). Cross-refs from `synthi_attach` semantics. The invariant enumerates both pull (tool-response envelopes) and push (subscription events on `synthi://preview/state` and any future subscribable `synthi://` resource that carries lifecycle state) — closes the footgun where push events might read as stickier than pull responses. No behavior change — the invariant was always true; the doc now says so once, authoritatively.
 
 ### Prometheus cardinality retention
 
@@ -910,6 +910,8 @@ SessionState =
 ### State-reporting is a snapshot, not a commitment (v4.4)
 
 **Universal invariant across every tool that reports session state.** The `session.state` field on any response envelope — `synthi_attach`, `synthi_reconnect`, `synthi_health`, any regular tool's envelope — is a snapshot of the state at the moment the server composed that response, not a commitment that persists into the agent's next tool call. A valid state transition (e.g., `ready → migrating` on pod drain, `running → crashed` on worker OOM) can land in the gap between two consecutive tool calls.
+
+**Applies equally to subscription push events.** `synthi://preview/state` (and any future subscribable `synthi://` resource that carries lifecycle state) emits `session.state` on change — the emitted state is snapshot-at-emit, not a commitment that persists to the agent's next tool call. Push events don't gain state-immunity from being push events; the invariant is about state-at-emit-time, which is the same regardless of transport direction. An agent that sees a `synthi://preview/state` push saying `ready` must still dispatch its next tool call against the envelope that call returns, not against the remembered push.
 
 This is correct behavior by design: the server doesn't promise a state window, and agents don't need it to. The contract that makes this work is:
 

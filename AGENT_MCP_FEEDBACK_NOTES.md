@@ -917,6 +917,18 @@ v4.4 ships as a small patch per Wave 6 cadence rule, same as v4.3. Colleague's v
 
 Observation: v4.3 and v4.4 are both small post-review patches, shipped separately on consecutive colleague reviews. This is the Wave 6 rule working as intended — tight review → tight patch → back to user. The Wave 7 explicit-batch override was an explicit user directive ("every single feedback at once"), not a default.
 
+### 43.5 Same-round follow-up: push events enumerated in the invariant
+
+**The bet colleague caught on re-read of v4.4.** §43.1's generalization names `synthi_attach`, `synthi_reconnect`, `synthi_health`, and "any regular tool's envelope" — all pull-based surfaces. Subscription push events on `synthi://preview/state` weren't explicitly covered, and the omission opens a footgun: a reader might assume push events are stickier than pull responses because they come from a "live" subscription. They aren't. The invariant is about state-at-emit-time; transport direction (pull response vs. push notification) doesn't enter into it.
+
+Colleague's framing: "Does it cover subscriptions? synthi://preview/state emits session.state on change. Is that delta push also a 'snapshot, not commitment'? Almost certainly yes — the push is state-at-emit-time, and nothing about being a subscription changes that — but the invariant subsection doesn't explicitly enumerate push-based state reports alongside pull."
+
+Right call. This is exactly the load-test-the-generalization step the §43.1 promotion needed to pass cleanly — stating the universal property without enumerating one of its principal surfaces is "universal in the abstract, specific in the read."
+
+**Resolution.** Added a paragraph to the §Session lifecycle subsection enumerating push: `synthi://preview/state` (and any future subscribable `synthi://` resource carrying lifecycle state) emits snapshot-at-emit, not a commitment that persists. Push events don't gain state-immunity from being push events. Same-round amendment to v4.4 (not a version bump — continuation of the same generalization). Changelog entry for §43.1 also extended to mention push coverage so the changelog is coherent with the subsection.
+
+Generalization now genuinely load-tested against: pull tool-response envelopes (`synthi_attach`, `synthi_reconnect`, `synthi_health`, any regular tool) + push subscription events (`synthi://preview/state`). Both surfaces stated, both equivalently a snapshot. If a third surface emerges (e.g., server-sent log tails with embedded state), the invariant already covers it by construction.
+
 ## 44. Memory-worthy?
 
 Wave 9 meta-principle candidate: **"When an invariant feels scoped-correct but applies universally, state it once at the general level and reference from specifics."** This is a well-known doc-writing principle (DRY for normative statements); not novel enough to merit its own memory entry. The existing `feedback_server_enforces_correctness` memory ("server enforces correctness, not docs") covers the adjacent property — authoritative statements live in one canonical place.
