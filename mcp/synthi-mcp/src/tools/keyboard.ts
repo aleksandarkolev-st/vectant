@@ -1,6 +1,7 @@
 import { eventLog } from "../events/index.js";
 import { session } from "../session.js";
 import { keystrokeDetector } from "../security/anomaly.js";
+import { checkInputGate } from "../correctness/index.js";
 import { encodeKey, encodeTypeSequence } from "../wire/input.js";
 import { runWait } from "../wait/index.js";
 import type { LogArgs, WaitArgs } from "../wait/index.js";
@@ -30,8 +31,11 @@ export async function keyboardTool(args: unknown): Promise<ToolResponse> {
     return errorResponse("invalid_args", { field: "action", allowed: VALID_ACTIONS });
   }
 
-  const attached = session.get();
-  if (!attached) return errorResponse("not_attached");
+  const gate = checkInputGate();
+  if (gate) {
+    return errorResponse(gate.error, gate);
+  }
+  const attached = session.require();
 
   if (a.waitFor !== undefined) {
     const waitArgs = a.waitFor as WaitArgs & { timeoutMs?: number };

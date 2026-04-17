@@ -1,6 +1,7 @@
 import { locateEngine } from "../locate/index.js";
 import { eventLog } from "../events/index.js";
 import { session } from "../session.js";
+import { checkInputGate } from "../correctness/index.js";
 import {
   buttonNameToCode,
   encodeMouseButton,
@@ -46,8 +47,11 @@ export async function mouseTool(args: unknown): Promise<ToolResponse> {
     return errorResponse("invalid_args", { field: "action", allowed: VALID_ACTIONS });
   }
 
-  const attached = session.get();
-  if (!attached) return errorResponse("not_attached");
+  const gate = checkInputGate();
+  if (gate) {
+    return errorResponse(gate.error, gate);
+  }
+  const attached = session.require();
 
   const button = typeof a.button === "string" ? (a.button as MouseButtonName) : "left";
   if (!["left", "right", "middle"].includes(button)) {
