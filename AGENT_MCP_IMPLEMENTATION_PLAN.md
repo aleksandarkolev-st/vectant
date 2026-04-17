@@ -33,37 +33,69 @@ Three load-bearing claims in the MVP need adjustment before code lands. These ar
 
 **Resolution:** encode correctly on day one; unit test asserts golden-byte match against a captured browser frame.
 
-### F2. HMR status wire format is bare `{status:...}` JSON, not `{type:"hmr-status"}` (MVP wire-format correction)
+### F2. HMR is a multi-tier AI-assisted pipeline; the `wait_hmr` terminal-event set must include `{event:"Promoted"}`, not just `{status:"applied"}` (MVP-blocker)
 
-**MVP says** `synthi_wait_hmr` resolves on `{type:"hmr-status", data:{status,…}}` where status ∈ {applied, rejected, compile-error, full-reload-required, crash-fatal, state-migrated}. That outer `type:"hmr-status"` wrapping is **not what the worker actually sends** for those statuses.
+**MVP says** `synthi_wait_hmr` resolves on HMR status = applied / rejected / compile-error / full-reload-required / crash-fatal. The MVP's wire sketch (`{type:"hmr-status", data:{status}}`) and my earlier correction (bare `{status:...}`) both understate what actually flows on `build-log`. The real picture matters because the MVP's reference fixture (*"change counter to start at 10 instead of 0"*) triggers a code path that **emits neither of those**.
 
-**Actual emission path, traced end-to-end:**
+#### F2.1 — HMR is four tiers, and ai-backend is in the critical path
 
-1. **Emit point — `worker/src/runtime/runner_logic.rs`** (the child runner process that hosts the compiled program). `HmrStatus::applied()`/`rejected()`/`compile_error()`/etc. (defined in `worker/src/runtime/capability.rs:755-818` as a `#[serde(tag = "status", rename_all = "kebab-case")]` enum) is serialized and written to **stderr** as `[Runner] [HMR-STATUS] <json>`. Example: `runner_logic.rs:909` — `eprintln!("[Runner] [HMR-STATUS] {}", status.to_json());`.
+Tracing `worker/src/compiler/handler.rs`:
 
-2. **Parser — `worker/src/compiler/stages/runner.rs:22-30`.** `extract_structured_runner_message` strips the `[Runner] [HMR-STATUS] ` prefix (or accepts bare `{...}` lines) and extracts the JSON body.
+| Tier | Where | Cost | When it wins |
+|------|-------|------|--------------|
+| **Tier 0** | `handler.rs:1220-1289` — pure-Rust `proc_mem_patcher`. Live-memory patches string/int/float literals in the running process via `/proc/<pid>/mem`. **No AI, no compile, no dlopen.** | ~5-30 ms | Value-only edits on running binaries (incl. MVP counter "0 → 10") |
+| **Tier 1** | `hmr::diff_patcher::patch_split_files` (see `handler.rs:411`) — regex value patcher over split module files. No AI; requires re-compile. | ~50-200 ms + compile | Value-only edits where Tier 0 misses or live-patch fails |
+| **Tier 2** | `handler.rs:478,613` — `perform_ai_diff_patch` → **`POST /refactor/diff_patch`** on ai-backend (`ai-backend/ai-engine/main.py:1881`). AI returns an edit list (`{"edits": [{"module":"gui", "operation":"insert_after", ...}]}`). Worker applies edits → compiles. | ~2-8 s (AI) + compile | Module-level edits |
+| **Tier 3** | fallback after Tier 2 fails — `perform_ai_split` → **`POST /refactor/split/verified`** (`main.py:1489`). AI emits a full 4-file split (shared / core / gui / host_runner) + architecture cache + build manifest. Verified by `split_verifier.py`. | ~5-30 s (AI + verify) + compile | Structural edits, new functions, scope changes |
 
-3. **Forwarder — `worker/src/compiler/stages/runner.rs:547-559`.** The worker's stderr reader loop forwards every parsed structured line **verbatim** to the `build-log` data channel (`log_dc.send_text(structured)`). Non-structured lines get wrapped in `{sessionId, type:"stderr", line}` instead.
+Plus **`/refactor/heal`** (`main.py:1991`) and **`/refactor/heal/manifest`** (`main.py:2061`) for AI-powered compile-error healing within the HMR pipeline. The ai-backend is **upstream of HMR, in the critical path**, not downstream — my earlier framing was wrong.
 
-4. **On the wire, MCP sees on `build-log` DC:**
-   - `{"status":"applied", "module":..., "capability":..., "state_preserved":true}` — bare, kebab-case variant tag.
-   - `{"status":"rejected", "module":..., "reason":..., "fallback":...}` — bare.
-   - `{"status":"compile-error", "module":..., "errors":[...]}` — bare.
-   - `{"status":"full-reload-required", "reason":...}` — bare.
-   - `{"status":"state-migrated", "module":..., "preserved_count":..., ...}` — bare.
-   - `{"status":"host-kv-preserved"|"host-kv-reset-schema-mismatch"|...}` — bare (other variants).
+Operational consequences for MCP:
+- HMR latency distribution is bimodal: fast tail ~30 ms (Tier 0 live-mem), slow tail 10-40 s (Tier 3 + compile + healing).
+- The MVP doc's `timeoutMs?: 30000` default is too tight for Tier 3 scenarios. Recommend **default 60 s** for MVP; keep override.
+- `compile-error` has four distinct origins: raw g++/clang diagnostics, AI diff_patch edit-list validation failures, AI split verification failures (`verified:false`), and manifest rejection (`HTTP 422` from `split/verified`). From MCP's perspective these all arrive as "compile-error with some `errors` array" — fine to treat uniformly, but the reason strings will vary.
 
-5. **Separately, two producers use the wrapped `{type:"hmr-status",...}` shape**:
-   - `worker/src/hmr/planner_glue.rs:51` → `{type:"hmr-status", status:"reload-planned", decision, ...}`.
-   - `worker/src/hmr/rollback_notification.rs:41` → `{type:"hmr-status", status:"rejected", ...}`.
+#### F2.2 — Terminal HMR events on `build-log` span **four** wire shapes, not three
 
-6. **A third shape** — `{type:"compile-diagnostics", error_count, ...}` — is emitted for structured compiler errors; the **browser synthesizes** a `compile-error` hmr-status from it (`synthi/src/services/compilerClient.js:404-421`) because the diagnostics path doesn't round-trip through the runner's `HmrStatus::compile_error`.
+Full enumeration of terminal events that should resolve `wait_hmr`:
 
-**Implication for MCP:** the MVP doc's wire-format sketch is only partially right. `hmr.ts` must listen for the **bare `{status:"..."}` shape as the primary path** (that's where `applied` comes from on a compiled-language preview) and also handle `{type:"hmr-status", status:"..."}` and `{type:"compile-diagnostics", error_count:>0}`. Listening only for `{type:"hmr-status"}` would hang `wait_hmr` forever on real compiled-language builds.
+| Shape | Source | Means |
+|-------|--------|-------|
+| `{"event":"Promoted", "data":{preview_id, generation, total_reload_ms}}` | `hmr::candidate_notification::CandidateNotification::Promoted` via `#[serde(tag="event", content="data")]`. Emitted by the orchestrator (`handler.rs:1705, 1833, 1958`). | **HMR success.** Fires on **both** Tier 0 live-mem + adapter-handled path **and** the runner-reload path. The primary `applied` signal for adapter-handled flows. |
+| `{"event":"RolledBack", "data":{preview_id, generation, reason}}` | `CandidateNotification::RolledBack` | HMR failure (adapter-handled path) |
+| `{"event":"Discarded", "data":{preview_id, generation, reason}}` | `CandidateNotification::Discarded` | Candidate superseded (a new edit replaced this one mid-reload) |
+| `{"status":"applied", "module", "capability", "state_preserved"}` bare | `runtime/capability.rs::HmrStatus::Applied` via `runner_logic.rs:909` → stderr → `compiler/stages/runner.rs:22-30` → forwarded verbatim on `log_dc.send_text()` at `runner.rs:557` | HMR success (runner-reload path — Tier 1-3, not Tier 0 adapter-handled) |
+| `{"status":"rejected"\|"compile-error"\|"full-reload-required"\|"state-migrated", ...}` bare | `HmrStatus` other variants via same runner-stderr path | HMR success / failure per variant |
+| `{"type":"hmr-status", "status":"rejected"}` | `hmr::rollback_notification` (`rollback_notification.rs:41`) | HMR rollback (redundant with `event:"RolledBack"` but emitted in different sub-paths) |
+| `{"type":"compile-diagnostics", "error_count":N, "module", "diagnostics":[...]}` with `error_count > 0` | structured compile diagnostics emission in the compile pipeline | Compile failed. Browser synthesizes `status:"compile-error"` from this (`compilerClient.js:404-421`). MCP must do the same. |
 
-**ai-backend role — downstream consumer only.** The ai-backend *consumes* HMR failures for healing via REST endpoints (`ai-engine/main.py:3406` `/heal/agentic/observability/hmr-failure`, `main.py:2577` `/heal/ai/runtime` for runtime-error fix-up) but does **not** carry or re-shape HMR events on any channel the MCP would tap. The canonical shape to implement against lives in the worker's `HmrStatus` enum (`worker/src/runtime/capability.rs:755`), serialized via `status.to_json()`.
+Non-terminal (intermediate) events MCP should **ignore** but log for debugging:
+- `{"event":"Enqueued"\|"Loading"\|"HealthCheckStarted"\|"HealthCheckCompleted"\|"PromotionDecision", ...}` — candidate lifecycle progress
+- `{"type":"hmr-status", "status":"reload-planned", ...}` — planner decision (`planner_glue.rs:51`)
+- `{"status":"host-kv-preserved"\|"host-kv-reset-schema-mismatch", ...}` — kv state events, informational
+- `{"status":"done", "success":true, "stage":"adapter"\|"runner"}` — compile-pipeline completion flag, **not** HMR applied. Emitted at `handler.rs:1839-1847` when adapter handled the reload.
+- `{"type":"ai_status"\|"adapter_status"\|"adapter_health", ...}` — subsystem diagnostics
+- `{"type":"stdout"\|"stderr", "line", "sessionId"}` — program output pass-through
 
-**Resolution — one option, not two.** `hmr.ts` implements the three-shape normalizer. No worker-side canonicalization needed — the existing bare-`{status}` wire is the worker's authoritative HMR status shape and both the browser and the MCP just need to consume it. ~½ day implementation + golden-byte unit test against captured build-log traffic.
+**MVP-blocker impact:** the MVP fixture is *"counter 0 → 10"*. That edit is a pure integer-literal change. Tier 0 v2 detects it, live-mem-patches the running process, the adapter reports in-process reload success, and only `{"event":"Promoted"}` is emitted. **There is no `{"status":"applied"}` on the wire for this path.** If `hmr.ts` only listens for `{status:"applied"}`, `wait_hmr` times out on the canonical MVP fixture. This is the biggest single change from my v1 plan.
+
+#### F2.3 — MCP `hmr.ts` normalizer, corrected shape
+
+Listen for the terminal set across the four wire families, dedupe redundant emissions (`Promoted` + runner-reported `applied` can both fire in the runner-reload path; take whichever lands first), and expose a unified `waitForTerminal(timeoutMs)` that resolves on any:
+
+```ts
+type TerminalStatus =
+  | "applied"               // ← {event:"Promoted"} OR bare {status:"applied"} OR {status:"state-migrated"}
+  | "rejected"              // ← {event:"RolledBack"} OR bare {status:"rejected"} OR {type:"hmr-status",status:"rejected"}
+  | "compile-error"         // ← bare {status:"compile-error"} OR synthesized from {type:"compile-diagnostics",error_count>0}
+  | "full-reload-required"  // ← bare {status:"full-reload-required"}
+  | "discarded"             // ← {event:"Discarded"} — agent's edit was superseded (retry on next wait)
+  | "timeout";              // ← deadline exceeded
+```
+
+No worker-side changes needed — all four wire families already flow on `build-log`. The fix is purely MCP-side: implement the multi-shape parser with sum-of-sources coverage for each terminal status. Unit test matrix: one golden `build-log` dump per tier (Tier 0 adapter-handled → `Promoted`-only; Tier 1 → `Promoted` + bare `applied`; Tier 2 AI diff_patch → same with longer latency; Tier 3 failure → `compile-error` via either source).
+
+Cost: ~1 day implementation + ~½ day tests (golden dumps need recording from 4 real HMR paths on the Swing counter fixture). The MVP's "½ day" estimate for `hmr.ts` was optimistic because it assumed one wire shape, not four.
 
 ### F3. "Observer" role in signaling-server is not only a signaling-server change (blocker, material scope shift)
 
@@ -197,7 +229,7 @@ Skip if Path A'. This is the material scope the ultraplan v4.2 deferred to phase
 | Path | Purpose | Key responsibilities |
 |------|---------|----------------------|
 | `mcp/synthi-mcp/src/wire/input.ts` *(new)* | Input wire format. | Encodes mouse/key events per the **verified** worker wire: `{type:"gui-event", sessionId, event:{type:"mouse"\|"key", action, x, y, button, key}}` — **not** the flat shape from the MVP doc (see §F1). Functions: `encodeClick(x, y, button, sessionId)`, `encodeKey(key, action, sessionId)`, `encodeType(text, sessionId)` (expands a string into `key down/up` pairs per character). |
-| `mcp/synthi-mcp/src/hmr.ts` *(new)* | HMR status normalizer + subscription. | Subscribes to `build-log` DC text messages; parses three wire shapes (§F2): (1) **primary** — bare `{status:"applied"\|"rejected"\|"compile-error"\|"full-reload-required"\|"state-migrated"\|...}` (kebab-case variant tags produced by `HmrStatus::to_json()` on the worker runner and forwarded verbatim through the stderr→build-log bridge at `worker/src/compiler/stages/runner.rs:547-559`); (2) `{type:"hmr-status", status:"reload-planned"\|"rejected", ...}` (planner_glue + rollback); (3) `{type:"compile-diagnostics", error_count:>0}` → synthesized `compile-error`. Ignore everything else (stderr lines, build-status progress, adapter health, compile manifest). Exposes `onStatus(cb)` and `waitForTerminal({timeoutMs}) → {status, elapsedMs}` resolving on any of {`applied`, `rejected`, `compile-error`, `full-reload-required`, `crash-fatal`, `state-migrated`}. ~120 LOC + comprehensive unit test. |
+| `mcp/synthi-mcp/src/hmr.ts` *(new)* | HMR status normalizer + subscription. | Subscribes to `build-log` DC text messages; parses **four** wire families (§F2.2): (1) `{event:"Promoted"\|"RolledBack"\|"Discarded", data:...}` — `CandidateNotification` (the primary `applied` signal for Tier 0 adapter-handled flows, incl. MVP counter fixture); (2) bare `{status:"applied"\|"rejected"\|"compile-error"\|"full-reload-required"\|"state-migrated", ...}` — `HmrStatus` from the runner stderr bridge at `worker/src/compiler/stages/runner.rs:547-559`; (3) `{type:"hmr-status", status:"reload-planned"\|"rejected", ...}` — `planner_glue` + `rollback_notification`; (4) `{type:"compile-diagnostics", error_count:>0, ...}` → synthesized `compile-error`. Dedupe redundant emissions (`event:Promoted` + bare `status:applied` can both fire on runner-reload path). Ignore intermediate events (`Enqueued`/`Loading`/`HealthCheckStarted`/`reload-planned`/`host-kv-*`/`build-status done`). Exposes `onStatus(cb)` and `waitForTerminal({timeoutMs}) → {status, elapsedMs}` where `status ∈ {applied, rejected, compile-error, full-reload-required, discarded, timeout}`. **Default timeout 60 s** (not 30 s) to accommodate Tier 3 AI-split + compile + healing latency. ~180 LOC + golden-dump tests per tier. |
 | `mcp/synthi-mcp/src/channels.ts` *(new)* | DC handle registry. | Collects `{build-log, terminal}` once the PC data channels open. `build-log` is created by the worker (incoming via `on_datachannel` on the MCP's PC); `terminal` is created by the MCP (outgoing). Order matters: see the browser's `compilerClient.js:905-912` for the canonical creation order. |
 
 **Commit after M5:** `feat(agent-mcp): wire input + HMR normalization with three-shape handling`.
@@ -208,7 +240,7 @@ Skip if Path A'. This is the material scope the ultraplan v4.2 deferred to phase
 |------|---------|----------------------|
 | `mcp/synthi-mcp/src/tools/attach.ts` *(new)* | `synthi_attach({sessionId, signalingUrl?})`. | Reads `SYNTHI_SIGNALING_URL` env or arg; resolves via `signaling.ts` + `peer.ts`; awaits both PC `connected` + `build-log` DC open; returns `{ok:true, resolution:{w,h}, connected:true}` after first video frame (signals real media path). |
 | `mcp/synthi-mcp/src/tools/screenshot.ts` *(new)* | `synthi_screenshot()`. | Calls `frames.getFrame()`; returns `{data: base64PNG, mimeType:"image/png", w, h, ts}`. Error `no_frame_yet` if no frame received within 1s. |
-| `mcp/synthi-mcp/src/tools/wait_hmr.ts` *(new)* | `synthi_wait_hmr({timeoutMs?: 30000})`. | Delegates to `hmr.waitForTerminal({timeoutMs})`; returns `{status, elapsedMs}` on success, `{status:"timeout", elapsedMs}` on deadline. No frame-seq gate (per MVP scope — E1 deferred). |
+| `mcp/synthi-mcp/src/tools/wait_hmr.ts` *(new)* | `synthi_wait_hmr({timeoutMs?: 60000})`. | Delegates to `hmr.waitForTerminal({timeoutMs})`; returns `{status, elapsedMs}` where `status ∈ {applied, rejected, compile-error, full-reload-required, discarded, timeout}`. Default 60 s — MVP's 30 s is too tight for Tier 3 AI-split paths (see §F2.1). No frame-seq gate (per MVP scope — ultraplan E1 deferred). |
 | `mcp/synthi-mcp/src/tools/click.ts` *(new)* | `synthi_click({x, y, button?})`. | Builds mouse-down then mouse-up via `wire/input.encodeClick`; sends on `terminal` DC; returns `{ok:true}`. No ack (MVP — worker doesn't ack today). |
 | `mcp/synthi-mcp/src/tools/type.ts` *(new)* | `synthi_type({text})`. | Expands `text` into a `key down/up` sequence per char via `wire/input.encodeType`; sends on `terminal` DC; returns `{ok:true}`. Rate limit: 500 keys/sec hard cap (matches ultraplan security §; cheap guard-rail even in MVP). |
 
@@ -221,7 +253,7 @@ Layer order matches `AGENT_MCP_MVP.md:Testing`.
 | Path | Purpose | Key responsibilities |
 |------|---------|----------------------|
 | `mcp/synthi-mcp/tests/unit/wire.test.ts` *(new)* | Golden-byte parity for input wire. | Captures one session's worth of `synthi:gui-input` payloads from a live browser session (fixture: `tests/fixtures/browser_gui_payloads.json`, recorded once). For each captured event, build the same inputs via `wire/input.ts`; assert byte-identical JSON strings. Catches F1 regressions. |
-| `mcp/synthi-mcp/tests/unit/hmr_normalize.test.ts` *(new)* | HMR normalizer covers all three wire shapes. | Feeds `hmr.onStatus` each of: `{"type":"hmr-status","data":{"status":"applied"}}` + `{"status":"applied"}` bare + `{"type":"compile-diagnostics","error_count":2}`; asserts normalized stream emits `applied`, `applied`, `compile-error` in order. |
+| `mcp/synthi-mcp/tests/unit/hmr_normalize.test.ts` *(new)* | HMR normalizer covers all four wire families. | Feeds `hmr.onStatus` each of: `{"event":"Promoted","data":{...}}`, `{"event":"RolledBack","data":{...}}`, `{"event":"Discarded","data":{...}}`, bare `{"status":"applied"}`, bare `{"status":"rejected"}`, bare `{"status":"compile-error"}`, bare `{"status":"full-reload-required"}`, `{"type":"hmr-status","status":"rejected"}`, `{"type":"compile-diagnostics","error_count":2}`; asserts each produces the correct normalized terminal status. Plus a dedup test: `event:Promoted` followed by bare `status:applied` within 50ms produces exactly one `applied`. Plus intermediate-event tests: `{event:"Loading"}`, `{status:"reload-planned"}`, `{status:"host-kv-preserved"}`, `{status:"done",success:true}` do **not** resolve `waitForTerminal`. |
 | `mcp/synthi-mcp/tests/integration/e2e.test.ts` *(new)* | Full docker-compose round trip. | Runs `docker-compose up -d` (reuses existing `/docker-compose.yml`); creates a session via collab-server REST; starts MCP; `synthi_attach` → `synthi_screenshot` → assert PNG ≥ 1KB + dims match resolution → edit a file via collab REST → `synthi_wait_hmr` → assert `applied` within 30s → `synthi_screenshot` → assert pHash distance from baseline > 4. |
 | `mcp/synthi-mcp/tests/fixtures/counter_swing/` *(new — copied from ultraplan testing fixtures)* | Swing counter fixture. | Minimal Java Swing app with a button that increments; baseline PNG at `counter-0.png`. Same fixture the ultraplan §Testing references. |
 | `mcp/synthi-mcp/tests/e2e/claude_code_smoke.sh` *(new)* | Claude-Code smoke loop. | Bash script: `claude mcp add synthi -- node dist/index.js --session $ID`; pipes a prompt: *"Attach to the preview and describe what you see. Then edit src/Counter.java to start from 10 instead of 0, wait for HMR, and screenshot again."* Shell asserts MCP tool-call trace + final screenshot pHash differs from baseline. |
@@ -255,7 +287,7 @@ Anything on the ultraplan's "Files — added/modified" list that's not in this p
 ## 5. Open items requiring user decision before M1 starts
 
 1. **F3 Path choice — A' (observer replaces browser) vs. B (true co-attach).** Path B is the product-correct answer but is ~5-7 days larger than the MVP's 3-5 day estimate because of the worker second-PC work that v4.2 deferred to `G3`. Path A' matches the MVP estimate and defers co-attach to post-MVP.
-2. **F2 HMR normalization.** Resolved in code audit: the bare `{status:...}` wire is authoritative, ai-backend is downstream-only, no worker change needed. MCP implements the three-shape normalizer in `hmr.ts`. (No open question — captured here so reviewers can re-check F2 before M5 if they want.)
+2. **F2 HMR normalization.** Resolved in code audit (correction captured §F2): four wire families, not three. `{event:"Promoted"}` from `CandidateNotification` is the primary `applied` signal for Tier 0 / adapter-handled paths — MCP's canonical fixture ("counter 0→10") flows through this path, not through bare `{status:"applied"}`. ai-backend is **upstream** of HMR (Tier 2 `/refactor/diff_patch`, Tier 3 `/refactor/split/verified`) — not downstream. `wait_hmr` default timeout raised 30 → 60 s to accommodate Tier 3 AI latency. (No open question; captured so reviewers can re-check F2 before M5.)
 3. **Where should `mcp/synthi-mcp/` live in the monorepo?** The MVP + ultraplan say `mcp/synthi-mcp/`; that's a new top-level directory. If the user prefers `packages/synthi-mcp/` or `backend/synthi-mcp/`, say so before M3.
 4. **Golden-byte fixtures** (`browser_gui_payloads.json`, `counter_swing/`) — record once from a live session. Before M7, user confirms which workspace/session to record against.
 5. **Frame-seq gate in MVP?** MVP currently ships status-only. Plan matches. If user wants to add the gate for MVP (low risk on static counter fixtures per ultraplan E1), it's a ~½-day add to `hmr.ts` and requires a new worker `{type:"frame-advance"}` DC message (scope creep into worker).
