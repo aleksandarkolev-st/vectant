@@ -6,6 +6,7 @@ import { SessionChannels } from "./channels.js";
 import { eventLog } from "./events/index.js";
 import type { SessionState as WireSessionState } from "./events/index.js";
 import { locateEngine } from "./locate/index.js";
+import { scanForInjection } from "./security/injection.js";
 
 /**
  * MCP-local connection state. Distinct from the wire-level `SessionState`
@@ -227,6 +228,23 @@ class SessionManager {
         source: msgType ?? "build-log",
         raw: msg,
       });
+
+      // Injection-heuristic pre-screen: any free-text field in the wire
+      // might be a prompt-injection vector since the preview content
+      // renders in our LLM's context.
+      const textFields = [msg["message"], msg["reason"], msg["stdout"], msg["stderr"]];
+      for (const f of textFields) {
+        if (typeof f === "string") {
+          const matches = scanForInjection(f);
+          if (matches.length > 0) {
+            eventLog.push({
+              kind: "security",
+              code: "injection_suspected",
+              detail: { matches, source: "build-log" },
+            });
+          }
+        }
+      }
     });
     this.unsubscribers.push(unsubHmr);
 

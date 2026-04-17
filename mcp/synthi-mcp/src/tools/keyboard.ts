@@ -1,5 +1,6 @@
 import { eventLog } from "../events/index.js";
 import { session } from "../session.js";
+import { keystrokeDetector } from "../security/anomaly.js";
 import { encodeKey, encodeTypeSequence } from "../wire/input.js";
 import { runWait } from "../wait/index.js";
 import type { LogArgs, WaitArgs } from "../wait/index.js";
@@ -50,6 +51,7 @@ export async function keyboardTool(args: unknown): Promise<ToolResponse> {
   }
 
   let charsSent = 0;
+  let recordedKeys: string[] = [];
   try {
     switch (action) {
       case "type": {
@@ -61,6 +63,7 @@ export async function keyboardTool(args: unknown): Promise<ToolResponse> {
           await attached.channels.sendInput(frames);
         }
         charsSent = a.text.length;
+        recordedKeys = Array.from(a.text);
         break;
       }
       case "key": {
@@ -71,6 +74,7 @@ export async function keyboardTool(args: unknown): Promise<ToolResponse> {
         const up = encodeKey(attached.sessionId, a.key, "up");
         await attached.channels.sendInput([down, up]);
         charsSent = 1;
+        recordedKeys = [a.key];
         break;
       }
       case "chord": {
@@ -83,11 +87,28 @@ export async function keyboardTool(args: unknown): Promise<ToolResponse> {
         for (let i = keys.length - 1; i >= 0; i--) frames.push(encodeKey(attached.sessionId, keys[i]!, "up"));
         await attached.channels.sendInput(frames);
         charsSent = keys.length;
+        recordedKeys = keys;
         break;
       }
     }
   } catch (err) {
     return errorFromException("keyboard_send_failed", err);
+  }
+
+  // Anomaly detection on the emitted keys. Phase-1 warns only — every
+  // dispatch goes through; suspicious patterns land in the event log so
+  // post-run analysis can flag a runaway agent.
+  const reasons: string[] = [];
+  for (const k of recordedKeys) {
+    const signal = keystrokeDetector.record(k);
+    if (signal.suspicious) reasons.push(...signal.reasons);
+  }
+  if (reasons.length > 0) {
+    eventLog.push({
+      kind: "security",
+      code: "rate_limit_warning",
+      detail: { action, reasons, charsSent },
+    });
   }
 
   eventLog.push({

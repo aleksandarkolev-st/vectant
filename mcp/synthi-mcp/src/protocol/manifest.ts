@@ -81,10 +81,10 @@ export const STATIC_MANIFEST: Omit<CapabilityManifest, "tools"> = {
     drift_threshold: 12,
   },
   security: {
-    unsafe_signaling_flag_supported: false,
+    unsafe_signaling_flag_supported: true,
     focus_lock: false,
     wm_class_spoof_check: false,
-    injection_heuristic_prescreen: false,
+    injection_heuristic_prescreen: true,
     sensitive_action_interstitial: false,
     keystroke_rate_cap_per_sec: 500,
   },
