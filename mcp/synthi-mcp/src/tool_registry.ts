@@ -29,6 +29,13 @@ export const ADVERTISED_TOOLS = [
   // Event log / telemetry / source state
   "synthi_get_event_log",
   "synthi_get_source_state",
+  // Operational
+  "synthi_get_usage",
+  "synthi_set_quality",
+  "synthi_checkpoint",
+  "synthi_acknowledge_disruption",
+  "synthi_get_crash_info",
+  "synthi_reset_guest",
 ] as const;
 
 export type AdvertisedToolName = (typeof ADVERTISED_TOOLS)[number];

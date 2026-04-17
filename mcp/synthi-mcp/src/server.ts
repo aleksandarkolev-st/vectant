@@ -18,6 +18,12 @@ import { locateTool } from "./tools/locate.js";
 import { waitTool } from "./tools/wait.js";
 import { mouseTool } from "./tools/mouse.js";
 import { keyboardTool } from "./tools/keyboard.js";
+import { getUsageTool } from "./tools/get_usage.js";
+import { setQualityTool } from "./tools/set_quality.js";
+import { checkpointTool } from "./tools/checkpoint.js";
+import { acknowledgeDisruptionTool } from "./tools/acknowledge_disruption.js";
+import { getCrashInfoTool } from "./tools/get_crash_info.js";
+import { resetGuestTool } from "./tools/reset_guest.js";
 import type { ToolContext } from "./tools/shared.js";
 
 export interface SynthiServerOptions {
@@ -224,6 +230,61 @@ const TOOLS = [
     inputSchema: { type: "object", properties: {}, required: [] },
   },
   {
+    name: "synthi_get_usage",
+    description:
+      "Return per-session usage counters aggregated from the event log: tool_call, screenshot, vision_inference, egress_bytes. Includes vision_cost_usd_estimate (0 until claude_api backend ships) and hot_seconds since attach.",
+    inputSchema: { type: "object", properties: {}, required: [] },
+  },
+  {
+    name: "synthi_set_quality",
+    description:
+      "Request bandwidth changes (target_fps / target_bitrate / target_resolution). Phase 1 records the intent in the event log; actual negotiation with the worker is phase 2 (returns applied:false, note:\"phase_1_record_only\").",
+    inputSchema: {
+      type: "object",
+      properties: {
+        target_fps: { type: "number" },
+        target_bitrate: { type: "number", description: "Bits per second." },
+        target_resolution: {
+          type: "object",
+          properties: { w: { type: "number" }, h: { type: "number" } },
+          required: ["w", "h"],
+        },
+      },
+      required: [],
+    },
+  },
+  {
+    name: "synthi_checkpoint",
+    description:
+      "Write a named marker (label) into the event log so post-run analysis can anchor time ranges to caller-meaningful phases. Returns {seq, ts}.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        label: { type: "string", description: "Short human-readable label (required)." },
+        detail: { description: "Arbitrary structured context, passed through in the response." },
+      },
+      required: ["label"],
+    },
+  },
+  {
+    name: "synthi_acknowledge_disruption",
+    description:
+      "Acknowledge a pending disruption (crash-recovered / full-reload-required) so subsequent input is accepted. Returns `cleared` with the disruption kind that was cleared, or \"none\" if nothing was pending.",
+    inputSchema: { type: "object", properties: {}, required: [] },
+  },
+  {
+    name: "synthi_get_crash_info",
+    description:
+      "Return the most recent crash metadata observed by the MCP (pending_disruption + crash_info). null/empty if the session has not reported a crash.",
+    inputSchema: { type: "object", properties: {}, required: [] },
+  },
+  {
+    name: "synthi_reset_guest",
+    description:
+      "Request that the guest program be restarted without closing the session. Phase 1 records the intent; worker-side enforcement lands in phase 2 (returns applied:false).",
+    inputSchema: { type: "object", properties: {}, required: [] },
+  },
+  {
     name: "synthi_mouse",
     description:
       "Playwright-style mouse tool. Actions: click, double_click, move, down, up, drag, wheel. Coordinates come from explicit x/y OR a handle (resolved via synthi_locate, bbox center is used). Optional auto-wait via waitFor:{condition,...} runs a synthi_wait before the action.",
@@ -403,6 +464,18 @@ export function createSynthiServer(options: SynthiServerOptions): Server {
         return (await mouseTool(args)) as CallToolResult;
       case "synthi_keyboard":
         return (await keyboardTool(args)) as CallToolResult;
+      case "synthi_get_usage":
+        return (await getUsageTool(args)) as CallToolResult;
+      case "synthi_set_quality":
+        return (await setQualityTool(args)) as CallToolResult;
+      case "synthi_checkpoint":
+        return (await checkpointTool(args)) as CallToolResult;
+      case "synthi_acknowledge_disruption":
+        return (await acknowledgeDisruptionTool(args)) as CallToolResult;
+      case "synthi_get_crash_info":
+        return (await getCrashInfoTool(args)) as CallToolResult;
+      case "synthi_reset_guest":
+        return (await resetGuestTool(args)) as CallToolResult;
       default:
         return {
           content: [

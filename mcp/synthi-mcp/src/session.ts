@@ -52,6 +52,8 @@ class SessionManager {
   private wireState: WireSessionState = "ready";
   private wireStateTs: number = Date.now();
   private wireUnsafeMode = false;
+  private ackRequired: string | null = null; // null | "crash-recovered" | "full-reload-required"
+  private lastCrashInfo: Record<string, unknown> | null = null;
   private attachedAt: number | null = null;
   private lastActivityAt: number = Date.now();
   private unsubscribers: Array<() => void> = [];
@@ -104,6 +106,25 @@ class SessionManager {
       kind: "security",
       code: "unsafe_attach",
     });
+  }
+
+  markDisruption(kind: "crash-recovered" | "full-reload-required", info: Record<string, unknown>): void {
+    this.ackRequired = kind;
+    this.lastCrashInfo = { kind, ...info, ts: Date.now() };
+  }
+
+  disruptionPending(): string | null {
+    return this.ackRequired;
+  }
+
+  crashInfo(): Record<string, unknown> | null {
+    return this.lastCrashInfo;
+  }
+
+  clearDisruption(): string | null {
+    const cleared = this.ackRequired;
+    this.ackRequired = null;
+    return cleared;
   }
 
   get(): AttachedSession | null {
@@ -272,6 +293,8 @@ class SessionManager {
     this.wireState = "ready";
     this.wireStateTs = Date.now();
     this.wireUnsafeMode = false;
+    this.ackRequired = null;
+    this.lastCrashInfo = null;
     this.attachedAt = null;
     this.lastActivityAt = Date.now();
     for (const unsub of this.unsubscribers) {
