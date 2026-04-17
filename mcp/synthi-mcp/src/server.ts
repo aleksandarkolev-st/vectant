@@ -5,6 +5,11 @@ import {
   type CallToolResult,
 } from "@modelcontextprotocol/sdk/types.js";
 import { attachTool } from "./tools/attach.js";
+import { detachTool } from "./tools/detach.js";
+import { healthTool } from "./tools/health.js";
+import { reconnectTool } from "./tools/reconnect.js";
+import { getEventLogTool } from "./tools/get_event_log.js";
+import { getSourceStateTool } from "./tools/get_source_state.js";
 import { screenshotTool } from "./tools/screenshot.js";
 import { waitHmrTool } from "./tools/wait_hmr.js";
 import { clickTool } from "./tools/click.js";
@@ -101,6 +106,60 @@ const TOOLS = [
       },
       required: ["text"],
     },
+  },
+  {
+    name: "synthi_detach",
+    description:
+      "Close the current WebRTC + signaling connection and release the session handle. Safe to call when not attached. Does NOT terminate the Synthi preview session itself; a human browser can re-attach afterwards.",
+    inputSchema: { type: "object", properties: {}, required: [] },
+  },
+  {
+    name: "synthi_health",
+    description:
+      "Snapshot of the MCP's connection state: wire session state + timestamp, peer connectionState, data-channel readyStates, first-frame flag, unsafe_mode flag. Read-only.",
+    inputSchema: { type: "object", properties: {}, required: [] },
+  },
+  {
+    name: "synthi_reconnect",
+    description:
+      "Re-establish the WebRTC peer + signaling socket against the current sessionId. Recovers transient network drops. If the underlying session is gone (worker dead, pod evicted), returns session_terminated and the agent should synthi_attach a fresh session.",
+    inputSchema: { type: "object", properties: {}, required: [] },
+  },
+  {
+    name: "synthi_get_event_log",
+    description:
+      "Fetch entries from the session-scoped event ring buffer. Supports since_seq, since_ts, kind filter (lifecycle/hmr/input/locator_resolution/console/error/security/source_state/usage), and limit. Returns entries oldest-first + last_seq.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        since_seq: {
+          type: "number",
+          description: "Return only entries with seq > since_seq. Integer >= 0.",
+        },
+        since_ts: {
+          type: "number",
+          description: "Return only entries with ts >= since_ts (ms epoch).",
+        },
+        kind: {
+          oneOf: [
+            { type: "string", enum: ["lifecycle", "hmr", "input", "locator_resolution", "console", "error", "security", "source_state", "usage"] },
+            { type: "array", items: { type: "string" } },
+          ],
+          description: "Filter by one kind or an array of kinds.",
+        },
+        limit: {
+          type: "number",
+          description: "Maximum number of entries to return. Integer >= 1.",
+        },
+      },
+      required: [],
+    },
+  },
+  {
+    name: "synthi_get_source_state",
+    description:
+      "Report the session's source-state summary (last_changed_files, last_change_seq, last_change_ts). Sourced from the event log. Returns a note field when no source_state events have been emitted yet.",
+    inputSchema: { type: "object", properties: {}, required: [] },
   },
   {
     name: "synthi_locate",
@@ -204,6 +263,16 @@ export function createSynthiServer(options: SynthiServerOptions): Server {
         return (await typeTool(args)) as CallToolResult;
       case "synthi_locate":
         return (await locateTool(args)) as CallToolResult;
+      case "synthi_detach":
+        return (await detachTool(args)) as CallToolResult;
+      case "synthi_health":
+        return (await healthTool(args)) as CallToolResult;
+      case "synthi_reconnect":
+        return (await reconnectTool(args)) as CallToolResult;
+      case "synthi_get_event_log":
+        return (await getEventLogTool(args)) as CallToolResult;
+      case "synthi_get_source_state":
+        return (await getSourceStateTool(args)) as CallToolResult;
       default:
         return {
           content: [

@@ -23,8 +23,9 @@ export const ADVERTISED_TOOLS = [
   "synthi_type",
   // Semantic addressing
   "synthi_locate",
-  // Event log / telemetry
+  // Event log / telemetry / source state
   "synthi_get_event_log",
+  "synthi_get_source_state",
 ] as const;
 
 export type AdvertisedToolName = (typeof ADVERTISED_TOOLS)[number];

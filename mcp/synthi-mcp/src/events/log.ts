@@ -106,6 +106,13 @@ export class EventLog {
   clear(): void {
     this.entries.length = 0;
   }
+
+  /** Reset seq + entries. Test-only; production log must keep seq monotonic. */
+  _resetForTests(): void {
+    this.entries.length = 0;
+    this.seqCounter = 0;
+    this.listeners.clear();
+  }
 }
 
 /** Per-process singleton. One MCP = one session = one event log. */
