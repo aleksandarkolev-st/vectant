@@ -9,6 +9,7 @@ import { screenshotTool } from "./tools/screenshot.js";
 import { waitHmrTool } from "./tools/wait_hmr.js";
 import { clickTool } from "./tools/click.js";
 import { typeTool } from "./tools/type.js";
+import { locateTool } from "./tools/locate.js";
 import type { ToolContext } from "./tools/shared.js";
 
 export interface SynthiServerOptions {
@@ -93,6 +94,62 @@ const TOOLS = [
       required: ["text"],
     },
   },
+  {
+    name: "synthi_locate",
+    description:
+      "Resolve a natural-language element description into a {bbox, handle_id, region_phash} handle. Phase-0.5 spike tool: with `preferred_vision_backend:\"mock\"` (default) or an explicit `hints.prefer_region`, the server uses the hint as the answer; `agent_side` returns an unresolved-handle signal so the agent runs its own vision; `claude_api` is a phase-1 stub today. Passing `handle_id` + `reuse_handle:true` enables the region-pHash cache.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        description: {
+          type: "string",
+          description: "What the agent is trying to find, in natural language (e.g., 'the counter value').",
+        },
+        hints: {
+          type: "object",
+          description: "Optional hints to narrow the search. Mock/agent_side backends require `prefer_region` today.",
+          properties: {
+            prefer_region: {
+              type: "object",
+              properties: {
+                x: { type: "number" },
+                y: { type: "number" },
+                w: { type: "number" },
+                h: { type: "number" },
+              },
+              required: ["x", "y", "w", "h"],
+            },
+            exclude_bbox: {
+              type: "object",
+              properties: {
+                x: { type: "number" },
+                y: { type: "number" },
+                w: { type: "number" },
+                h: { type: "number" },
+              },
+              required: ["x", "y", "w", "h"],
+            },
+            containing_text: { type: "string" },
+            nth: { type: "number" },
+          },
+        },
+        preferred_vision_backend: {
+          type: "string",
+          enum: ["mock", "agent_side", "claude_api"],
+          description: "Which backend to use for vision grounding. Defaults to env SYNTHI_VISION_BACKEND or 'mock'.",
+        },
+        handle_id: {
+          type: "string",
+          description: "Caller-supplied stable identity for the element, used to key the cache.",
+        },
+        reuse_handle: {
+          type: "boolean",
+          description: "If true and handle_id is set, try the cache first.",
+        },
+      },
+      required: ["description"],
+    },
+  },
 ] as const;
 
 export function createSynthiServer(options: SynthiServerOptions): Server {
@@ -137,6 +194,8 @@ export function createSynthiServer(options: SynthiServerOptions): Server {
         return (await clickTool(args)) as CallToolResult;
       case "synthi_type":
         return (await typeTool(args)) as CallToolResult;
+      case "synthi_locate":
+        return (await locateTool(args)) as CallToolResult;
       default:
         return {
           content: [
