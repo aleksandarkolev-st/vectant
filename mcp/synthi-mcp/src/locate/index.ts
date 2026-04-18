@@ -13,6 +13,11 @@ export interface LocateDispatchCtx {
   frame: Buffer;
   frameDims: { w: number; h: number };
   now?: number;
+  /**
+   * Upstream cancellation. Forwarded to the vision backend so in-flight
+   * API calls abort without billing on client disconnect / tool cancel.
+   */
+  signal?: AbortSignal;
 }
 
 export class LocateEngine {
@@ -99,6 +104,7 @@ export class LocateEngine {
       frame: ctx.frame,
       ...(args.hints !== undefined ? { hints: args.hints } : {}),
       frameDims: ctx.frameDims,
+      ...(ctx.signal !== undefined ? { signal: ctx.signal } : {}),
     });
     const regionHash = await regionPHash(ctx.frame, resolution.bbox);
     const handleId = args.handle_id ?? `h_${randomUUID()}`;
@@ -177,6 +183,7 @@ export type {
   AnthropicTextBlock,
   AnthropicMessagesCreateParams,
   AnthropicMessagesResponse,
+  AnthropicRequestOptions,
   ClaudeApiBackendOptions,
   CachedVisionEntry,
   ParsedVisionResult,

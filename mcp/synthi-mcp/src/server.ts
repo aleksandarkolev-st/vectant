@@ -604,9 +604,13 @@ export function createSynthiServer(options: SynthiServerOptions): Server {
     }
   });
 
-  server.setRequestHandler(CallToolRequestSchema, async (request): Promise<CallToolResult> => {
+  server.setRequestHandler(CallToolRequestSchema, async (request, extra): Promise<CallToolResult> => {
     const toolName = request.params.name;
     const args = request.params.arguments;
+    // RequestHandlerExtra.signal fires when the client cancels the tool call
+    // or the transport drops. Plumb it into the tools whose work is either
+    // slow or billable so they unwind without finishing.
+    const signal = (extra as { signal?: AbortSignal } | undefined)?.signal;
     switch (toolName) {
       case "synthi_attach":
         return (await attachTool(args, ctx)) as CallToolResult;
@@ -619,7 +623,7 @@ export function createSynthiServer(options: SynthiServerOptions): Server {
       case "synthi_type":
         return (await typeTool(args)) as CallToolResult;
       case "synthi_locate":
-        return (await locateTool(args)) as CallToolResult;
+        return (await locateTool(args, signal ? { signal } : undefined)) as CallToolResult;
       case "synthi_detach":
         return (await detachTool(args)) as CallToolResult;
       case "synthi_health":

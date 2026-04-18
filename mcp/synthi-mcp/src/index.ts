@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { createSynthiServer } from "./server.js";
+import { session } from "./session.js";
+import { requestRegistry } from "./util/request_registry.js";
 
 function parseArgs(argv: string[]): { sessionId?: string; signalingUrl?: string } {
   const out: { sessionId?: string; signalingUrl?: string } = {};
@@ -39,6 +41,20 @@ async function main(): Promise<void> {
   const transport = new StdioServerTransport();
 
   const shutdown = async (): Promise<void> => {
+    // Abort every in-flight tool call so Anthropic API calls, wait-
+    // primitives, and other slow work unwind without finishing. Then
+    // tear down the WebRTC session (DC → PC → WS) before closing the
+    // MCP transport.
+    try {
+      requestRegistry.cancelAll("shutdown");
+    } catch {
+      // registry is best-effort — continue teardown
+    }
+    try {
+      await session.close();
+    } catch {
+      // session may already be detached
+    }
     try {
       await server.close();
     } catch {

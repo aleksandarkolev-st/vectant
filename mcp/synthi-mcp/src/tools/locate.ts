@@ -1,6 +1,7 @@
 import { locateEngine } from "../locate/index.js";
 import type { LocateArgs, LocateBackendName } from "../locate/index.js";
 import { session } from "../session.js";
+import { requestRegistry } from "../util/request_registry.js";
 import {
   errorFromException,
   errorResponse,
@@ -18,7 +19,12 @@ interface RawArgs {
   reuse_handle?: unknown;
 }
 
-export async function locateTool(args: unknown): Promise<ToolResponse> {
+export interface LocateToolExtra {
+  /** SDK-supplied cancellation signal (RequestHandlerExtra.signal). */
+  signal?: AbortSignal;
+}
+
+export async function locateTool(args: unknown, extra?: LocateToolExtra): Promise<ToolResponse> {
   const a = (args ?? {}) as RawArgs;
   if (typeof a.description !== "string" || a.description.length === 0) {
     return errorResponse("invalid_args", { field: "description", expected: "non-empty string" });
@@ -53,14 +59,25 @@ export async function locateTool(args: unknown): Promise<ToolResponse> {
     ...(typeof a.reuse_handle === "boolean" ? { reuse_handle: a.reuse_handle } : {}),
   };
 
+  // Register the call so (a) the SDK-supplied signal propagates to the
+  // vision backend and (b) operators/shutdown can cancel in-flight calls
+  // by id. The Anthropic SDK picks up `signal` and aborts before billing.
+  const handle = requestRegistry.register("synthi_locate", extra?.signal);
   try {
     const result = await locateEngine.resolve(built, {
       frame: frame.data,
       frameDims: { w: frame.width, h: frame.height },
+      signal: handle.signal,
     });
-    return jsonResponse({ ok: true, ...result });
+    return jsonResponse({ ok: true, request_id: handle.id, ...result });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
+    if (handle.signal.aborted || message.includes("_aborted")) {
+      return errorResponse("request_cancelled", {
+        request_id: handle.id,
+        reason: message,
+      });
+    }
     if (message.startsWith("agent_side_vision_required")) {
       return errorResponse("agent_side_vision_required", {
         hint: "Run your own vision grounding on the provided screenshot, then re-call synthi_locate with hints.prefer_region populated.",
@@ -75,5 +92,7 @@ export async function locateTool(args: unknown): Promise<ToolResponse> {
       return errorResponse("locator_unresolved", { message });
     }
     return errorFromException("locate_failed", err);
+  } finally {
+    handle.unregister();
   }
 }

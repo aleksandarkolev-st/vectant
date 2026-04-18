@@ -16,6 +16,12 @@ export interface VisionBackend {
     frame: Buffer;
     hints?: LocateHints;
     frameDims: { w: number; h: number };
+    /**
+     * Optional cancellation. When fired mid-call, backends must unwind
+     * without incurring billable side effects (no usage event, no cache
+     * write) and throw a distinct error (e.g. `claude_api_aborted`).
+     */
+    signal?: AbortSignal;
   }): Promise<BackendResolution>;
 }
 
@@ -36,7 +42,9 @@ export class MockBackend implements VisionBackend {
     frame: Buffer;
     hints?: LocateHints;
     frameDims: { w: number; h: number };
+    signal?: AbortSignal;
   }): Promise<BackendResolution> {
+    if (args.signal?.aborted) throw new Error("mock_backend_aborted");
     if (args.hints?.prefer_region) {
       return {
         bbox: args.hints.prefer_region,
@@ -72,7 +80,9 @@ export class AgentSideBackend implements VisionBackend {
     frame: Buffer;
     hints?: LocateHints;
     frameDims: { w: number; h: number };
+    signal?: AbortSignal;
   }): Promise<BackendResolution> {
+    if (args.signal?.aborted) throw new Error("agent_side_backend_aborted");
     if (args.hints?.prefer_region) {
       return {
         bbox: args.hints.prefer_region,
@@ -108,7 +118,13 @@ export class ClaudeApiBackend implements VisionBackend {
     frame: Buffer;
     hints?: LocateHints;
     frameDims: { w: number; h: number };
+    signal?: AbortSignal;
   }): Promise<BackendResolution> {
+    if (args.signal?.aborted) {
+      throw new Error(
+        `claude_api_aborted: ${((args.signal.reason as Error | undefined)?.message) ?? "pre_call"}`
+      );
+    }
     if (args.hints?.prefer_region) {
       return {
         bbox: args.hints.prefer_region,

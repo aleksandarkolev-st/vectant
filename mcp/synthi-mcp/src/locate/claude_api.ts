@@ -82,9 +82,21 @@ export interface AnthropicMessagesResponse {
   stop_reason?: string;
 }
 
+/**
+ * Second-argument request options on `client.messages.create`. The real
+ * Anthropic SDK accepts a `{signal?: AbortSignal}` here; we model only the
+ * fields we actually forward so tests can supply a minimal mock.
+ */
+export interface AnthropicRequestOptions {
+  signal?: AbortSignal;
+}
+
 export interface AnthropicLike {
   messages: {
-    create(params: AnthropicMessagesCreateParams): Promise<AnthropicMessagesResponse>;
+    create(
+      params: AnthropicMessagesCreateParams,
+      options?: AnthropicRequestOptions
+    ): Promise<AnthropicMessagesResponse>;
   };
 }
 
@@ -229,9 +241,17 @@ export class ClaudeApiBackendReal implements VisionBackend {
     frame: Buffer;
     hints?: LocateHints;
     frameDims: { w: number; h: number };
+    signal?: AbortSignal;
   }): Promise<BackendResolution> {
     const key = `${contentHash(args.frame)}_${descriptionHash(args.description)}`;
     const now = Date.now();
+
+    // Respect cancellation before we even hit the cache or the network.
+    if (args.signal?.aborted) {
+      throw new Error(
+        `claude_api_aborted: ${((args.signal.reason as Error | undefined)?.message) ?? "pre_call"}`
+      );
+    }
 
     const cached = this.cache.get(key);
     if (cached && now - cached.ts < this.cacheTtlMs) {
@@ -249,21 +269,29 @@ export class ClaudeApiBackendReal implements VisionBackend {
 
     let response: AnthropicMessagesResponse;
     try {
-      response = await client.messages.create({
-        model: this.model,
-        max_tokens: this.maxTokens,
-        system: systemPrompt,
-        messages: [
-          {
-            role: "user",
-            content: [
-              { type: "image", source: { type: "base64", media_type: "image/png", data: base64 } },
-              { type: "text", text: userText },
-            ],
-          },
-        ],
-      });
+      response = await client.messages.create(
+        {
+          model: this.model,
+          max_tokens: this.maxTokens,
+          system: systemPrompt,
+          messages: [
+            {
+              role: "user",
+              content: [
+                { type: "image", source: { type: "base64", media_type: "image/png", data: base64 } },
+                { type: "text", text: userText },
+              ],
+            },
+          ],
+        },
+        args.signal ? { signal: args.signal } : {}
+      );
     } catch (err) {
+      // If we got here because of an abort, surface a distinct error code so
+      // callers can branch (no billing, no cache update, no usage event).
+      if (args.signal?.aborted) {
+        throw new Error(`claude_api_aborted: ${(err as Error).message}`);
+      }
       throw new Error(`claude_api_network_error: ${(err as Error).message}`);
     }
 
