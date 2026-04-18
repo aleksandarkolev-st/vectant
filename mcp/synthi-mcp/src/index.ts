@@ -9,6 +9,7 @@ import {
   resolvePrometheusPort,
   startPrometheusServer,
 } from "./observability/prometheus_server.js";
+import { performShutdown } from "./shutdown.js";
 import type { Server as HttpServer } from "node:http";
 
 function parseArgs(argv: string[]): { sessionId?: string; signalingUrl?: string } {
@@ -62,35 +63,18 @@ async function main(): Promise<void> {
   }
 
   const shutdown = async (): Promise<void> => {
-    // Abort every in-flight tool call so Anthropic API calls, wait-
-    // primitives, and other slow work unwind without finishing. Then
-    // tear down the WebRTC session (DC → PC → WS) before closing the
-    // MCP transport.
-    try {
-      requestRegistry.cancelAll("shutdown");
-    } catch {
-      // registry is best-effort — continue teardown
-    }
-    try {
-      await session.close();
-    } catch {
-      // session may already be detached
-    }
-    try {
-      await server.close();
-    } catch {
-      // best-effort — process is exiting
-    }
-    try {
-      unbindMetrics?.();
-    } catch {
-      // metrics listener may already be gone
-    }
-    try {
-      metricsServer?.close();
-    } catch {
-      // server may not have finished listening
-    }
+    await performShutdown({
+      requestRegistry,
+      session,
+      server,
+      ...(unbindMetrics ? { unbindMetrics } : {}),
+      ...(metricsServer ? { metricsServer } : {}),
+      logError: (step, err) => {
+        process.stderr.write(
+          `synthi-mcp shutdown[${step}]: ${err instanceof Error ? err.message : String(err)}\n`
+        );
+      },
+    });
     process.exit(0);
   };
   process.on("SIGINT", shutdown);
