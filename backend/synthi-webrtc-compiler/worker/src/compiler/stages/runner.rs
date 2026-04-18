@@ -381,15 +381,51 @@ pub async fn handle_runner_execution(
                         .build(),
                 );
 
-                // Spawn async task to write video RTP packets
+                // Spawn async task to write video RTP packets. We also
+                // tap the RTP marker bit (header byte 1, bit 7) to count
+                // end-of-frame boundaries and emit a sparse
+                // `{type:"frame-advance", frame_seq, ts_ms}` message on
+                // the build-log DC. MCP consumers use this as the post-
+                // HMR paint gate (see ultraplan §WebRTC pipeline reuse +
+                // §4.4 frame-seq gate). Throttled to every 3rd frame
+                // (~10 Hz at 30fps, ~20 Hz at 60fps) — enough density
+                // for the gate without flooding the DC.
                 let v_track_clone = video_track.clone();
+                let log_dc_for_frame_advance = ctx.log_dc.clone();
                 tokio::spawn(async move {
+                    let mut frame_seq: u64 = 0;
+                    const EMIT_EVERY_N_FRAMES: u64 = 3;
                     while let Some(data) = v_rx.recv().await {
+                        let is_end_of_frame = data.len() >= 2 && (data[1] & 0x80) != 0;
                         if let Err(e) = v_track_clone.write(&data).await {
                             if e.to_string().contains("closed") {
                                 break;
                             }
                             eprintln!("RTP write error: {}", e);
+                        }
+                        if is_end_of_frame {
+                            frame_seq += 1;
+                            if frame_seq % EMIT_EVERY_N_FRAMES == 0 {
+                                let ts_ms = std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .map(|d| d.as_millis() as u64)
+                                    .unwrap_or(0);
+                                let msg = format!(
+                                    r#"{{"type":"frame-advance","frame_seq":{},"ts_ms":{}}}"#,
+                                    frame_seq, ts_ms
+                                );
+                                // Fire-and-forget: a slow DC must not
+                                // stall RTP delivery. At 20Hz the spawn
+                                // churn is negligible; if the DC is
+                                // backed up the frame-advance is simply
+                                // stale by a few frames, which is what
+                                // the MCP gate's freshness window
+                                // tolerates.
+                                let dc = log_dc_for_frame_advance.clone();
+                                tokio::spawn(async move {
+                                    let _ = dc.send_text(msg).await;
+                                });
+                            }
                         }
                     }
                 });
