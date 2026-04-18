@@ -70,7 +70,7 @@ const CFG = {
   collabUrl: process.env.COLLAB_URL ?? 'http://localhost:1234',
   signalingUrl: process.env.SIGNALING_URL ?? 'ws://localhost:9000',
   prometheusPort: Number(process.env.PROMETHEUS_PORT ?? 9464),
-  googleApiKey: process.env.GOOGLE_API_KEY ?? '',
+  googleApiKey: 'AIzaSyDaOUxXavFUVYkVHM8cD65svGU0sYKaxqQ',
   geminiModel: process.env.SYNTHI_GEMINI_MODEL ?? 'gemini-3-flash-preview',
   slug: process.env.SLUG ?? `mcp-counter-${Date.now()}`,
   workspaceName: process.env.WORKSPACE_NAME ?? 'Synthi MCP Live Test',
@@ -84,7 +84,7 @@ const CFG = {
   // change what the MCP test exercises — it just keeps the output clean when
   // the running collab-server's GCS client is mis-configured. Opt in with
   // MCP_SYNC_GCS=true to exercise the mirror path.
-  syncToGcs: (process.env.MCP_SYNC_GCS ?? 'false').toLowerCase() === 'true',
+  syncToGcs: 'true'
 };
 
 const LOG_DIR = path.resolve(__dirname, '../.live-test-logs');
