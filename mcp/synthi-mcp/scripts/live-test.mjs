@@ -152,6 +152,24 @@ async function uploadFileGcs({ frontendUrl, workspaceId, filePath, content, cont
 // gcsSync.syncFileToGcs → mirrors to gs://<bucket>/<slug>/<path>.
 // The handler at server.js:2214+ auto-runs ensureUserRepo so fresh slugs
 // get their per-user repo provisioned on first call.
+// Commit the mcp-live-test user repo so that when the browser user
+// (different userId, from localStorage) opens the workspace, their
+// ensureUserRepo() → peer-clone picks up the files. Peer-clone copies
+// committed history only; uncommitted working-tree files are invisible
+// to it. Verified by gitService.js:4170 (listUserRepos scan) + 4193
+// (git.clone from peerRepo.path).
+async function stageAndCommit({ collabUrl, slug, userId, message }) {
+  await httpJson(
+    'POST', `${collabUrl}/git/${slug}/stage-all`, {},
+    { 'x-user-id': userId },
+  );
+  await httpJson(
+    'POST', `${collabUrl}/git/${slug}/commit`,
+    { message },
+    { 'x-user-id': userId },
+  );
+}
+
 async function writeFilesBatchCollab({ collabUrl, slug, userId, files }) {
   const res = await httpJson(
     'POST',
@@ -341,6 +359,14 @@ async function main() {
     if (r.gcsErrs.length) log('warn', `GCS mirror failed (disk write succeeded): ${JSON.stringify(r.gcsErrs)}`);
     else log('ok', `GCS mirror requested  → gs://<bucket>/${CFG.slug}/main.cpp`);
   }
+
+  // 3b. Commit — so the browser user's peer-clone sees the files.
+  log('info', 'stage-all + commit (so browser user\'s peer-clone inherits the seed)');
+  await stageAndCommit({
+    collabUrl: CFG.collabUrl, slug: CFG.slug, userId: CFG.hostId,
+    message: 'mcp-live-test: seed counter fixture',
+  });
+  log('ok', 'seed committed');
 
   if (!CFG.frontendPrecompiled) {
     console.log('');
