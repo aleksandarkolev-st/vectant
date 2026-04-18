@@ -9,13 +9,13 @@
 //   - `pnpm build` has produced dist/index.js in this package
 //
 // Env vars (with defaults):
-//   COLLAB_URL             http://localhost:1234   (collab-server REST)
+//   FRONTEND_URL           http://localhost:3000   (Next.js /api/workspace*)
 //   SIGNALING_URL          ws://localhost:9000     (MCP → signaling)
 //   PROMETHEUS_PORT        9464                    (MCP /metrics)
 //   GOOGLE_API_KEY         (required)              (Gemini API key)
 //   SYNTHI_GEMINI_MODEL    gemini-3-flash-preview
-//   HOST_ID                mcp-live-test           (collab user id)
-//   SLUG                   mcp-counter             (per-run unique to avoid state)
+//   SLUG                   mcp-counter-<ts>        (per-run unique to avoid collisions)
+//   WORKSPACE_NAME         Synthi MCP Live Test
 //   MCP_ENTRY              ../dist/index.js        (resolved relative to this file)
 //   FIXTURE_PATH           ../tests/fixtures/counter/main.cpp
 //   FRONTEND_PRECOMPILED   false                   (set true if you opened the session in the browser)
@@ -25,11 +25,17 @@
 //   cd mcp/synthi-mcp
 //   GOOGLE_API_KEY=... node scripts/live-test.mjs
 //
+// GCS path (confirmed from synthi/src/app/api/workspace/.../route.js):
+//   workspaces/<slug>/                   ← workspace folder marker
+//   workspaces/<slug>/main.cpp           ← fixture file
+//
 // What it does, in order:
-//   1. Preflight: TCP-ping signaling + collab. Bail early with a clear error if either is dead.
+//   1. Preflight: TCP-ping frontend + signaling. Bail on either dead.
 //   2. Read counter/main.cpp off disk.
-//   3. POST /session/create → captures sessionId.
-//   4. POST /git/<slug>/write-file → writes main.cpp into the host's repo.
+//   3. POST /api/workspace   { name, slug }
+//      → creates DB Workspace row + GCS folder marker at workspaces/<slug>/
+//   4. POST /api/workspace/<slug>/item  (multipart form-data: filePath, file)
+//      → uploads main.cpp to gs://<bucket>/workspaces/<slug>/main.cpp
 //   5. Spawn MCP subprocess with Gemini env.
 //   6. JSON-RPC over stdio:
 //        initialize → tools/list → tools/call synthi_attach
@@ -56,13 +62,13 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const CFG = {
-  collabUrl: process.env.COLLAB_URL ?? 'http://localhost:1234',
+  frontendUrl: process.env.FRONTEND_URL ?? 'http://localhost:3000',
   signalingUrl: process.env.SIGNALING_URL ?? 'ws://localhost:9000',
   prometheusPort: Number(process.env.PROMETHEUS_PORT ?? 9464),
   googleApiKey: process.env.GOOGLE_API_KEY ?? '',
   geminiModel: process.env.SYNTHI_GEMINI_MODEL ?? 'gemini-3-flash-preview',
-  hostId: process.env.HOST_ID ?? 'mcp-live-test',
   slug: process.env.SLUG ?? `mcp-counter-${Date.now()}`,
+  workspaceName: process.env.WORKSPACE_NAME ?? 'Synthi MCP Live Test',
   mcpEntry: path.resolve(__dirname, process.env.MCP_ENTRY ?? '../dist/index.js'),
   fixturePath: path.resolve(__dirname, process.env.FIXTURE_PATH ?? '../tests/fixtures/counter/main.cpp'),
   frontendPrecompiled: (process.env.FRONTEND_PRECOMPILED ?? 'false').toLowerCase() === 'true',
@@ -102,6 +108,52 @@ async function httpJson(method, url, body, headers = {}) {
     throw new Error(`${method} ${url} → ${res.status}: ${text.slice(0, 500)}`);
   }
   return json ?? {};
+}
+
+// Next.js /api/workspace writes directly to GCS via @google-cloud/storage.
+// Source of truth: synthi/src/app/api/workspace/route.js (workspace create) +
+// synthi/src/app/api/workspace/[workspaceId]/item/route.js (file/folder upload).
+// Requires the frontend to have GCP_PROJECT_ID, GCP_CLIENT_EMAIL,
+// GCP_PRIVATE_KEY, GCS_BUCKET_NAME set — unconfigured envs will surface as
+// 500s from the API, which we propagate as clear errors.
+
+async function createWorkspaceGcs({ frontendUrl, name, slug, repoUrl }) {
+  // POST /api/workspace  { name, slug?, repoUrl? }
+  // Creates DB Workspace row + GCS marker at workspaces/<slug>/ .
+  // Returns the Prisma record ({id, name, slug, repoUrl, ...}).
+  return httpJson('POST', `${frontendUrl}/api/workspace`, { name, slug, repoUrl });
+}
+
+async function uploadFileGcs({ frontendUrl, workspaceId, filePath, content, contentType = 'text/plain' }) {
+  // POST /api/workspace/<workspaceId>/item  (multipart form-data)
+  // `workspaceId` is used as the GCS key segment — pass the slug.
+  // Content type hints only; GCS stores bytes as-is.
+  const form = new FormData();
+  form.set('filePath', filePath);
+  form.set('file', new Blob([content], { type: contentType }), filePath.split('/').pop());
+  const res = await fetch(`${frontendUrl}/api/workspace/${encodeURIComponent(workspaceId)}/item`, {
+    method: 'POST', body: form,
+  });
+  const text = await res.text();
+  if (!res.ok) throw new Error(`upload ${filePath} → ${res.status}: ${text.slice(0, 500)}`);
+  try { return JSON.parse(text); } catch { return { raw: text }; }
+}
+
+async function createFolderGcs({ frontendUrl, workspaceId, folderPath }) {
+  // Same endpoint as uploadFileGcs, but filePath ends with '/' — the route
+  // creates an empty GCS object with contentType:application/x-directory
+  // and isFolder metadata. No `file` form field required.
+  const trailing = folderPath.endsWith('/') ? folderPath : folderPath + '/';
+  const form = new FormData();
+  form.set('filePath', trailing);
+  const res = await fetch(`${frontendUrl}/api/workspace/${encodeURIComponent(workspaceId)}/item`, {
+    method: 'POST', body: form,
+  });
+  const text = await res.text();
+  if (!res.ok && res.status !== 409) {
+    throw new Error(`folder ${trailing} → ${res.status}: ${text.slice(0, 500)}`);
+  }
+  return { already: res.status === 409 };
 }
 
 function tcpPing(host, port, timeoutMs = 2000) {
@@ -207,7 +259,7 @@ class McpClient {
 async function main() {
   console.log(color.blue + '\n━━━ Synthi MCP live-test ━━━' + color.reset);
   console.log(`  slug         ${CFG.slug}`);
-  console.log(`  hostId       ${CFG.hostId}`);
+  console.log(`  workspace    ${CFG.workspaceName}`);
   console.log(`  gemini       ${CFG.geminiModel}`);
   console.log(`  mcp entry    ${CFG.mcpEntry}`);
   console.log('');
@@ -220,39 +272,40 @@ async function main() {
   await mkdir(ARTIFACT_DIR, { recursive: true });
 
   // 1. Preflight
-  log('info', 'Preflight: signaling + collab reachable?');
+  log('info', 'Preflight: frontend + signaling reachable?');
+  const fe = parseUrl(CFG.frontendUrl);
   const sig = parseUrl(CFG.signalingUrl);
-  const col = parseUrl(CFG.collabUrl);
-  const [sigOk, colOk] = await Promise.all([tcpPing(sig.host, sig.port), tcpPing(col.host, col.port)]);
+  const [feOk, sigOk] = await Promise.all([tcpPing(fe.host, fe.port), tcpPing(sig.host, sig.port)]);
+  if (!feOk) fail(`frontend unreachable at ${CFG.frontendUrl}  (Next.js dev/prod server must be running — it owns /api/workspace)`);
   if (!sigOk) fail(`signaling unreachable at ${CFG.signalingUrl}`);
-  if (!colOk) fail(`collab-server unreachable at ${CFG.collabUrl}`);
-  log('ok', `signaling:${sig.port} + collab:${col.port} both up`);
+  log('ok', `frontend:${fe.port} + signaling:${sig.port} both up`);
 
-  // 2. Create session
-  log('info', 'POST /session/create');
-  const session = await httpJson('POST', `${CFG.collabUrl}/session/create`, {
-    hostId: CFG.hostId, hostName: 'MCP Live Test', hostAvatar: '',
-    slug: CFG.slug, defaultPerms: {},
-  });
-  if (!session.sessionId) fail('session create returned no sessionId', session);
-  log('ok', `sessionId=${session.sessionId}  worktree=${session.worktreePath || '(none)'}`);
-
-  // 3. Seed fixture via write-file
-  log('info', 'Seeding fixture via POST /git/:slug/write-file');
+  // 2. Create workspace (DB row + GCS folder marker)
+  log('info', `POST /api/workspace  {name, slug:"${CFG.slug}"}`);
   const fixture = await readFile(CFG.fixturePath, 'utf8');
-  await httpJson(
-    'POST',
-    `${CFG.collabUrl}/git/${CFG.slug}/write-file`,
-    { path: 'main.cpp', content: fixture },
-    { 'x-session-id': session.sessionId, 'x-user-id': CFG.hostId },
-  );
-  log('ok', 'main.cpp written to host repo');
+  let workspace;
+  try {
+    workspace = await createWorkspaceGcs({
+      frontendUrl: CFG.frontendUrl, name: CFG.workspaceName, slug: CFG.slug,
+    });
+  } catch (e) {
+    fail(`workspace create failed — this usually means GCP env vars (GCP_PROJECT_ID, GCP_CLIENT_EMAIL, GCP_PRIVATE_KEY, GCS_BUCKET_NAME) are missing on the frontend process.\n  → ${e.message}`);
+  }
+  log('ok', `workspace id=${workspace.id}  slug=${workspace.slug}  → gs://<bucket>/workspaces/${CFG.slug}/`);
+
+  // 3. Upload fixture to GCS
+  log('info', 'POST /api/workspace/:slug/item  (multipart, filePath=main.cpp)');
+  await uploadFileGcs({
+    frontendUrl: CFG.frontendUrl, workspaceId: CFG.slug,
+    filePath: 'main.cpp', content: fixture, contentType: 'text/x-c++src',
+  });
+  log('ok', `main.cpp uploaded → gs://<bucket>/workspaces/${CFG.slug}/main.cpp`);
 
   if (!CFG.frontendPrecompiled) {
     console.log('');
     log('warn', 'Initial compile is frontend-driven. Options:');
-    console.log('    (a) In the Windows browser, open the session:');
-    console.log(`        http://localhost:3000/workspace/${CFG.slug}?sessionId=${session.sessionId}`);
+    console.log('    (a) In the Windows browser, open the workspace:');
+    console.log(`        ${CFG.frontendUrl}/workspace/${CFG.slug}`);
     console.log('        Wait until the counter is visibly rendering, then press ENTER here.');
     console.log('    (b) Skip — synthi_attach will hang until a frame arrives.');
     console.log('');
@@ -260,11 +313,11 @@ async function main() {
     await new Promise((r) => process.stdin.once('data', r));
   }
 
-  // 4. Spawn MCP
+  // 4. Spawn MCP  (session_id = slug, matching compilerClient.js:167 fallback)
   log('info', 'Spawning MCP subprocess');
   const env = {
     ...process.env,
-    SYNTHI_SESSION_ID: session.sessionId,
+    SYNTHI_SESSION_ID: CFG.slug,
     SYNTHI_SIGNALING_URL: CFG.signalingUrl,
     SYNTHI_LOCATE_BACKEND: 'gemini_api',
     GOOGLE_API_KEY: CFG.googleApiKey,
@@ -320,17 +373,19 @@ async function main() {
       log('ok', `bbox=${JSON.stringify(locate.bbox)}  conf=${locate.confidence ?? 'n/a'}  cached=${locate.cached ?? false}  cost=$${locate.costUsd ?? 0}`);
     }
 
-    // 9. edit fixture: counter = 0 → 42
-    log('info', 'Editing main.cpp: counter = 0 → 42');
+    // 9. edit fixture: counter = 0 → 42 (re-upload to GCS)
+    log('info', 'Editing main.cpp: counter = 0 → 42  (POST /api/workspace/:slug/item, overwrite)');
     const edited = fixture.replace('int counter = 0;', 'int counter = 42;');
     if (edited === fixture) fail('fixture did not contain `int counter = 0;` to edit');
-    await httpJson(
-      'POST',
-      `${CFG.collabUrl}/git/${CFG.slug}/write-file`,
-      { path: 'main.cpp', content: edited },
-      { 'x-session-id': session.sessionId, 'x-user-id': CFG.hostId },
-    );
-    log('ok', 'edit written');
+    await uploadFileGcs({
+      frontendUrl: CFG.frontendUrl, workspaceId: CFG.slug,
+      filePath: 'main.cpp', content: edited, contentType: 'text/x-c++src',
+    });
+    log('ok', 'edit uploaded to GCS');
+    // NOTE: this updates the GCS object but does NOT by itself trigger a
+    // recompile on the worker. Y-Sweet is the reactive source; if you want
+    // the worker to see the edit, the browser (or another Y-Sweet client)
+    // must re-sync the file. Treat the next wait_hmr as best-effort.
 
     // 10. wait_hmr
     log('info', `synthi_wait_hmr (timeout ${CFG.hmrTimeoutMs}ms)`);
@@ -368,7 +423,8 @@ async function main() {
     log('ok', 'Live test completed.');
     console.log(`  Artifacts:  ${ARTIFACT_DIR}`);
     console.log(`  Logs:       ${LOG_DIR}`);
-    console.log(`  Session:    ${session.sessionId}  (slug: ${CFG.slug})`);
+    console.log(`  Workspace:  id=${workspace.id}  slug=${CFG.slug}`);
+    console.log(`  GCS:        gs://<bucket>/workspaces/${CFG.slug}/`);
   } finally {
     // Shutdown MCP cleanly
     log('info', 'Shutting down MCP');
