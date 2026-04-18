@@ -328,7 +328,7 @@ const TOOLS = [
   {
     name: "synthi_get_usage",
     description:
-      "Return per-session usage counters aggregated from the event log: tool_call, screenshot, vision_inference, egress_bytes. Includes vision_cost_usd_estimate (0 until claude_api backend ships) and hot_seconds since attach.",
+      "Return per-session usage counters aggregated from the event log: tool_call, screenshot, vision_inference, egress_bytes. Includes vision_cost_usd_estimate (populated by claude_api / gemini_api backends) and hot_seconds since attach.",
     inputSchema: { type: "object", properties: {}, required: [] },
   },
   {
@@ -460,7 +460,7 @@ const TOOLS = [
   {
     name: "synthi_locate",
     description:
-      "Resolve a natural-language element description into a {bbox, handle_id, region_phash} handle. Phase-0.5 spike tool: with `preferred_vision_backend:\"mock\"` (default) or an explicit `hints.prefer_region`, the server uses the hint as the answer; `agent_side` returns an unresolved-handle signal so the agent runs its own vision; `claude_api` is a phase-1 stub today. Passing `handle_id` + `reuse_handle:true` enables the region-pHash cache.",
+      "Resolve a natural-language element description into a {bbox, handle_id, region_phash} handle. Default backend is `agent_side` — the server returns the current screenshot + `agent_side_vision_required` and expects you to ground the bbox using your own LLM then re-call with `hints.prefer_region` populated. `claude_api` / `gemini_api` perform server-side grounding (require ANTHROPIC_API_KEY / GEMINI_API_KEY respectively); `mock` uses `hints.prefer_region` verbatim (spike only). Passing `handle_id` + `reuse_handle:true` enables the region-pHash cache keyed on (frame_content, description).",
     inputSchema: {
       type: "object",
       properties: {
@@ -499,7 +499,7 @@ const TOOLS = [
         preferred_vision_backend: {
           type: "string",
           enum: ["mock", "agent_side", "claude_api"],
-          description: "Which backend to use for vision grounding. Defaults to env SYNTHI_VISION_BACKEND or 'mock'.",
+          description: "Which backend to use for vision grounding. Defaults to env SYNTHI_VISION_BACKEND or 'agent_side' (no API key needed; the agent does the grounding and re-calls with hints.prefer_region).",
         },
         handle_id: {
           type: "string",

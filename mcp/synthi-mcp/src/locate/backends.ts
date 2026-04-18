@@ -156,14 +156,23 @@ export function _resetDefaultClaudeApiBackendForTests(): void {
 }
 
 /**
- * Resolve a backend name to a concrete instance. Honors the per-call
- * override first, then the env default (`SYNTHI_VISION_BACKEND`), then
- * falls back to `mock` for the spike so nothing silently tries to call
- * an external API.
+ * Resolve a backend name to a concrete instance. Precedence:
+ *   1. `override` (per-call, from `synthi_locate({preferred_vision_backend})`).
+ *   2. `SYNTHI_VISION_BACKEND` env.
+ *   3. **`agent_side` default.** The agent (Claude Code / Codex / etc.)
+ *      already has vision via its outer model + the user's subscription;
+ *      `agent_side` hands back the screenshot for the agent to ground and
+ *      then re-call with `hints.prefer_region`. Zero API key on the MCP
+ *      side. This mirrors how Figma/GitHub MCP servers work — the MCP
+ *      returns data, the host's LLM reasons.
+ *
+ * `claude_api` / `gemini_api` remain explicit opt-ins for users who want
+ * server-side caching or whose host is not vision-capable. `mock` stays
+ * available for the phase-0.5 spike harness (no external calls).
  */
 export function selectBackend(override?: LocateBackendName): VisionBackend {
   const envName = process.env["SYNTHI_VISION_BACKEND"] as LocateBackendName | undefined;
-  const chosen = override ?? envName ?? "mock";
+  const chosen = override ?? envName ?? "agent_side";
   switch (chosen) {
     case "mock":
       return new MockBackend();
@@ -172,6 +181,6 @@ export function selectBackend(override?: LocateBackendName): VisionBackend {
     case "claude_api":
       return getDefaultClaudeApiBackend();
     default:
-      return new MockBackend();
+      return new AgentSideBackend();
   }
 }
