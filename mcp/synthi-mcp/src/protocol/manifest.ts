@@ -86,7 +86,7 @@ export interface ManifestRuntime {
 }
 
 export const STATIC_MANIFEST: Omit<CapabilityManifest, "tools" | "frame_seq_gate"> = {
-  vision_backends: ["mock", "agent_side", "claude_api"],
+  vision_backends: ["agent_side", "claude_api", "gemini_api", "mock"],
   wait_conditions: ["hmr", "log", "source_state", "pixel", "motion_settled", "scene_change", "element"],
   verify_predicates: ["pixel", "log", "element_visible", "and", "or"],
   enriched_tier: {

@@ -1,6 +1,6 @@
 import type { BBox } from "../util/phash.js";
 
-export type LocateBackendName = "mock" | "agent_side" | "claude_api";
+export type LocateBackendName = "mock" | "agent_side" | "claude_api" | "gemini_api";
 
 export interface LocateHints {
   /** Bias the search to this region. If mock backend, this is the answer. */

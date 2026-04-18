@@ -29,11 +29,20 @@
  *   responses raise `locator_unresolved` with a short reason string.
  */
 
-import { createHash } from "node:crypto";
 import type { BBox } from "../util/phash.js";
 import { eventLog } from "../events/index.js";
 import type { LocateHints, LocateBackendName } from "./types.js";
 import type { BackendResolution, VisionBackend } from "./backends.js";
+import {
+  buildSystemPrompt as sharedBuildSystemPrompt,
+  buildUserText as sharedBuildUserText,
+  clampBboxToFrame as sharedClampBboxToFrame,
+  contentHash as sharedContentHash,
+  descriptionHash as sharedDescriptionHash,
+  parseBboxResponse as sharedParseBboxResponse,
+  type CachedVisionEntry as SharedCachedVisionEntry,
+  type ParsedVisionResult as SharedParsedVisionResult,
+} from "./vision_utils.js";
 
 /** Per-million-token USD prices. Extend as new Claude models ship. */
 export const PRICING_USD_PER_MILLION: Record<string, { input: number; output: number }> = {
@@ -100,93 +109,24 @@ export interface AnthropicLike {
   };
 }
 
-export function contentHash(buf: Buffer): string {
-  return createHash("sha256").update(buf).digest("hex").slice(0, 16);
-}
-
-export function descriptionHash(description: string): string {
-  return createHash("sha256").update(description).digest("hex").slice(0, 16);
-}
-
-export function buildSystemPrompt(): string {
-  return [
-    "You are a bounding-box extractor. You take an image and an element description and return the pixel bbox.",
-    "Respond with STRICT JSON only. No prose, no code fences, no markdown.",
-    "Coordinates are top-left origin, pixels, relative to the full image dimensions.",
-  ].join(" ");
-}
-
-export function buildUserText(description: string, dims: { w: number; h: number }): string {
-  return [
-    `Element to locate: ${description}`,
-    `Frame dimensions: ${dims.w}x${dims.h} pixels.`,
-    "",
-    "Return exactly this JSON shape on a single line:",
-    '{"bbox":{"x":N,"y":N,"w":N,"h":N},"confidence":FLOAT_0_TO_1,"trace":"short why"}',
-    "",
-    "If the element is not visible or you cannot find it with confidence >= 0.3, return:",
-    '{"bbox":null,"confidence":0,"trace":"not_visible"}',
-  ].join("\n");
-}
-
-export interface ParsedVisionResult {
-  bbox: BBox | null;
-  confidence: number;
-  trace: string;
-}
-
-export function parseBboxResponse(text: string): ParsedVisionResult {
-  // Peel out the first top-level {...} block. Tolerates leading "```json".
-  const match = text.match(/\{[\s\S]*\}/);
-  if (!match) {
-    throw new Error("claude_api_parse_error: no JSON object found in response");
-  }
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(match[0]);
-  } catch (err) {
-    throw new Error(`claude_api_parse_error: ${(err as Error).message}`);
-  }
-  const obj = parsed as {
-    bbox?: { x?: unknown; y?: unknown; w?: unknown; h?: unknown } | null;
-    confidence?: unknown;
-    trace?: unknown;
-  };
-  const confidence = typeof obj.confidence === "number" ? obj.confidence : 0;
-  const trace = typeof obj.trace === "string" ? obj.trace : "";
-  if (obj.bbox === null || obj.bbox === undefined) {
-    return { bbox: null, confidence, trace };
-  }
-  const { x, y, w, h } = obj.bbox;
-  if (typeof x !== "number" || typeof y !== "number" || typeof w !== "number" || typeof h !== "number") {
-    throw new Error("claude_api_parse_error: bbox missing numeric x/y/w/h");
-  }
-  return {
-    bbox: { x: Math.round(x), y: Math.round(y), w: Math.round(w), h: Math.round(h) },
-    confidence,
-    trace,
-  };
-}
+// Re-export the shared vision utilities so existing imports continue to
+// work (locate/index.ts publicly re-exports these). New backends should
+// import from `./vision_utils.js` directly.
+export const contentHash = sharedContentHash;
+export const descriptionHash = sharedDescriptionHash;
+export const buildSystemPrompt = sharedBuildSystemPrompt;
+export const buildUserText = sharedBuildUserText;
+export const clampBboxToFrame = sharedClampBboxToFrame;
+export type ParsedVisionResult = SharedParsedVisionResult;
+export type CachedVisionEntry = SharedCachedVisionEntry;
 
 /**
- * Clamp a bbox to the frame so we never hand back out-of-bounds coords to
- * the rest of the pipeline. Any dimension rounded to zero gets bumped to 1
- * so downstream pHash has something to bite on.
+ * Claude-specific wrapper around the shared parser. Preserves the legacy
+ * `claude_api_parse_error:` prefix so existing error-code branches keep
+ * matching.
  */
-export function clampBboxToFrame(bbox: BBox, dims: { w: number; h: number }): BBox {
-  const x = Math.max(0, Math.min(bbox.x, dims.w - 1));
-  const y = Math.max(0, Math.min(bbox.y, dims.h - 1));
-  const w = Math.max(1, Math.min(bbox.w, dims.w - x));
-  const h = Math.max(1, Math.min(bbox.h, dims.h - y));
-  return { x, y, w, h };
-}
-
-export interface CachedVisionEntry {
-  bbox: BBox;
-  confidence: number;
-  trace: string;
-  model: string;
-  ts: number;
+export function parseBboxResponse(text: string): ParsedVisionResult {
+  return sharedParseBboxResponse(text, "claude_api_parse_error");
 }
 
 /** Options accepted by the real `claude_api` backend. */

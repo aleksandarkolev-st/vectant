@@ -163,7 +163,9 @@ export {
   MockBackend,
   AgentSideBackend,
   ClaudeApiBackend,
+  GeminiApiBackend,
   _resetDefaultClaudeApiBackendForTests,
+  _resetDefaultGeminiApiBackendForTests,
 } from "./backends.js";
 export {
   ClaudeApiBackendReal,
@@ -176,6 +178,14 @@ export {
   buildSystemPrompt,
   buildUserText,
 } from "./claude_api.js";
+export {
+  GeminiApiBackendReal,
+  GEMINI_PRICING_USD_PER_MILLION,
+  GEMINI_FALLBACK_PRICING,
+  computeGeminiCostUsd,
+  extractGeminiText,
+  parseGeminiBboxResponse,
+} from "./gemini_api.js";
 export type {
   AnthropicLike,
   AnthropicContentBlock,
@@ -188,6 +198,18 @@ export type {
   CachedVisionEntry,
   ParsedVisionResult,
 } from "./claude_api.js";
+export type {
+  GeminiLike,
+  GeminiContent,
+  GeminiPart,
+  GeminiTextPart,
+  GeminiInlineDataPart,
+  GeminiGenerateParams,
+  GeminiGenerateConfig,
+  GeminiGenerateResponse,
+  GeminiUsageMetadata,
+  GeminiApiBackendOptions,
+} from "./gemini_api.js";
 export type {
   LocateArgs,
   LocateResult,

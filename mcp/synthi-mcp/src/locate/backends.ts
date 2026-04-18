@@ -1,6 +1,7 @@
 import type { BBox } from "../util/phash.js";
 import type { LocateHints, LocateBackendName } from "./types.js";
 import { ClaudeApiBackendReal, type ClaudeApiBackendOptions } from "./claude_api.js";
+import { GeminiApiBackendReal, type GeminiApiBackendOptions } from "./gemini_api.js";
 
 export interface BackendResolution {
   bbox: BBox;
@@ -137,11 +138,56 @@ export class ClaudeApiBackend implements VisionBackend {
 }
 
 /**
- * Per-process singleton shared by `selectBackend` so the content-hash cache
- * is meaningful across tool calls. Tests that want a fresh backend can
- * instantiate {@link ClaudeApiBackend} directly with an injected client.
+ * `gemini_api` backend. Thin wrapper around {@link GeminiApiBackendReal}.
+ * Operationally symmetric to {@link ClaudeApiBackend}: peer option, not
+ * a sub-mode. Picked explicitly via `preferred_vision_backend:"gemini_api"`
+ * or `SYNTHI_VISION_BACKEND=gemini_api`. Uses its own SDK
+ * (`@google/genai`), its own env key (`GEMINI_API_KEY` → `GOOGLE_API_KEY`
+ * fallback), its own pricing table, its own error codes (`gemini_api_*`).
+ *
+ * Short-circuits `hints.prefer_region` without a vision call (same rule
+ * as claude_api): a planner that already knows the exact bbox shouldn't
+ * pay for grounding.
+ */
+export class GeminiApiBackend implements VisionBackend {
+  readonly name = "gemini_api" as const;
+  private readonly real: GeminiApiBackendReal;
+
+  constructor(options?: GeminiApiBackendOptions) {
+    this.real = new GeminiApiBackendReal(options ?? {});
+  }
+
+  async resolve(args: {
+    description: string;
+    frame: Buffer;
+    hints?: LocateHints;
+    frameDims: { w: number; h: number };
+    signal?: AbortSignal;
+  }): Promise<BackendResolution> {
+    if (args.signal?.aborted) {
+      throw new Error(
+        `gemini_api_aborted: ${((args.signal.reason as Error | undefined)?.message) ?? "pre_call"}`
+      );
+    }
+    if (args.hints?.prefer_region) {
+      return {
+        bbox: args.hints.prefer_region,
+        confidence: 1,
+        trace: "gemini_api_used_prefer_region",
+      };
+    }
+    return this.real.resolve(args);
+  }
+}
+
+/**
+ * Per-process singletons shared by `selectBackend` so each vendor's
+ * content-hash cache is meaningful across tool calls. Tests that want a
+ * fresh backend can instantiate the wrapper class directly with an
+ * injected client.
  */
 let defaultClaudeApiBackend: ClaudeApiBackend | undefined;
+let defaultGeminiApiBackend: GeminiApiBackend | undefined;
 
 function getDefaultClaudeApiBackend(): ClaudeApiBackend {
   if (!defaultClaudeApiBackend) {
@@ -150,9 +196,20 @@ function getDefaultClaudeApiBackend(): ClaudeApiBackend {
   return defaultClaudeApiBackend;
 }
 
-/** Test-only: reset the shared backend so one test's cache doesn't leak to another. */
+function getDefaultGeminiApiBackend(): GeminiApiBackend {
+  if (!defaultGeminiApiBackend) {
+    defaultGeminiApiBackend = new GeminiApiBackend();
+  }
+  return defaultGeminiApiBackend;
+}
+
+/** Test-only: reset the shared backends so one test's cache doesn't leak to another. */
 export function _resetDefaultClaudeApiBackendForTests(): void {
   defaultClaudeApiBackend = undefined;
+}
+
+export function _resetDefaultGeminiApiBackendForTests(): void {
+  defaultGeminiApiBackend = undefined;
 }
 
 /**
@@ -180,6 +237,8 @@ export function selectBackend(override?: LocateBackendName): VisionBackend {
       return new AgentSideBackend();
     case "claude_api":
       return getDefaultClaudeApiBackend();
+    case "gemini_api":
+      return getDefaultGeminiApiBackend();
     default:
       return new AgentSideBackend();
   }

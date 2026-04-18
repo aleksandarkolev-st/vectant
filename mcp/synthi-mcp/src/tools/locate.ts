@@ -9,7 +9,7 @@ import {
   type ToolResponse,
 } from "./shared.js";
 
-const BACKEND_NAMES: readonly LocateBackendName[] = ["mock", "agent_side", "claude_api"];
+const BACKEND_NAMES: readonly LocateBackendName[] = ["mock", "agent_side", "claude_api", "gemini_api"];
 
 interface RawArgs {
   description?: unknown;
@@ -87,6 +87,14 @@ export async function locateTool(args: unknown, extra?: LocateToolExtra): Promis
       return errorResponse("claude_api_not_implemented", {
         hint: "claude_api backend is a phase-0.5 stub; set SYNTHI_VISION_BACKEND=mock for spike, or pass hints.prefer_region to bypass.",
       });
+    }
+    if (message.startsWith("gemini_api_no_key")) {
+      return errorResponse("gemini_api_no_key", {
+        hint: "Set GEMINI_API_KEY (or GOOGLE_API_KEY) in the MCP process env, or switch to SYNTHI_VISION_BACKEND=agent_side.",
+      });
+    }
+    if (message.startsWith("gemini_api_low_confidence") || message.startsWith("claude_api_low_confidence")) {
+      return errorResponse("locator_unresolved", { message });
     }
     if (message.startsWith("locator_unresolved")) {
       return errorResponse("locator_unresolved", { message });

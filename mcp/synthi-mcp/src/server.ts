@@ -460,7 +460,7 @@ const TOOLS = [
   {
     name: "synthi_locate",
     description:
-      "Resolve a natural-language element description into a {bbox, handle_id, region_phash} handle. Default backend is `agent_side` — the server returns the current screenshot + `agent_side_vision_required` and expects you to ground the bbox using your own LLM then re-call with `hints.prefer_region` populated. `claude_api` / `gemini_api` perform server-side grounding (require ANTHROPIC_API_KEY / GEMINI_API_KEY respectively); `mock` uses `hints.prefer_region` verbatim (spike only). Passing `handle_id` + `reuse_handle:true` enables the region-pHash cache keyed on (frame_content, description).",
+      "Resolve a natural-language element description into a {bbox, handle_id, region_phash} handle. Default backend is `agent_side` — the server returns the current screenshot + `agent_side_vision_required` and expects you to ground the bbox using your own LLM then re-call with `hints.prefer_region` populated. `claude_api` grounds server-side via Anthropic (needs ANTHROPIC_API_KEY); `gemini_api` grounds server-side via Google (needs GEMINI_API_KEY / GOOGLE_API_KEY); `mock` uses `hints.prefer_region` verbatim (spike only). Passing `handle_id` + `reuse_handle:true` enables the region-pHash cache keyed on (frame_content, description).",
     inputSchema: {
       type: "object",
       properties: {
@@ -498,8 +498,8 @@ const TOOLS = [
         },
         preferred_vision_backend: {
           type: "string",
-          enum: ["mock", "agent_side", "claude_api"],
-          description: "Which backend to use for vision grounding. Defaults to env SYNTHI_VISION_BACKEND or 'agent_side' (no API key needed; the agent does the grounding and re-calls with hints.prefer_region).",
+          enum: ["mock", "agent_side", "claude_api", "gemini_api"],
+          description: "Which backend to use for vision grounding. Defaults to env SYNTHI_VISION_BACKEND or 'agent_side' (no API key needed; the agent does the grounding and re-calls with hints.prefer_region). `claude_api` needs ANTHROPIC_API_KEY; `gemini_api` needs GEMINI_API_KEY (or GOOGLE_API_KEY).",
         },
         handle_id: {
           type: "string",

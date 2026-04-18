@@ -38,9 +38,11 @@ npm run build
 |-----|---------|---------|
 | `SYNTHI_SESSION_ID` | *(none)* | Session id if not passed via `--session`. |
 | `SYNTHI_SIGNALING_URL` | `ws://localhost:9000` | Signaling WebSocket URL. |
-| `SYNTHI_VISION_BACKEND` | `agent_side` | Default backend for `synthi_locate`. `agent_side` / `claude_api` / `mock`. See **Vision backend** below. |
+| `SYNTHI_VISION_BACKEND` | `agent_side` | Default backend for `synthi_locate`. `agent_side` / `claude_api` / `gemini_api` / `mock`. See **Vision backend** below. |
 | `SYNTHI_VISION_MODEL` | `claude-opus-4-7` | Model id used by the `claude_api` backend. |
-| `ANTHROPIC_API_KEY` | *(unset)* | Required when any tool call selects the `claude_api` backend. Not needed for `agent_side`. |
+| `SYNTHI_GEMINI_MODEL` | `gemini-2.5-flash` | Model id used by the `gemini_api` backend. |
+| `ANTHROPIC_API_KEY` | *(unset)* | Required when any tool call selects the `claude_api` backend. |
+| `GEMINI_API_KEY` | *(unset)* | Required when any tool call selects the `gemini_api` backend. Falls back to `GOOGLE_API_KEY` if set. |
 | `SYNTHI_PIPELINE_BUDGET_MS` | `80` | Frame-seq gate shim applied after `wait({condition:"hmr"})` resolves `applied`. |
 
 CLI args override env; env overrides defaults.
@@ -78,22 +80,23 @@ Swap `--session` for `SYNTHI_SESSION_ID` in `env` if the client prefers env-only
 
 ## Vision backend
 
-`synthi_locate` grounds a natural-language description to a `{bbox, handle_id, region_phash}`. Three backends today; pick per-session via `synthi_locate({preferred_vision_backend})` or globally via `SYNTHI_VISION_BACKEND=...`.
+`synthi_locate` grounds a natural-language description to a `{bbox, handle_id, region_phash}`. Four backends; pick per-session via `synthi_locate({preferred_vision_backend})` or globally via `SYNTHI_VISION_BACKEND=...`. The three server-side backends are **independent peers** — picking one does not invoke the others.
 
 | Backend | Needs a key? | How it grounds | When to use |
 |---------|--------------|----------------|-------------|
 | `agent_side` *(default)* | No | Server returns the screenshot with `agent_side_vision_required`. **Your agent (Claude Code / Codex / etc.) uses its own model to decide the bbox** and re-calls `synthi_locate` with `hints.prefer_region` populated. The MCP then caches the handle. | Claude Code and other vision-capable MCP hosts. Zero API-key friction — same pattern as Figma/GitHub MCP servers (we return data, your agent's LLM reasons). |
-| `claude_api` | `ANTHROPIC_API_KEY` | MCP calls Anthropic multimodal directly to grounds the bbox. Results cached by `(frame_content_hash, description_hash)` for 60 s. | Non-vision-capable hosts, or you want server-side caching across multiple MCP sessions. Pays Anthropic twice — once from MCP, once from the agent's own reasoning. |
+| `claude_api` | `ANTHROPIC_API_KEY` | MCP calls Anthropic multimodal directly to ground the bbox. Results cached by `(frame_content_hash, description_hash)` for 60 s. Errors with `claude_api_*` prefixes. Default model `claude-opus-4-7`; override with `SYNTHI_VISION_MODEL`. | Non-vision-capable hosts; server-side cache across agent turns; single choke point for vision cost metrics. |
+| `gemini_api` | `GEMINI_API_KEY` (or `GOOGLE_API_KEY`) | MCP calls Google Gemini via `@google/genai`. Same cache semantics as `claude_api`; errors with `gemini_api_*` prefixes. Default model `gemini-2.5-flash`; override with `SYNTHI_GEMINI_MODEL`. | Same motivation as `claude_api` but billed through a Google account. `gemini-2.5-flash` tails are materially cheaper for tight loops. |
 | `mock` | No | Returns `hints.prefer_region` verbatim; throws if absent. No vision. | Phase-0.5 spike harness + unit tests only. |
 
 **Why `agent_side` is the default.** Most MCP servers in the wild (Figma, GitHub, Linear, Playwright, Sequential-thinking, Memory) do one thing: call a specialized external service or run compute, and hand data back to the host's LLM. The host's LLM does the reasoning — and uses the user's existing subscription to do so. That's the "Claude subscription" path without any `sampling/createMessage` wiring (which Claude Code hasn't implemented today). `synthi_locate` with `agent_side` slots into the same pattern: server returns frame, agent grounds, agent re-calls with a region hint.
 
-**Where `claude_api` earns its keep.** If your workflow:
+**Where `claude_api` / `gemini_api` earn their keep.** If your workflow:
 - Runs a non-vision-capable host (some Codex configurations, CI robots).
 - Wants the MCP's `(content_hash, description_hash)` cache to survive across agent turns (e.g., locate the same button 50 times without re-grounding).
 - Wants a single choke point for `vision_inference_count` + `vision_cost_usd_estimate` in `synthi_get_usage`.
 
-…then set `SYNTHI_VISION_BACKEND=claude_api` + supply the key.
+…then set `SYNTHI_VISION_BACKEND=claude_api` (or `gemini_api`) + supply the key. Switching vendors is one env var + nothing else; agents call the same tool.
 
 ---
 
