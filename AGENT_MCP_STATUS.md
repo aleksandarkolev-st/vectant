@@ -1,6 +1,6 @@
 # Synthi MCP — Status
 
-**Status:** phase 0.5 instrumentation + phase 1 code complete (in-process; no live-stack validation yet). Branch `claude/agent-mcp` @ `883056f5`. **245** unit tests green, typecheck green. Worker scaffolding (`worker::webrtc::*`) landed standalone; full main.rs multi-PC wiring staged behind `G3_PHASE_B_INTEGRATION.md`.
+**Status:** phase 0.5 instrumentation + phase 1 code complete (in-process; no live-stack validation yet). Branch `claude/agent-mcp` @ `a4b67cbd`. **328** unit tests green, typecheck green, `cargo check` green. Worker scaffolding (`worker::webrtc::*`) landed standalone; full main.rs multi-PC wiring staged behind `G3_PHASE_B_INTEGRATION.md`. Frame-advance emission + input dispatch-ack + signaling protocol handshake + presence counts all landed this session.
 
 **Source of truth for scope:** `AGENT_MCP_ULTRAPLAN.md` (design, approved). **Source of truth for MVP gate:** `AGENT_MCP_MVP.md` (Path A shipped). **Phase 0.5 findings:** `PHASE_0_5_FINDINGS.md` (template + sim run 1). This doc is the merge view.
 
@@ -32,6 +32,18 @@ Worker scaffold landed in `backend/synthi-webrtc-compiler/worker/src/webrtc/`:
 - [x] **Security primitives.** Local-allowlist signaling URL classifier + `i-understand-no-auth` flag (blocks non-local attaches). Keystroke anomaly detector (burst + monotone-repeats). Injection-heuristic pre-screen on `build-log` free-text fields (7 canonical patterns).
 - [x] **Correctness error table.** 17 error codes with deterministic priority ladder + `required_tool_call` remediation. Mouse + keyboard honor the central gate.
 - [x] **MCP resources.** 6 subscribable URIs (`synthi://preview/{screenshot, hmr, console, events, state, source}`) with `notifications/resources/updated` push + 2 Hz throttle on screenshot.
+
+### Phase 1+ — session 2026-04-18 additions
+
+- [x] **`gemini_api` vision backend.** Peer option with `claude_api`; both selectable via `SYNTHI_VISION_BACKEND` / `synthi_locate({preferred_vision_backend})`. Own SDK (`@google/genai`), own pricing table (gemini-2.5-pro / flash / flash-lite), own error codes (`gemini_api_*`). Shared vision utils in `src/locate/vision_utils.ts`. 26 unit tests.
+- [x] **Default vision backend flipped to `agent_side`.** `selectBackend()` previously fell back to `mock` when `SYNTHI_VISION_BACKEND` was unset — that's spike-only. Now defaults to `agent_side` (zero API-key friction; same pattern as Figma/GitHub MCP — server returns data, your agent's LLM reasons using its own subscription). `claude_api` / `gemini_api` stay as explicit opt-ins for server-side caching + centralised cost metrics.
+- [x] **Request-id registry + `claude_api` cancellation.** `src/util/request_registry.ts` derives AbortControllers per tool-call, chained from the MCP SDK's `RequestHandlerExtra.signal`. Wired through `synthi_locate` -> `VisionBackend.resolve` -> Anthropic SDK `{signal}`. Cancelled calls skip usage event + bill zero tokens. Also cancels on SIGINT/SIGTERM.
+- [x] **Input dispatch-ack.** Worker echoes `{type:"input-ack", dispatch_id, accepted, reason?}` on build-log DC for every gui-event that carries a `dispatch_id`. MCP parses via `DispatchAckRegistry` which resolves pending promises or rejects on `input_ack_timeout`. Back-compat — the field is optional, legacy envelopes unchanged.
+- [x] **Prometheus `/metrics` endpoint.** Opt-in via `SYNTHI_PROMETHEUS_PORT`. Seven counters (`synthi_tool_calls_total`, `_inputs_total`, `_screenshots_total`, `_vision_inferences_total`, `_vision_cost_usd_total`, `_locator_cache_dispatches_by_mode`, `_locator_reresolutions_by_reason`, `_egress_bytes_total`). v4.4 sum invariants asserted in tests. Text format v0.0.4 hand-rendered to keep deps small.
+- [x] **Graceful shutdown orchestration.** `src/shutdown.ts` exports `performShutdown({registry, session, server, metrics...})` with a canonical 5-step order + per-step try isolation. SIGINT/SIGTERM handler in `index.ts` delegates.
+- [x] **Signaling protocol-version handshake.** Register envelope gains optional `supported_protocols: [number]` + `client_version: string`. Server replies `{type:"registered", accepted_protocol, server_supports}`. `{code:"unsupported_protocol"}` + close when no overlap. Legacy clients unchanged (default to v1).
+- [x] **Signaling presence counts.** `broadcast_presence` fans `{type:"presence", session_id, attached_humans, attached_agents}` to every peer on register + disconnect. MCP `SessionManager.setPresenceCounts` consumes it; `synthi_attach` envelope surfaces the live values.
+- [x] **Documentation.** `docs/E3_README_VARIANTS.md` — three pre-drafted README splices for the E3 live-run decision (claude_api stays / gemini_api preferred / marginal). `TESTING.md` — 15-step manual QA golden path per client harness.
 
 ### Tools (23 advertised)
 
@@ -208,7 +220,7 @@ All listed §4 items from the prior snapshot have landed except the live-stack-d
 - [x] `session.ts`: `setFrameAdvance` / `getFrameAdvance` / `awaitFrameAdvanceAtOrAfter` / `frameSeqGateEnabled` / `pipelineBudgetMs` (default 80 ms, env `SYNTHI_PIPELINE_BUDGET_MS`).
 - [x] `wait/engine.ts`: `condition:"hmr"` resolving to `applied` now stalls on a post-reload frame-advance up to the remaining timeout; evidence reports `frame_gate:{status:"satisfied"|"timeout"|"disabled"}`.
 - [x] `manifest.ts`: `capabilities.frame_seq_gate.pipeline_budget_ms` + runtime-driven `available` flag.
-- [ ] **Worker emission** of `{type:"frame-advance", frame_seq, ts_ms}` alongside RTP writes. One-line add at the GStreamer sink; activates the gate as soon as it ships.
+- [x] **Worker emission** of `{type:"frame-advance", frame_seq, ts_ms}` alongside RTP writes (commit `c7bbe0ab`). Peeks at the RTP header marker bit (byte 1, bit 7) per packet and emits every 3rd end-of-frame on the build-log DC via `tokio::spawn` fire-and-forget so DC backpressure cannot stall the RTP task.
 - [ ] `pipeline_budget_ms` calibration probe at worker start (10 samples, p95, fallback 80 ms). MCP honors the negotiated value today; worker needs to emit it during attach.
 
 ### 4.5. `synthi_compile` tool — ✅ shipped
@@ -263,22 +275,43 @@ Unchanged from prior status doc:
 
 ## 8. Known limitations (phase-1 live-stack dependent)
 
-1. **`claude_api` vision is live.** Requires `ANTHROPIC_API_KEY`. Cost is metered via `usage` events + surfaced by `synthi_get_usage`.
+1. **Default vision backend is `agent_side` (2026-04-18).** Zero API-key friction for Claude Code + other vision-capable hosts. `claude_api` (`ANTHROPIC_API_KEY`) and `gemini_api` (`GEMINI_API_KEY` / `GOOGLE_API_KEY`) remain opt-ins for server-side caching + centralised cost metrics.
 2. **Observer media doesn't flow without worker main.rs wiring.** Registering as `observer` today = SDP/ICE fan-out works + scaffolded fan-out primitives exist, but `main.rs` still uses the singleton `pc`/`log_channel_store`. True co-attach awaits §4.2 main.rs migration.
-3. **Frame-seq gate is live on the MCP side but dormant until worker emits `frame-advance`.** `capabilities.frame_seq_gate.available` reflects the real state at attach.
+3. **Frame-seq gate is live end-to-end.** Worker now emits `{type:"frame-advance"}` at end-of-frame (throttled to every 3rd frame; commit `c7bbe0ab`). MCP-side stalls `wait(hmr)` resolution on `applied` until a post-budget frame-advance arrives.
 4. **Source-state producer is live** for MCP-driven compiles + explicit agent reports. Human-driven edits via the frontend aren't captured until the collab-server / worker hook ships (additive, §4.3 notes).
 5. **`synthi_set_quality` and `synthi_reset_guest` are record-only** until worker control paths exist.
 6. **OCR + VLM predicates unsupported.** `synthi_verify({kind:"ocr"})` → `ocr_backend_not_implemented`; `kind:"scene_matches"` → `verify_scene_matches_unsupported`. Both return `required_tool_call` fallbacks.
 7. **No reconnect across process crash.** `synthi_reconnect` recovers transient socket drops; a hard worker/pod crash requires a fresh `synthi_attach`.
 8. **Path A eviction.** MCP still registers as `browser` today. Observer is wire-only (awaits §4.2 main.rs migration).
+9. **Input dispatch-ack is infrastructure-only.** Worker echoes `{type:"input-ack"}` when `dispatch_id` is present; MCP's `DispatchAckRegistry` resolves pending promises. **Tool-layer opt-in** (synthi_mouse / keyboard awaiting acks) is staged as a follow-up — today tools fire-and-forget.
+10. **Prometheus `/metrics` is opt-in.** Disabled unless `SYNTHI_PROMETHEUS_PORT` is set. Counters are populated whether the endpoint runs or not (tests verify this), but scraping requires explicit opt-in.
+11. **Signaling handshake is additive.** Old browsers / workers unchanged; new `{type:"registered"}` / `{type:"presence"}` messages are ignored by any client that doesn't know them (verified).
 
 ---
 
-## 9. Reference — commits landed this session
+## 9. Reference — commits landed
 
-**This session's follow-up commits** (on top of the phase-1-complete snapshot):
+**Session 2026-04-18 (this session):**
 
 ```
+a4b67cbd feat(agent-mcp): signaling presence counts — humans vs agents per session
+9fe76041 feat(agent-mcp): signaling protocol-version handshake
+913b5a30 feat(agent-mcp): input dispatch-ack — worker echoes {type:"input-ack"}
+c7bbe0ab feat(agent-mcp): worker emits {type:"frame-advance"} on end-of-frame
+d090c19e docs(agent-mcp): TESTING.md — 15-step manual QA golden path
+82ebb4b8 docs(agent-mcp): pre-draft both README variants for E3 decision
+c5410d8a feat(agent-mcp): extract testable graceful-shutdown orchestration
+546ac206 feat(agent-mcp): Prometheus /metrics endpoint + locator counters
+9a073f6b feat(agent-mcp): gemini_api vision backend (peer of claude_api)
+d4e0c3fb feat(agent-mcp): default vision backend to agent_side (no API key friction)
+72ab9c90 feat(agent-mcp): request-id registry + claude_api cancellation
+52951fcc docs(agent-mcp): exhaustive phase-1 gap report + sampling finding
+```
+
+**Prior session:**
+
+```
+157df722 docs(agent-mcp): AGENT_MCP_STATUS refresh — §4 items merged
 883056f5 feat(agent-mcp): worker webrtc/ scaffold — PeerRegistry + TrackFanout
 7c7c47ab docs(agent-mcp): README phase-1 refresh (23 tools, 6 resources, manifest)
 a1885746 feat(agent-mcp): source-state producer — compile auto-emit + explicit report

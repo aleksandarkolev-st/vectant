@@ -1,8 +1,33 @@
 # Synthi MCP — Remaining Work (research pass 2026-04-18)
 
-**Status:** exhaustive gap report between `AGENT_MCP_ULTRAPLAN.md` (v4.5 phase-1 scope) and what actually exists in-tree at branch tip `157df722`.
+**Status:** exhaustive gap report between `AGENT_MCP_ULTRAPLAN.md` (v4.5 phase-1 scope) and what actually exists in-tree at branch tip `a4b67cbd` (updated after session 2026-04-18).
 **Companion docs:** `AGENT_MCP_STATUS.md` (shipped items), `PHASE_2_PLUS_BACKLOG.md` (explicitly-deferred tickets), `PHASE_0_5_FINDINGS.md` (live-run gaps).
 **Scope of this doc:** **not** cherry-picked "cheap/high-value" items — a full inventory of what the ultraplan calls phase-1, with honest classification for each (shipped / staged / missing / deferred).
+
+---
+
+## Session 2026-04-18 update
+
+Sections below reflect the state at commit `157df722`. Twelve follow-up commits landed during session 2026-04-18. **What shipped (each entry that was flagged below is now resolved):**
+
+- §3 MCP infrastructure: **Request-id registry + claude_api cancellation** (commit `72ab9c90`). **Prometheus `/metrics` endpoint + locator counters** (commit `546ac206`). **Graceful shutdown** now extractable + unit-tested (commit `c5410d8a`).
+- §4.1 Staged: **Frame-advance emission** on worker side (commit `c7bbe0ab`); §4.4 gate is now live end-to-end.
+- §4.2 Not started: **Input dispatch-ack** infrastructure (commit `913b5a30`); tool-layer opt-in deferred.
+- §4 Signaling: **Protocol-version handshake** (commit `9fe76041`); **presence count reporting** (commit `a4b67cbd`).
+- §7 Documentation: **`docs/E3_README_VARIANTS.md`** pre-drafted (commit `82ebb4b8`); **`TESTING.md`** manual-QA golden path (commit `d090c19e`).
+- **Bonus: `gemini_api` vision backend** (commit `9a073f6b`) — peer of `claude_api`, not on the ultraplan but symmetric. **Default vision backend flipped to `agent_side`** (commit `d4e0c3fb`) to eliminate the API-key friction for vision-capable hosts.
+
+**What's still open:**
+
+- §4.2 main.rs multi-PC migration (scaffold at `883056f5`, integration guide at `worker/src/webrtc/G3_PHASE_B_INTEGRATION.md`) — deliberately staged; 300+ LOC across load-bearing singletons.
+- Tool-layer consumption of dispatch-ack (synthi_mouse / keyboard awaiting worker acks before resolving) — infra is ready; tool wiring is additive.
+- Worker: input-dispatch ack on the audio path (video only today); pipeline-budget calibration probe at worker start; WM_CLASS spoof check; window-tree focus lock; guest root-PID capture; structural-change pHash gate at HMR applied; warming-progress + migrating-state propagation.
+- Remaining 6 ultraplan phase-1 tools: `synthi_describe`, `synthi_acquire_input`, `synthi_release_input`, `synthi_request_human`, `synthi_annotate_and_ask`, `synthi_recent_human_actions`.
+- Phase 0.5 live runs (E1/E1b/E2/E2b/E3/E4) — require `docker-compose up -d` + fixtures.
+- Adversarial fixture for prompt_injection + wm_class_spoof integration tests.
+- Collab-server session lifecycle REST + warm endpoint + migrating-state hook.
+
+**Test count:** 245 → 328 unit tests; 13 Rust signaling-server tests (up from 4). Typecheck + `cargo check` clean.
 
 ---
 
