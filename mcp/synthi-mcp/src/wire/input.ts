@@ -46,6 +46,13 @@ export type GuiInnerEvent = GuiMouseMove | GuiMouseButton | GuiMouseWheel | GuiK
 export interface GuiEventEnvelope {
   type: "gui-event";
   sessionId: string;
+  /**
+   * Optional correlator. When set, the worker echoes
+   * `{type:"input-ack", dispatch_id, accepted, reason?}` on the
+   * build-log DC. Callers who want ack-based backpressure supply a
+   * unique id (uuid/random) and await via DispatchAckRegistry.
+   */
+  dispatch_id?: string;
   event: GuiInnerEvent;
 }
 
@@ -62,13 +69,19 @@ export function buttonNameToCode(name: MouseButtonName | undefined): number {
   }
 }
 
-function envelope(sessionId: string, event: GuiInnerEvent): string {
+function envelope(sessionId: string, event: GuiInnerEvent, dispatchId?: string): string {
   const env: GuiEventEnvelope = { type: "gui-event", sessionId, event };
+  if (dispatchId !== undefined) env.dispatch_id = dispatchId;
   return JSON.stringify(env);
 }
 
-export function encodeMouseMove(sessionId: string, x: number, y: number): string {
-  return envelope(sessionId, { type: "mouse", action: "move", x, y });
+export function encodeMouseMove(
+  sessionId: string,
+  x: number,
+  y: number,
+  dispatchId?: string
+): string {
+  return envelope(sessionId, { type: "mouse", action: "move", x, y }, dispatchId);
 }
 
 export function encodeMouseButton(
@@ -76,37 +89,43 @@ export function encodeMouseButton(
   x: number,
   y: number,
   button: number,
-  action: "down" | "up"
+  action: "down" | "up",
+  dispatchId?: string
 ): string {
-  return envelope(sessionId, { type: "mouse", action, x, y, button });
+  return envelope(sessionId, { type: "mouse", action, x, y, button }, dispatchId);
 }
 
-export function encodeWheel(sessionId: string, deltaY: number): string {
-  return envelope(sessionId, { type: "mouse", action: "wheel", deltaY });
+export function encodeWheel(sessionId: string, deltaY: number, dispatchId?: string): string {
+  return envelope(sessionId, { type: "mouse", action: "wheel", deltaY }, dispatchId);
 }
 
 export function encodeKey(
   sessionId: string,
   key: string,
-  action: "down" | "up"
+  action: "down" | "up",
+  dispatchId?: string
 ): string {
-  return envelope(sessionId, { type: "key", action, key });
+  return envelope(sessionId, { type: "key", action, key }, dispatchId);
 }
 
 /**
  * A synthi_click expands to a mouse-down + mouse-up pair at the same point.
  * Returns a two-element array of JSON frames.
+ *
+ * `dispatchIds` — optional `[downId, upId]` pair correlates each half of
+ * the click with an ack. Provide either both or neither.
  */
 export function encodeClickPair(
   sessionId: string,
   x: number,
   y: number,
-  button: MouseButtonName = "left"
+  button: MouseButtonName = "left",
+  dispatchIds?: [string, string]
 ): [string, string] {
   const code = buttonNameToCode(button);
   return [
-    encodeMouseButton(sessionId, x, y, code, "down"),
-    encodeMouseButton(sessionId, x, y, code, "up"),
+    encodeMouseButton(sessionId, x, y, code, "down", dispatchIds?.[0]),
+    encodeMouseButton(sessionId, x, y, code, "up", dispatchIds?.[1]),
   ];
 }
 
@@ -115,12 +134,23 @@ export function encodeClickPair(
  * character is sent as `ev.key` (matches the browser's DOM convention at
  * `DraggableVideoWidget.jsx:143-147`). The worker translates via
  * `js_key_to_sdl_keycode(key)` in `main.rs:1781`.
+ *
+ * When `dispatchIdSupplier` is provided, each emitted frame carries a
+ * fresh dispatch_id produced by the supplier (typically
+ * `() => randomUUID()`). Callers tracking per-key acks can correlate
+ * them via the returned parallel array in `dispatchIdSupplierIds`.
  */
-export function encodeTypeSequence(sessionId: string, text: string): string[] {
+export function encodeTypeSequence(
+  sessionId: string,
+  text: string,
+  dispatchIdSupplier?: () => string
+): string[] {
   const out: string[] = [];
   for (const ch of text) {
-    out.push(encodeKey(sessionId, ch, "down"));
-    out.push(encodeKey(sessionId, ch, "up"));
+    const downId = dispatchIdSupplier?.();
+    const upId = dispatchIdSupplier?.();
+    out.push(encodeKey(sessionId, ch, "down", downId));
+    out.push(encodeKey(sessionId, ch, "up", upId));
   }
   return out;
 }

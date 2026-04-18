@@ -1688,7 +1688,42 @@ async fn wire_peer_channels(
                                                 }
                                             }
                                         } else if t == "gui-event" {
-                                            // Handle GUI event by sending to persistent SDL process
+                                            // Handle GUI event by sending to persistent SDL process.
+                                            // Optional `dispatch_id` (string) lets MCP callers
+                                            // correlate each input with an ack. Acks are emitted
+                                            // on the build-log DC (not terminal) so the MCP's
+                                            // existing log tap handles them alongside hmr/
+                                            // frame-advance status messages.
+                                            let dispatch_id_opt = v
+                                                .get("dispatch_id")
+                                                .and_then(|x| x.as_str())
+                                                .map(|s| s.to_string());
+                                            let emit_ack = |accepted: bool, reason: Option<&str>| {
+                                                if let Some(ref did) = dispatch_id_opt {
+                                                    let did = did.clone();
+                                                    let reason = reason.map(|s| s.to_string());
+                                                    let store = build_log_term.clone();
+                                                    tokio::spawn(async move {
+                                                        let guard = store.lock().await;
+                                                        if let Some(dc) = guard.as_ref() {
+                                                            let msg = match reason {
+                                                                Some(r) => serde_json::json!({
+                                                                    "type": "input-ack",
+                                                                    "dispatch_id": did,
+                                                                    "accepted": accepted,
+                                                                    "reason": r,
+                                                                }),
+                                                                None => serde_json::json!({
+                                                                    "type": "input-ack",
+                                                                    "dispatch_id": did,
+                                                                    "accepted": accepted,
+                                                                }),
+                                                            };
+                                                            let _ = dc.send_text(msg.to_string()).await;
+                                                        }
+                                                    });
+                                                }
+                                            };
                                             if let Some(sid) = v.get("sessionId").and_then(|x| x.as_str()) {
                                                 if let Some(evt) = v.get("event") {
                                                     // Handle stop-runner before SDL sender lookup
@@ -1742,6 +1777,8 @@ async fn wire_peer_channels(
                                                                 });
                                                                 let _ = dc.send_text(end_msg.to_string()).await;
                                                             }
+                                                            drop(log_guard);
+                                                            emit_ack(true, None);
                                                             // Early return - don't try SDL sender lookup
                                                             return;
                                                         }
@@ -1791,6 +1828,9 @@ async fn wire_peer_channels(
                                                         }
                                                         if !cmd.is_empty() {
                                                             let _ = sender.send(cmd);
+                                                            emit_ack(true, None);
+                                                        } else {
+                                                            emit_ack(false, Some("unsupported_event"));
                                                         }
                                                     } else {
                                                         // Only warn once per session to avoid log spam
@@ -1799,6 +1839,8 @@ async fn wire_peer_channels(
                                                         if warned.insert(sid.to_string()) {
                                                             debug_log!("[worker] no x11 sender for session {} (further warnings suppressed)", sid);
                                                         }
+                                                        drop(warned);
+                                                        emit_ack(false, Some("no_sdl_sender"));
                                                     }
                                                 }
                                             }

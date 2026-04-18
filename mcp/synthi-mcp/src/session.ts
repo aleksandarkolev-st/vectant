@@ -8,6 +8,7 @@ import type { SessionState as WireSessionState } from "./events/index.js";
 import { locateEngine } from "./locate/index.js";
 import { scanForInjection } from "./security/injection.js";
 import { resolvePipelineBudgetMs } from "./protocol/index.js";
+import { dispatchAckRegistry } from "./util/dispatch_ack_registry.js";
 
 /**
  * MCP-local connection state. Distinct from the wire-level `SessionState`
@@ -320,6 +321,27 @@ class SessionManager {
         const tsMs = typeof msg["ts_ms"] === "number" ? (msg["ts_ms"] as number) : undefined;
         if (fs !== undefined && tsMs !== undefined) {
           this.setFrameAdvance(fs, tsMs);
+        }
+        return;
+      }
+
+      // Input ack: `{type:"input-ack", dispatch_id, accepted, reason?}`.
+      // Worker echoes one per input event that carried a dispatch_id.
+      // Resolve the DispatchAckRegistry so any caller awaiting the ack
+      // (phase-1 infra; tool-layer opt-in follow-up) unblocks.
+      if (msgType === "input-ack") {
+        const did = typeof msg["dispatch_id"] === "string" ? (msg["dispatch_id"] as string) : undefined;
+        const accepted = typeof msg["accepted"] === "boolean" ? (msg["accepted"] as boolean) : undefined;
+        if (did !== undefined && accepted !== undefined) {
+          const reason = typeof msg["reason"] === "string" ? (msg["reason"] as string) : undefined;
+          const payload: { dispatch_id: string; accepted: boolean; reason?: string } = { dispatch_id: did, accepted };
+          if (reason !== undefined) payload.reason = reason;
+          dispatchAckRegistry.resolveAck(payload);
+          eventLog.push({
+            kind: "input",
+            action: "ack",
+            payload: { dispatch_id: did, accepted, ...(reason !== undefined ? { reason } : {}) },
+          });
         }
         return;
       }
