@@ -1393,6 +1393,7 @@ async fn wire_peer_channels(
                         let boundary_checker = boundary_checker_outer.clone();
                         let incremental_cache = incremental_cache_outer.clone();
                         let compile_task_store_for_msg = compile_task_store_outer.clone();
+                        let peer_registry_for_msg = peer_registry_outer.clone();
                         // v2.1 inner clones
                         let hmr_orchestrator = hmr_orchestrator_outer.clone();
                         let structured_logger = structured_logger_outer.clone();
@@ -1447,17 +1448,21 @@ async fn wire_peer_channels(
                                             }
                                         }
 
-                                        // Notify frontend
+                                        // Notify frontend via every registered build-log
+                                        // DC. With one peer, identical to the legacy path;
+                                        // with N peers the cancel notice fans out.
                                         if let Some(sid) = cancelled_session {
-                                            if let Some(log) = { store.lock().await.clone() } {
-                                                let payload = serde_json::json!({
-                                                    "type": "build-status",
-                                                    "status": "cancelled",
-                                                    "sessionId": sid,
-                                                    "message": "Build cancelled by user"
-                                                });
-                                                let _ = log.send_text(serde_json::to_string(&payload).unwrap_or_default()).await;
-                                            } else {
+                                            let payload = serde_json::json!({
+                                                "type": "build-status",
+                                                "status": "cancelled",
+                                                "sessionId": sid,
+                                                "message": "Build cancelled by user"
+                                            });
+                                            let (sent, _dropped) = broadcast_build_log_text(
+                                                &peer_registry_for_msg,
+                                                serde_json::to_string(&payload).unwrap_or_default(),
+                                            ).await;
+                                            if sent == 0 {
                                                 debug_log!("[Main] Build cancelled by user (session {})", sid);
                                             }
                                         }
@@ -1708,6 +1713,7 @@ async fn wire_peer_channels(
                     let sdl_store_for_msg = sdl_store_outer.clone();
                     let runner_store_for_term = runner_store_outer.clone();
                     let build_log_store_for_term = store.clone();
+                    let peer_registry_for_term = peer_registry_outer.clone();
                     // Track which sessions we've already warned about missing x11 senders
                     // to avoid flooding logs with repeated messages on every mouse/key event.
                     let x11_warned: Arc<tokio::sync::Mutex<std::collections::HashSet<String>>> =
@@ -1717,6 +1723,7 @@ async fn wire_peer_channels(
                         let sdl_store = sdl_store_for_msg.clone();
                         let runner_store_term = runner_store_for_term.clone();
                         let build_log_term = build_log_store_for_term.clone();
+                        let peer_registry_term = peer_registry_for_term.clone();
                         let x11_warned = x11_warned.clone();
                         async move {
                             if msg.is_string {
@@ -1752,25 +1759,25 @@ async fn wire_peer_channels(
                                                 if let Some(ref did) = dispatch_id_opt {
                                                     let did = did.clone();
                                                     let reason = reason.map(|s| s.to_string());
-                                                    let store = build_log_term.clone();
+                                                    let registry = peer_registry_term.clone();
                                                     tokio::spawn(async move {
-                                                        let guard = store.lock().await;
-                                                        if let Some(dc) = guard.as_ref() {
-                                                            let msg = match reason {
-                                                                Some(r) => serde_json::json!({
-                                                                    "type": "input-ack",
-                                                                    "dispatch_id": did,
-                                                                    "accepted": accepted,
-                                                                    "reason": r,
-                                                                }),
-                                                                None => serde_json::json!({
-                                                                    "type": "input-ack",
-                                                                    "dispatch_id": did,
-                                                                    "accepted": accepted,
-                                                                }),
-                                                            };
-                                                            let _ = dc.send_text(msg.to_string()).await;
-                                                        }
+                                                        let msg = match reason {
+                                                            Some(r) => serde_json::json!({
+                                                                "type": "input-ack",
+                                                                "dispatch_id": did,
+                                                                "accepted": accepted,
+                                                                "reason": r,
+                                                            }),
+                                                            None => serde_json::json!({
+                                                                "type": "input-ack",
+                                                                "dispatch_id": did,
+                                                                "accepted": accepted,
+                                                            }),
+                                                        };
+                                                        broadcast_build_log_text(
+                                                            &registry,
+                                                            msg.to_string(),
+                                                        ).await;
                                                     });
                                                 }
                                             };
@@ -1819,15 +1826,16 @@ async fn wire_peer_channels(
                                                                 let mut warned = x11_warned.lock().await;
                                                                 warned.remove(sid);
                                                             }
-                                                            // Notify frontend that the runner has ended
-                                                            let log_guard = build_log_term.lock().await;
-                                                            if let Some(dc) = log_guard.as_ref() {
-                                                                let end_msg = serde_json::json!({
-                                                                    "type": "run-gui-end"
-                                                                });
-                                                                let _ = dc.send_text(end_msg.to_string()).await;
-                                                            }
-                                                            drop(log_guard);
+                                                            // Notify every attached peer that
+                                                            // the runner has ended. Legacy
+                                                            // singleton DC -> registry fan-out.
+                                                            let end_msg = serde_json::json!({
+                                                                "type": "run-gui-end"
+                                                            });
+                                                            broadcast_build_log_text(
+                                                                &peer_registry_term,
+                                                                end_msg.to_string(),
+                                                            ).await;
                                                             emit_ack(true, None);
                                                             // Early return - don't try SDL sender lookup
                                                             return;
