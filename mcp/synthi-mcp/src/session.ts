@@ -262,6 +262,8 @@ class SessionManager {
       sessionId: opts.sessionId,
       role: "browser",
       connectTimeoutMs: 10_000,
+      clientVersion: "synthi-mcp/0.1.0",
+      supportedProtocols: [1],
     });
     await signaling.connect();
 

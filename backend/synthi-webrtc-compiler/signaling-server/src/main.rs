@@ -71,6 +71,45 @@ struct SignalMessage {
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     candidate: Option<serde_json::Value>,
+
+    /// Optional client identity string (e.g. `"synthi-mcp/0.1.0"`). For
+    /// operator observability — never used for routing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    client_version: Option<String>,
+
+    /// Optional protocol handshake: the list of protocol versions the
+    /// client can speak. Server picks the highest mutually-supported
+    /// version and echoes it back on the `registered` reply. Clients
+    /// that omit this default to protocol 1 (current single version) so
+    /// legacy browsers/workers keep working byte-identical.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    supported_protocols: Option<Vec<u32>>,
+}
+
+/// Protocol versions this signaling-server implementation can speak.
+/// Keep ordered ascending — the highest mutually-supported version wins.
+const SERVER_PROTOCOLS: &[u32] = &[1];
+
+/// Pick the highest mutually-supported protocol. `None` means no common
+/// version exists and the client should be rejected with
+/// `unsupported_protocol`.
+fn pick_protocol(client: Option<&[u32]>) -> Option<u32> {
+    match client {
+        None => SERVER_PROTOCOLS.last().copied(),
+        Some(list) if list.is_empty() => SERVER_PROTOCOLS.last().copied(),
+        Some(list) => {
+            let mut best: Option<u32> = None;
+            for v in SERVER_PROTOCOLS {
+                if list.contains(v) {
+                    best = Some(match best {
+                        Some(b) => b.max(*v),
+                        None => *v,
+                    });
+                }
+            }
+            best
+        }
+    }
 }
 
 // ── Redis relay envelope ───────────────────────────────────────────────────
@@ -320,6 +359,31 @@ async fn handle_connection(
                 }
             };
 
+            // Protocol-version handshake. Clients that don't send
+            // `supported_protocols` default to v1 (current), preserving
+            // byte-identical wire for legacy browsers/workers.
+            let negotiated_protocol = match pick_protocol(parsed.supported_protocols.as_deref()) {
+                Some(v) => v,
+                None => {
+                    let err = serde_json::json!({
+                        "type": "register-error",
+                        "code": "unsupported_protocol",
+                        "server_supports": SERVER_PROTOCOLS,
+                    });
+                    let _ = out_tx.send(Message::text(err.to_string()));
+                    // Close without populating peer state so signaling
+                    // doesn't route to an unsupported client.
+                    println!(
+                        "[Signaling] Rejected register from {addr}: unsupported_protocol (client supports {:?})",
+                        parsed.supported_protocols
+                    );
+                    break;
+                }
+            };
+            if let Some(cv) = &parsed.client_version {
+                println!("[Signaling]   client_version={cv}");
+            }
+
             // Remove previous registration if the connection re-registers.
             if let (Some(old_sid), Some(old_role)) = (&my_session, &my_role) {
                 let mut peers = state.peers.write().await;
@@ -348,8 +412,21 @@ async fn handle_connection(
 
             let count_msg = if is_multi { " (observer slot)" } else { "" };
             println!(
-                "[Signaling] Registered {role}{count_msg} for session '{session_id}' (addr={addr})"
+                "[Signaling] Registered {role}{count_msg} for session '{session_id}' (addr={addr}, protocol={negotiated_protocol})"
             );
+
+            // Acknowledge the registration so the client knows which
+            // protocol version to use. Emitted after peer-map insert so
+            // a client that immediately replies with SDP sees a
+            // server that's ready to route.
+            let ack = serde_json::json!({
+                "type": "registered",
+                "accepted_protocol": negotiated_protocol,
+                "server_supports": SERVER_PROTOCOLS,
+                "session_id": session_id,
+                "role": role,
+            });
+            let _ = out_tx.send(Message::text(ack.to_string()));
             continue;
         }
 
@@ -542,5 +619,33 @@ mod tests {
         let (sid, role) = parse_target_key(&key).unwrap();
         assert_eq!(sid, "abc123");
         assert_eq!(role, "observer");
+    }
+
+    #[test]
+    fn protocol_handshake_default_when_client_omits_field() {
+        // Legacy clients send no `supported_protocols` — default to the
+        // highest server-supported version.
+        assert_eq!(pick_protocol(None), Some(1));
+    }
+
+    #[test]
+    fn protocol_handshake_empty_list_defaults_to_current() {
+        // An empty list is treated like no-list (back-compat).
+        let empty: &[u32] = &[];
+        assert_eq!(pick_protocol(Some(empty)), Some(1));
+    }
+
+    #[test]
+    fn protocol_handshake_picks_highest_mutually_supported() {
+        // Client supports 1 + hypothetical future 2 — server only speaks
+        // 1 today → picks 1.
+        assert_eq!(pick_protocol(Some(&[1, 2, 3])), Some(1));
+        assert_eq!(pick_protocol(Some(&[1])), Some(1));
+    }
+
+    #[test]
+    fn protocol_handshake_rejects_when_no_overlap() {
+        // Client supports only a future version server doesn't speak.
+        assert_eq!(pick_protocol(Some(&[99, 100])), None);
     }
 }

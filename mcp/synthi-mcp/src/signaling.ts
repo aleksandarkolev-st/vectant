@@ -12,6 +12,18 @@ export interface SignalingClientOptions {
   sessionId: string;
   role?: SignalingRole;
   connectTimeoutMs?: number;
+  /**
+   * Optional client version string (e.g., "synthi-mcp/0.1.0"). Purely
+   * informational — server logs it for operator observability but
+   * doesn't route on it.
+   */
+  clientVersion?: string;
+  /**
+   * Protocol versions this MCP can speak. Server picks the highest
+   * mutually-supported version and echoes it on the `registered` reply.
+   * Omit to accept whatever the server defaults to (v1 today).
+   */
+  supportedProtocols?: number[];
 }
 
 export type SignalingMessageHandler = (msg: SignalingMessage) => void;
@@ -72,6 +84,12 @@ export class SignalingClient {
           role: this.opts.role ?? "browser",
           session_id: this.opts.sessionId,
         };
+        if (this.opts.clientVersion) {
+          registerMsg["client_version"] = this.opts.clientVersion;
+        }
+        if (this.opts.supportedProtocols && this.opts.supportedProtocols.length > 0) {
+          registerMsg["supported_protocols"] = this.opts.supportedProtocols;
+        }
         try {
           ws.send(JSON.stringify(registerMsg));
         } catch (err) {
