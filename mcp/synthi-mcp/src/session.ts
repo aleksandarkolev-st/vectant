@@ -76,6 +76,7 @@ class SessionManager {
   private unsubscribers: Array<() => void> = [];
   private lastFrameAdvance: FrameAdvance | null = null;
   private frameAdvanceListeners = new Set<FrameAdvanceListener>();
+  private presenceCounts: { humans: number; agents: number } = { humans: 0, agents: 1 };
 
   getState(): SessionState {
     return this.state;
@@ -91,6 +92,23 @@ class SessionManager {
 
   isUnsafeMode(): boolean {
     return this.wireUnsafeMode;
+  }
+
+  /**
+   * Presence counts reported by the signaling-server's `presence`
+   * broadcasts. The MCP defaults to `{humans:0, agents:1}` (self)
+   * until the first presence message arrives. Other peers connecting
+   * or disconnecting push updates; the values never drift stale.
+   */
+  getPresenceCounts(): { humans: number; agents: number } {
+    return { ...this.presenceCounts };
+  }
+
+  setPresenceCounts(counts: { humans: number; agents: number }): void {
+    this.presenceCounts = {
+      humans: Math.max(0, Math.floor(counts.humans)),
+      agents: Math.max(0, Math.floor(counts.agents)),
+    };
   }
 
   getAttachedAt(): number | null {
@@ -265,6 +283,19 @@ class SessionManager {
       clientVersion: "synthi-mcp/0.1.0",
       supportedProtocols: [1],
     });
+    // Listen for {type:"presence"} broadcasts from the signaling-server.
+    // These arrive on register + disconnect of any peer in the session,
+    // so attached_humans / attached_agents reflect real peer state
+    // instead of a hardcoded fallback.
+    const unsubPresence = signaling.onMessage((msg) => {
+      if (msg.type !== "presence") return;
+      const humans = typeof msg["attached_humans"] === "number" ? (msg["attached_humans"] as number) : undefined;
+      const agents = typeof msg["attached_agents"] === "number" ? (msg["attached_agents"] as number) : undefined;
+      if (humans !== undefined && agents !== undefined) {
+        this.setPresenceCounts({ humans, agents });
+      }
+    });
+    this.unsubscribers.push(unsubPresence);
     await signaling.connect();
 
     const peer = new Peer({ signaling, connectTimeoutMs: attachTimeoutMs });
@@ -450,6 +481,7 @@ class SessionManager {
     this.lastActivityAt = Date.now();
     this.lastFrameAdvance = null;
     this.frameAdvanceListeners.clear();
+    this.presenceCounts = { humans: 0, agents: 1 };
     for (const unsub of this.unsubscribers) {
       try { unsub(); } catch { /* ignored */ }
     }

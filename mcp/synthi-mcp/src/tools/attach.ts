@@ -99,17 +99,20 @@ export async function attachTool(args: unknown, ctx: ToolContext): Promise<ToolR
         server_supports: serverSupports,
       },
       capabilities: manifest,
-      session: {
-        id: attached.sessionId,
-        state: session.getWireState(),
-        state_ts: session.getWireStateTs(),
-        unsafe_mode: session.isUnsafeMode(),
-        // Presence counts are placeholders until the signaling-server
-        // observer role + peer registry ship (ultraplan §4.16). The MCP
-        // itself is attached as `browser`; worker is implicit.
-        attached_humans: 0,
-        attached_agents: 1,
-      },
+      session: ((): Record<string, unknown> => {
+        const presence = session.getPresenceCounts();
+        return {
+          id: attached.sessionId,
+          state: session.getWireState(),
+          state_ts: session.getWireStateTs(),
+          unsafe_mode: session.isUnsafeMode(),
+          // Populated by `presence` messages from the signaling-server.
+          // Defaults to {humans:0, agents:1} (self) when no peers have
+          // reported yet.
+          attached_humans: presence.humans,
+          attached_agents: presence.agents,
+        };
+      })(),
     });
   } catch (err) {
     return errorFromException("attach_failed", err);

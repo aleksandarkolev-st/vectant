@@ -146,6 +146,79 @@ fn role_is_multi_peer(role: &str) -> bool {
     role == ROLE_OBSERVER
 }
 
+/// Classify a role as either a human peer (driver) or an agent peer
+/// (passive observer / automated driver). Browsers today always count
+/// as humans; observer/mcp-agent count as agents. Anything else falls
+/// back to `human` (conservative — a new role shows up in the
+/// human count until explicitly classified).
+fn role_is_agent(role: &str) -> bool {
+    role == ROLE_OBSERVER || role == "mcp-agent"
+}
+
+/// Compute `PresenceCounts` from a map of session peer lists (keyed by
+/// (session_id, role)) for the given session. Worker peers are not
+/// counted — they're not "attached" in the user-facing sense; they are
+/// the compute endpoint.
+fn compute_presence_counts(
+    peers: &HashMap<PeerKey, Vec<mpsc::UnboundedSender<Message>>>,
+    session_id: &str,
+) -> PresenceCounts {
+    let mut counts = PresenceCounts::zero();
+    for ((sid, role), senders) in peers {
+        if sid != session_id {
+            continue;
+        }
+        if role == ROLE_WORKER {
+            continue;
+        }
+        let n = senders.len();
+        if role_is_agent(role) {
+            counts.agents += n;
+        } else {
+            counts.humans += n;
+        }
+    }
+    counts
+}
+
+/// Emit a `{type:"presence", ...}` message to every peer of a session
+/// (worker, browsers, observers). Fails silently on a closed sender —
+/// the next disconnect cleanup will reap it.
+async fn broadcast_presence(state: &Arc<AppState>, session_id: &str, counts: PresenceCounts) {
+    let msg = serde_json::json!({
+        "type": "presence",
+        "session_id": session_id,
+        "attached_humans": counts.humans,
+        "attached_agents": counts.agents,
+    });
+    let text = msg.to_string();
+    let peers = state.peers.read().await;
+    for ((sid, _role), senders) in peers.iter() {
+        if sid != session_id {
+            continue;
+        }
+        for tx in senders {
+            let _ = tx.send(Message::text(text.clone()));
+        }
+    }
+}
+
+/// Counts of peers attached to a session, grouped by whether they are
+/// human-driven or agent-driven. Emitted as a `presence` message so MCP
+/// clients can surface `attached_humans` / `attached_agents` in their
+/// session envelope without polling.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PresenceCounts {
+    humans: usize,
+    agents: usize,
+}
+
+impl PresenceCounts {
+    fn zero() -> Self {
+        Self { humans: 0, agents: 0 }
+    }
+}
+
 /// Shared across all connection tasks on this pod.
 struct AppState {
     /// Local peers connected to **this** pod. Vec length enforced per role:
@@ -401,14 +474,15 @@ async fn handle_connection(
             // Singleton roles evict prior senders (Path A); observer appends.
             let key = (session_id.clone(), role.clone());
             let is_multi = role_is_multi_peer(&role);
-            {
+            let presence_after_insert = {
                 let mut peers = state.peers.write().await;
                 let entry = peers.entry(key).or_default();
                 if !is_multi {
                     entry.clear();
                 }
                 entry.push(out_tx.clone());
-            }
+                compute_presence_counts(&peers, &session_id)
+            };
 
             let count_msg = if is_multi { " (observer slot)" } else { "" };
             println!(
@@ -427,6 +501,11 @@ async fn handle_connection(
                 "role": role,
             });
             let _ = out_tx.send(Message::text(ack.to_string()));
+
+            // Broadcast presence to everyone attached to this session
+            // (including the worker, so worker-side metrics can surface
+            // the same counts).
+            broadcast_presence(&state, &session_id, presence_after_insert).await;
             continue;
         }
 
@@ -501,7 +580,7 @@ async fn handle_connection(
 
     // ── Cleanup on disconnect ──────────────────────────────────────────
     if let (Some(sid), Some(role)) = (&my_session, &my_role) {
-        let session_empty = {
+        let (session_empty, presence_after_remove) = {
             let mut peers = state.peers.write().await;
             // Remove this specific sender from the role's Vec; drop empty entry.
             if let Some(v) = peers.get_mut(&(sid.clone(), role.clone())) {
@@ -511,12 +590,20 @@ async fn handle_connection(
                 }
             }
             // Session empty when no role has any peer.
-            !peers
+            let empty = !peers
                 .iter()
-                .any(|((sid2, _r), v)| sid2 == sid && !v.is_empty())
+                .any(|((sid2, _r), v)| sid2 == sid && !v.is_empty());
+            let presence = compute_presence_counts(&peers, sid);
+            (empty, presence)
         };
 
         println!("[Signaling] Unregistered {role} for session '{sid}' (addr={addr})");
+
+        // Tell remaining peers that the count changed. Skip when the
+        // session is empty — there's nobody left to listen.
+        if !session_empty {
+            broadcast_presence(&state, sid, presence_after_remove).await;
+        }
 
         // If no peers remain for this session, notify the collab server
         // so it can tear down the workspace pod.
@@ -647,5 +734,65 @@ mod tests {
     fn protocol_handshake_rejects_when_no_overlap() {
         // Client supports only a future version server doesn't speak.
         assert_eq!(pick_protocol(Some(&[99, 100])), None);
+    }
+
+    #[test]
+    fn role_agent_classification() {
+        // observer + mcp-agent are agents; browser is human-driven;
+        // unknown roles fall to human (conservative).
+        assert!(!role_is_agent(ROLE_BROWSER));
+        assert!(!role_is_agent(ROLE_WORKER));
+        assert!(role_is_agent(ROLE_OBSERVER));
+        assert!(role_is_agent("mcp-agent"));
+        assert!(!role_is_agent("some_future_role"));
+    }
+
+    fn fake_sender() -> mpsc::UnboundedSender<Message> {
+        let (tx, _rx) = mpsc::unbounded_channel::<Message>();
+        tx
+    }
+
+    #[test]
+    fn presence_counts_browser_as_human() {
+        let mut peers = HashMap::<PeerKey, Vec<mpsc::UnboundedSender<Message>>>::new();
+        peers.insert(("s1".to_string(), ROLE_BROWSER.to_string()), vec![fake_sender()]);
+        let c = compute_presence_counts(&peers, "s1");
+        assert_eq!(c, PresenceCounts { humans: 1, agents: 0 });
+    }
+
+    #[test]
+    fn presence_counts_observer_as_agent() {
+        let mut peers = HashMap::<PeerKey, Vec<mpsc::UnboundedSender<Message>>>::new();
+        peers.insert(
+            ("s1".to_string(), ROLE_OBSERVER.to_string()),
+            vec![fake_sender(), fake_sender()],
+        );
+        peers.insert(("s1".to_string(), ROLE_BROWSER.to_string()), vec![fake_sender()]);
+        let c = compute_presence_counts(&peers, "s1");
+        assert_eq!(c, PresenceCounts { humans: 1, agents: 2 });
+    }
+
+    #[test]
+    fn presence_counts_ignores_worker() {
+        let mut peers = HashMap::<PeerKey, Vec<mpsc::UnboundedSender<Message>>>::new();
+        peers.insert(("s1".to_string(), ROLE_WORKER.to_string()), vec![fake_sender()]);
+        peers.insert(("s1".to_string(), ROLE_BROWSER.to_string()), vec![fake_sender()]);
+        let c = compute_presence_counts(&peers, "s1");
+        assert_eq!(c, PresenceCounts { humans: 1, agents: 0 });
+    }
+
+    #[test]
+    fn presence_counts_scope_by_session_id() {
+        let mut peers = HashMap::<PeerKey, Vec<mpsc::UnboundedSender<Message>>>::new();
+        peers.insert(("s1".to_string(), ROLE_BROWSER.to_string()), vec![fake_sender()]);
+        peers.insert(("s2".to_string(), ROLE_BROWSER.to_string()), vec![fake_sender()]);
+        peers.insert(
+            ("s2".to_string(), ROLE_OBSERVER.to_string()),
+            vec![fake_sender()],
+        );
+        let c1 = compute_presence_counts(&peers, "s1");
+        let c2 = compute_presence_counts(&peers, "s2");
+        assert_eq!(c1, PresenceCounts { humans: 1, agents: 0 });
+        assert_eq!(c2, PresenceCounts { humans: 1, agents: 1 });
     }
 }

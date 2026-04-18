@@ -41,13 +41,21 @@ export type SignalingCloseHandler = (info: { code: number; reason: string }) => 
 export class SignalingClient {
   private ws: WebSocket | null = null;
   private closed = false;
-  private messageHandler: SignalingMessageHandler | null = null;
+  private messageHandlers: SignalingMessageHandler[] = [];
   private closeHandler: SignalingCloseHandler | null = null;
 
   constructor(private readonly opts: SignalingClientOptions) {}
 
-  onMessage(handler: SignalingMessageHandler): void {
-    this.messageHandler = handler;
+  /**
+   * Register a message handler. Multiple handlers can coexist — each is
+   * called in registration order for every incoming message. Returns an
+   * unsubscribe fn so callers can scope listeners to a lifetime.
+   */
+  onMessage(handler: SignalingMessageHandler): () => void {
+    this.messageHandlers.push(handler);
+    return (): void => {
+      this.messageHandlers = this.messageHandlers.filter((h) => h !== handler);
+    };
   }
 
   onClose(handler: SignalingCloseHandler): void {
@@ -109,7 +117,7 @@ export class SignalingClient {
       });
 
       ws.on("message", (data) => {
-        if (!this.messageHandler) return;
+        if (this.messageHandlers.length === 0) return;
         const text = typeof data === "string" ? data : data.toString("utf8");
         let parsed: SignalingMessage;
         try {
@@ -118,7 +126,13 @@ export class SignalingClient {
           return;
         }
         if (parsed && typeof parsed.type === "string") {
-          this.messageHandler(parsed);
+          for (const h of this.messageHandlers) {
+            try {
+              h(parsed);
+            } catch {
+              // handlers must not break the receive loop
+            }
+          }
         }
       });
 
