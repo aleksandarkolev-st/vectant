@@ -79,6 +79,12 @@ const CFG = {
   fixturePath: path.resolve(__dirname, process.env.FIXTURE_PATH ?? '../tests/fixtures/counter/main.cpp'),
   frontendPrecompiled: (process.env.FRONTEND_PRECOMPILED ?? 'false').toLowerCase() === 'true',
   hmrTimeoutMs: Number(process.env.HMR_TIMEOUT_MS ?? 60000),
+  // GCS mirror is a durable-storage nicety. The editor + worker read from
+  // collab-server's local disk (api.js:137), so disabling the mirror doesn't
+  // change what the MCP test exercises — it just keeps the output clean when
+  // the running collab-server's GCS client is mis-configured. Opt in with
+  // MCP_SYNC_GCS=true to exercise the mirror path.
+  syncToGcs: (process.env.MCP_SYNC_GCS ?? 'false').toLowerCase() === 'true',
 };
 
 const LOG_DIR = path.resolve(__dirname, '../.live-test-logs');
@@ -170,7 +176,7 @@ async function stageAndCommit({ collabUrl, slug, userId, message }) {
   );
 }
 
-async function writeFilesBatchCollab({ collabUrl, slug, userId, files }) {
+async function writeFilesBatchCollab({ collabUrl, slug, userId, files, syncToGcs }) {
   const res = await httpJson(
     'POST',
     `${collabUrl}/git/${slug}/write-files-batch`,
@@ -178,7 +184,7 @@ async function writeFilesBatchCollab({ collabUrl, slug, userId, files }) {
       files: files.map((f) => ({
         path: f.path, encoding: f.encoding ?? 'utf8', content: f.content,
       })),
-      syncToGcs: true,
+      syncToGcs: syncToGcs === true,
     },
     { 'x-user-id': userId },
   );
@@ -347,17 +353,20 @@ async function main() {
   }
   log('ok', `workspace id=${workspace.id}  slug=${workspace.slug}  → gs://<bucket>/workspaces/${CFG.slug}/`);
 
-  // 3. Seed fixture via collab-server write-files-batch (disk + GCS mirror)
-  log('info', 'POST /git/:slug/write-files-batch (syncToGcs:true)');
+  // 3. Seed fixture via collab-server write-files-batch (disk; GCS mirror is opt-in)
+  log('info', `POST /git/:slug/write-files-batch (syncToGcs:${CFG.syncToGcs})`);
   {
     const r = await writeFilesBatchCollab({
       collabUrl: CFG.collabUrl, slug: CFG.slug, userId: CFG.hostId,
       files: [{ path: 'main.cpp', content: fixture }],
+      syncToGcs: CFG.syncToGcs,
     });
     if (r.otherErrs.length) fail(`write-files-batch hard errors: ${JSON.stringify(r.otherErrs)}`);
     log('ok', `main.cpp: written=${r.written} to collab-server disk (editor can now list it)`);
-    if (r.gcsErrs.length) log('warn', `GCS mirror failed (disk write succeeded): ${JSON.stringify(r.gcsErrs)}`);
-    else log('ok', `GCS mirror requested  → gs://<bucket>/${CFG.slug}/main.cpp`);
+    if (CFG.syncToGcs) {
+      if (r.gcsErrs.length) log('warn', `GCS mirror failed (disk write succeeded): ${JSON.stringify(r.gcsErrs)}`);
+      else log('ok', `GCS mirror requested  → gs://<bucket>/${CFG.slug}/main.cpp`);
+    }
   }
 
   // 3b. Commit — so the browser user's peer-clone sees the files.
@@ -448,10 +457,11 @@ async function main() {
       const r = await writeFilesBatchCollab({
         collabUrl: CFG.collabUrl, slug: CFG.slug, userId: CFG.hostId,
         files: [{ path: 'main.cpp', content: edited }],
+        syncToGcs: CFG.syncToGcs,
       });
       if (r.otherErrs.length) fail(`edit batch hard errors: ${JSON.stringify(r.otherErrs)}`);
-      if (r.gcsErrs.length) log('warn', `edit GCS mirror failed: ${JSON.stringify(r.gcsErrs)}`);
-      else log('ok', `edit written to disk + mirrored to GCS`);
+      if (CFG.syncToGcs && r.gcsErrs.length) log('warn', `edit GCS mirror failed: ${JSON.stringify(r.gcsErrs)}`);
+      else log('ok', `edit written to disk${CFG.syncToGcs ? ' + mirrored to GCS' : ''}`);
     }
 
     // 10. wait_hmr
