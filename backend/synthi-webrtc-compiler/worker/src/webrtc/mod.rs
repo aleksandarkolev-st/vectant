@@ -18,8 +18,17 @@
 //! the ultraplan §4.16 presence model, so future wiring is a drop-in rather
 //! than a re-design.
 
+pub mod build_log_broadcast;
 pub mod peer_registry;
 pub mod track_fanout;
 
+pub use build_log_broadcast::{broadcast_build_log_text, PER_DC_SEND_TIMEOUT};
 pub use peer_registry::{PeerHandle, PeerRegistry, PeerRole, RegistryInsertOutcome};
 pub use track_fanout::{FanoutStats, TrackFanout, TrackKind};
+
+/// Conventional id for the single-peer-per-session browser slot that
+/// `main.rs` uses today (pre-multi-PC). When the signal loop migrates
+/// to per-peer PCs, offers will supply their own peer_id via the
+/// signaling-server's Path-B register envelope and this constant goes
+/// away. See `G3_PHASE_B_INTEGRATION.md` Step 2.
+pub const DEFAULT_BROWSER_PEER_ID: &str = "default-browser";

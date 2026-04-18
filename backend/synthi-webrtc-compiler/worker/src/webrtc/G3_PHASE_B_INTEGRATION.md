@@ -16,8 +16,11 @@
 | `PeerRole::{Browser, Observer, McpAgent}` | ✅ scaffolded | `src/webrtc/peer_registry.rs` |
 | `PeerRegistry` — insert / evict / attach-DC-track | ✅ scaffolded + tested | `src/webrtc/peer_registry.rs` |
 | `TrackFanout` — broadcast → N tracks, drop-on-lag | ✅ scaffolded + tested | `src/webrtc/track_fanout.rs` |
+| `broadcast_build_log_text` — per-DC 50ms-timeout fan-out helper | ✅ shipped | `src/webrtc/build_log_broadcast.rs` |
+| `peer_registry` populated on `main.rs` hot path (writes) | ✅ shipped | `src/main.rs` (both DC open sites + on every PC recreate) |
+| First read-site migrated: `dc_rx → build-log broadcast` | ✅ shipped | `src/main.rs:723` |
+| Remaining reads on `log_channel_store` | ⚠️ legacy path still live | `src/main.rs:714` (dc_rx read above migrated) + 8 other sites |
 | Single-PC assumption in `main.rs` | ❌ unchanged | `src/main.rs:615, 1140-1260` |
-| Single-DC assumption in `log_channel_store` | ❌ unchanged | `src/main.rs:616, 1283-1296` |
 | Single-track write-path in media pipelines | ❌ unchanged | `src/android/webrtc/video_pipeline.rs:614` |
 | Per-peer offer handling in signal loop | ❌ unchanged | `src/main.rs:600-900` |
 

@@ -15,6 +15,9 @@ use worker::infra;
 use worker::runtime;
 use worker::safety;
 use worker::debug_log;
+use worker::webrtc::{
+    broadcast_build_log_text, PeerHandle, PeerRegistry, PeerRole, DEFAULT_BROWSER_PEER_ID,
+};
 
 use anyhow::{Context, Result};
 use bytes::Bytes;
@@ -614,6 +617,16 @@ async fn main() -> Result<()> {
     let ice_servers = fetch_turn_credentials().await;
     let mut pc = create_peer(signal_tx.clone(), ice_servers).await?;
     let log_channel_store: Arc<Mutex<Option<Arc<RTCDataChannel>>>> = Arc::new(Mutex::new(None));
+    // Per-session peer registry. Today still populated with exactly one
+    // `default-browser` peer (same effective cardinality as the legacy
+    // `log_channel_store` singleton); the MCP-agent / observer roles
+    // land in a follow-up commit that replaces the singleton `pc` with
+    // per-peer PCs. See `webrtc/G3_PHASE_B_INTEGRATION.md`.
+    let peer_registry: Arc<PeerRegistry> = Arc::new(PeerRegistry::new());
+    {
+        let handle = PeerHandle::new(DEFAULT_BROWSER_PEER_ID, PeerRole::Browser, pc.clone());
+        peer_registry.insert(handle);
+    }
     // Store of sessionId -> stdin sender so datachannel 'terminal' messages can be
     // routed to the running process's stdin.
     let terminal_input_store: Arc<Mutex<HashMap<String, mpsc::UnboundedSender<String>>>> =
@@ -708,13 +721,15 @@ async fn main() -> Result<()> {
 
     // Forward updates to DataChannel
     let mut dc_rx = update_tx.subscribe();
-    let dc_store = log_channel_store.clone();
+    let dc_registry = peer_registry.clone();
     tokio::spawn(async move {
         while let Ok(msg) = dc_rx.recv().await {
-            let guard = dc_store.lock().await;
-            if let Some(dc) = &*guard {
-                let _ = dc.send_text(msg).await;
-            }
+            // Fan out to every peer's build-log DC. With exactly one
+            // peer (current pre-multi-PC reality) this is the same
+            // wire as the legacy `log_channel_store` read; with N
+            // peers it broadcasts. Per-DC 50ms timeout ensures a
+            // wedged peer cannot throttle the rest.
+            let _ = broadcast_build_log_text(&dc_registry, msg).await;
         }
     });
 
@@ -852,6 +867,7 @@ async fn main() -> Result<()> {
     wire_peer_channels(
         &pc,
         log_channel_store.clone(),
+        peer_registry.clone(),
         terminal_input_store.clone(),
         sdl_input_store.clone(),
         runner_store.clone(),
@@ -912,9 +928,19 @@ async fn main() -> Result<()> {
                         let ice_servers = fetch_turn_credentials().await;
                         match create_peer(signal_tx.clone(), ice_servers).await {
                             Ok(new_pc) => {
+                                // Clear the old peer-registry entry + re-insert the
+                                // fresh PC before wiring so the DC open callbacks
+                                // can attach to the current peer.
+                                peer_registry.remove(DEFAULT_BROWSER_PEER_ID);
+                                peer_registry.insert(PeerHandle::new(
+                                    DEFAULT_BROWSER_PEER_ID,
+                                    PeerRole::Browser,
+                                    new_pc.clone(),
+                                ));
                                 wire_peer_channels(
                                     &new_pc,
                                     log_channel_store.clone(),
+                                    peer_registry.clone(),
                                     terminal_input_store.clone(),
                                     sdl_input_store.clone(),
                                     runner_store.clone(),
@@ -1030,9 +1056,16 @@ async fn main() -> Result<()> {
                 let ice_servers = fetch_turn_credentials().await;
                 match create_peer(signal_tx.clone(), ice_servers).await {
                     Ok(new_pc) => {
+                        peer_registry.remove(DEFAULT_BROWSER_PEER_ID);
+                        peer_registry.insert(PeerHandle::new(
+                            DEFAULT_BROWSER_PEER_ID,
+                            PeerRole::Browser,
+                            new_pc.clone(),
+                        ));
                         wire_peer_channels(
                             &new_pc,
                             log_channel_store.clone(),
+                            peer_registry.clone(),
                             terminal_input_store.clone(),
                             sdl_input_store.clone(),
                             runner_store.clone(),
@@ -1264,6 +1297,7 @@ async fn create_peer(
 async fn wire_peer_channels(
     pc: &Arc<RTCPeerConnection>,
     log_channel_store: Arc<Mutex<Option<Arc<RTCDataChannel>>>>,
+    peer_registry: Arc<PeerRegistry>,
     terminal_input_store: Arc<Mutex<HashMap<String, mpsc::UnboundedSender<String>>>>,
     sdl_input_store: Arc<Mutex<HashMap<String, mpsc::UnboundedSender<String>>>>,
     runner_store: Arc<Mutex<Option<RunnerState>>>,
@@ -1285,12 +1319,20 @@ async fn wire_peer_channels(
         .await?;
     let store_for_open = log_channel_store.clone();
     let build_log_dc_for_open = build_log_dc.clone();
+    let peer_registry_for_open = peer_registry.clone();
     build_log_dc.on_open(Box::new(move || {
         let dc = build_log_dc_for_open.clone();
         let store = store_for_open.clone();
+        let registry = peer_registry_for_open.clone();
         async move {
             let mut guard = store.lock().await;
-            *guard = Some(dc);
+            *guard = Some(dc.clone());
+            // Parallel population of the per-session registry so
+            // multi-peer emission paths (see `broadcast_build_log_text`)
+            // can fan out. Pre-multi-PC, the registry holds exactly one
+            // peer — `DEFAULT_BROWSER_PEER_ID` — mirroring the singleton
+            // log_channel_store behaviour.
+            registry.attach_build_log(DEFAULT_BROWSER_PEER_ID, dc);
         }
         .boxed()
     }));
@@ -1312,6 +1354,7 @@ async fn wire_peer_channels(
     let ipc_config_for_callback = ipc_config.clone();
     let sdl_input_store_for_callback = sdl_input_store.clone();
     let vscode_server_kill_tx_for_callback = vscode_server_kill_tx.clone();
+    let peer_registry_for_callback = peer_registry.clone();
     pc.on_data_channel(Box::new(move |dc: Arc<RTCDataChannel>| {
         let store = compile_store.clone();
         let term_store = term_store.clone();
@@ -1330,6 +1373,7 @@ async fn wire_peer_channels(
         let restart_controller_outer = restart_controller_for_callback.clone();
         let ipc_config_outer = ipc_config_for_callback.clone();
         let vscode_server_kill_tx_outer = vscode_server_kill_tx_for_callback.clone();
+        let peer_registry_outer = peer_registry_for_callback.clone();
         async move {
             let label = dc.label();
             debug_log!("[on_data_channel] Received data channel: label='{}', id={}", label, dc.id());
@@ -1652,6 +1696,12 @@ async fn wire_peer_channels(
             } else if label == "build-log" {
                 let mut guard = store.lock().await;
                 *guard = Some(dc.clone());
+                drop(guard);
+                // Parallel population of the per-session registry so
+                // multi-peer emission paths fan out alongside the legacy
+                // singleton path. Matches the write at
+                // `wire_peer_channels` for the worker-created DC.
+                peer_registry_outer.attach_build_log(DEFAULT_BROWSER_PEER_ID, dc.clone());
             } else if label == "terminal" {
                     // Terminal datachannel - used to receive stdin messages for running
                     // processes. Messages are expected as JSON: { type: 'stdin', sessionId, data }
