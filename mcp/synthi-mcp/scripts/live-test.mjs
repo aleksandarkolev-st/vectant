@@ -9,13 +9,15 @@
 //   - `pnpm build` has produced dist/index.js in this package
 //
 // Env vars (with defaults):
-//   FRONTEND_URL           http://localhost:3000   (Next.js /api/workspace*)
+//   FRONTEND_URL           http://localhost:3000   (Next.js /api/workspace POST)
+//   COLLAB_URL             http://localhost:1234   (collab-server /git/:slug/write-files-batch)
 //   SIGNALING_URL          ws://localhost:9000     (MCP → signaling)
 //   PROMETHEUS_PORT        9464                    (MCP /metrics)
 //   GOOGLE_API_KEY         (required)              (Gemini API key)
 //   SYNTHI_GEMINI_MODEL    gemini-3-flash-preview
 //   SLUG                   mcp-counter-<ts>        (per-run unique to avoid collisions)
 //   WORKSPACE_NAME         Synthi MCP Live Test
+//   HOST_ID                mcp-live-test           (collab user id for the per-user repo)
 //   MCP_ENTRY              ../dist/index.js        (resolved relative to this file)
 //   FIXTURE_PATH           ../tests/fixtures/counter/main.cpp
 //   FRONTEND_PRECOMPILED   false                   (set true if you opened the session in the browser)
@@ -25,18 +27,20 @@
 //   cd mcp/synthi-mcp
 //   GOOGLE_API_KEY=... node scripts/live-test.mjs
 //
-// GCS path (confirmed from synthi/src/app/api/workspace/.../route.js):
-//   workspaces/<slug>/                   ← workspace folder marker
-//   workspaces/<slug>/main.cpp           ← fixture file
+// Stores touched:
+//   • Prisma DB       — Workspace row via POST /api/workspace (Next.js)
+//   • GCS             — workspaces/<slug>/ marker + gs://<bucket>/<slug>/main.cpp
+//                       via /api/workspace + write-files-batch mirror
+//   • collab-server   — repos/<slug>/<user>/main.cpp on disk via
+//                       write-files-batch. This is the store the editor +
+//                       worker actually READ from (api.js:137).
 //
 // What it does, in order:
-//   1. Preflight: TCP-ping frontend + signaling. Bail on either dead.
-//   2. Read counter/main.cpp off disk.
-//   3. POST /api/workspace   { name, slug }
-//      → creates DB Workspace row + GCS folder marker at workspaces/<slug>/
-//   4. POST /api/workspace/<slug>/item  (multipart form-data: filePath, file)
-//      → uploads main.cpp to gs://<bucket>/workspaces/<slug>/main.cpp
-//   5. Spawn MCP subprocess with Gemini env.
+//   1. Preflight: TCP-ping frontend + collab + signaling.
+//   2. POST /api/workspace → DB row + GCS workspaces/<slug>/ marker.
+//   3. POST /git/:slug/write-files-batch (syncToGcs:true) → writes main.cpp
+//      to collab-server disk AND mirrors to GCS. Auto-runs ensureUserRepo.
+//   4. Spawn MCP subprocess with Gemini env.
 //   6. JSON-RPC over stdio:
 //        initialize → tools/list → tools/call synthi_attach
 //        → tools/call synthi_screenshot (baseline)
@@ -63,12 +67,14 @@ const __dirname = path.dirname(__filename);
 
 const CFG = {
   frontendUrl: process.env.FRONTEND_URL ?? 'http://localhost:3000',
+  collabUrl: process.env.COLLAB_URL ?? 'http://localhost:1234',
   signalingUrl: process.env.SIGNALING_URL ?? 'ws://localhost:9000',
   prometheusPort: Number(process.env.PROMETHEUS_PORT ?? 9464),
   googleApiKey: process.env.GOOGLE_API_KEY ?? '',
   geminiModel: process.env.SYNTHI_GEMINI_MODEL ?? 'gemini-3-flash-preview',
   slug: process.env.SLUG ?? `mcp-counter-${Date.now()}`,
   workspaceName: process.env.WORKSPACE_NAME ?? 'Synthi MCP Live Test',
+  hostId: process.env.HOST_ID ?? 'mcp-live-test',
   mcpEntry: path.resolve(__dirname, process.env.MCP_ENTRY ?? '../dist/index.js'),
   fixturePath: path.resolve(__dirname, process.env.FIXTURE_PATH ?? '../tests/fixtures/counter/main.cpp'),
   frontendPrecompiled: (process.env.FRONTEND_PRECOMPILED ?? 'false').toLowerCase() === 'true',
@@ -137,6 +143,32 @@ async function uploadFileGcs({ frontendUrl, workspaceId, filePath, content, cont
   const text = await res.text();
   if (!res.ok) throw new Error(`upload ${filePath} → ${res.status}: ${text.slice(0, 500)}`);
   try { return JSON.parse(text); } catch { return { raw: text }; }
+}
+
+// write-files-batch is the dual-write path: gitService.writeFilesBatch
+// (gitService.js:3407) mkdir -p + fs.writeFile to collab-server's
+// repos/<slug>/<user>/<path> (the store the editor's fetchFiles() at
+// api.js:137 reads from), then when `syncToGcs:true` also calls
+// gcsSync.syncFileToGcs → mirrors to gs://<bucket>/<slug>/<path>.
+// The handler at server.js:2214+ auto-runs ensureUserRepo so fresh slugs
+// get their per-user repo provisioned on first call.
+async function writeFilesBatchCollab({ collabUrl, slug, userId, files }) {
+  const res = await httpJson(
+    'POST',
+    `${collabUrl}/git/${slug}/write-files-batch`,
+    {
+      files: files.map((f) => ({
+        path: f.path, encoding: f.encoding ?? 'utf8', content: f.content,
+      })),
+      syncToGcs: true,
+    },
+    { 'x-user-id': userId },
+  );
+  const written = res.written?.length ?? 0;
+  const skipped = res.skipped?.length ?? 0;
+  const gcsErrs = (res.errors ?? []).filter((e) => e.stage === 'gcs_upload');
+  const otherErrs = (res.errors ?? []).filter((e) => e.stage !== 'gcs_upload');
+  return { written, skipped, gcsErrs, otherErrs, raw: res };
 }
 
 async function createFolderGcs({ frontendUrl, workspaceId, folderPath }) {
@@ -272,15 +304,19 @@ async function main() {
   await mkdir(ARTIFACT_DIR, { recursive: true });
 
   // 1. Preflight
-  log('info', 'Preflight: frontend + signaling reachable?');
+  log('info', 'Preflight: frontend + collab + signaling reachable?');
   const fe = parseUrl(CFG.frontendUrl);
+  const col = parseUrl(CFG.collabUrl);
   const sig = parseUrl(CFG.signalingUrl);
-  const [feOk, sigOk] = await Promise.all([tcpPing(fe.host, fe.port), tcpPing(sig.host, sig.port)]);
-  if (!feOk) fail(`frontend unreachable at ${CFG.frontendUrl}  (Next.js dev/prod server must be running — it owns /api/workspace)`);
+  const [feOk, colOk, sigOk] = await Promise.all([
+    tcpPing(fe.host, fe.port), tcpPing(col.host, col.port), tcpPing(sig.host, sig.port),
+  ]);
+  if (!feOk) fail(`frontend unreachable at ${CFG.frontendUrl}  (Next.js — owns /api/workspace)`);
+  if (!colOk) fail(`collab-server unreachable at ${CFG.collabUrl}  (owns /git/:slug/* — editor's file source)`);
   if (!sigOk) fail(`signaling unreachable at ${CFG.signalingUrl}`);
-  log('ok', `frontend:${fe.port} + signaling:${sig.port} both up`);
+  log('ok', `frontend:${fe.port} + collab:${col.port} + signaling:${sig.port} all up`);
 
-  // 2. Create workspace (DB row + GCS folder marker)
+  // 2. Create workspace (Prisma DB row + GCS folder marker)
   log('info', `POST /api/workspace  {name, slug:"${CFG.slug}"}`);
   const fixture = await readFile(CFG.fixturePath, 'utf8');
   let workspace;
@@ -289,17 +325,22 @@ async function main() {
       frontendUrl: CFG.frontendUrl, name: CFG.workspaceName, slug: CFG.slug,
     });
   } catch (e) {
-    fail(`workspace create failed — this usually means GCP env vars (GCP_PROJECT_ID, GCP_CLIENT_EMAIL, GCP_PRIVATE_KEY, GCS_BUCKET_NAME) are missing on the frontend process.\n  → ${e.message}`);
+    fail(`workspace create failed — usually means GCP env vars (GCP_PROJECT_ID, GCP_CLIENT_EMAIL, GCP_PRIVATE_KEY, GCS_BUCKET_NAME) or Prisma DB missing on the frontend.\n  → ${e.message}`);
   }
   log('ok', `workspace id=${workspace.id}  slug=${workspace.slug}  → gs://<bucket>/workspaces/${CFG.slug}/`);
 
-  // 3. Upload fixture to GCS
-  log('info', 'POST /api/workspace/:slug/item  (multipart, filePath=main.cpp)');
-  await uploadFileGcs({
-    frontendUrl: CFG.frontendUrl, workspaceId: CFG.slug,
-    filePath: 'main.cpp', content: fixture, contentType: 'text/x-c++src',
-  });
-  log('ok', `main.cpp uploaded → gs://<bucket>/workspaces/${CFG.slug}/main.cpp`);
+  // 3. Seed fixture via collab-server write-files-batch (disk + GCS mirror)
+  log('info', 'POST /git/:slug/write-files-batch (syncToGcs:true)');
+  {
+    const r = await writeFilesBatchCollab({
+      collabUrl: CFG.collabUrl, slug: CFG.slug, userId: CFG.hostId,
+      files: [{ path: 'main.cpp', content: fixture }],
+    });
+    if (r.otherErrs.length) fail(`write-files-batch hard errors: ${JSON.stringify(r.otherErrs)}`);
+    log('ok', `main.cpp: written=${r.written} to collab-server disk (editor can now list it)`);
+    if (r.gcsErrs.length) log('warn', `GCS mirror failed (disk write succeeded): ${JSON.stringify(r.gcsErrs)}`);
+    else log('ok', `GCS mirror requested  → gs://<bucket>/${CFG.slug}/main.cpp`);
+  }
 
   if (!CFG.frontendPrecompiled) {
     console.log('');
@@ -373,19 +414,19 @@ async function main() {
       log('ok', `bbox=${JSON.stringify(locate.bbox)}  conf=${locate.confidence ?? 'n/a'}  cached=${locate.cached ?? false}  cost=$${locate.costUsd ?? 0}`);
     }
 
-    // 9. edit fixture: counter = 0 → 42 (re-upload to GCS)
-    log('info', 'Editing main.cpp: counter = 0 → 42  (POST /api/workspace/:slug/item, overwrite)');
+    // 9. edit fixture: counter = 0 → 42 (disk + GCS mirror via batch)
+    log('info', 'Editing main.cpp: counter = 0 → 42  (write-files-batch)');
     const edited = fixture.replace('int counter = 0;', 'int counter = 42;');
     if (edited === fixture) fail('fixture did not contain `int counter = 0;` to edit');
-    await uploadFileGcs({
-      frontendUrl: CFG.frontendUrl, workspaceId: CFG.slug,
-      filePath: 'main.cpp', content: edited, contentType: 'text/x-c++src',
-    });
-    log('ok', 'edit uploaded to GCS');
-    // NOTE: this updates the GCS object but does NOT by itself trigger a
-    // recompile on the worker. Y-Sweet is the reactive source; if you want
-    // the worker to see the edit, the browser (or another Y-Sweet client)
-    // must re-sync the file. Treat the next wait_hmr as best-effort.
+    {
+      const r = await writeFilesBatchCollab({
+        collabUrl: CFG.collabUrl, slug: CFG.slug, userId: CFG.hostId,
+        files: [{ path: 'main.cpp', content: edited }],
+      });
+      if (r.otherErrs.length) fail(`edit batch hard errors: ${JSON.stringify(r.otherErrs)}`);
+      if (r.gcsErrs.length) log('warn', `edit GCS mirror failed: ${JSON.stringify(r.gcsErrs)}`);
+      else log('ok', `edit written to disk + mirrored to GCS`);
+    }
 
     // 10. wait_hmr
     log('info', `synthi_wait_hmr (timeout ${CFG.hmrTimeoutMs}ms)`);
