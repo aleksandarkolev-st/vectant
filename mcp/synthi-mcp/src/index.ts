@@ -3,6 +3,13 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { createSynthiServer } from "./server.js";
 import { session } from "./session.js";
 import { requestRegistry } from "./util/request_registry.js";
+import { eventLog } from "./events/index.js";
+import { bindEventLogToMetrics } from "./observability/metrics.js";
+import {
+  resolvePrometheusPort,
+  startPrometheusServer,
+} from "./observability/prometheus_server.js";
+import type { Server as HttpServer } from "node:http";
 
 function parseArgs(argv: string[]): { sessionId?: string; signalingUrl?: string } {
   const out: { sessionId?: string; signalingUrl?: string } = {};
@@ -40,6 +47,20 @@ async function main(): Promise<void> {
 
   const transport = new StdioServerTransport();
 
+  // Optional: Prometheus /metrics endpoint. Opt-in via
+  // SYNTHI_PROMETHEUS_PORT=9464 (or any valid port). Binds to 127.0.0.1
+  // unless SYNTHI_PROMETHEUS_HOST overrides. Unsubscribe/close happens
+  // in `shutdown()` below.
+  let metricsServer: HttpServer | undefined;
+  let unbindMetrics: (() => void) | undefined;
+  const promPort = resolvePrometheusPort(process.env["SYNTHI_PROMETHEUS_PORT"]);
+  if (promPort !== undefined) {
+    unbindMetrics = bindEventLogToMetrics(eventLog);
+    const host = process.env["SYNTHI_PROMETHEUS_HOST"];
+    metricsServer = startPrometheusServer(host ? { port: promPort, host } : { port: promPort });
+    process.stderr.write(`synthi-mcp metrics: http://127.0.0.1:${promPort}/metrics\n`);
+  }
+
   const shutdown = async (): Promise<void> => {
     // Abort every in-flight tool call so Anthropic API calls, wait-
     // primitives, and other slow work unwind without finishing. Then
@@ -59,6 +80,16 @@ async function main(): Promise<void> {
       await server.close();
     } catch {
       // best-effort — process is exiting
+    }
+    try {
+      unbindMetrics?.();
+    } catch {
+      // metrics listener may already be gone
+    }
+    try {
+      metricsServer?.close();
+    } catch {
+      // server may not have finished listening
     }
     process.exit(0);
   };

@@ -44,6 +44,8 @@ npm run build
 | `ANTHROPIC_API_KEY` | *(unset)* | Required when any tool call selects the `claude_api` backend. |
 | `GEMINI_API_KEY` | *(unset)* | Required when any tool call selects the `gemini_api` backend. Falls back to `GOOGLE_API_KEY` if set. |
 | `SYNTHI_PIPELINE_BUDGET_MS` | `80` | Frame-seq gate shim applied after `wait({condition:"hmr"})` resolves `applied`. |
+| `SYNTHI_PROMETHEUS_PORT` | *(unset)* | Opt-in — when set to a valid port (e.g. `9464`), the MCP exposes `/metrics` + `/healthz` on `127.0.0.1`. |
+| `SYNTHI_PROMETHEUS_HOST` | `127.0.0.1` | Bind host for the metrics server. Override only when you intend a scraper on another host. |
 
 CLI args override env; env overrides defaults.
 

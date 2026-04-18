@@ -9,6 +9,7 @@ import {
   type CallToolResult,
 } from "@modelcontextprotocol/sdk/types.js";
 import { eventLog } from "./events/index.js";
+import { recordToolCall } from "./observability/metrics.js";
 import {
   RESOURCES,
   RESOURCE_URIS,
@@ -604,13 +605,11 @@ export function createSynthiServer(options: SynthiServerOptions): Server {
     }
   });
 
-  server.setRequestHandler(CallToolRequestSchema, async (request, extra): Promise<CallToolResult> => {
-    const toolName = request.params.name;
-    const args = request.params.arguments;
-    // RequestHandlerExtra.signal fires when the client cancels the tool call
-    // or the transport drops. Plumb it into the tools whose work is either
-    // slow or billable so they unwind without finishing.
-    const signal = (extra as { signal?: AbortSignal } | undefined)?.signal;
+  async function dispatchTool(
+    toolName: string,
+    args: unknown,
+    signal: AbortSignal | undefined
+  ): Promise<CallToolResult> {
     switch (toolName) {
       case "synthi_attach":
         return (await attachTool(args, ctx)) as CallToolResult;
@@ -669,6 +668,17 @@ export function createSynthiServer(options: SynthiServerOptions): Server {
           isError: true,
         };
     }
+  }
+
+  server.setRequestHandler(CallToolRequestSchema, async (request, extra): Promise<CallToolResult> => {
+    const toolName = request.params.name;
+    const args = request.params.arguments;
+    const signal = (extra as { signal?: AbortSignal } | undefined)?.signal;
+    const response = await dispatchTool(toolName, args, signal);
+    // Record the outcome for Prometheus. Most tools return structured error
+    // payloads via `isError: true` rather than throwing — respect that.
+    recordToolCall(toolName, response.isError ? "error" : "ok");
+    return response;
   });
 
   return server;
