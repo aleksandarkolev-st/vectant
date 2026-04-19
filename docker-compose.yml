@@ -55,6 +55,10 @@ services:
         NEXT_PUBLIC_COLLAB_PORT: "1234"
         NEXT_PUBLIC_COMPILE_SIGNAL_URL: "ws://localhost:9000"
         NEXT_PUBLIC_GATEWAY_WS_URL: "ws://localhost:7070/ws"
+        # Force the per-workspace worker spawner on even when the frontend
+        # talks to localhost URLs; collab-server will spawn a worker
+        # container per session via the Docker Engine API.
+        NEXT_PUBLIC_ENABLE_WORKSPACE_SPAWNER: "true"
     ports:
       - "3000:3000"
     environment:
@@ -96,8 +100,18 @@ services:
       CLOUD_SQL_INSTANCE: "" # Not used in local dev
       # Dev specific
       GCS_SYNC_ON_FLUSH: "false"
+      # Per-workspace worker spawner (local dev)
+      SPAWNER_MODE: "local"
+      WORKER_IMAGE: "synthi-worker:local"
+      WORKER_NETWORK: "${COMPOSE_PROJECT_NAME:-synthi-ide}_default"
+      WORKER_SIGNALING_URL: "ws://signaling-server:9000"
+      WORKER_COLLAB_URL: "http://collab-server:1234"
+      WORKER_AI_BACKEND_URL: "http://ai-engine:8000"
+      WORKER_LOG_LEVEL: "debug"
     volumes:
       - collab-data:/data
+      # Spawner needs the Docker Engine API to create per-workspace workers.
+      - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
       - y-sweet
       - ai-engine
@@ -143,25 +157,17 @@ services:
     depends_on:
       - ai-engine
 
+  # Worker is built here but NOT started by `docker-compose up`. Instead,
+  # collab-server's local spawner creates one worker container per open
+  # workspace (SESSION_ID=<workspace-slug>) via /var/run/docker.sock.
+  # Build the image with: `docker-compose --profile worker-base build worker`.
   worker:
     build:
       context: ./backend/synthi-webrtc-compiler/worker
       dockerfile: Dockerfile
-    # Worker connects outbound, no inbound ports needed usually, 
-    # but for local dev debugging we might want to exec in.
-    environment:
-      SESSION_ID: "local-session"
-      SIGNALING_URL: "ws://signaling-server:9000"
-      COLLAB_SERVER_URL: "http://collab-server:1234"
-      AI_BACKEND_URL: "http://ai-engine:8000"
-      # GStreamer
-      GST_DEBUG: "2"
-      DISPLAY: ":99"
-      # Logging
-      SYNTHI_LOG_LEVEL: "debug"
-    depends_on:
-      - signaling-server
-      - collab-server
+    image: synthi-worker:local
+    profiles:
+      - worker-base
 
 volumes:
   ysweet-data:
