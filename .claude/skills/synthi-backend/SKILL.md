@@ -31,12 +31,14 @@ Backend workflow skill for the Synthi monorepo. Use this when the task touches b
   - Hard dependency on Redis
 - `backend/collab-server/`
   - File CRUD, git operations, workspace management, terminal proxy, Y-Sweet token issuance
+  - Also hosts the ephemeral Yjs WS relay (`yjsWsServer.js`) — see "Y-Sweet dual-path" below.
+  - Hosts the worker spawner dispatcher — see "Spawner selection" below.
 - `backend/y-sweet/`
-  - CRDT backend used by collab flows
+  - CRDT persistence backend. **Not a fork** — ships only a Dockerfile around the upstream `ghcr.io/jamsocket/y-sweet:latest` image.
 - `ai-backend/ai-engine/`
-  - Analysis, healing, code intelligence, observability endpoints
+  - Analysis, healing, code intelligence, observability endpoints. See `synthi-ai-backend` skill for depth.
 - `ai-backend/gateway/`
-  - WebSocket/HTTP gateway in front of the AI backend
+  - WebSocket/HTTP gateway in front of the AI backend. See `synthi-ai-backend` skill for depth.
 
 ### Local dependency graph
 
@@ -66,7 +68,7 @@ See `docker-compose.yml` for the authoritative local wiring.
 
 ### Worker
 
-The worker is the compiled-language runtime and HMR engine.
+The worker is the compiled-language runtime and HMR engine. Single-package Rust crate (not a Cargo workspace). Binaries: `worker` (main.rs) and `runner` (src/runtime/runner_bin.rs).
 
 Important directories:
 
@@ -74,12 +76,34 @@ Important directories:
 - `backend/synthi-webrtc-compiler/worker/src/runtime/`
 - `backend/synthi-webrtc-compiler/worker/src/hmr/`
 
+#### Language + adapter matrix
+
+Authoritative source: `worker/src/hmr/adapter_registry.rs::create_adapter_for_language`. Anything outside this list is unsupported — no Python, no JS/TS, no Node runtime.
+
+| Language(s) | Adapter family | Tier | File |
+|-------------|----------------|------|------|
+| `c`, `cpp`, `rust`, `zig` | `DynLibAdapter` (dlopen/dlclose) | Tier 3 (fast, in-process) | `hmr/dynlib_adapter.rs` |
+| `java`, `kotlin` | `ManagedRuntimeAdapter` (JVM classloader) | Tier 2 | `hmr/managed_runtime_adapter.rs` |
+| `csharp` | `ManagedRuntimeAdapter` (.NET) | Tier 2 | `hmr/managed_runtime_adapter.rs` |
+| `go`, `swift` | `ProcessSwapAdapter` (candidate process + state IPC) | Tier 1 | `hmr/process_swap_adapter.rs` |
+
+Families are split across many peer files (e.g. `dynlib_*`, `managed_*`, `process_swap_*`). Edit the family you're actually in — do not cross-wire.
+
+#### Compiler stages
+
+`worker/src/compiler/stages/`: `compile_core.rs`, `compile_gui.rs`, `compile_runner.rs`, `runner.rs` (authoritative runner execution path, calls `handle_runner_execution`), plus `ai_utils.rs`, `guardrails.rs`, `pch.rs`.
+
 When debugging worker issues:
 
 1. Identify whether the path is compile-time, planner-time, adapter-time, runner-time, or restore-time.
-2. Confirm whether the path is live native dynlib HMR, managed runtime scaffolding, or process-swap scaffolding.
+2. Confirm the adapter family (dynlib / managed / process-swap) matches the language.
 3. Treat `compiler/handler.rs -> compiler/stages/runner.rs -> runtime/runner_logic.rs -> hmr/orchestrator.rs` as the main native reload path.
 4. Prefer fixing authority boundaries and metadata targeting over adding more abstractions.
+
+Dormant but still compiled:
+
+- `runtime/backends/{glfw,raylib,sdl2,sfml}` — predate the current Xvfb + GStreamer rendering path. Scaffolding.
+- `runtime/hot_reload/v2.rs` — minimal; live HMR orchestration is in `hmr/orchestrator.rs` + `planner.rs`.
 
 ### Signaling Server
 
@@ -103,26 +127,78 @@ Addressing rules:
 
 ### Collab Server
 
-The collab server is the workspace/file/git service and not the CRDT document socket server.
+Node.js (Express + raw `http.createServer`). Default port `1234` (`COLLAB_PORT`). It is _both_ the workspace/file/git service AND an ephemeral Yjs WS relay — see "Y-Sweet dual-path" below. The authoritative Yjs persistence still lives in Y-Sweet.
 
-Key dependencies:
+Key files (`backend/collab-server/`):
 
-- `YSWEET_URL`
-- `REPOS_DIR`
-- optional database and sync settings depending on environment
+| File | Role |
+|------|------|
+| `server.js` (~2900 LOC) | HTTP + 5 WebSocket servers (Yjs relay, notifications, session, terminal, sparse). Main entry. |
+| `spawner.js` | Dispatcher — picks `processWorkerSpawner` / `localWorkerSpawner` / `workspacePodSpawner`. |
+| `processWorkerSpawner.js` | `cargo run` worker as child process. Bare-metal dev. |
+| `localWorkerSpawner.js` | Worker as Docker container via `/var/run/docker.sock`. Docker-compose dev. |
+| `workspacePodSpawner.js` | Worker as Kubernetes Deployment/Job. Prod. |
+| `SessionManager.js` | In-memory session state (user, workspace, permissions). |
+| `fileIndex.js` + `fsWatcherService.js` | File tree indexing and watching. |
+| `gitService.js` (~3800 LOC) | Complete git implementation via simple-git. |
+| `gcsSync.js` | GCS backup / restore. Active only if `GCS_SYNC_ON_FLUSH=true`. |
+| `terminalService.js` | node-pty WebSocket shell. |
+| `workspaceManager.js` | Per-workspace repo lifecycle, LRU eviction. |
+| `ySweetBridge.js` | **REST** bridge to Y-Sweet for token + snapshot. |
+| `yjsWsServer.js` | **WebSocket** Yjs relay. Ephemeral, in-process. Not persistent. |
+| `proxyService.js` | HTTP proxy to worker for compile requests. |
+| `permissionMiddleware.js` | Session/user/permission extraction on HTTP. |
+
+Key env vars: `COLLAB_PORT`, `YSWEET_URL` (e.g. `http://y-sweet:8080`), `YSWEET_AUTH_KEY`, `REPOS_DIR` (e.g. `/data/repos`), `CODE_INTEL_URL` (ai-engine), `WORKER_SIGNALING_URL`, `WORKER_COLLAB_URL`, `WORKER_AI_BACKEND_URL`, `GCS_SYNC_ON_FLUSH`. `LEVELDB_DIR` is read but unused (LevelDB removed).
 
 When collab behavior is wrong:
 
-1. Separate file/git API failures from Y-Sweet document-sync failures.
-2. Check collab URL usage in frontend and worker callers.
-3. Verify repo storage paths and workspace ownership assumptions.
+1. Separate file/git API failures (collab-server HTTP) from Y-Sweet document-sync failures.
+2. Distinguish a `yjsWsServer` (ephemeral relay) failure from a Y-Sweet persistence failure.
+3. Check collab URL usage in frontend and worker callers.
+4. Verify repo storage paths and workspace ownership assumptions.
+
+#### Y-Sweet dual-path
+
+Two Yjs components are live simultaneously:
+
+- **Y-Sweet** (`backend/y-sweet/` → upstream binary): persistent CRDT store, REST API.
+- **collab-server `yjsWsServer.js`**: in-process WebSocket relay, **not** persistent.
+
+Normal flow:
+
+1. Frontend asks collab-server for a Y-Sweet token (`ySweetBridge.js` → Y-Sweet REST).
+2. Frontend connects Yjs via WebSocket to collab-server's `yjsWsServer` for real-time fan-out.
+3. Persistence still rides Y-Sweet.
+
+On collab-server restart, `yjsWsServer`'s in-memory rooms vanish. Clients reconnect and rehydrate from Y-Sweet. That is by design.
+
+If you change either component, ask: am I changing the ephemeral relay (`yjsWsServer.js`) or the persistent bridge (`ySweetBridge.js`)? They are frequently confused.
+
+#### Spawner selection
+
+`spawner.js::pickMode()` order:
+
+1. `SPAWNER_MODE` env var (`"process"` | `"local"` | `"k8s"`) — explicit wins.
+2. `KUBERNETES_SERVICE_HOST` set → `"k8s"`.
+3. Default → `"process"`.
+
+Concrete defaults:
+
+- Bare-metal dev: no env → `processWorkerSpawner` (`cargo run --release --bin worker`).
+- `docker-compose.yml` sets `SPAWNER_MODE: "local"` → `localWorkerSpawner` (Docker-in-Docker via mounted socket). Image tag defaults to `synthi-worker:local`.
+- K8s: ambient `KUBERNETES_SERVICE_HOST` → `workspacePodSpawner` using `@kubernetes/client-node`. Worker Deployment ships with `replicas: 0` — pods are created per-session by collab-server, not by a static Deployment.
+
+When worker launch is broken, the first question is always: which spawner was picked? Collab-server logs this on startup.
 
 ### AI Backend and Gateway
 
 Keep AI engine and gateway concerns separate:
 
-- `ai-engine` owns analysis/healing/intelligence logic
-- `gateway` owns transport and fan-out behavior
+- `ai-engine` owns analysis/healing/intelligence logic. Python/FastAPI on `:8000`.
+- `gateway` owns transport and fan-out behavior. Node.js/WS on `:7070`, path `/ws`.
+
+For any task beyond wiring-level debugging, switch to the `synthi-ai-backend` skill — it documents routes, prompt-cache mechanics, the Gemini-only factory, and supersession.
 
 When debugging AI-backed backend features:
 
