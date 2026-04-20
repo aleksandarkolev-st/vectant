@@ -360,7 +360,7 @@ async function flushDocToDisk(docName, options = {}) {
 }
 
 const workspaceManager = require('./workspaceManager');
-const spawner = require('./workspacePodSpawner');
+const spawner = require('./spawner');
 
 // ── In-memory userId → displayName cache ──────────────────────────────────
 // Populated from Yjs awareness state changes so that REST endpoints can

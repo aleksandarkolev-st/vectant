@@ -49,6 +49,11 @@ COPY . .
 # ENV NEXT_PUBLIC_CODE_INTEL_URL=$NEXT_PUBLIC_CODE_INTEL_URL
 # ENV NEXT_PUBLIC_AI_ENGINE_URL=$NEXT_PUBLIC_AI_ENGINE_URL
 
+# Opt into the per-workspace worker spawner in local docker-compose builds.
+# Cloud builds override this via .env.production.
+ARG NEXT_PUBLIC_ENABLE_WORKSPACE_SPAWNER
+ENV NEXT_PUBLIC_ENABLE_WORKSPACE_SPAWNER=$NEXT_PUBLIC_ENABLE_WORKSPACE_SPAWNER
+
 # Generate the Prisma client (reads schema.prisma → node_modules/.prisma)
 RUN npx prisma generate
 
