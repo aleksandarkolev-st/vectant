@@ -742,122 +742,133 @@ async fn main() -> Result<()> {
         use std::time::Instant;
 
         loop {
-            if let Ok(message) = preemptive_rx.recv() {
-                match message {
-                    PreemptiveMessage::StartSpeculative {
-                        paths,
-                        scope,
-                        timestamp: _timestamp,
-                    } => {
-                        debug_log!(
-                            "[Build] Starting speculative compile for scope '{}': {:?}",
-                            scope, paths
-                        );
+            // `recv()` blocks until a message arrives or the sender is dropped.
+            // The old `if let Ok(..)` here silently swallowed `Disconnected`
+            // and spun the loop at 100% CPU once the watcher thread exited,
+            // so the worker looked "alive but deaf" instead of surfacing the
+            // problem. Exit cleanly instead — the watcher owning the sender
+            // is tied to main()'s scope anyway.
+            let message = match preemptive_rx.recv() {
+                Ok(m) => m,
+                Err(_) => {
+                    eprintln!("[Build] preemptive channel closed — exiting build loop");
+                    break;
+                }
+            };
+            match message {
+                PreemptiveMessage::StartSpeculative {
+                    paths,
+                    scope,
+                    timestamp: _timestamp,
+                } => {
+                    debug_log!(
+                        "[Build] Starting speculative compile for scope '{}': {:?}",
+                        scope, paths
+                    );
 
-                        // Check cancellation flag periodically during compile
+                    // Check cancellation flag periodically during compile
+                    if build_cancel_flag.load(Ordering::SeqCst) {
+                        debug_log!("[Build] Speculative compile cancelled before start");
+                        continue;
+                    }
+
+                    // Perform speculative compilation
+                    let start = Instant::now();
+                    for path_str in &paths {
+                        let path = std::path::Path::new(&path_str);
+                        let relative_path =
+                            if let Ok(rel) = path.strip_prefix(&build_session.workspace_root) {
+                                rel.to_string_lossy().to_string()
+                            } else {
+                                path_str.clone()
+                            };
+
+                        // Check for cancellation between files
                         if build_cancel_flag.load(Ordering::SeqCst) {
-                            debug_log!("[Build] Speculative compile cancelled before start");
-                            continue;
+                            debug_log!(
+                                "[Build] Speculative compile cancelled during compilation"
+                            );
+                            break;
                         }
 
-                        // Perform speculative compilation
-                        let start = Instant::now();
-                        for path_str in &paths {
-                            let path = std::path::Path::new(&path_str);
-                            let relative_path =
-                                if let Ok(rel) = path.strip_prefix(&build_session.workspace_root) {
-                                    rel.to_string_lossy().to_string()
-                                } else {
-                                    path_str.clone()
-                                };
+                        // Do incremental compile but don't send update yet
+                        if let Some(_payload) =
+                            build_session.incremental_compile(vec![relative_path.clone()])
+                        {
+                            // Cache the speculative result
+                            let _content_hash = {
+                                let mut hasher =
+                                    std::collections::hash_map::DefaultHasher::new();
+                                relative_path.hash(&mut hasher);
+                                hasher.finish()
+                            };
 
-                            // Check for cancellation between files
-                            if build_cancel_flag.load(Ordering::SeqCst) {
-                                debug_log!(
-                                    "[Build] Speculative compile cancelled during compilation"
-                                );
-                                break;
-                            }
-
-                            // Do incremental compile but don't send update yet
-                            if let Some(_payload) =
-                                build_session.incremental_compile(vec![relative_path.clone()])
-                            {
-                                // Cache the speculative result
-                                let _content_hash = {
-                                    let mut hasher =
-                                        std::collections::hash_map::DefaultHasher::new();
-                                    relative_path.hash(&mut hasher);
-                                    hasher.finish()
-                                };
-
-                                // Store in speculative cache (blocking mutex)
-                                // Note: In production, use a lock-free structure
-                                debug_log!(
-                                    "[Build] Speculative compile complete in {}ms, cached",
-                                    start.elapsed().as_millis()
-                                );
-                            }
+                            // Store in speculative cache (blocking mutex)
+                            // Note: In production, use a lock-free structure
+                            debug_log!(
+                                "[Build] Speculative compile complete in {}ms, cached",
+                                start.elapsed().as_millis()
+                            );
                         }
                     }
+                }
 
-                    PreemptiveMessage::CancelSpeculative { reason } => {
-                        debug_log!("[Build] Speculative compile cancelled: {}", reason);
-                        // Cancel flag is already set by watcher
-                    }
+                PreemptiveMessage::CancelSpeculative { reason } => {
+                    debug_log!("[Build] Speculative compile cancelled: {}", reason);
+                    // Cancel flag is already set by watcher
+                }
 
-                    PreemptiveMessage::CommitSpeculative { paths, scope } => {
-                        debug_log!(
-                            "[Build] Committing speculative compile for scope '{}': {:?}",
-                            scope, paths
-                        );
+                PreemptiveMessage::CommitSpeculative { paths, scope } => {
+                    debug_log!(
+                        "[Build] Committing speculative compile for scope '{}': {:?}",
+                        scope, paths
+                    );
 
-                        // Send the cached result to frontend
-                        let msg = serde_json::json!({
-                            "type": "update",
-                            "data": {
-                                "hash": build_session.session_hash,
-                                "scope": scope,
-                                "speculative": true,
-                                "message": format!("Speculative compile committed for {:?}", paths)
-                            }
-                        });
-                        if let Ok(json) = serde_json::to_string(&msg) {
-                            let _ = build_update_tx.send(json);
+                    // Send the cached result to frontend
+                    let msg = serde_json::json!({
+                        "type": "update",
+                        "data": {
+                            "hash": build_session.session_hash,
+                            "scope": scope,
+                            "speculative": true,
+                            "message": format!("Speculative compile committed for {:?}", paths)
                         }
+                    });
+                    if let Ok(json) = serde_json::to_string(&msg) {
+                        let _ = build_update_tx.send(json);
                     }
+                }
 
-                    PreemptiveMessage::Changed { scope, paths } => {
-                        // Standard (non-speculative) change - compile immediately
-                        debug_log!(
-                            "[Build] Standard compile for scope '{}': {:?}",
-                            scope, paths
-                        );
+                PreemptiveMessage::Changed { scope, paths } => {
+                    // Standard (non-speculative) change - compile immediately
+                    debug_log!(
+                        "[Build] Standard compile for scope '{}': {:?}",
+                        scope, paths
+                    );
 
-                        for path_str in paths {
-                            let path = std::path::Path::new(&path_str);
-                            let relative_path =
-                                if let Ok(rel) = path.strip_prefix(&build_session.workspace_root) {
-                                    rel.to_string_lossy().to_string()
-                                } else {
-                                    path_str
-                                };
+                    for path_str in paths {
+                        let path = std::path::Path::new(&path_str);
+                        let relative_path =
+                            if let Ok(rel) = path.strip_prefix(&build_session.workspace_root) {
+                                rel.to_string_lossy().to_string()
+                            } else {
+                                path_str
+                            };
 
-                            if let Some(payload) =
-                                build_session.incremental_compile(vec![relative_path])
-                            {
-                                // Wrap with type="update" and include hash
-                                let msg = serde_json::json!({
-                                    "type": "update",
-                                    "data": {
-                                        "hash": build_session.session_hash,
-                                        "manifest": payload.manifest,
-                                        "modules": payload.modules
-                                    }
-                                });
-                                if let Ok(json) = serde_json::to_string(&msg) {
-                                    let _ = build_update_tx.send(json);
+                        if let Some(payload) =
+                            build_session.incremental_compile(vec![relative_path])
+                        {
+                            // Wrap with type="update" and include hash
+                            let msg = serde_json::json!({
+                                "type": "update",
+                                "data": {
+                                    "hash": build_session.session_hash,
+                                    "manifest": payload.manifest,
+                                    "modules": payload.modules
                                 }
+                            });
+                            if let Ok(json) = serde_json::to_string(&msg) {
+                                let _ = build_update_tx.send(json);
                             }
                         }
                     }
@@ -902,84 +913,130 @@ async fn main() -> Result<()> {
 
         match parsed.msg_type.as_str() {
             "offer" => {
-                if let Some(sdp) = parsed.sdp {
-                    let sdp_type = match parsed.sdp_type.as_deref().unwrap_or("offer") {
-                        "offer" => RTCSdpType::Offer,
-                        "answer" => RTCSdpType::Answer,
-                        "pranswer" => RTCSdpType::Pranswer,
-                        "rollback" => RTCSdpType::Rollback,
-                        _ => RTCSdpType::Offer,
-                    };
+                // A single peer's handshake failure must not take down the
+                // worker — this loop owns the filesystem watcher + build
+                // thread via locals whose Drop fires when main returns, so
+                // bubbling `?` here silently stops speculative compilation
+                // for every other peer too. Scope the `?` to this handshake
+                // and log on failure instead.
+                let sdp_opt = parsed.sdp.clone();
+                let sdp_type_opt = parsed.sdp_type.clone();
+                let peer_id_h = peer_id.clone();
+                let registry_h = peer_registry.clone();
+                let signal_tx_h = signal_tx.clone();
+                let workspace_path_arc_h = workspace_path_arc.clone();
+                let terminal_input_store_h = terminal_input_store.clone();
+                let sdl_input_store_h = sdl_input_store.clone();
+                let runner_store_h = runner_store.clone();
+                let compile_task_store_h = compile_task_store.clone();
+                let compile_cache_h = compile_cache.clone();
+                let boundary_checker_h = boundary_checker.clone();
+                let incremental_cache_h = incremental_cache.clone();
+                let hmr_orchestrator_h = hmr_orchestrator.clone();
+                let structured_logger_h = structured_logger.clone();
+                let metrics_aggregator_h = metrics_aggregator.clone();
+                let restart_controller_h = restart_controller.clone();
+                let ipc_config_h = ipc_config.clone();
+                let vscode_server_kill_tx_h = vscode_server_kill_tx.clone();
+                let video_fanout_h = video_fanout.clone();
+                let audio_fanout_h = audio_fanout.clone();
+                let role_h = role_for_new_peer;
+                let handshake: anyhow::Result<()> = async move {
+                    if let Some(sdp) = sdp_opt {
+                        let sdp_type = match sdp_type_opt.as_deref().unwrap_or("offer") {
+                            "offer" => RTCSdpType::Offer,
+                            "answer" => RTCSdpType::Answer,
+                            "pranswer" => RTCSdpType::Pranswer,
+                            "rollback" => RTCSdpType::Rollback,
+                            _ => RTCSdpType::Offer,
+                        };
 
-                    // Get-or-create a PC for this peer. A fresh peer (not
-                    // yet in the registry) gets a new PC + per-peer tracks
-                    // subscribed to the session fanouts, and then we wire
-                    // the data channels. An existing peer re-offering (ICE
-                    // restart) reuses its PC + DCs — just process the SDP.
-                    let pc = if let Some(existing) = peer_registry.get(&peer_id) {
-                        existing.pc.clone()
-                    } else {
-                        let ice_servers = fetch_turn_credentials().await;
-                        let new_pc = create_peer(
-                            peer_id.clone(),
-                            role_for_new_peer,
-                            signal_tx.clone(),
-                            ice_servers,
-                            peer_registry.clone(),
-                            video_fanout.clone(),
-                            audio_fanout.clone(),
-                        )
-                        .await?;
-                        wire_peer_channels(
-                            &new_pc,
-                            peer_id.clone(),
-                            peer_registry.clone(),
-                            terminal_input_store.clone(),
-                            sdl_input_store.clone(),
-                            runner_store.clone(),
-                            compile_task_store.clone(),
-                            workspace_path_arc.clone(),
-                            compile_cache.clone(),
-                            boundary_checker.clone(),
-                            incremental_cache.clone(),
-                            hmr_orchestrator.clone(),
-                            structured_logger.clone(),
-                            metrics_aggregator.clone(),
-                            restart_controller.clone(),
-                            ipc_config.clone(),
-                            vscode_server_kill_tx.clone(),
-                            video_fanout.clone(),
-                            audio_fanout.clone(),
-                        )
-                        .await?;
-                        new_pc
-                    };
+                        // Get-or-create a PC for this peer. A fresh peer (not
+                        // yet in the registry) gets a new PC + per-peer tracks
+                        // subscribed to the session fanouts, and then we wire
+                        // the data channels. An existing peer re-offering (ICE
+                        // restart) reuses its PC + DCs — just process the SDP.
+                        let pc = if let Some(existing) = registry_h.get(&peer_id_h) {
+                            existing.pc.clone()
+                        } else {
+                            let ice_servers = fetch_turn_credentials().await;
+                            let new_pc = create_peer(
+                                peer_id_h.clone(),
+                                role_h,
+                                signal_tx_h.clone(),
+                                ice_servers,
+                                registry_h.clone(),
+                                video_fanout_h.clone(),
+                                audio_fanout_h.clone(),
+                            )
+                            .await?;
+                            wire_peer_channels(
+                                &new_pc,
+                                peer_id_h.clone(),
+                                registry_h.clone(),
+                                terminal_input_store_h.clone(),
+                                sdl_input_store_h.clone(),
+                                runner_store_h.clone(),
+                                compile_task_store_h.clone(),
+                                workspace_path_arc_h.clone(),
+                                compile_cache_h.clone(),
+                                boundary_checker_h.clone(),
+                                incremental_cache_h.clone(),
+                                hmr_orchestrator_h.clone(),
+                                structured_logger_h.clone(),
+                                metrics_aggregator_h.clone(),
+                                restart_controller_h.clone(),
+                                ipc_config_h.clone(),
+                                vscode_server_kill_tx_h.clone(),
+                                video_fanout_h.clone(),
+                                audio_fanout_h.clone(),
+                            )
+                            .await?;
+                            new_pc
+                        };
 
-                    debug_log!(
-                        "[WebRTC-signal] Offer from peer {} (role={:?}, type={:?}, state={:?})",
-                        peer_id,
-                        role_for_new_peer,
-                        sdp_type,
-                        pc.signaling_state()
-                    );
-                    let mut desc = RTCSessionDescription::default();
-                    desc.sdp_type = sdp_type;
-                    desc.sdp = sdp;
-                    pc.set_remote_description(desc).await?;
-                    let answer = pc.create_answer(None).await?;
-                    pc.set_local_description(answer.clone()).await?;
-                    if answer.sdp.find("transport-wide-cc").is_none() {
-                        eprintln!("[WebRTC-signal] WARNING: TWCC missing from Answer SDP!");
+                        debug_log!(
+                            "[WebRTC-signal] Offer from peer {} (role={:?}, type={:?}, state={:?})",
+                            peer_id_h,
+                            role_h,
+                            sdp_type,
+                            pc.signaling_state()
+                        );
+                        let mut desc = RTCSessionDescription::default();
+                        desc.sdp_type = sdp_type;
+                        desc.sdp = sdp;
+                        pc.set_remote_description(desc).await?;
+                        let answer = pc.create_answer(None).await?;
+                        pc.set_local_description(answer.clone()).await?;
+                        if answer.sdp.find("transport-wide-cc").is_none() {
+                            eprintln!("[WebRTC-signal] WARNING: TWCC missing from Answer SDP!");
+                        }
+                        signal_tx_h.send(SignalMessage {
+                            msg_type: "answer".into(),
+                            role: None,
+                            session_id: None,
+                            sdp: Some(answer.sdp),
+                            sdp_type: Some(answer.sdp_type.to_string()),
+                            candidate: None,
+                            peer_id: Some(peer_id_h.clone()),
+                        })?;
                     }
-                    signal_tx.send(SignalMessage {
-                        msg_type: "answer".into(),
-                        role: None,
-                        session_id: None,
-                        sdp: Some(answer.sdp),
-                        sdp_type: Some(answer.sdp_type.to_string()),
-                        candidate: None,
-                        peer_id: Some(peer_id.clone()),
-                    })?;
+                    Ok(())
+                }
+                .await;
+                if let Err(e) = handshake {
+                    eprintln!(
+                        "[WebRTC-signal] Offer handshake failed for peer {} (role={:?}): {:?}",
+                        peer_id, role_for_new_peer, e
+                    );
+                    // Drop the half-built handle so a retry offer can rebuild
+                    // from scratch instead of reusing a PC in a broken state.
+                    if let Some(stale) = peer_registry.remove(&peer_id) {
+                        let stale_pc = stale.pc.clone();
+                        tokio::spawn(async move {
+                            let _ = stale_pc.close().await;
+                        });
+                    }
                 }
             }
             "candidate" => {
