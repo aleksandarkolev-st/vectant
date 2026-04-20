@@ -128,7 +128,6 @@ RUN useradd -m -s /bin/bash runner
 RUN mkdir -p /tmp/synthi /home/runner/.cache && \
     chown -R runner:runner /home/runner /tmp/synthi
 
-USER runner
 WORKDIR /home/runner
 
 # No inbound ports exposed — worker connects outbound to signaling + TURN.

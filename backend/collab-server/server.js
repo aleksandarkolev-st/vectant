@@ -677,8 +677,17 @@ const TURN_REFRESH_MARGIN = 0.2; // refresh when 80% of TTL elapsed
 async function getTurnCredentials() {
   const { CLOUDFLARE_TURN_TOKEN_ID, CLOUDFLARE_TURN_API_TOKEN, TURN_CREDENTIAL_TTL } = config;
 
-  // Not configured → STUN-only fallback.
+  // Not configured → local TURN if available, else STUN-only fallback.
   if (!CLOUDFLARE_TURN_TOKEN_ID || !CLOUDFLARE_TURN_API_TOKEN) {
+    const localUrl = process.env.LOCAL_TURN_URL;
+    const localUser = process.env.LOCAL_TURN_USERNAME;
+    const localCred = process.env.LOCAL_TURN_CREDENTIAL;
+    if (localUrl && localUser && localCred) {
+      return [
+        { urls: ['stun:stun.l.google.com:19302'] },
+        { urls: [localUrl], username: localUser, credential: localCred },
+      ];
+    }
     return [{ urls: ['stun:stun.l.google.com:19302'] }];
   }
 
