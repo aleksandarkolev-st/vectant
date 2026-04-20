@@ -581,13 +581,20 @@ async fn handle_connection(
             session_id.clone()
         };
 
-        // Rewrite the payload so `peer_id` always carries the identity of
-        // the non-worker peer in the conversation:
-        //   browser/observer → worker: stamp the sender's peer_id.
+        // Rewrite the payload so `peer_id` + `role` always carry the
+        // identity of the non-worker peer in the conversation:
+        //   browser/observer → worker: stamp the sender's peer_id + role.
+        //     The worker uses `role` to decide PeerRole::{Browser,Observer}
+        //     when inserting a fresh handle into its registry; without it
+        //     every peer would look like a Browser and evict each other.
         //   worker → browser/observer: keep whatever the worker set
         //     (target peer_id used for direct routing below).
         let forwarded_text = if role != ROLE_WORKER {
-            rewrite_peer_id(&text, my_peer_id.as_deref().unwrap_or(""))
+            rewrite_peer_fields(
+                &text,
+                my_peer_id.as_deref().unwrap_or(""),
+                &role,
+            )
         } else {
             text.clone()
         };
@@ -750,13 +757,13 @@ async fn handle_connection(
     Ok(())
 }
 
-/// Inject `peer_id` into an opaque signaling JSON without disturbing any
-/// other fields. Parsing through `Value` (instead of the typed
-/// `SignalMessage`) preserves forward-compat with client fields we don't
-/// model yet. Non-object payloads pass through untouched — the struct
-/// deserializer would have rejected them earlier, so this is a defensive
-/// no-op.
-fn rewrite_peer_id(text: &str, peer_id: &str) -> String {
+/// Inject `peer_id` + `role` into an opaque signaling JSON without
+/// disturbing any other fields. Parsing through `Value` (instead of the
+/// typed `SignalMessage`) preserves forward-compat with client fields we
+/// don't model yet. Non-object payloads pass through untouched — the
+/// struct deserializer would have rejected them earlier, so this is a
+/// defensive no-op.
+fn rewrite_peer_fields(text: &str, peer_id: &str, role: &str) -> String {
     let mut v: serde_json::Value = match serde_json::from_str(text) {
         Ok(v) => v,
         Err(_) => return text.to_string(),
@@ -765,6 +772,10 @@ fn rewrite_peer_id(text: &str, peer_id: &str) -> String {
         obj.insert(
             "peer_id".to_string(),
             serde_json::Value::String(peer_id.to_string()),
+        );
+        obj.insert(
+            "role".to_string(),
+            serde_json::Value::String(role.to_string()),
         );
     }
     v.to_string()
@@ -855,29 +866,33 @@ mod tests {
     }
 
     #[test]
-    fn rewrite_peer_id_injects_field_without_clobbering_others() {
+    fn rewrite_peer_fields_injects_without_clobbering_others() {
         let original = r#"{"type":"offer","sdp":"v=0","extra":"preserved"}"#;
-        let out = rewrite_peer_id(original, "my-pid");
+        let out = rewrite_peer_fields(original, "my-pid", "observer");
         let v: serde_json::Value = serde_json::from_str(&out).unwrap();
         assert_eq!(v["peer_id"], "my-pid");
+        assert_eq!(v["role"], "observer");
         assert_eq!(v["type"], "offer");
         assert_eq!(v["sdp"], "v=0");
         assert_eq!(v["extra"], "preserved");
     }
 
     #[test]
-    fn rewrite_peer_id_overwrites_existing_field() {
-        // Clients cannot spoof identity — the server always stamps its own
-        // peer_id on top, regardless of what the client sent.
-        let original = r#"{"type":"offer","peer_id":"spoofed"}"#;
-        let out = rewrite_peer_id(original, "real-pid");
+    fn rewrite_peer_fields_overwrites_existing_fields() {
+        // Clients cannot spoof identity or role — the server always
+        // stamps its own values on top, regardless of what the client
+        // sent. Prevents an observer from forging `role:"browser"` to
+        // evict the real browser on the worker side.
+        let original = r#"{"type":"offer","peer_id":"spoofed","role":"browser"}"#;
+        let out = rewrite_peer_fields(original, "real-pid", "observer");
         let v: serde_json::Value = serde_json::from_str(&out).unwrap();
         assert_eq!(v["peer_id"], "real-pid");
+        assert_eq!(v["role"], "observer");
     }
 
     #[test]
-    fn rewrite_peer_id_non_json_passthrough() {
-        let out = rewrite_peer_id("not json", "pid");
+    fn rewrite_peer_fields_non_json_passthrough() {
+        let out = rewrite_peer_fields("not json", "pid", "observer");
         assert_eq!(out, "not json");
     }
 

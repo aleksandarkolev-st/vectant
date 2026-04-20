@@ -9,9 +9,8 @@ use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::mpsc;
-use webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecCapability;
-use webrtc::track::track_local::track_local_static_rtp::TrackLocalStaticRTP;
-use webrtc::track::track_local::{TrackLocal, TrackLocalWriter};
+use webrtc::rtp::packet::Packet;
+use webrtc_util::Unmarshal;
 
 use crate::compiler::builder::ModuleHashes;
 use crate::compiler::context::CompileContext;
@@ -80,14 +79,14 @@ pub async fn handle_runner_execution(
         req.is_gui, has_on_update, use_ai_split
     );
 
-    // Reuse Xvfb/GStreamer if possible
+    // Reuse Xvfb/GStreamer if possible. Under `TrackFanout` there's no
+    // per-run track to carry across restarts — fanout subscribers are
+    // per-peer and persistent for the peer's lifetime.
     let mut reused_xvfb: Option<tokio::process::Child> = None;
     let mut reused_pipeline: Option<gst::Pipeline> = None;
     let mut reused_wsl_display = String::new();
     let mut reused_gst_display = String::new();
     let mut reused_sdl_tx: Option<mpsc::UnboundedSender<String>> = None;
-    let mut video_track_opt: Option<Arc<TrackLocalStaticRTP>> = None;
-    let mut audio_track_opt: Option<Arc<TrackLocalStaticRTP>> = None;
 
     // Determine if we have an existing runner that can handle HMR.
     // The runner process supports hot-loading modules via stdin `load`
@@ -140,8 +139,6 @@ pub async fn handle_runner_execution(
             reused_wsl_display = state.wsl_display_str;
             reused_gst_display = state.gst_display_str;
             reused_sdl_tx = None; // Do not reuse sdl_tx so we recreate the input task for the new runner's stdin
-            video_track_opt = state.video_track;
-            audio_track_opt = state.audio_track;
         } else {
             debug_log!("Full restart (resolution/GUI mode changed)...");
             // Stop GStreamer BEFORE killing Xvfb to avoid capture-from-dead-display crashes
@@ -351,17 +348,14 @@ pub async fn handle_runner_execution(
                     .dynamic_cast::<gst_app::AppSink>()
                     .unwrap();
 
-                // Setup Video Track
-                let mime = selected_mime_type.clone();
-                let video_track = Arc::new(TrackLocalStaticRTP::new(
-                    RTCRtpCodecCapability {
-                        mime_type: mime,
-                        ..Default::default()
-                    },
-                    "video".to_owned(),
-                    "synthi_stream".to_owned(),
-                ));
-                video_track_opt = Some(video_track.clone());
+                // Video: appsink pushes RTP bytes into a channel; we
+                // unmarshal to `Packet` and `dispatch` into the session
+                // `video_fanout`. Each peer's subscribed
+                // `TrackLocalStaticRTP` task (set up in `create_peer`)
+                // writes into its own transceiver. Under HMR, the next
+                // runner run produces fresh packets that flow through
+                // the same fanout — no `replace_track` dance needed.
+                let _ = &selected_mime_type; // kept for pipeline_string use
 
                 let v_tx_clone = v_tx.clone();
                 video_sink.set_callbacks(
@@ -381,27 +375,23 @@ pub async fn handle_runner_execution(
                         .build(),
                 );
 
-                // Spawn async task to write video RTP packets. We also
-                // tap the RTP marker bit (header byte 1, bit 7) to count
-                // end-of-frame boundaries and emit a sparse
-                // `{type:"frame-advance", frame_seq, ts_ms}` message on
-                // the build-log DC. MCP consumers use this as the post-
-                // HMR paint gate (see ultraplan §WebRTC pipeline reuse +
-                // §4.4 frame-seq gate). Throttled to every 3rd frame
-                // (~10 Hz at 30fps, ~20 Hz at 60fps) — enough density
-                // for the gate without flooding the DC.
-                let v_track_clone = video_track.clone();
+                // Dispatch video packets to the session fanout + tap the
+                // RTP marker bit to emit sparse `{type:"frame-advance"}`
+                // for the post-HMR paint gate (ultraplan §4.4). The
+                // frame-advance ack goes on the build-log DC of the
+                // peer that triggered this compile; observers see it
+                // via broadcast_build_log_text.
+                let video_fanout = ctx.video_fanout.clone();
                 let log_dc_for_frame_advance = ctx.log_dc.clone();
                 tokio::spawn(async move {
                     let mut frame_seq: u64 = 0;
                     const EMIT_EVERY_N_FRAMES: u64 = 3;
                     while let Some(data) = v_rx.recv().await {
                         let is_end_of_frame = data.len() >= 2 && (data[1] & 0x80) != 0;
-                        if let Err(e) = v_track_clone.write(&data).await {
-                            if e.to_string().contains("closed") {
-                                break;
-                            }
-                            eprintln!("RTP write error: {}", e);
+                        if let Ok(packet) = Packet::unmarshal(&mut &data[..]) {
+                            video_fanout.dispatch(packet);
+                        } else {
+                            eprintln!("[Runner] Failed to unmarshal RTP packet ({} bytes)", data.len());
                         }
                         if is_end_of_frame {
                             frame_seq += 1;
@@ -414,13 +404,6 @@ pub async fn handle_runner_execution(
                                     r#"{{"type":"frame-advance","frame_seq":{},"ts_ms":{}}}"#,
                                     frame_seq, ts_ms
                                 );
-                                // Fire-and-forget: a slow DC must not
-                                // stall RTP delivery. At 20Hz the spawn
-                                // churn is negligible; if the DC is
-                                // backed up the frame-advance is simply
-                                // stale by a few frames, which is what
-                                // the MCP gate's freshness window
-                                // tolerates.
                                 let dc = log_dc_for_frame_advance.clone();
                                 tokio::spawn(async move {
                                     let _ = dc.send_text(msg).await;
@@ -430,17 +413,7 @@ pub async fn handle_runner_execution(
                     }
                 });
 
-                // Setup Audio Track
-                let audio_track = Arc::new(TrackLocalStaticRTP::new(
-                    RTCRtpCodecCapability {
-                        mime_type: "audio/opus".to_owned(),
-                        ..Default::default()
-                    },
-                    "audio".to_owned(),
-                    "synthi_stream".to_owned(),
-                ));
-                audio_track_opt = Some(audio_track.clone());
-
+                // Audio: identical dispatch pattern via `audio_fanout`.
                 let a_tx_clone = a_tx.clone();
                 audio_sink.set_callbacks(
                     gst_app::AppSinkCallbacks::builder()
@@ -459,14 +432,11 @@ pub async fn handle_runner_execution(
                         .build(),
                 );
 
-                // Spawn async task to write audio RTP packets
-                let a_track_clone = audio_track.clone();
+                let audio_fanout = ctx.audio_fanout.clone();
                 tokio::spawn(async move {
                     while let Some(data) = a_rx.recv().await {
-                        if let Err(e) = a_track_clone.write(&data).await {
-                            if e.to_string().contains("closed") {
-                                break;
-                            }
+                        if let Ok(packet) = Packet::unmarshal(&mut &data[..]) {
+                            audio_fanout.dispatch(packet);
                         }
                     }
                 });
@@ -621,8 +591,8 @@ pub async fn handle_runner_execution(
             xvfb_process,
             gst_pipeline,
             sdl_tx: sdl_tx_opt.clone(),
-            video_track: video_track_opt,
-            audio_track: audio_track_opt,
+            video_track: None,
+            audio_track: None,
             width: req_width,
             height: req_height,
             wsl_display_str: wsl_display_str.clone(),
@@ -690,49 +660,12 @@ pub async fn handle_runner_execution(
     }
 
     if let Some(state) = guard.as_mut() {
-        if !existing_runner_can_hmr {
-            // Replace tracks on pre-allocated transceivers instead of adding new ones
-            let transceivers = ctx.pc.get_transceivers().await;
-            if let Some(track) = &state.video_track {
-                debug_log!("[Main] Replacing video track on transceiver");
-                for t in &transceivers {
-                    if t.kind() == webrtc::rtp_transceiver::rtp_codec::RTPCodecType::Video {
-                        match t
-                            .sender()
-                            .await
-                            .replace_track(Some(
-                                Arc::clone(track) as Arc<dyn TrackLocal + Send + Sync>
-                            ))
-                            .await
-                        {
-                            Ok(_) => debug_log!("[Main] Video track replaced successfully"),
-                            Err(e) => eprintln!("[Main] ERROR replacing video track: {:?}", e),
-                        }
-                        break;
-                    }
-                }
-            }
-            if let Some(track) = &state.audio_track {
-                debug_log!("[Main] Replacing audio track on transceiver");
-                for t in &transceivers {
-                    if t.kind() == webrtc::rtp_transceiver::rtp_codec::RTPCodecType::Audio {
-                        match t
-                            .sender()
-                            .await
-                            .replace_track(Some(
-                                Arc::clone(track) as Arc<dyn TrackLocal + Send + Sync>
-                            ))
-                            .await
-                        {
-                            Ok(_) => debug_log!("[Main] Audio track replaced successfully"),
-                            Err(e) => eprintln!("[Main] ERROR replacing audio track: {:?}", e),
-                        }
-                        break;
-                    }
-                }
-            }
-
-        }
+        // Under `TrackFanout`, there is no per-run track to
+        // `replace_track` onto each peer's transceiver — per-peer tracks
+        // are attached in `create_peer` and persist for the peer's
+        // lifetime. Fresh RTP packets from the new GStreamer pipeline
+        // flow through the same fanout, so every attached peer sees the
+        // new frames automatically.
 
         // Signal the frontend to show/update the GUI widget.
         // Must be sent on both full-restart and HMR reloads so the

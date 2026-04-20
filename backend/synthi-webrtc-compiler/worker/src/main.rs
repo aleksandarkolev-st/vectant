@@ -615,26 +615,21 @@ async fn main() -> Result<()> {
         }
     });
 
-    let ice_servers = fetch_turn_credentials().await;
-    // peer_id the singleton PC is currently bound to. Populated when an
-    // offer arrives carrying `peer_id` (Phase-B clients); stays `None` for
-    // legacy browsers that don't stamp the field. Shared with
-    // `create_peer`'s on_ice_candidate closure so outgoing candidates
-    // carry the same peer_id the answer carried.
-    let current_peer_id: Arc<tokio::sync::RwLock<Option<String>>> =
-        Arc::new(tokio::sync::RwLock::new(None));
-    let mut pc = create_peer(signal_tx.clone(), ice_servers, current_peer_id.clone()).await?;
-    let log_channel_store: Arc<Mutex<Option<Arc<RTCDataChannel>>>> = Arc::new(Mutex::new(None));
-    // Per-session peer registry. Today still populated with exactly one
-    // `default-browser` peer (same effective cardinality as the legacy
-    // `log_channel_store` singleton); the MCP-agent / observer roles
-    // land in a follow-up commit that replaces the singleton `pc` with
-    // per-peer PCs. See `webrtc/G3_PHASE_B_INTEGRATION.md`.
+    // Per-session peer registry. Each attached peer (browser + zero or
+    // more observers) gets its own `PeerHandle` with its own PC, per-peer
+    // video/audio tracks, and per-peer build-log DC. The `TrackFanout`
+    // instances below broadcast GStreamer RTP to every peer's track
+    // through an abort-on-drop subscription, so teardown is automatic
+    // when a peer disconnects.
     let peer_registry: Arc<PeerRegistry> = Arc::new(PeerRegistry::new());
-    {
-        let handle = PeerHandle::new(DEFAULT_BROWSER_PEER_ID, PeerRole::Browser, pc.clone());
-        peer_registry.insert(handle);
-    }
+    let video_fanout = Arc::new(worker::webrtc::TrackFanout::new(
+        worker::webrtc::TrackKind::Video,
+        worker::webrtc::track_fanout::DEFAULT_CAPACITY,
+    ));
+    let audio_fanout = Arc::new(worker::webrtc::TrackFanout::new(
+        worker::webrtc::TrackKind::Audio,
+        worker::webrtc::track_fanout::DEFAULT_CAPACITY,
+    ));
     // Store of sessionId -> stdin sender so datachannel 'terminal' messages can be
     // routed to the running process's stdin.
     let terminal_input_store: Arc<Mutex<HashMap<String, mpsc::UnboundedSender<String>>>> =
@@ -872,29 +867,9 @@ async fn main() -> Result<()> {
     });
     // -----------------------------------
 
-    wire_peer_channels(
-        &pc,
-        log_channel_store.clone(),
-        peer_registry.clone(),
-        terminal_input_store.clone(),
-        sdl_input_store.clone(),
-        runner_store.clone(),
-        compile_task_store.clone(),
-        workspace_path_arc.clone(),
-        compile_cache.clone(),
-        boundary_checker.clone(),
-        incremental_cache.clone(),
-        hmr_orchestrator.clone(),
-        structured_logger.clone(),
-        metrics_aggregator.clone(),
-        restart_controller.clone(),
-        ipc_config.clone(),
-        vscode_server_kill_tx.clone(),
-        current_peer_id.clone(),
-    )
-    .await?;
-
-    let mut current_remote_fingerprint: Option<String> = None;
+    // PCs are created lazily on the first offer from each peer; the
+    // signal loop below handles get-or-create, wire_peer_channels, and
+    // teardown on reset.
     while let Some(msg) = ws_read.next().await {
         let msg = msg?;
         if !msg.is_text() {
@@ -910,6 +885,21 @@ async fn main() -> Result<()> {
         // don't yet carry the field — we fall back to role-fanout routing.
         let incoming_peer_id = parsed.peer_id.clone();
 
+        // Resolve which peer this message routes to. The signaling-server
+        // stamps `peer_id` + `role` on every forwarded non-worker message
+        // (see `rewrite_peer_fields` there). Legacy clients that omit
+        // `peer_id` fall back to DEFAULT_BROWSER_PEER_ID so the pre-
+        // Phase-B Synthi frontend keeps working byte-identical.
+        let peer_id = parsed
+            .peer_id
+            .clone()
+            .unwrap_or_else(|| DEFAULT_BROWSER_PEER_ID.to_string());
+        let role_for_new_peer = parsed
+            .role
+            .as_deref()
+            .map(PeerRole::from_wire)
+            .unwrap_or(PeerRole::Browser);
+
         match parsed.msg_type.as_str() {
             "offer" => {
                 if let Some(sdp) = parsed.sdp {
@@ -920,189 +910,29 @@ async fn main() -> Result<()> {
                         "rollback" => RTCSdpType::Rollback,
                         _ => RTCSdpType::Offer,
                     };
-                    let new_fingerprint = extract_fingerprint(&sdp);
-                    let fingerprint_changed = match (&current_remote_fingerprint, &new_fingerprint)
-                    {
-                        (Some(old_fp), Some(new_fp)) => old_fp != new_fp,
-                        (Some(_), None) => true,
-                        _ => false,
-                    };
 
-                    if fingerprint_changed {
-                        debug_log!(
-                            "[WebRTC-signal] Detected new peer fingerprint, recreating PeerConnection for fresh browser session"
-                        );
-                        if let Err(e) = pc.close().await {
-                            eprintln!("[WebRTC-signal] Warning: failed to close old PC: {:?}", e);
-                        }
-                        {
-                            let mut guard = log_channel_store.lock().await;
-                            *guard = None;
-                        }
+                    // Get-or-create a PC for this peer. A fresh peer (not
+                    // yet in the registry) gets a new PC + per-peer tracks
+                    // subscribed to the session fanouts, and then we wire
+                    // the data channels. An existing peer re-offering (ICE
+                    // restart) reuses its PC + DCs — just process the SDP.
+                    let pc = if let Some(existing) = peer_registry.get(&peer_id) {
+                        existing.pc.clone()
+                    } else {
                         let ice_servers = fetch_turn_credentials().await;
-                        match create_peer(
+                        let new_pc = create_peer(
+                            peer_id.clone(),
+                            role_for_new_peer,
                             signal_tx.clone(),
                             ice_servers,
-                            current_peer_id.clone(),
+                            peer_registry.clone(),
+                            video_fanout.clone(),
+                            audio_fanout.clone(),
                         )
-                        .await
-                        {
-                            Ok(new_pc) => {
-                                // Clear the old peer-registry entry + re-insert the
-                                // fresh PC before wiring so the DC open callbacks
-                                // can attach to the current peer.
-                                peer_registry.remove(DEFAULT_BROWSER_PEER_ID);
-                                peer_registry.insert(PeerHandle::new(
-                                    DEFAULT_BROWSER_PEER_ID,
-                                    PeerRole::Browser,
-                                    new_pc.clone(),
-                                ));
-                                wire_peer_channels(
-                                    &new_pc,
-                                    log_channel_store.clone(),
-                                    peer_registry.clone(),
-                                    terminal_input_store.clone(),
-                                    sdl_input_store.clone(),
-                                    runner_store.clone(),
-                                    compile_task_store.clone(),
-                                    workspace_path_arc.clone(),
-                                    compile_cache.clone(),
-                                    boundary_checker.clone(),
-                                    incremental_cache.clone(),
-                                    hmr_orchestrator.clone(),
-                                    structured_logger.clone(),
-                                    metrics_aggregator.clone(),
-                                    restart_controller.clone(),
-                                    ipc_config.clone(),
-                                    vscode_server_kill_tx.clone(),
-                                    current_peer_id.clone(),
-                                )
-                                .await?;
-                                pc = new_pc;
-                                current_remote_fingerprint = None;
-                            }
-                            Err(e) => {
-                                debug_log!(
-                                    "[WebRTC-signal] CRITICAL ERROR: Failed to re-create peer connection: {:?}",
-                                    e
-                                );
-                                return Err(e);
-                            }
-                        }
-                    }
-
-                    debug_log!(
-                        "[WebRTC-signal] Received offer (type={:?}), current state={:?}",
-                        sdp_type,
-                        pc.signaling_state()
-                    );
-                    let mut desc = RTCSessionDescription::default();
-                    desc.sdp_type = sdp_type;
-                    desc.sdp = sdp;
-                    pc.set_remote_description(desc).await?;
-                    let answer = pc.create_answer(None).await?;
-                    pc.set_local_description(answer.clone()).await?;
-                    debug_log!(
-                        "[WebRTC-signal] Sending answer, new state={:?}",
-                        pc.signaling_state()
-                    );
-                    if let Some(pos) = answer.sdp.find("transport-wide-cc") {
-                        debug_log!("[WebRTC-signal] TWCC found in Answer SDP at index {}", pos);
-                    } else {
-                        eprintln!("[WebRTC-signal] WARNING: TWCC missing from Answer SDP!");
-                    }
-                    // Remember which peer this singleton PC is bound to so
-                    // outgoing ICE candidates (emitted asynchronously by the
-                    // on_ice_candidate closure) stamp the same peer_id and
-                    // the signaling-server direct-routes them back.
-                    if incoming_peer_id.is_some() {
-                        *current_peer_id.write().await = incoming_peer_id.clone();
-                    }
-                    signal_tx.send(SignalMessage {
-                        msg_type: "answer".into(),
-                        role: None,
-                        session_id: None,
-                        sdp: Some(answer.sdp),
-                        sdp_type: Some(answer.sdp_type.to_string()),
-                        candidate: None,
-                        peer_id: incoming_peer_id.clone(),
-                    })?;
-                    if let Some(fp) = new_fingerprint {
-                        current_remote_fingerprint = Some(fp);
-                    }
-                }
-            }
-            "candidate" => {
-                if let Some(c) = parsed.candidate {
-                    let _ = pc.add_ice_candidate(c).await;
-                }
-            }
-            "reset" => {
-                debug_log!(
-                    "[WebRTC-signal] Received reset command, clearing WebRTC state (SOFT RESET)..."
-                );
-
-                // 1. Close the existing PeerConnection
-                if let Err(e) = pc.close().await {
-                    eprintln!("[WebRTC-signal] Warning: failed to close old PC: {:?}", e);
-                }
-                current_remote_fingerprint = None;
-
-                // 2. Clear runner state (Terminates Emulator/GStreamer pipeline)
-                {
-                    let mut guard = runner_store.lock().await;
-                    if guard.is_some() {
-                        debug_log!("[WebRTC-signal] Dropping old RunnerState...");
-                        *guard = None;
-                    }
-                }
-
-                // 3. Clear other session stores
-                {
-                    let mut guard = log_channel_store.lock().await;
-                    *guard = None;
-                }
-                {
-                    let mut guard = terminal_input_store.lock().await;
-                    guard.clear();
-                }
-                {
-                    let mut guard = sdl_input_store.lock().await;
-                    guard.clear();
-                }
-                // Kill any running VS Code Server manager process
-                {
-                    let mut guard = vscode_server_kill_tx.lock().await;
-                    if let Some((tx, _)) = guard.take() {
-                        debug_log!(
-                            "[WebRTC-signal] Killing vscode-server-manager process during reset..."
-                        );
-                        let _ = tx.send(());
-                    }
-                }
-
-                // 4. Create a fresh PeerConnection
-                let ice_servers = fetch_turn_credentials().await;
-                // Reset unbinds the PC from any prior peer_id; the next
-                // offer will rebind it.
-                *current_peer_id.write().await = None;
-                match create_peer(
-                    signal_tx.clone(),
-                    ice_servers,
-                    current_peer_id.clone(),
-                )
-                .await
-                {
-                    Ok(new_pc) => {
-                        peer_registry.remove(DEFAULT_BROWSER_PEER_ID);
-                        peer_registry.insert(PeerHandle::new(
-                            DEFAULT_BROWSER_PEER_ID,
-                            PeerRole::Browser,
-                            new_pc.clone(),
-                        ));
+                        .await?;
                         wire_peer_channels(
                             &new_pc,
-                            log_channel_store.clone(),
+                            peer_id.clone(),
                             peer_registry.clone(),
                             terminal_input_store.clone(),
                             sdl_input_store.clone(),
@@ -1118,19 +948,93 @@ async fn main() -> Result<()> {
                             restart_controller.clone(),
                             ipc_config.clone(),
                             vscode_server_kill_tx.clone(),
-                            current_peer_id.clone(),
+                            video_fanout.clone(),
+                            audio_fanout.clone(),
                         )
                         .await?;
-                        pc = new_pc;
-                        debug_log!("[WebRTC-signal] Soft reset complete. New PeerConnection ready.");
+                        new_pc
+                    };
+
+                    debug_log!(
+                        "[WebRTC-signal] Offer from peer {} (role={:?}, type={:?}, state={:?})",
+                        peer_id,
+                        role_for_new_peer,
+                        sdp_type,
+                        pc.signaling_state()
+                    );
+                    let mut desc = RTCSessionDescription::default();
+                    desc.sdp_type = sdp_type;
+                    desc.sdp = sdp;
+                    pc.set_remote_description(desc).await?;
+                    let answer = pc.create_answer(None).await?;
+                    pc.set_local_description(answer.clone()).await?;
+                    if answer.sdp.find("transport-wide-cc").is_none() {
+                        eprintln!("[WebRTC-signal] WARNING: TWCC missing from Answer SDP!");
                     }
-                    Err(e) => {
-                        eprintln!("[WebRTC-signal] CRITICAL ERROR: Failed to re-create peer connection: {:?}", e);
-                        // Panic? Return? Try to continue?
-                        // If we can't create a peer, we're likely dead anyway.
-                        return Err(e);
+                    signal_tx.send(SignalMessage {
+                        msg_type: "answer".into(),
+                        role: None,
+                        session_id: None,
+                        sdp: Some(answer.sdp),
+                        sdp_type: Some(answer.sdp_type.to_string()),
+                        candidate: None,
+                        peer_id: Some(peer_id.clone()),
+                    })?;
+                }
+            }
+            "candidate" => {
+                if let Some(c) = parsed.candidate {
+                    if let Some(handle) = peer_registry.get(&peer_id) {
+                        let _ = handle.pc.add_ice_candidate(c).await;
+                    } else {
+                        debug_log!(
+                            "[WebRTC-signal] Dropped candidate for unknown peer {}",
+                            peer_id
+                        );
                     }
                 }
+            }
+            "reset" => {
+                debug_log!(
+                    "[WebRTC-signal] Received reset command, closing all peers..."
+                );
+
+                // Close every registered PC. Dropping the handle also
+                // drops its FanoutSubscriptions, aborting per-peer
+                // dispatch tasks. New offers after reset will recreate
+                // handles lazily.
+                for peer in peer_registry.all_peers() {
+                    let _ = peer.pc.close().await;
+                }
+                peer_registry.clear();
+
+                // Clear runner state (terminates emulator / GStreamer pipeline).
+                {
+                    let mut guard = runner_store.lock().await;
+                    if guard.is_some() {
+                        debug_log!("[WebRTC-signal] Dropping old RunnerState...");
+                        *guard = None;
+                    }
+                }
+                {
+                    let mut guard = terminal_input_store.lock().await;
+                    guard.clear();
+                }
+                {
+                    let mut guard = sdl_input_store.lock().await;
+                    guard.clear();
+                }
+                // Kill any running VS Code Server manager process.
+                {
+                    let mut guard = vscode_server_kill_tx.lock().await;
+                    if let Some((tx, _)) = guard.take() {
+                        debug_log!(
+                            "[WebRTC-signal] Killing vscode-server-manager process during reset..."
+                        );
+                        let _ = tx.send(());
+                    }
+                }
+                debug_log!("[WebRTC-signal] Reset complete — awaiting next offer to re-spawn peers");
             }
             _ => {}
         }
@@ -1139,10 +1043,24 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
+/// Construct a per-peer `RTCPeerConnection`, insert a matching
+/// `PeerHandle` into the registry (evicting the prior Browser slot if
+/// needed), and subscribe this peer's video+audio tracks to the session
+/// fanouts. Returns the freshly-built peer connection.
+///
+/// Callers (the signal-loop offer arm) process the SDP/ICE themselves;
+/// this function owns everything "set up a PC that can be subscribed to
+/// and unsubscribed from the session" — ICE callback stamps peer_id on
+/// outgoing candidates, connection-state callback removes the peer
+/// from the registry on Closed/Failed so the fanout dispatch task dies.
 async fn create_peer(
+    peer_id: String,
+    role: worker::webrtc::PeerRole,
     signal_tx: mpsc::UnboundedSender<SignalMessage>,
     ice_servers: Vec<webrtc::ice_transport::ice_server::RTCIceServer>,
-    current_peer_id: Arc<tokio::sync::RwLock<Option<String>>>,
+    peer_registry: Arc<PeerRegistry>,
+    video_fanout: Arc<worker::webrtc::TrackFanout>,
+    audio_fanout: Arc<worker::webrtc::TrackFanout>,
 ) -> Result<Arc<RTCPeerConnection>> {
     let mut m = MediaEngine::default();
     m.register_default_codecs()?;
@@ -1243,80 +1161,95 @@ async fn create_peer(
     )
     .await?;
 
-    // Important: some browsers won't emit `ontrack` unless the SDP includes track/MSID info.
-    // Attaching placeholder tracks up-front ensures the answer advertises real tracks, while
-    // later runtime pipelines can `replace_track()` without requiring renegotiation.
-    // This is especially important for Android emulator streaming, where the real track is
-    // created after the initial offer/answer exchange.
+    // Per-peer video + audio tracks. Each PC's transceiver gets its own
+    // `TrackLocalStaticRTP`; the session's `TrackFanout` then writes every
+    // RTP packet to every peer's track through an abort-on-drop task.
+    // Dropping the `PeerHandle` drops the `FanoutSubscription`, which
+    // aborts the per-peer dispatch task — no writes-to-a-detached-track.
+    let per_peer_video = Arc::new(TrackLocalStaticRTP::new(
+        RTCRtpCodecCapability {
+            mime_type: "video/H264".to_owned(),
+            // Constrained Baseline Level 3.1 — universally supported by
+            // browsers. Must match what the GStreamer pipeline emits so
+            // the browser decoder accepts the RTP stream unchanged.
+            sdp_fmtp_line: "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f".to_owned(),
+            ..Default::default()
+        },
+        "video".to_owned(),
+        format!("synthi-peer-{peer_id}"),
+    ));
+    let per_peer_audio = Arc::new(TrackLocalStaticRTP::new(
+        RTCRtpCodecCapability {
+            mime_type: "audio/opus".to_owned(),
+            ..Default::default()
+        },
+        "audio".to_owned(),
+        format!("synthi-peer-{peer_id}"),
+    ));
     {
-        let placeholder_video = Arc::new(TrackLocalStaticRTP::new(
-            RTCRtpCodecCapability {
-                mime_type: "video/H264".to_owned(),
-                // Constrained Baseline Level 3.1 — universally supported by
-                // all browsers.  Must match what x264enc actually produces
-                // (profile=constrained-baseline in the GStreamer capsfilter)
-                // so the browser's decoder accepts the RTP stream.
-                sdp_fmtp_line: "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f".to_owned(),
-                ..Default::default()
-            },
-            "video".to_owned(),
-            "synthi-placeholder".to_owned(),
-        ));
-        let placeholder_audio = Arc::new(TrackLocalStaticRTP::new(
-            RTCRtpCodecCapability {
-                mime_type: "audio/opus".to_owned(),
-                ..Default::default()
-            },
-            "audio".to_owned(),
-            "synthi-placeholder".to_owned(),
-        ));
-
         let transceivers = pc.get_transceivers().await;
         for t in transceivers {
             let kind = t.kind();
             if kind == RTPCodecType::Video {
                 let sender = t.sender().await;
-                match sender
+                if let Err(e) = sender
                     .replace_track(Some(
-                        Arc::clone(&placeholder_video) as Arc<dyn TrackLocal + Send + Sync>
+                        Arc::clone(&per_peer_video) as Arc<dyn TrackLocal + Send + Sync>
                     ))
                     .await
                 {
-                    Ok(_) => debug_log!("[WebRTC] Attached placeholder video track"),
-                    Err(e) => {
-                        eprintln!("[WebRTC] Failed to attach placeholder video track: {:?}", e)
-                    }
+                    eprintln!("[WebRTC] Failed to attach video track for {peer_id}: {:?}", e);
                 }
             } else if kind == RTPCodecType::Audio {
                 let sender = t.sender().await;
-                match sender
+                if let Err(e) = sender
                     .replace_track(Some(
-                        Arc::clone(&placeholder_audio) as Arc<dyn TrackLocal + Send + Sync>
+                        Arc::clone(&per_peer_audio) as Arc<dyn TrackLocal + Send + Sync>
                     ))
                     .await
                 {
-                    Ok(_) => debug_log!("[WebRTC] Attached placeholder audio track"),
-                    Err(e) => {
-                        eprintln!("[WebRTC] Failed to attach placeholder audio track: {:?}", e)
-                    }
+                    eprintln!("[WebRTC] Failed to attach audio track for {peer_id}: {:?}", e);
                 }
             }
         }
     }
 
+    // Insert (or evict-then-insert) the handle BEFORE wiring callbacks +
+    // fanout subs so a peer-connection-state callback firing during
+    // `subscribe_track` finds a handle to remove. The Browser slot
+    // evicts; Observer/McpAgent coexist.
+    let handle = PeerHandle::new(&peer_id, role, pc.clone());
+    let insert_outcome = peer_registry.insert(handle);
+    if let worker::webrtc::RegistryInsertOutcome::Evicted(evicted) = insert_outcome {
+        debug_log!(
+            "[WebRTC] Evicted prior Browser peer {} for fresh session",
+            evicted.peer_id
+        );
+        let old_pc = evicted.pc.clone();
+        // Close the evicted PC out-of-band — `evicted` itself drops when
+        // this block ends, which aborts its fanout subs and severs
+        // dispatch for the old peer.
+        tokio::spawn(async move {
+            let _ = old_pc.close().await;
+        });
+    }
+    peer_registry.attach_video_track(&peer_id, per_peer_video.clone());
+    peer_registry.attach_audio_track(&peer_id, per_peer_audio.clone());
+    peer_registry.attach_video_sub(&peer_id, video_fanout.subscribe_track(per_peer_video));
+    peer_registry.attach_audio_sub(&peer_id, audio_fanout.subscribe_track(per_peer_audio));
+
     {
         let tx = signal_tx.clone();
-        let current_peer_id = current_peer_id.clone();
+        let peer_id_for_ice = peer_id.clone();
         pc.on_ice_candidate(Box::new(move |candidate| {
             let tx = tx.clone();
-            let current_peer_id = current_peer_id.clone();
+            let peer_id_for_ice = peer_id_for_ice.clone();
             async move {
                 if let Some(c) = candidate {
                     if let Ok(init) = c.to_json() {
-                        // Stamp the peer_id the signaling-server should
-                        // route this candidate to. `None` falls through
-                        // to role-fanout (legacy pre-Phase-B browsers).
-                        let peer_id = current_peer_id.read().await.clone();
+                        // Stamp this peer's peer_id on every outgoing
+                        // candidate so the signaling-server direct-routes
+                        // the reply back to the right socket.
                         let _ = tx.send(SignalMessage {
                             msg_type: "candidate".into(),
                             role: None,
@@ -1324,7 +1257,7 @@ async fn create_peer(
                             sdp: None,
                             sdp_type: None,
                             candidate: Some(init),
-                            peer_id,
+                            peer_id: Some(peer_id_for_ice.clone()),
                         });
                     }
                 }
@@ -1333,17 +1266,37 @@ async fn create_peer(
         }));
     }
 
-    pc.on_peer_connection_state_change(Box::new(move |s: RTCPeerConnectionState| {
-        debug_log!("Peer Connection State: {s:?}");
-        async {}.boxed()
-    }));
+    {
+        let peer_id_for_state = peer_id.clone();
+        let registry_for_state = peer_registry.clone();
+        pc.on_peer_connection_state_change(Box::new(move |s: RTCPeerConnectionState| {
+            let peer_id = peer_id_for_state.clone();
+            let registry = registry_for_state.clone();
+            async move {
+                debug_log!("Peer Connection State ({}): {s:?}", peer_id);
+                if matches!(
+                    s,
+                    RTCPeerConnectionState::Closed | RTCPeerConnectionState::Failed | RTCPeerConnectionState::Disconnected
+                ) {
+                    // Dropping the Arc<PeerHandle> drops the fanout
+                    // subscription tasks, aborting dispatch to this peer's
+                    // tracks. Safe to call even if the peer was already
+                    // removed by a reset() sweep.
+                    if registry.remove(&peer_id).is_some() {
+                        debug_log!("[WebRTC] Removed peer {} on state {:?}", peer_id, s);
+                    }
+                }
+            }
+            .boxed()
+        }));
+    }
 
     Ok(pc)
 }
 
 async fn wire_peer_channels(
     pc: &Arc<RTCPeerConnection>,
-    log_channel_store: Arc<Mutex<Option<Arc<RTCDataChannel>>>>,
+    peer_id: String,
     peer_registry: Arc<PeerRegistry>,
     terminal_input_store: Arc<Mutex<HashMap<String, mpsc::UnboundedSender<String>>>>,
     sdl_input_store: Arc<Mutex<HashMap<String, mpsc::UnboundedSender<String>>>>,
@@ -1359,33 +1312,29 @@ async fn wire_peer_channels(
     restart_controller: Arc<tokio::sync::Mutex<RestartController>>,
     ipc_config: Arc<IpcConfig>,
     vscode_server_kill_tx: Arc<Mutex<Option<(mpsc::UnboundedSender<()>, tokio::time::Instant)>>>,
-    current_peer_id: Arc<tokio::sync::RwLock<Option<String>>>,
+    video_fanout: Arc<worker::webrtc::TrackFanout>,
+    audio_fanout: Arc<worker::webrtc::TrackFanout>,
 ) -> Result<()> {
     let pc = pc.clone();
     let build_log_dc = pc
         .create_data_channel("build-log", Some(RTCDataChannelInit::default()))
         .await?;
-    let store_for_open = log_channel_store.clone();
     let build_log_dc_for_open = build_log_dc.clone();
     let peer_registry_for_open = peer_registry.clone();
+    let peer_id_for_open = peer_id.clone();
     build_log_dc.on_open(Box::new(move || {
         let dc = build_log_dc_for_open.clone();
-        let store = store_for_open.clone();
         let registry = peer_registry_for_open.clone();
+        let peer_id = peer_id_for_open.clone();
         async move {
-            let mut guard = store.lock().await;
-            *guard = Some(dc.clone());
-            // Parallel population of the per-session registry so
-            // multi-peer emission paths (see `broadcast_build_log_text`)
-            // can fan out. Pre-multi-PC, the registry holds exactly one
-            // peer — `DEFAULT_BROWSER_PEER_ID` — mirroring the singleton
-            // log_channel_store behaviour.
-            registry.attach_build_log(DEFAULT_BROWSER_PEER_ID, dc);
+            // Attach to the per-session registry so emission paths
+            // (`broadcast_build_log_text` + per-peer compile-DC replies)
+            // can fan out correctly.
+            registry.attach_build_log(&peer_id, dc);
         }
         .boxed()
     }));
 
-    let compile_store = log_channel_store.clone();
     let term_store = terminal_input_store.clone();
     let pc_clone = pc.clone();
     let workspace_path_for_callback = workspace_path_arc.clone();
@@ -1403,9 +1352,10 @@ async fn wire_peer_channels(
     let sdl_input_store_for_callback = sdl_input_store.clone();
     let vscode_server_kill_tx_for_callback = vscode_server_kill_tx.clone();
     let peer_registry_for_callback = peer_registry.clone();
-    let current_peer_id_for_callback = current_peer_id.clone();
+    let peer_id_for_callback = peer_id.clone();
+    let video_fanout_for_callback = video_fanout.clone();
+    let audio_fanout_for_callback = audio_fanout.clone();
     pc.on_data_channel(Box::new(move |dc: Arc<RTCDataChannel>| {
-        let store = compile_store.clone();
         let term_store = term_store.clone();
         let pc_for_callback = pc_clone.clone();
         let workspace_path_for_dc = workspace_path_for_callback.clone();
@@ -1423,7 +1373,9 @@ async fn wire_peer_channels(
         let ipc_config_outer = ipc_config_for_callback.clone();
         let vscode_server_kill_tx_outer = vscode_server_kill_tx_for_callback.clone();
         let peer_registry_outer = peer_registry_for_callback.clone();
-        let current_peer_id_outer = current_peer_id_for_callback.clone();
+        let peer_id_outer = peer_id_for_callback.clone();
+        let video_fanout_outer = video_fanout_for_callback.clone();
+        let audio_fanout_outer = audio_fanout_for_callback.clone();
         async move {
             let label = dc.label();
             debug_log!("[on_data_channel] Received data channel: label='{}', id={}", label, dc.id());
@@ -1432,7 +1384,6 @@ async fn wire_peer_channels(
                     // that can be moved into the async block below without
                     // consuming the captured `term_store`.
                     dc.on_message(Box::new(move |msg| {
-                        let store = store.clone();
                         let term_store_for_msg = term_store.clone();
                         let pc_for_compile = pc_for_callback.clone();
                         let workspace_path_for_compile = workspace_path_for_dc.clone();
@@ -1444,6 +1395,9 @@ async fn wire_peer_channels(
                         let incremental_cache = incremental_cache_outer.clone();
                         let compile_task_store_for_msg = compile_task_store_outer.clone();
                         let peer_registry_for_msg = peer_registry_outer.clone();
+                        let peer_id_for_msg = peer_id_outer.clone();
+                        let video_fanout_for_msg = video_fanout_outer.clone();
+                        let audio_fanout_for_msg = audio_fanout_outer.clone();
                         // v2.1 inner clones
                         let hmr_orchestrator = hmr_orchestrator_outer.clone();
                         let structured_logger = structured_logger_outer.clone();
@@ -1534,9 +1488,16 @@ async fn wire_peer_channels(
                                 
                                 // Try to parse as a CompileRequest
                                 if let Ok(req) = serde_json::from_slice::<CompileRequest>(&msg.data) {
-                                    debug_log!("[Main] Received CompileRequest: is_gui={}, use_ai_split={}, lang={}, target={:?}", 
+                                    debug_log!("[Main] Received CompileRequest: is_gui={}, use_ai_split={}, lang={}, target={:?}",
                                         req.is_gui, req.use_ai_split, req.language, req.target);
-                                    let log_dc = { store.lock().await.clone() };
+                                    // Reply path: use the REQUESTING peer's own build-log DC
+                                    // so compile status lands only on that peer. Observers
+                                    // on the same session see broadcast messages (hmr, build
+                                    // cancel, run-gui-end) via `broadcast_build_log_text`,
+                                    // but per-request replies stay scoped to the requester.
+                                    let log_dc = peer_registry_for_msg
+                                        .get(&peer_id_for_msg)
+                                        .and_then(|h| h.build_log_dc_snapshot());
                                     if let Some(log) = log_dc {
                                         debug_log!("[Main] Found active build-log channel, proceeding with build...");
                                         // Check if this is a mobile emulator target
@@ -1548,6 +1509,7 @@ async fn wire_peer_channels(
                                                 let project_root = req.project_root.clone();
                                                 let slug = req.slug.clone();
                                                 let log_clone = log.clone();
+                                                let rn_video_fanout = video_fanout_for_msg.clone();
                                                 tokio::spawn(async move {
                                                     // Download/sync the workspace if slug is provided.
                                                     // IMPORTANT: do NOT delete the workspace by default.
@@ -1615,13 +1577,14 @@ async fn wire_peer_channels(
                                                         project_root,
                                                         false, // debug build by default
                                                         pc_for_compile.clone(),
+                                                        rn_video_fanout.clone(),
                                                     ).await {
                                                         eprintln!("[Main] Mobile emulator job failed: {:?}", e);
                                                     }
                                                 });
                                                 return;
                                             }
-                                            
+
                                             // Flutter Android emulator target
                                             if target == "flutter-android-emulator" {
                                                 let session_id = req.session_id.clone().unwrap_or_else(|| {
@@ -1630,6 +1593,7 @@ async fn wire_peer_channels(
                                                 let project_root = req.project_root.clone();
                                                 let slug = req.slug.clone();
                                                 let log_clone = log.clone();
+                                                let flutter_video_fanout = video_fanout_for_msg.clone();
                                                 tokio::spawn(async move {
                                                     let workspace_path = if let Some(s) = &slug {
                                                         let local_dir = std::path::PathBuf::from("/synthi").join(s);
@@ -1687,6 +1651,7 @@ async fn wire_peer_channels(
                                                         project_root,
                                                         false, // debug build by default
                                                         pc_for_compile.clone(),
+                                                        flutter_video_fanout.clone(),
                                                     ).await {
                                                         eprintln!("[Main] Flutter emulator job failed: {:?}", e);
                                                     }
@@ -1710,6 +1675,8 @@ async fn wire_peer_channels(
                                         let ma = metrics_aggregator.clone();
                                         let rc = restart_controller.clone();
                                         let ipc = ipc_config.clone();
+                                        let video_fanout_for_compile = video_fanout_for_msg.clone();
+                                        let audio_fanout_for_compile = audio_fanout_for_msg.clone();
                                         let session_id = req
                                             .session_id
                                             .clone()
@@ -1722,7 +1689,7 @@ async fn wire_peer_channels(
                                         let log_clone = log.clone();
                                         let task_session = session_id.clone();
                                         let handle = tokio::spawn(async move {
-                                            if let Err(e) = handle_compile(req, log_clone, ts, sdls, rs, pc_clone, wp.to_path_buf(), cc, bc, ic, ho, sl, ma, rc, ipc).await {
+                                            if let Err(e) = handle_compile(req, log_clone, ts, sdls, rs, pc_clone, wp.to_path_buf(), cc, bc, ic, ho, sl, ma, rc, ipc, video_fanout_for_compile, audio_fanout_for_compile).await {
                                                 eprintln!("[Main] Compile task failed: {:?}", e);
                                             }
                                             let mut guard = task_store.lock().await;
@@ -1749,23 +1716,20 @@ async fn wire_peer_channels(
                         .boxed()
                     }));
             } else if label == "build-log" {
-                let mut guard = store.lock().await;
-                *guard = Some(dc.clone());
-                drop(guard);
-                // Parallel population of the per-session registry so
-                // multi-peer emission paths fan out alongside the legacy
-                // singleton path. Matches the write at
-                // `wire_peer_channels` for the worker-created DC.
-                peer_registry_outer.attach_build_log(DEFAULT_BROWSER_PEER_ID, dc.clone());
+                // Browser-opened build-log DC (alternative to the
+                // worker-created one in `wire_peer_channels`). Either
+                // attachment point is valid; whichever fires first wins
+                // and the registry snapshot is used by all downstream
+                // readers.
+                peer_registry_outer.attach_build_log(&peer_id_outer, dc.clone());
             } else if label == "terminal" {
                     // Terminal datachannel - used to receive stdin messages for running
                     // processes. Messages are expected as JSON: { type: 'stdin', sessionId, data }
                     let sdl_store_for_msg = sdl_store_outer.clone();
                     let runner_store_for_term = runner_store_outer.clone();
-                    let build_log_store_for_term = store.clone();
                     let peer_registry_for_term = peer_registry_outer.clone();
                     let structured_logger_for_term = structured_logger_outer.clone();
-                    let current_peer_id_for_term = current_peer_id_outer.clone();
+                    let peer_id_for_term = peer_id_outer.clone();
                     // Track which sessions we've already warned about missing x11 senders
                     // to avoid flooding logs with repeated messages on every mouse/key event.
                     let x11_warned: Arc<tokio::sync::Mutex<std::collections::HashSet<String>>> =
@@ -1774,10 +1738,9 @@ async fn wire_peer_channels(
                         let term_store_for_msg = term_store.clone();
                         let sdl_store = sdl_store_for_msg.clone();
                         let runner_store_term = runner_store_for_term.clone();
-                        let build_log_term = build_log_store_for_term.clone();
                         let peer_registry_term = peer_registry_for_term.clone();
                         let structured_logger_term = structured_logger_for_term.clone();
-                        let current_peer_id_term = current_peer_id_for_term.clone();
+                        let peer_id_term = peer_id_for_term.clone();
                         let x11_warned = x11_warned.clone();
                         async move {
                             if msg.is_string {
@@ -1809,17 +1772,11 @@ async fn wire_peer_channels(
                                                 .get("dispatch_id")
                                                 .and_then(|x| x.as_str())
                                                 .map(|s| s.to_string());
-                                            // Resolve the peer_id for the active browser/observer.
-                                            // Empty string for legacy clients that don't carry
-                                            // the field on the wire — the ack/log still emits but
-                                            // without disambiguation.
-                                            let peer_id_for_event = current_peer_id_term
-                                                .read()
-                                                .await
-                                                .clone()
-                                                .unwrap_or_else(|| {
-                                                    DEFAULT_BROWSER_PEER_ID.to_string()
-                                                });
+                                            // Known at wire_peer_channels scope — the terminal DC
+                                            // belongs to exactly one peer (the one whose PC owns
+                                            // this data channel). Use the peer_id captured there
+                                            // directly rather than a session-wide slot.
+                                            let peer_id_for_event = peer_id_term.clone();
                                             // Record every gui-event to the structured logger,
                                             // tagged with the sending peer. A multi-peer session
                                             // is reconstructable post-hoc from these entries.
@@ -2004,7 +1961,11 @@ async fn wire_peer_channels(
                 };
                 let lang = lang_str.to_string();
 
-                let log_store = store.clone();
+                // LSP stderr lines surface on the owning peer's build-log DC
+                // so only the peer that opened the LSP channel sees them;
+                // observers don't need LSP diagnostics cross-peer.
+                let lsp_peer_registry = peer_registry_outer.clone();
+                let lsp_peer_id = peer_id_outer.clone();
                 let dc_clone = dc.clone();
                 let workspace_path_for_lsp = workspace_path_for_dc.clone();
 
@@ -3033,7 +2994,8 @@ async fn wire_peer_channels(
                                 }
                             });
 
-                            let log_store_clone = log_store.clone();
+                            let lsp_peer_registry = lsp_peer_registry.clone();
+                            let lsp_peer_id = lsp_peer_id.clone();
                             tokio::spawn(async move {
                                 let mut reader = BufReader::new(stderr);
                                 let mut line = String::new();
@@ -3045,7 +3007,9 @@ async fn wire_peer_channels(
                                             // Always print RA stderr to worker logs for diagnostics
                                             // (sysroot errors, cargo metadata failures, etc.)
                                             eprint!("[LSP-ERR/{}] {}", lang, line);
-                                            let log_dc = { log_store_clone.lock().await.clone() };
+                                            let log_dc = lsp_peer_registry
+                                                .get(&lsp_peer_id)
+                                                .and_then(|h| h.build_log_dc_snapshot());
                                             if let Some(ldc) = log_dc {
                                                 let payload = serde_json::json!({
                                                     "type": "lsp-stderr",
@@ -3641,6 +3605,8 @@ async fn handle_compile(
     metrics_aggregator: Arc<tokio::sync::Mutex<MetricsAggregator>>,
     restart_controller: Arc<tokio::sync::Mutex<RestartController>>,
     ipc_config: Arc<IpcConfig>,
+    video_fanout: Arc<worker::webrtc::TrackFanout>,
+    audio_fanout: Arc<worker::webrtc::TrackFanout>,
 ) -> Result<()> {
     // Construct context object for cleaner passing
     let ctx = CompileContext {
@@ -3662,6 +3628,8 @@ async fn handle_compile(
         xvfb_allocator: Arc::new(tokio::sync::Mutex::new(
             crate::runtime::path_c::xvfb_allocator::XvfbAllocator::new(),
         )),
+        video_fanout,
+        audio_fanout,
     };
 
     // Call the unified handler

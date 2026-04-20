@@ -237,6 +237,7 @@ pub async fn handle_react_native_emulator_job(
     project_root: Option<String>,
     is_release: bool,
     pc: Arc<RTCPeerConnection>,
+    video_fanout: Arc<crate::webrtc::TrackFanout>,
 ) -> Result<()> {
     // Version marker to identify deployed binary - this helps detect stale binaries
     const JOB_HANDLER_VERSION: &str = "v2-webrtc-video-2025-01-18";
@@ -1227,7 +1228,10 @@ pub async fn handle_react_native_emulator_job(
             }
         };
 
-        let pipeline = match video_pipeline::EmulatorVideoPipeline::start_appsrc(app_cfg.clone()) {
+        let pipeline = match video_pipeline::EmulatorVideoPipeline::start_appsrc(
+            app_cfg.clone(),
+            video_fanout.clone(),
+        ) {
             Ok(p) => Arc::new(p),
             Err(e) => {
                 emulator_input::unregister_session_sync(&session_id);
@@ -1643,7 +1647,7 @@ pub async fn handle_react_native_emulator_job(
         )
         .await;
 
-        let pipeline = match video_pipeline::EmulatorVideoPipeline::start(cfg.clone()) {
+        let pipeline = match video_pipeline::EmulatorVideoPipeline::start(cfg.clone(), video_fanout.clone()) {
             Ok(p) => Arc::new(p),
             Err(e) => {
                 // If capturing a specific window fails (common under Xvfb / WMs), retry root capture.
@@ -1671,7 +1675,7 @@ pub async fn handle_react_native_emulator_job(
                     )
                     .await;
 
-                    match video_pipeline::EmulatorVideoPipeline::start(cfg.clone()) {
+                    match video_pipeline::EmulatorVideoPipeline::start(cfg.clone(), video_fanout.clone()) {
                         Ok(p) => Arc::new(p),
                         Err(e2) => {
                             emulator_input::unregister_session_sync(&session_id);
@@ -1690,78 +1694,31 @@ pub async fn handle_react_native_emulator_job(
         (pipeline, cfg.x11_display.clone())
     };
 
-    // Attach to existing video transceiver.
-    let transceivers = pc.get_transceivers().await;
-    let mut video_transceiver_found = false;
-    for t in transceivers {
-        if t.kind() == RTPCodecType::Video {
-            video_transceiver_found = true;
-            let sender = t.sender().await;
-            eprintln!("[mobile-job] Attaching video track to transceiver...");
-            match sender
-                .replace_track(Some(
-                    Arc::clone(&pipeline.track) as Arc<dyn TrackLocal + Send + Sync>
-                ))
-                .await
-            {
-                Ok(_) => {
-                    eprintln!("[mobile-job] Video track attached successfully");
-
-                    // Critical: Retrieve the negotiated SSRC from the sender
-                    // and inject it into the video pipeline.
-                    let params = sender.get_parameters().await;
-
-                    if !params.encodings.is_empty() {
-                        let ssrc = params.encodings[0].ssrc;
-                        eprintln!("[mobile-job] Found Sender SSRC: {}", ssrc);
-                        if ssrc != 0 {
-                            pipeline.set_ssrc(ssrc);
-                        }
-                    } else {
-                        eprintln!("[mobile-job] WARNING: No encodings found in Sender parameters!");
-                    }
-
-                    // Start RTCP reader for the video sender.
-                    // This is REQUIRED for Interceptors (like TWCC/GCC) to process feedback packets (ACKs).
-                    // Without this loop, the bandwidth estimator will never receive feedback and will stay at 0 bitrate.
-                    let rtcp_sender = sender.clone();
-                    tokio::spawn(async move {
-                        let mut buf = vec![0u8; 1500];
-                        while let Ok((_, _)) = rtcp_sender.read(&mut buf).await {}
-                        eprintln!("[mobile-job] RTCP reader loop ended for video sender");
-                    });
-
-                    send_log(
-                        &log_dc,
-                        &session_id,
-                        "[video] Track attached to WebRTC sender successfully",
-                        "emulator",
-                    )
-                    .await;
-                }
-                Err(e) => {
-                    eprintln!("[mobile-job] ERROR: Failed to attach video track: {:?}", e);
-                    send_log(
-                        &log_dc,
-                        &session_id,
-                        &format!("[video] ERROR: Failed to attach track to sender: {:?}", e),
-                        "emulator",
-                    )
-                    .await;
-                }
-            }
+    // Per-peer tracks are already attached to each peer's transceiver
+    // during `create_peer` and subscribed to `video_fanout`. The
+    // pipeline above dispatches into that fanout; no replace_track
+    // dance here. Each peer's `TrackLocalStaticRTP::write_rtp`
+    // rewrites SSRC to that peer's negotiated value, so cross-peer
+    // SSRC mismatch is impossible. Start RTCP readers on every peer's
+    // video sender so TWCC/GCC feedback keeps flowing per-peer.
+    for peer in pc.get_transceivers().await {
+        if peer.kind() == RTPCodecType::Video {
+            let sender = peer.sender().await;
+            let rtcp_sender = sender.clone();
+            tokio::spawn(async move {
+                let mut buf = vec![0u8; 1500];
+                while let Ok((_, _)) = rtcp_sender.read(&mut buf).await {}
+                eprintln!("[mobile-job] RTCP reader loop ended for video sender");
+            });
         }
     }
-    if !video_transceiver_found {
-        eprintln!("[mobile-job] WARNING: No video transceiver found! Browser may not have requested video.");
-        send_log(
-            &log_dc,
-            &session_id,
-            "[video] WARNING: No video transceiver found in peer connection!",
-            "emulator",
-        )
-        .await;
-    }
+    send_log(
+        &log_dc,
+        &session_id,
+        "[video] Pipeline dispatching to per-peer TrackFanout",
+        "emulator",
+    )
+    .await;
 
     send_status(
         &log_dc,
@@ -1774,7 +1731,7 @@ pub async fn handle_react_native_emulator_job(
             "emulator_serial": emulator_serial,
             "display": display_label,
             "logcat": logcat_started,
-            "video_transceiver_attached": video_transceiver_found,
+            "video_transceiver_attached": true,
         })),
     )
     .await;
