@@ -65,9 +65,10 @@ function deferred<T>(): Deferred<T> {
  * Wraps @roamhq/wrtc `RTCPeerConnection` with the Synthi signaling protocol.
  *
  * Mimics `synthi/src/services/compilerClient.js:884-946` for offer creation
- * and data-channel setup. The MCP plays the "browser" role — creates the
- * offer, creates `terminal` data channel, receives `build-log` from the
- * worker via `ondatachannel`, receives video via `ontrack`.
+ * and data-channel setup. The MCP registers as an `observer` peer (co-exists
+ * with the real browser) but still creates the offer, creates the `terminal`
+ * data channel, receives `build-log` from the worker via `ondatachannel`,
+ * and receives video via `ontrack`.
  */
 export class Peer {
   readonly pc: wrtc.RTCPeerConnection;

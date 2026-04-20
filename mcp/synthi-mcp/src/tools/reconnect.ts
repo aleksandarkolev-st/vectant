@@ -40,7 +40,7 @@ export async function reconnectTool(_args: unknown): Promise<ToolResponse> {
       return jsonResponse({
         ok: true,
         reconnected: true,
-        resolution: { w: attached.resolution.width, h: attached.resolution.height },
+        resolution: attached.resolution ? { w: attached.resolution.width, h: attached.resolution.height } : null,
         session_id: attached.sessionId,
       });
     } catch (err) {

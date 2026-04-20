@@ -609,10 +609,11 @@ async function main() {
     log('ok', `MCP advertises ${tools.tools?.length ?? 0} tools: ${tools.tools?.map(t => t.name).join(', ')}`);
 
     // 6. attach
-    log('info', 'synthi_attach (expect ~10-15s, waits for first video frame)');
+    log('info', 'synthi_attach (returns as soon as PC + data channels are up)');
     const attach = await client.toolCall('synthi_attach', {});
     if (!attach?.ok) fail(`synthi_attach failed: ${JSON.stringify(attach)}`);
-    log('ok', `attached  resolution=${attach.resolution?.w}x${attach.resolution?.h}`);
+    const resStr = attach.resolution ? `${attach.resolution.w}x${attach.resolution.h}` : 'none-yet (no frames)';
+    log('ok', `attached  resolution=${resStr}`);
 
     // 7. baseline screenshot
     log('info', 'synthi_screenshot (baseline)');
