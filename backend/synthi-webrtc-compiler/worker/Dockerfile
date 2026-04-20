@@ -61,6 +61,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     openjdk-17-jdk-headless \
     # Python
     python3 python3-pip \
+    # SDL2
+    libsdl2-2.0-0 libsdl2-dev \
     # Runtime utilities used by language runtimes and downloads
     curl ca-certificates xz-utils \
     && rm -rf /var/lib/apt/lists/*
