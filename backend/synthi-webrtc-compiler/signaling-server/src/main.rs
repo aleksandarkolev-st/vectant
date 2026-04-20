@@ -84,6 +84,13 @@ struct SignalMessage {
     /// legacy browsers/workers keep working byte-identical.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     supported_protocols: Option<Vec<u32>>,
+
+    /// Per-connection peer identifier. Minted by the signaling-server on
+    /// register and echoed in the `registered` ack. Routing decisions
+    /// still run off `(session_id, role)` today; the field is on the wire
+    /// for forward-compat with G3 Phase B (worker per-peer PC routing).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    peer_id: Option<String>,
 }
 
 /// Protocol versions this signaling-server implementation can speak.
@@ -470,6 +477,12 @@ async fn handle_connection(
 
             my_session = Some(session_id.clone());
             my_role = Some(role.clone());
+            // Per-connection peer identifier. Echoed back in the
+            // `registered` ack so clients can correlate their messages
+            // with server-side routing decisions. Phase B will stamp
+            // this onto forwarded SDP/ICE messages; today it's
+            // informational only.
+            let peer_id = uuid::Uuid::new_v4().to_string();
 
             // Singleton roles evict prior senders (Path A); observer appends.
             let key = (session_id.clone(), role.clone());
@@ -499,6 +512,7 @@ async fn handle_connection(
                 "server_supports": SERVER_PROTOCOLS,
                 "session_id": session_id,
                 "role": role,
+                "peer_id": peer_id,
             });
             let _ = out_tx.send(Message::text(ack.to_string()));
 

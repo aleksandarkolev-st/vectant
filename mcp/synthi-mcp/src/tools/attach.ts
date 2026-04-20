@@ -20,6 +20,47 @@ interface AttachArgs {
   requested_protocol_version?: unknown;
   preferred_vision_backend?: unknown;
   "i-understand-no-auth"?: unknown;
+  /**
+   * Explicit ICE server list. When present, overrides the env-var path
+   * below. Each entry follows the WebRTC `RTCIceServer` dictionary —
+   * `{urls, username?, credential?}`.
+   */
+  ice_servers?: unknown;
+}
+
+/**
+ * Resolve ICE servers from (in order): explicit tool args, then
+ * `SYNTHI_TURN_URL` / `SYNTHI_TURN_USERNAME` / `SYNTHI_TURN_CREDENTIAL`
+ * + `SYNTHI_STUN_URL` env vars. When no TURN creds are available,
+ * returns `undefined` so the Peer falls back to its built-in Google STUN
+ * default (matches pre-existing behavior).
+ *
+ * Why the env path exists: in local docker-compose dev the worker gets
+ * TURN via collab-server's `/turn-credentials` endpoint, but the MCP
+ * typically runs on the host — so it needs the host-reachable TURN URL
+ * (e.g. `turn:localhost:3478`) rather than the docker-internal name
+ * (`turn:coturn:3478`) the worker uses. Env lets the operator pass in
+ * the host-scoped URL without the MCP having to know the networking
+ * topology.
+ */
+function resolveIceServers(args: AttachArgs): RTCIceServer[] | undefined {
+  if (Array.isArray(args.ice_servers) && args.ice_servers.length > 0) {
+    return args.ice_servers as RTCIceServer[];
+  }
+
+  const stunUrl = process.env.SYNTHI_STUN_URL;
+  const turnUrl = process.env.SYNTHI_TURN_URL;
+  const turnUser = process.env.SYNTHI_TURN_USERNAME;
+  const turnCred = process.env.SYNTHI_TURN_CREDENTIAL;
+
+  const servers: RTCIceServer[] = [];
+  if (stunUrl) {
+    servers.push({ urls: stunUrl });
+  }
+  if (turnUrl && turnUser && turnCred) {
+    servers.push({ urls: turnUrl, username: turnUser, credential: turnCred });
+  }
+  return servers.length > 0 ? servers : undefined;
 }
 
 export async function attachTool(args: unknown, ctx: ToolContext): Promise<ToolResponse> {
@@ -81,7 +122,16 @@ export async function attachTool(args: unknown, ctx: ToolContext): Promise<ToolR
   }
 
   try {
-    const attached = await session.attach({ sessionId, signalingUrl });
+    const iceServers = resolveIceServers(a);
+    const attachOpts: {
+      sessionId: string;
+      signalingUrl: string;
+      iceServers?: RTCIceServer[];
+    } = { sessionId, signalingUrl };
+    if (iceServers !== undefined) {
+      attachOpts.iceServers = iceServers;
+    }
+    const attached = await session.attach(attachOpts);
     if (!classification.local) {
       session.markUnsafeMode();
     }

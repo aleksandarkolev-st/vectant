@@ -43,8 +43,21 @@ export class SignalingClient {
   private closed = false;
   private messageHandlers: SignalingMessageHandler[] = [];
   private closeHandler: SignalingCloseHandler | null = null;
+  /**
+   * Per-connection peer identifier minted by the signaling-server on
+   * register and echoed back in the `registered` ack. Forward-compat
+   * with G3 Phase B (per-peer PC routing in the worker); not used for
+   * routing today.
+   */
+  private assignedPeerId: string | null = null;
 
   constructor(private readonly opts: SignalingClientOptions) {}
+
+  /** Returns the server-assigned peer_id, or `null` if the `registered`
+   *  ack hasn't arrived yet. */
+  peerId(): string | null {
+    return this.assignedPeerId;
+  }
 
   /**
    * Register a message handler. Multiple handlers can coexist — each is
@@ -117,7 +130,6 @@ export class SignalingClient {
       });
 
       ws.on("message", (data) => {
-        if (this.messageHandlers.length === 0) return;
         const text = typeof data === "string" ? data : data.toString("utf8");
         let parsed: SignalingMessage;
         try {
@@ -125,13 +137,19 @@ export class SignalingClient {
         } catch {
           return;
         }
-        if (parsed && typeof parsed.type === "string") {
-          for (const h of this.messageHandlers) {
-            try {
-              h(parsed);
-            } catch {
-              // handlers must not break the receive loop
-            }
+        if (!parsed || typeof parsed.type !== "string") return;
+        // Capture the server-assigned peer_id on the `registered` ack.
+        // Done BEFORE user handlers so anyone reading `peerId()` in
+        // response to that message sees the fresh value.
+        if (parsed.type === "registered" && typeof parsed["peer_id"] === "string") {
+          this.assignedPeerId = parsed["peer_id"] as string;
+        }
+        if (this.messageHandlers.length === 0) return;
+        for (const h of this.messageHandlers) {
+          try {
+            h(parsed);
+          } catch {
+            // handlers must not break the receive loop
           }
         }
       });

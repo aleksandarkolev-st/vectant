@@ -54,13 +54,14 @@
 //
 // On failure, prints the MCP's stderr tail + the last few JSON-RPC frames.
 
-import { spawn } from 'node:child_process';
+import { spawn, exec } from 'node:child_process';
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 import net from 'node:net';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
+import { WebSocket } from 'ws';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -84,7 +85,26 @@ const CFG = {
   // change what the MCP test exercises — it just keeps the output clean when
   // the running collab-server's GCS client is mis-configured. Opt in with
   // MCP_SYNC_GCS=true to exercise the mirror path.
-  syncToGcs: 'true'
+  syncToGcs: 'true',
+  // TURN creds for the MCP's RTCPeerConnection. Defaults match the host-
+  // reachable coturn in docker-compose.yml (`turn:localhost:3478`, user
+  // `synthi`, pass `synthi`). The worker inside docker gets
+  // `turn:coturn:3478` via collab-server's /turn-credentials — that name
+  // doesn't resolve from the Windows/macOS host where the MCP subprocess
+  // runs, so we can't reuse the worker's URL. Override with env for
+  // non-standard coturn configs.
+  turnUrl: process.env.SYNTHI_TURN_URL ?? 'turn:localhost:3478',
+  turnUser: process.env.SYNTHI_TURN_USERNAME ?? 'synthi',
+  turnCred: process.env.SYNTHI_TURN_CREDENTIAL ?? 'synthi',
+  stunUrl: process.env.SYNTHI_STUN_URL ?? 'stun:stun.l.google.com:19302',
+  // When `AUTO_OPEN=true` (default), the script spawns the OS default
+  // browser pointed at the workspace, polls signaling presence for a
+  // browser peer, then waits `COMPILE_WARMUP_MS` for the worker to
+  // produce its first video frame before attaching the MCP. Set to
+  // `false` to fall back to the manual ENTER prompt.
+  autoOpen: (process.env.AUTO_OPEN ?? 'true').toLowerCase() !== 'false',
+  presenceTimeoutMs: Number(process.env.PRESENCE_TIMEOUT_MS ?? 60_000),
+  compileWarmupMs: Number(process.env.COMPILE_WARMUP_MS ?? 8_000),
 };
 
 const LOG_DIR = path.resolve(__dirname, '../.live-test-logs');
@@ -218,6 +238,70 @@ function tcpPing(host, port, timeoutMs = 2000) {
     const t = setTimeout(() => { s.destroy(); resolve(false); }, timeoutMs);
     s.once('connect', () => { clearTimeout(t); s.end(); resolve(true); });
     s.once('error', () => { clearTimeout(t); resolve(false); });
+  });
+}
+
+// ── Browser auto-open ────────────────────────────────────────────────
+// Spawn the OS default browser at `url`. Non-blocking — callers poll
+// signaling presence separately to know when the tab is actually loaded.
+// Returns the spawned child so the caller can keep a handle if needed.
+function openBrowser(url) {
+  const plat = process.platform;
+  let cmd;
+  if (plat === 'win32') {
+    // `start` is a cmd.exe builtin; shell:true routes it via cmd.
+    cmd = `start "" "${url}"`;
+    return exec(cmd, { windowsHide: true });
+  } else if (plat === 'darwin') {
+    return exec(`open "${url}"`);
+  } else {
+    // Linux / BSDs — xdg-open is provided by xdg-utils on most distros.
+    return exec(`xdg-open "${url}"`);
+  }
+}
+
+// ── Signaling presence poller ────────────────────────────────────────
+// Connect to the signaling-server as `role:"observer"` (multi-slot, so
+// we don't evict the real browser) and wait for a `{type:"presence"}`
+// broadcast that shows at least one `attached_humans`. The observer role
+// is configured in signaling-server/src/main.rs; presence broadcasts
+// fire on every register/disconnect so this is a one-shot await, not a
+// busy loop.
+async function waitForBrowserPeer({ signalingUrl, sessionId, timeoutMs }) {
+  return new Promise((resolve, reject) => {
+    const ws = new WebSocket(signalingUrl);
+    const startedAt = Date.now();
+    const timer = setTimeout(() => {
+      try { ws.close(); } catch { /* ignored */ }
+      reject(new Error(`no browser peer on session '${sessionId}' after ${timeoutMs}ms`));
+    }, timeoutMs);
+
+    ws.on('open', () => {
+      ws.send(JSON.stringify({
+        type: 'register',
+        role: 'observer',
+        session_id: sessionId,
+        client_version: 'synthi-live-test/presence-probe',
+      }));
+    });
+
+    ws.on('message', (data) => {
+      let msg;
+      try { msg = JSON.parse(data.toString('utf8')); } catch { return; }
+      if (msg?.type !== 'presence') return;
+      if (typeof msg.attached_humans !== 'number') return;
+      if (msg.attached_humans >= 1) {
+        clearTimeout(timer);
+        const elapsed = Date.now() - startedAt;
+        try { ws.close(); } catch { /* ignored */ }
+        resolve({ humans: msg.attached_humans, agents: msg.attached_agents ?? 0, elapsedMs: elapsed });
+      }
+    });
+
+    ws.on('error', (err) => {
+      clearTimeout(timer);
+      reject(err);
+    });
   });
 }
 
@@ -378,15 +462,46 @@ async function main() {
   log('ok', 'seed committed');
 
   if (!CFG.frontendPrecompiled) {
-    console.log('');
-    log('warn', 'Initial compile is frontend-driven. Options:');
-    console.log('    (a) In the Windows browser, open the workspace:');
-    console.log(`        ${CFG.frontendUrl}/workspace/${CFG.slug}`);
-    console.log('        Wait until the counter is visibly rendering, then press ENTER here.');
-    console.log('    (b) Skip — synthi_attach will hang until a frame arrives.');
-    console.log('');
-    process.stdout.write('    Press ENTER when the workspace shows the counter, or Ctrl-C to abort: ');
-    await new Promise((r) => process.stdin.once('data', r));
+    const workspaceUrl = `${CFG.frontendUrl}/workspace/${CFG.slug}`;
+    if (CFG.autoOpen) {
+      console.log('');
+      log('info', `Auto-open: launching OS default browser → ${workspaceUrl}`);
+      try {
+        openBrowser(workspaceUrl);
+      } catch (e) {
+        log('warn', `openBrowser failed (${e.message}); fallback to manual ENTER`);
+      }
+      log('info', `Waiting for browser peer on signaling (timeout ${CFG.presenceTimeoutMs}ms)`);
+      try {
+        const p = await waitForBrowserPeer({
+          signalingUrl: CFG.signalingUrl,
+          sessionId: CFG.slug,
+          timeoutMs: CFG.presenceTimeoutMs,
+        });
+        log('ok', `browser peer detected after ${p.elapsedMs}ms (humans=${p.humans} agents=${p.agents})`);
+      } catch (e) {
+        log('warn', `presence poll failed: ${e.message}`);
+        log('warn', 'Falling back to manual ENTER. Ensure the browser tab is loaded.');
+        process.stdout.write('    Press ENTER to continue, or Ctrl-C to abort: ');
+        await new Promise((r) => process.stdin.once('data', r));
+      }
+      // Compile kicks off on tab load; give the worker time to produce
+      // the first frame before the MCP attach races it. 8s default is
+      // conservative for a Hello-world C++ compile; override with
+      // COMPILE_WARMUP_MS for heavier fixtures.
+      log('info', `Warmup sleep ${CFG.compileWarmupMs}ms (compile → first frame)`);
+      await sleep(CFG.compileWarmupMs);
+    } else {
+      console.log('');
+      log('warn', 'Initial compile is frontend-driven. Options:');
+      console.log('    (a) In the browser, open the workspace:');
+      console.log(`        ${workspaceUrl}`);
+      console.log('        Wait until the counter is visibly rendering, then press ENTER here.');
+      console.log('    (b) Skip — synthi_attach will hang until a frame arrives.');
+      console.log('');
+      process.stdout.write('    Press ENTER when the workspace shows the counter, or Ctrl-C to abort: ');
+      await new Promise((r) => process.stdin.once('data', r));
+    }
   }
 
   // 4. Spawn MCP  (session_id = slug, matching compilerClient.js:167 fallback)
@@ -400,6 +515,14 @@ async function main() {
     SYNTHI_GEMINI_MODEL: CFG.geminiModel,
     SYNTHI_PROMETHEUS_PORT: String(CFG.prometheusPort),
     SYNTHI_PROMETHEUS_HOST: '127.0.0.1',
+    // ICE servers — the MCP tool's `attach` resolves these at runtime
+    // via `resolveIceServers()` in `src/tools/attach.ts`. Without TURN
+    // the RTCPeerConnection can't form a working candidate pair against
+    // the docker-internal worker, and `synthi_attach` times out at 30s.
+    SYNTHI_STUN_URL: CFG.stunUrl,
+    SYNTHI_TURN_URL: CFG.turnUrl,
+    SYNTHI_TURN_USERNAME: CFG.turnUser,
+    SYNTHI_TURN_CREDENTIAL: CFG.turnCred,
   };
   const mcp = spawn('node', [CFG.mcpEntry], { env, stdio: ['pipe', 'pipe', 'pipe'] });
   const client = new McpClient(mcp);

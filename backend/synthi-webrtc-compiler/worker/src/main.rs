@@ -603,6 +603,7 @@ async fn main() -> Result<()> {
             sdp: None,
             sdp_type: None,
             candidate: None,
+            peer_id: None,
         })?))
         .await?;
 
@@ -997,6 +998,7 @@ async fn main() -> Result<()> {
                         sdp: Some(answer.sdp),
                         sdp_type: Some(answer.sdp_type.to_string()),
                         candidate: None,
+                        peer_id: None,
                     })?;
                     if let Some(fp) = new_fingerprint {
                         current_remote_fingerprint = Some(fp);
@@ -1278,6 +1280,7 @@ async fn create_peer(
                             sdp: None,
                             sdp_type: None,
                             candidate: Some(init),
+                            peer_id: None,
                         });
                     }
                 }

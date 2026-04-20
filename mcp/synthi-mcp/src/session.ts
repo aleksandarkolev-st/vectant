@@ -22,6 +22,16 @@ export interface AttachOptions {
   signalingUrl: string;
   attachTimeoutMs?: number;
   firstFrameTimeoutMs?: number;
+  /**
+   * ICE servers the underlying RTCPeerConnection should use. When omitted,
+   * the Peer falls back to Google STUN only — which is fine for most cloud
+   * deploys (the worker has its own TURN via collab-server) but fails in
+   * local docker-compose dev because the MCP runs on the host and can't
+   * route to the worker's private container IPs without a TURN relay on
+   * both ends. The attach tool resolves this from env + args before
+   * calling in; callers that already have creds can pass them directly.
+   */
+  iceServers?: RTCIceServer[];
 }
 
 export interface AttachedSession {
@@ -298,7 +308,14 @@ class SessionManager {
     this.unsubscribers.push(unsubPresence);
     await signaling.connect();
 
-    const peer = new Peer({ signaling, connectTimeoutMs: attachTimeoutMs });
+    const peerOpts: { signaling: SignalingClient; connectTimeoutMs: number; iceServers?: RTCIceServer[] } = {
+      signaling,
+      connectTimeoutMs: attachTimeoutMs,
+    };
+    if (opts.iceServers !== undefined) {
+      peerOpts.iceServers = opts.iceServers;
+    }
+    const peer = new Peer(peerOpts);
     await peer.start();
 
     // Wait for the peer connection to reach connected + build-log + terminal + compile.
