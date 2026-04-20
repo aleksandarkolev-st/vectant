@@ -249,11 +249,11 @@ function openBrowser(url) {
   const plat = process.platform;
   let cmd;
   if (plat === 'win32') {
-    // `start` is a cmd.exe builtin; shell:true routes it via cmd.
-    cmd = `start "" "${url}"`;
+    // Use Chrome explicitly; fall back to `start` (Windows default) if not found
+    cmd = `start chrome "${url}"`;
     return exec(cmd, { windowsHide: true });
   } else if (plat === 'darwin') {
-    return exec(`open "${url}"`);
+    return exec(`open -a "Google Chrome" "${url}"`);
   } else {
     // Linux / BSDs — xdg-open is provided by xdg-utils on most distros.
     return exec(`xdg-open "${url}"`);
