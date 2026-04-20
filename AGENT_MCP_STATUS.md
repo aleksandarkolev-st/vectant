@@ -74,9 +74,10 @@ Worker scaffold landed in `backend/synthi-webrtc-compiler/worker/src/webrtc/`:
 
 ### Multi-peer signaling
 
-- [x] **Signaling-server observer role.** `backend/synthi-webrtc-compiler/signaling-server/src/main.rs` refactored — peers are Vec<Sender>; `observer` appends, `browser`/`worker` evict; worker → browser+observer fan-out. 4 rust unit tests green.
+- [x] **Signaling-server observer role.** `backend/synthi-webrtc-compiler/signaling-server/src/main.rs` refactored — peers are Vec<Sender>; `observer` appends, `browser`/`worker` evict; worker → browser+observer fan-out. 17 rust unit tests green (4 roles + 5 protocol + 4 presence + 4 peer_id).
+- [x] **Signaling-server peer_id routing + worker peer_id wire.** Server mints a per-connection peer_id on register, stamps it onto every forwarded non-worker message, and direct-routes worker replies that carry `peer_id` to a specific socket via `peers_by_id: String → tx`. Worker stamps peer_id on outgoing answer/candidate via `current_peer_id: Arc<RwLock<Option<String>>>`. MCP auto-stamps on outgoing offer/answer/candidate.
 - [x] **Worker webrtc/ scaffold** — `PeerRegistry` + `TrackFanout` landed standalone, unit-tested, reachable via `worker::webrtc::*`. Resolves the refined-plan risks (GStreamer max-buffers=1 HOL blocking via broadcast+drop-on-lag; teardown ordering via Drop-aborts-task; per-PC DTLS/ICE automatic).
-- [ ] **Main.rs multi-PC wiring.** Remaining step: replace `log_channel_store: Option<Arc<DC>>` + singular `pc` with the new registry, per-peer PC creation on `offer`, per-peer track subscription. Migration guide in `backend/synthi-webrtc-compiler/worker/src/webrtc/G3_PHASE_B_INTEGRATION.md`.
+- [ ] **Main.rs multi-PC wiring.** Follow-up PR: replace `log_channel_store: Option<Arc<DC>>` + singular `pc` with the registry for per-peer PCs + per-peer track subscription via the already-wired `TrackFanout`. Full scope in §4.2 below.
 
 ### HMR wire coverage (`src/hmr.ts`)
 
@@ -201,12 +202,24 @@ All listed §4 items from the prior snapshot have landed except the live-stack-d
 - [x] Confidence gate (default 0.3) + bbox clamping to frame rect.
 - 26 new unit tests.
 
-### 4.2. Worker per-peer PC registry — ⚠️ scaffolded; main.rs wiring staged
+### 4.2. Worker per-peer PC registry — ⚠️ wire-level complete; transport fan-out still pending
+
+**peer_id protocol now end-to-end:**
 
 - [x] `worker/src/webrtc/peer_registry.rs` — `PeerRegistry` with browser eviction + observer fan-out + incremental handle population. 6 unit tests.
 - [x] `worker/src/webrtc/track_fanout.rs` — broadcast-based RTP fan-out resolving GStreamer `max-buffers=1` HOL blocking (drop-on-lag via `RecvError::Lagged`). 5 unit tests.
-- [x] `worker/src/webrtc/G3_PHASE_B_INTEGRATION.md` — step-by-step guide for remaining `main.rs` wiring with current-code file:line pointers.
-- [ ] **Main.rs migration.** Replace `log_channel_store: Option<Arc<DC>>` + singular `pc` with the registry; per-peer PC creation on `offer`; per-peer track subscription in media pipelines. This is the high-risk step the scaffold commit deliberately staged away from.
+- [x] **Signaling-server peer_id routing.** `peers_by_id: String → tx` map; every forwarded message from a non-worker peer is stamped with the sender's peer_id; worker-to-peer replies that carry `peer_id` are direct-routed (single socket, no cross-talk) with `peer:<id>` as the cross-pod Redis target key. 5 new unit tests (`rewrite_peer_id_*`, `parse_peer_target_key_roundtrip`) — 17/17 passing.
+- [x] **Worker stamps peer_id on outgoing answer/candidate.** `current_peer_id: Arc<RwLock<Option<String>>>` tracks which peer the singleton PC is bound to; on_ice_candidate + answer-send read it; reset arm clears it.
+- [x] **MCP client auto-stamps peer_id** on outgoing offer/answer/candidate in `SignalingClient.send`.
+- [x] **Input peer-tagging.** `gui-event` handler resolves the active `peer_id` via the signal-loop slot (falls back to `DEFAULT_BROWSER_PEER_ID` for legacy), logs `{peer_id, role, session_id, event}` through `StructuredLogger::record_input_event`, and includes `peer_id` on every `input-ack`.
+- [x] **live-test peer_id smoke.** `scripts/live-test.mjs` opens two observer sockets on a probe session and asserts distinct `peer_id`s on their `registered` acks — catches signaling-server regressions pre-MCP.
+
+**Remaining (follow-up PR — explicitly scoped out of this one):**
+
+- [ ] **Per-peer PC refactor in main.rs.** Delete the singleton `pc` + `current_remote_fingerprint` + fingerprint-rotation branch; route offer/candidate/reset arms through `peer_registry.get_or_insert(peer_id)`. ~300 LOC across the signal loop + callback chains.
+- [ ] **`wire_peer_channels` rewrite.** Drop `log_channel_store` (declaration + duplicate attach + 6 reader sites inside the compile DC). Migrate compile-DC replies to `registry.get(&peer_id).and_then(|h| h.build_log_dc.clone())` — these are per-request replies, not broadcasts, so we route to the requesting peer's DC, not broadcast.
+- [ ] **TrackFanout wiring.** At boot: one fanout per kind (video + audio). Offer-arm builds per-peer `TrackLocalStaticRTP`, `replace_track`s onto the transceiver pre-`create_answer`, stores the `FanoutSubscription` on `PeerHandle`. `video_pipeline.rs:614` writes into the fanout instead of the singleton track.
+- [ ] **HMR replace_track review.** Once fanout owns distribution, `runner.rs:692-733`'s replace-track loop likely collapses — verify during execution; keep a guarded registry-walk fallback if needed.
 - [ ] Integration test: 1 browser + 1 observer both receive media + HMR status + per-peer tagged input.
 
 ### 4.3. Source-state producer — ✅ shipped

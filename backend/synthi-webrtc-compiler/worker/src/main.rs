@@ -616,7 +616,14 @@ async fn main() -> Result<()> {
     });
 
     let ice_servers = fetch_turn_credentials().await;
-    let mut pc = create_peer(signal_tx.clone(), ice_servers).await?;
+    // peer_id the singleton PC is currently bound to. Populated when an
+    // offer arrives carrying `peer_id` (Phase-B clients); stays `None` for
+    // legacy browsers that don't stamp the field. Shared with
+    // `create_peer`'s on_ice_candidate closure so outgoing candidates
+    // carry the same peer_id the answer carried.
+    let current_peer_id: Arc<tokio::sync::RwLock<Option<String>>> =
+        Arc::new(tokio::sync::RwLock::new(None));
+    let mut pc = create_peer(signal_tx.clone(), ice_servers, current_peer_id.clone()).await?;
     let log_channel_store: Arc<Mutex<Option<Arc<RTCDataChannel>>>> = Arc::new(Mutex::new(None));
     // Per-session peer registry. Today still populated with exactly one
     // `default-browser` peer (same effective cardinality as the legacy
@@ -883,6 +890,7 @@ async fn main() -> Result<()> {
         restart_controller.clone(),
         ipc_config.clone(),
         vscode_server_kill_tx.clone(),
+        current_peer_id.clone(),
     )
     .await?;
 
@@ -896,6 +904,11 @@ async fn main() -> Result<()> {
             Ok(v) => v,
             Err(_) => continue,
         };
+
+        // peer_id stamped by the signaling-server on every forwarded SDP/ICE
+        // message from a non-worker peer. Empty for legacy clients that
+        // don't yet carry the field — we fall back to role-fanout routing.
+        let incoming_peer_id = parsed.peer_id.clone();
 
         match parsed.msg_type.as_str() {
             "offer" => {
@@ -927,7 +940,13 @@ async fn main() -> Result<()> {
                             *guard = None;
                         }
                         let ice_servers = fetch_turn_credentials().await;
-                        match create_peer(signal_tx.clone(), ice_servers).await {
+                        match create_peer(
+                            signal_tx.clone(),
+                            ice_servers,
+                            current_peer_id.clone(),
+                        )
+                        .await
+                        {
                             Ok(new_pc) => {
                                 // Clear the old peer-registry entry + re-insert the
                                 // fresh PC before wiring so the DC open callbacks
@@ -956,6 +975,7 @@ async fn main() -> Result<()> {
                                     restart_controller.clone(),
                                     ipc_config.clone(),
                                     vscode_server_kill_tx.clone(),
+                                    current_peer_id.clone(),
                                 )
                                 .await?;
                                 pc = new_pc;
@@ -991,6 +1011,13 @@ async fn main() -> Result<()> {
                     } else {
                         eprintln!("[WebRTC-signal] WARNING: TWCC missing from Answer SDP!");
                     }
+                    // Remember which peer this singleton PC is bound to so
+                    // outgoing ICE candidates (emitted asynchronously by the
+                    // on_ice_candidate closure) stamp the same peer_id and
+                    // the signaling-server direct-routes them back.
+                    if incoming_peer_id.is_some() {
+                        *current_peer_id.write().await = incoming_peer_id.clone();
+                    }
                     signal_tx.send(SignalMessage {
                         msg_type: "answer".into(),
                         role: None,
@@ -998,7 +1025,7 @@ async fn main() -> Result<()> {
                         sdp: Some(answer.sdp),
                         sdp_type: Some(answer.sdp_type.to_string()),
                         candidate: None,
-                        peer_id: None,
+                        peer_id: incoming_peer_id.clone(),
                     })?;
                     if let Some(fp) = new_fingerprint {
                         current_remote_fingerprint = Some(fp);
@@ -1056,7 +1083,16 @@ async fn main() -> Result<()> {
 
                 // 4. Create a fresh PeerConnection
                 let ice_servers = fetch_turn_credentials().await;
-                match create_peer(signal_tx.clone(), ice_servers).await {
+                // Reset unbinds the PC from any prior peer_id; the next
+                // offer will rebind it.
+                *current_peer_id.write().await = None;
+                match create_peer(
+                    signal_tx.clone(),
+                    ice_servers,
+                    current_peer_id.clone(),
+                )
+                .await
+                {
                     Ok(new_pc) => {
                         peer_registry.remove(DEFAULT_BROWSER_PEER_ID);
                         peer_registry.insert(PeerHandle::new(
@@ -1082,6 +1118,7 @@ async fn main() -> Result<()> {
                             restart_controller.clone(),
                             ipc_config.clone(),
                             vscode_server_kill_tx.clone(),
+                            current_peer_id.clone(),
                         )
                         .await?;
                         pc = new_pc;
@@ -1105,6 +1142,7 @@ async fn main() -> Result<()> {
 async fn create_peer(
     signal_tx: mpsc::UnboundedSender<SignalMessage>,
     ice_servers: Vec<webrtc::ice_transport::ice_server::RTCIceServer>,
+    current_peer_id: Arc<tokio::sync::RwLock<Option<String>>>,
 ) -> Result<Arc<RTCPeerConnection>> {
     let mut m = MediaEngine::default();
     m.register_default_codecs()?;
@@ -1268,11 +1306,17 @@ async fn create_peer(
 
     {
         let tx = signal_tx.clone();
+        let current_peer_id = current_peer_id.clone();
         pc.on_ice_candidate(Box::new(move |candidate| {
             let tx = tx.clone();
+            let current_peer_id = current_peer_id.clone();
             async move {
                 if let Some(c) = candidate {
                     if let Ok(init) = c.to_json() {
+                        // Stamp the peer_id the signaling-server should
+                        // route this candidate to. `None` falls through
+                        // to role-fanout (legacy pre-Phase-B browsers).
+                        let peer_id = current_peer_id.read().await.clone();
                         let _ = tx.send(SignalMessage {
                             msg_type: "candidate".into(),
                             role: None,
@@ -1280,7 +1324,7 @@ async fn create_peer(
                             sdp: None,
                             sdp_type: None,
                             candidate: Some(init),
-                            peer_id: None,
+                            peer_id,
                         });
                     }
                 }
@@ -1315,6 +1359,7 @@ async fn wire_peer_channels(
     restart_controller: Arc<tokio::sync::Mutex<RestartController>>,
     ipc_config: Arc<IpcConfig>,
     vscode_server_kill_tx: Arc<Mutex<Option<(mpsc::UnboundedSender<()>, tokio::time::Instant)>>>,
+    current_peer_id: Arc<tokio::sync::RwLock<Option<String>>>,
 ) -> Result<()> {
     let pc = pc.clone();
     let build_log_dc = pc
@@ -1358,6 +1403,7 @@ async fn wire_peer_channels(
     let sdl_input_store_for_callback = sdl_input_store.clone();
     let vscode_server_kill_tx_for_callback = vscode_server_kill_tx.clone();
     let peer_registry_for_callback = peer_registry.clone();
+    let current_peer_id_for_callback = current_peer_id.clone();
     pc.on_data_channel(Box::new(move |dc: Arc<RTCDataChannel>| {
         let store = compile_store.clone();
         let term_store = term_store.clone();
@@ -1377,6 +1423,7 @@ async fn wire_peer_channels(
         let ipc_config_outer = ipc_config_for_callback.clone();
         let vscode_server_kill_tx_outer = vscode_server_kill_tx_for_callback.clone();
         let peer_registry_outer = peer_registry_for_callback.clone();
+        let current_peer_id_outer = current_peer_id_for_callback.clone();
         async move {
             let label = dc.label();
             debug_log!("[on_data_channel] Received data channel: label='{}', id={}", label, dc.id());
@@ -1717,6 +1764,8 @@ async fn wire_peer_channels(
                     let runner_store_for_term = runner_store_outer.clone();
                     let build_log_store_for_term = store.clone();
                     let peer_registry_for_term = peer_registry_outer.clone();
+                    let structured_logger_for_term = structured_logger_outer.clone();
+                    let current_peer_id_for_term = current_peer_id_outer.clone();
                     // Track which sessions we've already warned about missing x11 senders
                     // to avoid flooding logs with repeated messages on every mouse/key event.
                     let x11_warned: Arc<tokio::sync::Mutex<std::collections::HashSet<String>>> =
@@ -1727,6 +1776,8 @@ async fn wire_peer_channels(
                         let runner_store_term = runner_store_for_term.clone();
                         let build_log_term = build_log_store_for_term.clone();
                         let peer_registry_term = peer_registry_for_term.clone();
+                        let structured_logger_term = structured_logger_for_term.clone();
+                        let current_peer_id_term = current_peer_id_for_term.clone();
                         let x11_warned = x11_warned.clone();
                         async move {
                             if msg.is_string {
@@ -1758,11 +1809,37 @@ async fn wire_peer_channels(
                                                 .get("dispatch_id")
                                                 .and_then(|x| x.as_str())
                                                 .map(|s| s.to_string());
+                                            // Resolve the peer_id for the active browser/observer.
+                                            // Empty string for legacy clients that don't carry
+                                            // the field on the wire — the ack/log still emits but
+                                            // without disambiguation.
+                                            let peer_id_for_event = current_peer_id_term
+                                                .read()
+                                                .await
+                                                .clone()
+                                                .unwrap_or_else(|| {
+                                                    DEFAULT_BROWSER_PEER_ID.to_string()
+                                                });
+                                            // Record every gui-event to the structured logger,
+                                            // tagged with the sending peer. A multi-peer session
+                                            // is reconstructable post-hoc from these entries.
+                                            if let Some(sid) = v.get("sessionId").and_then(|x| x.as_str()) {
+                                                if let Some(evt) = v.get("event") {
+                                                    structured_logger_term.record_input_event(
+                                                        &peer_id_for_event,
+                                                        "browser",
+                                                        sid,
+                                                        evt,
+                                                    );
+                                                }
+                                            }
+                                            let ack_peer_id = peer_id_for_event.clone();
                                             let emit_ack = |accepted: bool, reason: Option<&str>| {
                                                 if let Some(ref did) = dispatch_id_opt {
                                                     let did = did.clone();
                                                     let reason = reason.map(|s| s.to_string());
                                                     let registry = peer_registry_term.clone();
+                                                    let pid = ack_peer_id.clone();
                                                     tokio::spawn(async move {
                                                         let msg = match reason {
                                                             Some(r) => serde_json::json!({
@@ -1770,11 +1847,13 @@ async fn wire_peer_channels(
                                                                 "dispatch_id": did,
                                                                 "accepted": accepted,
                                                                 "reason": r,
+                                                                "peer_id": pid,
                                                             }),
                                                             None => serde_json::json!({
                                                                 "type": "input-ack",
                                                                 "dispatch_id": did,
                                                                 "accepted": accepted,
+                                                                "peer_id": pid,
                                                             }),
                                                         };
                                                         broadcast_build_log_text(

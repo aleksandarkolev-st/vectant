@@ -232,6 +232,12 @@ struct AppState {
     ///   browser/worker: 1 (re-register evicts the prior sender).
     ///   observer:       N.
     peers: RwLock<HashMap<PeerKey, Vec<mpsc::UnboundedSender<Message>>>>,
+    /// peer_id → outbound sender. Minted on register, removed on disconnect.
+    /// Lets the worker reach a specific peer by id (no `(session, role)`
+    /// fanout) so >1 observer on the same session can co-attach without
+    /// cross-talk. Cross-pod delivery uses `peer:<id>` Redis target keys
+    /// that resolve against this map on the owning pod.
+    peers_by_id: RwLock<HashMap<String, mpsc::UnboundedSender<Message>>>,
     /// Maps a `__legacy__` worker to the real session it is currently serving.
     /// Used in local dev when the worker has no SESSION_ID set.
     legacy_session: RwLock<Option<String>>,
@@ -293,6 +299,7 @@ async fn main() -> anyhow::Result<()> {
 
     let state = Arc::new(AppState {
         peers: RwLock::new(HashMap::new()),
+        peers_by_id: RwLock::new(HashMap::new()),
         legacy_session: RwLock::new(None),
         redis_client: redis_client.clone(),
         node_id: node_id.clone(),
@@ -356,9 +363,19 @@ async fn redis_subscribe_loop(state: &AppState) -> anyhow::Result<()> {
             continue;
         }
 
-        // Parse the target_key → (session_id, role). Fan to all local peers
-        // of that role (observer case can have many; browser/worker at most 1).
-        if let Some((session_id, role)) = parse_target_key(&envelope.target_key) {
+        // Two target-key shapes:
+        //   "session:<sid>:<role>" → role fan-out (legacy / observer default)
+        //   "peer:<peer_id>"       → direct delivery to a specific socket
+        //                            (used for worker→peer replies when the
+        //                            worker stamps `peer_id` on the outgoing
+        //                            SDP/ICE; routes only to that peer even
+        //                            if multiple observers share the session)
+        if let Some(peer_id) = parse_peer_target_key(&envelope.target_key) {
+            let peers_by_id = state.peers_by_id.read().await;
+            if let Some(tx) = peers_by_id.get(&peer_id) {
+                let _ = tx.send(Message::text(envelope.payload.clone()));
+            }
+        } else if let Some((session_id, role)) = parse_target_key(&envelope.target_key) {
             let peers = state.peers.read().await;
             if let Some(senders) = peers.get(&(session_id, role)) {
                 for tx in senders {
@@ -380,9 +397,21 @@ fn parse_target_key(key: &str) -> Option<(String, String)> {
     // "session:<sid>:<role>"
     let mut parts = key.splitn(3, ':');
     let _prefix = parts.next()?; // "session"
+    if _prefix != "session" {
+        return None;
+    }
     let sid = parts.next()?;
     let role = parts.next()?;
     Some((sid.to_string(), role.to_string()))
+}
+
+/// target_key format for peer-direct delivery: "peer:<peer_id>".
+fn make_peer_target_key(peer_id: &str) -> String {
+    format!("peer:{peer_id}")
+}
+
+fn parse_peer_target_key(key: &str) -> Option<String> {
+    key.strip_prefix("peer:").map(|s| s.to_string())
 }
 
 // ── Per-connection handler ─────────────────────────────────────────────────
@@ -410,6 +439,10 @@ async fn handle_connection(
     // Identity of this connection — set on "register".
     let mut my_session: Option<String> = None;
     let mut my_role: Option<String> = None;
+    // peer_id minted on register. Used to stamp outbound messages and to
+    // route worker→peer replies directly. Removed from `peers_by_id` on
+    // disconnect so a stale id cannot receive bytes meant for a fresh peer.
+    let mut my_peer_id: Option<String> = None;
 
     while let Some(msg) = ws_rx.next().await {
         let msg = msg?;
@@ -474,15 +507,23 @@ async fn handle_connection(
                     }
                 }
             }
+            if let Some(old_pid) = &my_peer_id {
+                state.peers_by_id.write().await.remove(old_pid);
+            }
 
             my_session = Some(session_id.clone());
             my_role = Some(role.clone());
             // Per-connection peer identifier. Echoed back in the
-            // `registered` ack so clients can correlate their messages
-            // with server-side routing decisions. Phase B will stamp
-            // this onto forwarded SDP/ICE messages; today it's
-            // informational only.
+            // `registered` ack, stamped onto every forwarded SDP/ICE
+            // message originating from this socket, and used as the
+            // routing key when the worker replies directly to one peer.
             let peer_id = uuid::Uuid::new_v4().to_string();
+            my_peer_id = Some(peer_id.clone());
+            state
+                .peers_by_id
+                .write()
+                .await
+                .insert(peer_id.clone(), out_tx.clone());
 
             // Singleton roles evict prior senders (Path A); observer appends.
             let key = (session_id.clone(), role.clone());
@@ -540,12 +581,69 @@ async fn handle_connection(
             session_id.clone()
         };
 
+        // Rewrite the payload so `peer_id` always carries the identity of
+        // the non-worker peer in the conversation:
+        //   browser/observer → worker: stamp the sender's peer_id.
+        //   worker → browser/observer: keep whatever the worker set
+        //     (target peer_id used for direct routing below).
+        let forwarded_text = if role != ROLE_WORKER {
+            rewrite_peer_id(&text, my_peer_id.as_deref().unwrap_or(""))
+        } else {
+            text.clone()
+        };
+
+        // Direct peer routing: worker → specific peer.
+        // If the worker stamped `peer_id` on the outgoing message, deliver
+        // to exactly that peer (avoids cross-talking every observer on
+        // the session). Falls back to role fan-out when peer_id is absent
+        // (legacy worker, pre-Phase-B).
+        let direct_peer_id = if role == ROLE_WORKER {
+            parsed.peer_id.clone()
+        } else {
+            None
+        };
+
+        if let Some(target_peer_id) = direct_peer_id {
+            let delivered_locally = {
+                let peers_by_id = state.peers_by_id.read().await;
+                if let Some(tx) = peers_by_id.get(&target_peer_id) {
+                    tx.send(Message::text(forwarded_text.clone())).is_ok()
+                } else {
+                    false
+                }
+            };
+            if delivered_locally {
+                log_forward(
+                    &parsed.msg_type,
+                    &effective_session,
+                    &role,
+                    &format!("peer:{target_peer_id}"),
+                    "local",
+                );
+            } else {
+                publish_to_redis(
+                    &state,
+                    &make_peer_target_key(&target_peer_id),
+                    &forwarded_text,
+                )
+                .await;
+                log_forward(
+                    &parsed.msg_type,
+                    &effective_session,
+                    &role,
+                    &format!("peer:{target_peer_id}"),
+                    "redis",
+                );
+            }
+            continue;
+        }
+
         let target_roles = target_roles_for(&role);
 
         // Fan out across every target role. For worker → [browser, observer]
         // this routes the same message to both sets so every attached peer
-        // gets the SDP/ICE. WebRTC semantics at the peer layer ignore what
-        // isn't theirs; phase-2 worker per-peer PC registry tightens this.
+        // gets the SDP/ICE. Kept for back-compat with workers that don't
+        // yet stamp `peer_id`; direct-peer routing above supersedes it.
         for target_role in target_roles {
             let delivered_locally = {
                 let peers = state.peers.read().await;
@@ -564,7 +662,7 @@ async fn handle_connection(
                 if let Some(senders) = senders {
                     let mut any_ok = false;
                     for tx in senders {
-                        if tx.send(Message::text(text.clone())).is_ok() {
+                        if tx.send(Message::text(forwarded_text.clone())).is_ok() {
                             any_ok = true;
                         }
                     }
@@ -584,7 +682,7 @@ async fn handle_connection(
                 publish_to_redis(
                     &state,
                     &make_target_key(&effective_session, target_role),
-                    &text,
+                    &forwarded_text,
                 )
                 .await;
                 log_forward(&parsed.msg_type, &effective_session, &role, target_role, "redis");
@@ -593,6 +691,9 @@ async fn handle_connection(
     }
 
     // ── Cleanup on disconnect ──────────────────────────────────────────
+    if let Some(pid) = &my_peer_id {
+        state.peers_by_id.write().await.remove(pid);
+    }
     if let (Some(sid), Some(role)) = (&my_session, &my_role) {
         let (session_empty, presence_after_remove) = {
             let mut peers = state.peers.write().await;
@@ -647,6 +748,26 @@ async fn handle_connection(
 
     send_task.abort();
     Ok(())
+}
+
+/// Inject `peer_id` into an opaque signaling JSON without disturbing any
+/// other fields. Parsing through `Value` (instead of the typed
+/// `SignalMessage`) preserves forward-compat with client fields we don't
+/// model yet. Non-object payloads pass through untouched — the struct
+/// deserializer would have rejected them earlier, so this is a defensive
+/// no-op.
+fn rewrite_peer_id(text: &str, peer_id: &str) -> String {
+    let mut v: serde_json::Value = match serde_json::from_str(text) {
+        Ok(v) => v,
+        Err(_) => return text.to_string(),
+    };
+    if let Some(obj) = v.as_object_mut() {
+        obj.insert(
+            "peer_id".to_string(),
+            serde_json::Value::String(peer_id.to_string()),
+        );
+    }
+    v.to_string()
 }
 
 // ── Redis publish helper ───────────────────────────────────────────────────
@@ -720,6 +841,44 @@ mod tests {
         let (sid, role) = parse_target_key(&key).unwrap();
         assert_eq!(sid, "abc123");
         assert_eq!(role, "observer");
+    }
+
+    #[test]
+    fn parse_peer_target_key_roundtrip() {
+        let key = make_peer_target_key("pid-xyz");
+        assert_eq!(parse_peer_target_key(&key).as_deref(), Some("pid-xyz"));
+        // session-style keys must not look like peer keys.
+        let sk = make_target_key("s", "r");
+        assert_eq!(parse_peer_target_key(&sk), None);
+        // session prefix is required for parse_target_key to succeed.
+        assert!(parse_target_key("peer:pid-xyz").is_none());
+    }
+
+    #[test]
+    fn rewrite_peer_id_injects_field_without_clobbering_others() {
+        let original = r#"{"type":"offer","sdp":"v=0","extra":"preserved"}"#;
+        let out = rewrite_peer_id(original, "my-pid");
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["peer_id"], "my-pid");
+        assert_eq!(v["type"], "offer");
+        assert_eq!(v["sdp"], "v=0");
+        assert_eq!(v["extra"], "preserved");
+    }
+
+    #[test]
+    fn rewrite_peer_id_overwrites_existing_field() {
+        // Clients cannot spoof identity — the server always stamps its own
+        // peer_id on top, regardless of what the client sent.
+        let original = r#"{"type":"offer","peer_id":"spoofed"}"#;
+        let out = rewrite_peer_id(original, "real-pid");
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["peer_id"], "real-pid");
+    }
+
+    #[test]
+    fn rewrite_peer_id_non_json_passthrough() {
+        let out = rewrite_peer_id("not json", "pid");
+        assert_eq!(out, "not json");
     }
 
     #[test]

@@ -166,7 +166,21 @@ export class SignalingClient {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
       throw new Error("signaling_not_open");
     }
-    this.ws.send(JSON.stringify(message));
+    // Stamp our assigned peer_id on outgoing routable messages
+    // (offer/answer/candidate). The signaling-server rewrites it to the
+    // sender's peer_id anyway, but including it makes client-side logs /
+    // tests unambiguous when inspecting the wire. We don't clobber a
+    // peer_id the caller set explicitly — that's used by the worker-side
+    // test harness to target a specific peer.
+    const routable =
+      message.type === "offer" ||
+      message.type === "answer" ||
+      message.type === "candidate";
+    const payload =
+      routable && this.assignedPeerId !== null && message["peer_id"] === undefined
+        ? { ...message, peer_id: this.assignedPeerId }
+        : message;
+    this.ws.send(JSON.stringify(payload));
   }
 
   isOpen(): boolean {

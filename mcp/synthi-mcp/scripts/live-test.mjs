@@ -260,6 +260,56 @@ function openBrowser(url) {
   }
 }
 
+// ── Phase-B peer_id wire validation ──────────────────────────────────
+// Registers two observers on the same session and asserts the signaling
+// server mints a distinct peer_id for each. Catches regressions in the
+// peer_id stamping + peers_by_id map (signaling-server/src/main.rs).
+//
+// Does NOT exercise worker-side routing — that's validated implicitly by
+// the MCP attach flow below, which fails to form a WebRTC connection
+// when peer_id routing is broken.
+async function validatePeerIdWire({ signalingUrl, sessionId }) {
+  function registerOne(tag) {
+    return new Promise((resolve, reject) => {
+      const ws = new WebSocket(signalingUrl);
+      const timer = setTimeout(() => {
+        try { ws.close(); } catch { /* ignored */ }
+        reject(new Error(`peer_id handshake for ${tag} timed out after 5s`));
+      }, 5000);
+      ws.on('open', () => {
+        ws.send(JSON.stringify({
+          type: 'register',
+          role: 'observer',
+          session_id: sessionId,
+          client_version: `synthi-live-test/peer-id-probe-${tag}`,
+        }));
+      });
+      ws.on('message', (data) => {
+        let msg;
+        try { msg = JSON.parse(data.toString('utf8')); } catch { return; }
+        if (msg?.type !== 'registered') return;
+        clearTimeout(timer);
+        const peerId = typeof msg.peer_id === 'string' ? msg.peer_id : null;
+        try { ws.close(); } catch { /* ignored */ }
+        if (!peerId) reject(new Error(`registered ack missing peer_id (${tag})`));
+        else resolve({ tag, peerId, ws: null });
+      });
+      ws.on('error', (e) => {
+        clearTimeout(timer);
+        reject(e);
+      });
+    });
+  }
+  const [a, b] = await Promise.all([registerOne('obs-a'), registerOne('obs-b')]);
+  if (!a.peerId || !b.peerId) {
+    throw new Error(`expected peer_id on both acks; got a=${a.peerId}, b=${b.peerId}`);
+  }
+  if (a.peerId === b.peerId) {
+    throw new Error(`signaling reused peer_id across observers: ${a.peerId}`);
+  }
+  return { peerIdA: a.peerId, peerIdB: b.peerId };
+}
+
 // ── Signaling presence poller ────────────────────────────────────────
 // Connect to the signaling-server as `role:"observer"` (multi-slot, so
 // we don't evict the real browser) and wait for a `{type:"presence"}`
@@ -423,6 +473,21 @@ async function main() {
   if (!colOk) fail(`collab-server unreachable at ${CFG.collabUrl}  (owns /git/:slug/* — editor's file source)`);
   if (!sigOk) fail(`signaling unreachable at ${CFG.signalingUrl}`);
   log('ok', `frontend:${fe.port} + collab:${col.port} + signaling:${sig.port} all up`);
+
+  // 1b. Phase-B peer_id wire smoke — two observers registered on the same
+  // session must get distinct peer_ids back on their `registered` ack.
+  // Runs before workspace creation so it's fast and decoupled.
+  log('info', 'Phase-B peer_id wire: registering two observers on a probe session');
+  try {
+    const probeSid = `peer-id-probe-${Date.now()}`;
+    const { peerIdA, peerIdB } = await validatePeerIdWire({
+      signalingUrl: CFG.signalingUrl,
+      sessionId: probeSid,
+    });
+    log('ok', `peer_id round-trip: a=${peerIdA.slice(0, 8)}… b=${peerIdB.slice(0, 8)}… (distinct ✓)`);
+  } catch (e) {
+    fail(`peer_id wire validation failed: ${e.message}`);
+  }
 
   // 2. Create workspace (Prisma DB row + GCS folder marker)
   log('info', `POST /api/workspace  {name, slug:"${CFG.slug}"}`);

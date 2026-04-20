@@ -1,8 +1,8 @@
 # G3 Phase B — Worker Per-Peer PC Integration
 
-**Status:** modules `peer_registry.rs` + `track_fanout.rs` are scaffolded and unit-tested. `main.rs` is NOT wired to them yet — that's the remaining work described below.
+**Status update (post-peer_id-wire PR):** the peer_id protocol is now end-to-end — signaling-server stamps + direct-routes, worker stamps outgoing answer/candidate via a shared `current_peer_id` slot, MCP auto-stamps. `log_channel_store` + the singleton `pc` remain for compatibility; the remaining migration (per-peer PCs in the signal loop + per-peer track subscription via `TrackFanout`) is intentionally a follow-up PR — it touches ~300 LOC of main.rs callback chains + video_pipeline.rs + runner.rs and has to land with live-test validation.
 
-**Why this is staged:** the existing worker `main.rs` singletons (one `pc`, one `log_channel_store: Option<Arc<DC>>`, one track per media kind) are load-bearing across the compile pipeline, the HMR orchestrator, and the input routing. Landing per-peer PC support in one commit risks production stability; splitting it means the main branch is always green.
+**Why staged:** the existing worker `main.rs` singletons (one `pc`, one `log_channel_store: Option<Arc<DC>>`, one track per media kind) are load-bearing across the compile pipeline, the HMR orchestrator, and the input routing. Landing per-peer PC support alongside the peer_id wire changes in one commit risks production stability without incremental live-test coverage; splitting it means the main branch is always green.
 
 **Companion doc:** `AGENT_MCP_STATUS.md` §4.2. **Design source:** refined-plan §5 (Path B sub-manifest).
 
@@ -13,16 +13,21 @@
 | What | Status | File |
 |------|--------|------|
 | Signaling-server observer role | ✅ shipped | `backend/synthi-webrtc-compiler/signaling-server/src/main.rs` |
+| Signaling-server peer_id stamping + direct-peer routing | ✅ shipped | `signaling-server/src/main.rs` (`rewrite_peer_id`, `peers_by_id`, `peer:<id>` Redis target) |
+| Worker stamps peer_id on outgoing answer/candidate | ✅ shipped | `src/main.rs` (`current_peer_id: Arc<RwLock<Option<String>>>`) |
+| MCP auto-stamps peer_id on outgoing routable messages | ✅ shipped | `mcp/synthi-mcp/src/signaling.ts::send` |
 | `PeerRole::{Browser, Observer, McpAgent}` | ✅ scaffolded | `src/webrtc/peer_registry.rs` |
 | `PeerRegistry` — insert / evict / attach-DC-track | ✅ scaffolded + tested | `src/webrtc/peer_registry.rs` |
 | `TrackFanout` — broadcast → N tracks, drop-on-lag | ✅ scaffolded + tested | `src/webrtc/track_fanout.rs` |
 | `broadcast_build_log_text` — per-DC 50ms-timeout fan-out helper | ✅ shipped | `src/webrtc/build_log_broadcast.rs` |
 | `peer_registry` populated on `main.rs` hot path (writes) | ✅ shipped | `src/main.rs` (both DC open sites + on every PC recreate) |
-| First read-site migrated: `dc_rx → build-log broadcast` | ✅ shipped | `src/main.rs:723` |
-| Remaining reads on `log_channel_store` | ⚠️ legacy path still live | `src/main.rs:714` (dc_rx read above migrated) + 8 other sites |
-| Single-PC assumption in `main.rs` | ❌ unchanged | `src/main.rs:615, 1140-1260` |
+| First read-site migrated: `dc_rx → build-log broadcast` | ✅ shipped | `src/main.rs` (dc_rx spawn) |
+| Input peer-tagging — `gui-event`, `input-ack`, `StructuredLogger::record_input_event` | ✅ shipped | `src/main.rs` terminal-DC arm + `src/infra/observability.rs` |
+| live-test 2-observer peer_id round-trip smoke | ✅ shipped | `mcp/synthi-mcp/scripts/live-test.mjs::validatePeerIdWire` |
+| Remaining reads on `log_channel_store` | ⚠️ legacy path still live | 6 sites inside the compile DC (per-request replies, not broadcasts — migrate to `registry.get(&peer_id).build_log_dc.clone()`) |
+| Single-PC assumption in `main.rs` | ❌ unchanged | `src/main.rs` offer/candidate/reset arms |
 | Single-track write-path in media pipelines | ❌ unchanged | `src/android/webrtc/video_pipeline.rs:614` |
-| Per-peer offer handling in signal loop | ❌ unchanged | `src/main.rs:600-900` |
+| Per-peer offer handling in signal loop | ❌ unchanged | `src/main.rs` — needs `peer_registry.get_or_insert(peer_id)` path |
 
 ---
 
