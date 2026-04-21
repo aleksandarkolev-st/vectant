@@ -9,6 +9,7 @@ import { locateEngine } from "./locate/index.js";
 import { scanForInjection } from "./security/injection.js";
 import { resolvePipelineBudgetMs } from "./protocol/index.js";
 import { dispatchAckRegistry } from "./util/dispatch_ack_registry.js";
+import { structuralChangeGate } from "./correctness/structural_change.js";
 
 /**
  * MCP-local connection state. Distinct from the wire-level `SessionState`
@@ -505,6 +506,32 @@ class SessionManager {
         return;
       }
 
+      // Structural-change pHash gate (ultraplan §4.1). Capture a
+      // baseline pHash on compile-start; evaluate against post-reload
+      // frame on `applied`. Phase 1 is detection-only — we emit a
+      // security event; no input queue flush yet (phase 2c).
+      const isCompileStart =
+        (msgType === "compile-start") ||
+        (msgType === "hmr-status" && status === "reload-planned") ||
+        (status === "Enqueued") ||
+        (evType === "Enqueued");
+      if (isCompileStart) {
+        // Snapshot current frame without blocking the tap. The gate
+        // emits its own error event if the snapshot fails.
+        const frameSink = attached.frames;
+        const snapshotFrame = async (): Promise<void> => {
+          try {
+            const frame = await frameSink.getFrame();
+            await structuralChangeGate.onCompileStart(frame.data, frame.seq);
+          } catch {
+            // No frame yet — gate will no-op on the applied check
+            // because there's no baseline to compare against.
+          }
+        };
+        // Fire-and-forget; errors are captured inside
+        void snapshotFrame();
+      }
+
       // Only tap terminal events to the log — intermediate ones flood the
       // ring. Classification happens in the normalizer; we mirror a short
       // label for observability without re-parsing.
@@ -518,6 +545,27 @@ class SessionManager {
         source: msgType ?? "build-log",
         raw: msg,
       });
+
+      // Structural-change verdict on every `applied` / `Promoted` —
+      // compute the post-reload pHash and compare to the baseline
+      // captured at compile-start.
+      if (status === "applied" || evType === "Promoted") {
+        const frameSink = attached.frames;
+        const pipelineBudget = this.pipelineBudgetMs();
+        void (async (): Promise<void> => {
+          try {
+            // Wait for a post-reload frame with the gate's pipeline
+            // budget so we don't sample the stale pre-reload frame.
+            await new Promise((r) => setTimeout(r, pipelineBudget));
+            const frame = await frameSink.getFrame();
+            await structuralChangeGate.onHmrApplied(frame.data, frame.seq);
+          } catch {
+            // Absent frame sink is non-fatal; the gate already emits
+            // `input_rejected_phash_unavailable` when the snapshot
+            // fails. For "no frame at all" we simply skip the check.
+          }
+        })();
+      }
 
       // Injection-heuristic pre-screen: any free-text field in the wire
       // might be a prompt-injection vector since the preview content
