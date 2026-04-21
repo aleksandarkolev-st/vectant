@@ -622,7 +622,12 @@ async function main() {
     const mcpEnv = {
       SYNTHI_SESSION_ID: CFG.slug,
       SYNTHI_SIGNALING_URL: CFG.mcpSignalingUrl,
-      SYNTHI_LOCATE_BACKEND: 'gemini_api',
+      // Vision backend for synthi_locate. The MCP reads SYNTHI_VISION_BACKEND
+      // (backends.ts:231); without this the default is `agent_side`, which
+      // deliberately refuses to ground and returns `agent_side_vision_required`
+      // — the error you see if this var isn't set. `gemini_api` calls Gemini
+      // directly using GOOGLE_API_KEY below.
+      SYNTHI_VISION_BACKEND: 'gemini_api',
       GOOGLE_API_KEY: CFG.googleApiKey,
       SYNTHI_GEMINI_MODEL: CFG.geminiModel,
       SYNTHI_PROMETHEUS_PORT: String(CFG.prometheusPort),
@@ -645,7 +650,12 @@ async function main() {
       ...process.env,
       SYNTHI_SESSION_ID: CFG.slug,
       SYNTHI_SIGNALING_URL: CFG.signalingUrl,
-      SYNTHI_LOCATE_BACKEND: 'gemini_api',
+      // Vision backend for synthi_locate. The MCP reads SYNTHI_VISION_BACKEND
+      // (backends.ts:231); without this the default is `agent_side`, which
+      // deliberately refuses to ground and returns `agent_side_vision_required`
+      // — the error you see if this var isn't set. `gemini_api` calls Gemini
+      // directly using GOOGLE_API_KEY below.
+      SYNTHI_VISION_BACKEND: 'gemini_api',
       GOOGLE_API_KEY: CFG.googleApiKey,
       SYNTHI_GEMINI_MODEL: CFG.geminiModel,
       SYNTHI_PROMETHEUS_PORT: String(CFG.prometheusPort),
