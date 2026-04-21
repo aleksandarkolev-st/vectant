@@ -34,6 +34,11 @@ COPY Cargo.toml Cargo.lock ./
 COPY build.rs ./
 COPY proto/ proto/
 COPY .cargo/ .cargo/
+# `[patch.crates-io] stun = { path = "vendored/stun" }` in Cargo.toml is
+# resolved during lockfile processing — even the dummy cache build reads
+# it — so the vendored tree must be present before `cargo build` runs.
+# See `vendored/stun/README_SYNTHI_PATCH.md` for why the patch exists.
+COPY vendored/ vendored/
 RUN mkdir -p src/runtime src/compiler src/hmr src/infra src/safety src/android src/bin && \
     echo "fn main() {}" > src/main.rs && \
     echo "fn main() {}" > src/runtime/runner_bin.rs && \
