@@ -1,5 +1,7 @@
 pub mod boundary;
 pub mod enhanced_fingerprint;
+pub mod focus_probe;
+pub mod guest_registry;
 pub mod hardened_ipc;
 pub mod quiescence;
 pub mod restart_control;

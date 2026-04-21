@@ -380,6 +380,49 @@ class SessionManager {
         return;
       }
 
+      // Worker-emitted security events (e.g. WM_CLASS spoof). Shape:
+      //   {type:"security", code:string, detail:{...}}
+      // We mirror them into the MCP event log so synthi_get_event_log +
+      // the synthi://preview/events resource surface them immediately.
+      // Phase 1 is detection-only: the worker still dispatches input,
+      // the agent decides what to do.
+      if (msgType === "security") {
+        const code = typeof msg["code"] === "string" ? (msg["code"] as string) : "unknown";
+        const detail = msg["detail"] as Record<string, unknown> | undefined;
+        const ALLOWED_CODES = [
+          "wm_class_mismatch",
+          "unsafe_attach",
+          "injection_suspected",
+          "rate_limit_warning",
+          "focus_lost",
+          "sensitive_action_interstitial",
+        ] as const;
+        const mapped = (ALLOWED_CODES as readonly string[]).includes(code)
+          ? (code as typeof ALLOWED_CODES[number])
+          : "focus_lost";
+        eventLog.push({
+          kind: "security",
+          code: mapped,
+          ...(detail !== undefined ? { detail } : {}),
+        });
+        return;
+      }
+
+      // Worker-emitted guest-registered event (ultraplan §Security v4
+      // pre-work #5-#6). Shape:
+      //   {type:"guest-registered", root_pid, binary_path, binary_fingerprint, ...}
+      // Recorded as a console event for observability; tools query the
+      // synthi://preview/events stream to see when a new guest comes up.
+      if (msgType === "guest-registered") {
+        eventLog.push({
+          kind: "console",
+          level: "info",
+          message: `[guest_registered] pid=${msg["root_pid"]} binary=${msg["binary_path"]}`,
+          source: "worker_build_log",
+        });
+        return;
+      }
+
       // Input ack: `{type:"input-ack", dispatch_id, accepted, reason?}`.
       // Worker echoes one per input event that carried a dispatch_id.
       // Resolve the DispatchAckRegistry so any caller awaiting the ack

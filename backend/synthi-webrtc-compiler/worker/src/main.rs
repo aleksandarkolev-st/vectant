@@ -1967,6 +1967,40 @@ async fn wire_peer_channels(
                                             // on the build-log DC (not terminal) so the MCP's
                                             // existing log tap handles them alongside hmr/
                                             // frame-advance status messages.
+                                            //
+                                            // Focus-lock + WM_CLASS spoof check (advisory):
+                                            // every gui-event triggers a cache lookup against
+                                            // the focus probe. On a mismatch we emit a
+                                            // `security`-shaped build-log message but still
+                                            // dispatch — phase-1 detection-only. Gating is
+                                            // phase 2c.
+                                            let gui_sid_opt = v.get("sessionId").and_then(|x| x.as_str());
+                                            if let Some(sid) = gui_sid_opt {
+                                                if let Some(display) = crate::safety::focus_probe::display_for_session(sid) {
+                                                    let (verdict, focus) = crate::safety::focus_probe::verify_focus(sid, &display);
+                                                    match verdict {
+                                                        crate::safety::guest_registry::WmClassVerdict::Mismatch { claimed, registry_binary } => {
+                                                            let msg = serde_json::json!({
+                                                                "sessionId": sid,
+                                                                "type": "security",
+                                                                "code": "wm_class_mismatch",
+                                                                "detail": {
+                                                                    "claimed_wm_class": claimed,
+                                                                    "registry_binary": registry_binary,
+                                                                    "window_title": focus.as_ref().and_then(|f| f.window_title.clone()),
+                                                                    "window_pid": focus.as_ref().and_then(|f| f.window_pid),
+                                                                }
+                                                            });
+                                                            let registry = peer_registry_term.clone();
+                                                            tokio::spawn(async move {
+                                                                broadcast_build_log_text(&registry, msg.to_string()).await;
+                                                            });
+                                                        }
+                                                        _ => {}
+                                                    }
+                                                }
+                                            }
+
                                             let dispatch_id_opt = v
                                                 .get("dispatch_id")
                                                 .and_then(|x| x.as_str())

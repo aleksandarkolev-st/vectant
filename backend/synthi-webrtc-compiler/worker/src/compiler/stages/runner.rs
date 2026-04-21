@@ -250,6 +250,15 @@ pub async fn handle_runner_execution(
             // starting GStreamer capture (ximagesrc needs a live X display).
             tokio::time::sleep(tokio::time::Duration::from_millis(700)).await;
 
+            // Kick off the focus probe for this display. One probe per
+            // DISPLAY; idempotent. The probe's cache feeds the
+            // window-tree focus lock + WM_CLASS spoof check in the
+            // gui-event handler (main.rs). Advisory-only in phase 1.
+            crate::safety::focus_probe::ensure_probe(&wsl_display_str).await;
+            if let Some(sid) = session_id.as_deref() {
+                crate::safety::focus_probe::bind_session_display(sid, &wsl_display_str);
+            }
+
             if gst_pipeline.is_none() {
                 // VP8 only: the per-peer WebRTC track declares video/VP8 so
                 // the pipeline MUST emit VP8 RTP. H264 is excluded because
@@ -537,6 +546,41 @@ pub async fn handle_runner_execution(
         }
 
         let mut child = cmd.spawn().context("Failed to spawn runner process")?;
+
+        // Guest-process registry (ultraplan §Security v4 pre-work #5-#6).
+        // Record the root PID + binary fingerprint so the focus-lock +
+        // WM_CLASS spoof checks have a ground truth. This is passive —
+        // enforcement lands in a follow-up; the registry entry exists
+        // on every spawn whether or not downstream code consumes it.
+        if let Some(pid) = child.id() {
+            if let Some(sid) = session_id.as_deref() {
+                let argv0 = runner_path
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .map(|s| s.to_string());
+                let registered = crate::safety::guest_registry::GLOBAL_GUEST_REGISTRY
+                    .register(sid, pid, argv0);
+                let summary = serde_json::json!({
+                    "sessionId": sid,
+                    "type": "guest-registered",
+                    "root_pid": registered.root_pid,
+                    "binary_path": registered.binary_path
+                        .as_ref().map(|p| p.display().to_string()),
+                    "binary_fingerprint": registered.binary_fingerprint,
+                    "expected_wm_class_hint": registered.expected_wm_class_hint,
+                });
+                let _ = ctx
+                    .log_dc
+                    .send_text(serde_json::to_string(&summary).unwrap_or_default())
+                    .await;
+                eprintln!(
+                    "[GuestRegistry] session={} root_pid={} binary={:?}",
+                    sid,
+                    registered.root_pid,
+                    registered.binary_path,
+                );
+            }
+        }
 
         // Capture stdout/stderr
         let stdout = child.stdout.take().unwrap();
