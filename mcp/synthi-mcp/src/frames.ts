@@ -127,7 +127,8 @@ export class FrameSink {
   private flushedFrameCount = 0;
   private flushedKeyframeCount = 0;
   private droppedPreKeyframeCount = 0;
-  private lastDiagLogAt = 0;
+  private diagTimer: NodeJS.Timeout | null = null;
+  private lastDiagSnapshot = { rtp: 0 };
 
   constructor(track: MediaStreamTrack) {
     fsDbg(`FrameSink constructed for track id=${track.id ?? track.uuid} kind=${track.kind}`);
@@ -172,7 +173,6 @@ export class FrameSink {
           // because the RTP itself parsed fine; just no codec payload
           // in this packet (e.g. keepalive / padding).
           this.vp8OkCount += 1;
-          this.maybeLogDiagSummary();
           return;
         }
         this.vp8OkCount += 1;
@@ -201,24 +201,21 @@ export class FrameSink {
           );
         }
       }
-      this.maybeLogDiagSummary();
     });
-  }
 
-  /** Periodic low-volume status line so a hung stream is obvious in the log. */
-  private maybeLogDiagSummary(): void {
-    const now = Date.now();
-    // First summary at 2s after attach, then every 5s thereafter.
-    if (this.lastDiagLogAt === 0) {
-      this.lastDiagLogAt = now;
-      return;
-    }
-    const interval = this.latest ? 10_000 : 2_000;
-    if (now - this.lastDiagLogAt < interval) return;
-    this.lastDiagLogAt = now;
-    fsDbg(
-      `diag: rtp=${this.rtpCount} vp8_ok=${this.vp8OkCount} vp8_fail=${this.vp8FailCount} frames_flushed=${this.flushedFrameCount} keyframes=${this.flushedKeyframeCount} pre_kf_drop=${this.droppedPreKeyframeCount} latest=${this.latest ? `${this.latest.width}x${this.latest.height}#${this.latest.seq}` : "none"}`
-    );
+    // Independent heartbeat: fires even if zero RTP arrives, which is
+    // the exact failure mode we're hunting — the packet-driven call site
+    // below never runs when the worker stops sending. The flag
+    // `lastDiagSnapshot` lets us call out a stall explicitly vs a steady
+    // feed.
+    this.diagTimer = setInterval(() => {
+      const deltaRtp = this.rtpCount - this.lastDiagSnapshot.rtp;
+      this.lastDiagSnapshot.rtp = this.rtpCount;
+      fsDbg(
+        `diag: rtp=${this.rtpCount} (+${deltaRtp}/2s) vp8_ok=${this.vp8OkCount} vp8_fail=${this.vp8FailCount} frames_flushed=${this.flushedFrameCount} keyframes=${this.flushedKeyframeCount} pre_kf_drop=${this.droppedPreKeyframeCount} latest=${this.latest ? `${this.latest.width}x${this.latest.height}#${this.latest.seq}` : "none"}`
+      );
+    }, 2_000);
+    if (this.diagTimer.unref) this.diagTimer.unref();
   }
 
   private flushFrame(pts: number): void {
@@ -330,6 +327,10 @@ export class FrameSink {
   stop(): void {
     if (this.stopped) return;
     this.stopped = true;
+    if (this.diagTimer) {
+      clearInterval(this.diagTimer);
+      this.diagTimer = null;
+    }
     try {
       this.trackSub?.unSubscribe();
     } catch {

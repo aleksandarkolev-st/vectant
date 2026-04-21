@@ -180,6 +180,7 @@ services:
       --listening-ip=0.0.0.0
       --external-ip=192.168.100.107
       --allowed-peer-ip=0.0.0.0-255.255.255.255
+      --allowed-peer-ip=::-ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff
       --verbose
       --log-file=stdout
     restart: unless-stopped

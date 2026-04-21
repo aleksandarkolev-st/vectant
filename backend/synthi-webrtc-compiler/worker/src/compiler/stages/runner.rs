@@ -396,13 +396,30 @@ pub async fn handle_runner_execution(
                 let log_dc_for_frame_advance = ctx.log_dc.clone();
                 tokio::spawn(async move {
                     let mut frame_seq: u64 = 0;
+                    let mut dispatched: u64 = 0;
+                    let mut unmarshal_fail: u64 = 0;
+                    let mut last_log = std::time::Instant::now();
                     const EMIT_EVERY_N_FRAMES: u64 = 3;
                     while let Some(data) = v_rx.recv().await {
                         let is_end_of_frame = data.len() >= 2 && (data[1] & 0x80) != 0;
                         if let Ok(packet) = Packet::unmarshal(&mut &data[..]) {
                             video_fanout.dispatch(packet);
+                            dispatched += 1;
                         } else {
+                            unmarshal_fail += 1;
                             eprintln!("[Runner] Failed to unmarshal RTP packet ({} bytes)", data.len());
+                        }
+                        if dispatched <= 3 || last_log.elapsed() >= std::time::Duration::from_secs(2) {
+                            last_log = std::time::Instant::now();
+                            eprintln!(
+                                "[video-rtp] dispatched={} unmarshal_fail={} subscribers={} fanout_dispatched={} fanout_dropped_lag={} fanout_dropped_error={}",
+                                dispatched,
+                                unmarshal_fail,
+                                video_fanout.subscriber_count(),
+                                video_fanout.stats().packets_dispatched,
+                                video_fanout.stats().packets_dropped_lag,
+                                video_fanout.stats().packets_dropped_error,
+                            );
                         }
                         if is_end_of_frame {
                             frame_seq += 1;

@@ -84,6 +84,7 @@ use webrtc::data_channel::RTCDataChannel;
 use webrtc::interceptor::registry::Registry;
 // use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
 use webrtc::peer_connection::configuration::RTCConfiguration;
+use webrtc::ice_transport::ice_connection_state::RTCIceConnectionState;
 use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
 use webrtc::peer_connection::sdp::sdp_type::RTCSdpType;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
@@ -1380,6 +1381,22 @@ async fn create_peer(
                         });
                     }
                 }
+            }
+            .boxed()
+        }));
+    }
+
+    {
+        // ICE-only state is finer-grained than peer_connection_state
+        // (which aggregates ICE + DTLS). When RTP stops mid-session,
+        // the timing of ICE Disconnected vs DTLS Closed tells us which
+        // transport gave up first — critical for diagnosing relay-path
+        // failures (consent-freshness timeout on a TURN-relayed pair).
+        let peer_id_for_ice_state = peer_id.clone();
+        pc.on_ice_connection_state_change(Box::new(move |s: RTCIceConnectionState| {
+            let peer_id = peer_id_for_ice_state.clone();
+            async move {
+                eprintln!("[WebRTC] ICE connection state ({}): {:?}", peer_id, s);
             }
             .boxed()
         }));
