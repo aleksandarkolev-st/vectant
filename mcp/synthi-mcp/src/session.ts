@@ -284,7 +284,7 @@ class SessionManager {
   }
 
   private async doAttach(opts: AttachOptions): Promise<AttachedSession> {
-    const attachTimeoutMs = opts.attachTimeoutMs ?? 30_000;
+    const attachTimeoutMs = opts.attachTimeoutMs ?? 60_000;
     const dbg = (m: string): void => {
       const ts = new Date().toISOString().slice(11, 23);
       process.stderr.write(`[mcp ${ts}] session: ${m}\n`);

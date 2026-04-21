@@ -151,7 +151,7 @@ export class Peer {
     this.wirePeerEvents();
     this.wireSignalingEvents();
 
-    const connectTimeoutMs = opts.connectTimeoutMs ?? 30_000;
+    const connectTimeoutMs = opts.connectTimeoutMs ?? 60_000;
     setTimeout(() => {
       if (!this.connectedD.settled) {
         this.connectedD.reject(new Error(`peer_connect_timeout after ${connectTimeoutMs}ms`));
