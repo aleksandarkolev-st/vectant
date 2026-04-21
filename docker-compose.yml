@@ -196,6 +196,26 @@ services:
       --log-file=stdout
     restart: unless-stopped
 
+  # Synthi MCP — sleeper container on the default compose network.
+  # live-test.mjs uses `docker exec -i synthi-ide-mcp-1 node /app/dist/index.js`
+  # so MCP runs inside docker and shares a subnet with `worker`. The two peers
+  # then pair directly via host ICE candidates (172.18.0.x ↔ 172.18.0.x) and
+  # skip TURN entirely — which is what we want, since both sides would
+  # otherwise allocate on the same coturn and trip coturn's self-peer-IP
+  # block (403 Forbidden IP on CREATE_PERMISSION for --external-ip).
+  mcp:
+    build:
+      context: ./mcp/synthi-mcp
+      dockerfile: Dockerfile
+    ports:
+      # Expose Prometheus /metrics to the host so live-test.mjs can scrape
+      # http://127.0.0.1:9464/metrics without a second `docker exec`.
+      - "9464:9464"
+    depends_on:
+      - signaling-server
+      - worker
+    restart: unless-stopped
+
   worker:
     build:
       context: ./backend/synthi-webrtc-compiler/worker
