@@ -19,6 +19,7 @@ export const ADVERTISED_TOOLS = [
   "synthi_screenshot",
   "synthi_wait",
   "synthi_wait_hmr",
+  "synthi_describe",
   // Build control
   "synthi_compile",
   // Input
@@ -41,6 +42,13 @@ export const ADVERTISED_TOOLS = [
   "synthi_acknowledge_disruption",
   "synthi_get_crash_info",
   "synthi_reset_guest",
+  // Arbitration wire (phase-1 record-only; enforcement is phase 2c)
+  "synthi_acquire_input",
+  "synthi_release_input",
+  // Escape hatch wire (phase-1 stubs returning escape_hatch_backend_not_implemented)
+  "synthi_request_human",
+  "synthi_annotate_and_ask",
+  "synthi_recent_human_actions",
 ] as const;
 
 export type AdvertisedToolName = (typeof ADVERTISED_TOOLS)[number];

@@ -24,6 +24,7 @@ runs.
 |---|---|---|
 | `counter/` | static | E1, E2, E3, E4, integration |
 | `particle_demo/` | animated | E2b |
+| `adversarial/` | static | `prompt_injection.test.ts`, `wm_class_spoof.test.ts` |
 
 See each subdirectory's `README.md` for the observable signal and
 per-experiment protocol.
