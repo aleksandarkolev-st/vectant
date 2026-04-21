@@ -1,4 +1,4 @@
-import type wrtc from "@roamhq/wrtc";
+import type { RTCDataChannel } from "werift";
 
 /**
  * HMR normalizer. Parses the four wire families emitted by the worker on the
@@ -127,7 +127,7 @@ export class HmrNormalizer {
   private readonly listeners = new Set<MessageHandler>();
   private readonly unbind: () => void;
 
-  constructor(dc: wrtc.RTCDataChannel) {
+  constructor(dc: RTCDataChannel) {
     const dcListener = (ev: Event): void => {
       const data = (ev as unknown as { data: unknown }).data;
       let text: string | null = null;

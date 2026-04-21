@@ -1,5 +1,4 @@
 import sharp from "sharp";
-import type wrtc from "@roamhq/wrtc";
 import { eventLog } from "../events/index.js";
 import { locateEngine } from "../locate/index.js";
 import { session } from "../session.js";
@@ -341,5 +340,3 @@ async function waitText(args: TextArgs, _timeoutMs: number, elapsedMs: number): 
 }
 
 export { DEFAULT_TIMEOUT_MS };
-/** Typed export so tests can construct Peer/DC helpers without pulling wrtc. */
-export type UnusedWrtc = typeof wrtc;

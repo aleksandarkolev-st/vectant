@@ -251,15 +251,26 @@ pub async fn handle_runner_execution(
             tokio::time::sleep(tokio::time::Duration::from_millis(700)).await;
 
             if gst_pipeline.is_none() {
-                // Start GStreamer Pipeline
+                // VP8 only: the per-peer WebRTC track declares video/VP8 so
+                // the pipeline MUST emit VP8 RTP. H264 is excluded because
+                // @roamhq/wrtc (used by the MCP agent) ships without H264,
+                // and mixing codecs between pipeline and track silently
+                // breaks negotiation.
+                //
+                // `keyframe-max-dist=30` forces a keyframe every second at
+                // 30 fps. Without it, vp8enc's default of 128 frames (~4 s)
+                // means a late-joining observer peer can wait multiple
+                // seconds before FrameSink sees a decodable keyframe — and
+                // some combinations of `deadline=1 cpu-used=4` end up
+                // emitting keyframes only on scene-change, which the
+                // MCP observer flow treats as "no_frame_yet" forever.
+                // The encoder is given `name=video_enc` so `create_peer`
+                // can dispatch `force-key-unit` events on subscribe.
                 let encoders = [
-                    ("nvh264enc preset=low-latency-hp zerolatency=true", "rtph264pay", "video/H264"),
-                    ("vaapih264enc", "rtph264pay", "video/H264"),
-                    ("x264enc tune=zerolatency speed-preset=ultrafast bitrate=2000 key-int-max=60 ! video/x-h264,stream-format=byte-stream", "rtph264pay", "video/H264"),
-                    ("vp8enc deadline=1 cpu-used=4 end-usage=cbr target-bitrate=2000000", "rtpvp8pay", "video/VP8"),
+                    ("vp8enc name=video_enc deadline=1 cpu-used=4 end-usage=cbr target-bitrate=2000000 keyframe-max-dist=30", "rtpvp8pay", "video/VP8"),
                 ];
 
-                let mut selected_mime_type = "video/H264".to_owned();
+                let mut selected_mime_type = "video/VP8".to_owned();
                 let mut encoder_idx = 0;
                 let mut pipeline = None;
 
@@ -325,7 +336,7 @@ pub async fn handle_runner_execution(
                 }
 
                 if pipeline.is_none() {
-                    let msg = "Failed to initialize any video encoder (tried nvh264enc, vaapih264enc, x264enc, vp8enc). Check GStreamer installation.";
+                    let msg = "Failed to initialize vp8enc. Check GStreamer installation (gstreamer1.0-plugins-good).";
                     debug_log!("[Runner] {}", msg);
                     anyhow::bail!(msg);
                 }
@@ -385,13 +396,30 @@ pub async fn handle_runner_execution(
                 let log_dc_for_frame_advance = ctx.log_dc.clone();
                 tokio::spawn(async move {
                     let mut frame_seq: u64 = 0;
+                    let mut dispatched: u64 = 0;
+                    let mut unmarshal_fail: u64 = 0;
+                    let mut last_log = std::time::Instant::now();
                     const EMIT_EVERY_N_FRAMES: u64 = 3;
                     while let Some(data) = v_rx.recv().await {
                         let is_end_of_frame = data.len() >= 2 && (data[1] & 0x80) != 0;
                         if let Ok(packet) = Packet::unmarshal(&mut &data[..]) {
                             video_fanout.dispatch(packet);
+                            dispatched += 1;
                         } else {
+                            unmarshal_fail += 1;
                             eprintln!("[Runner] Failed to unmarshal RTP packet ({} bytes)", data.len());
+                        }
+                        if dispatched <= 3 || last_log.elapsed() >= std::time::Duration::from_secs(2) {
+                            last_log = std::time::Instant::now();
+                            eprintln!(
+                                "[video-rtp] dispatched={} unmarshal_fail={} subscribers={} fanout_dispatched={} fanout_dropped_lag={} fanout_dropped_error={}",
+                                dispatched,
+                                unmarshal_fail,
+                                video_fanout.subscriber_count(),
+                                video_fanout.stats().packets_dispatched,
+                                video_fanout.stats().packets_dropped_lag,
+                                video_fanout.stats().packets_dropped_error,
+                            );
                         }
                         if is_end_of_frame {
                             frame_seq += 1;

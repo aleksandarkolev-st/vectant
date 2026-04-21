@@ -967,15 +967,20 @@ async fn start_gstreamer(
     video_fanout: Arc<crate::webrtc::TrackFanout>,
     audio_fanout: Arc<crate::webrtc::TrackFanout>,
 ) -> Result<gst::Pipeline> {
+    // VP8 only — see main.rs create_peer for the rationale. Track mime is
+    // video/VP8 so the pipeline must match.
+    //
+    // `keyframe-max-dist=30` → one keyframe per second at 30 fps, so a
+    // late-joining observer peer sees a decodable frame within ~1 s of
+    // subscribe. `name=video_enc` lets `create_peer` fire `force-key-unit`
+    // on the encoder when a fresh peer subscribes, short-circuiting the
+    // wait entirely in the common case.
     let encoders = [
-        ("nvh264enc preset=low-latency-hp zerolatency=true ! video/x-h264,stream-format=byte-stream,profile=constrained-baseline", "rtph264pay", "video/H264"),
-        ("vaapih264enc ! video/x-h264,stream-format=byte-stream,profile=constrained-baseline", "rtph264pay", "video/H264"),
-        ("x264enc tune=zerolatency speed-preset=ultrafast bitrate=2000 key-int-max=60 ! video/x-h264,stream-format=byte-stream,profile=constrained-baseline", "rtph264pay", "video/H264"),
-        ("vp8enc deadline=1 cpu-used=4 end-usage=cbr target-bitrate=2000000", "rtpvp8pay", "video/VP8"),
+        ("vp8enc name=video_enc deadline=1 cpu-used=4 end-usage=cbr target-bitrate=2000000 keyframe-max-dist=30", "rtpvp8pay", "video/VP8"),
     ];
 
     let mut pipeline_opt: Option<gst::Pipeline> = None;
-    let mut selected_mime = "video/H264".to_string();
+    let mut selected_mime = "video/VP8".to_string();
 
     // Build the ximagesrc element string based on capture mode:
     //
