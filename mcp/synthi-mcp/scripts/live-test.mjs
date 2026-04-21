@@ -102,7 +102,7 @@ const CFG = {
   // browser peer, then waits `COMPILE_WARMUP_MS` for the worker to
   // produce its first video frame before attaching the MCP. Set to
   // `false` to fall back to the manual ENTER prompt.
-  autoOpen: (process.env.AUTO_OPEN ?? 'true').toLowerCase() !== 'false',
+  autoOpen: false, // (process.env.AUTO_OPEN ?? 'true').toLowerCase() !== 'false',
   presenceTimeoutMs: Number(process.env.PRESENCE_TIMEOUT_MS ?? 60_000),
   compileWarmupMs: Number(process.env.COMPILE_WARMUP_MS ?? 8_000),
 };

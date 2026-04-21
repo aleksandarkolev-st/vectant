@@ -251,15 +251,16 @@ pub async fn handle_runner_execution(
             tokio::time::sleep(tokio::time::Duration::from_millis(700)).await;
 
             if gst_pipeline.is_none() {
-                // Start GStreamer Pipeline
+                // VP8 only: the per-peer WebRTC track declares video/VP8 so
+                // the pipeline MUST emit VP8 RTP. H264 is excluded because
+                // @roamhq/wrtc (used by the MCP agent) ships without H264,
+                // and mixing codecs between pipeline and track silently
+                // breaks negotiation.
                 let encoders = [
-                    ("nvh264enc preset=low-latency-hp zerolatency=true", "rtph264pay", "video/H264"),
-                    ("vaapih264enc", "rtph264pay", "video/H264"),
-                    ("x264enc tune=zerolatency speed-preset=ultrafast bitrate=2000 key-int-max=60 ! video/x-h264,stream-format=byte-stream", "rtph264pay", "video/H264"),
                     ("vp8enc deadline=1 cpu-used=4 end-usage=cbr target-bitrate=2000000", "rtpvp8pay", "video/VP8"),
                 ];
 
-                let mut selected_mime_type = "video/H264".to_owned();
+                let mut selected_mime_type = "video/VP8".to_owned();
                 let mut encoder_idx = 0;
                 let mut pipeline = None;
 
@@ -325,7 +326,7 @@ pub async fn handle_runner_execution(
                 }
 
                 if pipeline.is_none() {
-                    let msg = "Failed to initialize any video encoder (tried nvh264enc, vaapih264enc, x264enc, vp8enc). Check GStreamer installation.";
+                    let msg = "Failed to initialize vp8enc. Check GStreamer installation (gstreamer1.0-plugins-good).";
                     debug_log!("[Runner] {}", msg);
                     anyhow::bail!(msg);
                 }

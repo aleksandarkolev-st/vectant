@@ -967,15 +967,14 @@ async fn start_gstreamer(
     video_fanout: Arc<crate::webrtc::TrackFanout>,
     audio_fanout: Arc<crate::webrtc::TrackFanout>,
 ) -> Result<gst::Pipeline> {
+    // VP8 only — see main.rs create_peer for the rationale. Track mime is
+    // video/VP8 so the pipeline must match.
     let encoders = [
-        ("nvh264enc preset=low-latency-hp zerolatency=true ! video/x-h264,stream-format=byte-stream,profile=constrained-baseline", "rtph264pay", "video/H264"),
-        ("vaapih264enc ! video/x-h264,stream-format=byte-stream,profile=constrained-baseline", "rtph264pay", "video/H264"),
-        ("x264enc tune=zerolatency speed-preset=ultrafast bitrate=2000 key-int-max=60 ! video/x-h264,stream-format=byte-stream,profile=constrained-baseline", "rtph264pay", "video/H264"),
         ("vp8enc deadline=1 cpu-used=4 end-usage=cbr target-bitrate=2000000", "rtpvp8pay", "video/VP8"),
     ];
 
     let mut pipeline_opt: Option<gst::Pipeline> = None;
-    let mut selected_mime = "video/H264".to_string();
+    let mut selected_mime = "video/VP8".to_string();
 
     // Build the ximagesrc element string based on capture mode:
     //

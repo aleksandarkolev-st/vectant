@@ -1,4 +1,4 @@
-import type wrtc from "@roamhq/wrtc";
+import type { RTCDataChannel } from "werift";
 import { HmrNormalizer } from "./hmr.js";
 import { sendFrames, type SendOptions } from "./wire/input.js";
 
@@ -21,9 +21,9 @@ export class SessionChannels {
   readonly hmr: HmrNormalizer;
 
   constructor(
-    private readonly terminalDC: wrtc.RTCDataChannel,
-    buildLogDC: wrtc.RTCDataChannel,
-    private readonly compileDC: wrtc.RTCDataChannel
+    private readonly terminalDC: RTCDataChannel,
+    buildLogDC: RTCDataChannel,
+    private readonly compileDC: RTCDataChannel
   ) {
     this.hmr = new HmrNormalizer(buildLogDC);
   }

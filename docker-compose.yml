@@ -178,6 +178,10 @@ services:
       --min-port=49152
       --max-port=49200
       --listening-ip=0.0.0.0
+      --external-ip=192.168.100.107
+      --allowed-peer-ip=0.0.0.0-255.255.255.255
+      --verbose
+      --log-file=stdout
     restart: unless-stopped
 
   worker:

@@ -90,17 +90,12 @@ use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 use webrtc::peer_connection::RTCPeerConnection;
 // use webrtc::rtp::packet::Packet;
 use webrtc::rtp_transceiver::rtp_codec::{
-    RTCRtpCodecCapability, RTCRtpCodecParameters, RTCRtpHeaderExtensionCapability, RTPCodecType,
+    RTCRtpCodecCapability, RTCRtpHeaderExtensionCapability, RTPCodecType,
 };
 use webrtc::rtp_transceiver::rtp_transceiver_direction::RTCRtpTransceiverDirection;
 use webrtc::rtp_transceiver::RTCRtpTransceiverInit;
-// use webrtc::track::track_local::track_local_static_rtp::TrackLocalStaticRTP;
-// use webrtc::track::track_local::TrackLocal;
-// use webrtc::track::track_local::TrackLocalWriter;
-// use webrtc::util::Unmarshal;
 use serde::{Deserialize, Serialize};
 use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
-use webrtc::rtp_transceiver::RTCPFeedback;
 use webrtc::track::track_local::track_local_static_rtp::TrackLocalStaticRTP;
 use webrtc::track::track_local::TrackLocal;
 use webrtc::track::track_local::TrackLocalWriter;
@@ -1122,68 +1117,6 @@ async fn create_peer(
     let mut m = MediaEngine::default();
     m.register_default_codecs()?;
 
-    // Manually register H265 as it might not be in default codecs
-    let _ = m.register_codec(
-        RTCRtpCodecParameters {
-            capability: RTCRtpCodecCapability {
-                mime_type: "video/H265".to_owned(),
-                clock_rate: 90000,
-                channels: 0,
-                sdp_fmtp_line: "".to_owned(),
-                rtcp_feedback: vec![RTCPFeedback {
-                    typ: "transport-cc".to_owned(),
-                    parameter: "".to_owned(),
-                }],
-            },
-            payload_type: 96,
-            ..Default::default()
-        },
-        RTPCodecType::Video,
-    );
-
-    // Explicitly register H264 (Baseline) with transport-cc
-    // This matches standard Android emulator / RN output (profile-level-id=42001f)
-    let _ = m.register_codec(
-        RTCRtpCodecParameters {
-            capability: RTCRtpCodecCapability {
-                mime_type: "video/H264".to_owned(),
-                clock_rate: 90000,
-                channels: 0,
-                sdp_fmtp_line:
-                    "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42001f"
-                        .to_owned(),
-                rtcp_feedback: vec![RTCPFeedback {
-                    typ: "transport-cc".to_owned(),
-                    parameter: "".to_owned(),
-                }],
-            },
-            payload_type: 103, // Match common dynamic PT
-            ..Default::default()
-        },
-        RTPCodecType::Video,
-    );
-
-    // Explicitly register H264 with transport-cc (Constrained Baseline - 42e01f)
-    let _ = m.register_codec(
-        RTCRtpCodecParameters {
-            capability: RTCRtpCodecCapability {
-                mime_type: "video/H264".to_owned(),
-                clock_rate: 90000,
-                channels: 0,
-                sdp_fmtp_line:
-                    "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f"
-                        .to_owned(),
-                rtcp_feedback: vec![RTCPFeedback {
-                    typ: "transport-cc".to_owned(),
-                    parameter: "".to_owned(),
-                }],
-            },
-            payload_type: 102,
-            ..Default::default()
-        },
-        RTPCodecType::Video,
-    );
-
     let mut registry = Registry::new();
     registry = register_default_interceptors(registry, &mut m)?;
 
@@ -1223,13 +1156,14 @@ async fn create_peer(
     // RTP packet to every peer's track through an abort-on-drop task.
     // Dropping the `PeerHandle` drops the `FanoutSubscription`, which
     // aborts the per-peer dispatch task — no writes-to-a-detached-track.
+    // VP8 chosen over H264 because @roamhq/wrtc (used by the MCP agent)
+    // ships without H264 support — OpenH264 licensing means most libwebrtc
+    // Node bindings omit it. VP8 is mandatory in the WebRTC spec, so it's
+    // present in every browser and in wrtc. Must match the GStreamer
+    // pipeline's rtpvp8pay output so payload types line up.
     let per_peer_video = Arc::new(TrackLocalStaticRTP::new(
         RTCRtpCodecCapability {
-            mime_type: "video/H264".to_owned(),
-            // Constrained Baseline Level 3.1 — universally supported by
-            // browsers. Must match what the GStreamer pipeline emits so
-            // the browser decoder accepts the RTP stream unchanged.
-            sdp_fmtp_line: "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f".to_owned(),
+            mime_type: "video/VP8".to_owned(),
             ..Default::default()
         },
         "video".to_owned(),

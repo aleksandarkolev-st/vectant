@@ -1,4 +1,4 @@
-import type wrtc from "@roamhq/wrtc";
+import type { RTCDataChannel } from "werift";
 import { SignalingClient } from "./signaling.js";
 import { Peer } from "./peer.js";
 import { FrameSink } from "./frames.js";
@@ -40,9 +40,9 @@ export interface AttachedSession {
   readonly peer: Peer;
   readonly frames: FrameSink;
   readonly channels: SessionChannels;
-  readonly buildLogDC: wrtc.RTCDataChannel;
-  readonly terminalDC: wrtc.RTCDataChannel;
-  readonly compileDC: wrtc.RTCDataChannel;
+  readonly buildLogDC: RTCDataChannel;
+  readonly terminalDC: RTCDataChannel;
+  readonly compileDC: RTCDataChannel;
   readonly resolution: { width: number; height: number } | null;
 }
 
@@ -285,6 +285,11 @@ class SessionManager {
 
   private async doAttach(opts: AttachOptions): Promise<AttachedSession> {
     const attachTimeoutMs = opts.attachTimeoutMs ?? 30_000;
+    const dbg = (m: string): void => {
+      const ts = new Date().toISOString().slice(11, 23);
+      process.stderr.write(`[mcp ${ts}] session: ${m}\n`);
+    };
+    dbg(`attach start sid=${opts.sessionId} signaling=${opts.signalingUrl} timeout=${attachTimeoutMs}ms`);
 
     const signaling = new SignalingClient({
       url: opts.signalingUrl,
@@ -308,6 +313,7 @@ class SessionManager {
     });
     this.unsubscribers.push(unsubPresence);
     await signaling.connect();
+    dbg(`signaling connected`);
 
     const peerOpts: { signaling: SignalingClient; connectTimeoutMs: number; iceServers?: RTCIceServer[] } = {
       signaling,
@@ -318,14 +324,18 @@ class SessionManager {
     }
     const peer = new Peer(peerOpts);
     await peer.start();
+    dbg(`peer.start() returned; awaiting connected + DCs`);
 
+    const dcWaiter = (label: string, p: Promise<unknown>): Promise<unknown> =>
+      p.then((v) => { dbg(`ready.${label} resolved`); return v; },
+             (e) => { dbg(`ready.${label} rejected: ${(e as Error).message}`); throw e; });
     // Wait for the peer connection to reach connected + build-log + terminal + compile.
     const [, buildLogDC, terminalDC, compileDC] = await Promise.all([
-      peer.ready.connected,
-      peer.ready.buildLogDC,
-      peer.ready.terminalDC,
-      peer.ready.compileDC,
-    ]);
+      dcWaiter("connected", peer.ready.connected),
+      dcWaiter("buildLogDC", peer.ready.buildLogDC),
+      dcWaiter("terminalDC", peer.ready.terminalDC),
+      dcWaiter("compileDC", peer.ready.compileDC),
+    ]) as [void, RTCDataChannel, RTCDataChannel, RTCDataChannel];
 
     const videoTrack = await peer.ready.videoTrack;
     const frames = new FrameSink(videoTrack);

@@ -1,7 +1,9 @@
-import wrtc from "@roamhq/wrtc";
-import sharp from "sharp";
+import { spawn, type ChildProcessByStdio } from "node:child_process";
+import type { Readable, Writable } from "node:stream";
+import ffmpegInstaller from "@ffmpeg-installer/ffmpeg";
+import { Vp8RtpPayload, type MediaStreamTrack } from "werift";
 
-const { RTCVideoSink, i420ToRgba } = wrtc.nonstandard;
+const FFMPEG_PATH: string = ffmpegInstaller.path;
 
 export interface FrameSnapshot {
   /** PNG bytes. */
@@ -16,49 +18,208 @@ export interface FrameSnapshot {
   seq: number;
 }
 
-interface LatestI420 {
+interface LatestPng {
+  png: Buffer;
   width: number;
   height: number;
-  data: Uint8Array;
   seq: number;
   ts: number;
 }
 
-/**
- * Subscribes to a video MediaStreamTrack, stores the most recent I420 frame,
- * and converts to PNG on demand.
+const PNG_MAGIC = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+// IEND chunk: 4-byte length (0), 4-byte type "IEND", 4-byte CRC (fixed).
+const PNG_IEND = Buffer.from([
+  0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+]);
+
+/** VP8 keyframe start code (RFC 6386 §9.1). */
+const VP8_KEYFRAME_START_CODE = Buffer.from([0x9d, 0x01, 0x2a]);
+
+/** Parse width/height from a VP8 keyframe's uncompressed header.
  *
- * Worker-side encoder defaults are VP8 1080×1920 @ 30fps (see
- * `backend/synthi-webrtc-compiler/worker/src/android/webrtc/video_pipeline.rs:80-83`).
- * `@roamhq/wrtc`'s `RTCVideoSink` delivers decoded frames in I420 planar format;
- * we copy the frame buffer (the native buffer is reused across events), convert
- * to RGBA via the binding's `i420ToRgba`, then PNG-encode via sharp.
+ * Layout (RFC 6386 §9.1):
+ *   byte 0-2: frame tag (LSB: key_frame=0 means keyframe)
+ *   byte 3-5: start code 0x9d 0x01 0x2a
+ *   byte 6-7: horizontal_scale(2) | width(14), little-endian
+ *   byte 8-9: vertical_scale(2)   | height(14), little-endian
+ *
+ * Returns null if the buffer isn't a keyframe or is too short. */
+function parseVp8Keyframe(buf: Buffer): { width: number; height: number } | null {
+  if (buf.length < 10) return null;
+  // Frame tag byte 0 bit 0 = key_frame (0 = keyframe).
+  if ((buf[0]! & 0x01) !== 0) return null;
+  if (buf.subarray(3, 6).compare(VP8_KEYFRAME_START_CODE) !== 0) return null;
+  const widthField = buf.readUInt16LE(6);
+  const heightField = buf.readUInt16LE(8);
+  return {
+    width: widthField & 0x3fff,
+    height: heightField & 0x3fff,
+  };
+}
+
+/** Build a 32-byte IVF file header for VP8 at the given resolution. */
+function buildIvfHeader(width: number, height: number): Buffer {
+  const hdr = Buffer.alloc(32);
+  hdr.write("DKIF", 0, "ascii");
+  hdr.writeUInt16LE(0, 4); // version
+  hdr.writeUInt16LE(32, 6); // header length
+  hdr.write("VP80", 8, "ascii");
+  hdr.writeUInt16LE(width, 12);
+  hdr.writeUInt16LE(height, 14);
+  // Timebase den/num — use RTP 90kHz clock so PTS = RTP timestamp.
+  hdr.writeUInt32LE(90000, 16);
+  hdr.writeUInt32LE(1, 20);
+  hdr.writeUInt32LE(0, 24); // frame count (unknown — leave 0)
+  hdr.writeUInt32LE(0, 28);
+  return hdr;
+}
+
+/** Build a 12-byte IVF frame header. PTS is 64-bit LE. */
+function buildIvfFrameHeader(frameSize: number, pts: number): Buffer {
+  const hdr = Buffer.alloc(12);
+  hdr.writeUInt32LE(frameSize, 0);
+  // Node's writeBigUInt64LE wants bigint; Number.MAX_SAFE_INTEGER is >>
+  // any plausible RTP timestamp (32-bit), so plain Number → bigint is safe.
+  hdr.writeBigUInt64LE(BigInt(pts >>> 0), 4);
+  return hdr;
+}
+
+/**
+ * Subscribes to a werift MediaStreamTrack carrying VP8 RTP, reassembles
+ * frames from the RTP payloads, wraps them in an IVF container, and pipes
+ * the stream into an ffmpeg subprocess for decoding to PNG. The latest
+ * decoded PNG is kept in memory so `getFrame()` returns synchronously.
+ *
+ * Why ffmpeg + IVF: werift exposes VP8 RTP payloads via `Vp8RtpPayload`
+ * but has no decoder. ffmpeg reads VP8 cleanly out of an IVF container,
+ * which is trivial to synthesize in userland (32-byte file header +
+ * 12-byte per-frame header). The worker's GStreamer pipeline emits VP8
+ * because the original `@roamhq/wrtc` build on the MCP side lacked H264;
+ * we stay on VP8 now on werift too so both ends match without touching
+ * the worker.
  */
 export class FrameSink {
-  private readonly sink: wrtc.nonstandard.RTCVideoSink;
-  private latest: LatestI420 | null = null;
+  private readonly ffmpeg: ChildProcessByStdio<Writable, Readable, Readable>;
+  private readonly trackSub: { unSubscribe: () => void } | null;
+  private latest: LatestPng | null = null;
   private seq = 0;
   private firstFrameAt: number | null = null;
   private stopped = false;
+  private stdoutBuf: Buffer = Buffer.alloc(0);
 
-  constructor(track: wrtc.MediaStreamTrack) {
-    this.sink = new RTCVideoSink(track);
-    this.sink.onframe = (event: unknown) => {
+  // VP8 reassembly state.
+  private frameBuf: Buffer[] = [];
+  private frameRtpTs: number | null = null;
+  private ivfHeaderSent = false;
+
+  constructor(track: MediaStreamTrack) {
+    this.ffmpeg = spawn(
+      FFMPEG_PATH,
+      [
+        "-loglevel", "error",
+        "-f", "ivf",
+        "-i", "-",
+        "-f", "image2pipe",
+        "-c:v", "png",
+        "-",
+      ],
+      { stdio: ["pipe", "pipe", "pipe"] },
+    );
+    this.ffmpeg.stdout.on("data", (chunk: Buffer) => this.onFfmpegStdout(chunk));
+    this.ffmpeg.stderr.on("data", (chunk: Buffer) => {
+      process.stderr.write(`[mcp] frames: ffmpeg: ${chunk.toString()}`);
+    });
+    this.ffmpeg.on("error", (err) => {
+      process.stderr.write(`[mcp] frames: ffmpeg spawn error: ${err.message}\n`);
+    });
+    this.ffmpeg.stdin.on("error", () => {
+      // ignore broken-pipe on shutdown
+    });
+
+    this.trackSub = track.onReceiveRtp.subscribe((rtp) => {
       if (this.stopped) return;
-      const frame = (event as { frame: { width: number; height: number; data: Uint8Array } }).frame;
-      const copy = new Uint8Array(frame.data.byteLength);
-      copy.set(frame.data);
+      try {
+        const vp8 = Vp8RtpPayload.deSerialize(rtp.payload);
+        if (!vp8.payload || vp8.payload.length === 0) return;
+
+        // RTP timestamp changes each frame; use it as the PTS + boundary.
+        // Marker bit on the RTP header flags the final packet of a frame
+        // but we also reset on timestamp change as a defensive fallback
+        // (e.g. first packet after attach).
+        const rtpTs = rtp.header.timestamp;
+        if (this.frameRtpTs !== null && this.frameRtpTs !== rtpTs) {
+          // Previous frame never saw its marker — flush what we have.
+          this.flushFrame(this.frameRtpTs);
+        }
+        this.frameRtpTs = rtpTs;
+        this.frameBuf.push(vp8.payload);
+
+        if (rtp.header.marker) {
+          this.flushFrame(rtpTs);
+          this.frameRtpTs = null;
+        }
+      } catch {
+        // malformed RTP payload — drop and continue
+      }
+    });
+  }
+
+  private flushFrame(pts: number): void {
+    if (this.frameBuf.length === 0) return;
+    const frame = Buffer.concat(this.frameBuf);
+    this.frameBuf = [];
+
+    if (!this.ivfHeaderSent) {
+      // First frame MUST be a keyframe for the decoder; if it isn't, drop
+      // and wait for one. ffmpeg is perfectly happy to start mid-stream on
+      // the next keyframe. Bonus: the keyframe carries the width/height
+      // we need to synthesize the IVF file header.
+      const dims = parseVp8Keyframe(frame);
+      if (!dims) return;
+      this.ffmpeg.stdin.write(buildIvfHeader(dims.width, dims.height));
+      this.ivfHeaderSent = true;
+    }
+
+    this.ffmpeg.stdin.write(buildIvfFrameHeader(frame.length, pts));
+    this.ffmpeg.stdin.write(frame);
+  }
+
+  private onFfmpegStdout(chunk: Buffer): void {
+    this.stdoutBuf = this.stdoutBuf.length === 0 ? chunk : Buffer.concat([this.stdoutBuf, chunk]);
+
+    for (;;) {
+      const magicStart = this.stdoutBuf.indexOf(PNG_MAGIC);
+      if (magicStart < 0) {
+        if (this.stdoutBuf.length > 16 * 1024 * 1024) {
+          this.stdoutBuf = Buffer.alloc(0);
+        }
+        return;
+      }
+      const iendPos = this.stdoutBuf.indexOf(PNG_IEND, magicStart + PNG_MAGIC.length);
+      if (iendPos < 0) {
+        if (magicStart > 0) {
+          this.stdoutBuf = this.stdoutBuf.subarray(magicStart);
+        }
+        return;
+      }
+      const pngEnd = iendPos + PNG_IEND.length;
+      const png = this.stdoutBuf.subarray(magicStart, pngEnd);
+      // PNG IHDR: magic(8) + length(4) + "IHDR"(4) + width(4 BE) + height(4 BE)
+      const width = png.readUInt32BE(16);
+      const height = png.readUInt32BE(20);
       this.seq += 1;
       const now = Date.now();
       if (this.firstFrameAt === null) this.firstFrameAt = now;
+      // Buffer.from(png) so the slice doesn't retain the whole stdoutBuf.
       this.latest = {
-        width: frame.width,
-        height: frame.height,
-        data: copy,
+        png: Buffer.from(png),
+        width,
+        height,
         seq: this.seq,
         ts: now,
       };
-    };
+      this.stdoutBuf = this.stdoutBuf.subarray(pngEnd);
+    }
   }
 
   /** Resolves when at least one frame has been received, or rejects on timeout. */
@@ -83,24 +244,12 @@ export class FrameSink {
     return { width: this.latest.width, height: this.latest.height };
   }
 
-  /** Encode the most recent frame as PNG. Throws if no frame has arrived yet. */
+  /** Return the most recent frame as PNG. Throws if no frame has arrived yet. */
   async getFrame(): Promise<FrameSnapshot> {
     const latest = this.latest;
     if (!latest) throw new Error("no_frame_yet");
-
-    const rgbaData = new Uint8ClampedArray(latest.width * latest.height * 4);
-    const i420Frame = { width: latest.width, height: latest.height, data: latest.data };
-    const rgbaFrame = { width: latest.width, height: latest.height, data: rgbaData as unknown as Uint8Array };
-    i420ToRgba(i420Frame, rgbaFrame);
-
-    const png = await sharp(Buffer.from(rgbaData.buffer), {
-      raw: { width: latest.width, height: latest.height, channels: 4 },
-    })
-      .png({ compressionLevel: 6, adaptiveFiltering: false })
-      .toBuffer();
-
     return {
-      data: png,
+      data: latest.png,
       width: latest.width,
       height: latest.height,
       ts: latest.ts,
@@ -112,7 +261,17 @@ export class FrameSink {
     if (this.stopped) return;
     this.stopped = true;
     try {
-      this.sink.stop();
+      this.trackSub?.unSubscribe();
+    } catch {
+      // ignored
+    }
+    try {
+      this.ffmpeg.stdin.end();
+    } catch {
+      // ignored
+    }
+    try {
+      this.ffmpeg.kill("SIGTERM");
     } catch {
       // ignored
     }
