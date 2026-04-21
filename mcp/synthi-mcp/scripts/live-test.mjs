@@ -710,10 +710,30 @@ async function main() {
       log('ok', `bbox=${JSON.stringify(locate.bbox)}  conf=${locate.confidence ?? 'n/a'}  cached=${locate.cached ?? false}  cost=$${locate.costUsd ?? 0}`);
     }
 
-    // 9. edit fixture: counter = 0 → 42 (disk + GCS mirror via batch)
-    log('info', 'Editing main.cpp: counter = 0 → 42  (write-files-batch)');
+    // 9. edit fixture: counter = 0 → 42
+    //
+    // Two writes are needed and they mean different things:
+    //
+    // (a) write-files-batch → collab-server disk + GCS mirror.
+    //     This is the editor's store of record. The browser reads from
+    //     here; without it, a tab reload would show the old source. It
+    //     does NOT trigger HMR — the worker has its own FS and doesn't
+    //     watch collab-server.
+    //
+    // (b) synthi_compile → CompileRequest on the `compile` data channel.
+    //     THIS is what fires HMR. The worker runs the edit → diff →
+    //     perform_ai_diff_patch (handler.rs:478) pipeline against the
+    //     source inside the CompileRequest payload, applies the targeted
+    //     edits to the split modules, hot-swaps the shared object, and
+    //     emits a terminal event on build-log. synthi_wait_hmr catches
+    //     that event.
+    //
+    // Without (b), wait_hmr just sits until timeout. That was the symptom.
+    log('info', 'Editing main.cpp: counter = 0 → 42');
     const edited = fixture.replace('int counter = 0;', 'int counter = 42;');
     if (edited === fixture) fail('fixture did not contain `int counter = 0;` to edit');
+
+    // (a) persist the edit to the editor's store
     {
       const r = await writeFilesBatchCollab({
         collabUrl: CFG.collabUrl, slug: CFG.slug, userId: CFG.hostId,
@@ -722,8 +742,20 @@ async function main() {
       });
       if (r.otherErrs.length) fail(`edit batch hard errors: ${JSON.stringify(r.otherErrs)}`);
       if (CFG.syncToGcs && r.gcsErrs.length) log('warn', `edit GCS mirror failed: ${JSON.stringify(r.gcsErrs)}`);
-      else log('ok', `edit written to disk${CFG.syncToGcs ? ' + mirrored to GCS' : ''}`);
+      else log('ok', `edit written to collab-server disk${CFG.syncToGcs ? ' + GCS' : ''}`);
     }
+
+    // (b) fire the CompileRequest that actually triggers diff_patch + HMR
+    log('info', 'synthi_compile (CompileRequest → worker runs diff_patch → HMR)');
+    const compileRes = await client.toolCall('synthi_compile', {
+      language: 'cpp',
+      filename: 'main.cpp',
+      source: edited,
+      is_gui: true,
+      slug: CFG.slug,
+    });
+    if (!compileRes?.ok) fail(`synthi_compile failed: ${JSON.stringify(compileRes)}`);
+    log('ok', `compile dispatched_at=${compileRes.dispatched_at}`);
 
     // 10. wait_hmr
     log('info', `synthi_wait_hmr (timeout ${CFG.hmrTimeoutMs}ms)`);
@@ -731,7 +763,18 @@ async function main() {
     const hmr = await client.toolCall('synthi_wait_hmr', { timeoutMs: CFG.hmrTimeoutMs });
     const waitElapsed = Date.now() - waitStart;
     log(hmr?.status === 'applied' ? 'ok' : 'warn',
-        `hmr status=${hmr?.status}  elapsedMs=${hmr?.elapsedMs ?? waitElapsed}`);
+        `hmr status=${hmr?.status}  source=${hmr?.source ?? 'n/a'}  elapsedMs=${hmr?.elapsedMs ?? waitElapsed}`);
+
+    // Settle window between "adapter reports Promoted" and "new pixels
+    // arrive on our track". The terminal event fires the moment the worker
+    // finishes the hot-swap; the next SDL render (~16ms) still has to go
+    // through encode → RTP → network → werift RTP demux → vpx decode →
+    // sharp PNG. On a cold docker network that's often 300–600ms. Without
+    // this wait, synthi_screenshot can pull a frame that was already
+    // buffered at the time of the swap and the pHash diff is zero.
+    const postHmrSettleMs = Number(process.env.POST_HMR_SETTLE_MS ?? 1000);
+    log('info', `post-HMR settle ${postHmrSettleMs}ms (let fresh frames propagate)`);
+    await sleep(postHmrSettleMs);
 
     // 11. post-edit screenshot
     log('info', 'synthi_screenshot (post-edit)');
