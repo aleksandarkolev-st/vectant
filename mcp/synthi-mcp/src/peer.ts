@@ -14,6 +14,13 @@ function dbg(msg: string): void {
   process.stderr.write(`[mcp ${ts}] ${msg}\n`);
 }
 
+/** Parse the `typ <host|srflx|prflx|relay>` field out of an SDP candidate. */
+function candidateType(candidate: string | undefined | null): string | null {
+  if (!candidate) return null;
+  const m = /\btyp\s+(host|srflx|prflx|relay)\b/i.exec(candidate);
+  return m ? m[1]!.toLowerCase() : null;
+}
+
 /** Coerce DOM-lib RTCIceCandidateInit (allows null) into werift's shape
  *  (string | undefined only). */
 function normalizeCandidateInit(c: RTCIceCandidateInit): {
@@ -108,6 +115,7 @@ export class Peer {
 
   private readonly signaling: SignalingClient;
   private readonly offerRetryMs: number;
+  private readonly iceTransportPolicy: "all" | "relay";
   private readonly connectedD = deferred<void>();
   private readonly videoTrackD = deferred<MediaStreamTrack>();
   private readonly buildLogDcD = deferred<RTCDataChannel>();
@@ -140,6 +148,7 @@ export class Peer {
       opts.iceTransportPolicy
       ?? (envPolicy === "relay" || envPolicy === "all" ? (envPolicy as "all" | "relay") : undefined)
       ?? (hasTurn ? "relay" : "all");
+    this.iceTransportPolicy = iceTransportPolicy;
     dbg(`peer: new RTCPeerConnection iceServers=${JSON.stringify(weriftIceServers.map((s) => ({ urls: s.urls, hasCred: !!s.credential })))} policy=${iceTransportPolicy}`);
     this.pc = new RTCPeerConnection({
       iceServers: weriftIceServers,
@@ -200,7 +209,17 @@ export class Peer {
         dbg(`peer: local ICE gathering complete`);
         return;
       }
-      dbg(`peer: local ICE candidate ${candidate.candidate?.slice(0, 80) ?? ""}`);
+      const candStr = candidate.candidate ?? "";
+      const ctype = candidateType(candStr);
+      // werift still *gathers* host/srflx candidates even with
+      // iceTransportPolicy=relay — it only filters pairing, not emission.
+      // Suppress non-relay locals at the signaling boundary so the worker
+      // never sees them and can't nominate a flaky host↔host pair.
+      if (this.iceTransportPolicy === "relay" && ctype !== "relay") {
+        dbg(`peer: local ICE candidate (filtered, policy=relay, typ=${ctype}) ${candStr.slice(0, 80)}`);
+        return;
+      }
+      dbg(`peer: local ICE candidate ${candStr.slice(0, 80)}`);
       try {
         this.signaling.send({
           type: "candidate",
@@ -278,6 +297,14 @@ export class Peer {
   private async handleCandidate(msg: SignalingMessage): Promise<void> {
     const candidate = msg.candidate as RTCIceCandidateInit | undefined;
     if (!candidate) return;
+    const ctype = candidateType(candidate.candidate);
+    // Symmetric to outgoing filter: when we're relay-only, also refuse the
+    // worker's host/srflx candidates. Worker's host is its docker-internal
+    // 172.18.0.x which may or may not even be routable from the MCP host.
+    if (this.iceTransportPolicy === "relay" && ctype !== "relay") {
+      dbg(`signaling: drop remote candidate (policy=relay, typ=${ctype}) ${(candidate.candidate ?? "").slice(0, 80)}`);
+      return;
+    }
     if (!this.remoteDescriptionSet) {
       this.pendingCandidates.push(candidate);
       return;
