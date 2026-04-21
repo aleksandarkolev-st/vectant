@@ -1413,14 +1413,13 @@ async fn create_peer(
             async move {
                 debug_log!("Peer Connection State ({}): {s:?}", peer_id);
                 if matches!(s, RTCPeerConnectionState::Connected) {
-                    // Snapshot stats once ICE+DTLS are up so we can see
-                    // which candidate pair actually got nominated.
-                    // Browser peers work; MCP peers currently don't — the
-                    // difference should be visible in the nominated pair's
-                    // local/remote candidate types (host/srflx/relay).
                     let pid = peer_id.clone();
                     tokio::spawn(async move {
                         use webrtc::stats::StatsReportType;
+                        // Let ICE finish nominating and let RTP counters tick
+                        // before we sample. Firing immediately on Connected
+                        // captures checks mid-flight with zero counters.
+                        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
                         let report = pc_for_stats.get_stats().await;
                         let mut locals: std::collections::HashMap<String, String> = std::collections::HashMap::new();
                         let mut remotes: std::collections::HashMap<String, String> = std::collections::HashMap::new();
@@ -1442,37 +1441,46 @@ async fn create_peer(
                             }
                         }
                         let mut pair_count = 0;
+                        let mut nominated_count = 0;
                         for (_, entry) in &report.reports {
                             if let StatsReportType::CandidatePair(pair) = entry {
                                 pair_count += 1;
+                                if pair.nominated { nominated_count += 1; }
                                 let local = locals.get(&pair.local_candidate_id).cloned().unwrap_or_else(|| pair.local_candidate_id.clone());
                                 let remote = remotes.get(&pair.remote_candidate_id).cloned().unwrap_or_else(|| pair.remote_candidate_id.clone());
-                                eprintln!(
-                                    "[WebRTC] ICE pair ({}): nominated={} state={:?} local=[{}] remote=[{}] pkt_sent={} pkt_recv={} rtt={:.3}ms",
-                                    pid,
-                                    pair.nominated,
-                                    pair.state,
-                                    local,
-                                    remote,
-                                    pair.packets_sent,
-                                    pair.packets_received,
-                                    pair.current_round_trip_time * 1000.0,
-                                );
+                                // Only dump nominated + Succeeded pairs to
+                                // keep log volume sane; everything else is
+                                // noise post-nomination.
+                                if pair.nominated || format!("{:?}", pair.state) == "Succeeded" {
+                                    eprintln!(
+                                        "[WebRTC] ICE pair ({}) [+3s]: nominated={} state={:?} local=[{}] remote=[{}] pkt_sent={} pkt_recv={} rtt={:.3}ms",
+                                        pid,
+                                        pair.nominated,
+                                        pair.state,
+                                        local,
+                                        remote,
+                                        pair.packets_sent,
+                                        pair.packets_received,
+                                        pair.current_round_trip_time * 1000.0,
+                                    );
+                                }
                             }
                         }
-                        if pair_count == 0 {
-                            eprintln!("[WebRTC] ICE pair ({}): no candidate-pair stats available", pid);
-                        }
+                        eprintln!(
+                            "[WebRTC] ICE pair summary ({}) [+3s]: pairs={} nominated={}",
+                            pid, pair_count, nominated_count
+                        );
                     });
                 }
+                // IMPORTANT: Disconnected is TRANSIENT — consent-freshness
+                // probes missed a beat, but ICE restores on its own in
+                // seconds. Removing the peer here drops its fanout
+                // subscription, so when ICE recovers the peer never
+                // receives RTP again. Only tear down on terminal states.
                 if matches!(
                     s,
-                    RTCPeerConnectionState::Closed | RTCPeerConnectionState::Failed | RTCPeerConnectionState::Disconnected
+                    RTCPeerConnectionState::Closed | RTCPeerConnectionState::Failed
                 ) {
-                    // Dropping the Arc<PeerHandle> drops the fanout
-                    // subscription tasks, aborting dispatch to this peer's
-                    // tracks. Safe to call even if the peer was already
-                    // removed by a reset() sweep.
                     if registry.remove(&peer_id).is_some() {
                         debug_log!("[WebRTC] Removed peer {} on state {:?}", peer_id, s);
                     }
