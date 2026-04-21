@@ -256,8 +256,18 @@ pub async fn handle_runner_execution(
                 // @roamhq/wrtc (used by the MCP agent) ships without H264,
                 // and mixing codecs between pipeline and track silently
                 // breaks negotiation.
+                //
+                // `keyframe-max-dist=30` forces a keyframe every second at
+                // 30 fps. Without it, vp8enc's default of 128 frames (~4 s)
+                // means a late-joining observer peer can wait multiple
+                // seconds before FrameSink sees a decodable keyframe — and
+                // some combinations of `deadline=1 cpu-used=4` end up
+                // emitting keyframes only on scene-change, which the
+                // MCP observer flow treats as "no_frame_yet" forever.
+                // The encoder is given `name=video_enc` so `create_peer`
+                // can dispatch `force-key-unit` events on subscribe.
                 let encoders = [
-                    ("vp8enc deadline=1 cpu-used=4 end-usage=cbr target-bitrate=2000000", "rtpvp8pay", "video/VP8"),
+                    ("vp8enc name=video_enc deadline=1 cpu-used=4 end-usage=cbr target-bitrate=2000000 keyframe-max-dist=30", "rtpvp8pay", "video/VP8"),
                 ];
 
                 let mut selected_mime_type = "video/VP8".to_owned();

@@ -93,6 +93,7 @@ use webrtc::rtp_transceiver::rtp_codec::{
     RTCRtpCodecCapability, RTCRtpHeaderExtensionCapability, RTPCodecType,
 };
 use webrtc::rtp_transceiver::rtp_transceiver_direction::RTCRtpTransceiverDirection;
+use webrtc::rtp_transceiver::RTCPFeedback;
 use webrtc::rtp_transceiver::RTCRtpTransceiverInit;
 use serde::{Deserialize, Serialize};
 use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
@@ -617,6 +618,18 @@ async fn main() -> Result<()> {
     // through an abort-on-drop subscription, so teardown is automatic
     // when a peer disconnects.
     let peer_registry: Arc<PeerRegistry> = Arc::new(PeerRegistry::new());
+    // Early-candidate buffer: trickle-ICE from werift (MCP side) sends local
+    // candidates before its offer reaches the worker, because werift only
+    // resolves `setLocalDescription` after ICE gathering is complete — by
+    // which time the candidates have already been transmitted. If a
+    // candidate arrives for a peer_id we haven't yet created a PC for,
+    // stash it here; the offer arm drains the bucket right after
+    // `wire_peer_channels` returns, so the PC sees every remote candidate.
+    // Capped at 32 entries/peer to fend off unbounded growth from a
+    // misbehaving client that keeps sending candidates for an id that
+    // never offers.
+    let pending_remote_candidates: Arc<Mutex<HashMap<String, Vec<RTCIceCandidateInit>>>> =
+        Arc::new(Mutex::new(HashMap::new()));
     let video_fanout = Arc::new(worker::webrtc::TrackFanout::new(
         worker::webrtc::TrackKind::Video,
         worker::webrtc::track_fanout::DEFAULT_CAPACITY,
@@ -935,6 +948,7 @@ async fn main() -> Result<()> {
                 let vscode_server_kill_tx_h = vscode_server_kill_tx.clone();
                 let video_fanout_h = video_fanout.clone();
                 let audio_fanout_h = audio_fanout.clone();
+                let pending_remote_candidates_h = pending_remote_candidates.clone();
                 let role_h = role_for_new_peer;
                 let handshake: anyhow::Result<()> = async move {
                     if let Some(sdp) = sdp_opt {
@@ -963,6 +977,7 @@ async fn main() -> Result<()> {
                                 registry_h.clone(),
                                 video_fanout_h.clone(),
                                 audio_fanout_h.clone(),
+                                runner_store_h.clone(),
                             )
                             .await?;
                             wire_peer_channels(
@@ -1001,6 +1016,31 @@ async fn main() -> Result<()> {
                         desc.sdp_type = sdp_type;
                         desc.sdp = sdp;
                         pc.set_remote_description(desc).await?;
+
+                        // Replay any candidates that arrived ahead of the
+                        // offer (standard with werift trickle ICE). Done
+                        // AFTER set_remote_description so the PC accepts
+                        // them; before that `add_ice_candidate` errors.
+                        let queued = {
+                            let mut map = pending_remote_candidates_h.lock().await;
+                            map.remove(&peer_id_h).unwrap_or_default()
+                        };
+                        if !queued.is_empty() {
+                            debug_log!(
+                                "[WebRTC-signal] Replaying {} queued candidate(s) for peer {}",
+                                queued.len(),
+                                peer_id_h
+                            );
+                            for c in queued {
+                                if let Err(e) = pc.add_ice_candidate(c).await {
+                                    debug_log!(
+                                        "[WebRTC-signal] Queued candidate replay failed for peer {}: {:?}",
+                                        peer_id_h, e
+                                    );
+                                }
+                            }
+                        }
+
                         let answer = pc.create_answer(None).await?;
                         pc.set_local_description(answer.clone()).await?;
                         if answer.sdp.find("transport-wide-cc").is_none() {
@@ -1039,9 +1079,24 @@ async fn main() -> Result<()> {
                     if let Some(handle) = peer_registry.get(&peer_id) {
                         let _ = handle.pc.add_ice_candidate(c).await;
                     } else {
+                        // Peer hasn't offered yet — werift always trickles
+                        // its local candidates BEFORE it emits the offer
+                        // (setLocalDescription awaits ICE gathering), so
+                        // this path is the common case, not an error. Stash
+                        // the candidate; the offer arm replays the bucket
+                        // after wire_peer_channels completes. Bounded so a
+                        // misbehaving peer can't grow memory without bound.
+                        const MAX_PENDING_PER_PEER: usize = 32;
+                        let mut map = pending_remote_candidates.lock().await;
+                        let bucket = map.entry(peer_id.clone()).or_default();
+                        if bucket.len() >= MAX_PENDING_PER_PEER {
+                            bucket.remove(0);
+                        }
+                        bucket.push(c);
                         debug_log!(
-                            "[WebRTC-signal] Dropped candidate for unknown peer {}",
-                            peer_id
+                            "[WebRTC-signal] Queued early candidate for peer {} (pending={})",
+                            peer_id,
+                            bucket.len()
                         );
                     }
                 }
@@ -1059,6 +1114,9 @@ async fn main() -> Result<()> {
                     let _ = peer.pc.close().await;
                 }
                 peer_registry.clear();
+                // Drop any candidates queued for peers that never offered;
+                // a fresh session starts with a clean bucket.
+                pending_remote_candidates.lock().await.clear();
 
                 // Clear runner state (terminates emulator / GStreamer pipeline).
                 {
@@ -1105,6 +1163,44 @@ async fn main() -> Result<()> {
 /// and unsubscribed from the session" — ICE callback stamps peer_id on
 /// outgoing candidates, connection-state callback removes the peer
 /// from the registry on Closed/Failed so the fanout dispatch task dies.
+/// Fire a `GstForceKeyUnit` event at the running `video_enc` encoder to
+/// make it emit an I-frame on the next buffer. No-op if no pipeline is
+/// active or the encoder element isn't present (e.g. a compile hasn't
+/// happened yet on this session).
+///
+/// Called whenever a fresh peer subscribes to the video fanout so the
+/// new observer doesn't have to wait for the pipeline's natural keyframe
+/// cadence (`keyframe-max-dist=30`, ~1 s at 30 fps) before `FrameSink`
+/// can decode anything. The event is sent *upstream* of the encoder so
+/// it flows through the whole chain — vp8enc treats it as "start a new
+/// GoP now".
+fn request_video_keyframe(runner_store: Arc<Mutex<Option<RunnerState>>>, reason: &'static str) {
+    tokio::spawn(async move {
+        use gstreamer::prelude::{ElementExtManual, GstBinExt};
+        // Minimise the time under the async mutex: clone the encoder Arc
+        // (gst::Element is a ref-counted glib::Object so .clone() is cheap)
+        // and drop the guard before firing the event.
+        let encoder = {
+            let guard = runner_store.lock().await;
+            let Some(state) = guard.as_ref() else { return };
+            let Some(pipeline) = state.gst_pipeline.as_ref() else { return };
+            match pipeline.by_name("video_enc") {
+                Some(e) => e,
+                None => return,
+            }
+        };
+        let structure = gst::Structure::builder("GstForceKeyUnit")
+            .field("all-headers", true)
+            .build();
+        let event = gst::event::CustomUpstream::new(structure);
+        if encoder.send_event(event) {
+            debug_log!("[WebRTC] Forced keyframe on video_enc ({reason})");
+        } else {
+            debug_log!("[WebRTC] Failed to dispatch force-keyframe event ({reason})");
+        }
+    });
+}
+
 async fn create_peer(
     peer_id: String,
     role: worker::webrtc::PeerRole,
@@ -1113,6 +1209,7 @@ async fn create_peer(
     peer_registry: Arc<PeerRegistry>,
     video_fanout: Arc<worker::webrtc::TrackFanout>,
     audio_fanout: Arc<worker::webrtc::TrackFanout>,
+    runner_store: Arc<Mutex<Option<RunnerState>>>,
 ) -> Result<Arc<RTCPeerConnection>> {
     let mut m = MediaEngine::default();
     m.register_default_codecs()?;
@@ -1161,10 +1258,27 @@ async fn create_peer(
     // Node bindings omit it. VP8 is mandatory in the WebRTC spec, so it's
     // present in every browser and in wrtc. Must match the GStreamer
     // pipeline's rtpvp8pay output so payload types line up.
+    //
+    // Capability is spelled out explicitly rather than using `Default` —
+    // VP8 requires a 90 kHz clock_rate, and the `nack`/`nack pli` rtcp-fb
+    // lines are what let a remote peer ask us for a keyframe (werift on
+    // the MCP side advertises these in its offer; without them in the
+    // answer, the feedback negotiation drops back to "no PLI possible"
+    // and a late-joining observer has no way to unstick a mid-stream
+    // arrival). `transport-cc` matches the browser's default feedback set
+    // and plays nicely with congestion-control interceptors downstream.
+    let vp8_feedback = vec![
+        RTCPFeedback { typ: "nack".to_owned(), parameter: "".to_owned() },
+        RTCPFeedback { typ: "nack".to_owned(), parameter: "pli".to_owned() },
+        RTCPFeedback { typ: "transport-cc".to_owned(), parameter: "".to_owned() },
+    ];
     let per_peer_video = Arc::new(TrackLocalStaticRTP::new(
         RTCRtpCodecCapability {
             mime_type: "video/VP8".to_owned(),
-            ..Default::default()
+            clock_rate: 90_000,
+            channels: 0,
+            sdp_fmtp_line: "".to_owned(),
+            rtcp_feedback: vp8_feedback,
         },
         "video".to_owned(),
         format!("synthi-peer-{peer_id}"),
@@ -1172,7 +1286,12 @@ async fn create_peer(
     let per_peer_audio = Arc::new(TrackLocalStaticRTP::new(
         RTCRtpCodecCapability {
             mime_type: "audio/opus".to_owned(),
-            ..Default::default()
+            clock_rate: 48_000,
+            channels: 2,
+            sdp_fmtp_line: "minptime=10;useinbandfec=1".to_owned(),
+            rtcp_feedback: vec![
+                RTCPFeedback { typ: "transport-cc".to_owned(), parameter: "".to_owned() },
+            ],
         },
         "audio".to_owned(),
         format!("synthi-peer-{peer_id}"),
@@ -1228,6 +1347,15 @@ async fn create_peer(
     peer_registry.attach_audio_track(&peer_id, per_peer_audio.clone());
     peer_registry.attach_video_sub(&peer_id, video_fanout.subscribe_track(per_peer_video));
     peer_registry.attach_audio_sub(&peer_id, audio_fanout.subscribe_track(per_peer_audio));
+
+    // A fresh peer subscribes to the broadcast at the tail — it only sees
+    // packets dispatched AFTER this point. Without an immediate keyframe
+    // request, it has to wait for the encoder's next natural I-frame
+    // (~1 s with `keyframe-max-dist=30`) and `FrameSink` drops every
+    // delta frame in between. Fire a `GstForceKeyUnit` upstream at the
+    // encoder so the very next RTP burst is decodable; this is a no-op
+    // when the pipeline isn't running yet (no compile → no video anyway).
+    request_video_keyframe(runner_store.clone(), "peer_subscribe");
 
     {
         let tx = signal_tx.clone();
