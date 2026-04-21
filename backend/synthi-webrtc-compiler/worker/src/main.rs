@@ -1405,11 +1405,66 @@ async fn create_peer(
     {
         let peer_id_for_state = peer_id.clone();
         let registry_for_state = peer_registry.clone();
+        let pc_for_stats = pc.clone();
         pc.on_peer_connection_state_change(Box::new(move |s: RTCPeerConnectionState| {
             let peer_id = peer_id_for_state.clone();
             let registry = registry_for_state.clone();
+            let pc_for_stats = pc_for_stats.clone();
             async move {
                 debug_log!("Peer Connection State ({}): {s:?}", peer_id);
+                if matches!(s, RTCPeerConnectionState::Connected) {
+                    // Snapshot stats once ICE+DTLS are up so we can see
+                    // which candidate pair actually got nominated.
+                    // Browser peers work; MCP peers currently don't — the
+                    // difference should be visible in the nominated pair's
+                    // local/remote candidate types (host/srflx/relay).
+                    let pid = peer_id.clone();
+                    tokio::spawn(async move {
+                        use webrtc::stats::StatsReportType;
+                        let report = pc_for_stats.get_stats().await;
+                        let mut locals: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+                        let mut remotes: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+                        for (id, entry) in &report.reports {
+                            match entry {
+                                StatsReportType::LocalCandidate(c) => {
+                                    locals.insert(
+                                        id.clone(),
+                                        format!("{:?} {}:{} net={:?} prio={}", c.candidate_type, c.ip, c.port, c.network_type, c.priority),
+                                    );
+                                }
+                                StatsReportType::RemoteCandidate(c) => {
+                                    remotes.insert(
+                                        id.clone(),
+                                        format!("{:?} {}:{} net={:?} prio={}", c.candidate_type, c.ip, c.port, c.network_type, c.priority),
+                                    );
+                                }
+                                _ => {}
+                            }
+                        }
+                        let mut pair_count = 0;
+                        for (_, entry) in &report.reports {
+                            if let StatsReportType::CandidatePair(pair) = entry {
+                                pair_count += 1;
+                                let local = locals.get(&pair.local_candidate_id).cloned().unwrap_or_else(|| pair.local_candidate_id.clone());
+                                let remote = remotes.get(&pair.remote_candidate_id).cloned().unwrap_or_else(|| pair.remote_candidate_id.clone());
+                                eprintln!(
+                                    "[WebRTC] ICE pair ({}): nominated={} state={:?} local=[{}] remote=[{}] pkt_sent={} pkt_recv={} rtt={:.3}ms",
+                                    pid,
+                                    pair.nominated,
+                                    pair.state,
+                                    local,
+                                    remote,
+                                    pair.packets_sent,
+                                    pair.packets_received,
+                                    pair.current_round_trip_time * 1000.0,
+                                );
+                            }
+                        }
+                        if pair_count == 0 {
+                            eprintln!("[WebRTC] ICE pair ({}): no candidate-pair stats available", pid);
+                        }
+                    });
+                }
                 if matches!(
                     s,
                     RTCPeerConnectionState::Closed | RTCPeerConnectionState::Failed | RTCPeerConnectionState::Disconnected
