@@ -77,7 +77,10 @@ const CFG = {
   workspaceName: process.env.WORKSPACE_NAME ?? 'Synthi MCP Live Test',
   hostId: process.env.HOST_ID ?? 'mcp-live-test',
   mcpEntry: path.resolve(__dirname, process.env.MCP_ENTRY ?? '../dist/index.js'),
-  fixturePath: path.resolve(__dirname, process.env.FIXTURE_PATH ?? '../tests/fixtures/counter/main.cpp'),
+  // Default fixture: button (has visible-on-every-frame edit).
+  // Override with FIXTURE_PATH=../tests/fixtures/counter/main.cpp for
+  // the older counter-based spike.
+  fixturePath: path.resolve(__dirname, process.env.FIXTURE_PATH ?? '../tests/fixtures/button/main.cpp'),
   frontendPrecompiled: (process.env.FRONTEND_PRECOMPILED ?? 'false').toLowerCase() === 'true',
   hmrTimeoutMs: Number(process.env.HMR_TIMEOUT_MS ?? 60000),
   // GCS mirror is a durable-storage nicety. The editor + worker read from
@@ -710,9 +713,9 @@ async function main() {
       log('ok', `bbox=${JSON.stringify(locate.bbox)}  conf=${locate.confidence ?? 'n/a'}  cached=${locate.cached ?? false}  cost=$${locate.costUsd ?? 0}`);
     }
 
-    // 9. edit fixture: counter = 0 → 42
+    // 9. edit fixture: insert a second (red) button at SECOND_BUTTON_ANCHOR
     //
-    // Two writes are needed and they mean different things:
+    // Two writes and they mean different things:
     //
     // (a) write-files-batch → collab-server disk + GCS mirror.
     //     This is the editor's store of record. The browser reads from
@@ -728,10 +731,22 @@ async function main() {
     //     emits a terminal event on build-log. synthi_wait_hmr catches
     //     that event.
     //
-    // Without (b), wait_hmr just sits until timeout. That was the symptom.
-    log('info', 'Editing main.cpp: counter = 0 → 42');
-    const edited = fixture.replace('int counter = 0;', 'int counter = 42;');
-    if (edited === fixture) fail('fixture did not contain `int counter = 0;` to edit');
+    // The edit itself: button/main.cpp has one blue button and a
+    // `// SECOND_BUTTON_ANCHOR` marker inside the render loop. We
+    // replace that whole line with three SDL calls that draw a red
+    // button below the blue one. Because the change is in code that
+    // runs every frame, the pixel delta is guaranteed regardless of
+    // whether HMR migrates state.
+    log('info', 'Editing main.cpp: insert red button at SECOND_BUTTON_ANCHOR');
+    const anchor = /^[ \t]*\/\/ SECOND_BUTTON_ANCHOR[ \t]*\r?\n/m;
+    if (!anchor.test(fixture)) {
+      fail('fixture did not contain a `// SECOND_BUTTON_ANCHOR` line to replace');
+    }
+    const insertion =
+      '        SDL_Rect red_button = { 150, 320, 500, 160 };\n' +
+      '        SDL_SetRenderDrawColor(ren, 220, 40, 40, 255);\n' +
+      '        SDL_RenderFillRect(ren, &red_button);\n';
+    const edited = fixture.replace(anchor, insertion);
 
     // (a) persist the edit to the editor's store
     {
