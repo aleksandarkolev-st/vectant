@@ -86,13 +86,27 @@ const CFG = {
   // the running collab-server's GCS client is mis-configured. Opt in with
   // MCP_SYNC_GCS=true to exercise the mirror path.
   syncToGcs: 'true',
-  // TURN creds for the MCP's RTCPeerConnection. Defaults match the host-
-  // reachable coturn in docker-compose.yml (`turn:localhost:3478`, user
-  // `synthi`, pass `synthi`). The worker inside docker gets
-  // `turn:coturn:3478` via collab-server's /turn-credentials — that name
-  // doesn't resolve from the Windows/macOS host where the MCP subprocess
-  // runs, so we can't reuse the worker's URL. Override with env for
-  // non-standard coturn configs.
+  // MCP_TRANSPORT:
+  //   "docker" (default): spawn MCP inside the `mcp` compose service via
+  //     `docker exec -i`. MCP shares the default compose network with the
+  //     worker and pairs directly through host ICE candidates — no TURN,
+  //     no relay-to-relay-through-same-coturn self-loop (coturn rejects
+  //     CREATE_PERMISSION for its own --external-ip, which is why the
+  //     previous host-subprocess setup timed out at 30s).
+  //   "host": legacy path — spawn MCP on the host with `node`. Kept as
+  //     an escape hatch for when docker isn't available. Needs TURN env
+  //     and hits the 403 bug unless the compose coturn is swapped out.
+  mcpTransport: (process.env.MCP_TRANSPORT ?? 'docker').toLowerCase(),
+  mcpContainer: process.env.MCP_CONTAINER ?? 'synthi-ide-mcp-1',
+  // Signaling URL the MCP *itself* connects to. Docker-transport needs the
+  // compose service DNS name since `localhost` inside the mcp container
+  // points at the mcp container, not the host. Host-transport uses
+  // CFG.signalingUrl (the host-reachable one).
+  mcpSignalingUrl: process.env.MCP_SIGNALING_URL ?? 'ws://signaling-server:9000',
+  // TURN creds — only used on the legacy host-transport path. When MCP
+  // runs inside the compose network (default) we deliberately leave them
+  // unset so Peer's iceTransportPolicy falls back to "all" (peer.ts:150)
+  // and host↔host candidates pair cleanly.
   turnUrl: process.env.SYNTHI_TURN_URL ?? 'turn:localhost:3478',
   turnUser: process.env.SYNTHI_TURN_USERNAME ?? 'synthi',
   turnCred: process.env.SYNTHI_TURN_CREDENTIAL ?? 'synthi',
@@ -102,7 +116,7 @@ const CFG = {
   // browser peer, then waits `COMPILE_WARMUP_MS` for the worker to
   // produce its first video frame before attaching the MCP. Set to
   // `false` to fall back to the manual ENTER prompt.
-  autoOpen: (process.env.AUTO_OPEN ?? 'true').toLowerCase() !== 'false',
+  autoOpen: false, // (process.env.AUTO_OPEN ?? 'true').toLowerCase() !== 'false',
   presenceTimeoutMs: Number(process.env.PRESENCE_TIMEOUT_MS ?? 60_000),
   compileWarmupMs: Number(process.env.COMPILE_WARMUP_MS ?? 8_000),
 };
@@ -249,15 +263,65 @@ function openBrowser(url) {
   const plat = process.platform;
   let cmd;
   if (plat === 'win32') {
-    // `start` is a cmd.exe builtin; shell:true routes it via cmd.
-    cmd = `start "" "${url}"`;
+    // Use Chrome explicitly; fall back to `start` (Windows default) if not found
+    cmd = `start chrome "${url}"`;
     return exec(cmd, { windowsHide: true });
   } else if (plat === 'darwin') {
-    return exec(`open "${url}"`);
+    return exec(`open -a "Google Chrome" "${url}"`);
   } else {
     // Linux / BSDs — xdg-open is provided by xdg-utils on most distros.
     return exec(`xdg-open "${url}"`);
   }
+}
+
+// ── Phase-B peer_id wire validation ──────────────────────────────────
+// Registers two observers on the same session and asserts the signaling
+// server mints a distinct peer_id for each. Catches regressions in the
+// peer_id stamping + peers_by_id map (signaling-server/src/main.rs).
+//
+// Does NOT exercise worker-side routing — that's validated implicitly by
+// the MCP attach flow below, which fails to form a WebRTC connection
+// when peer_id routing is broken.
+async function validatePeerIdWire({ signalingUrl, sessionId }) {
+  function registerOne(tag) {
+    return new Promise((resolve, reject) => {
+      const ws = new WebSocket(signalingUrl);
+      const timer = setTimeout(() => {
+        try { ws.close(); } catch { /* ignored */ }
+        reject(new Error(`peer_id handshake for ${tag} timed out after 5s`));
+      }, 5000);
+      ws.on('open', () => {
+        ws.send(JSON.stringify({
+          type: 'register',
+          role: 'observer',
+          session_id: sessionId,
+          client_version: `synthi-live-test/peer-id-probe-${tag}`,
+        }));
+      });
+      ws.on('message', (data) => {
+        let msg;
+        try { msg = JSON.parse(data.toString('utf8')); } catch { return; }
+        if (msg?.type !== 'registered') return;
+        clearTimeout(timer);
+        const peerId = typeof msg.peer_id === 'string' ? msg.peer_id : null;
+        try { ws.close(); } catch { /* ignored */ }
+        if (!peerId) reject(new Error(`registered ack missing peer_id (${tag})`));
+        else resolve({ tag, peerId, ws: null });
+      });
+      ws.on('error', (e) => {
+        clearTimeout(timer);
+        reject(e);
+      });
+    });
+  }
+  const [a, b] = await Promise.all([registerOne('obs-a'), registerOne('obs-b')]);
+  if (!a.peerId || !b.peerId) {
+    throw new Error(`expected peer_id on both acks; got a=${a.peerId}, b=${b.peerId}`);
+  }
+  if (a.peerId === b.peerId) {
+    throw new Error(`signaling reused peer_id across observers: ${a.peerId}`);
+  }
+  return { peerIdA: a.peerId, peerIdB: b.peerId };
 }
 
 // ── Signaling presence poller ────────────────────────────────────────
@@ -386,11 +450,25 @@ class McpClient {
 
   async toolCall(name, args) {
     const res = await this.request('tools/call', { name, arguments: args });
-    // MCP wraps tool output in { content: [{ type:'text', text: JSON-string }], isError? }
+    // MCP wraps tool output in { content: [...blocks], isError? }.
+    // Most tools emit one text block whose body is a JSON string.
+    // synthi_screenshot also emits an image block — order is
+    // [image, text] — so scan by block type instead of indexing
+    // `content[0]` (which used to silently return res and break the
+    // caller's `shot?.data` check).
     if (res.isError) throw new Error(`tool ${name} isError: ${JSON.stringify(res.content)}`);
-    const text = res?.content?.[0]?.text;
-    if (!text) return res;
-    try { return JSON.parse(text); } catch { return { raw: text }; }
+    const content = Array.isArray(res?.content) ? res.content : [];
+    const textBlock = content.find((b) => b?.type === 'text');
+    const imageBlock = content.find((b) => b?.type === 'image');
+    let parsed;
+    if (textBlock?.text) {
+      try { parsed = JSON.parse(textBlock.text); }
+      catch { parsed = { raw: textBlock.text }; }
+    } else {
+      parsed = {};
+    }
+    if (imageBlock?.data) parsed.data = imageBlock.data;
+    return parsed;
   }
 }
 
@@ -423,6 +501,21 @@ async function main() {
   if (!colOk) fail(`collab-server unreachable at ${CFG.collabUrl}  (owns /git/:slug/* — editor's file source)`);
   if (!sigOk) fail(`signaling unreachable at ${CFG.signalingUrl}`);
   log('ok', `frontend:${fe.port} + collab:${col.port} + signaling:${sig.port} all up`);
+
+  // 1b. Phase-B peer_id wire smoke — two observers registered on the same
+  // session must get distinct peer_ids back on their `registered` ack.
+  // Runs before workspace creation so it's fast and decoupled.
+  log('info', 'Phase-B peer_id wire: registering two observers on a probe session');
+  try {
+    const probeSid = `peer-id-probe-${Date.now()}`;
+    const { peerIdA, peerIdB } = await validatePeerIdWire({
+      signalingUrl: CFG.signalingUrl,
+      sessionId: probeSid,
+    });
+    log('ok', `peer_id round-trip: a=${peerIdA.slice(0, 8)}… b=${peerIdB.slice(0, 8)}… (distinct ✓)`);
+  } catch (e) {
+    fail(`peer_id wire validation failed: ${e.message}`);
+  }
 
   // 2. Create workspace (Prisma DB row + GCS folder marker)
   log('info', `POST /api/workspace  {name, slug:"${CFG.slug}"}`);
@@ -505,26 +598,62 @@ async function main() {
   }
 
   // 4. Spawn MCP  (session_id = slug, matching compilerClient.js:167 fallback)
-  log('info', 'Spawning MCP subprocess');
-  const env = {
-    ...process.env,
-    SYNTHI_SESSION_ID: CFG.slug,
-    SYNTHI_SIGNALING_URL: CFG.signalingUrl,
-    SYNTHI_LOCATE_BACKEND: 'gemini_api',
-    GOOGLE_API_KEY: CFG.googleApiKey,
-    SYNTHI_GEMINI_MODEL: CFG.geminiModel,
-    SYNTHI_PROMETHEUS_PORT: String(CFG.prometheusPort),
-    SYNTHI_PROMETHEUS_HOST: '127.0.0.1',
-    // ICE servers — the MCP tool's `attach` resolves these at runtime
-    // via `resolveIceServers()` in `src/tools/attach.ts`. Without TURN
-    // the RTCPeerConnection can't form a working candidate pair against
-    // the docker-internal worker, and `synthi_attach` times out at 30s.
-    SYNTHI_STUN_URL: CFG.stunUrl,
-    SYNTHI_TURN_URL: CFG.turnUrl,
-    SYNTHI_TURN_USERNAME: CFG.turnUser,
-    SYNTHI_TURN_CREDENTIAL: CFG.turnCred,
-  };
-  const mcp = spawn('node', [CFG.mcpEntry], { env, stdio: ['pipe', 'pipe', 'pipe'] });
+  //
+  // Two transports, selected by MCP_TRANSPORT (default=docker):
+  //
+  //  docker: spawn via `docker exec -i <mcp-container> node /app/dist/index.js`.
+  //    MCP runs on the compose network alongside `worker`, so its ICE host
+  //    candidates are 172.18.0.x — reachable from the worker directly. No
+  //    TURN is configured here; Peer's policy defaults to "all" (peer.ts:150)
+  //    and host↔host pairs cleanly. Prometheus is bound on 0.0.0.0 inside
+  //    the container and the mcp service publishes 9464:9464 so the host
+  //    scrape later in this script still works unchanged.
+  //
+  //  host: the old path — `node <dist/index.js>` on the host. Kept for
+  //    debugging only; times out at 30s against the compose worker because
+  //    coturn refuses CREATE_PERMISSION for its own --external-ip (see
+  //    docker-compose.yml mcp service comment).
+  let mcp;
+  if (CFG.mcpTransport === 'docker') {
+    log('info', `Spawning MCP via docker exec → container=${CFG.mcpContainer}`);
+    const mcpEnv = {
+      SYNTHI_SESSION_ID: CFG.slug,
+      SYNTHI_SIGNALING_URL: CFG.mcpSignalingUrl,
+      SYNTHI_LOCATE_BACKEND: 'gemini_api',
+      GOOGLE_API_KEY: CFG.googleApiKey,
+      SYNTHI_GEMINI_MODEL: CFG.geminiModel,
+      SYNTHI_PROMETHEUS_PORT: String(CFG.prometheusPort),
+      // Bind Prometheus on 0.0.0.0 inside the container so the host's
+      // port-mapped scrape at 127.0.0.1:9464 reaches it.
+      SYNTHI_PROMETHEUS_HOST: '0.0.0.0',
+      // Deliberately no SYNTHI_TURN_URL/_USERNAME/_CREDENTIAL — see the
+      // comment on CFG.turnUrl above.
+      SYNTHI_STUN_URL: CFG.stunUrl,
+    };
+    const args = ['exec', '-i'];
+    for (const [k, v] of Object.entries(mcpEnv)) {
+      args.push('-e', `${k}=${v}`);
+    }
+    args.push(CFG.mcpContainer, 'node', '/app/dist/index.js');
+    mcp = spawn('docker', args, { stdio: ['pipe', 'pipe', 'pipe'] });
+  } else {
+    log('info', 'Spawning MCP subprocess (host transport)');
+    const env = {
+      ...process.env,
+      SYNTHI_SESSION_ID: CFG.slug,
+      SYNTHI_SIGNALING_URL: CFG.signalingUrl,
+      SYNTHI_LOCATE_BACKEND: 'gemini_api',
+      GOOGLE_API_KEY: CFG.googleApiKey,
+      SYNTHI_GEMINI_MODEL: CFG.geminiModel,
+      SYNTHI_PROMETHEUS_PORT: String(CFG.prometheusPort),
+      SYNTHI_PROMETHEUS_HOST: '127.0.0.1',
+      SYNTHI_STUN_URL: CFG.stunUrl,
+      SYNTHI_TURN_URL: CFG.turnUrl,
+      SYNTHI_TURN_USERNAME: CFG.turnUser,
+      SYNTHI_TURN_CREDENTIAL: CFG.turnCred,
+    };
+    mcp = spawn('node', [CFG.mcpEntry], { env, stdio: ['pipe', 'pipe', 'pipe'] });
+  }
   const client = new McpClient(mcp);
 
   // stderr log tail gets written to a file for postmortem
@@ -544,10 +673,19 @@ async function main() {
     log('ok', `MCP advertises ${tools.tools?.length ?? 0} tools: ${tools.tools?.map(t => t.name).join(', ')}`);
 
     // 6. attach
-    log('info', 'synthi_attach (expect ~10-15s, waits for first video frame)');
-    const attach = await client.toolCall('synthi_attach', {});
+    //
+    // On docker transport the signaling URL is `ws://signaling-server:9000`
+    // — classifySignalingUrl (security/signaling_url.ts) is a literal-
+    // string check that only whitelists `localhost`/`127.x`/RFC1918 IPs,
+    // not docker DNS names. Pass `i-understand-no-auth:true` to opt past
+    // it. For the host transport the URL is `ws://localhost:…` and the
+    // flag is harmless but unnecessary; always sending it keeps both
+    // code paths symmetric.
+    log('info', 'synthi_attach (returns as soon as PC + data channels are up)');
+    const attach = await client.toolCall('synthi_attach', { 'i-understand-no-auth': true });
     if (!attach?.ok) fail(`synthi_attach failed: ${JSON.stringify(attach)}`);
-    log('ok', `attached  resolution=${attach.resolution?.w}x${attach.resolution?.h}`);
+    const resStr = attach.resolution ? `${attach.resolution.w}x${attach.resolution.h}` : 'none-yet (no frames)';
+    log('ok', `attached  resolution=${resStr}`);
 
     // 7. baseline screenshot
     log('info', 'synthi_screenshot (baseline)');
@@ -626,9 +764,20 @@ async function main() {
     console.log(`  Workspace:  id=${workspace.id}  slug=${CFG.slug}`);
     console.log(`  GCS:        gs://<bucket>/workspaces/${CFG.slug}/`);
   } finally {
-    // Shutdown MCP cleanly
+    // Shutdown MCP cleanly.
+    //
+    // Host transport: SIGTERM → node exits.
+    //
+    // Docker transport: `docker exec -i` (without -t) does NOT forward
+    // signals to the in-container process, so SIGTERMing the docker CLI
+    // just detaches stdio and leaves node running. Close stdin instead —
+    // the MCP SDK's StdioServerTransport exits on stdin EOF. SIGKILL the
+    // outer docker CLI as a belt-and-braces after the grace period.
     log('info', 'Shutting down MCP');
-    mcp.kill('SIGTERM');
+    try { mcp.stdin?.end(); } catch { /* ignored */ }
+    if (CFG.mcpTransport !== 'docker') {
+      mcp.kill('SIGTERM');
+    }
     await Promise.race([
       new Promise((r) => mcp.once('exit', r)),
       sleep(3000).then(() => mcp.kill('SIGKILL')),

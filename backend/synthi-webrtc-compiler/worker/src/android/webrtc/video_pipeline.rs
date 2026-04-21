@@ -6,15 +6,10 @@ use std::str::FromStr;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::mpsc;
-use webrtc::rtp::extension::audio_level_extension::AudioLevelExtension;
-use webrtc::rtp::extension::HeaderExtension;
-use webrtc::rtp::header::Header;
 use webrtc::rtp::packet::Packet;
-use webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecCapability;
-use webrtc::rtp_transceiver::RTCPFeedback;
-use webrtc::track::track_local::track_local_static_rtp::TrackLocalStaticRTP;
-use webrtc::track::track_local::TrackLocalWriter;
 use webrtc_util::Unmarshal;
+
+use crate::webrtc::TrackFanout;
 
 #[derive(Debug, Clone, Copy)]
 pub enum VideoCodec {
@@ -94,14 +89,16 @@ impl Default for EmulatorVideoConfig {
 pub struct EmulatorVideoPipeline {
     pipeline: gst::Pipeline,
     codec: VideoCodec,
-    pub track: Arc<TrackLocalStaticRTP>,
     _rtp_task: tokio::task::JoinHandle<()>,
-    /// Counter for RTP packets written to the track (can be read externally for diagnostics)
+    /// Counter for RTP packets dispatched to the session fanout (read
+    /// externally for diagnostics).
     pub rtp_packet_count: Arc<AtomicU64>,
     /// Counter for samples received in appsink callback
     pub appsink_sample_count: Arc<AtomicU64>,
     appsrc: Option<gst_app::AppSrc>,
-    /// SSRC to force on outgoing packets (0 = no force)
+    /// SSRC to force on outgoing packets (0 = no force). Under `TrackFanout`
+    /// this is the sole producer-side SSRC; every subscribed per-peer track
+    /// sees the same packets, so the chosen SSRC is uniform across peers.
     pub forced_ssrc: Arc<AtomicU32>,
 }
 
@@ -385,7 +382,7 @@ pub fn track_mime_type(codec: VideoCodec) -> String {
 }
 
 impl EmulatorVideoPipeline {
-    pub fn start(cfg: EmulatorVideoConfig) -> Result<Self> {
+    pub fn start(cfg: EmulatorVideoConfig, fanout: Arc<TrackFanout>) -> Result<Self> {
         // Validate required plugins early (fail-fast).
         require_element("ximagesrc")?;
         require_element("videoconvert")?;
@@ -419,10 +416,11 @@ impl EmulatorVideoPipeline {
             true,
             cfg.width,
             cfg.height,
+            fanout,
         )
     }
 
-    pub fn start_appsrc(cfg: EmulatorAppSrcConfig) -> Result<Self> {
+    pub fn start_appsrc(cfg: EmulatorAppSrcConfig, fanout: Arc<TrackFanout>) -> Result<Self> {
         // Validate required plugins early (fail-fast).
         require_element("appsrc")?;
         require_element("videoconvert")?;
@@ -487,6 +485,7 @@ impl EmulatorVideoPipeline {
             false,
             cfg.width,
             cfg.height,
+            fanout,
         )
     }
 
@@ -498,6 +497,7 @@ impl EmulatorVideoPipeline {
         verify_samples: bool,
         width: u32,
         height: u32,
+        fanout: Arc<TrackFanout>,
     ) -> Result<Self> {
         let appsink = pipeline
             .by_name("video_sink")
@@ -579,38 +579,15 @@ impl EmulatorVideoPipeline {
             );
         }
 
-        let track = Arc::new(TrackLocalStaticRTP::new(
-            RTCRtpCodecCapability {
-                mime_type: track_mime_type(codec),
-                rtcp_feedback: vec![
-                    RTCPFeedback {
-                        typ: "transport-cc".to_string(),
-                        parameter: "".to_string(),
-                    },
-                    RTCPFeedback {
-                        typ: "ccm".to_string(),
-                        parameter: "fir".to_string(),
-                    },
-                    RTCPFeedback {
-                        typ: "nack".to_string(),
-                        parameter: "".to_string(),
-                    },
-                    RTCPFeedback {
-                        typ: "nack".to_string(),
-                        parameter: "pli".to_string(),
-                    },
-                ],
-                ..Default::default()
-            },
-            "video".to_string(),
-            "synthi-emulator".to_string(),
-        ));
-
+        // No track ownership here — per-peer tracks are created in
+        // `create_peer` (worker/main.rs) and subscribed to `fanout`. This
+        // pipeline is the producer; each subscribed peer's task writes
+        // into its own `TrackLocalStaticRTP` from the broadcast channel.
         let rtp_packet_count = Arc::new(AtomicU64::new(0));
         let rtp_packet_count_clone = rtp_packet_count.clone();
         let forced_ssrc = Arc::new(AtomicU32::new(0));
         let forced_ssrc_clone = forced_ssrc.clone();
-        let track_clone = track.clone();
+        let fanout_dispatch = fanout.clone();
         let rtp_task = tokio::spawn(async move {
             let mut last_log_time = std::time::Instant::now();
             let mut last_packet_count = 0u64;
@@ -642,7 +619,7 @@ impl EmulatorVideoPipeline {
                         packet.header.payload_type = payload_type;
                     }
 
-                    let _ = track_clone.write_rtp(&packet).await;
+                    fanout_dispatch.dispatch(packet);
                     let count = rtp_packet_count_clone.fetch_add(1, Ordering::Relaxed) + 1;
 
                     // Log telemetry every ~2s
@@ -668,12 +645,14 @@ impl EmulatorVideoPipeline {
             );
         });
 
-        eprintln!("[video-pipeline] Pipeline started successfully, track attached");
+        eprintln!(
+            "[video-pipeline] Pipeline started, dispatching to fanout ({} subscribers)",
+            fanout.subscriber_count()
+        );
 
         Ok(Self {
             pipeline,
             codec,
-            track,
             _rtp_task: rtp_task,
             rtp_packet_count,
             appsink_sample_count,

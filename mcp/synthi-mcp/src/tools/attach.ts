@@ -141,7 +141,7 @@ export async function attachTool(args: unknown, ctx: ToolContext): Promise<ToolR
     return jsonResponse({
       ok: true,
       connected: true,
-      resolution: { w: attached.resolution.width, h: attached.resolution.height },
+      resolution: attached.resolution ? { w: attached.resolution.width, h: attached.resolution.height } : null,
       sessionId: attached.sessionId,
       signalingUrl: attached.signalingUrl,
       protocol: {

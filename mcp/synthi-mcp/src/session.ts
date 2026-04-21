@@ -1,4 +1,4 @@
-import type wrtc from "@roamhq/wrtc";
+import type { RTCDataChannel } from "werift";
 import { SignalingClient } from "./signaling.js";
 import { Peer } from "./peer.js";
 import { FrameSink } from "./frames.js";
@@ -21,7 +21,6 @@ export interface AttachOptions {
   sessionId: string;
   signalingUrl: string;
   attachTimeoutMs?: number;
-  firstFrameTimeoutMs?: number;
   /**
    * ICE servers the underlying RTCPeerConnection should use. When omitted,
    * the Peer falls back to Google STUN only — which is fine for most cloud
@@ -41,23 +40,26 @@ export interface AttachedSession {
   readonly peer: Peer;
   readonly frames: FrameSink;
   readonly channels: SessionChannels;
-  readonly buildLogDC: wrtc.RTCDataChannel;
-  readonly terminalDC: wrtc.RTCDataChannel;
-  readonly compileDC: wrtc.RTCDataChannel;
-  readonly resolution: { width: number; height: number };
+  readonly buildLogDC: RTCDataChannel;
+  readonly terminalDC: RTCDataChannel;
+  readonly compileDC: RTCDataChannel;
+  readonly resolution: { width: number; height: number } | null;
 }
 
 /**
  * In-process singleton: one attached session per MCP subprocess (MVP scope).
  *
  * Attach flow:
- *   1. Open signaling WS, register as role=browser.
+ *   1. Open signaling WS, register as role=observer (multi-slot, co-exists
+ *      with the real browser peer instead of evicting it).
  *   2. Start peer: add recvonly transceivers, create terminal DC, send offer.
  *   3. Await pc.connectionState === "connected".
  *   4. Await worker-initiated build-log DC open.
- *   5. Await first video frame — attach's "ready" signal.
  *
- * All four signals must fire before attach resolves. Any one failing aborts.
+ * Frames are not awaited at attach time — the user drives compile from the
+ * browser and frames only start flowing once the worker's runner is up.
+ * Tools that need a frame (screenshot, locate) surface `no_frame_yet` if
+ * called before the first frame arrives.
  */
 export interface FrameAdvance {
   frame_seq: number;
@@ -282,13 +284,17 @@ class SessionManager {
   }
 
   private async doAttach(opts: AttachOptions): Promise<AttachedSession> {
-    const attachTimeoutMs = opts.attachTimeoutMs ?? 30_000;
-    const firstFrameTimeoutMs = opts.firstFrameTimeoutMs ?? 15_000;
+    const attachTimeoutMs = opts.attachTimeoutMs ?? 60_000;
+    const dbg = (m: string): void => {
+      const ts = new Date().toISOString().slice(11, 23);
+      process.stderr.write(`[mcp ${ts}] session: ${m}\n`);
+    };
+    dbg(`attach start sid=${opts.sessionId} signaling=${opts.signalingUrl} timeout=${attachTimeoutMs}ms`);
 
     const signaling = new SignalingClient({
       url: opts.signalingUrl,
       sessionId: opts.sessionId,
-      role: "browser",
+      role: "observer",
       connectTimeoutMs: 10_000,
       clientVersion: "synthi-mcp/0.1.0",
       supportedProtocols: [1],
@@ -307,6 +313,7 @@ class SessionManager {
     });
     this.unsubscribers.push(unsubPresence);
     await signaling.connect();
+    dbg(`signaling connected`);
 
     const peerOpts: { signaling: SignalingClient; connectTimeoutMs: number; iceServers?: RTCIceServer[] } = {
       signaling,
@@ -317,23 +324,21 @@ class SessionManager {
     }
     const peer = new Peer(peerOpts);
     await peer.start();
+    dbg(`peer.start() returned; awaiting connected + DCs`);
 
+    const dcWaiter = (label: string, p: Promise<unknown>): Promise<unknown> =>
+      p.then((v) => { dbg(`ready.${label} resolved`); return v; },
+             (e) => { dbg(`ready.${label} rejected: ${(e as Error).message}`); throw e; });
     // Wait for the peer connection to reach connected + build-log + terminal + compile.
     const [, buildLogDC, terminalDC, compileDC] = await Promise.all([
-      peer.ready.connected,
-      peer.ready.buildLogDC,
-      peer.ready.terminalDC,
-      peer.ready.compileDC,
-    ]);
+      dcWaiter("connected", peer.ready.connected),
+      dcWaiter("buildLogDC", peer.ready.buildLogDC),
+      dcWaiter("terminalDC", peer.ready.terminalDC),
+      dcWaiter("compileDC", peer.ready.compileDC),
+    ]) as [void, RTCDataChannel, RTCDataChannel, RTCDataChannel];
 
     const videoTrack = await peer.ready.videoTrack;
     const frames = new FrameSink(videoTrack);
-    await frames.waitForFirstFrame(firstFrameTimeoutMs);
-
-    const dims = frames.dimensions();
-    if (!dims) {
-      throw new Error("no_frame_after_wait");
-    }
 
     const channels = new SessionChannels(terminalDC, buildLogDC, compileDC);
 
@@ -347,7 +352,7 @@ class SessionManager {
       buildLogDC,
       terminalDC,
       compileDC,
-      resolution: dims,
+      resolution: frames.dimensions(),
     };
     this.attached = attached;
     this.state = "attached";

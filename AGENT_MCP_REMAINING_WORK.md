@@ -129,7 +129,7 @@ These are the load-bearing worker-side changes the ultraplan commits to phase 1.
 
 | Gap | Current state | Migration guide |
 |-----|---------------|-----------------|
-| Multi-PC + observer co-attach | `worker/src/webrtc/{peer_registry,track_fanout}.rs` scaffolded + unit-tested. `main.rs` still uses singleton `pc` + `log_channel_store`. | `worker/src/webrtc/G3_PHASE_B_INTEGRATION.md` (7 steps, file:line pointers). **High-risk** ~300+ LOC refactor across load-bearing singletons; staged deliberately for a clean production-green landing. |
+| Multi-PC + observer co-attach | **Shipped.** Signaling peer_id + role routing, per-peer PCs via `PeerRegistry`, `TrackFanout` wiring across `video_pipeline.rs` + `runner.rs` (native + Java) + mobile jobs, HMR `replace_track` blocks deleted (fanout handles it), input peer-tagging, live-test 2-observer smoke. `log_channel_store` deleted; every compile-DC / LSP reply now routes through `registry.get(&peer_id)`. | Follow-up: integration test exercising 1 browser + 1 observer both receiving media + per-peer tagged input end-to-end (harness is in place via live-test; needs running stack). |
 | Frame-advance emission `{type:"frame-advance", frame_seq, ts_ms}` | MCP gate is live and dormant. Worker must emit at GStreamer appsink. | One-line add at the appsink callback: after `track.write_rtp(...)`, call `if let Some(dc) = build_log_dc { dc.send_text(...) }`. Activates §4.4 gate immediately. |
 
 ### 4.2 Not started (phase-1 backend scope)
