@@ -199,6 +199,15 @@ services:
       DISPLAY: ":99"
       # Logging
       SYNTHI_LOG_LEVEL: "debug"
+      # Capture full panic backtraces — without this a Rust panic just
+      # prints the message and thread name, which makes fmt / webrtc
+      # internal panics invisible to root-cause. `full` gives us the
+      # complete file:line chain instead of just the top frame.
+      RUST_BACKTRACE: "full"
+      RUST_LIB_BACKTRACE: "full"
+      # Turn on debug_log! output so the new force-key-unit + candidate
+      # buffer log lines are visible during this debugging session.
+      SYNTHI_WORKER_VERBOSE: "1"
     depends_on:
       - signaling-server
       - collab-server
