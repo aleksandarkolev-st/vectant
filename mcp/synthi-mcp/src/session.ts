@@ -74,6 +74,12 @@ export const FRAME_ADVANCE_FRESHNESS_WINDOW_MS = 10_000;
 
 type FrameAdvanceListener = (fa: FrameAdvance) => void;
 
+export interface WarmingProgress {
+  stage: string;
+  stage_progress_pct: number;
+  estimated_ready_at?: number;
+}
+
 class SessionManager {
   private attached: AttachedSession | null = null;
   private state: SessionState = "detached";
@@ -89,6 +95,7 @@ class SessionManager {
   private lastFrameAdvance: FrameAdvance | null = null;
   private frameAdvanceListeners = new Set<FrameAdvanceListener>();
   private presenceCounts: { humans: number; agents: number } = { humans: 0, agents: 1 };
+  private warmingProgress: WarmingProgress | null = null;
 
   getState(): SessionState {
     return this.state;
@@ -120,6 +127,29 @@ class SessionManager {
     this.presenceCounts = {
       humans: Math.max(0, Math.floor(counts.humans)),
       agents: Math.max(0, Math.floor(counts.agents)),
+    };
+  }
+
+  /**
+   * Warming-progress from the worker's lifecycle messages. `null` when
+   * the session isn't in `warming` or the worker hasn't reported a
+   * stage yet. Consumed by the synthi_attach envelope and synthi_health.
+   */
+  getWarmingProgress(): WarmingProgress | null {
+    return this.warmingProgress ? { ...this.warmingProgress } : null;
+  }
+
+  setWarmingProgress(progress: WarmingProgress | null): void {
+    if (progress === null) {
+      this.warmingProgress = null;
+      return;
+    }
+    this.warmingProgress = {
+      stage: progress.stage,
+      stage_progress_pct: Math.max(0, Math.min(100, Math.floor(progress.stage_progress_pct))),
+      ...(progress.estimated_ready_at !== undefined
+        ? { estimated_ready_at: progress.estimated_ready_at }
+        : {}),
     };
   }
 
@@ -377,6 +407,37 @@ class SessionManager {
         if (fs !== undefined && tsMs !== undefined) {
           this.setFrameAdvance(fs, tsMs);
         }
+        return;
+      }
+
+      // Worker-emitted lifecycle transitions. Shape:
+      //   {type:"lifecycle", state:"warming"|"ready"|"running"|..., warming_progress?:{stage, stage_progress_pct, estimated_ready_at?}}
+      // Drive `setWireState` so `synthi_attach` + `synthi_health`
+      // envelopes surface the real worker state + warming progress.
+      if (msgType === "lifecycle") {
+        const rawState = typeof msg["state"] === "string" ? (msg["state"] as string) : "unknown";
+        const KNOWN_STATES = [
+          "warming", "ready", "running", "hibernated",
+          "migrating", "crashed", "terminated",
+        ] as const;
+        const mapped = (KNOWN_STATES as readonly string[]).includes(rawState)
+          ? (rawState as typeof KNOWN_STATES[number])
+          : "unknown";
+        const warming = msg["warming_progress"] as Record<string, unknown> | undefined;
+        if (warming && typeof warming === "object") {
+          this.setWarmingProgress({
+            stage: typeof warming["stage"] === "string" ? (warming["stage"] as string) : "unknown",
+            stage_progress_pct: typeof warming["stage_progress_pct"] === "number"
+              ? (warming["stage_progress_pct"] as number)
+              : 0,
+            ...(typeof warming["estimated_ready_at"] === "number"
+              ? { estimated_ready_at: warming["estimated_ready_at"] as number }
+              : {}),
+          });
+        } else {
+          this.setWarmingProgress(null);
+        }
+        this.setWireState(mapped, warming ? { warming_progress: warming } : undefined);
         return;
       }
 

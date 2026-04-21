@@ -28,6 +28,48 @@ fn extract_structured_runner_message(line: &str) -> Option<&str> {
     line.find(PREFIX).map(|idx| &line[idx + PREFIX.len()..])
 }
 
+/// Emit a lifecycle-progress message on the build-log DC so the MCP +
+/// frontend can surface per-stage warming progress. Ultraplan
+/// §Response envelope "Warming progress" — MCP's session envelope
+/// carries `warming_progress: {stage, stage_progress_pct,
+/// estimated_ready_at}`.
+///
+/// Fire-and-forget; drop errors so a flaky DC doesn't stall the warm
+/// path.
+async fn emit_lifecycle_progress(
+    ctx: &CompileContext,
+    session_id: Option<&str>,
+    state: &str,
+    stage: &str,
+    progress_pct: u8,
+    estimated_ready_ms: Option<u64>,
+) {
+    let mut payload = serde_json::json!({
+        "sessionId": session_id,
+        "type": "lifecycle",
+        "state": state,
+        "warming_progress": {
+            "stage": stage,
+            "stage_progress_pct": progress_pct.min(100),
+        },
+    });
+    if let Some(ms) = estimated_ready_ms {
+        payload["warming_progress"]["estimated_ready_at"] =
+            serde_json::Value::from(now_ms() + ms);
+    }
+    let _ = ctx
+        .log_dc
+        .send_text(serde_json::to_string(&payload).unwrap_or_default())
+        .await;
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
 pub async fn handle_runner_execution(
     ctx: &CompileContext,
     req: &CompileRequest,
@@ -211,6 +253,7 @@ pub async fn handle_runner_execution(
                 gst_display_str = wsl_display_str.clone();
 
                 debug_log!("Starting Xvfb on display {}", wsl_display_str);
+                emit_lifecycle_progress(ctx, session_id.as_deref(), "warming", "xvfb_start", 15, Some(5_000)).await;
 
                 let mut xvfb_cmd = Command::new("Xvfb");
                 xvfb_cmd
@@ -258,6 +301,8 @@ pub async fn handle_runner_execution(
             if let Some(sid) = session_id.as_deref() {
                 crate::safety::focus_probe::bind_session_display(sid, &wsl_display_str);
             }
+
+            emit_lifecycle_progress(ctx, session_id.as_deref(), "warming", "gstreamer_start", 40, Some(3_000)).await;
 
             if gst_pipeline.is_none() {
                 // VP8 only: the per-peer WebRTC track declares video/VP8 so
@@ -514,6 +559,8 @@ pub async fn handle_runner_execution(
             runner_path
         );
 
+        emit_lifecycle_progress(ctx, session_id.as_deref(), "warming", "runner_spawn", 75, Some(2_000)).await;
+
         let mut cmd = Command::new(&runner_path);
         cmd.env("DISPLAY", &wsl_display_str)
             .env(
@@ -546,6 +593,10 @@ pub async fn handle_runner_execution(
         }
 
         let mut child = cmd.spawn().context("Failed to spawn runner process")?;
+
+        // Runner is up — flip lifecycle to `ready`. First peer attach
+        // moves it to `running` via peer-count tracking (signaling-side).
+        emit_lifecycle_progress(ctx, session_id.as_deref(), "ready", "runner_started", 100, None).await;
 
         // Guest-process registry (ultraplan §Security v4 pre-work #5-#6).
         // Record the root PID + binary fingerprint so the focus-lock +
