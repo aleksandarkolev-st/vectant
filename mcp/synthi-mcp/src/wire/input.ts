@@ -1,4 +1,4 @@
-import type wrtc from "@roamhq/wrtc";
+import type { RTCDataChannel } from "werift";
 
 /**
  * Input wire format for the Synthi preview's `terminal` data channel.
@@ -168,7 +168,7 @@ export interface SendOptions {
  * the MVP rate cap (default 2ms between frames).
  */
 export async function sendFrames(
-  dc: wrtc.RTCDataChannel,
+  dc: RTCDataChannel,
   frames: string[],
   opts: SendOptions = {}
 ): Promise<void> {

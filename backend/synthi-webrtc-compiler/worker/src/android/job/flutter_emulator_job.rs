@@ -74,6 +74,7 @@ pub async fn handle_flutter_emulator_job(
     project_root: Option<String>,
     is_release: bool,
     pc: Arc<RTCPeerConnection>,
+    video_fanout: Arc<crate::webrtc::TrackFanout>,
 ) -> Result<()> {
     eprintln!(
         "[flutter-job] Starting handle_flutter_emulator_job version={}",
@@ -913,7 +914,10 @@ pub async fn handle_flutter_emulator_job(
             }
         };
 
-        let pipeline = match video_pipeline::EmulatorVideoPipeline::start_appsrc(app_cfg.clone()) {
+        let pipeline = match video_pipeline::EmulatorVideoPipeline::start_appsrc(
+            app_cfg.clone(),
+            video_fanout.clone(),
+        ) {
             Ok(p) => Arc::new(p),
             Err(e) => {
                 emulator_input::unregister_session_sync(&session_id);
@@ -1262,7 +1266,7 @@ pub async fn handle_flutter_emulator_job(
         )
         .await;
 
-        let pipeline = match video_pipeline::EmulatorVideoPipeline::start(cfg.clone()) {
+        let pipeline = match video_pipeline::EmulatorVideoPipeline::start(cfg.clone(), video_fanout.clone()) {
             Ok(p) => Arc::new(p),
             Err(e) => {
                 // Fallback to basic root capture
@@ -1274,7 +1278,7 @@ pub async fn handle_flutter_emulator_job(
                     "emulator",
                 )
                 .await;
-                match video_pipeline::EmulatorVideoPipeline::start(cfg.clone()) {
+                match video_pipeline::EmulatorVideoPipeline::start(cfg.clone(), video_fanout.clone()) {
                     Ok(p) => Arc::new(p),
                     Err(e2) => {
                         let _ = emulator_input::unregister_session_sync(&session_id);
@@ -1287,41 +1291,17 @@ pub async fn handle_flutter_emulator_job(
         (pipeline, cfg.x11_display.clone())
     };
 
-    // Attach to existing video transceiver
-    {
-        let transceivers = pc.get_transceivers().await;
-        for t in transceivers {
-            if t.kind() == RTPCodecType::Video {
-                let sender = t.sender().await;
-                eprintln!("[flutter-job] Attaching video track to transceiver...");
-                match sender
-                    .replace_track(Some(
-                        Arc::clone(&pipeline.track) as Arc<dyn TrackLocal + Send + Sync>
-                    ))
-                    .await
-                {
-                    Ok(_) => {
-                        eprintln!("[flutter-job] Video track attached successfully");
-                        let params = sender.get_parameters().await;
-                        if !params.encodings.is_empty() {
-                            let ssrc = params.encodings[0].ssrc;
-                            eprintln!("[flutter-job] Found Sender SSRC: {}", ssrc);
-                            if ssrc != 0 {
-                                pipeline.set_ssrc(ssrc);
-                            }
-                        }
-
-                        let rtcp_sender = sender.clone();
-                        tokio::spawn(async move {
-                            let mut buf = vec![0u8; 1500];
-                            // Assuming RTCRtpSender impls something that allows reading RTCP or we need to use a different mechanism.
-                            // In webrtc-rs, Sender.read reads RTCP packets.
-                            while let Ok((_, _)) = rtcp_sender.read(&mut buf).await {}
-                        });
-                    }
-                    Err(e) => eprintln!("Failed to replace track: {}", e),
-                }
-            }
+    // Per-peer tracks are attached in `create_peer` + subscribed to
+    // `video_fanout`. The pipeline above dispatches into that fanout.
+    // Start per-peer RTCP readers so TWCC/GCC feedback flows.
+    for peer in pc.get_transceivers().await {
+        if peer.kind() == RTPCodecType::Video {
+            let sender = peer.sender().await;
+            let rtcp_sender = sender.clone();
+            tokio::spawn(async move {
+                let mut buf = vec![0u8; 1500];
+                while let Ok((_, _)) = rtcp_sender.read(&mut buf).await {}
+            });
         }
     }
 

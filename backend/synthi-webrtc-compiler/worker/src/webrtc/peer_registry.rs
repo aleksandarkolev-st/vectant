@@ -1,33 +1,38 @@
 //! Per-session peer registry.
 //!
-//! Today the worker tracks at most one `RTCPeerConnection` per session (the
-//! singular `pc` + `log_channel_store: Option<Arc<DC>>` singletons in
-//! `main.rs`). For observer co-attach we need `N` per session: one browser
-//! (authoritative) + one or more observers (read-mostly), each with their own
-//! PC + build-log DC + video/audio track.
+//! The worker tracks `N` `RTCPeerConnection`s per session: one browser
+//! (authoritative) + zero or more observers (read-mostly) + optionally
+//! `mcp_agent`s (phase-4 scoped role). Each peer gets its own PC,
+//! build-log DC, and per-kind `TrackLocalStaticRTP` subscribed to the
+//! session-wide `TrackFanout`.
 //!
-//! `PeerRegistry` is that holder. It enforces the per-role occupancy rules
-//! that match the signaling-server's routing logic:
+//! `PeerRegistry` is the holder. It enforces the per-role occupancy
+//! rules that match the signaling-server's routing logic:
 //!
-//!   - exactly one `worker` peer (enforced elsewhere — this registry is the
-//!     worker's own view of *its peers*, not itself)
+//!   - exactly one `worker` peer (enforced elsewhere — this registry is
+//!     the worker's own view of *its peers*, not itself)
 //!   - at most one `browser` (newer browser evicts older)
 //!   - any number of `observer` (appended without eviction)
-//!   - at most one `mcp_agent` per agent-id (phase 4 — scoped role, not
-//!     exercised today)
+//!   - at most one `mcp_agent` per agent-id
 //!
 //! The registry is **pure data**. It doesn't mutate `RTCPeerConnection`
-//! state, doesn't close DCs on eviction, doesn't talk to signaling. Callers
-//! (main.rs's signal loop) own the lifecycle and call into the registry to
-//! record decisions.
+//! state or close DCs on eviction — callers (main.rs's signal loop +
+//! `create_peer`'s connection-state callback) own the lifecycle and call
+//! into the registry to record decisions. Late-populated fields
+//! (build-log DC, tracks, fanout subs) use interior `Mutex<Option<T>>`
+//! so mutation through `Arc<PeerHandle>` leaves the Arc untouched —
+//! the `FanoutSubscription` aborts on drop, and we must never drop a
+//! live peer's Arc while replacing a sub.
 
 use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::SystemTime;
 
 use webrtc::data_channel::RTCDataChannel;
 use webrtc::peer_connection::RTCPeerConnection;
 use webrtc::track::track_local::track_local_static_rtp::TrackLocalStaticRTP;
+
+use super::track_fanout::FanoutSubscription;
 
 /// Role a peer registered as.
 ///
@@ -68,15 +73,29 @@ impl PeerRole {
 }
 
 /// One peer's complete state. Populated incrementally: PC first, then
-/// build-log DC as it opens, then video/audio tracks as they're replaced
-/// over the placeholder ones.
+/// build-log DC as it opens, then video/audio tracks + fanout
+/// subscriptions when they're attached to the PC's transceivers during
+/// `create_peer`.
+///
+/// Late-populated fields use `Mutex<Option<T>>` so callers can mutate
+/// them without cloning the whole handle — `FanoutSubscription` owns a
+/// `tokio::task::JoinHandle` that aborts on drop, so a "clone then
+/// replace" pattern would sever the fan-out to a peer that's still
+/// live. The handle itself stays behind `Arc<PeerHandle>` in the
+/// registry; mutation through the Mutex leaves the Arc untouched.
+///
+/// Dropping the handle (on `registry.remove(peer_id)` or registry
+/// shutdown) drops the `video_sub`/`audio_sub` along with it, aborting
+/// the per-peer dispatch task and preventing writes to a detached track.
 pub struct PeerHandle {
     pub peer_id: String,
     pub role: PeerRole,
     pub pc: Arc<RTCPeerConnection>,
-    pub build_log_dc: Option<Arc<RTCDataChannel>>,
-    pub video_track: Option<Arc<TrackLocalStaticRTP>>,
-    pub audio_track: Option<Arc<TrackLocalStaticRTP>>,
+    pub build_log_dc: Mutex<Option<Arc<RTCDataChannel>>>,
+    pub video_track: Mutex<Option<Arc<TrackLocalStaticRTP>>>,
+    pub audio_track: Mutex<Option<Arc<TrackLocalStaticRTP>>>,
+    pub video_sub: Mutex<Option<FanoutSubscription>>,
+    pub audio_sub: Mutex<Option<FanoutSubscription>>,
     pub attached_at: SystemTime,
 }
 
@@ -86,11 +105,27 @@ impl PeerHandle {
             peer_id: peer_id.into(),
             role,
             pc,
-            build_log_dc: None,
-            video_track: None,
-            audio_track: None,
+            build_log_dc: Mutex::new(None),
+            video_track: Mutex::new(None),
+            audio_track: Mutex::new(None),
+            video_sub: Mutex::new(None),
+            audio_sub: Mutex::new(None),
             attached_at: SystemTime::now(),
         }
+    }
+
+    /// Snapshot the current build-log DC, if attached. Cheap — clones
+    /// the inner `Arc<RTCDataChannel>` under the mutex and releases.
+    pub fn build_log_dc_snapshot(&self) -> Option<Arc<RTCDataChannel>> {
+        self.build_log_dc.lock().expect("build_log_dc mutex poisoned").clone()
+    }
+
+    pub fn video_track_snapshot(&self) -> Option<Arc<TrackLocalStaticRTP>> {
+        self.video_track.lock().expect("video_track mutex poisoned").clone()
+    }
+
+    pub fn audio_track_snapshot(&self) -> Option<Arc<TrackLocalStaticRTP>> {
+        self.audio_track.lock().expect("audio_track mutex poisoned").clone()
     }
 }
 
@@ -173,38 +208,46 @@ impl PeerRegistry {
         self.peers.write().expect("peer registry poisoned").clear();
     }
 
+    /// Snapshot every currently-registered peer. Cheap `Arc` clones so
+    /// callers can iterate without holding the read lock across `.await`.
+    pub fn all_peers(&self) -> Vec<Arc<PeerHandle>> {
+        self.peers
+            .read()
+            .expect("peer registry poisoned")
+            .values()
+            .cloned()
+            .collect()
+    }
+
     /// Snapshot all registered build-log DCs. Used when an HMR status event
     /// needs to fan out to every peer (browser + all observers).
-    ///
-    /// Copies `Arc<RTCDataChannel>`s out under the lock so callers can
-    /// iterate without holding the read lock across `.await` points.
     pub fn all_build_log_dcs(&self) -> Vec<Arc<RTCDataChannel>> {
         self.peers
             .read()
             .expect("peer registry poisoned")
             .values()
-            .filter_map(|h| h.build_log_dc.clone())
+            .filter_map(|h| h.build_log_dc_snapshot())
             .collect()
     }
 
-    /// Snapshot all registered video tracks. Used by `TrackFanout` to know
-    /// where to write each RTP packet coming off the GStreamer appsink.
+    /// Snapshot all registered video tracks. Less useful under
+    /// `TrackFanout` (per-peer tasks write directly) but retained for
+    /// legacy callers that iterate tracks manually.
     pub fn all_video_tracks(&self) -> Vec<Arc<TrackLocalStaticRTP>> {
         self.peers
             .read()
             .expect("peer registry poisoned")
             .values()
-            .filter_map(|h| h.video_track.clone())
+            .filter_map(|h| h.video_track_snapshot())
             .collect()
     }
 
-    /// Snapshot all registered audio tracks.
     pub fn all_audio_tracks(&self) -> Vec<Arc<TrackLocalStaticRTP>> {
         self.peers
             .read()
             .expect("peer registry poisoned")
             .values()
-            .filter_map(|h| h.audio_track.clone())
+            .filter_map(|h| h.audio_track_snapshot())
             .collect()
     }
 
@@ -220,21 +263,13 @@ impl PeerRegistry {
     }
 
     /// Attach a build-log DC to an already-registered peer. Returns `true`
-    /// if the peer existed.
-    ///
-    /// Caller pattern: register the handle as soon as the peer connects;
-    /// attach the DC on `on_data_channel` open; attach tracks when the
-    /// real media pipeline spins up. The registry stays consistent even if
-    /// callbacks arrive in any order.
+    /// if the peer existed. Mutation is through the handle's interior
+    /// mutex so the Arc in the registry stays untouched — no
+    /// subscription tasks get severed.
     pub fn attach_build_log(&self, peer_id: &str, dc: Arc<RTCDataChannel>) -> bool {
-        let mut peers = self.peers.write().expect("peer registry poisoned");
-        if let Some(existing) = peers.get_mut(peer_id) {
-            let mut updated = (**existing).clone_meta();
-            updated.build_log_dc = Some(dc);
-            updated.pc = existing.pc.clone();
-            updated.video_track = existing.video_track.clone();
-            updated.audio_track = existing.audio_track.clone();
-            *existing = Arc::new(updated);
+        let peers = self.peers.read().expect("peer registry poisoned");
+        if let Some(existing) = peers.get(peer_id) {
+            *existing.build_log_dc.lock().expect("build_log_dc mutex poisoned") = Some(dc);
             true
         } else {
             false
@@ -242,14 +277,9 @@ impl PeerRegistry {
     }
 
     pub fn attach_video_track(&self, peer_id: &str, track: Arc<TrackLocalStaticRTP>) -> bool {
-        let mut peers = self.peers.write().expect("peer registry poisoned");
-        if let Some(existing) = peers.get_mut(peer_id) {
-            let mut updated = (**existing).clone_meta();
-            updated.video_track = Some(track);
-            updated.pc = existing.pc.clone();
-            updated.build_log_dc = existing.build_log_dc.clone();
-            updated.audio_track = existing.audio_track.clone();
-            *existing = Arc::new(updated);
+        let peers = self.peers.read().expect("peer registry poisoned");
+        if let Some(existing) = peers.get(peer_id) {
+            *existing.video_track.lock().expect("video_track mutex poisoned") = Some(track);
             true
         } else {
             false
@@ -257,34 +287,35 @@ impl PeerRegistry {
     }
 
     pub fn attach_audio_track(&self, peer_id: &str, track: Arc<TrackLocalStaticRTP>) -> bool {
-        let mut peers = self.peers.write().expect("peer registry poisoned");
-        if let Some(existing) = peers.get_mut(peer_id) {
-            let mut updated = (**existing).clone_meta();
-            updated.audio_track = Some(track);
-            updated.pc = existing.pc.clone();
-            updated.build_log_dc = existing.build_log_dc.clone();
-            updated.video_track = existing.video_track.clone();
-            *existing = Arc::new(updated);
+        let peers = self.peers.read().expect("peer registry poisoned");
+        if let Some(existing) = peers.get(peer_id) {
+            *existing.audio_track.lock().expect("audio_track mutex poisoned") = Some(track);
             true
         } else {
             false
         }
     }
-}
 
-impl PeerHandle {
-    /// Helper for in-place updates — clones the metadata fields we own
-    /// without trying to Clone the `Arc<RTCPeerConnection>` itself (callers
-    /// re-attach the Arc clone explicitly to make the flow obvious).
-    fn clone_meta(&self) -> PeerHandle {
-        PeerHandle {
-            peer_id: self.peer_id.clone(),
-            role: self.role,
-            pc: self.pc.clone(),
-            build_log_dc: None,
-            video_track: None,
-            audio_track: None,
-            attached_at: self.attached_at,
+    /// Store a `FanoutSubscription` on the peer. Dropping it aborts the
+    /// per-peer dispatch task; replacing it aborts the prior task first
+    /// (a peer rejoining with a fresh track would otherwise double-write).
+    pub fn attach_video_sub(&self, peer_id: &str, sub: FanoutSubscription) -> bool {
+        let peers = self.peers.read().expect("peer registry poisoned");
+        if let Some(existing) = peers.get(peer_id) {
+            *existing.video_sub.lock().expect("video_sub mutex poisoned") = Some(sub);
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn attach_audio_sub(&self, peer_id: &str, sub: FanoutSubscription) -> bool {
+        let peers = self.peers.read().expect("peer registry poisoned");
+        if let Some(existing) = peers.get(peer_id) {
+            *existing.audio_sub.lock().expect("audio_sub mutex poisoned") = Some(sub);
+            true
+        } else {
+            false
         }
     }
 }

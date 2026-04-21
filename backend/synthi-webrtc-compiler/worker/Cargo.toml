@@ -73,3 +73,11 @@ tree-sitter-cpp = "0.23"
 [build-dependencies]
 tonic-build = "0.11"
 protoc-bin-vendored = "3.2.0"
+
+# Patch a local copy of `stun` 0.5.1 in place of the crates.io version
+# shipped transitively by webrtc-rs. The local copy fixes the
+# `ErrorCodeAttribute` Display impl so a malformed TURN error response
+# no longer panics the ICE-agent task. See
+# `vendored/stun/README_SYNTHI_PATCH.md` for the full story.
+[patch.crates-io]
+stun = { path = "vendored/stun" }
