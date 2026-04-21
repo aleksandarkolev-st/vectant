@@ -179,8 +179,19 @@ services:
       --max-port=49200
       --listening-ip=0.0.0.0
       --external-ip=192.168.100.107
-      --allowed-peer-ip=0.0.0.0-255.255.255.255
-      --allowed-peer-ip=::-ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff
+      --allowed-peer-ip=10.0.0.0-10.255.255.255
+      --allowed-peer-ip=127.0.0.0-127.255.255.255
+      --allowed-peer-ip=172.16.0.0-172.31.255.255
+      --allowed-peer-ip=192.168.0.0-192.168.255.255
+      --allowed-peer-ip=1.0.0.0-9.255.255.255
+      --allowed-peer-ip=11.0.0.0-126.255.255.255
+      --allowed-peer-ip=128.0.0.0-172.15.255.255
+      --allowed-peer-ip=172.32.0.0-192.167.255.255
+      --allowed-peer-ip=192.169.0.0-223.255.255.255
+      --allowed-peer-ip=::1-::1
+      --allowed-peer-ip=2000::-3fff:ffff:ffff:ffff:ffff:ffff:ffff:ffff
+      --allowed-peer-ip=fc00::-fdff:ffff:ffff:ffff:ffff:ffff:ffff:ffff
+      --allowed-peer-ip=fe80::-febf:ffff:ffff:ffff:ffff:ffff:ffff:ffff
       --verbose
       --log-file=stdout
     restart: unless-stopped
