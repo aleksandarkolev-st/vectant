@@ -98,6 +98,11 @@ function buildIvfFrameHeader(frameSize: number, pts: number): Buffer {
  * we stay on VP8 now on werift too so both ends match without touching
  * the worker.
  */
+function fsDbg(msg: string): void {
+  const ts = new Date().toISOString().slice(11, 23);
+  process.stderr.write(`[mcp ${ts}] frames: ${msg}\n`);
+}
+
 export class FrameSink {
   private readonly ffmpeg: ChildProcessByStdio<Writable, Readable, Readable>;
   private readonly trackSub: { unSubscribe: () => void } | null;
@@ -112,7 +117,21 @@ export class FrameSink {
   private frameRtpTs: number | null = null;
   private ivfHeaderSent = false;
 
+  // Diagnostics — count RTP arrivals, VP8 parse successes/failures, and
+  // frame flushes so `no_frame_yet` can be root-caused without guessing.
+  // Logged at low frequency (first few, then every 30 / 100) so a
+  // healthy stream doesn't drown the stderr log.
+  private rtpCount = 0;
+  private vp8OkCount = 0;
+  private vp8FailCount = 0;
+  private flushedFrameCount = 0;
+  private flushedKeyframeCount = 0;
+  private droppedPreKeyframeCount = 0;
+  private diagTimer: NodeJS.Timeout | null = null;
+  private lastDiagSnapshot = { rtp: 0 };
+
   constructor(track: MediaStreamTrack) {
+    fsDbg(`FrameSink constructed for track id=${track.id ?? track.uuid} kind=${track.kind}`);
     this.ffmpeg = spawn(
       FFMPEG_PATH,
       [
@@ -138,9 +157,25 @@ export class FrameSink {
 
     this.trackSub = track.onReceiveRtp.subscribe((rtp) => {
       if (this.stopped) return;
+      this.rtpCount += 1;
+      // Early samples are the interesting ones for diagnosing a stuck
+      // pipeline; after 3 we switch to a sparse heartbeat so steady
+      // state doesn't flood stderr.
+      if (this.rtpCount <= 3 || this.rtpCount % 300 === 0) {
+        fsDbg(
+          `rtp#${this.rtpCount} pt=${rtp.header.payloadType} seq=${rtp.header.sequenceNumber} ts=${rtp.header.timestamp} marker=${rtp.header.marker} payload_len=${rtp.payload.length}`
+        );
+      }
       try {
         const vp8 = Vp8RtpPayload.deSerialize(rtp.payload);
-        if (!vp8.payload || vp8.payload.length === 0) return;
+        if (!vp8.payload || vp8.payload.length === 0) {
+          // Non-zero length empty-after-descriptor: accounted as ok
+          // because the RTP itself parsed fine; just no codec payload
+          // in this packet (e.g. keepalive / padding).
+          this.vp8OkCount += 1;
+          return;
+        }
+        this.vp8OkCount += 1;
 
         // RTP timestamp changes each frame; use it as the PTS + boundary.
         // Marker bit on the RTP header flags the final packet of a frame
@@ -158,10 +193,29 @@ export class FrameSink {
           this.flushFrame(rtpTs);
           this.frameRtpTs = null;
         }
-      } catch {
-        // malformed RTP payload — drop and continue
+      } catch (err) {
+        this.vp8FailCount += 1;
+        if (this.vp8FailCount <= 3) {
+          fsDbg(
+            `VP8 payload parse failed (payload_len=${rtp.payload.length}, first_bytes=${rtp.payload.slice(0, 6).toString("hex")}): ${(err as Error).message ?? String(err)}`
+          );
+        }
       }
     });
+
+    // Independent heartbeat: fires even if zero RTP arrives, which is
+    // the exact failure mode we're hunting — the packet-driven call site
+    // below never runs when the worker stops sending. The flag
+    // `lastDiagSnapshot` lets us call out a stall explicitly vs a steady
+    // feed.
+    this.diagTimer = setInterval(() => {
+      const deltaRtp = this.rtpCount - this.lastDiagSnapshot.rtp;
+      this.lastDiagSnapshot.rtp = this.rtpCount;
+      fsDbg(
+        `diag: rtp=${this.rtpCount} (+${deltaRtp}/2s) vp8_ok=${this.vp8OkCount} vp8_fail=${this.vp8FailCount} frames_flushed=${this.flushedFrameCount} keyframes=${this.flushedKeyframeCount} pre_kf_drop=${this.droppedPreKeyframeCount} latest=${this.latest ? `${this.latest.width}x${this.latest.height}#${this.latest.seq}` : "none"}`
+      );
+    }, 2_000);
+    if (this.diagTimer.unref) this.diagTimer.unref();
   }
 
   private flushFrame(pts: number): void {
@@ -169,17 +223,25 @@ export class FrameSink {
     const frame = Buffer.concat(this.frameBuf);
     this.frameBuf = [];
 
+    const keyframeDims = parseVp8Keyframe(frame);
     if (!this.ivfHeaderSent) {
       // First frame MUST be a keyframe for the decoder; if it isn't, drop
       // and wait for one. ffmpeg is perfectly happy to start mid-stream on
       // the next keyframe. Bonus: the keyframe carries the width/height
       // we need to synthesize the IVF file header.
-      const dims = parseVp8Keyframe(frame);
-      if (!dims) return;
-      this.ffmpeg.stdin.write(buildIvfHeader(dims.width, dims.height));
+      if (!keyframeDims) {
+        this.droppedPreKeyframeCount += 1;
+        return;
+      }
+      fsDbg(
+        `first keyframe accepted ${keyframeDims.width}x${keyframeDims.height} (dropped ${this.droppedPreKeyframeCount} delta frame(s) while waiting)`
+      );
+      this.ffmpeg.stdin.write(buildIvfHeader(keyframeDims.width, keyframeDims.height));
       this.ivfHeaderSent = true;
     }
 
+    this.flushedFrameCount += 1;
+    if (keyframeDims) this.flushedKeyframeCount += 1;
     this.ffmpeg.stdin.write(buildIvfFrameHeader(frame.length, pts));
     this.ffmpeg.stdin.write(frame);
   }
@@ -209,7 +271,12 @@ export class FrameSink {
       const height = png.readUInt32BE(20);
       this.seq += 1;
       const now = Date.now();
-      if (this.firstFrameAt === null) this.firstFrameAt = now;
+      if (this.firstFrameAt === null) {
+        this.firstFrameAt = now;
+        fsDbg(
+          `first decoded PNG available ${width}x${height} (${png.length} bytes, rtp_seen=${this.rtpCount})`
+        );
+      }
       // Buffer.from(png) so the slice doesn't retain the whole stdoutBuf.
       this.latest = {
         png: Buffer.from(png),
@@ -260,6 +327,10 @@ export class FrameSink {
   stop(): void {
     if (this.stopped) return;
     this.stopped = true;
+    if (this.diagTimer) {
+      clearInterval(this.diagTimer);
+      this.diagTimer = null;
+    }
     try {
       this.trackSub?.unSubscribe();
     } catch {

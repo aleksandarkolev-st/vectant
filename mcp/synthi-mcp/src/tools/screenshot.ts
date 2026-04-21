@@ -69,6 +69,15 @@ export async function screenshotTool(args: unknown): Promise<ToolResponse> {
 
   try {
     const attached = session.require();
+    // attach() returns as soon as the peer connection + data channels are
+    // ready, but video frames need another ~1–2s: keyframe arrival + VP8
+    // decode → PNG. Wait here instead of forcing every caller to retry on
+    // `no_frame_yet` — the old 30s attach timeout used to mask this race
+    // but now that attach succeeds fast, the first screenshot can easily
+    // beat the first decoded frame.
+    if (!attached.frames.hasFrame()) {
+      await attached.frames.waitForFirstFrame(10_000);
+    }
     const frame = await attached.frames.getFrame();
 
     if (freshnessMaxMs !== undefined) {
