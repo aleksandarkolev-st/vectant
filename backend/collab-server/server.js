@@ -763,6 +763,95 @@ const server = http.createServer(async (req, res) => {
   }
 
   // ========================================================================
+  // SESSION LIFECYCLE — /api/session/:sessionId/lifecycle (GET)
+  // Uniform view of warming / ready / running / hibernated / migrating /
+  // crashed / terminated state. Consumed by the MCP (synthi_attach,
+  // synthi_health) + operator UIs. Source of truth is the spawner's own
+  // lifecycleSnapshot — advisory state is layered in sessionLifecycle.js.
+  // ========================================================================
+  const lifecycleGet = req.url.match(/^\/api\/session\/([^/]+)\/lifecycle$/);
+  if (lifecycleGet && req.method === 'GET') {
+    const sessionId = decodeURIComponent(lifecycleGet[1]);
+    try {
+      const snapshot = spawner.lifecycleSnapshot
+        ? await spawner.lifecycleSnapshot(sessionId)
+        : { session_id: sessionId, state: 'unknown', tracked: false };
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(snapshot));
+    } catch (e) {
+      console.error('[Lifecycle] snapshot failed:', e.message);
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: e.message }));
+    }
+    return;
+  }
+
+  // ========================================================================
+  // SESSION LIFECYCLE — /api/session/:sessionId/warm (POST)
+  // Pre-warm a hibernated / fresh session. Body: {user_id?}. Returns
+  // {state:"warming"|"ready", estimated_ready_at?} immediately; caller
+  // polls /lifecycle for progress.
+  // ========================================================================
+  const warmMatch = req.url.match(/^\/api\/session\/([^/]+)\/warm$/);
+  if (warmMatch && req.method === 'POST') {
+    if (!spawner.warm) {
+      res.writeHead(501, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'warm_not_supported_for_spawner_mode' }));
+      return;
+    }
+    const sessionId = decodeURIComponent(warmMatch[1]);
+    let body = '';
+    for await (const chunk of req) body += chunk;
+    let parsed = {};
+    if (body) {
+      try { parsed = JSON.parse(body); } catch { res.writeHead(400); res.end('Invalid JSON'); return; }
+    }
+    try {
+      const snapshot = await spawner.warm(sessionId, parsed.user_id || parsed.userId || 'warm_trigger');
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(snapshot));
+    } catch (e) {
+      console.error('[Lifecycle] warm failed:', e.message);
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: e.message }));
+    }
+    return;
+  }
+
+  // ========================================================================
+  // SESSION LIFECYCLE — /api/session/:sessionId/migrate (POST)
+  // Record a migrating-state transition so the MCP can surface it on the
+  // next `synthi_attach` / `synthi_health` poll. Body: {target?, reason?}.
+  // No actual pod relocation happens here in phase 1 — this is the hook
+  // an operator / orchestrator calls to flag the MCP.
+  // ========================================================================
+  const migrateMatch = req.url.match(/^\/api\/session\/([^/]+)\/migrate$/);
+  if (migrateMatch && req.method === 'POST') {
+    const sessionId = decodeURIComponent(migrateMatch[1]);
+    let body = '';
+    for await (const chunk of req) body += chunk;
+    let parsed = {};
+    if (body) {
+      try { parsed = JSON.parse(body); } catch { res.writeHead(400); res.end('Invalid JSON'); return; }
+    }
+    try {
+      const lifecycle = require('./sessionLifecycle');
+      const snapshot = lifecycle.markMigrating(
+        sessionId,
+        parsed.target || null,
+        parsed.reason || null
+      );
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ session_id: sessionId, ...snapshot }));
+    } catch (e) {
+      console.error('[Lifecycle] migrate failed:', e.message);
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: e.message }));
+    }
+    return;
+  }
+
+  // ========================================================================
   // SPAWNER — /api/spawner/ensure
   // Called by the frontend to ensure a workspace pod exists.
   // Body: { session_id, user_id }

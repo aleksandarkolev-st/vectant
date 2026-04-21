@@ -26,6 +26,7 @@
 const { spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
+const lifecycle = require('./sessionLifecycle');
 
 // ── Config ─────────────────────────────────────────────────────────────────
 
@@ -82,6 +83,7 @@ async function ensurePod(sessionId, userId) {
   const tracked = activeSessions.get(sessionId);
   if (tracked && tracked.child && tracked.child.exitCode === null && !tracked.child.killed) {
     tracked.lastActive = now;
+    lifecycle.markReady(sessionId);
     return { name, created: false, podName: name, pid: tracked.child.pid };
   }
   if (tracked) activeSessions.delete(sessionId);
@@ -89,6 +91,8 @@ async function ensurePod(sessionId, userId) {
   if (activeSessions.size >= MAX_WORKSPACE_PROCESSES) {
     throw new Error(`Workspace process cap reached (${MAX_WORKSPACE_PROCESSES})`);
   }
+
+  lifecycle.markWarming(sessionId, { stage: "process_spawn", stage_progress_pct: 10 });
 
   const env = {
     ...process.env,
@@ -115,6 +119,7 @@ async function ensurePod(sessionId, userId) {
   }
 
   activeSessions.set(sessionId, { lastActive: now, child, userId, name });
+  lifecycle.markReady(sessionId);
 
   child.on('exit', (code, signal) => {
     console.log(`[ProcessSpawner] ${name} exited (code=${code}, signal=${signal})`);
@@ -122,10 +127,51 @@ async function ensurePod(sessionId, userId) {
     if (current && current.child === child) {
       activeSessions.delete(sessionId);
     }
+    if (code !== 0 && signal !== 'SIGTERM' && signal !== 'SIGINT') {
+      lifecycle.markCrashed(sessionId, `exit code=${code} signal=${signal}`);
+    } else {
+      lifecycle.markTerminated(sessionId, `exit code=${code} signal=${signal}`);
+    }
   });
 
   console.log(`[ProcessSpawner] Started ${name} pid=${child.pid} (session=${sessionId}, userId=${userId})`);
   return { name, created: true, podName: name, pid: child.pid };
+}
+
+/**
+ * Lifecycle snapshot — mirror of localWorkerSpawner.lifecycleSnapshot.
+ */
+async function lifecycleSnapshot(sessionId) {
+  const entry = activeSessions.get(sessionId);
+  const advisory = lifecycle.snapshot(sessionId);
+  if (!entry) {
+    return { ...advisory, pod_running: false, spawner_tracked: false };
+  }
+  const child = entry.child;
+  const running = child && child.exitCode === null && !child.killed;
+  if (!running && advisory.state !== "terminated" && advisory.state !== "crashed") {
+    lifecycle.markCrashed(sessionId, "process_not_running");
+  }
+  return {
+    ...lifecycle.snapshot(sessionId),
+    pod_running: Boolean(running),
+    spawner_tracked: true,
+    last_active: entry.lastActive,
+    pid: child?.pid,
+  };
+}
+
+/**
+ * Warm endpoint — trigger ensurePod asynchronously; poll /lifecycle for progress.
+ */
+async function warm(sessionId, userId) {
+  if (!sessionId) throw new Error('sessionId is required');
+  lifecycle.markWarming(sessionId, { stage: "warm_triggered", stage_progress_pct: 5 });
+  ensurePod(sessionId, userId).catch((err) => {
+    console.error(`[ProcessSpawner] warm ensurePod failed for ${sessionId}:`, err.message);
+    lifecycle.markCrashed(sessionId, `warm_failed: ${err.message}`);
+  });
+  return lifecycle.snapshot(sessionId);
 }
 
 // ── Heartbeat ──────────────────────────────────────────────────────────────
@@ -140,10 +186,16 @@ async function touch(sessionId) {
 async function teardown(sessionId) {
   const entry = activeSessions.get(sessionId);
   activeSessions.delete(sessionId);
-  if (!entry || !entry.child) return;
+  if (!entry || !entry.child) {
+    lifecycle.markTerminated(sessionId, "teardown_untracked");
+    return;
+  }
 
   const child = entry.child;
-  if (child.exitCode !== null || child.killed) return;
+  if (child.exitCode !== null || child.killed) {
+    lifecycle.markTerminated(sessionId, "teardown_already_exited");
+    return;
+  }
 
   try {
     child.kill('SIGTERM');
@@ -236,6 +288,8 @@ module.exports = {
   ensurePod,
   touch,
   teardown,
+  warm,
+  lifecycleSnapshot,
   cullIdleWorkspaces,
   startCuller,
   stopCuller,
