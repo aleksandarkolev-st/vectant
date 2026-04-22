@@ -46,6 +46,15 @@ import { releaseInputTool } from "./tools/release_input.js";
 import { requestHumanTool } from "./tools/request_human.js";
 import { annotateAndAskTool } from "./tools/annotate_and_ask.js";
 import { recentHumanActionsTool } from "./tools/recent_human_actions.js";
+import {
+  actTool,
+  clickTextTool,
+  fillFormTool,
+  getLabelsTool,
+  getMetricsTool,
+  getProcessStateTool,
+  queryTool,
+} from "./tools/enriched.js";
 import type { ToolContext } from "./tools/shared.js";
 
 export interface SynthiServerOptions {
@@ -589,6 +598,111 @@ const TOOLS = [
       required: [],
     },
   },
+  // Enriched tier (phase 2b). Advertised unconditionally so clients can
+  // enumerate the surface, but each tool returns enriched_tier_not_available
+  // until a session registers an a11y-bridge or synthi-probe provider.
+  {
+    name: "synthi_query",
+    description:
+      "Query the enriched-tier entity tree for entities matching a role / name-contains filter. Returns [] when no provider is registered. Requires capabilities.enriched_tier.available=true.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        role: { type: "string", description: "Filter by accessibility role (e.g., 'button', 'text_field')." },
+        name_contains: { type: "string", description: "Substring match against entity accessible name." },
+        limit: { type: "number", description: "Max entities returned. Default implementation-defined." },
+      },
+      required: [],
+    },
+  },
+  {
+    name: "synthi_act",
+    description:
+      "Invoke a semantic action on a known enriched entity (press, select, focus, toggle). Action dispatch goes through the a11y bridge or probe callback — not through raw coordinate input. Returns enriched_tier_not_available when no provider is registered.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        entity_id: { type: "string", description: "Entity id returned by synthi_query." },
+        action: { type: "string", enum: ["press", "select", "focus", "toggle"] },
+      },
+      required: ["entity_id", "action"],
+    },
+  },
+  {
+    name: "synthi_click_text",
+    description:
+      "Find an enriched entity by accessible-name substring and press it. Convenience wrapper over synthi_query + synthi_act — returns locator_ambiguous when multiple entities match, locator_unresolved when none match.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        text: { type: "string", description: "Substring to match against entity names." },
+        confirm: { type: "boolean", description: "Reserved for future sensitive-action interstitial." },
+      },
+      required: ["text"],
+    },
+  },
+  {
+    name: "synthi_fill_form",
+    description:
+      "Batch-fill multiple text-entry entities by id + value. Each field reports per-entity {ok, reason} so partial fills are visible. Enriched tier only.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        fields: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              entity_id: { type: "string" },
+              value: { type: "string" },
+            },
+            required: ["entity_id", "value"],
+          },
+        },
+      },
+      required: ["fields"],
+    },
+  },
+  {
+    name: "synthi_get_labels",
+    description:
+      "Return {bbox, name, role} for every enriched entity in the frame (or restricted to a region). Useful for dense UIs where synthi_query would be chatty.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        region: {
+          type: "object",
+          properties: {
+            x: { type: "number" },
+            y: { type: "number" },
+            w: { type: "number" },
+            h: { type: "number" },
+          },
+          required: ["x", "y", "w", "h"],
+        },
+        limit: { type: "number" },
+      },
+      required: [],
+    },
+  },
+  {
+    name: "synthi_get_process_state",
+    description:
+      "Return {pid, rss_kb, threads, uptime_ms} for the guest process. Sourced via the enriched-tier provider when available. Returns enriched_tier_not_available otherwise.",
+    inputSchema: { type: "object", properties: {}, required: [] },
+  },
+  {
+    name: "synthi_get_metrics",
+    description:
+      "Return guest-reported metrics. Only populated when a synthi-probe provider registers custom metrics; a11y bridges always return []. Optional `metric` filters to a single metric name.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        metric: { type: "string" },
+      },
+      required: [],
+    },
+  },
   {
     name: "synthi_locate",
     description:
@@ -800,6 +914,20 @@ export function createSynthiServer(options: SynthiServerOptions): Server {
         return (await annotateAndAskTool(args)) as CallToolResult;
       case "synthi_recent_human_actions":
         return (await recentHumanActionsTool(args)) as CallToolResult;
+      case "synthi_query":
+        return (await queryTool(args)) as CallToolResult;
+      case "synthi_act":
+        return (await actTool(args)) as CallToolResult;
+      case "synthi_click_text":
+        return (await clickTextTool(args)) as CallToolResult;
+      case "synthi_fill_form":
+        return (await fillFormTool(args)) as CallToolResult;
+      case "synthi_get_labels":
+        return (await getLabelsTool(args)) as CallToolResult;
+      case "synthi_get_process_state":
+        return (await getProcessStateTool(args)) as CallToolResult;
+      case "synthi_get_metrics":
+        return (await getMetricsTool(args)) as CallToolResult;
       default:
         return {
           content: [

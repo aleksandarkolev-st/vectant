@@ -53,6 +53,13 @@ const EXPECTED_TOOLS = [
   "synthi_request_human",
   "synthi_annotate_and_ask",
   "synthi_recent_human_actions",
+  "synthi_query",
+  "synthi_act",
+  "synthi_click_text",
+  "synthi_fill_form",
+  "synthi_get_labels",
+  "synthi_get_process_state",
+  "synthi_get_metrics",
 ];
 
 function parseArgs(argv) {

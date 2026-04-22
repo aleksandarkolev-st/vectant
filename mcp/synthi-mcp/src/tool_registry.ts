@@ -49,6 +49,15 @@ export const ADVERTISED_TOOLS = [
   "synthi_request_human",
   "synthi_annotate_and_ask",
   "synthi_recent_human_actions",
+  // Enriched tier (phase 2b — runtime-advertised; stubs return
+  // enriched_tier_not_available until a provider attaches)
+  "synthi_query",
+  "synthi_act",
+  "synthi_click_text",
+  "synthi_fill_form",
+  "synthi_get_labels",
+  "synthi_get_process_state",
+  "synthi_get_metrics",
 ] as const;
 
 export type AdvertisedToolName = (typeof ADVERTISED_TOOLS)[number];

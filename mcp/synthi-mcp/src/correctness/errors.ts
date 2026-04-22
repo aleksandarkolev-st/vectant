@@ -203,6 +203,16 @@ const SPECS: Record<string, ErrorSpec> = {
       ...(detail ?? {}),
     }),
   },
+  enriched_tier_not_available: {
+    code: "enriched_tier_not_available",
+    priority: 15,
+    build: (detail) => ({
+      error: "enriched_tier_not_available",
+      priority: 15,
+      hint: "No a11y bridge or synthi-probe provider is registered for this session. Enriched-tier tools (synthi_query/act/fill_form/click_text/get_labels/get_process_state/get_metrics) rely on the provider. Use universal-tier tools (synthi_locate + synthi_mouse/keyboard) until enriched ships.",
+      ...(detail ?? {}),
+    }),
+  },
   quota_exceeded: {
     code: "quota_exceeded",
     priority: 16,
