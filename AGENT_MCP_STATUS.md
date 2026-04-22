@@ -267,23 +267,31 @@ Proprietary-aware distribution; public-npm publish explicitly deferred. Full ana
 
 ### Phase 2b — Enrichment (~2 weeks)
 
-- [ ] Swing `javax.accessibility` enriched-tier adapter + fixture.
-- [ ] `synthi-probe` cooperative library (C/C++ first; Java/Python later).
+- [x] **Enriched-tier tool surface** — 7 tools scaffolded (`synthi_query`, `synthi_act`, `synthi_click_text`, `synthi_fill_form`, `synthi_get_labels`, `synthi_get_process_state`, `synthi_get_metrics`). Route through `EnrichedProvider`; return `enriched_tier_not_available` until a provider registers. Manifest `capabilities.enriched_tier` reflects provider kind/toolkit at runtime.
+- [x] **Swing fixture** — `mcp/synthi-mcp/tests/fixtures/counter_swing/` with `javax.accessibility` wiring. Compiles standalone.
+- [x] **`synthi-probe` C library** — `probe/synthi-probe/` with header, reference implementation, example fixture, Makefile. Compiles under `-Wall -Wextra -Wpedantic`. Distribution inherits phase-2a's proprietary posture.
+- [ ] Swing a11y-bridge **provider** that terminates the a11y side into the MCP's provider registry (JNI work).
+- [ ] Worker-side **synthi-probe socket adapter** that terminates `/run/synthi/probe-<session>.sock` into the same registry.
+- [ ] Non-C probe wrappers — JS → Java → Python, in that order once a consumer asks.
 
 ### Phase 2c — Arbitration & scaling (~2 weeks)
 
-- [ ] Broker implementation (multi-agent fan-out).
-- [ ] Worker-side input lease enforcement.
+- [x] **MCP-local input lease enforcement** — opt-in via `SYNTHI_LEASE_MODE=single-holder`. `acquireWithPolicy` rejects a second live acquire with `lease_already_held`; mouse/keyboard reject mismatched callers with `input_lease_held_by_other`. Manifest flips `arbitration.enforcement` to `"mcp-local"`.
+- [x] **Worker-side lease registry** — `worker::webrtc::input_lease` scaffold + 9 unit tests. Session-level single-holder across peers, observer rejected, same-peer refresh, hot-path `gate_dispatch`.
+- [ ] Worker-side **signal-loop integration** — call `input_lease_registry.gate_dispatch(peer_id)` on every `gui-event` before translation. Remaining phase-2c Rust commit.
+- [ ] **Broker service** — explicitly deferred. Speculative without a concrete multi-agent customer; MCP-local + worker-local enforcement covers today's 1-agent and 1-browser/1-agent deployments.
 
 ### Phase 2d — Observability (~2 weeks)
 
-- [ ] Audio tee + `synthi_get_audio_level` / `synthi_wait_audio_event`.
-- [ ] Operator observability UI.
-- [ ] Quota enforcement (metrics-only in phase 1).
+- [x] **Audio tool stubs + `wait({condition:"audio"})`** — `synthi_get_audio_level`, `synthi_wait_audio_event` wired as stubs returning `audio_backend_not_implemented`. Worker already runs audio through `TrackFanout` — remaining hook is peak-analysis + `{type:"audio-level"}` emission.
+- [x] **Quota enforcement** — opt-in via `SYNTHI_QUOTA_MODE=enforce`. Rolling-window gates on vision cost / tool-call rate / screenshot rate. Pre-dispatch choke point at `server.ts`; short-circuits with `quota_exceeded`.
+- [ ] Worker audio **peak-analysis + emission**.
+- [ ] **Operator observability UI** — explicitly deferred (frontend work; belongs to a frontend-focused session).
 
 ### Phase 2e — Chaos suite (~1 week)
 
-- [ ] Chaos testing suite (full).
+- [x] **Chaos runner scaffold** — `mcp/synthi-mcp/tests/chaos/runner.mjs` + `scenarios/_template.mjs` define the setup/inject/assert/cleanup lifecycle. Discovers and dispatches scenarios; CLI flags for `--only` / `--iterations` / `--list`.
+- [ ] **Individual scenarios** — latency injection, DC packet loss, frame freeze, worker kill, signaling partition, Redis eviction, payload corruption. Land on top of the scaffold.
 
 ---
 
