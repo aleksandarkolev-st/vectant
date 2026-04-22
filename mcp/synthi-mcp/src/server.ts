@@ -10,6 +10,7 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { eventLog } from "./events/index.js";
 import { recordToolCall } from "./observability/metrics.js";
+import { enforceQuota } from "./observability/quota.js";
 import {
   RESOURCES,
   RESOURCE_URIS,
@@ -816,6 +817,18 @@ export function createSynthiServer(options: SynthiServerOptions): Server {
     const toolName = request.params.name;
     const args = request.params.arguments;
     const signal = (extra as { signal?: AbortSignal } | undefined)?.signal;
+    // Phase-2d quota gate. `off` mode returns null immediately; `warn` logs
+    // a security event but still returns null; `enforce` short-circuits
+    // with quota_exceeded. Gate precedes dispatch so the offending tool
+    // never actually runs when over budget.
+    const quotaError = enforceQuota(toolName);
+    if (quotaError) {
+      recordToolCall(toolName, "error");
+      return {
+        content: [{ type: "text" as const, text: JSON.stringify(quotaError) }],
+        isError: true,
+      };
+    }
     const response = await dispatchTool(toolName, args, signal);
     // Record the outcome for Prometheus. Most tools return structured error
     // payloads via `isError: true` rather than throwing — respect that.
