@@ -31,6 +31,8 @@
     "test:unit": "vitest run --project unit",
     "test:integration": "vitest run --project integration",
     "typecheck": "tsc --noEmit",
+    "smoke": "node scripts/release-smoke.mjs --command dist/index.js",
+    "smoke:image": "node scripts/release-smoke.mjs",
     "spike:all": "tsx tests/spike/run_all.ts",
     "spike:E1": "tsx tests/spike/E1_frame_seq.ts",
     "spike:E2": "tsx tests/spike/E2_locator_cache.ts",
