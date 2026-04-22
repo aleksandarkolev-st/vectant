@@ -33,7 +33,7 @@ use futures::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use tokio::{
     net::TcpListener,
-    sync::{mpsc, RwLock},
+    sync::{mpsc, oneshot, RwLock},
 };
 use tokio_tungstenite::{accept_async, tungstenite::Message};
 
@@ -91,6 +91,16 @@ struct SignalMessage {
     /// for forward-compat with G3 Phase B (worker per-peer PC routing).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     peer_id: Option<String>,
+
+    /// Target role for operator `kick-peer` messages (e.g. `"observer"`,
+    /// `"mcp-agent"`, `"browser"`). Ignored on any other message type.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    target_role: Option<String>,
+
+    /// Optional human-readable reason attached to a `kick-peer`. Surfaces
+    /// on the kicked peer's final `{type:"evicted"}` frame.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    reason: Option<String>,
 }
 
 /// Protocol versions this signaling-server implementation can speak.
@@ -147,10 +157,22 @@ type PeerKey = (String, String); // (session_id, role)
 const ROLE_BROWSER: &str = "browser";
 const ROLE_WORKER: &str = "worker";
 const ROLE_OBSERVER: &str = "observer";
+/// Operator UI role — a human monitor with a kill switch. One per session.
+/// Not counted in `presence` (it's out-of-band observability, not a peer
+/// participating in the session's input/video loop) and the signaling
+/// server never fans worker media to operators.
+const ROLE_OPERATOR: &str = "operator";
 
 /// Roles that are allowed multiple peers per session.
 fn role_is_multi_peer(role: &str) -> bool {
     role == ROLE_OBSERVER
+}
+
+/// Roles authorised to send privileged operator control messages
+/// (currently just `kick-peer`). Kept narrow so a rogue observer or
+/// mcp-agent can't drop its peers.
+fn role_is_operator(role: &str) -> bool {
+    role == ROLE_OPERATOR
 }
 
 /// Classify a role as either a human peer (driver) or an agent peer
@@ -175,7 +197,7 @@ fn compute_presence_counts(
         if sid != session_id {
             continue;
         }
-        if role == ROLE_WORKER {
+        if role == ROLE_WORKER || role == ROLE_OPERATOR {
             continue;
         }
         let n = senders.len();
@@ -226,6 +248,12 @@ impl PresenceCounts {
     }
 }
 
+/// Reason string attached to an operator kick. Sent as the final message
+/// on the kicked peer's socket so the client can surface *why* it was
+/// evicted (vs. a generic transport drop).
+#[derive(Debug, Clone)]
+struct KickReason(String);
+
 /// Shared across all connection tasks on this pod.
 struct AppState {
     /// Local peers connected to **this** pod. Vec length enforced per role:
@@ -238,6 +266,16 @@ struct AppState {
     /// cross-talk. Cross-pod delivery uses `peer:<id>` Redis target keys
     /// that resolve against this map on the owning pod.
     peers_by_id: RwLock<HashMap<String, mpsc::UnboundedSender<Message>>>,
+    /// Per-peer hard-disconnect channels. `kick-peer` drains the matching
+    /// entries and fires the signals, which causes the owning connection
+    /// task's `select!` to break out of its read loop, send a final
+    /// `{type:"evicted"}` frame, and close the socket. Same-pod only —
+    /// cross-pod kicks (operator on pod A, MCP on pod B) will no-op on
+    /// the local lookup and the agent will stay attached on the other
+    /// pod. The horizontal-scale fix is a Redis-relayed kick envelope
+    /// (`peer:<id>` target key → receiving pod fires its local signal);
+    /// the primitive sits here waiting for the relay wiring.
+    kill_signals: RwLock<HashMap<String, oneshot::Sender<KickReason>>>,
     /// Maps a `__legacy__` worker to the real session it is currently serving.
     /// Used in local dev when the worker has no SESSION_ID set.
     legacy_session: RwLock<Option<String>>,
@@ -300,6 +338,7 @@ async fn main() -> anyhow::Result<()> {
     let state = Arc::new(AppState {
         peers: RwLock::new(HashMap::new()),
         peers_by_id: RwLock::new(HashMap::new()),
+        kill_signals: RwLock::new(HashMap::new()),
         legacy_session: RwLock::new(None),
         redis_client: redis_client.clone(),
         node_id: node_id.clone(),
@@ -414,6 +453,55 @@ fn parse_peer_target_key(key: &str) -> Option<String> {
     key.strip_prefix("peer:").map(|s| s.to_string())
 }
 
+// ── Operator kick helpers ──────────────────────────────────────────────────
+
+/// Collect peer_ids for every peer of `target_role` currently attached to
+/// `session_id`. Returns an empty vec if nothing matches. Snapshot-only —
+/// the caller must fire kicks via `kill_signals` afterwards.
+async fn collect_target_peer_ids(
+    state: &Arc<AppState>,
+    session_id: &str,
+    target_role: &str,
+) -> Vec<String> {
+    let peers = state.peers.read().await;
+    let entry = match peers.get(&(session_id.to_string(), target_role.to_string())) {
+        Some(v) => v,
+        None => return Vec::new(),
+    };
+    let senders: Vec<_> = entry.clone();
+    drop(peers);
+    let by_id = state.peers_by_id.read().await;
+    let mut ids = Vec::new();
+    for (pid, tx) in by_id.iter() {
+        if senders.iter().any(|s| s.same_channel(tx)) {
+            ids.push(pid.clone());
+        }
+    }
+    ids
+}
+
+/// Fire the kill signal for every peer_id in the list. Returns the number
+/// actually signalled (some entries may have been removed concurrently by
+/// a natural disconnect). The targeted connection task picks up the
+/// signal in its `select!`, emits a final `{type:"evicted"}` frame, and
+/// runs its normal cleanup path.
+async fn fire_kicks(
+    state: &Arc<AppState>,
+    peer_ids: &[String],
+    reason: &str,
+) -> usize {
+    let mut kills = state.kill_signals.write().await;
+    let mut fired = 0usize;
+    for pid in peer_ids {
+        if let Some(tx) = kills.remove(pid) {
+            if tx.send(KickReason(reason.to_string())).is_ok() {
+                fired += 1;
+            }
+        }
+    }
+    fired
+}
+
 // ── Per-connection handler ─────────────────────────────────────────────────
 
 async fn handle_connection(
@@ -443,8 +531,35 @@ async fn handle_connection(
     // route worker→peer replies directly. Removed from `peers_by_id` on
     // disconnect so a stale id cannot receive bytes meant for a fresh peer.
     let mut my_peer_id: Option<String> = None;
+    // Per-connection kill channel; the sender lives in AppState.kill_signals
+    // under `peer_id`. Holds `Option` so we can take it once (oneshot).
+    let mut kill_rx: Option<oneshot::Receiver<KickReason>> = None;
+    // Set when this connection was evicted by an operator. Surfaced in the
+    // final `{type:"evicted"}` frame + cleanup log.
+    let mut kicked_reason: Option<KickReason> = None;
 
-    while let Some(msg) = ws_rx.next().await {
+    loop {
+        // Re-borrow `kill_rx` as a mutable optional future. The outer
+        // `select!` biases toward the kill branch so a kick interrupts
+        // even if the peer is spamming the socket.
+        let msg = if let Some(rx) = kill_rx.as_mut() {
+            tokio::select! {
+                biased;
+                reason = rx => {
+                    kicked_reason = reason.ok();
+                    break;
+                }
+                next = ws_rx.next() => match next {
+                    Some(m) => m,
+                    None => break,
+                },
+            }
+        } else {
+            match ws_rx.next().await {
+                Some(m) => m,
+                None => break,
+            }
+        };
         let msg = msg?;
         if !msg.is_text() {
             continue;
@@ -509,6 +624,7 @@ async fn handle_connection(
             }
             if let Some(old_pid) = &my_peer_id {
                 state.peers_by_id.write().await.remove(old_pid);
+                state.kill_signals.write().await.remove(old_pid);
             }
 
             my_session = Some(session_id.clone());
@@ -524,6 +640,17 @@ async fn handle_connection(
                 .write()
                 .await
                 .insert(peer_id.clone(), out_tx.clone());
+            // Per-peer kill channel. Held by AppState for operator
+            // `kick-peer` to signal hard disconnect; received here so the
+            // read loop can break on it. Re-register replaces any prior
+            // channel above.
+            let (kill_tx, new_kill_rx) = oneshot::channel();
+            kill_rx = Some(new_kill_rx);
+            state
+                .kill_signals
+                .write()
+                .await
+                .insert(peer_id.clone(), kill_tx);
 
             // Singleton roles evict prior senders (Path A); observer appends.
             let key = (session_id.clone(), role.clone());
@@ -564,11 +691,80 @@ async fn handle_connection(
             continue;
         }
 
+        // ── Operator kick-peer ────────────────────────────────────────
+        // Hard-disconnect every peer in this session matching the
+        // requested target role. Only operators may send this; anything
+        // else is rejected with `kick-denied` so a rogue agent can't drop
+        // its peers. Worker and operator roles are never kickable — the
+        // worker is the compute endpoint (killing it orphans the session)
+        // and letting one operator kick another is out of scope until
+        // multi-operator semantics are defined.
+        if parsed.msg_type == "kick-peer" {
+            let caller_role = my_role.as_deref().unwrap_or("");
+            if !role_is_operator(caller_role) {
+                let err = serde_json::json!({
+                    "type": "kick-denied",
+                    "code": "not_operator",
+                    "caller_role": caller_role,
+                });
+                let _ = out_tx.send(Message::text(err.to_string()));
+                continue;
+            }
+            let Some(sid) = my_session.clone() else { continue };
+            let target_role = match parsed.target_role.clone() {
+                Some(r) if r != ROLE_WORKER && r != ROLE_OPERATOR => r,
+                Some(r) => {
+                    let err = serde_json::json!({
+                        "type": "kick-denied",
+                        "code": "role_not_kickable",
+                        "target_role": r,
+                    });
+                    let _ = out_tx.send(Message::text(err.to_string()));
+                    continue;
+                }
+                None => {
+                    let err = serde_json::json!({
+                        "type": "kick-denied",
+                        "code": "missing_target_role",
+                    });
+                    let _ = out_tx.send(Message::text(err.to_string()));
+                    continue;
+                }
+            };
+            let reason_text = parsed
+                .reason
+                .clone()
+                .unwrap_or_else(|| "operator_kick".to_string());
+            let target_peer_ids = collect_target_peer_ids(&state, &sid, &target_role).await;
+            let kicked_count =
+                fire_kicks(&state, &target_peer_ids, &reason_text).await;
+            println!(
+                "[Signaling] kick-peer: operator session='{sid}' target_role='{target_role}' kicked={kicked_count} reason='{reason_text}'"
+            );
+            let ack = serde_json::json!({
+                "type": "kick-ack",
+                "session_id": sid,
+                "target_role": target_role,
+                "kicked": kicked_count,
+                "reason": reason_text,
+            });
+            let _ = out_tx.send(Message::text(ack.to_string()));
+            continue;
+        }
+
         // ── Forward SDP / ICE / reset / etc ────────────────────────────
         let (session_id, role) = match (&my_session, &my_role) {
             (Some(s), Some(r)) => (s.clone(), r.clone()),
             _ => continue, // not registered yet — drop
         };
+
+        // Operators are monitors, not peers in the media loop. They may
+        // only send register + kick-peer; anything else is dropped here
+        // so an out-of-date operator UI can't accidentally inject SDP/ICE
+        // into the session.
+        if role == ROLE_OPERATOR {
+            continue;
+        }
 
         // ── Legacy-worker bridging ─────────────────────────────────────
         // In local dev the worker runs without SESSION_ID and registers
@@ -698,8 +894,21 @@ async fn handle_connection(
     }
 
     // ── Cleanup on disconnect ──────────────────────────────────────────
+    // If we got here because of an operator kick, tell the peer why
+    // before the socket actually closes. Best-effort — the send_task may
+    // have already drained and the client may not be listening, but
+    // giving them a chance to see `{type:"evicted"}` means the MCP can
+    // surface `operator_kicked` rather than a generic transport drop.
+    if let Some(KickReason(reason)) = &kicked_reason {
+        let evicted = serde_json::json!({
+            "type": "evicted",
+            "reason": reason,
+        });
+        let _ = out_tx.send(Message::text(evicted.to_string()));
+    }
     if let Some(pid) = &my_peer_id {
         state.peers_by_id.write().await.remove(pid);
+        state.kill_signals.write().await.remove(pid);
     }
     if let (Some(sid), Some(role)) = (&my_session, &my_role) {
         let (session_empty, presence_after_remove) = {
@@ -967,6 +1176,36 @@ mod tests {
         peers.insert(("s1".to_string(), ROLE_BROWSER.to_string()), vec![fake_sender()]);
         let c = compute_presence_counts(&peers, "s1");
         assert_eq!(c, PresenceCounts { humans: 1, agents: 0 });
+    }
+
+    #[test]
+    fn role_operator_classification() {
+        // Operator is not multi-peer (one monitor per session), not an
+        // agent (it doesn't drive the session — it observes), and is the
+        // sole role permitted to send kick-peer messages.
+        assert!(!role_is_multi_peer(ROLE_OPERATOR));
+        assert!(!role_is_agent(ROLE_OPERATOR));
+        assert!(role_is_operator(ROLE_OPERATOR));
+        assert!(!role_is_operator(ROLE_OBSERVER));
+        assert!(!role_is_operator(ROLE_BROWSER));
+        assert!(!role_is_operator("mcp-agent"));
+    }
+
+    #[test]
+    fn presence_counts_ignores_operator() {
+        // Operators are monitors, not attached peers — they must not
+        // appear in `attached_humans` or `attached_agents`. Otherwise an
+        // MCP client asking `synthi_attach` for presence would see the
+        // operator UI and assume another driver is in the session.
+        let mut peers = HashMap::<PeerKey, Vec<mpsc::UnboundedSender<Message>>>::new();
+        peers.insert(("s1".to_string(), ROLE_OPERATOR.to_string()), vec![fake_sender()]);
+        peers.insert(("s1".to_string(), ROLE_BROWSER.to_string()), vec![fake_sender()]);
+        peers.insert(
+            ("s1".to_string(), ROLE_OBSERVER.to_string()),
+            vec![fake_sender()],
+        );
+        let c = compute_presence_counts(&peers, "s1");
+        assert_eq!(c, PresenceCounts { humans: 1, agents: 1 });
     }
 
     #[test]
