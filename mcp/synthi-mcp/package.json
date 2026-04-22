@@ -1,7 +1,8 @@
 {
-  "name": "@synthi/mcp-server",
+  "name": "@synthi-inc/mcp-server",
   "version": "0.1.0",
-  "description": "Synthi MCP — minimal MCP server for agents to observe and drive a running Synthi preview session.",
+  "private": false,
+  "description": "Synthi MCP — proprietary MCP server for agents to observe and drive a running Synthi preview session.",
   "type": "module",
   "bin": {
     "synthi-mcp": "dist/index.js"
@@ -12,6 +13,16 @@
     "dist",
     "README.md"
   ],
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com",
+    "access": "restricted"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/synthi-inc/synthi-ide.git",
+    "directory": "mcp/synthi-mcp"
+  },
+  "homepage": "https://github.com/synthi-inc/synthi-ide/tree/main/mcp/synthi-mcp#readme",
   "scripts": {
     "build": "tsc",
     "start": "node dist/index.js",
