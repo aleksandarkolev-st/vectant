@@ -173,6 +173,10 @@ async function evalElementVisible(p: { handle_id: string }): Promise<VerifyResul
     };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
+    const ts = new Date().toISOString().slice(11, 23);
+    process.stderr.write(
+      `[mcp ${ts}] verify(element_visible): handle=${p.handle_id} err=${message}\n`
+    );
     return {
       matched: false,
       kind: "element_visible",

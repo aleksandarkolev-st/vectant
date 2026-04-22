@@ -78,6 +78,9 @@ export async function locateTool(args: unknown, extra?: LocateToolExtra): Promis
         reason: message,
       });
     }
+    const ts = new Date().toISOString().slice(11, 23);
+    const stack = err instanceof Error && err.stack ? err.stack : message;
+    process.stderr.write(`[mcp ${ts}] locate: ${stack}\n`);
     if (message.startsWith("agent_side_vision_required")) {
       return errorResponse("agent_side_vision_required", {
         hint: "Run your own vision grounding on the provided screenshot, then re-call synthi_locate with hints.prefer_region populated.",
