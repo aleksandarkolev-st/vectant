@@ -286,7 +286,7 @@ Proprietary-aware distribution; public-npm publish explicitly deferred. Full ana
 - [x] **Audio tool stubs + `wait({condition:"audio"})`** — `synthi_get_audio_level`, `synthi_wait_audio_event` wired as stubs returning `audio_backend_not_implemented`. Worker already runs audio through `TrackFanout` — remaining hook is peak-analysis + `{type:"audio-level"}` emission.
 - [x] **Quota enforcement** — opt-in via `SYNTHI_QUOTA_MODE=enforce`. Rolling-window gates on vision cost / tool-call rate / screenshot rate. Pre-dispatch choke point at `server.ts`; short-circuits with `quota_exceeded`.
 - [ ] Worker audio **peak-analysis + emission**.
-- [ ] **Operator observability UI** — explicitly deferred (frontend work; belongs to a frontend-focused session).
+- [x] **Operator observability UI (kill-switch MVP)** — Next.js route `/workspace/<slug>/operator`. Signaling server gained an `operator` role + `kick-peer` handler with per-peer oneshot kill signals (hard-disconnect, not route-blocking). Frontend `OperatorClient` + `OperatorPanel` render live `attached_humans` / `attached_agents` presence counts and expose kill buttons for `observer` / `mcp-agent` / `browser`. Worker + operator roles are non-kickable. Event log / quota / lease snapshot still pending — they need a side-channel to the MCP process itself, not the signaling server.
 
 ### Phase 2e — Chaos suite (~1 week)
 

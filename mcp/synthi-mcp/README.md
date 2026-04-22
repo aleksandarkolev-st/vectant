@@ -232,6 +232,22 @@ An agent can branch on capability availability (`capabilities.frame_seq_gate.ava
 
 ---
 
+## Operator UI
+
+Phase-2 ships a Next.js operator console at `/workspace/<SESSION_ID>/operator` (inside the `synthi` frontend). It connects to the signaling server as a new `operator` role (monitor, not counted in presence, no media fan-out), renders the live `attached_humans` / `attached_agents` counts the server already broadcasts, and exposes a kill switch:
+
+- **Kick `observer` peers** — drops the Synthi MCP (registers as `observer`). Use when an agent is running away.
+- **Kick `mcp-agent` peers** — forward-compat for agents on the reserved `mcp-agent` role.
+- **Kick the browser** — rarely what you want; included for completeness.
+
+The server hard-disconnects the target: it sends a final `{type:"evicted", reason}` frame and closes the socket, so the MCP surfaces a clean transport error on its next call rather than a generic drop.
+
+Worker and operator roles are non-kickable. Same-pod only today — cross-pod kicks (operator on pod A, MCP on pod B) require the Redis-relayed envelope, tracked in phase 2c follow-ups.
+
+Event log / quota / lease snapshot are not in this first cut — they need a side-channel to the MCP process itself (not the signaling server).
+
+---
+
 ## Security
 
 - **Signaling URL allowlist.** Non-local URLs (anything outside loopback / RFC1918 / link-local) require `"i-understand-no-auth": true` on `synthi_attach`. Flagged sessions set `unsafe_mode:true` in the manifest and log a `security:unsafe_attach` event.
