@@ -24,13 +24,41 @@ img = await synthi_screenshot({...})    // see the result
 
 ## Install
 
-Requires Node ≥ 20 and a running Synthi stack (e.g., `docker-compose up -d` at the repo root).
+**This is proprietary software distributed only to authorized users of Synthi.** Install through one of the two private channels below. The public `npm` registry is not a supported distribution path — `@synthi/mcp-server` on the public registry is not us. See `PHASE_2A_DISTRIBUTION.txt` at the repo root for the full access-control posture.
+
+All install paths assume a running Synthi stack you have access to (e.g., `docker-compose up -d` at the repo root, or a Synthi environment you've been granted access to). Requires Node ≥ 20 if using the npm channel; Docker ≥ 24 if using the image channel.
+
+### Option 1 — GHCR container image *(recommended)*
+
+```bash
+# One-time: authenticate to GitHub Container Registry with a PAT scoped to read:packages.
+echo "$GITHUB_TOKEN" | docker login ghcr.io -u "$GITHUB_USER" --password-stdin
+
+# Pull a pinned release.
+docker pull ghcr.io/synthi-inc/synthi-mcp:v0.1.0
+```
+
+The image entry-point is `node /app/dist/index.js`, so stdio MCP works with `docker run -i`. See `docs/CLIENT_CONFIGS.md` for the host-specific wiring.
+
+### Option 2 — GitHub Packages npm *(for hosts without Docker)*
+
+```bash
+# Copy the template, then populate with a PAT scoped to read:packages.
+cp mcp/synthi-mcp/.npmrc.example ./.npmrc
+export GITHUB_TOKEN=ghp_...
+
+npm install @synthi-inc/mcp-server
+```
+
+### Option 3 — Source build (collaborators cloning this repo)
 
 ```bash
 cd mcp/synthi-mcp
 npm install
 npm run build
 ```
+
+Use this while actively developing the MCP. End-user consumers should prefer options 1 or 2.
 
 ### Environment
 
@@ -46,37 +74,40 @@ npm run build
 | `SYNTHI_PIPELINE_BUDGET_MS` | `80` | Frame-seq gate shim applied after `wait({condition:"hmr"})` resolves `applied`. |
 | `SYNTHI_PROMETHEUS_PORT` | *(unset)* | Opt-in — when set to a valid port (e.g. `9464`), the MCP exposes `/metrics` + `/healthz` on `127.0.0.1`. |
 | `SYNTHI_PROMETHEUS_HOST` | `127.0.0.1` | Bind host for the metrics server. Override only when you intend a scraper on another host. |
+| `SYNTHI_LEASE_MODE` | `advisory` | Input-lease enforcement level. `advisory`: phase-1 behaviour — multi-acquire allowed, mouse/keyboard log a security event on lease mismatch but still dispatch. `single-holder` (phase 2c): `synthi_acquire_input` rejects when a live lease exists (`lease_already_held`), mouse/keyboard reject when the caller's `lease_id` doesn't match (`input_lease_held_by_other`). Use `takeover: true` to force acquire. Manifest reports `arbitration.enforcement` accordingly. |
+| `SYNTHI_QUOTA_MODE` | `off` | Quota gate on tool dispatch (phase 2d). `off`: metrics only. `warn`: log `quota_exceeded` security events but still dispatch. `enforce`: short-circuit with `quota_exceeded` when any limit is breached. |
+| `SYNTHI_QUOTA_VISION_COST_USD_PER_HR` | `5.00` | Rolling-3600s cap on vision-inference cost across `claude_api` / `gemini_api` backends. Gates `synthi_locate` + `synthi_describe`. |
+| `SYNTHI_QUOTA_TOOL_CALLS_PER_MIN` | `120` | Rolling-60s cap on total tool-call dispatches. Gates every tool. |
+| `SYNTHI_QUOTA_SCREENSHOTS_PER_MIN` | `30` | Rolling-60s cap on `synthi_screenshot` calls. Gates only screenshots. |
 
 CLI args override env; env overrides defaults.
 
 ### Register with your MCP client
 
-#### Claude Code
+**Preferred path (GHCR image):**
+
+```bash
+# Claude Code — pinned image tag keeps an agent from picking up a breaking change silently.
+claude mcp add synthi -- \
+  docker run -i --rm --network host \
+  -e SYNTHI_SESSION_ID=<SESSION_ID> \
+  -e SYNTHI_SIGNALING_URL=ws://localhost:9000 \
+  ghcr.io/synthi-inc/synthi-mcp:v0.1.0
+```
+
+**Fallback (npm + local `node`, for hosts without Docker):**
+
+```bash
+claude mcp add synthi -- npx -y @synthi-inc/mcp-server --session <SESSION_ID>
+```
+
+**Source-build (collaborators developing the MCP):**
 
 ```bash
 claude mcp add synthi -- node /abs/path/to/mcp/synthi-mcp/dist/index.js --session <SESSION_ID>
 ```
 
-#### Codex / Cursor / other MCP stdio clients
-
-Add an entry to the client's MCP config:
-
-```json
-{
-  "mcpServers": {
-    "synthi": {
-      "command": "node",
-      "args": ["/abs/path/to/mcp/synthi-mcp/dist/index.js", "--session", "<SESSION_ID>"],
-      "env": {
-        "SYNTHI_SIGNALING_URL": "ws://localhost:9000",
-        "ANTHROPIC_API_KEY": "sk-ant-..."
-      }
-    }
-  }
-}
-```
-
-Swap `--session` for `SYNTHI_SESSION_ID` in `env` if the client prefers env-only config.
+Full per-client config snippets (Codex, Cursor, Gemini CLI, Windsurf) live in `docs/CLIENT_CONFIGS.md`.
 
 ---
 

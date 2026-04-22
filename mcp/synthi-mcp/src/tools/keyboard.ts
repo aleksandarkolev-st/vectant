@@ -68,6 +68,20 @@ export async function keyboardTool(args: unknown): Promise<ToolResponse> {
 
   const callerLeaseId = typeof a.lease_id === "string" ? a.lease_id : undefined;
   checkLeaseAndMaybeAlert(`keyboard:${action}`, callerLeaseId);
+
+  // Phase-2c single-holder enforcement (see tools/mouse.ts for
+  // rationale — shared gate, opt-in via SYNTHI_LEASE_MODE).
+  const leaseGate = leaseRegistry.enforceDispatch(callerLeaseId);
+  if (!leaseGate.allowed) {
+    return errorResponse(leaseGate.error, {
+      action: `keyboard:${action}`,
+      current_lease_id: leaseGate.current.lease_id,
+      current_lease_owner: leaseGate.current.owner,
+      current_lease_expires_at: leaseGate.current.expires_at,
+      caller_lease_id: callerLeaseId ?? null,
+    });
+  }
+
   inputQueueDepth.recordDispatch(`keyboard:${action}`);
 
   if (a.waitFor !== undefined) {

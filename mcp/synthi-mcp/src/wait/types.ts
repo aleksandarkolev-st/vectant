@@ -9,7 +9,8 @@ export type WaitCondition =
   | "text"
   | "log"
   | "element"
-  | "source_state";
+  | "source_state"
+  | "audio";
 
 export interface HmrConditionArgs {
   condition: "hmr";
@@ -63,6 +64,17 @@ export interface SourceStateArgs {
   since_seq?: number;
 }
 
+export interface AudioArgs {
+  condition: "audio";
+  // Event kind to wait for. Phase 2d defines two predicates that will be
+  // implemented once the worker audio-tee is wired:
+  //   - "above_threshold": audio peak exceeds `threshold_dbfs` for `window_ms`
+  //   - "silence":         audio peak below `threshold_dbfs` for `window_ms`
+  kind?: "above_threshold" | "silence";
+  threshold_dbfs?: number;
+  window_ms?: number;
+}
+
 export type WaitArgs =
   | HmrConditionArgs
   | MotionSettledArgs
@@ -71,7 +83,8 @@ export type WaitArgs =
   | TextArgs
   | LogArgs
   | ElementArgs
-  | SourceStateArgs;
+  | SourceStateArgs
+  | AudioArgs;
 
 export type WaitOutcome =
   | { status: "resolved"; elapsedMs: number; condition: WaitCondition; evidence: Record<string, unknown> }

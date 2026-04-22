@@ -1,3 +1,5 @@
+import { currentEnrichedProvider, enrichedAvailable } from "../enriched/provider.js";
+
 /**
  * Protocol version + capability manifest. Returned from `synthi_attach` so
  * agents can branch on feature availability instead of trial-and-error
@@ -51,7 +53,7 @@ export interface CapabilityManifest {
   };
   arbitration: {
     input_lease_supported: boolean;
-    enforcement: "none" | "server" | "wire-only";
+    enforcement: "none" | "server" | "wire-only" | "mcp-local";
   };
   limits: {
     event_log_capacity: number;
@@ -85,14 +87,10 @@ export interface ManifestRuntime {
   frame_seq_gate_reason?: string;
 }
 
-export const STATIC_MANIFEST: Omit<CapabilityManifest, "tools" | "frame_seq_gate"> = {
+export const STATIC_MANIFEST: Omit<CapabilityManifest, "tools" | "frame_seq_gate" | "arbitration" | "enriched_tier"> = {
   vision_backends: ["agent_side", "claude_api", "gemini_api", "mock"],
-  wait_conditions: ["hmr", "log", "source_state", "pixel", "motion_settled", "scene_change", "element"],
+  wait_conditions: ["hmr", "log", "source_state", "pixel", "motion_settled", "scene_change", "element", "audio"],
   verify_predicates: ["pixel", "log", "element_visible", "and", "or"],
-  enriched_tier: {
-    available: false,
-    reason: "phase_2_plus_only",
-  },
   region_phash_cache: {
     available: true,
     ttl_ms: 30_000,
@@ -106,15 +104,27 @@ export const STATIC_MANIFEST: Omit<CapabilityManifest, "tools" | "frame_seq_gate
     sensitive_action_interstitial: false,
     keystroke_rate_cap_per_sec: 500,
   },
-  arbitration: {
-    input_lease_supported: true,
-    enforcement: "wire-only",
-  },
   limits: {
     event_log_capacity: 1024,
     max_screenshot_dim: 3840,
   },
 };
+
+function resolveArbitrationManifest(): CapabilityManifest["arbitration"] {
+  const mode = process.env["SYNTHI_LEASE_MODE"] === "single-holder" ? "mcp-local" : "wire-only";
+  return { input_lease_supported: true, enforcement: mode };
+}
+
+function resolveEnrichedManifest(): CapabilityManifest["enriched_tier"] {
+  if (enrichedAvailable()) {
+    const info = currentEnrichedProvider()!.info();
+    return {
+      available: true,
+      reason: `provider_${info.kind}${info.toolkit ? `_${info.toolkit}` : ""}`,
+    };
+  }
+  return { available: false, reason: "no_provider_registered" };
+}
 
 export function buildManifest(
   advertisedTools: readonly string[],
@@ -127,6 +137,8 @@ export function buildManifest(
   return {
     tools: [...advertisedTools],
     ...STATIC_MANIFEST,
+    enriched_tier: resolveEnrichedManifest(),
+    arbitration: resolveArbitrationManifest(),
     frame_seq_gate: {
       available: enabled,
       reason,

@@ -1,22 +1,28 @@
 /**
- * Input lease registry — phase-1 wire-only (ultraplan §Arbitration wire).
+ * Input lease registry — ultraplan §Arbitration wire. Supports two modes:
  *
- * Phase-1 behavior:
- *   - `acquire` mints a lease_id, records the holder, and returns expiry.
- *     Concurrent callers on the same session get distinct leases; nothing
- *     blocks because enforcement is phase-2c (worker-side input gating).
- *   - `release` is idempotent; releasing an unknown/expired id returns
- *     `lease_not_found`.
- *   - `currentLease()` returns the highest-priority live lease (most
- *     recently acquired, not expired), or null.
+ *   - `advisory` (default): phase-1 behaviour. Multi-acquire allowed, no
+ *     enforcement; input tools emit a security event on lease mismatch
+ *     but still dispatch. Tests documenting phase-1 behaviour still pass.
+ *   - `single-holder`: phase-2c MCP-local enforcement. A second `acquire`
+ *     while a live lease exists fails with `lease_already_held` (unless
+ *     the caller passes `takeover: true`). Input tools reject dispatch
+ *     with `input_lease_held_by_other` when the caller's lease_id doesn't
+ *     match the current holder.
  *
- * Records a `lifecycle`-kind console event so operators can trace who
- * held input authority at any moment. Enforcement is phase 2 per
- * `AGENT_MCP_REMAINING_WORK.md §2.1`.
+ * Select via `SYNTHI_LEASE_MODE=single-holder`. Worker-side enforcement
+ * (the cross-peer gate that would block a separate browser session from
+ * bypassing the MCP-local registry) is still a follow-up and requires
+ * the worker's `PeerRegistry` to track leases — scaffolded separately.
+ *
+ * Records a `console`-kind event so operators can trace who held input
+ * authority at any moment.
  */
 
 import { randomUUID } from "node:crypto";
 import { eventLog } from "../events/index.js";
+
+export type LeaseMode = "advisory" | "single-holder";
 
 export interface InputLease {
   lease_id: string;
@@ -26,8 +32,37 @@ export interface InputLease {
   owner: string;
 }
 
+export interface AcquireResult {
+  ok: true;
+  lease: InputLease;
+  evicted?: InputLease;
+}
+
+export interface AcquireRejection {
+  ok: false;
+  error: "lease_already_held";
+  current: InputLease;
+}
+
+export interface DispatchAllowed {
+  allowed: true;
+  current: InputLease | null;
+}
+
+export interface DispatchBlocked {
+  allowed: false;
+  error: "input_lease_held_by_other";
+  current: InputLease;
+}
+
 const MIN_LEASE_MS = 50;
 const MAX_LEASE_MS = 10 * 60 * 1000; // 10 min
+
+export function resolveLeaseMode(): LeaseMode {
+  const raw = process.env["SYNTHI_LEASE_MODE"];
+  if (raw === "single-holder") return "single-holder";
+  return "advisory";
+}
 
 class LeaseRegistry {
   private active = new Map<string, InputLease>();
@@ -38,6 +73,46 @@ class LeaseRegistry {
   private acquireOrder = new Map<string, number>();
 
   acquire(lease_ms: number, owner: string = "mcp_agent"): InputLease {
+    // Advisory-mode backwards-compat shim: unconditionally mint a new
+    // lease. Single-holder callers go through `acquireWithPolicy` and
+    // surface a rejection envelope instead of silently multi-acquiring.
+    return this.mint(lease_ms, owner);
+  }
+
+  acquireWithPolicy(
+    lease_ms: number,
+    owner: string = "mcp_agent",
+    opts: { takeover?: boolean } = {}
+  ): AcquireResult | AcquireRejection {
+    const current = this.currentLease();
+    if (resolveLeaseMode() === "single-holder" && current && !opts.takeover) {
+      return { ok: false, error: "lease_already_held", current };
+    }
+    let evicted: InputLease | undefined;
+    if (current && opts.takeover) {
+      this.active.delete(current.lease_id);
+      this.acquireOrder.delete(current.lease_id);
+      evicted = current;
+      eventLog.push({
+        kind: "console",
+        level: "info",
+        message: `[input_lease] takeover evicted lease_id=${current.lease_id} owner=${current.owner}`,
+        source: "mcp_internal",
+      });
+    }
+    const lease = this.mint(lease_ms, owner);
+    return evicted ? { ok: true, lease, evicted } : { ok: true, lease };
+  }
+
+  enforceDispatch(callerLeaseId: string | undefined): DispatchAllowed | DispatchBlocked {
+    if (resolveLeaseMode() !== "single-holder") return { allowed: true, current: this.currentLease() };
+    const current = this.currentLease();
+    if (!current) return { allowed: true, current: null };
+    if (callerLeaseId === current.lease_id) return { allowed: true, current };
+    return { allowed: false, error: "input_lease_held_by_other", current };
+  }
+
+  private mint(lease_ms: number, owner: string): InputLease {
     const ms = Math.max(MIN_LEASE_MS, Math.min(MAX_LEASE_MS, Math.floor(lease_ms)));
     const lease: InputLease = {
       lease_id: `lease_${randomUUID()}`,

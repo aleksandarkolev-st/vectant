@@ -2,3 +2,8 @@ dist/
 node_modules/
 *.log
 .vitest-cache/
+
+# .npmrc may carry a real GITHUB_TOKEN — never commit it.
+# Use .npmrc.example as the template.
+.npmrc
+

@@ -56,10 +56,10 @@ describe("buildManifest", () => {
     expect(m.vision_backends).toContain("claude_api");
   });
 
-  it("marks enriched_tier unavailable in phase 0.5", () => {
+  it("marks enriched_tier unavailable when no provider is registered", () => {
     const m = buildManifest(ADVERTISED_TOOLS);
     expect(m.enriched_tier.available).toBe(false);
-    expect(m.enriched_tier.reason).toContain("phase_2");
+    expect(m.enriched_tier.reason).toBe("no_provider_registered");
   });
 
   it("exposes region-pHash cache defaults", () => {

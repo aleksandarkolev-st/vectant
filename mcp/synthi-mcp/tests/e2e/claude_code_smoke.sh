@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Real-agent smoke loop for @synthi/mcp-server.
+# Real-agent smoke loop for @synthi-inc/mcp-server.
 #
 # Requires:
 #   - Claude Code CLI installed (`claude --version`)
