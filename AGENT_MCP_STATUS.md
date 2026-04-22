@@ -247,18 +247,42 @@ Stays deferred per ultraplan; `capabilities.enriched_tier.available=false` today
 
 ---
 
-## 5. What's left — Phase 2 (~3 weeks)
+## 5. What's left — Phase 2
 
-Unchanged from prior status doc:
+Decomposed into 2a–2e per `PHASE_2_PLUS_BACKLOG.md:G3`.
 
-- [ ] npm publish `@synthi/mcp-server`.
+### Phase 2a — Distribution (in progress)
+
+Proprietary-aware distribution; public-npm publish explicitly deferred. Full analysis in `PHASE_2A_DISTRIBUTION.md`.
+
+- [x] **Strategy doc** — `PHASE_2A_DISTRIBUTION.md`.
+- [x] **Package rename** — `@synthi/mcp-server` → `@synthi-inc/mcp-server`. Binary name `synthi-mcp` unchanged.
+- [x] **publishConfig** — points at GitHub Packages (`https://npm.pkg.github.com`, `access: restricted`).
+- [x] **`.npmrc.example`** — template for authorized consumers to resolve `@synthi-inc/*` against GitHub Packages with a PAT (`read:packages`).
+- [x] **Release pipeline** — `.github/workflows/mcp-release.yml`. Tag-triggered on `mcp-v*`; gates typecheck + unit tests; ships both a GHCR image (`ghcr.io/synthi-inc/synthi-mcp:<version>`) and a GitHub Packages npm tarball; runs a post-publish smoke; drafts a GitHub Release.
+- [x] **Per-client configs** — `mcp/synthi-mcp/docs/CLIENT_CONFIGS.md` covers Claude Code, Codex, Cursor, Gemini CLI, Windsurf, each with the GHCR-preferred and npm-fallback variants.
+- [x] **Release smoke** — `scripts/release-smoke.mjs` drives an MCP over stdio, runs the MCP handshake (`initialize` → `initialized` → `tools/list`), and asserts all expected tool names + non-empty schemas.
+- [ ] **Cut `mcp-v0.1.0`** — manual tag once we've land-tested the workflow with a `workflow_dispatch`.
+- [ ] **Flip `AGENT_MCP_STATUS.md` §1 `role:"browser"` footnote** once the release is cut and consumed by at least one external client.
+
+### Phase 2b — Enrichment (~2 weeks)
+
 - [ ] Swing `javax.accessibility` enriched-tier adapter + fixture.
-- [ ] `synthi-probe` cooperative library.
+- [ ] `synthi-probe` cooperative library (C/C++ first; Java/Python later).
+
+### Phase 2c — Arbitration & scaling (~2 weeks)
+
 - [ ] Broker implementation (multi-agent fan-out).
 - [ ] Worker-side input lease enforcement.
+
+### Phase 2d — Observability (~2 weeks)
+
 - [ ] Audio tee + `synthi_get_audio_level` / `synthi_wait_audio_event`.
 - [ ] Operator observability UI.
 - [ ] Quota enforcement (metrics-only in phase 1).
+
+### Phase 2e — Chaos suite (~1 week)
+
 - [ ] Chaos testing suite (full).
 
 ---
