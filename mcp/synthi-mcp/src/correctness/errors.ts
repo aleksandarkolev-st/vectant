@@ -81,6 +81,35 @@ const SPECS: Record<string, ErrorSpec> = {
       ...(detail ?? {}),
     }),
   },
+  // Phase 2c — MCP-local single-holder enforcement. Tool-layer gate;
+  // lives one rung above `input_queue_full` so the lease diagnosis wins
+  // over the queue diagnosis when both could fire.
+  input_lease_held_by_other: {
+    code: "input_lease_held_by_other",
+    priority: 5.5,
+    build: (detail) => ({
+      error: "input_lease_held_by_other",
+      priority: 5.5,
+      required_tool_call: {
+        tool: "synthi_acquire_input",
+        suggested_args: { lease_ms: 30000, takeover: true },
+      },
+      ...(detail ?? {}),
+    }),
+  },
+  lease_already_held: {
+    code: "lease_already_held",
+    priority: 5.6,
+    build: (detail) => ({
+      error: "lease_already_held",
+      priority: 5.6,
+      required_tool_call: {
+        tool: "synthi_acquire_input",
+        suggested_args: { takeover: true },
+      },
+      ...(detail ?? {}),
+    }),
+  },
   input_queue_full: {
     code: "input_queue_full",
     priority: 6,

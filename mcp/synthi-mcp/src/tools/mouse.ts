@@ -22,18 +22,20 @@ import {
 } from "./shared.js";
 
 /**
- * Phase-1 lease advisory: the manifest advertises
- * arbitration.enforcement:"wire-only", which means the tool layer
- * should warn when an input is dispatched without matching the
- * currently-held lease. Worker-side enforcement lands in phase 2c.
+ * Lease advisory (advisory mode): emits a loud security event in the
+ * ring buffer when a lease is held and the caller doesn't match; input
+ * still dispatches.
+ *
+ * In phase-2c `single-holder` mode the upgrade is the subsequent
+ * `leaseRegistry.enforceDispatch` gate in `mouseTool` — this advisory
+ * function then still fires (the security event is useful either way)
+ * but the tool refuses to dispatch before reaching the wire path.
  *
  * Behaviour:
- *   - No current lease → silent (single-holder model, no contention
- *     possible).
+ *   - No current lease → silent (no contention possible).
  *   - Lease held + caller passes matching `lease_id` → silent.
  *   - Lease held + caller passes NO `lease_id` or a stale one →
- *     loud security event in the ring buffer with detail.code =
- *     "input_without_current_lease". Input still dispatches.
+ *     loud security event with detail.code="input_without_current_lease".
  */
 function checkLeaseAndMaybeAlert(action: string, callerLeaseId?: string): void {
   const current = leaseRegistry.currentLease();
@@ -139,6 +141,20 @@ export async function mouseTool(args: unknown): Promise<ToolResponse> {
   // event when a lease is held and the caller isn't matching it.
   const callerLeaseId = typeof a.lease_id === "string" ? a.lease_id : undefined;
   checkLeaseAndMaybeAlert(`mouse:${action}`, callerLeaseId);
+
+  // Phase-2c single-holder enforcement. Opt-in via
+  // SYNTHI_LEASE_MODE=single-holder; no-op in advisory mode so phase-1
+  // call shapes still dispatch.
+  const leaseGate = leaseRegistry.enforceDispatch(callerLeaseId);
+  if (!leaseGate.allowed) {
+    return errorResponse(leaseGate.error, {
+      action: `mouse:${action}`,
+      current_lease_id: leaseGate.current.lease_id,
+      current_lease_owner: leaseGate.current.owner,
+      current_lease_expires_at: leaseGate.current.expires_at,
+      caller_lease_id: callerLeaseId ?? null,
+    });
+  }
 
   // B2 measurement: count inputs dispatched while a compile is in
   // progress. No-op outside the compile window.

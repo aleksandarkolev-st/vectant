@@ -74,6 +74,7 @@ Use this while actively developing the MCP. End-user consumers should prefer opt
 | `SYNTHI_PIPELINE_BUDGET_MS` | `80` | Frame-seq gate shim applied after `wait({condition:"hmr"})` resolves `applied`. |
 | `SYNTHI_PROMETHEUS_PORT` | *(unset)* | Opt-in — when set to a valid port (e.g. `9464`), the MCP exposes `/metrics` + `/healthz` on `127.0.0.1`. |
 | `SYNTHI_PROMETHEUS_HOST` | `127.0.0.1` | Bind host for the metrics server. Override only when you intend a scraper on another host. |
+| `SYNTHI_LEASE_MODE` | `advisory` | Input-lease enforcement level. `advisory`: phase-1 behaviour — multi-acquire allowed, mouse/keyboard log a security event on lease mismatch but still dispatch. `single-holder` (phase 2c): `synthi_acquire_input` rejects when a live lease exists (`lease_already_held`), mouse/keyboard reject when the caller's `lease_id` doesn't match (`input_lease_held_by_other`). Use `takeover: true` to force acquire. Manifest reports `arbitration.enforcement` accordingly. |
 
 CLI args override env; env overrides defaults.
 

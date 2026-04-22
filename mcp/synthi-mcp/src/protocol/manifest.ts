@@ -51,7 +51,7 @@ export interface CapabilityManifest {
   };
   arbitration: {
     input_lease_supported: boolean;
-    enforcement: "none" | "server" | "wire-only";
+    enforcement: "none" | "server" | "wire-only" | "mcp-local";
   };
   limits: {
     event_log_capacity: number;
@@ -85,7 +85,7 @@ export interface ManifestRuntime {
   frame_seq_gate_reason?: string;
 }
 
-export const STATIC_MANIFEST: Omit<CapabilityManifest, "tools" | "frame_seq_gate"> = {
+export const STATIC_MANIFEST: Omit<CapabilityManifest, "tools" | "frame_seq_gate" | "arbitration"> = {
   vision_backends: ["agent_side", "claude_api", "gemini_api", "mock"],
   wait_conditions: ["hmr", "log", "source_state", "pixel", "motion_settled", "scene_change", "element"],
   verify_predicates: ["pixel", "log", "element_visible", "and", "or"],
@@ -106,15 +106,16 @@ export const STATIC_MANIFEST: Omit<CapabilityManifest, "tools" | "frame_seq_gate
     sensitive_action_interstitial: false,
     keystroke_rate_cap_per_sec: 500,
   },
-  arbitration: {
-    input_lease_supported: true,
-    enforcement: "wire-only",
-  },
   limits: {
     event_log_capacity: 1024,
     max_screenshot_dim: 3840,
   },
 };
+
+function resolveArbitrationManifest(): CapabilityManifest["arbitration"] {
+  const mode = process.env["SYNTHI_LEASE_MODE"] === "single-holder" ? "mcp-local" : "wire-only";
+  return { input_lease_supported: true, enforcement: mode };
+}
 
 export function buildManifest(
   advertisedTools: readonly string[],
@@ -127,6 +128,7 @@ export function buildManifest(
   return {
     tools: [...advertisedTools],
     ...STATIC_MANIFEST,
+    arbitration: resolveArbitrationManifest(),
     frame_seq_gate: {
       available: enabled,
       reason,
