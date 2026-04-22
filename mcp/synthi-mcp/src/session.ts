@@ -10,6 +10,8 @@ import { scanForInjection } from "./security/injection.js";
 import { resolvePipelineBudgetMs } from "./protocol/index.js";
 import { dispatchAckRegistry } from "./util/dispatch_ack_registry.js";
 import { structuralChangeGate } from "./correctness/structural_change.js";
+import { inputQueueDepth } from "./correctness/input_queue_depth.js";
+import { humanActions } from "./escape_hatch/human_actions.js";
 
 /**
  * MCP-local connection state. Distinct from the wire-level `SessionState`
@@ -81,6 +83,21 @@ export interface WarmingProgress {
   estimated_ready_at?: number;
 }
 
+export interface FrameTimingSnapshot {
+  total_frames: number;
+  sample_count: number;
+  interval_ms: {
+    mean?: number;
+    min?: number;
+    p50?: number;
+    p95?: number;
+    p99?: number;
+    max?: number;
+  };
+  pipeline_budget_estimate_ms: number;
+  observed_at: number;
+}
+
 class SessionManager {
   private attached: AttachedSession | null = null;
   private state: SessionState = "detached";
@@ -97,6 +114,7 @@ class SessionManager {
   private frameAdvanceListeners = new Set<FrameAdvanceListener>();
   private presenceCounts: { humans: number; agents: number } = { humans: 0, agents: 1 };
   private warmingProgress: WarmingProgress | null = null;
+  private frameTiming: FrameTimingSnapshot | null = null;
 
   getState(): SessionState {
     return this.state;
@@ -138,6 +156,20 @@ class SessionManager {
    */
   getWarmingProgress(): WarmingProgress | null {
     return this.warmingProgress ? { ...this.warmingProgress } : null;
+  }
+
+  /**
+   * Latest worker-emitted frame-timing snapshot. Populated by the
+   * `{type:"frame-timing"}` handler on the build-log tap. `null` when
+   * no snapshot has arrived (worker hasn't sampled yet, or the worker
+   * is older than the F4 instrumentation).
+   */
+  getFrameTimingSnapshot(): FrameTimingSnapshot | null {
+    return this.frameTiming ? { ...this.frameTiming } : null;
+  }
+
+  setFrameTimingSnapshot(snap: Omit<FrameTimingSnapshot, "observed_at">): void {
+    this.frameTiming = { ...snap, observed_at: Date.now() };
   }
 
   setWarmingProgress(progress: WarmingProgress | null): void {
@@ -470,6 +502,83 @@ class SessionManager {
         return;
       }
 
+      // Worker-emitted frame-timing snapshot (F4 VFR + F2 pipeline-
+      // budget recal cadence). Shape:
+      //   {type:"frame-timing", total_frames, sample_count,
+      //    interval_ms:{mean,min,p50,p95,p99,max},
+      //    pipeline_budget_estimate_ms}
+      // Recorded as a usage event so PHASE_0_5_FINDINGS.md can be
+      // backfilled from event-log queries. Also tracked on the session
+      // so synthi_health / synthi_get_usage can surface the latest
+      // snapshot synchronously.
+      if (msgType === "frame-timing") {
+        const interval = msg["interval_ms"] as Record<string, unknown> | undefined;
+        const sampleCount = typeof msg["sample_count"] === "number" ? (msg["sample_count"] as number) : 0;
+        const totalFrames = typeof msg["total_frames"] === "number" ? (msg["total_frames"] as number) : 0;
+        const budget = typeof msg["pipeline_budget_estimate_ms"] === "number"
+          ? (msg["pipeline_budget_estimate_ms"] as number)
+          : 0;
+        this.setFrameTimingSnapshot({
+          total_frames: totalFrames,
+          sample_count: sampleCount,
+          interval_ms: (interval as { mean?: number; min?: number; p50?: number; p95?: number; p99?: number; max?: number }) ?? {},
+          pipeline_budget_estimate_ms: budget,
+        });
+        eventLog.push({
+          kind: "usage",
+          metric: "tool_call",
+          value: 1,
+          detail: {
+            kind: "frame_timing",
+            total_frames: totalFrames,
+            sample_count: sampleCount,
+            ...(interval !== undefined ? { interval_ms: interval } : {}),
+            pipeline_budget_estimate_ms: budget,
+          },
+        });
+        return;
+      }
+
+      // Worker-emitted human-action event. Shape:
+      //   {type:"human-action", sessionId, source:"human", kind, peer_id, ts_ms, detail}
+      // Worker stamps this on every gui-event whose origin peer is
+      // registered with PeerRole::Browser. The MCP ring buffer feeds
+      // `synthi_recent_human_actions` so agents can branch on whether
+      // a human has been driving the session concurrently.
+      if (msgType === "human-action") {
+        const rawKind = typeof msg["kind"] === "string" ? (msg["kind"] as string) : "other";
+        // Map wire kind to the schema-constrained enum expected by the
+        // humanActions ring. The worker emits "mouse" | "key" |
+        // "stop-runner" | ... today; collapse anything non-mouse /
+        // non-keyboard into "other".
+        let mapped: "mouse" | "keyboard" | "other";
+        if (rawKind === "mouse") mapped = "mouse";
+        else if (rawKind === "key" || rawKind === "keyboard") mapped = "keyboard";
+        else mapped = "other";
+        const peerId = typeof msg["peer_id"] === "string" ? (msg["peer_id"] as string) : undefined;
+        const ts = typeof msg["ts_ms"] === "number" ? (msg["ts_ms"] as number) : Date.now();
+        const detail = msg["detail"] as Record<string, unknown> | undefined;
+        humanActions.record({
+          kind: mapped,
+          ts,
+          ...(peerId !== undefined ? { source_peer_id: peerId } : {}),
+          ...(detail !== undefined ? { detail } : {}),
+        });
+        // Also mirror into the event log as an `input` event with
+        // source-attribution, so event-log consumers see it without
+        // having to query the ring separately.
+        eventLog.push({
+          kind: "input",
+          action: "human:" + mapped,
+          payload: {
+            kind: mapped,
+            ...(peerId !== undefined ? { peer_id: peerId } : {}),
+            source: "human",
+          },
+        });
+        return;
+      }
+
       // Worker-emitted guest-registered event (ultraplan §Security v4
       // pre-work #5-#6). Shape:
       //   {type:"guest-registered", root_pid, binary_path, binary_fingerprint, ...}
@@ -516,6 +625,10 @@ class SessionManager {
         (status === "Enqueued") ||
         (evType === "Enqueued");
       if (isCompileStart) {
+        // Open the input-queue-depth window — every dispatch from the
+        // mouse/keyboard tools until the next applied/rejected/etc
+        // counts toward the peak.
+        inputQueueDepth.onCompileStart();
         // Snapshot current frame without blocking the tap. The gate
         // emits its own error event if the snapshot fails.
         const frameSink = attached.frames;
@@ -550,6 +663,8 @@ class SessionManager {
       // compute the post-reload pHash and compare to the baseline
       // captured at compile-start.
       if (status === "applied" || evType === "Promoted") {
+        // Close the queue-depth window — record peak in histogram.
+        inputQueueDepth.onCompileEnd();
         const frameSink = attached.frames;
         const pipelineBudget = this.pipelineBudgetMs();
         void (async (): Promise<void> => {
@@ -565,6 +680,17 @@ class SessionManager {
             // fails. For "no frame at all" we simply skip the check.
           }
         })();
+      }
+      // Close the window on terminal-but-not-applied statuses too,
+      // otherwise inflight bleeds into the next cycle.
+      if (
+        status === "rejected" ||
+        status === "compile-error" ||
+        status === "full-reload-required" ||
+        evType === "RolledBack" ||
+        evType === "Discarded"
+      ) {
+        inputQueueDepth.onCompileEnd();
       }
 
       // Injection-heuristic pre-screen: any free-text field in the wire

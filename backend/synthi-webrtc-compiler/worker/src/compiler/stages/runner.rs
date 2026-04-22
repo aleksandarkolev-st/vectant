@@ -448,6 +448,7 @@ pub async fn handle_runner_execution(
                 // via broadcast_build_log_text.
                 let video_fanout = ctx.video_fanout.clone();
                 let log_dc_for_frame_advance = ctx.log_dc.clone();
+                let session_id_for_frame_timing = session_id.clone();
                 tokio::spawn(async move {
                     let mut frame_seq: u64 = 0;
                     let mut dispatched: u64 = 0;
@@ -477,6 +478,14 @@ pub async fn handle_runner_execution(
                         }
                         if is_end_of_frame {
                             frame_seq += 1;
+                            // F4 measurement: feed every end-of-frame
+                            // into the per-session interval tracker.
+                            // Cheap (one mutex + push to a bounded
+                            // VecDeque); marker-rate caps at the
+                            // encoder's frame rate (≤60 Hz).
+                            if let Some(ref sid) = session_id_for_frame_timing {
+                                crate::infra::frame_timing::record_end_of_frame(sid);
+                            }
                             if frame_seq % EMIT_EVERY_N_FRAMES == 0 {
                                 let ts_ms = std::time::SystemTime::now()
                                     .duration_since(std::time::UNIX_EPOCH)
@@ -523,6 +532,47 @@ pub async fn handle_runner_execution(
                     }
                 });
             }
+        }
+
+        // Frame-timing publisher (F2 + F4): every 5s, publish the
+        // rolling p50/p95/p99 of inter-frame intervals + a pipeline-
+        // budget proxy on the build-log DC. The MCP routes this into
+        // its event log so PHASE_0_5_FINDINGS.md can be filled in
+        // with real numbers without a separate scrape endpoint.
+        if let Some(sid_for_publish) = session_id.clone() {
+            let log_dc_for_timing = ctx.log_dc.clone();
+            tokio::spawn(async move {
+                let mut interval = tokio::time::interval(
+                    crate::infra::frame_timing::PUBLISH_INTERVAL,
+                );
+                interval.tick().await; // skip the immediate first tick
+                loop {
+                    interval.tick().await;
+                    crate::infra::frame_timing::publish_snapshots();
+                    let snap = match crate::infra::frame_timing::latest_published(&sid_for_publish) {
+                        Some(s) if s.sample_count > 0 => s,
+                        _ => continue,
+                    };
+                    let payload = serde_json::json!({
+                        "sessionId": sid_for_publish,
+                        "type": "frame-timing",
+                        "total_frames": snap.total_frames,
+                        "sample_count": snap.sample_count,
+                        "interval_ms": {
+                            "mean": snap.mean_ms,
+                            "min": snap.min_ms,
+                            "p50": snap.p50_ms,
+                            "p95": snap.p95_ms,
+                            "p99": snap.p99_ms,
+                            "max": snap.max_ms,
+                        },
+                        "pipeline_budget_estimate_ms": snap.pipeline_budget_estimate_ms,
+                    });
+                    let _ = log_dc_for_timing
+                        .send_text(payload.to_string())
+                        .await;
+                }
+            });
         }
 
         // Spawn Runner Process

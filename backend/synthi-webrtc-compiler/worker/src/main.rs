@@ -1975,6 +1975,54 @@ async fn wire_peer_channels(
                                             // dispatch — phase-1 detection-only. Gating is
                                             // phase 2c.
                                             let gui_sid_opt = v.get("sessionId").and_then(|x| x.as_str());
+
+                                            // Source attribution: resolve this peer's role from
+                                            // the registry so we can tag the event as
+                                            // human|agent. PeerRole::Browser → human; Observer
+                                            // / McpAgent → agent. Emits a `{type:"human-action"}`
+                                            // message on build-log for human-authored input so
+                                            // the MCP's `synthi_recent_human_actions` ring sees
+                                            // it without any heuristic guessing.
+                                            let source_role = peer_registry_term
+                                                .get(&peer_id_term)
+                                                .map(|h| h.role)
+                                                .unwrap_or(PeerRole::Observer);
+                                            let source_label = match source_role {
+                                                PeerRole::Browser => "human",
+                                                PeerRole::Observer => "agent",
+                                                PeerRole::McpAgent => "agent",
+                                            };
+                                            if source_label == "human" {
+                                                if let Some(sid) = gui_sid_opt {
+                                                    if let Some(evt) = v.get("event") {
+                                                        let event_kind = evt
+                                                            .get("type")
+                                                            .and_then(|x| x.as_str())
+                                                            .unwrap_or("other")
+                                                            .to_string();
+                                                        let payload = serde_json::json!({
+                                                            "sessionId": sid,
+                                                            "type": "human-action",
+                                                            "source": "human",
+                                                            "kind": event_kind,
+                                                            "peer_id": peer_id_term.clone(),
+                                                            "ts_ms": std::time::SystemTime::now()
+                                                                .duration_since(std::time::UNIX_EPOCH)
+                                                                .map(|d| d.as_millis() as u64)
+                                                                .unwrap_or(0),
+                                                            "detail": evt,
+                                                        });
+                                                        let registry_for_human = peer_registry_term.clone();
+                                                        tokio::spawn(async move {
+                                                            broadcast_build_log_text(
+                                                                &registry_for_human,
+                                                                payload.to_string(),
+                                                            ).await;
+                                                        });
+                                                    }
+                                                }
+                                            }
+
                                             if let Some(sid) = gui_sid_opt {
                                                 if let Some(display) = crate::safety::focus_probe::display_for_session(sid) {
                                                     let (verdict, focus) = crate::safety::focus_probe::verify_focus(sid, &display);

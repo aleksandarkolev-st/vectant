@@ -6,12 +6,35 @@ import { encodeKey, encodeTypeSequence } from "../wire/input.js";
 import { runWait } from "../wait/index.js";
 import type { LogArgs, WaitArgs } from "../wait/index.js";
 import { dispatchAckRegistry, type PendingDispatch } from "../util/dispatch_ack_registry.js";
+import { leaseRegistry } from "../arbitration/lease.js";
+import { inputQueueDepth } from "../correctness/input_queue_depth.js";
 import {
   errorFromException,
   errorResponse,
   jsonResponse,
   type ToolResponse,
 } from "./shared.js";
+
+/** See `tools/mouse.ts::checkLeaseAndMaybeAlert` for rationale. */
+function checkLeaseAndMaybeAlert(action: string, callerLeaseId?: string): void {
+  const current = leaseRegistry.currentLease();
+  if (!current) return;
+  if (callerLeaseId === current.lease_id) return;
+  eventLog.push({
+    kind: "security",
+    code: "rate_limit_warning",
+    detail: {
+      code: "input_without_current_lease",
+      action,
+      current_lease_id: current.lease_id,
+      current_lease_owner: current.owner,
+      current_lease_expires_at: current.expires_at,
+      caller_lease_id: callerLeaseId ?? null,
+      enforcement: "wire-only",
+      note: "Phase-1 advisory. Worker-side enforcement lands in phase 2c.",
+    },
+  });
+}
 
 interface RawArgs {
   action?: unknown;
@@ -22,6 +45,7 @@ interface RawArgs {
   waitFor?: unknown;
   await_ack?: unknown;
   ack_timeout_ms?: unknown;
+  lease_id?: unknown;
 }
 
 const VALID_ACTIONS = ["type", "key", "chord"] as const;
@@ -41,6 +65,10 @@ export async function keyboardTool(args: unknown): Promise<ToolResponse> {
     return errorResponse(gate.error, gate);
   }
   const attached = session.require();
+
+  const callerLeaseId = typeof a.lease_id === "string" ? a.lease_id : undefined;
+  checkLeaseAndMaybeAlert(`keyboard:${action}`, callerLeaseId);
+  inputQueueDepth.recordDispatch(`keyboard:${action}`);
 
   if (a.waitFor !== undefined) {
     const waitArgs = a.waitFor as WaitArgs & { timeoutMs?: number };

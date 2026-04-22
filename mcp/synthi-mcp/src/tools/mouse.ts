@@ -12,12 +12,48 @@ import {
 import { runWait } from "../wait/index.js";
 import type { WaitArgs } from "../wait/index.js";
 import { dispatchAckRegistry, type PendingDispatch } from "../util/dispatch_ack_registry.js";
+import { leaseRegistry } from "../arbitration/lease.js";
+import { inputQueueDepth } from "../correctness/input_queue_depth.js";
 import {
   errorFromException,
   errorResponse,
   jsonResponse,
   type ToolResponse,
 } from "./shared.js";
+
+/**
+ * Phase-1 lease advisory: the manifest advertises
+ * arbitration.enforcement:"wire-only", which means the tool layer
+ * should warn when an input is dispatched without matching the
+ * currently-held lease. Worker-side enforcement lands in phase 2c.
+ *
+ * Behaviour:
+ *   - No current lease → silent (single-holder model, no contention
+ *     possible).
+ *   - Lease held + caller passes matching `lease_id` → silent.
+ *   - Lease held + caller passes NO `lease_id` or a stale one →
+ *     loud security event in the ring buffer with detail.code =
+ *     "input_without_current_lease". Input still dispatches.
+ */
+function checkLeaseAndMaybeAlert(action: string, callerLeaseId?: string): void {
+  const current = leaseRegistry.currentLease();
+  if (!current) return;
+  if (callerLeaseId === current.lease_id) return;
+  eventLog.push({
+    kind: "security",
+    code: "rate_limit_warning",
+    detail: {
+      code: "input_without_current_lease",
+      action,
+      current_lease_id: current.lease_id,
+      current_lease_owner: current.owner,
+      current_lease_expires_at: current.expires_at,
+      caller_lease_id: callerLeaseId ?? null,
+      enforcement: "wire-only",
+      note: "Phase-1 advisory. Worker-side enforcement lands in phase 2c.",
+    },
+  });
+}
 
 interface HandleRef {
   handle_id: string;
@@ -38,6 +74,7 @@ interface RawArgs {
   retry?: unknown;
   await_ack?: unknown;
   ack_timeout_ms?: unknown;
+  lease_id?: unknown;
 }
 
 const VALID_ACTIONS = ["click", "move", "down", "up", "drag", "wheel", "double_click"] as const;
@@ -97,6 +134,15 @@ export async function mouseTool(args: unknown): Promise<ToolResponse> {
     return errorResponse(gate.error, gate);
   }
   const attached = session.require();
+
+  // Lease-gated advisory (phase-1 wire-only). Emits a loud security
+  // event when a lease is held and the caller isn't matching it.
+  const callerLeaseId = typeof a.lease_id === "string" ? a.lease_id : undefined;
+  checkLeaseAndMaybeAlert(`mouse:${action}`, callerLeaseId);
+
+  // B2 measurement: count inputs dispatched while a compile is in
+  // progress. No-op outside the compile window.
+  inputQueueDepth.recordDispatch(`mouse:${action}`);
 
   const button = typeof a.button === "string" ? (a.button as MouseButtonName) : "left";
   if (!["left", "right", "middle"].includes(button)) {

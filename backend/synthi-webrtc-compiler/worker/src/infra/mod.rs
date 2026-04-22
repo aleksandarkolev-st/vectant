@@ -1,6 +1,7 @@
 pub mod constants;
 pub mod crash_recovery;
 pub mod dep_installer;
+pub mod frame_timing;
 pub mod host_kv;
 pub mod import_scanner;
 pub mod lsp_installer;

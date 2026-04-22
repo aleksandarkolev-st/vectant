@@ -422,6 +422,10 @@ const TOOLS = [
           type: "number",
           description: "Per-dispatch ack timeout when await_ack is true. Default 4000ms; rejects with input_ack_timeout if the worker doesn't echo within the window.",
         },
+        lease_id: {
+          type: "string",
+          description: "Optional input-lease id (from synthi_acquire_input). Phase-1 wire-only: when a lease is held by another caller and this id doesn't match, the MCP emits a security event of code:\"rate_limit_warning\" with detail.code=\"input_without_current_lease\". Worker-side enforcement is phase 2c.",
+        },
       },
       required: ["action"],
     },
@@ -460,6 +464,10 @@ const TOOLS = [
         ack_timeout_ms: {
           type: "number",
           description: "Per-dispatch ack timeout when await_ack is true. Default 4000ms.",
+        },
+        lease_id: {
+          type: "string",
+          description: "Optional input-lease id (from synthi_acquire_input). Same advisory semantics as synthi_mouse.lease_id.",
         },
       },
       required: ["action"],
