@@ -13,6 +13,7 @@ import { useWorkspacePresence } from '@/hooks/useWorkspacePresence';
 import { getCurrentUser } from '@/services/userIdentity';
 import { AlertCircle, AlertTriangle, Cpu, Zap, Loader2, Wifi, WifiOff, Radio, Users } from 'lucide-react';
 import { HealingIndicator } from '@/components/healing/HealingIndicator';
+import OperatorStatusBarButton from './OperatorStatusBarButton';
 
 /**
  * StatusBar Component - Synthi styled bottom status bar
@@ -193,6 +194,11 @@ function StatusBarInner({
             </span>
           )}
         </div>
+
+        <div className="w-px h-4 bg-[#1a1b24]"></div>
+
+        {/* Operator console trigger */}
+        <OperatorStatusBarButton sessionId={slug} />
 
         {/* Session Sharing Indicator */}
         {isHost && (
