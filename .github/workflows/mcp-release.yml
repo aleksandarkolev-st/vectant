@@ -5,7 +5,7 @@ name: mcp-release
 # @synthi-inc/mcp-server:
 #
 #   1. GHCR container image at ghcr.io/synthi-inc/synthi-mcp:<version>
-#      (preferred path — see PHASE_2A_DISTRIBUTION.md).
+#      (preferred path — see PHASE_2A_DISTRIBUTION.txt).
 #   2. npm tarball published to GitHub Packages at
 #      https://npm.pkg.github.com/@synthi-inc/mcp-server (fallback path).
 #
@@ -188,7 +188,7 @@ jobs:
 
           Both artifacts require a GitHub PAT scoped to \`read:packages\` from a
           collaborator of \`synthi-inc/synthi-ide\`. See the repo's
-          \`PHASE_2A_DISTRIBUTION.md\` + \`mcp/synthi-mcp/docs/CLIENT_CONFIGS.md\`
+          \`PHASE_2A_DISTRIBUTION.txt\` + \`mcp/synthi-mcp/docs/CLIENT_CONFIGS.md\`
           for end-to-end setup.
           EOF
           echo "notes_path=release-notes.md" >> "$GITHUB_OUTPUT"

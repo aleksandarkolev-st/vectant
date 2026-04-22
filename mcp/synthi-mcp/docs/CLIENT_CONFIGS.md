@@ -3,7 +3,7 @@
 **Scope:** concrete config snippets for each top-tier MCP host, keyed off the
 two proprietary distribution channels Phase 2a ships (GHCR image preferred,
 GitHub Packages npm fallback). For the "why" of those channels, see
-`PHASE_2A_DISTRIBUTION.md` at the repo root.
+`PHASE_2A_DISTRIBUTION.txt` at the repo root.
 
 **Conventions:**
 

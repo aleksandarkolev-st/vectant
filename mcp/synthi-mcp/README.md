@@ -24,7 +24,7 @@ img = await synthi_screenshot({...})    // see the result
 
 ## Install
 
-**This is proprietary software distributed only to authorized users of Synthi.** Install through one of the two private channels below. The public `npm` registry is not a supported distribution path — `@synthi/mcp-server` on the public registry is not us. See `PHASE_2A_DISTRIBUTION.md` at the repo root for the full access-control posture.
+**This is proprietary software distributed only to authorized users of Synthi.** Install through one of the two private channels below. The public `npm` registry is not a supported distribution path — `@synthi/mcp-server` on the public registry is not us. See `PHASE_2A_DISTRIBUTION.txt` at the repo root for the full access-control posture.
 
 All install paths assume a running Synthi stack you have access to (e.g., `docker-compose up -d` at the repo root, or a Synthi environment you've been granted access to). Requires Node ≥ 20 if using the npm channel; Docker ≥ 24 if using the image channel.
 

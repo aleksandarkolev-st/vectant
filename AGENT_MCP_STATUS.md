@@ -253,9 +253,9 @@ Decomposed into 2a–2e per `PHASE_2_PLUS_BACKLOG.md:G3`.
 
 ### Phase 2a — Distribution (in progress)
 
-Proprietary-aware distribution; public-npm publish explicitly deferred. Full analysis in `PHASE_2A_DISTRIBUTION.md`.
+Proprietary-aware distribution; public-npm publish explicitly deferred. Full analysis in `PHASE_2A_DISTRIBUTION.txt`.
 
-- [x] **Strategy doc** — `PHASE_2A_DISTRIBUTION.md`.
+- [x] **Strategy doc** — `PHASE_2A_DISTRIBUTION.txt`.
 - [x] **Package rename** — `@synthi/mcp-server` → `@synthi-inc/mcp-server`. Binary name `synthi-mcp` unchanged.
 - [x] **publishConfig** — points at GitHub Packages (`https://npm.pkg.github.com`, `access: restricted`).
 - [x] **`.npmrc.example`** — template for authorized consumers to resolve `@synthi-inc/*` against GitHub Packages with a PAT (`read:packages`).
