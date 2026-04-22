@@ -10,6 +10,10 @@ import {
   startPrometheusServer,
 } from "./observability/prometheus_server.js";
 import { performShutdown } from "./shutdown.js";
+import {
+  FileSnapshotPersistor,
+  snapshotStore,
+} from "./snapshot/index.js";
 import type { Server as HttpServer } from "node:http";
 
 function parseArgs(argv: string[]): { sessionId?: string; signalingUrl?: string } {
@@ -40,6 +44,15 @@ async function main(): Promise<void> {
 
   const defaultSessionId = args.sessionId ?? envSession;
   const defaultSignalingUrl = args.signalingUrl ?? envSignaling ?? "ws://localhost:9000";
+
+  // Phase 3 — wire a file-backed snapshot persistor when
+  // SYNTHI_SNAPSHOT_DIR is set so snapshots survive subprocess restarts.
+  // Default remains in-memory.
+  const snapshotDir = process.env["SYNTHI_SNAPSHOT_DIR"];
+  if (snapshotDir) {
+    snapshotStore.setPersistor(new FileSnapshotPersistor(snapshotDir));
+    process.stderr.write(`synthi-mcp snapshots: file-backed at ${snapshotDir}\n`);
+  }
 
   const server = createSynthiServer({
     defaultSessionId,

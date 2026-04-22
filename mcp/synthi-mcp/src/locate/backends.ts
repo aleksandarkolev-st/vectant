@@ -2,6 +2,7 @@ import type { BBox } from "../util/phash.js";
 import type { LocateHints, LocateBackendName } from "./types.js";
 import { ClaudeApiBackendReal, type ClaudeApiBackendOptions } from "./claude_api.js";
 import { GeminiApiBackendReal, type GeminiApiBackendOptions } from "./gemini_api.js";
+import { getDefaultLocalBackend } from "./local.js";
 
 export interface BackendResolution {
   bbox: BBox;
@@ -239,6 +240,8 @@ export function selectBackend(override?: LocateBackendName): VisionBackend {
       return getDefaultClaudeApiBackend();
     case "gemini_api":
       return getDefaultGeminiApiBackend();
+    case "local":
+      return getDefaultLocalBackend();
     default:
       return new AgentSideBackend();
   }
