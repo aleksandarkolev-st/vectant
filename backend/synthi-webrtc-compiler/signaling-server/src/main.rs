@@ -232,6 +232,37 @@ async fn broadcast_presence(state: &Arc<AppState>, session_id: &str, counts: Pre
     }
 }
 
+/// UNIX-ms timestamp, for the operator event log. Saturates to 0 if the
+/// system clock is before the epoch (would indicate a badly misconfigured
+/// host — never seen in practice).
+fn now_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// Emit an operator-scoped event to every `operator` peer on a session.
+/// Used for the `/operator` UI's live event log — register/disconnect/
+/// kick notifications that normal browser/observer/worker peers should
+/// not receive (they'd treat the JSON as stray signaling traffic).
+///
+/// Same-pod only for now; cross-pod delivery requires a Redis-relayed
+/// `session:<sid>:operator` envelope, tracked with the kick relay.
+async fn broadcast_operator_event(
+    state: &Arc<AppState>,
+    session_id: &str,
+    event: serde_json::Value,
+) {
+    let text = event.to_string();
+    let peers = state.peers.read().await;
+    if let Some(senders) = peers.get(&(session_id.to_string(), ROLE_OPERATOR.to_string())) {
+        for tx in senders {
+            let _ = tx.send(Message::text(text.clone()));
+        }
+    }
+}
+
 /// Counts of peers attached to a session, grouped by whether they are
 /// human-driven or agent-driven. Emitted as a `presence` message so MCP
 /// clients can surface `attached_humans` / `attached_agents` in their
@@ -688,6 +719,21 @@ async fn handle_connection(
             // (including the worker, so worker-side metrics can surface
             // the same counts).
             broadcast_presence(&state, &session_id, presence_after_insert).await;
+            // Operator-only event log entry. Self-register events for
+            // the operator role are fine — they serve as the UI's
+            // "connected" marker even when no other peers are present.
+            broadcast_operator_event(
+                &state,
+                &session_id,
+                serde_json::json!({
+                    "type": "operator-event",
+                    "kind": "peer_registered",
+                    "role": role,
+                    "peer_id": peer_id,
+                    "ts_ms": now_millis(),
+                }),
+            )
+            .await;
             continue;
         }
 
@@ -749,6 +795,22 @@ async fn handle_connection(
                 "reason": reason_text,
             });
             let _ = out_tx.send(Message::text(ack.to_string()));
+            // Event-log fanout. Other operators on the same session
+            // should see the kick even if they weren't the one that
+            // issued it (e.g., a second monitor observing the first).
+            broadcast_operator_event(
+                &state,
+                &sid,
+                serde_json::json!({
+                    "type": "operator-event",
+                    "kind": "kick_executed",
+                    "target_role": target_role,
+                    "kicked": kicked_count,
+                    "reason": reason_text,
+                    "ts_ms": now_millis(),
+                }),
+            )
+            .await;
             continue;
         }
 
@@ -934,6 +996,30 @@ async fn handle_connection(
         // session is empty — there's nobody left to listen.
         if !session_empty {
             broadcast_presence(&state, sid, presence_after_remove).await;
+            // Operator-only disconnect event. `disconnect_kind`
+            // distinguishes an operator-initiated kick from a natural
+            // transport drop so the UI can show a kicked badge vs. a
+            // generic "left". The kicked peer itself also got the
+            // {type:"evicted"} frame above; this entry is for *other*
+            // operators watching the session.
+            let disconnect_kind = if kicked_reason.is_some() {
+                "kick"
+            } else {
+                "transport"
+            };
+            broadcast_operator_event(
+                &state,
+                sid,
+                serde_json::json!({
+                    "type": "operator-event",
+                    "kind": "peer_disconnected",
+                    "role": role,
+                    "peer_id": my_peer_id.clone().unwrap_or_default(),
+                    "disconnect_kind": disconnect_kind,
+                    "ts_ms": now_millis(),
+                }),
+            )
+            .await;
         }
 
         // If no peers remain for this session, notify the collab server

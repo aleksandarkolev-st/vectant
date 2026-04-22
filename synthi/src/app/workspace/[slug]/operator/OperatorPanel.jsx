@@ -1,41 +1,40 @@
 'use client';
 
-// OperatorPanel — live view of a session's attached peers with a kill
-// switch. Hosted at `/workspace/<slug>/operator`. Talks to the
-// signaling server as role="operator" via `OperatorClient`; receives
-// `presence` broadcasts and sends `kick-peer` on button click.
+// OperatorPanel — content-only view for the operator console. Safe to
+// drop into any shell (dialog, sheet, standalone page) because it owns
+// no outer container padding. Renders:
+//   - status pill + presence counters
+//   - per-role kick switch buttons
+//   - live event log (register / disconnect / kick) streamed from the
+//     signaling server
+//
+// State lives here so both the dialog and a standalone-page embedding
+// share one React lifecycle for the underlying OperatorClient.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import OperatorClient from '@/services/operatorClient';
 import { Button } from '@/components/ui/button';
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from '@/components/ui/card';
+import { ScrollArea } from '@/components/ui/scroll-area';
 
 const KICKABLE_ROLES = [
   {
     role: 'observer',
     label: 'MCP / observer peers',
-    description:
-      "Disconnects every observer slot (the Synthi MCP registers here). Use when an agent is misbehaving.",
+    description: 'Disconnects every observer slot (Synthi MCP registers here).',
   },
   {
     role: 'mcp-agent',
     label: 'mcp-agent peers',
-    description:
-      "Forward-compat slot for agents that register as mcp-agent rather than observer.",
+    description: 'Forward-compat slot for agents on the mcp-agent role.',
   },
   {
     role: 'browser',
     label: 'Browser peer',
-    description:
-      "Drops the human browser session. Rarely what you want — prefer asking the user to close the tab.",
+    description: 'Drops the human browser session. Rarely what you want.',
   },
 ];
+
+const MAX_EVENTS = 200;
 
 function StatusPill({ state }) {
   const { label, cls } = useMemo(() => {
@@ -53,10 +52,36 @@ function StatusPill({ state }) {
     }
   }, [state]);
   return (
-    <span className={`inline-flex items-center rounded-full px-3 py-1 text-xs font-medium ${cls}`}>
+    <span
+      className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${cls}`}
+    >
       {label}
     </span>
   );
+}
+
+function formatEventLine(ev) {
+  // Produce one compact line per event. Kept as plain strings so the
+  // log view can render them in a <code> block without needing per-kind
+  // markup; richer styling can land later if the UI gets busy.
+  const ts = new Date(ev.tsMs ?? Date.now()).toLocaleTimeString();
+  switch (ev.kind) {
+    case 'peer_registered':
+      return `${ts}  +  ${ev.role} joined  (${shortId(ev.peerId)})`;
+    case 'peer_disconnected': {
+      const flag = ev.disconnectKind === 'kick' ? 'KICKED' : 'left';
+      return `${ts}  –  ${ev.role} ${flag}  (${shortId(ev.peerId)})`;
+    }
+    case 'kick_executed':
+      return `${ts}  ⚡ kick  target=${ev.targetRole}  kicked=${ev.kicked}  reason=${ev.reason}`;
+    default:
+      return `${ts}  ?  ${JSON.stringify(ev)}`;
+  }
+}
+
+function shortId(pid) {
+  if (!pid || typeof pid !== 'string') return '';
+  return pid.length > 8 ? `${pid.slice(0, 8)}…` : pid;
 }
 
 export default function OperatorPanel({ sessionId }) {
@@ -65,6 +90,7 @@ export default function OperatorPanel({ sessionId }) {
   const [lastKick, setLastKick] = useState(null);
   const [kicking, setKicking] = useState(null);
   const [error, setError] = useState(null);
+  const [events, setEvents] = useState([]);
   const clientRef = useRef(null);
 
   useEffect(() => {
@@ -80,12 +106,20 @@ export default function OperatorPanel({ sessionId }) {
     const offError = client.on('error', () => {
       setError('Signaling connection error — see browser devtools.');
     });
+    const offEvent = client.on('event', (ev) => {
+      setEvents((prev) => {
+        const next = [...prev, ev];
+        if (next.length > MAX_EVENTS) next.splice(0, next.length - MAX_EVENTS);
+        return next;
+      });
+    });
     client.connect();
     return () => {
       offConn();
       offPresence();
       offEvicted();
       offError();
+      offEvent();
       client.disconnect();
       clientRef.current = null;
     };
@@ -114,90 +148,98 @@ export default function OperatorPanel({ sessionId }) {
   );
 
   return (
-    <div className="mx-auto w-full max-w-3xl space-y-6 p-6">
-      <header className="flex items-start justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-semibold">Operator console</h1>
-          <p className="text-muted-foreground text-sm">
+    <div className="flex flex-col gap-5 text-sm">
+      <header className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="text-muted-foreground text-xs">
             Session <code className="font-mono">{sessionId}</code>
-          </p>
+          </div>
         </div>
         <StatusPill state={connState} />
       </header>
 
       {error ? (
-        <div className="rounded-md border border-red-500/40 bg-red-500/10 px-4 py-3 text-sm text-red-200">
+        <div className="rounded-md border border-red-500/40 bg-red-500/10 px-3 py-2 text-xs text-red-200">
           {error}
         </div>
       ) : null}
 
-      <Card>
-        <CardHeader>
-          <CardTitle>Attached peers</CardTitle>
-          <CardDescription>
-            Live counts broadcast by the signaling server. Operators do not count — only peers
-            that are part of the input/video loop.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="flex items-center gap-10 text-base">
-          <div>
-            <div className="text-muted-foreground text-xs uppercase tracking-wider">Humans</div>
-            <div className="text-3xl font-semibold">{presence.attachedHumans}</div>
+      <section className="flex items-center gap-8 rounded-md border px-4 py-3">
+        <div>
+          <div className="text-muted-foreground text-[10px] uppercase tracking-wider">
+            Humans
           </div>
-          <div>
-            <div className="text-muted-foreground text-xs uppercase tracking-wider">Agents</div>
-            <div className="text-3xl font-semibold">{presence.attachedAgents}</div>
+          <div className="text-2xl font-semibold">{presence.attachedHumans}</div>
+        </div>
+        <div>
+          <div className="text-muted-foreground text-[10px] uppercase tracking-wider">
+            Agents
           </div>
-        </CardContent>
-      </Card>
+          <div className="text-2xl font-semibold">{presence.attachedAgents}</div>
+        </div>
+      </section>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>Kill switch</CardTitle>
-          <CardDescription>
-            Hard-disconnect every peer of a given role. The signaling server sends the targeted
-            peer a final <code className="font-mono">{'{type:"evicted"}'}</code> frame and closes
-            the socket; any in-flight MCP tool call the agent had pending returns a transport
-            error on its side. Worker and operator roles are never kickable.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          {KICKABLE_ROLES.map(({ role, label, description }) => (
-            <div
-              key={role}
-              className="flex items-start justify-between gap-4 rounded-md border px-4 py-3"
-            >
-              <div className="min-w-0">
-                <div className="font-medium">{label}</div>
-                <p className="text-muted-foreground text-xs">{description}</p>
-              </div>
-              <Button
-                variant="destructive"
-                size="sm"
-                disabled={connState !== 'connected' || kicking != null}
-                onClick={() => handleKick(role)}
-              >
-                {kicking === role ? 'Kicking…' : 'Kick'}
-              </Button>
+      <section className="space-y-2">
+        <div className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+          Kill switch
+        </div>
+        {KICKABLE_ROLES.map(({ role, label, description }) => (
+          <div
+            key={role}
+            className="flex items-start justify-between gap-3 rounded-md border px-3 py-2"
+          >
+            <div className="min-w-0">
+              <div className="text-sm font-medium">{label}</div>
+              <p className="text-muted-foreground text-xs">{description}</p>
             </div>
-          ))}
-        </CardContent>
-      </Card>
+            <Button
+              variant="destructive"
+              size="sm"
+              disabled={connState !== 'connected' || kicking != null}
+              onClick={() => handleKick(role)}
+            >
+              {kicking === role ? 'Kicking…' : 'Kick'}
+            </Button>
+          </div>
+        ))}
+        {lastKick ? (
+          <div className="text-xs text-muted-foreground">
+            Last: <code className="font-mono">{lastKick.role}</code> — kicked{' '}
+            <strong>{lastKick.kicked}</strong> at{' '}
+            {new Date(lastKick.at).toLocaleTimeString()}
+          </div>
+        ) : null}
+      </section>
 
-      {lastKick ? (
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-base">Last kick</CardTitle>
-          </CardHeader>
-          <CardContent className="text-sm">
-            Role <code className="font-mono">{lastKick.role}</code> — kicked{' '}
-            <strong>{lastKick.kicked}</strong> peer(s) at{' '}
-            <span className="text-muted-foreground">
-              {new Date(lastKick.at).toLocaleTimeString()}
-            </span>
-          </CardContent>
-        </Card>
-      ) : null}
+      <section>
+        <div className="mb-2 flex items-center justify-between">
+          <div className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+            Event log
+          </div>
+          {events.length > 0 ? (
+            <button
+              type="button"
+              onClick={() => setEvents([])}
+              className="text-xs text-muted-foreground hover:text-foreground"
+            >
+              Clear
+            </button>
+          ) : null}
+        </div>
+        <ScrollArea className="h-48 rounded-md border">
+          {events.length === 0 ? (
+            <div className="px-3 py-2 text-xs text-muted-foreground">
+              (no events yet — peer register / disconnect / kick entries land here in real time)
+            </div>
+          ) : (
+            <pre className="px-3 py-2 font-mono text-xs leading-relaxed">
+              {events.map((ev, i) => (
+                <div key={i}>{formatEventLine(ev)}</div>
+              ))}
+            </pre>
+          )}
+        </ScrollArea>
+      </section>
     </div>
   );
 }

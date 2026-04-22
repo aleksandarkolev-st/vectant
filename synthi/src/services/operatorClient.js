@@ -34,6 +34,7 @@ export class OperatorClient {
       evicted: new Set(),
       connection: new Set(),
       error: new Set(),
+      event: new Set(),
     };
     this._pendingKicks = [];
   }
@@ -140,6 +141,22 @@ export class OperatorClient {
       case 'evicted':
         this._emit('evicted', { reason: msg.reason });
         this.connected = false;
+        break;
+      case 'operator-event':
+        // Server-side event log: peer_registered / peer_disconnected /
+        // kick_executed. `kind` is the discriminator; the rest of the
+        // shape depends on it. See signaling-server's
+        // broadcast_operator_event for the authoritative schema.
+        this._emit('event', {
+          kind: msg.kind,
+          role: msg.role,
+          peerId: msg.peer_id,
+          targetRole: msg.target_role,
+          kicked: msg.kicked,
+          reason: msg.reason,
+          disconnectKind: msg.disconnect_kind,
+          tsMs: msg.ts_ms,
+        });
         break;
       default:
         // Unrelated signaling traffic — ignore. Operators never route SDP/ICE.
