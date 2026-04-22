@@ -89,7 +89,7 @@ export interface ManifestRuntime {
 
 export const STATIC_MANIFEST: Omit<CapabilityManifest, "tools" | "frame_seq_gate" | "arbitration" | "enriched_tier"> = {
   vision_backends: ["agent_side", "claude_api", "gemini_api", "mock"],
-  wait_conditions: ["hmr", "log", "source_state", "pixel", "motion_settled", "scene_change", "element"],
+  wait_conditions: ["hmr", "log", "source_state", "pixel", "motion_settled", "scene_change", "element", "audio"],
   verify_predicates: ["pixel", "log", "element_visible", "and", "or"],
   region_phash_cache: {
     available: true,

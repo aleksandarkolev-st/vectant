@@ -60,6 +60,8 @@ const EXPECTED_TOOLS = [
   "synthi_get_labels",
   "synthi_get_process_state",
   "synthi_get_metrics",
+  "synthi_get_audio_level",
+  "synthi_wait_audio_event",
 ];
 
 function parseArgs(argv) {

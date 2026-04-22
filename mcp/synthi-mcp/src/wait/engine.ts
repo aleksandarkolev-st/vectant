@@ -95,6 +95,20 @@ export async function runWait(args: WaitArgs, timeoutMs: number = DEFAULT_TIMEOU
       return waitElement(args, timeoutMs, start);
     case "text":
       return waitText(args as TextArgs, timeoutMs, elapsed());
+    case "audio":
+      // Phase 2d wire stub. Worker-side audio-tee exists (TrackFanout for
+      // the audio RTP path) but no peak-analysis + data-channel emission
+      // yet, so we surface a deterministic unsupported outcome with a
+      // required_tool_call nudging toward log-based waits as a fallback.
+      return {
+        status: "unsupported",
+        condition: "audio",
+        reason: "audio_backend_not_implemented",
+        required_tool_call: {
+          tool: "synthi_wait",
+          suggested_args: { condition: "log", pattern: "audio|sound|beep" },
+        },
+      };
     default: {
       const unknown = args as { condition: WaitCondition };
       return {

@@ -55,6 +55,7 @@ import {
   getProcessStateTool,
   queryTool,
 } from "./tools/enriched.js";
+import { getAudioLevelTool, waitAudioEventTool } from "./tools/audio.js";
 import type { ToolContext } from "./tools/shared.js";
 
 export interface SynthiServerOptions {
@@ -703,6 +704,34 @@ const TOOLS = [
       required: [],
     },
   },
+  // Audio tier (phase 2d — wire stubs).
+  {
+    name: "synthi_get_audio_level",
+    description:
+      "Return the guest's current audio peak + RMS level in dBFS over the most recent window. Phase 2d wire stub — returns audio_backend_not_implemented until the worker audio-tee emits peak samples on the build-log DC.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        window_ms: { type: "number", description: "Analysis window size (default 200ms)." },
+      },
+      required: [],
+    },
+  },
+  {
+    name: "synthi_wait_audio_event",
+    description:
+      "Block until the guest audio crosses a threshold (kind='above_threshold') or goes silent (kind='silence'). Phase 2d wire stub — returns audio_backend_not_implemented until worker peak emission ships.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        kind: { type: "string", enum: ["above_threshold", "silence"] },
+        threshold_dbfs: { type: "number", description: "Level in dBFS. Default -30 for above_threshold, -50 for silence." },
+        window_ms: { type: "number", description: "How long the condition must hold. Default 200ms." },
+        timeoutMs: { type: "number", description: "Maximum wait. Default 30_000." },
+      },
+      required: [],
+    },
+  },
   {
     name: "synthi_locate",
     description:
@@ -928,6 +957,10 @@ export function createSynthiServer(options: SynthiServerOptions): Server {
         return (await getProcessStateTool(args)) as CallToolResult;
       case "synthi_get_metrics":
         return (await getMetricsTool(args)) as CallToolResult;
+      case "synthi_get_audio_level":
+        return (await getAudioLevelTool(args)) as CallToolResult;
+      case "synthi_wait_audio_event":
+        return (await waitAudioEventTool(args)) as CallToolResult;
       default:
         return {
           content: [

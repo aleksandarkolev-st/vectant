@@ -58,6 +58,10 @@ export const ADVERTISED_TOOLS = [
   "synthi_get_labels",
   "synthi_get_process_state",
   "synthi_get_metrics",
+  // Audio (phase 2d — worker audio-tee exists; peak emission is the
+  // remaining hook). Stubs return audio_backend_not_implemented.
+  "synthi_get_audio_level",
+  "synthi_wait_audio_event",
 ] as const;
 
 export type AdvertisedToolName = (typeof ADVERTISED_TOOLS)[number];
