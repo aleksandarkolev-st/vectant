@@ -1,0 +1,25 @@
+#
+# .npmrc.example — authorized-consumer template for installing @synthi-inc/mcp-server
+# from GitHub Packages.
+#
+# Usage:
+#   1. Copy this file to ~/.npmrc (user-scoped) or to the project root as .npmrc
+#      (project-scoped). Project-scoped tends to be safer so the token is bound
+#      to one workspace; user-scoped is easier if you install across many.
+#   2. Mint a GitHub personal access token with scope: read:packages.
+#      Keep the token to the narrowest scope needed. Do not add write:packages
+#      unless you are cutting releases.
+#   3. Either export it as $GITHUB_TOKEN before running npm, or replace the
+#      ${GITHUB_TOKEN} literal below with the token value.
+#
+# The scope binding is load-bearing: it tells npm that any package under
+# @synthi-inc/* resolves against GitHub Packages instead of the public registry,
+# while everything else (@modelcontextprotocol/sdk, sharp, …) stays on npmjs.org.
+#
+# NEVER commit a real token to the repo. This file is .example only; the
+# populated .npmrc is in .gitignore.
+#
+
+@synthi-inc:registry=https://npm.pkg.github.com
+//npm.pkg.github.com/:_authToken=${GITHUB_TOKEN}
+always-auth=true
