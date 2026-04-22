@@ -99,6 +99,13 @@ export interface GeminiContent {
 export interface GeminiGenerateConfig {
   systemInstruction?: string | GeminiContent;
   maxOutputTokens?: number;
+  /**
+   * Force the model to emit a specific MIME type. `application/json`
+   * makes Gemini return a single JSON object even when the element
+   * isn't visible, which is how we keep the "not found" path from
+   * collapsing into prose and tripping gemini_api_parse_error.
+   */
+  responseMimeType?: string;
   /** Forwarded to fetch() — aborts the API call without finishing. */
   abortSignal?: AbortSignal;
 }
@@ -228,6 +235,7 @@ export class GeminiApiBackendReal implements VisionBackend {
       const config: GeminiGenerateConfig = {
         systemInstruction: systemPrompt,
         maxOutputTokens: this.maxTokens,
+        responseMimeType: "application/json",
       };
       if (args.signal) config.abortSignal = args.signal;
       response = await client.models.generateContent({
