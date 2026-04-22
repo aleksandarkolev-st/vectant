@@ -19,10 +19,15 @@
 //! See `AGENT_MCP_STATUS.md` §4.2 for the full shipped surface.
 
 pub mod build_log_broadcast;
+pub mod input_lease;
 pub mod peer_registry;
 pub mod track_fanout;
 
 pub use build_log_broadcast::{broadcast_build_log_text, PER_DC_SEND_TIMEOUT};
+pub use input_lease::{
+    AcquireError as InputLeaseAcquireError, GateDecision as InputLeaseGateDecision, InputLease,
+    InputLeaseRegistry,
+};
 pub use peer_registry::{PeerHandle, PeerRegistry, PeerRole, RegistryInsertOutcome};
 pub use track_fanout::{FanoutStats, TrackFanout, TrackKind};
 
