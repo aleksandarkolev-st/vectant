@@ -14,6 +14,7 @@
  */
 
 const Docker = require('dockerode');
+const lifecycle = require('./sessionLifecycle');
 
 // ── Config ─────────────────────────────────────────────────────────────────
 
@@ -82,6 +83,7 @@ async function ensurePod(sessionId, userId) {
       const info = await c.inspect();
       if (info.State.Running) {
         tracked.lastActive = now;
+        lifecycle.markReady(sessionId);
         return { name, created: false, podName: name, containerId: tracked.containerId };
       }
       // Container exists but is not running — remove and recreate below.
@@ -110,6 +112,8 @@ async function ensurePod(sessionId, userId) {
   if (activeSessions.size >= MAX_WORKSPACE_CONTAINERS) {
     throw new Error(`Workspace container cap reached (${MAX_WORKSPACE_CONTAINERS})`);
   }
+
+  lifecycle.markWarming(sessionId, { stage: "container_create", stage_progress_pct: 10 });
 
   const env = [
     `SESSION_ID=${sessionId}`,
@@ -158,6 +162,7 @@ async function ensurePod(sessionId, userId) {
     }
   }
 
+  lifecycle.markWarming(sessionId, { stage: "container_start", stage_progress_pct: 60 });
   await container.start();
 
   activeSessions.set(sessionId, {
@@ -165,6 +170,11 @@ async function ensurePod(sessionId, userId) {
     containerId: container.id,
     userId,
   });
+
+  // Container is running; the worker itself finishes warming via signaling
+  // register. Mark `ready` optimistically — the MCP-side wireState flip to
+  // `running` happens on peer attach.
+  lifecycle.markReady(sessionId);
 
   console.log(`[LocalSpawner] Started worker container ${name} (session=${sessionId}, userId=${userId})`);
   return { name, created: true, podName: name, containerId: container.id };
@@ -201,6 +211,56 @@ async function teardown(sessionId) {
       console.error(`[LocalSpawner] teardown failed for ${name}:`, err.message);
     }
   }
+  lifecycle.markTerminated(sessionId, "teardown");
+}
+
+/**
+ * Lifecycle snapshot for HTTP /api/session/:id/lifecycle. Reconciles
+ * the spawner's own view (activeSessions + container inspect) with the
+ * advisory state in sessionLifecycle — the two can disagree if the
+ * container crashed between ensurePod and the next poll.
+ */
+async function lifecycleSnapshot(sessionId) {
+  const entry = activeSessions.get(sessionId);
+  const advisory = lifecycle.snapshot(sessionId);
+  if (!entry) {
+    return { ...advisory, pod_running: false, spawner_tracked: false };
+  }
+  let podRunning = false;
+  try {
+    const info = await docker.getContainer(entry.containerId).inspect();
+    podRunning = Boolean(info?.State?.Running);
+    if (!podRunning && advisory.state !== "terminated") {
+      lifecycle.markCrashed(sessionId, "container_not_running");
+    }
+  } catch (_) {
+    podRunning = false;
+    if (advisory.state !== "terminated") lifecycle.markCrashed(sessionId, "container_missing");
+  }
+  return {
+    ...lifecycle.snapshot(sessionId),
+    pod_running: podRunning,
+    spawner_tracked: true,
+    last_active: entry.lastActive,
+    container_id: entry.containerId,
+  };
+}
+
+/**
+ * Pre-warm a hibernated / fresh session. Returns immediately with
+ * `{state:"warming", estimated_ready_at}` and triggers an ensurePod in
+ * the background — the caller polls /api/session/:id/lifecycle.
+ */
+async function warm(sessionId, userId) {
+  if (!sessionId) throw new Error('sessionId is required');
+  lifecycle.markWarming(sessionId, { stage: "warm_triggered", stage_progress_pct: 5 });
+  // Fire-and-forget; errors surface via the lifecycle state transitioning
+  // to `crashed`.
+  ensurePod(sessionId, userId).catch((err) => {
+    console.error(`[LocalSpawner] warm ensurePod failed for ${sessionId}:`, err.message);
+    lifecycle.markCrashed(sessionId, `warm_failed: ${err.message}`);
+  });
+  return lifecycle.snapshot(sessionId);
 }
 
 // ── Culler ─────────────────────────────────────────────────────────────────
@@ -315,6 +375,8 @@ module.exports = {
   ensurePod,
   touch,
   teardown,
+  warm,
+  lifecycleSnapshot,
   cullIdleWorkspaces,
   startCuller,
   stopCuller,

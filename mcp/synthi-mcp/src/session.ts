@@ -9,6 +9,9 @@ import { locateEngine } from "./locate/index.js";
 import { scanForInjection } from "./security/injection.js";
 import { resolvePipelineBudgetMs } from "./protocol/index.js";
 import { dispatchAckRegistry } from "./util/dispatch_ack_registry.js";
+import { structuralChangeGate } from "./correctness/structural_change.js";
+import { inputQueueDepth } from "./correctness/input_queue_depth.js";
+import { humanActions } from "./escape_hatch/human_actions.js";
 
 /**
  * MCP-local connection state. Distinct from the wire-level `SessionState`
@@ -74,6 +77,27 @@ export const FRAME_ADVANCE_FRESHNESS_WINDOW_MS = 10_000;
 
 type FrameAdvanceListener = (fa: FrameAdvance) => void;
 
+export interface WarmingProgress {
+  stage: string;
+  stage_progress_pct: number;
+  estimated_ready_at?: number;
+}
+
+export interface FrameTimingSnapshot {
+  total_frames: number;
+  sample_count: number;
+  interval_ms: {
+    mean?: number;
+    min?: number;
+    p50?: number;
+    p95?: number;
+    p99?: number;
+    max?: number;
+  };
+  pipeline_budget_estimate_ms: number;
+  observed_at: number;
+}
+
 class SessionManager {
   private attached: AttachedSession | null = null;
   private state: SessionState = "detached";
@@ -89,6 +113,8 @@ class SessionManager {
   private lastFrameAdvance: FrameAdvance | null = null;
   private frameAdvanceListeners = new Set<FrameAdvanceListener>();
   private presenceCounts: { humans: number; agents: number } = { humans: 0, agents: 1 };
+  private warmingProgress: WarmingProgress | null = null;
+  private frameTiming: FrameTimingSnapshot | null = null;
 
   getState(): SessionState {
     return this.state;
@@ -120,6 +146,43 @@ class SessionManager {
     this.presenceCounts = {
       humans: Math.max(0, Math.floor(counts.humans)),
       agents: Math.max(0, Math.floor(counts.agents)),
+    };
+  }
+
+  /**
+   * Warming-progress from the worker's lifecycle messages. `null` when
+   * the session isn't in `warming` or the worker hasn't reported a
+   * stage yet. Consumed by the synthi_attach envelope and synthi_health.
+   */
+  getWarmingProgress(): WarmingProgress | null {
+    return this.warmingProgress ? { ...this.warmingProgress } : null;
+  }
+
+  /**
+   * Latest worker-emitted frame-timing snapshot. Populated by the
+   * `{type:"frame-timing"}` handler on the build-log tap. `null` when
+   * no snapshot has arrived (worker hasn't sampled yet, or the worker
+   * is older than the F4 instrumentation).
+   */
+  getFrameTimingSnapshot(): FrameTimingSnapshot | null {
+    return this.frameTiming ? { ...this.frameTiming } : null;
+  }
+
+  setFrameTimingSnapshot(snap: Omit<FrameTimingSnapshot, "observed_at">): void {
+    this.frameTiming = { ...snap, observed_at: Date.now() };
+  }
+
+  setWarmingProgress(progress: WarmingProgress | null): void {
+    if (progress === null) {
+      this.warmingProgress = null;
+      return;
+    }
+    this.warmingProgress = {
+      stage: progress.stage,
+      stage_progress_pct: Math.max(0, Math.min(100, Math.floor(progress.stage_progress_pct))),
+      ...(progress.estimated_ready_at !== undefined
+        ? { estimated_ready_at: progress.estimated_ready_at }
+        : {}),
     };
   }
 
@@ -380,6 +443,157 @@ class SessionManager {
         return;
       }
 
+      // Worker-emitted lifecycle transitions. Shape:
+      //   {type:"lifecycle", state:"warming"|"ready"|"running"|..., warming_progress?:{stage, stage_progress_pct, estimated_ready_at?}}
+      // Drive `setWireState` so `synthi_attach` + `synthi_health`
+      // envelopes surface the real worker state + warming progress.
+      if (msgType === "lifecycle") {
+        const rawState = typeof msg["state"] === "string" ? (msg["state"] as string) : "unknown";
+        const KNOWN_STATES = [
+          "warming", "ready", "running", "hibernated",
+          "migrating", "crashed", "terminated",
+        ] as const;
+        const mapped = (KNOWN_STATES as readonly string[]).includes(rawState)
+          ? (rawState as typeof KNOWN_STATES[number])
+          : "unknown";
+        const warming = msg["warming_progress"] as Record<string, unknown> | undefined;
+        if (warming && typeof warming === "object") {
+          this.setWarmingProgress({
+            stage: typeof warming["stage"] === "string" ? (warming["stage"] as string) : "unknown",
+            stage_progress_pct: typeof warming["stage_progress_pct"] === "number"
+              ? (warming["stage_progress_pct"] as number)
+              : 0,
+            ...(typeof warming["estimated_ready_at"] === "number"
+              ? { estimated_ready_at: warming["estimated_ready_at"] as number }
+              : {}),
+          });
+        } else {
+          this.setWarmingProgress(null);
+        }
+        this.setWireState(mapped, warming ? { warming_progress: warming } : undefined);
+        return;
+      }
+
+      // Worker-emitted security events (e.g. WM_CLASS spoof). Shape:
+      //   {type:"security", code:string, detail:{...}}
+      // We mirror them into the MCP event log so synthi_get_event_log +
+      // the synthi://preview/events resource surface them immediately.
+      // Phase 1 is detection-only: the worker still dispatches input,
+      // the agent decides what to do.
+      if (msgType === "security") {
+        const code = typeof msg["code"] === "string" ? (msg["code"] as string) : "unknown";
+        const detail = msg["detail"] as Record<string, unknown> | undefined;
+        const ALLOWED_CODES = [
+          "wm_class_mismatch",
+          "unsafe_attach",
+          "injection_suspected",
+          "rate_limit_warning",
+          "focus_lost",
+          "sensitive_action_interstitial",
+        ] as const;
+        const mapped = (ALLOWED_CODES as readonly string[]).includes(code)
+          ? (code as typeof ALLOWED_CODES[number])
+          : "focus_lost";
+        eventLog.push({
+          kind: "security",
+          code: mapped,
+          ...(detail !== undefined ? { detail } : {}),
+        });
+        return;
+      }
+
+      // Worker-emitted frame-timing snapshot (F4 VFR + F2 pipeline-
+      // budget recal cadence). Shape:
+      //   {type:"frame-timing", total_frames, sample_count,
+      //    interval_ms:{mean,min,p50,p95,p99,max},
+      //    pipeline_budget_estimate_ms}
+      // Recorded as a usage event so PHASE_0_5_FINDINGS.md can be
+      // backfilled from event-log queries. Also tracked on the session
+      // so synthi_health / synthi_get_usage can surface the latest
+      // snapshot synchronously.
+      if (msgType === "frame-timing") {
+        const interval = msg["interval_ms"] as Record<string, unknown> | undefined;
+        const sampleCount = typeof msg["sample_count"] === "number" ? (msg["sample_count"] as number) : 0;
+        const totalFrames = typeof msg["total_frames"] === "number" ? (msg["total_frames"] as number) : 0;
+        const budget = typeof msg["pipeline_budget_estimate_ms"] === "number"
+          ? (msg["pipeline_budget_estimate_ms"] as number)
+          : 0;
+        this.setFrameTimingSnapshot({
+          total_frames: totalFrames,
+          sample_count: sampleCount,
+          interval_ms: (interval as { mean?: number; min?: number; p50?: number; p95?: number; p99?: number; max?: number }) ?? {},
+          pipeline_budget_estimate_ms: budget,
+        });
+        eventLog.push({
+          kind: "usage",
+          metric: "tool_call",
+          value: 1,
+          detail: {
+            kind: "frame_timing",
+            total_frames: totalFrames,
+            sample_count: sampleCount,
+            ...(interval !== undefined ? { interval_ms: interval } : {}),
+            pipeline_budget_estimate_ms: budget,
+          },
+        });
+        return;
+      }
+
+      // Worker-emitted human-action event. Shape:
+      //   {type:"human-action", sessionId, source:"human", kind, peer_id, ts_ms, detail}
+      // Worker stamps this on every gui-event whose origin peer is
+      // registered with PeerRole::Browser. The MCP ring buffer feeds
+      // `synthi_recent_human_actions` so agents can branch on whether
+      // a human has been driving the session concurrently.
+      if (msgType === "human-action") {
+        const rawKind = typeof msg["kind"] === "string" ? (msg["kind"] as string) : "other";
+        // Map wire kind to the schema-constrained enum expected by the
+        // humanActions ring. The worker emits "mouse" | "key" |
+        // "stop-runner" | ... today; collapse anything non-mouse /
+        // non-keyboard into "other".
+        let mapped: "mouse" | "keyboard" | "other";
+        if (rawKind === "mouse") mapped = "mouse";
+        else if (rawKind === "key" || rawKind === "keyboard") mapped = "keyboard";
+        else mapped = "other";
+        const peerId = typeof msg["peer_id"] === "string" ? (msg["peer_id"] as string) : undefined;
+        const ts = typeof msg["ts_ms"] === "number" ? (msg["ts_ms"] as number) : Date.now();
+        const detail = msg["detail"] as Record<string, unknown> | undefined;
+        humanActions.record({
+          kind: mapped,
+          ts,
+          ...(peerId !== undefined ? { source_peer_id: peerId } : {}),
+          ...(detail !== undefined ? { detail } : {}),
+        });
+        // Also mirror into the event log as an `input` event with
+        // source-attribution, so event-log consumers see it without
+        // having to query the ring separately.
+        eventLog.push({
+          kind: "input",
+          action: "human:" + mapped,
+          payload: {
+            kind: mapped,
+            ...(peerId !== undefined ? { peer_id: peerId } : {}),
+            source: "human",
+          },
+        });
+        return;
+      }
+
+      // Worker-emitted guest-registered event (ultraplan §Security v4
+      // pre-work #5-#6). Shape:
+      //   {type:"guest-registered", root_pid, binary_path, binary_fingerprint, ...}
+      // Recorded as a console event for observability; tools query the
+      // synthi://preview/events stream to see when a new guest comes up.
+      if (msgType === "guest-registered") {
+        eventLog.push({
+          kind: "console",
+          level: "info",
+          message: `[guest_registered] pid=${msg["root_pid"]} binary=${msg["binary_path"]}`,
+          source: "worker_build_log",
+        });
+        return;
+      }
+
       // Input ack: `{type:"input-ack", dispatch_id, accepted, reason?}`.
       // Worker echoes one per input event that carried a dispatch_id.
       // Resolve the DispatchAckRegistry so any caller awaiting the ack
@@ -401,6 +615,36 @@ class SessionManager {
         return;
       }
 
+      // Structural-change pHash gate (ultraplan §4.1). Capture a
+      // baseline pHash on compile-start; evaluate against post-reload
+      // frame on `applied`. Phase 1 is detection-only — we emit a
+      // security event; no input queue flush yet (phase 2c).
+      const isCompileStart =
+        (msgType === "compile-start") ||
+        (msgType === "hmr-status" && status === "reload-planned") ||
+        (status === "Enqueued") ||
+        (evType === "Enqueued");
+      if (isCompileStart) {
+        // Open the input-queue-depth window — every dispatch from the
+        // mouse/keyboard tools until the next applied/rejected/etc
+        // counts toward the peak.
+        inputQueueDepth.onCompileStart();
+        // Snapshot current frame without blocking the tap. The gate
+        // emits its own error event if the snapshot fails.
+        const frameSink = attached.frames;
+        const snapshotFrame = async (): Promise<void> => {
+          try {
+            const frame = await frameSink.getFrame();
+            await structuralChangeGate.onCompileStart(frame.data, frame.seq);
+          } catch {
+            // No frame yet — gate will no-op on the applied check
+            // because there's no baseline to compare against.
+          }
+        };
+        // Fire-and-forget; errors are captured inside
+        void snapshotFrame();
+      }
+
       // Only tap terminal events to the log — intermediate ones flood the
       // ring. Classification happens in the normalizer; we mirror a short
       // label for observability without re-parsing.
@@ -414,6 +658,40 @@ class SessionManager {
         source: msgType ?? "build-log",
         raw: msg,
       });
+
+      // Structural-change verdict on every `applied` / `Promoted` —
+      // compute the post-reload pHash and compare to the baseline
+      // captured at compile-start.
+      if (status === "applied" || evType === "Promoted") {
+        // Close the queue-depth window — record peak in histogram.
+        inputQueueDepth.onCompileEnd();
+        const frameSink = attached.frames;
+        const pipelineBudget = this.pipelineBudgetMs();
+        void (async (): Promise<void> => {
+          try {
+            // Wait for a post-reload frame with the gate's pipeline
+            // budget so we don't sample the stale pre-reload frame.
+            await new Promise((r) => setTimeout(r, pipelineBudget));
+            const frame = await frameSink.getFrame();
+            await structuralChangeGate.onHmrApplied(frame.data, frame.seq);
+          } catch {
+            // Absent frame sink is non-fatal; the gate already emits
+            // `input_rejected_phash_unavailable` when the snapshot
+            // fails. For "no frame at all" we simply skip the check.
+          }
+        })();
+      }
+      // Close the window on terminal-but-not-applied statuses too,
+      // otherwise inflight bleeds into the next cycle.
+      if (
+        status === "rejected" ||
+        status === "compile-error" ||
+        status === "full-reload-required" ||
+        evType === "RolledBack" ||
+        evType === "Discarded"
+      ) {
+        inputQueueDepth.onCompileEnd();
+      }
 
       // Injection-heuristic pre-screen: any free-text field in the wire
       // might be a prompt-injection vector since the preview content

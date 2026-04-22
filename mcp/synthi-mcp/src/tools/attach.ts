@@ -151,6 +151,7 @@ export async function attachTool(args: unknown, ctx: ToolContext): Promise<ToolR
       capabilities: manifest,
       session: ((): Record<string, unknown> => {
         const presence = session.getPresenceCounts();
+        const warming = session.getWarmingProgress();
         return {
           id: attached.sessionId,
           state: session.getWireState(),
@@ -161,6 +162,10 @@ export async function attachTool(args: unknown, ctx: ToolContext): Promise<ToolR
           // reported yet.
           attached_humans: presence.humans,
           attached_agents: presence.agents,
+          // Populated by worker-emitted `{type:"lifecycle", warming_progress}`.
+          // Omitted when the worker hasn't reported a warming stage (session
+          // already running, or warming finished before attach).
+          ...(warming !== null ? { warming_progress: warming } : {}),
         };
       })(),
     });

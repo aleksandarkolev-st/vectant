@@ -107,8 +107,8 @@ export const STATIC_MANIFEST: Omit<CapabilityManifest, "tools" | "frame_seq_gate
     keystroke_rate_cap_per_sec: 500,
   },
   arbitration: {
-    input_lease_supported: false,
-    enforcement: "none",
+    input_lease_supported: true,
+    enforcement: "wire-only",
   },
   limits: {
     event_log_capacity: 1024,

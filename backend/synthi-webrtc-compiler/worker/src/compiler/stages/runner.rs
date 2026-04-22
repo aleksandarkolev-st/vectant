@@ -28,6 +28,48 @@ fn extract_structured_runner_message(line: &str) -> Option<&str> {
     line.find(PREFIX).map(|idx| &line[idx + PREFIX.len()..])
 }
 
+/// Emit a lifecycle-progress message on the build-log DC so the MCP +
+/// frontend can surface per-stage warming progress. Ultraplan
+/// §Response envelope "Warming progress" — MCP's session envelope
+/// carries `warming_progress: {stage, stage_progress_pct,
+/// estimated_ready_at}`.
+///
+/// Fire-and-forget; drop errors so a flaky DC doesn't stall the warm
+/// path.
+async fn emit_lifecycle_progress(
+    ctx: &CompileContext,
+    session_id: Option<&str>,
+    state: &str,
+    stage: &str,
+    progress_pct: u8,
+    estimated_ready_ms: Option<u64>,
+) {
+    let mut payload = serde_json::json!({
+        "sessionId": session_id,
+        "type": "lifecycle",
+        "state": state,
+        "warming_progress": {
+            "stage": stage,
+            "stage_progress_pct": progress_pct.min(100),
+        },
+    });
+    if let Some(ms) = estimated_ready_ms {
+        payload["warming_progress"]["estimated_ready_at"] =
+            serde_json::Value::from(now_ms() + ms);
+    }
+    let _ = ctx
+        .log_dc
+        .send_text(serde_json::to_string(&payload).unwrap_or_default())
+        .await;
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
 pub async fn handle_runner_execution(
     ctx: &CompileContext,
     req: &CompileRequest,
@@ -211,6 +253,7 @@ pub async fn handle_runner_execution(
                 gst_display_str = wsl_display_str.clone();
 
                 debug_log!("Starting Xvfb on display {}", wsl_display_str);
+                emit_lifecycle_progress(ctx, session_id.as_deref(), "warming", "xvfb_start", 15, Some(5_000)).await;
 
                 let mut xvfb_cmd = Command::new("Xvfb");
                 xvfb_cmd
@@ -249,6 +292,17 @@ pub async fn handle_runner_execution(
             // Wait for Xvfb and window manager to be fully ready before
             // starting GStreamer capture (ximagesrc needs a live X display).
             tokio::time::sleep(tokio::time::Duration::from_millis(700)).await;
+
+            // Kick off the focus probe for this display. One probe per
+            // DISPLAY; idempotent. The probe's cache feeds the
+            // window-tree focus lock + WM_CLASS spoof check in the
+            // gui-event handler (main.rs). Advisory-only in phase 1.
+            crate::safety::focus_probe::ensure_probe(&wsl_display_str).await;
+            if let Some(sid) = session_id.as_deref() {
+                crate::safety::focus_probe::bind_session_display(sid, &wsl_display_str);
+            }
+
+            emit_lifecycle_progress(ctx, session_id.as_deref(), "warming", "gstreamer_start", 40, Some(3_000)).await;
 
             if gst_pipeline.is_none() {
                 // VP8 only: the per-peer WebRTC track declares video/VP8 so
@@ -394,6 +448,7 @@ pub async fn handle_runner_execution(
                 // via broadcast_build_log_text.
                 let video_fanout = ctx.video_fanout.clone();
                 let log_dc_for_frame_advance = ctx.log_dc.clone();
+                let session_id_for_frame_timing = session_id.clone();
                 tokio::spawn(async move {
                     let mut frame_seq: u64 = 0;
                     let mut dispatched: u64 = 0;
@@ -423,6 +478,14 @@ pub async fn handle_runner_execution(
                         }
                         if is_end_of_frame {
                             frame_seq += 1;
+                            // F4 measurement: feed every end-of-frame
+                            // into the per-session interval tracker.
+                            // Cheap (one mutex + push to a bounded
+                            // VecDeque); marker-rate caps at the
+                            // encoder's frame rate (≤60 Hz).
+                            if let Some(ref sid) = session_id_for_frame_timing {
+                                crate::infra::frame_timing::record_end_of_frame(sid);
+                            }
                             if frame_seq % EMIT_EVERY_N_FRAMES == 0 {
                                 let ts_ms = std::time::SystemTime::now()
                                     .duration_since(std::time::UNIX_EPOCH)
@@ -471,6 +534,47 @@ pub async fn handle_runner_execution(
             }
         }
 
+        // Frame-timing publisher (F2 + F4): every 5s, publish the
+        // rolling p50/p95/p99 of inter-frame intervals + a pipeline-
+        // budget proxy on the build-log DC. The MCP routes this into
+        // its event log so PHASE_0_5_FINDINGS.md can be filled in
+        // with real numbers without a separate scrape endpoint.
+        if let Some(sid_for_publish) = session_id.clone() {
+            let log_dc_for_timing = ctx.log_dc.clone();
+            tokio::spawn(async move {
+                let mut interval = tokio::time::interval(
+                    crate::infra::frame_timing::PUBLISH_INTERVAL,
+                );
+                interval.tick().await; // skip the immediate first tick
+                loop {
+                    interval.tick().await;
+                    crate::infra::frame_timing::publish_snapshots();
+                    let snap = match crate::infra::frame_timing::latest_published(&sid_for_publish) {
+                        Some(s) if s.sample_count > 0 => s,
+                        _ => continue,
+                    };
+                    let payload = serde_json::json!({
+                        "sessionId": sid_for_publish,
+                        "type": "frame-timing",
+                        "total_frames": snap.total_frames,
+                        "sample_count": snap.sample_count,
+                        "interval_ms": {
+                            "mean": snap.mean_ms,
+                            "min": snap.min_ms,
+                            "p50": snap.p50_ms,
+                            "p95": snap.p95_ms,
+                            "p99": snap.p99_ms,
+                            "max": snap.max_ms,
+                        },
+                        "pipeline_budget_estimate_ms": snap.pipeline_budget_estimate_ms,
+                    });
+                    let _ = log_dc_for_timing
+                        .send_text(payload.to_string())
+                        .await;
+                }
+            });
+        }
+
         // Spawn Runner Process
         //
         // ULTRAPLAN Lightning Phase 12 — per-project runner selection.
@@ -505,6 +609,8 @@ pub async fn handle_runner_execution(
             runner_path
         );
 
+        emit_lifecycle_progress(ctx, session_id.as_deref(), "warming", "runner_spawn", 75, Some(2_000)).await;
+
         let mut cmd = Command::new(&runner_path);
         cmd.env("DISPLAY", &wsl_display_str)
             .env(
@@ -537,6 +643,45 @@ pub async fn handle_runner_execution(
         }
 
         let mut child = cmd.spawn().context("Failed to spawn runner process")?;
+
+        // Runner is up — flip lifecycle to `ready`. First peer attach
+        // moves it to `running` via peer-count tracking (signaling-side).
+        emit_lifecycle_progress(ctx, session_id.as_deref(), "ready", "runner_started", 100, None).await;
+
+        // Guest-process registry (ultraplan §Security v4 pre-work #5-#6).
+        // Record the root PID + binary fingerprint so the focus-lock +
+        // WM_CLASS spoof checks have a ground truth. This is passive —
+        // enforcement lands in a follow-up; the registry entry exists
+        // on every spawn whether or not downstream code consumes it.
+        if let Some(pid) = child.id() {
+            if let Some(sid) = session_id.as_deref() {
+                let argv0 = runner_path
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .map(|s| s.to_string());
+                let registered = crate::safety::guest_registry::GLOBAL_GUEST_REGISTRY
+                    .register(sid, pid, argv0);
+                let summary = serde_json::json!({
+                    "sessionId": sid,
+                    "type": "guest-registered",
+                    "root_pid": registered.root_pid,
+                    "binary_path": registered.binary_path
+                        .as_ref().map(|p| p.display().to_string()),
+                    "binary_fingerprint": registered.binary_fingerprint,
+                    "expected_wm_class_hint": registered.expected_wm_class_hint,
+                });
+                let _ = ctx
+                    .log_dc
+                    .send_text(serde_json::to_string(&summary).unwrap_or_default())
+                    .await;
+                eprintln!(
+                    "[GuestRegistry] session={} root_pid={} binary={:?}",
+                    sid,
+                    registered.root_pid,
+                    registered.binary_path,
+                );
+            }
+        }
 
         // Capture stdout/stderr
         let stdout = child.stdout.take().unwrap();

@@ -21,6 +21,9 @@ export async function healthTool(_args: unknown): Promise<ToolResponse> {
     const attachedAt = session.getAttachedAt();
     const lastActivity = session.getLastActivityAt();
 
+    const warming = session.getWarmingProgress();
+    const timing = session.getFrameTimingSnapshot();
+
     if (!attached) {
       return jsonResponse({
         ok: true,
@@ -30,6 +33,8 @@ export async function healthTool(_args: unknown): Promise<ToolResponse> {
         unsafe_mode: unsafe,
         attached_at: attachedAt,
         last_activity_at: lastActivity,
+        ...(warming !== null ? { warming_progress: warming } : {}),
+        ...(timing !== null ? { frame_timing: timing } : {}),
       });
     }
 
@@ -47,6 +52,8 @@ export async function healthTool(_args: unknown): Promise<ToolResponse> {
       signaling_url: attached.signalingUrl,
       attached_at: attachedAt,
       last_activity_at: lastActivity,
+      ...(warming !== null ? { warming_progress: warming } : {}),
+      ...(timing !== null ? { frame_timing: timing } : {}),
       peer: {
         connection_state: peerConnectionState,
       },

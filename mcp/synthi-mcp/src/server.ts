@@ -39,6 +39,12 @@ import { resetGuestTool } from "./tools/reset_guest.js";
 import { verifyTool } from "./tools/verify.js";
 import { compileTool } from "./tools/compile.js";
 import { reportSourceStateTool } from "./tools/report_source_state.js";
+import { describeTool } from "./tools/describe.js";
+import { acquireInputTool } from "./tools/acquire_input.js";
+import { releaseInputTool } from "./tools/release_input.js";
+import { requestHumanTool } from "./tools/request_human.js";
+import { annotateAndAskTool } from "./tools/annotate_and_ask.js";
+import { recentHumanActionsTool } from "./tools/recent_human_actions.js";
 import type { ToolContext } from "./tools/shared.js";
 
 export interface SynthiServerOptions {
@@ -408,6 +414,18 @@ const TOOLS = [
           type: "object",
           description: "Optional pre-action wait. Same shape as synthi_wait input.",
         },
+        await_ack: {
+          type: "boolean",
+          description: "When true, every outgoing input frame is stamped with a dispatch_id and the tool waits for the worker's `{type:\"input-ack\"}` echo before returning. Useful when subsequent steps (screenshot, wait) depend on the event actually landing in the guest. Default false (fire-and-forget).",
+        },
+        ack_timeout_ms: {
+          type: "number",
+          description: "Per-dispatch ack timeout when await_ack is true. Default 4000ms; rejects with input_ack_timeout if the worker doesn't echo within the window.",
+        },
+        lease_id: {
+          type: "string",
+          description: "Optional input-lease id (from synthi_acquire_input). Phase-1 wire-only: when a lease is held by another caller and this id doesn't match, the MCP emits a security event of code:\"rate_limit_warning\" with detail.code=\"input_without_current_lease\". Worker-side enforcement is phase 2c.",
+        },
       },
       required: ["action"],
     },
@@ -439,6 +457,18 @@ const TOOLS = [
           type: "object",
           description: "Optional pre-action wait. Same shape as synthi_wait input.",
         },
+        await_ack: {
+          type: "boolean",
+          description: "When true, every outgoing key frame is stamped with a dispatch_id and the tool waits for the worker's `{type:\"input-ack\"}` echo before returning. Default false.",
+        },
+        ack_timeout_ms: {
+          type: "number",
+          description: "Per-dispatch ack timeout when await_ack is true. Default 4000ms.",
+        },
+        lease_id: {
+          type: "string",
+          description: "Optional input-lease id (from synthi_acquire_input). Same advisory semantics as synthi_mouse.lease_id.",
+        },
       },
       required: ["action"],
     },
@@ -456,6 +486,106 @@ const TOOLS = [
         },
       },
       required: ["predicate"],
+    },
+  },
+  {
+    name: "synthi_describe",
+    description:
+      "Describe the current preview frame. mode:'agent_side' (default) returns {screenshot, frame_seq, entities:[]} so the agent's own LLM runs the description. mode:'server_side' runs a VLM pass using the configured vision backend (claude_api | gemini_api) and returns {summary, entities[], frame_seq}. Falls back to capability_not_available when no server-side backend is configured. Intended as the closed-loop partner for verify({kind:'scene_matches'}), which returns verify_scene_matches_unsupported with required_tool_call:'synthi_describe'.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        mode: {
+          type: "string",
+          enum: ["agent_side", "server_side"],
+          description: "agent_side returns a screenshot for the agent to reason about; server_side runs a VLM pass on the MCP side.",
+        },
+        focus_description: {
+          type: "string",
+          description: "Optional natural-language hint for what the description should emphasise (e.g. 'the login form').",
+        },
+        preferred_vision_backend: {
+          type: "string",
+          enum: ["claude_api", "gemini_api"],
+          description: "server_side only: which vision backend to use. Defaults to SYNTHI_VISION_BACKEND env.",
+        },
+      },
+      required: [],
+    },
+  },
+  {
+    name: "synthi_acquire_input",
+    description:
+      "Acquire an input lease for the session. Phase 1 records the lease + owner + expiry in the MCP event log; worker-side enforcement (actual single-holder gating) lands in phase 2c. Capability manifest reports arbitration.enforcement:'wire-only' today. Returns {lease_id, acquired_at, expires_at, lease_ms, owner, enforcement}.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        lease_ms: {
+          type: "number",
+          description: "Lease duration in milliseconds. Clamped to [50, 600000]. Default 30000.",
+        },
+        owner: {
+          type: "string",
+          description: "Optional short owner label stamped onto the lease (e.g. 'claude-code', 'cursor').",
+        },
+      },
+      required: [],
+    },
+  },
+  {
+    name: "synthi_release_input",
+    description:
+      "Release a lease acquired via synthi_acquire_input. Omitting lease_id releases every lease held by this MCP process. Returns lease_not_found if the id does not match a live lease.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        lease_id: { type: "string", description: "Lease id returned by synthi_acquire_input. Omit to release all." },
+      },
+      required: [],
+    },
+  },
+  {
+    name: "synthi_request_human",
+    description:
+      "Ask a human operator a question and await their reply. Phase 1 wire-only: records intent + returns escape_hatch_backend_not_implemented. Operator-UI routing lands in phase 3.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        question: { type: "string", description: "Plain-text question for the human." },
+        screenshot: {
+          type: "string",
+          description: "Optional base64-encoded PNG (from synthi_screenshot) to include with the question.",
+        },
+        timeoutMs: { type: "number", description: "Maximum time to wait for the human's reply." },
+      },
+      required: ["question"],
+    },
+  },
+  {
+    name: "synthi_annotate_and_ask",
+    description:
+      "Ask a human to click a point on a screenshot to disambiguate an action. Phase 1 wire-only: records intent + returns escape_hatch_backend_not_implemented. Operator-UI overlay lands in phase 3.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        screenshot: { type: "string", description: "Base64-encoded PNG to annotate (from synthi_screenshot)." },
+        question: { type: "string", description: "Plain-text prompt rendered with the overlay." },
+        timeoutMs: { type: "number", description: "Maximum time to wait for the human's click." },
+      },
+      required: ["screenshot", "question"],
+    },
+  },
+  {
+    name: "synthi_recent_human_actions",
+    description:
+      "Return human-authored input actions observed by the MCP since sinceSeq. Phase 1 returns an empty list unless the worker has populated the log (input-source attribution hook is phase-1 pending).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        sinceSeq: { type: "number", description: "Return only actions with seq > sinceSeq." },
+        limit: { type: "number", description: "Maximum number of entries to return. Default 64." },
+      },
+      required: [],
     },
   },
   {
@@ -657,6 +787,18 @@ export function createSynthiServer(options: SynthiServerOptions): Server {
         return (await compileTool(args)) as CallToolResult;
       case "synthi_report_source_state":
         return (await reportSourceStateTool(args)) as CallToolResult;
+      case "synthi_describe":
+        return (await describeTool(args, signal ? { signal } : undefined)) as CallToolResult;
+      case "synthi_acquire_input":
+        return (await acquireInputTool(args)) as CallToolResult;
+      case "synthi_release_input":
+        return (await releaseInputTool(args)) as CallToolResult;
+      case "synthi_request_human":
+        return (await requestHumanTool(args)) as CallToolResult;
+      case "synthi_annotate_and_ask":
+        return (await annotateAndAskTool(args)) as CallToolResult;
+      case "synthi_recent_human_actions":
+        return (await recentHumanActionsTool(args)) as CallToolResult;
       default:
         return {
           content: [
