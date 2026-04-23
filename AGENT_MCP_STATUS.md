@@ -313,17 +313,29 @@ First-cut landed in PR #250 (merged 2026-04-23, branch `claude/phase-3-agent-mcp
 
 - [ ] **CRIU-backed guest-memory snapshot.** Worker-side; needs a CRIU daemon + orchestration. MCP snapshots intentionally capture observable state only — the guest heap isn't in scope for the MCP layer. This ticket is the worker's job.
 - [ ] **24 h+ soak on the cloud stack.** Short-cycle harness is in; long-haul runs against a staging cluster need scheduling + on-call coverage.
-- [ ] **Operator-UI kit for `synthi://escape-hatch/queue`.** Dashboard widget that lists pending entries + click-to-answer overlay for `annotate_and_ask` (operator clicks a coordinate on the sent screenshot, the click is serialized as the answer). Resource + tool exist; the UI consumer is the gap.
+- [x] **Operator-UI kit for `synthi://escape-hatch/queue`.** Landed on `claude/review-agentmcp-phases-aqio8`. New MCP opt-in HTTP bridge (`src/operator_bridge/server.ts`, gated by `SYNTHI_OPERATOR_BRIDGE_PORT`; optional `SYNTHI_OPERATOR_BRIDGE_TOKEN` shared-secret header) exposes `GET /escape-hatch/queue`, `GET /escape-hatch/queue/:id`, `POST /escape-hatch/answer`, `GET /escape-hatch/events` (SSE). Frontend `EscapeHatchPanel.jsx` (polling + SSE) mounts alongside `OperatorPanel` in a shadcn-tabs-wrapped `OperatorDialog`. `annotate_and_ask` entries render the screenshot and capture a click-to-answer coordinate (rendered-px → natural-px mapping), which the operator can send or cancel. Config persists in `localStorage` so operators can point at a different MCP without a rebuild. 9 new unit tests cover the bridge end-to-end.
 - [ ] **Production local-grounding model choice.** Benchmark Moondream / Qwen2-VL / Florence-2 against the counter_sdl2 fixture for accuracy vs. latency vs. VRAM; ship the winner plus the pod manifest (tracked in `PHASE_2_PLUS_BACKLOG.md:D6`).
 
 ---
 
-## 7. What's left — Phase 4 (~1 week)
+## 7. Phase 4 — scaffolded, infra validation pending
 
-- [ ] `mcp-agent` role in signaling-server.
-- [ ] Scoped agent-token issuance.
-- [ ] Cross-region latency bench.
-- [ ] TURN credentials for `mcp-agent`.
+Landed on `claude/review-agentmcp-phases-aqio8` (all four items first-cut; env-gated so existing deployments are byte-identical unchanged).
+
+### Landed
+
+- [x] **`mcp-agent` role** (`signaling-server/src/main.rs`). New constant `ROLE_MCP_AGENT` alongside browser/worker/observer/operator; multi-peer per session, counted in `attached_agents` presence, included in the worker→peer fanout list. MCP flips to this role via `SYNTHI_MCP_ROLE=mcp-agent` (default stays `observer` for Path A). 3 unit tests updated, no fanout regressions.
+- [x] **Scoped agent-token issuance + verification.** New module `signaling-server/src/agent_auth.rs` — minimal HS256 JWT verify (hmac + sha2 + base64, no heavy jwt crate) with claims `{sub, scope:"mcp-agent", session_id, role, iat, exp}` and 60s skew tolerance. Gated by `SYNTHI_AGENT_TOKEN_SECRET`; when unset, verification is disabled and every role passes through (backwards-compat). 8 distinct error codes cover malformed / wrong-alg / bad-signature / wrong-scope / session-mismatch / role-mismatch / expired / missing paths. Companion Node CLI at `scripts/issue-agent-token.mjs` (reads `SYNTHI_AGENT_TOKEN_SECRET`, mints a token). MCP picks up `SYNTHI_AGENT_TOKEN` from env and stamps it onto the register envelope. Verified end-to-end against a running signaling-server: valid token → `registered` ack with `agent_subject`; missing token → `register-error{code:"agent_token_required"}` → socket close.
+- [x] **TURN credentials for `mcp-agent`.** Gated by `SYNTHI_TURN_SECRET` + `SYNTHI_TURN_URLS` (+ optional `SYNTHI_TURN_TTL_SECONDS`, default 1h). Minted fresh on every mcp-agent register using coturn's `use-auth-secret` REST flow (`username=<unix-expiry>:<subject>`, `credential=base64(HMAC-SHA1(secret, username))`). Returned as `turn_credentials:{urls, username, credential, expires_at}` on the `registered` ack. MCP splices them in front of any caller-supplied `iceServers` so relay candidates are tried first. Browser / observer / operator roles never receive TURN creds (they have their own ICE config / don't need relay).
+- [x] **Cross-region latency bench** (`scripts/cross-region-bench.mjs`). Measures `ws_connect_ms`, `register_ack_ms`, `presence_rtt_ms`, `echo_rtt_ms` per iteration against any signaling URL, with `--region` / `--role` / `--iterations` / `--gap-ms` / `--agent-token` flags. Emits NDJSON rows and a p50/p95/p99 summary for archival + comparison across regions. Verified end-to-end against the local signaling-server: p50 `register_ack_ms` < 1ms (local) — realistic floor for same-host; operators run against a real deployment to compare.
+- [x] **Fixed a collateral bug.** `register-error` frames were consistently lost because `send_task.abort()` ran before the writer task could flush. The rejection path now drops `out_tx` + awaits `send_task` for up to 500 ms so the final frame lands before the socket closes. Smoke-tested: clients now see `{type:"register-error",code:"agent_token_required"}` before the transport drop.
+- [x] **Docs.** `mcp/synthi-mcp/docs/PHASE_4_AUTH.md` — env var table, issuer usage, TURN deployment notes, bench usage, per-failure error-code reference, deployment checklist.
+
+### Still open (infra-dependent)
+
+- [ ] **Production TURN deployment + reachability test.** The signaling-server mints credentials unconditionally once configured; whether the TURN server is actually reachable from every MCP host + worker pod is a deployment concern that this repo can't validate. Checklist covered in `PHASE_4_AUTH.md`.
+- [ ] **Real cross-region runs.** Bench works; running it from at least two regions against one deployed signaling-server is an operational exercise (needs reachable hosts + archived NDJSON outputs).
+- [ ] **Token-issuer integration.** The CLI issuer is fine for local dev + CI, but a production deployment wants the token minted by an auth-aware service (collab-server / NextAuth) that has already authenticated the user. That wiring is deployment-specific and not in this branch.
 
 ---
 

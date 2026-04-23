@@ -355,13 +355,22 @@ class SessionManager {
     };
     dbg(`attach start sid=${opts.sessionId} signaling=${opts.signalingUrl} timeout=${attachTimeoutMs}ms`);
 
+    // Phase-4 role selection. Defaults to `observer` for Path-A local dev
+    // (zero-auth, MCP shares the browser slot). Flip to `mcp-agent` via
+    // SYNTHI_MCP_ROLE when the signaling-server is running scoped agent
+    // auth + TURN minting — in that mode we also forward SYNTHI_AGENT_TOKEN
+    // on register so the server can bind us to a session + subject.
+    const envRole = process.env["SYNTHI_MCP_ROLE"];
+    const role = envRole === "mcp-agent" ? "mcp-agent" : "observer";
+    const agentToken = process.env["SYNTHI_AGENT_TOKEN"];
     const signaling = new SignalingClient({
       url: opts.signalingUrl,
       sessionId: opts.sessionId,
-      role: "observer",
+      role,
       connectTimeoutMs: 10_000,
       clientVersion: "synthi-mcp/0.1.0",
       supportedProtocols: [1],
+      ...(agentToken ? { agentToken } : {}),
     });
     // Listen for {type:"presence"} broadcasts from the signaling-server.
     // These arrive on register + disconnect of any peer in the session,
@@ -383,8 +392,25 @@ class SessionManager {
       signaling,
       connectTimeoutMs: attachTimeoutMs,
     };
+    // Phase-4: if the server minted TURN credentials on the `registered`
+    // ack, splice them in front of any caller-supplied iceServers so
+    // relay candidates are tried first. Caller overrides still win when
+    // SYNTHI_MCP_ICE_POLICY=all is forced downstream.
+    const issuedTurn = signaling.turn();
+    const mergedIceServers: RTCIceServer[] = [];
+    if (issuedTurn) {
+      mergedIceServers.push({
+        urls: issuedTurn.urls,
+        username: issuedTurn.username,
+        credential: issuedTurn.credential,
+      });
+      dbg(`turn: using issued credentials (expires ${new Date(issuedTurn.expires_at * 1000).toISOString()})`);
+    }
     if (opts.iceServers !== undefined) {
-      peerOpts.iceServers = opts.iceServers;
+      mergedIceServers.push(...opts.iceServers);
+    }
+    if (mergedIceServers.length > 0) {
+      peerOpts.iceServers = mergedIceServers;
     }
     const peer = new Peer(peerOpts);
     await peer.start();
