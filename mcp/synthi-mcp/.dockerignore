@@ -1,0 +1,9 @@
+node_modules
+dist
+.live-test-logs
+.live-test-artifacts
+tests
+docs
+scripts
+*.log
+.git

@@ -14,6 +14,7 @@ use crate::runtime::path_c::supervisor::SupervisedSession;
 use crate::runtime::path_c::xvfb_allocator::XvfbAllocator;
 use crate::safety::hardened_ipc::IpcConfig;
 use crate::safety::restart_control::RestartController;
+use crate::webrtc::TrackFanout;
 
 pub struct CompileContext {
     pub log_dc: Arc<RTCDataChannel>,
@@ -33,6 +34,13 @@ pub struct CompileContext {
     // Phase 12.6: per-session supervisor (typed IPC, per-session Xvfb)
     pub supervisor_store: Arc<Mutex<Option<SupervisedSession>>>,
     pub xvfb_allocator: Arc<Mutex<XvfbAllocator>>,
+    /// Session-wide RTP fanouts. Producers (runner.rs + video_pipeline.rs)
+    /// dispatch packets here; the PC-creation code in main.rs subscribes
+    /// each peer's per-peer track to them. Dropping a peer (via
+    /// `PeerRegistry::remove`) drops its `FanoutSubscription`, severing
+    /// dispatch to that peer without affecting the rest.
+    pub video_fanout: Arc<TrackFanout>,
+    pub audio_fanout: Arc<TrackFanout>,
 }
 
 impl Clone for CompileContext {
@@ -54,6 +62,8 @@ impl Clone for CompileContext {
             ipc_config: self.ipc_config.clone(),
             supervisor_store: self.supervisor_store.clone(),
             xvfb_allocator: self.xvfb_allocator.clone(),
+            video_fanout: self.video_fanout.clone(),
+            audio_fanout: self.audio_fanout.clone(),
         }
     }
 }

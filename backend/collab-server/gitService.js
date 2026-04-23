@@ -1789,12 +1789,45 @@ class GitService {
                 } else {
                     await git.commit(message);
                 }
+                await this._propagateToBare(slug, userId, git, { amend });
                 this._archiveGitAsync(slug, userId);
                 return this.getStatus(slug, userId);
             } catch (e) {
                 throw this.mapGitError(e, slug);
             }
         }, userId);
+    }
+
+    // Push the per-user commit forward to <slug>/_upstream.git so other users
+    // who later run ensureUserRepo clone a bare that actually contains it.
+    // Without this, a commit lives only in the committer's per-user repo;
+    // ensureUserRepo prefers the bare over peer-clone (gitService.js:4144),
+    // so new users get an empty bare and never see the work.
+    // Local filesystem push — no credentials needed. Best-effort: a failure
+    // here must not undo the commit, since the commit itself succeeded.
+    async _propagateToBare(slug, userId, userGit, { amend } = {}) {
+        if (!userId) return;
+        const barePath = this.getBarePath(slug);
+        if (!fs.existsSync(barePath)) return;
+
+        let branch;
+        try {
+            const status = await userGit.status();
+            branch = status.current;
+        } catch (_) { return; }
+        if (!branch || branch === 'HEAD') return;
+
+        const opts = amend ? { '--force': null } : {};
+        try {
+            await userGit.push(barePath, `${branch}:${branch}`, opts);
+        } catch (e) {
+            // Non-fast-forward (peer pushed first) or detached bare HEAD —
+            // surface but don't throw. Cross-user merge is a separate concern.
+            console.warn(
+                `[GitService] _propagateToBare(${slug}/${userId}): ` +
+                `push ${branch} → ${barePath} failed: ${e?.message || e}`,
+            );
+        }
     }
 
     /**
@@ -3792,9 +3825,47 @@ class GitService {
             console.warn(`[Migration]   Failed to clean slug-level working tree: ${e.message}`);
         }
 
+        // ── Step 7: Seed bare from existing per-user repos ────────────────
+        // The bare was cloned from the slug-level repo, which is often just
+        // scaffolding (single "Initial commit" from initRepo line 1285).
+        // Any real work lives in the per-user repos.  Without this push,
+        // future ensureUserRepo() calls clone the empty bare and miss it.
+        await this._seedBareFromUserRepos(slug, barePath);
+
         console.log(`[Migration] ── Migration complete for "${slug}" ──`);
 
         return { barePath, worktreePath: repoPath };
+    }
+
+    // After the bare is created from the slug-level scaffold, fold in any
+    // commits that already exist in per-user repos. Pushes each user repo's
+    // current branch into the bare; conflicts (divergent branches across
+    // users) are non-fatal — we surface a warning and the bare keeps
+    // whichever push landed last. Called from _migrateToSessionStructure.
+    async _seedBareFromUserRepos(slug, barePath) {
+        let userRepos;
+        try {
+            userRepos = await this.listUserRepos(slug);
+        } catch (e) {
+            console.warn(`[Migration]   listUserRepos failed during bare seed: ${e.message}`);
+            return;
+        }
+        if (!userRepos.length) return;
+
+        for (const peer of userRepos) {
+            try {
+                const peerGit = simpleGit(peer.path);
+                const status = await peerGit.status();
+                const branch = status.current;
+                if (!branch || branch === 'HEAD') continue;
+                await peerGit.push(barePath, `${branch}:${branch}`);
+                console.log(`[Migration]   Seeded bare from ${peer.userId} (${branch})`);
+            } catch (e) {
+                console.warn(
+                    `[Migration]   Failed to seed bare from ${peer.userId}: ${e?.message || e}`,
+                );
+            }
+        }
     }
 
     /**

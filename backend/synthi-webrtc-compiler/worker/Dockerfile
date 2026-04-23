@@ -34,6 +34,11 @@ COPY Cargo.toml Cargo.lock ./
 COPY build.rs ./
 COPY proto/ proto/
 COPY .cargo/ .cargo/
+# `[patch.crates-io] stun = { path = "vendored/stun" }` in Cargo.toml is
+# resolved during lockfile processing — even the dummy cache build reads
+# it — so the vendored tree must be present before `cargo build` runs.
+# See `vendored/stun/README_SYNTHI_PATCH.md` for why the patch exists.
+COPY vendored/ vendored/
 RUN mkdir -p src/runtime src/compiler src/hmr src/infra src/safety src/android src/bin && \
     echo "fn main() {}" > src/main.rs && \
     echo "fn main() {}" > src/runtime/runner_bin.rs && \
@@ -61,6 +66,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     openjdk-17-jdk-headless \
     # Python
     python3 python3-pip \
+    # SDL2
+    libsdl2-2.0-0 libsdl2-dev \
     # Runtime utilities used by language runtimes and downloads
     curl ca-certificates xz-utils \
     && rm -rf /var/lib/apt/lists/*
@@ -128,7 +135,6 @@ RUN useradd -m -s /bin/bash runner
 RUN mkdir -p /tmp/synthi /home/runner/.cache && \
     chown -R runner:runner /home/runner /tmp/synthi
 
-USER runner
 WORKDIR /home/runner
 
 # No inbound ports exposed — worker connects outbound to signaling + TURN.

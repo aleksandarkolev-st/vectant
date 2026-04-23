@@ -58,20 +58,31 @@ services:
     ports:
       - "3000:3000"
     environment:
-      # Database
-      DATABASE_URL: postgresql://synthi:password@postgres:5432/synthi
       # Auth (NextAuth.js)
-      NEXTAUTH_URL: http://localhost:3000
-      NEXTAUTH_SECRET: dev-secret-key-change-me-1234567890
-      AUTH_SECRET: dev-secret-key-change-me-1234567890
-      # OAuth Providers (dummies for local dev unless set in .env)
-      GITHUB_ID: ${GITHUB_ID:-dummy}
-      GITHUB_SECRET: ${GITHUB_SECRET:-dummy}
-      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-dummy}
-      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-dummy}
-      # Backend Services
-      CLOUDFLARE_TURN_TOKEN_ID: ${CLOUDFLARE_TURN_TOKEN_ID:-dummy}
-      CLOUDFLARE_TURN_API_TOKEN: ${CLOUDFLARE_TURN_API_TOKEN:-dummy}
+      NEXTAUTH_URL: "http://localhost:3000/"
+      NEXTAUTH_SECRET: "YOUR_SECURE_RANDOM_SECRET_KEY"
+      AUTH_SECRET: "YOUR_SECURE_RANDOM_SECRET_KEY"
+      # Database
+      DATABASE_URL: "postgres://synthi:testNegrocito123_@34.32.85.168/synthi"
+      # OAuth Providers
+      GITHUB_ID: "Ov23liSHBwbfjvZhwD6n"
+      GITHUB_SECRET: "1a3f9f34861adfa600ea00fb1d619ea74ff4957c"
+      GOOGLE_CLIENT_ID: "14384285684-lfnucknr088h28hb6svu7dpcb640ms3t.apps.googleusercontent.com"
+      GOOGLE_CLIENT_SECRET: "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"
+      # GCP / Storage
+      GCP_PROJECT_ID: "overview-synti"
+      GCS_BUCKET_NAME: "synthi-cloud-storage"
+      GCP_CLIENT_EMAIL: "file-uploader-service@overview-synti.iam.gserviceaccount.com"
+      GCP_PRIVATE_KEY: "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQCZ4GiBbEtfsT/j\nl1mnS2MRbjyDjU7wQGeBvi3TD4jmBcWi8EHzp+H1rIxj9fHWBHA2LhEiETN6Hw6z\n4MnEGSLCk+XsGWIJrzc4oX8RGpEg9XLFAHEszSVavaumS4KMSuYc8MTZYsfRjYHd\nZDlej5i8qFsEn9F+UO/oOo/gQuAV2/uiT19qZTs0biKiJKT5a22O44QzD1tk0Fah\nZyvjv1YLGuwnRVNipLFqzxQQOkcJhj3r2KX+BQ+CAseanMzBf3JL+L9tJnnxZ0kD\nW/BYbmvDx48HAhdUZhAv0t0ZL3+1NzW8emVzRuzcsRRlt2v1f69PscAJUmtiHV9E\nPE3Hn5jFAgMBAAECggEAGtFvpU7YfB8KQYI5T9zlsT4DMfJI1bqDz6rzlZtZgq1y\n2okBFZQm34hpF2rf8Sro26h/t+5DiH8tMtB0mca/tiXMpq9t1L5C443R9YspzBK7\nI/aFwwcmAYCZD+yNHiJXpKeZx0FeDfmZrpovHXntZsP4yP+JpXg5t8GtHarKH0To\nhuTcnqKo7BfSjN/sZMGnvIjyja7eACVJU5FG9nd7vNQekm0ZUxLXylOvzBIAW1Xx\nDba3HHX0YIL+nyleZvC4A4JrXE65iPU3dqQvbwkZNsfCTtaE6AFfKiVcAAXf2icw\nU57e8NoH5fwmQ+5VXofhD7jbG8N2+8vZp+552fD7AQKBgQDNdUg2n7SZR75MNwx2\nXusH1U8xrt9R3cE0QE0vFglG7HzkSICXIvYytrdZWyxA0WTaT+xMxDGO4L7Ohuqk\nk8OiJ1r3RblrmING2eXaMl2cEYsZAlRBnrykSDNAIj0kD9S0lGFve+wmxC5Jw7dr\n5BaqpKRwGwHIJ+oewjEst9gcpQKBgQC/usfgUdsXqj0GO1gqMgL2u2bjsWKQHd53\nIC4lsL5kXwj/nCougXtrRIh2n1Gcq17tGPKPkryT5QLnxUu9ZY+6WkNZSJhcfFS8\nXxStrWH8NgCMpFR1O5hREKCYlebXL2zCRTUZS4943E8Olj4CjxLfStuU8t/W1p+b\nsEGB9zIxoQKBgQC0WmSWlqDZALJaguQssGuOR8Ap88DTQ18K9/sI/0YLfSKw3bgL\nc8Q8hknyZWc2StlGDmx2gq6iJkU4VBR7fb54hCWE9C6s9YcfVb1ASYAEtR2uSW4e\n4DHl3/8lKCkVk9P65FmXnGeTLBkZ5XUIf4MqLjautfZddjQ85eh2wbcyhQKBgEHw\n74WLIZtGBa77AhuhD7vkQELXY1rFqxm1i6mS3CiRNvsSrr9H8Ta3X2fM67jCh+dr\nySDwCsOi5Bjqll4RbBlfqgIvIZfNeyc+XFJPa3/e4tl8O0AGuyBGY7WW+MnRmcpH\nGzgT8MhUnSwbKEChDJCXomXcEnhFYKefOyiD6FOBAoGAfiXxNfmK6iTGqG3A+HHI\n1TupEEPZudygJ2Awd1+22iy5++0BqvMf3o0j0JP0u8ArwkcVDWNuLWrpI6aHZIb8\nVb34haFWR82J/tX2NTq9zAQq//d8OAgEH6PDb0K2YlQVOSmPcYWqd7aGVGMW5+QO\nhZeaOzLwbJLOa36t6Ph+70c=\n-----END PRIVATE KEY-----\n"
+      # Cloudflare TURN (not used locally — local coturn handles relay)
+      CLOUDFLARE_TURN_TOKEN_ID: ""
+      CLOUDFLARE_TURN_API_TOKEN: ""
+      # Local TURN (returned to browser via /api/turn-credentials)
+      LOCAL_TURN_URL: "turn:localhost:3478"
+      LOCAL_TURN_USERNAME: "synthi"
+      LOCAL_TURN_CREDENTIAL: "synthi"
+      # Public URLs
+      NEXT_PUBLIC_GATEWAY_WS_URL: "ws://localhost:7070/ws"
     depends_on:
       postgres:
         condition: service_healthy
@@ -84,6 +95,11 @@ services:
       - "1234:1234"
     environment:
       COLLAB_PORT: "1234"
+      SPAWNER_MODE: "local"
+      # Local TURN (returned to worker via /turn-credentials)
+      LOCAL_TURN_URL: "turn:coturn:3478"
+      LOCAL_TURN_USERNAME: "synthi"
+      LOCAL_TURN_CREDENTIAL: "synthi"
       # Networking
       CORS_ORIGIN: "http://localhost:3000"
       CODE_INTEL_URL: "http://ai-engine:8000"
@@ -125,9 +141,11 @@ services:
     ports:
       - "8000:8000"
     environment:
-      # API Keys (Must be set in .env file)
-      GOOGLE_AI_API_KEY: ${GOOGLE_AI_API_KEY:-dummy}
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-dummy}
+      # API Keys
+      GOOGLE_AI_API_KEY: "AIzaSyBFGyMQ7muhz_vz5E8Ug5uFoRtSZLTK4ys"
+      GEMINI_API_KEY: "AIzaSyBFGyMQ7muhz_vz5E8Ug5uFoRtSZLTK4ys"
+      SYNTHI_AI_MODEL: "gemini-3-flash-preview-preview"
+      OPENAI_API_KEY: "dummy"
 
   ai-gateway:
     build:
@@ -143,14 +161,68 @@ services:
     depends_on:
       - ai-engine
 
+  coturn:
+    image: coturn/coturn:latest
+    ports:
+      - "3478:3478"
+      - "3478:3478/udp"
+      - "49152-49200:49152-49200/udp"
+    command: >
+      --no-tls
+      --no-dtls
+      --lt-cred-mech
+      --user=synthi:synthi
+      --realm=synthi.local
+      --no-cli
+      --fingerprint
+      --min-port=49152
+      --max-port=49200
+      --listening-ip=0.0.0.0
+      --external-ip=192.168.100.107
+      --allowed-peer-ip=10.0.0.0-10.255.255.255
+      --allowed-peer-ip=127.0.0.0-127.255.255.255
+      --allowed-peer-ip=172.16.0.0-172.31.255.255
+      --allowed-peer-ip=192.168.0.0-192.168.255.255
+      --allowed-peer-ip=1.0.0.0-9.255.255.255
+      --allowed-peer-ip=11.0.0.0-126.255.255.255
+      --allowed-peer-ip=128.0.0.0-172.15.255.255
+      --allowed-peer-ip=172.32.0.0-192.167.255.255
+      --allowed-peer-ip=192.169.0.0-223.255.255.255
+      --allowed-peer-ip=::1-::1
+      --allowed-peer-ip=2000::-3fff:ffff:ffff:ffff:ffff:ffff:ffff:ffff
+      --allowed-peer-ip=fc00::-fdff:ffff:ffff:ffff:ffff:ffff:ffff:ffff
+      --allowed-peer-ip=fe80::-febf:ffff:ffff:ffff:ffff:ffff:ffff:ffff
+      --verbose
+      --log-file=stdout
+    restart: unless-stopped
+
+  # Synthi MCP — sleeper container on the default compose network.
+  # live-test.mjs uses `docker exec -i synthi-ide-mcp-1 node /app/dist/index.js`
+  # so MCP runs inside docker and shares a subnet with `worker`. The two peers
+  # then pair directly via host ICE candidates (172.18.0.x ↔ 172.18.0.x) and
+  # skip TURN entirely — which is what we want, since both sides would
+  # otherwise allocate on the same coturn and trip coturn's self-peer-IP
+  # block (403 Forbidden IP on CREATE_PERMISSION for --external-ip).
+  mcp:
+    build:
+      context: ./mcp/synthi-mcp
+      dockerfile: Dockerfile
+    ports:
+      # Expose Prometheus /metrics to the host so live-test.mjs can scrape
+      # http://127.0.0.1:9464/metrics without a second `docker exec`.
+      - "9464:9464"
+    depends_on:
+      - signaling-server
+      - worker
+    restart: unless-stopped
+
   worker:
     build:
       context: ./backend/synthi-webrtc-compiler/worker
       dockerfile: Dockerfile
-    # Worker connects outbound, no inbound ports needed usually, 
-    # but for local dev debugging we might want to exec in.
     environment:
-      SESSION_ID: "local-session"
+      # No SESSION_ID → worker registers as "__legacy__" in signaling server,
+      # which lets it accept ANY browser session (local-dev single-worker mode).
       SIGNALING_URL: "ws://signaling-server:9000"
       COLLAB_SERVER_URL: "http://collab-server:1234"
       AI_BACKEND_URL: "http://ai-engine:8000"
@@ -159,6 +231,15 @@ services:
       DISPLAY: ":99"
       # Logging
       SYNTHI_LOG_LEVEL: "debug"
+      # Capture full panic backtraces — without this a Rust panic just
+      # prints the message and thread name, which makes fmt / webrtc
+      # internal panics invisible to root-cause. `full` gives us the
+      # complete file:line chain instead of just the top frame.
+      RUST_BACKTRACE: "full"
+      RUST_LIB_BACKTRACE: "full"
+      # Turn on debug_log! output so the new force-key-unit + candidate
+      # buffer log lines are visible during this debugging session.
+      SYNTHI_WORKER_VERBOSE: "1"
     depends_on:
       - signaling-server
       - collab-server

@@ -10,8 +10,10 @@ import { getMonacoLanguage } from '@/utils/languageMapper';
 import { useCollabStatus } from '@/hooks/useCollabStatus';
 import { useCollabSession } from '@/hooks/useCollabSession';
 import { useWorkspacePresence } from '@/hooks/useWorkspacePresence';
+import { getCurrentUser } from '@/services/userIdentity';
 import { AlertCircle, AlertTriangle, Cpu, Zap, Loader2, Wifi, WifiOff, Radio, Users } from 'lucide-react';
 import { HealingIndicator } from '@/components/healing/HealingIndicator';
+import OperatorStatusBarButton from './OperatorStatusBarButton';
 
 /**
  * StatusBar Component - Synthi styled bottom status bar
@@ -107,7 +109,8 @@ function StatusBarInner({
   const collabStatus = useCollabStatus();
   const { role: sessionRole, guests, isHost, isGuest, session } = useCollabSession();
   const { activeUsers } = useWorkspacePresence(slug);
-  const otherUserCount = activeUsers ? activeUsers.filter(u => u.userId !== position?.userId).length : 0;
+  const currentUserId = getCurrentUser()?.id;
+  const otherUserCount = activeUsers ? activeUsers.filter(u => u.userId !== currentUserId).length : 0;
   const getCollabStyle = () => {
     switch (collabStatus) {
       case 'connected':
@@ -191,6 +194,11 @@ function StatusBarInner({
             </span>
           )}
         </div>
+
+        <div className="w-px h-4 bg-[#1a1b24]"></div>
+
+        {/* Operator console trigger */}
+        <OperatorStatusBarButton sessionId={slug} />
 
         {/* Session Sharing Indicator */}
         {isHost && (

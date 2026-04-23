@@ -9,9 +9,8 @@ use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::mpsc;
-use webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecCapability;
-use webrtc::track::track_local::track_local_static_rtp::TrackLocalStaticRTP;
-use webrtc::track::track_local::{TrackLocal, TrackLocalWriter};
+use webrtc::rtp::packet::Packet;
+use webrtc_util::Unmarshal;
 
 use crate::compiler::builder::ModuleHashes;
 use crate::compiler::context::CompileContext;
@@ -53,12 +52,12 @@ pub async fn run_java(
     let mut guard = ctx.runner_store.lock().await;
 
     // ── Tear down previous process, reuse Xvfb/GStreamer ──────────
+    // Per-peer tracks + fanout subs are persistent across runner
+    // restarts, so no track plumbing needs to carry through here.
     let mut reused_xvfb: Option<tokio::process::Child> = None;
     let mut reused_pipeline: Option<gst::Pipeline> = None;
     let mut reused_wsl_display = String::new();
     let mut _reused_gst_display = String::new();
-    let mut video_track_opt: Option<Arc<TrackLocalStaticRTP>> = None;
-    let mut audio_track_opt: Option<Arc<TrackLocalStaticRTP>> = None;
 
     if let Some(state) = guard.as_mut() {
         let can_reuse =
@@ -98,8 +97,6 @@ pub async fn run_java(
                     }
                 } else {
                     reused_pipeline = state.gst_pipeline;
-                    video_track_opt = state.video_track;
-                    audio_track_opt = state.audio_track;
                 }
             } else {
                 eprintln!("[JavaRunner] Reuse requested but display {} is dead — full teardown", state.wsl_display_str);
@@ -315,11 +312,15 @@ pub async fn run_java(
 
         // Root capture — no XID, same approach as the C++ runner.
         // All connections use DISPLAY=:99 (abstract UNIX sockets + XShm).
-        let (pipeline, v_track, a_track) =
-            start_gstreamer(&wsl_display_str, session_id, None).await?;
+        let pipeline = start_gstreamer(
+            &wsl_display_str,
+            session_id,
+            None,
+            ctx.video_fanout.clone(),
+            ctx.audio_fanout.clone(),
+        )
+        .await?;
         gst_pipeline = Some(pipeline);
-        video_track_opt = Some(v_track);
-        audio_track_opt = Some(a_track);
 
         // Force periodic Swing repaints via xdotool.
         // After GStreamer starts, Swing components may have already painted
@@ -528,8 +529,8 @@ pub async fn run_java(
         xvfb_process,
         gst_pipeline,
         sdl_tx: None,
-        video_track: video_track_opt.clone(),
-        audio_track: audio_track_opt.clone(),
+        video_track: None,
+        audio_track: None,
         width: req_width,
         height: req_height,
         gst_display_str: wsl_display_str.clone(),
@@ -567,63 +568,12 @@ pub async fn run_java(
         }
     }
 
-    // ── Attach video/audio tracks to WebRTC transceivers ──────────
+    // Under `TrackFanout`, tracks are pre-attached on each peer's
+    // transceiver during `create_peer`; GStreamer just dispatches
+    // packets to the session fanouts and every subscribed peer's
+    // track receives them. No per-runner replace_track dance.
     if req.is_gui {
         if let Some(state) = guard.as_ref() {
-            let transceivers = ctx.pc.get_transceivers().await;
-            eprintln!("[JavaRunner] Attaching tracks to {} transceivers", transceivers.len());
-            let mut video_replaced = false;
-            let mut audio_replaced = false;
-            if let Some(track) = &state.video_track {
-                for t in &transceivers {
-                    if t.kind() == webrtc::rtp_transceiver::rtp_codec::RTPCodecType::Video {
-                        match t
-                            .sender()
-                            .await
-                            .replace_track(Some(
-                                Arc::clone(track) as Arc<dyn TrackLocal + Send + Sync>,
-                            ))
-                            .await
-                        {
-                            Ok(_) => {
-                                eprintln!("[JavaRunner] ✓ Video track replaced successfully");
-                                video_replaced = true;
-                            }
-                            Err(e) => eprintln!("[JavaRunner] ✗ Video replace_track error: {}", e),
-                        }
-                        break;
-                    }
-                }
-            }
-            if let Some(track) = &state.audio_track {
-                for t in &transceivers {
-                    if t.kind() == webrtc::rtp_transceiver::rtp_codec::RTPCodecType::Audio {
-                        match t
-                            .sender()
-                            .await
-                            .replace_track(Some(
-                                Arc::clone(track) as Arc<dyn TrackLocal + Send + Sync>,
-                            ))
-                            .await
-                        {
-                            Ok(_) => {
-                                eprintln!("[JavaRunner] ✓ Audio track replaced successfully");
-                                audio_replaced = true;
-                            }
-                            Err(e) => eprintln!("[JavaRunner] ✗ Audio replace_track error: {}", e),
-                        }
-                        break;
-                    }
-                }
-            }
-            if !video_replaced {
-                eprintln!("[JavaRunner] WARNING: No video transceiver found to replace!");
-            }
-            if !audio_replaced {
-                eprintln!("[JavaRunner] WARNING: No audio transceiver found to replace!");
-            }
-
-            // Signal frontend to show GUI widget
             let gui_start = serde_json::json!({
                 "type": "run-gui-start",
                 "sessionId": session_id,
@@ -1014,16 +964,23 @@ async fn start_gstreamer(
     tcp_display: &str,
     _session_id: &str,
     window_xid: Option<u64>,
-) -> Result<(gst::Pipeline, Arc<TrackLocalStaticRTP>, Arc<TrackLocalStaticRTP>)> {
+    video_fanout: Arc<crate::webrtc::TrackFanout>,
+    audio_fanout: Arc<crate::webrtc::TrackFanout>,
+) -> Result<gst::Pipeline> {
+    // VP8 only — see main.rs create_peer for the rationale. Track mime is
+    // video/VP8 so the pipeline must match.
+    //
+    // `keyframe-max-dist=30` → one keyframe per second at 30 fps, so a
+    // late-joining observer peer sees a decodable frame within ~1 s of
+    // subscribe. `name=video_enc` lets `create_peer` fire `force-key-unit`
+    // on the encoder when a fresh peer subscribes, short-circuiting the
+    // wait entirely in the common case.
     let encoders = [
-        ("nvh264enc preset=low-latency-hp zerolatency=true ! video/x-h264,stream-format=byte-stream,profile=constrained-baseline", "rtph264pay", "video/H264"),
-        ("vaapih264enc ! video/x-h264,stream-format=byte-stream,profile=constrained-baseline", "rtph264pay", "video/H264"),
-        ("x264enc tune=zerolatency speed-preset=ultrafast bitrate=2000 key-int-max=60 ! video/x-h264,stream-format=byte-stream,profile=constrained-baseline", "rtph264pay", "video/H264"),
-        ("vp8enc deadline=1 cpu-used=4 end-usage=cbr target-bitrate=2000000", "rtpvp8pay", "video/VP8"),
+        ("vp8enc name=video_enc deadline=1 cpu-used=4 end-usage=cbr target-bitrate=2000000 keyframe-max-dist=30", "rtpvp8pay", "video/VP8"),
     ];
 
     let mut pipeline_opt: Option<gst::Pipeline> = None;
-    let mut selected_mime = "video/H264".to_string();
+    let mut selected_mime = "video/VP8".to_string();
 
     // Build the ximagesrc element string based on capture mode:
     //
@@ -1140,14 +1097,11 @@ async fn start_gstreamer(
         .dynamic_cast::<gst_app::AppSink>()
         .unwrap();
 
-    let video_track = Arc::new(TrackLocalStaticRTP::new(
-        RTCRtpCodecCapability {
-            mime_type: selected_mime,
-            ..Default::default()
-        },
-        "video".to_owned(),
-        "synthi_stream".to_owned(),
-    ));
+    // Under `TrackFanout` the producer doesn't own any `TrackLocalStaticRTP`;
+    // per-peer tracks are created in `create_peer` and subscribe to these
+    // fanouts. `selected_mime` is still useful for operator logs but the
+    // per-peer tracks own their own mime (configured at peer creation).
+    let _ = selected_mime;
 
     let (v_tx, mut v_rx) = mpsc::unbounded_channel::<Vec<u8>>();
     let v_tx_clone = v_tx.clone();
@@ -1167,7 +1121,7 @@ async fn start_gstreamer(
             .build(),
     );
 
-    let vt = video_track.clone();
+    let video_fanout_dispatch = video_fanout.clone();
     tokio::spawn(async move {
         let mut frame_count: u64 = 0;
         while let Some(data) = v_rx.recv().await {
@@ -1178,29 +1132,14 @@ async fn start_gstreamer(
                     frame_count, data.len()
                 );
             }
-            if let Err(e) = vt.write(&data).await {
-                if e.to_string().contains("closed") {
-                    eprintln!("[JavaRunner] Video track closed after {} packets", frame_count);
-                    break;
-                }
-                // Log first few write errors — often indicates track not yet bound
-                if frame_count <= 5 {
-                    eprintln!("[JavaRunner] Video write error (packet #{}): {}", frame_count, e);
-                }
+            if let Ok(packet) = Packet::unmarshal(&mut &data[..]) {
+                video_fanout_dispatch.dispatch(packet);
+            } else if frame_count <= 5 {
+                eprintln!("[JavaRunner] Failed to unmarshal RTP packet #{}", frame_count);
             }
         }
-        eprintln!("[JavaRunner] Video writer task ended, total packets: {}", frame_count);
+        eprintln!("[JavaRunner] Video dispatch task ended, total packets: {}", frame_count);
     });
-
-    // Audio track
-    let audio_track = Arc::new(TrackLocalStaticRTP::new(
-        RTCRtpCodecCapability {
-            mime_type: "audio/opus".to_owned(),
-            ..Default::default()
-        },
-        "audio".to_owned(),
-        "synthi_stream".to_owned(),
-    ));
 
     let (a_tx, mut a_rx) = mpsc::unbounded_channel::<Vec<u8>>();
     let a_tx_clone = a_tx.clone();
@@ -1220,18 +1159,16 @@ async fn start_gstreamer(
             .build(),
     );
 
-    let at = audio_track.clone();
+    let audio_fanout_dispatch = audio_fanout.clone();
     tokio::spawn(async move {
         while let Some(data) = a_rx.recv().await {
-            if let Err(e) = at.write(&data).await {
-                if e.to_string().contains("closed") {
-                    break;
-                }
+            if let Ok(packet) = Packet::unmarshal(&mut &data[..]) {
+                audio_fanout_dispatch.dispatch(packet);
             }
         }
     });
 
-    Ok((pipeline, video_track, audio_track))
+    Ok(pipeline)
 }
 
 /// Extract GUI window dimensions from Java source code.

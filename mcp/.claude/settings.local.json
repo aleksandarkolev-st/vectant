@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__synthi__synthi_attach",
+      "mcp__synthi__synthi_screenshot",
+      "mcp__synthi__synthi_describe",
+      "Bash(node *)"
+    ]
+  }
+}

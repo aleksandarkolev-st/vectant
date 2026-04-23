@@ -1,0 +1,208 @@
+name: mcp-release
+
+# Phase-2a release pipeline. Triggered by a tag of the form `mcp-v*` on the
+# default branch. Produces two artifacts for authorized consumers of
+# @synthi-inc/mcp-server:
+#
+#   1. GHCR container image at ghcr.io/synthi-inc/synthi-mcp:<version>
+#      (preferred path — see PHASE_2A_DISTRIBUTION.txt).
+#   2. npm tarball published to GitHub Packages at
+#      https://npm.pkg.github.com/@synthi-inc/mcp-server (fallback path).
+#
+# Access control for both artifacts inherits from the synthi-inc GitHub org —
+# consumers authenticate with a PAT scoped to read:packages.
+#
+# `workflow_dispatch` is kept alongside the tag trigger so the first few
+# releases can be cut by hand while we shake out the pipeline; subsequent
+# releases can use the tag trigger exclusively.
+
+on:
+  push:
+    tags:
+      - 'mcp-v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release (e.g. 0.1.0). Required for manual dispatch.'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  packages: write
+
+env:
+  IMAGE_NAME: ghcr.io/synthi-inc/synthi-mcp
+
+jobs:
+  release-gate:
+    name: Release gate — typecheck + unit tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: mcp/synthi-mcp
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve release version
+        id: version
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "version=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+          else
+            # Strip leading `mcp-v` from the tag (e.g. `mcp-v0.1.0` -> `0.1.0`).
+            ref="${GITHUB_REF_NAME}"
+            echo "version=${ref#mcp-v}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Assert package.json matches tag version
+        working-directory: mcp/synthi-mcp
+        run: |
+          pkg_version=$(node -p "require('./package.json').version")
+          tag_version="${{ steps.version.outputs.version }}"
+          if [[ "${pkg_version}" != "${tag_version}" ]]; then
+            echo "::error::package.json version (${pkg_version}) does not match tag (${tag_version}). Bump package.json before tagging."
+            exit 1
+          fi
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: mcp/synthi-mcp/package-lock.json
+
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+
+  publish-image:
+    name: Publish GHCR image
+    needs: release-gate
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.release-gate.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build + push
+        uses: docker/build-push-action@v6
+        with:
+          context: mcp/synthi-mcp
+          file: mcp/synthi-mcp/Dockerfile
+          push: true
+          tags: |
+            ${{ env.IMAGE_NAME }}:${{ env.VERSION }}
+            ${{ env.IMAGE_NAME }}:latest
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.version=${{ env.VERSION }}
+            org.opencontainers.image.revision=${{ github.sha }}
+
+  publish-npm:
+    name: Publish GitHub Packages npm
+    needs: release-gate
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: mcp/synthi-mcp
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: mcp/synthi-mcp/package-lock.json
+          registry-url: 'https://npm.pkg.github.com'
+          scope: '@synthi-inc'
+
+      - run: npm ci
+      - run: npm run build
+
+      - name: Publish
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npm publish
+
+  smoke:
+    name: Release smoke
+    needs:
+      - release-gate
+      - publish-image
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.release-gate.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Run smoke against pushed image
+        run: node mcp/synthi-mcp/scripts/release-smoke.mjs --image ${{ env.IMAGE_NAME }}:${{ env.VERSION }}
+
+  github-release:
+    name: Draft GitHub release
+    needs:
+      - release-gate
+      - publish-image
+      - publish-npm
+      - smoke
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.release-gate.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create release notes
+        id: notes
+        run: |
+          cat > release-notes.md <<EOF
+          Synthi MCP \`v${VERSION}\`.
+
+          ## Distribution
+
+          - GHCR image: \`ghcr.io/synthi-inc/synthi-mcp:${VERSION}\`
+          - GitHub Packages npm: \`@synthi-inc/mcp-server@${VERSION}\`
+
+          Both artifacts require a GitHub PAT scoped to \`read:packages\` from a
+          collaborator of \`synthi-inc/synthi-ide\`. See the repo's
+          \`PHASE_2A_DISTRIBUTION.txt\` + \`mcp/synthi-mcp/docs/CLIENT_CONFIGS.md\`
+          for end-to-end setup.
+          EOF
+          echo "notes_path=release-notes.md" >> "$GITHUB_OUTPUT"
+
+      - name: Create or update the GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="mcp-v${VERSION}"
+          if ! gh release view "${tag}" >/dev/null 2>&1; then
+            gh release create "${tag}" \
+              --title "Synthi MCP v${VERSION}" \
+              --notes-file "${{ steps.notes.outputs.notes_path }}"
+          else
+            gh release edit "${tag}" \
+              --notes-file "${{ steps.notes.outputs.notes_path }}"
+          fi

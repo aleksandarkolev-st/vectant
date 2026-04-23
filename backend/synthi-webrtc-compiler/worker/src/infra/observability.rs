@@ -167,6 +167,27 @@ impl StructuredLogger {
         }
     }
 
+    /// Emit one structured log line for a GUI/terminal input event arriving
+    /// over the peer's terminal DC. Captures which peer sent the input so
+    /// multi-peer sessions (browser + observer) can be reconstructed after
+    /// the fact — e.g. "observer o1 clicked (120, 240) on session sess-abc
+    /// while browser b1 was idle". `peer_id` is the empty string for legacy
+    /// pre-Phase-B clients that don't carry the field on the wire.
+    pub fn record_input_event(
+        &self,
+        peer_id: &str,
+        role: &str,
+        session_id: &str,
+        event: &serde_json::Value,
+    ) {
+        let entry = LogEntry::new(LogLevel::Info, "input", "gui-event")
+            .with_slot_id(session_id)
+            .with_field("peer_id", peer_id)
+            .with_field("role", role)
+            .with_field("event", event);
+        self.log(&entry);
+    }
+
     pub fn log(&self, entry: &LogEntry) {
         if (entry.level as u8) < (self.min_level as u8) {
             return;
