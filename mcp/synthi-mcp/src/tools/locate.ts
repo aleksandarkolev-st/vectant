@@ -9,7 +9,13 @@ import {
   type ToolResponse,
 } from "./shared.js";
 
-const BACKEND_NAMES: readonly LocateBackendName[] = ["mock", "agent_side", "claude_api", "gemini_api"];
+const BACKEND_NAMES: readonly LocateBackendName[] = [
+  "mock",
+  "agent_side",
+  "claude_api",
+  "gemini_api",
+  "local",
+];
 
 interface RawArgs {
   description?: unknown;

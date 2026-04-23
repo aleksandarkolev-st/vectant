@@ -110,8 +110,16 @@ export interface ManifestRuntime {
 
 export const STATIC_MANIFEST: Omit<CapabilityManifest, "tools" | "frame_seq_gate" | "arbitration" | "enriched_tier" | "snapshot" | "escape_hatch" | "local_vision"> = {
   vision_backends: ["agent_side", "claude_api", "gemini_api", "mock", "local"],
-  wait_conditions: ["hmr", "log", "source_state", "pixel", "motion_settled", "scene_change", "element", "audio"],
-  verify_predicates: ["pixel", "log", "element_visible", "and", "or"],
+  // Must match VALID_CONDITIONS in src/tools/wait.ts. "audio" is NOT a
+  // wait condition — it's served by synthi_wait_audio_event, a separate
+  // tool. "text" is accepted but phase-1 returns `text_wait_requires_ocr_backend`
+  // with a required_tool_call to fall back to condition:"log".
+  wait_conditions: ["hmr", "log", "source_state", "pixel", "motion_settled", "scene_change", "element", "text"],
+  // Must match the switch in src/verify/engine.ts. `ocr` and `scene_matches`
+  // are accepted by the engine but return `unsupported:{reason, required_tool_call}`
+  // so agents can branch on advertisement + discover remediation without
+  // trial-and-error.
+  verify_predicates: ["pixel", "log", "element_visible", "ocr", "scene_matches", "and", "or"],
   region_phash_cache: {
     available: true,
     ttl_ms: 30_000,
