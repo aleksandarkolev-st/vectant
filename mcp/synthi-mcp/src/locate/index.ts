@@ -186,6 +186,13 @@ export {
   extractGeminiText,
   parseGeminiBboxResponse,
 } from "./gemini_api.js";
+export {
+  LocalVisionBackend,
+  getDefaultLocalBackend,
+  parseLocalResponse,
+  _resetDefaultLocalBackendForTests,
+} from "./local.js";
+export type { LocalBackendOptions } from "./local.js";
 export type {
   AnthropicLike,
   AnthropicContentBlock,

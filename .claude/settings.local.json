@@ -10,7 +10,12 @@
       "Bash(grep -n \"addKeybinding\\\\|addCommand.*save\\\\|registerCommand.*save\" /c/Users/dev/Downloads/synthi-test/synthi-ide/synthi/src/app/workspace/[slug]/Editor/Editor.jsx)",
       "Bash(grep -n \"initializationOptions\\\\|clientCapabilities\\\\|initializeResult\" /c/Users/dev/Downloads/synthi-test/synthi-ide/synthi/src/app/workspace/[slug]/Editor/Editor.jsx)",
       "Bash(grep -n \"autoSaveEnabled\\\\|AUTO_SAVE\" /c/Users/dev/Downloads/synthi-test/synthi-ide/synthi/src/app/workspace/[slug]/Editor/Editor.jsx)",
-      "Bash(grep -n \"createModel\\\\|file:///synthi\\\\|model.*uri\\\\|Uri.*synthi\" \"src/app/workspace/[slug]/Editor/Editor.jsx\")"
+      "Bash(grep -n \"createModel\\\\|file:///synthi\\\\|model.*uri\\\\|Uri.*synthi\" \"src/app/workspace/[slug]/Editor/Editor.jsx\")",
+      "mcp__synthi__synthi_attach",
+      "mcp__synthi__synthi_screenshot",
+      "mcp__synthi__synthi_describe",
+      "Bash(cmd.exe *)",
+      "Bash(python3 *)"
     ]
   }
 }

@@ -1,4 +1,5 @@
 import { currentEnrichedProvider, enrichedAvailable } from "../enriched/provider.js";
+import { MAX_PENDING } from "../escape_hatch/queue.js";
 
 /**
  * Protocol version + capability manifest. Returned from `synthi_attach` so
@@ -59,6 +60,26 @@ export interface CapabilityManifest {
     event_log_capacity: number;
     max_screenshot_dim: number;
   };
+  /** Phase-3 capabilities. Omitted at earlier protocol versions; callers
+   *  must branch on presence, not assume the shape. */
+  snapshot?: {
+    available: boolean;
+    frame_capture: boolean;
+    persistor: "memory" | "file";
+  };
+  escape_hatch?: {
+    /** true once queue-backed semantics shipped (phase 3). Earlier builds
+     *  returned `escape_hatch_backend_not_implemented` — agents branch on
+     *  this flag. */
+    queue_available: boolean;
+    max_pending: number;
+    answer_tool: string;
+  };
+  local_vision?: {
+    available: boolean;
+    endpoint?: string;
+    reason?: string;
+  };
 }
 
 /**
@@ -87,10 +108,18 @@ export interface ManifestRuntime {
   frame_seq_gate_reason?: string;
 }
 
-export const STATIC_MANIFEST: Omit<CapabilityManifest, "tools" | "frame_seq_gate" | "arbitration" | "enriched_tier"> = {
-  vision_backends: ["agent_side", "claude_api", "gemini_api", "mock"],
-  wait_conditions: ["hmr", "log", "source_state", "pixel", "motion_settled", "scene_change", "element", "audio"],
-  verify_predicates: ["pixel", "log", "element_visible", "and", "or"],
+export const STATIC_MANIFEST: Omit<CapabilityManifest, "tools" | "frame_seq_gate" | "arbitration" | "enriched_tier" | "snapshot" | "escape_hatch" | "local_vision"> = {
+  vision_backends: ["agent_side", "claude_api", "gemini_api", "mock", "local"],
+  // Must match VALID_CONDITIONS in src/tools/wait.ts. "audio" is NOT a
+  // wait condition — it's served by synthi_wait_audio_event, a separate
+  // tool. "text" is accepted but phase-1 returns `text_wait_requires_ocr_backend`
+  // with a required_tool_call to fall back to condition:"log".
+  wait_conditions: ["hmr", "log", "source_state", "pixel", "motion_settled", "scene_change", "element", "text"],
+  // Must match the switch in src/verify/engine.ts. `ocr` and `scene_matches`
+  // are accepted by the engine but return `unsupported:{reason, required_tool_call}`
+  // so agents can branch on advertisement + discover remediation without
+  // trial-and-error.
+  verify_predicates: ["pixel", "log", "element_visible", "ocr", "scene_matches", "and", "or"],
   region_phash_cache: {
     available: true,
     ttl_ms: 30_000,
@@ -134,7 +163,8 @@ export function buildManifest(
   const reason =
     runtime.frame_seq_gate_reason ??
     (enabled ? "frame_advance_observed" : "no_frame_advance_seen_yet");
-  return {
+  const localUrl = process.env["SYNTHI_LOCAL_VISION_URL"];
+  const manifest: CapabilityManifest = {
     tools: [...advertisedTools],
     ...STATIC_MANIFEST,
     enriched_tier: resolveEnrichedManifest(),
@@ -144,7 +174,21 @@ export function buildManifest(
       reason,
       pipeline_budget_ms: resolvePipelineBudgetMs(),
     },
+    snapshot: {
+      available: true,
+      frame_capture: true,
+      persistor: process.env["SYNTHI_SNAPSHOT_DIR"] ? "file" : "memory",
+    },
+    escape_hatch: {
+      queue_available: true,
+      max_pending: MAX_PENDING,
+      answer_tool: "synthi_answer_escape_hatch",
+    },
+    local_vision: localUrl
+      ? { available: true, endpoint: localUrl }
+      : { available: false, reason: "SYNTHI_LOCAL_VISION_URL_not_set" },
   };
+  return manifest;
 }
 
 /**

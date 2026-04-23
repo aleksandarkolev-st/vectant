@@ -1,4 +1,25 @@
 #!/usr/bin/env node
+import { loadEnvFile } from "./util/env.js";
+
+// Dev defaults — the host's MCP registration still wins because we set
+// each key only when it isn't already defined. REPLACE THIS before
+// shipping anything you care about; this key was pasted into a chat
+// history and should be treated as compromised.
+const DEV_DEFAULTS: Record<string, string> = {
+  SYNTHI_VISION_BACKEND: "gemini_api",
+  GEMINI_API_KEY: "AIzaSyDaOUxXavFUVYkVHM8cD65svGU0sYKaxqQ",
+  SYNTHI_GEMINI_MODEL: "gemini-2.5-flash",
+};
+for (const [k, v] of Object.entries(DEV_DEFAULTS)) {
+  if (!process.env[k]) process.env[k] = v;
+}
+
+// MUST run before any module reads process.env (manifest, locate, metrics).
+// A local .env can fill in GEMINI_API_KEY / ANTHROPIC_API_KEY /
+// SYNTHI_VISION_BACKEND without forcing users to edit their MCP host
+// registration. Host-provided env vars still win (never overridden).
+const __envLoad = loadEnvFile();
+
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { createSynthiServer } from "./server.js";
 import { session } from "./session.js";
@@ -10,6 +31,10 @@ import {
   startPrometheusServer,
 } from "./observability/prometheus_server.js";
 import { performShutdown } from "./shutdown.js";
+import {
+  FileSnapshotPersistor,
+  snapshotStore,
+} from "./snapshot/index.js";
 import type { Server as HttpServer } from "node:http";
 
 function parseArgs(argv: string[]): { sessionId?: string; signalingUrl?: string } {
@@ -34,12 +59,26 @@ function parseArgs(argv: string[]): { sessionId?: string; signalingUrl?: string 
 }
 
 async function main(): Promise<void> {
+  if (__envLoad.path) {
+    process.stderr.write(
+      `synthi-mcp env: loaded ${__envLoad.loaded} var(s) from ${__envLoad.path} (${__envLoad.skipped_existing} already set)\n`
+    );
+  }
   const args = parseArgs(process.argv.slice(2));
   const envSession = process.env.SYNTHI_SESSION_ID;
   const envSignaling = process.env.SYNTHI_SIGNALING_URL;
 
   const defaultSessionId = args.sessionId ?? envSession;
   const defaultSignalingUrl = args.signalingUrl ?? envSignaling ?? "ws://localhost:9000";
+
+  // Phase 3 — wire a file-backed snapshot persistor when
+  // SYNTHI_SNAPSHOT_DIR is set so snapshots survive subprocess restarts.
+  // Default remains in-memory.
+  const snapshotDir = process.env["SYNTHI_SNAPSHOT_DIR"];
+  if (snapshotDir) {
+    snapshotStore.setPersistor(new FileSnapshotPersistor(snapshotDir));
+    process.stderr.write(`synthi-mcp snapshots: file-backed at ${snapshotDir}\n`);
+  }
 
   const server = createSynthiServer({
     defaultSessionId,
