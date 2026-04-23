@@ -1431,10 +1431,43 @@ Everything in this document lands in phase 1 *except* items in "deferred" below.
 
 ### Phase 3 - Robustness, snapshot/restore, local vision *(~2 weeks)*
 
-- Full snapshot/restore (beyond phase-1's `reset_guest`).
-- Local grounding model backend (ticket `PHASE_2_PLUS_BACKLOG.md:D6`).
-- Long-haul soak.
-- Escape-hatch UI.
+**Status: scaffolded on `claude/phase-3-agent-mcp-A9Cfj` (2026-04-23).** Four tools + one backend + one long-haul harness landed as a first cut. The deeper pieces (CRIU-backed guest-memory snapshot, a real local grounding model deployment, 24-hour soak runs against a cloud stack) are follow-up work.
+
+Landed:
+
+- **Snapshot / restore** (`src/snapshot/`, `src/tools/snapshot.ts`, `src/tools/restore.ts`, `src/tools/list_snapshots.ts`). Captures observable state only — last `source_state`, current frame (PNG, optionally downscaled via `frame_max_dim`), event-log seq, wire state, caller-supplied detail. `synthi_restore` re-emits the captured `source_state` event so waiters (`wait({condition:"source_state", since_seq:snap.seq})`) resolve, and optionally drives a compile when the caller re-supplies the files. In-memory persistor by default; file-backed via `SYNTHI_SNAPSHOT_DIR`. Guest process heap is explicitly **not** captured — that remains CRIU + worker work, documented in the tool descriptions so agents don't assume more than the MCP owns. Cross-session restore is rejected with `snapshot_session_mismatch`.
+- **Escape-hatch queue** (`src/escape_hatch/queue.ts`). `synthi_request_human` + `synthi_annotate_and_ask` now enqueue into a capped (32) pending-entry queue and block on a per-entry timeout. Operators drain the queue via the new `synthi_answer_escape_hatch` tool (resolve with any JSON answer, or cancel with a reason). Session-close cancels every pending entry deterministically (`escape_hatch_canceled`). New resource `synthi://escape-hatch/queue` exposes the pending list for operator-UI consumers.
+- **Local vision backend** (`src/locate/local.ts`). `synthi_locate({preferred_vision_backend:"local"})` POSTs `{description, hints, frame:{png_base64, width, height}}` to `SYNTHI_LOCAL_VISION_URL` and expects `{bbox, confidence, trace?}` back. `hints.prefer_region` short-circuits without a network call (same rule as `claude_api`/`gemini_api`). Fails fast with `local_vision_backend_not_configured` when env unset so capability manifests stay honest (`local_vision.available:false`). Ships wire-compatible with an Ollama / vLLM / bespoke FastAPI front-end — the model itself is a deployment choice.
+- **Soak harness** (`tests/soak/soak_loop.mjs`). Long-running `screenshot → locate → wait → snapshot` loop with per-iteration NDJSON + aggregate summary (p50/p95/p99 per tool, error count, snapshots captured). Defaults to the `mock` vision backend to avoid vendor burn. `SOAK_DURATION_MIN`, `SOAK_ITERATION_MS`, `SOAK_SNAPSHOT_EVERY` tune the schedule.
+- **Phase-3 live test harness** (`scripts/live-test-phase3.mjs`). End-to-end self-contained test: spawns the MCP subprocess, stands up a stub HTTP grounding server pointed at `SYNTHI_LOCAL_VISION_URL`, runs manifest + `tools/list` + `resources/list` sanity checks, round-trips one escape-hatch `request_human → answer` across two JSON-RPC clients on the same subprocess, and (when `SYNTHI_SESSION_ID` is supplied) drives the snapshot + restore round-trip against a real session. Runs in ~10–15 s.
+
+Manifest additions advertised to agents on `synthi_attach`:
+
+```jsonc
+{
+  "snapshot":     { "available": true,  "frame_capture": true, "persistor": "memory" | "file" },
+  "escape_hatch": { "queue_available": true, "max_pending": 32,
+                    "answer_tool": "synthi_answer_escape_hatch" },
+  "local_vision": { "available": bool, "endpoint"?: string,
+                    "reason"?: "SYNTHI_LOCAL_VISION_URL_not_set" },
+  "vision_backends": ["agent_side","claude_api","gemini_api","mock","local"]
+}
+```
+
+Test coverage added (31 new unit tests; 384 passed / 3 skipped post-land):
+
+- `tests/unit/snapshot.test.ts` — persistor round-trip, digest stability, not-attached rejection, cross-session restore refusal, source_state replay on restore, `recompile_source` arg validation, session-scoped listing.
+- `tests/unit/escape_hatch_queue.test.ts` — enqueue / resolve / timeout / cancelAll, over-cap refusal, `synthi_request_human` + `synthi_annotate_and_ask` end-to-end, `synthi_answer_escape_hatch` cancel + unknown-id paths.
+- `tests/unit/local_vision_backend.test.ts` — response parser (bbox / confidence clamp / malformed rejection), `prefer_region` short-circuit, unconfigured-env failure, HTTP round-trip via stub `fetch`, non-2xx → `local_vision_backend_error`, `selectBackend("local")` + `SYNTHI_VISION_BACKEND=local` wiring.
+
+Deferred (phase 3+ follow-ups):
+
+- CRIU-backed guest-memory snapshot (worker-side; needs worker CRIU daemon + orchestration).
+- Long-haul soak against the cloud stack (24 h+ runs on a staging cluster; requires scheduling).
+- Operator-UI kit built on the `synthi://escape-hatch/queue` resource (dashboard widget + click-to-answer overlay for `annotate_and_ask`).
+- Production local-grounding model choice (Moondream / Qwen2-VL / Florence-2 benchmarking).
+
+Primary artifacts: `mcp/synthi-mcp/src/snapshot/`, `mcp/synthi-mcp/src/escape_hatch/queue.ts`, `mcp/synthi-mcp/src/locate/local.ts`, `mcp/synthi-mcp/src/tools/{snapshot,restore,list_snapshots,answer_escape_hatch}.ts`, `mcp/synthi-mcp/tests/soak/`, `mcp/synthi-mcp/scripts/live-test-phase3.mjs`.
 
 ### Phase 4 - Remote multi-tenant auth *(~1 week)*
 

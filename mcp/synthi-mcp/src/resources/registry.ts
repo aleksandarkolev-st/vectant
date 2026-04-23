@@ -1,6 +1,8 @@
 import { eventLog } from "../events/index.js";
 import type { EventLogEntry } from "../events/index.js";
 import { session } from "../session.js";
+import { snapshotStore } from "../snapshot/index.js";
+import { escapeHatchQueue } from "../escape_hatch/queue.js";
 
 export interface ResourceDescriptor {
   uri: string;
@@ -23,6 +25,9 @@ export const RESOURCE_URIS = {
   events: "synthi://preview/events",
   state: "synthi://preview/state",
   source: "synthi://preview/source",
+  // Phase 3 additions.
+  snapshots: "synthi://snapshots/list",
+  escapeHatchQueue: "synthi://escape-hatch/queue",
 } as const;
 
 export const RESOURCES: ResourceDescriptor[] = [
@@ -60,6 +65,18 @@ export const RESOURCES: ResourceDescriptor[] = [
     uri: RESOURCE_URIS.source,
     name: "Source-state summary",
     description: "Most recent source_state event (last_changed_files + detail).",
+    mimeType: "application/json",
+  },
+  {
+    uri: RESOURCE_URIS.snapshots,
+    name: "Snapshot index (phase 3)",
+    description: "Metadata for every snapshot captured in this process. Frames are omitted — call synthi_list_snapshots({include_frame:true}) for blobs.",
+    mimeType: "application/json",
+  },
+  {
+    uri: RESOURCE_URIS.escapeHatchQueue,
+    name: "Escape-hatch pending queue (phase 3)",
+    description: "Pending synthi_request_human / synthi_annotate_and_ask entries awaiting operator answer.",
     mimeType: "application/json",
   },
 ];
@@ -115,6 +132,44 @@ export async function readResource(uri: string): Promise<ResourceContents | unde
         count: entries.length,
       });
     }
+    case RESOURCE_URIS.snapshots: {
+      const records = await snapshotStore.list();
+      return json(uri, {
+        count: records.length,
+        snapshots: records.map((r) => ({
+          snapshot_id: r.snapshot_id,
+          label: r.label ?? null,
+          session_id: r.session_id,
+          captured_at: r.captured_at,
+          event_log_seq_at_capture: r.event_log_seq_at_capture,
+          wire_state: r.wire_state,
+          source_state: r.source_state,
+          frame: {
+            frame_seq: r.frame.frame_seq ?? null,
+            ts: r.frame.ts ?? null,
+            width: r.frame.width ?? null,
+            height: r.frame.height ?? null,
+            has_blob: r.frame.png_base64 !== undefined,
+          },
+        })),
+      });
+    }
+    case RESOURCE_URIS.escapeHatchQueue: {
+      const pending = escapeHatchQueue.list();
+      return json(uri, {
+        count: pending.length,
+        pending: pending.map((p) => ({
+          pending_id: p.pending_id,
+          kind: p.kind,
+          question: p.question,
+          created_at: p.created_at,
+          expires_at: p.expires_at,
+          source_tool: p.source_tool,
+          ...(p.screenshot_bytes !== undefined ? { screenshot_bytes: p.screenshot_bytes } : {}),
+          ...(p.detail !== undefined ? { detail: p.detail } : {}),
+        })),
+      });
+    }
     default:
       return undefined;
   }
@@ -135,9 +190,20 @@ export function resourceUrisForEvent(entry: EventLogEntry): string[] {
     case "hmr":
       uris.push(RESOURCE_URIS.hmr);
       break;
-    case "console":
+    case "console": {
       uris.push(RESOURCE_URIS.console);
+      // Phase-3 taps: the snapshot + restore + escape-hatch paths emit
+      // console events with a `[snapshot]` / `[restore]` / `[escape_hatch]`
+      // prefix. We fan out to their dedicated resources so subscribers
+      // don't have to parse the console stream.
+      if (entry.message.startsWith("[snapshot]") || entry.message.startsWith("[restore]")) {
+        uris.push(RESOURCE_URIS.snapshots);
+      }
+      if (entry.message.startsWith("[escape_hatch]")) {
+        uris.push(RESOURCE_URIS.escapeHatchQueue);
+      }
       break;
+    }
     case "source_state":
       uris.push(RESOURCE_URIS.source);
       break;

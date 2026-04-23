@@ -14,8 +14,8 @@ describe("resources registry", () => {
     eventLog._resetForTests();
   });
 
-  it("advertises six resources", () => {
-    expect(RESOURCES.length).toBe(6);
+  it("advertises the phase-1 + phase-3 resources", () => {
+    expect(RESOURCES.length).toBe(8);
     const uris = new Set(RESOURCES.map((r) => r.uri));
     expect(uris.has(RESOURCE_URIS.screenshot)).toBe(true);
     expect(uris.has(RESOURCE_URIS.hmr)).toBe(true);
@@ -23,6 +23,9 @@ describe("resources registry", () => {
     expect(uris.has(RESOURCE_URIS.events)).toBe(true);
     expect(uris.has(RESOURCE_URIS.state)).toBe(true);
     expect(uris.has(RESOURCE_URIS.source)).toBe(true);
+    // Phase 3 additions.
+    expect(uris.has(RESOURCE_URIS.snapshots)).toBe(true);
+    expect(uris.has(RESOURCE_URIS.escapeHatchQueue)).toBe(true);
   });
 
   it("readResource(unknown) returns undefined", async () => {

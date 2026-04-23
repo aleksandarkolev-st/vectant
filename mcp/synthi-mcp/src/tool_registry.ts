@@ -62,6 +62,11 @@ export const ADVERTISED_TOOLS = [
   // remaining hook). Stubs return audio_backend_not_implemented.
   "synthi_get_audio_level",
   "synthi_wait_audio_event",
+  // Phase 3 — snapshot / restore + escape-hatch answer tool.
+  "synthi_snapshot",
+  "synthi_restore",
+  "synthi_list_snapshots",
+  "synthi_answer_escape_hatch",
 ] as const;
 
 export type AdvertisedToolName = (typeof ADVERTISED_TOOLS)[number];

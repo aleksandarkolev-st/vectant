@@ -8,7 +8,7 @@ An MCP that attaches to a Synthi session inherits that session's capabilities: i
 
 ## What this is
 
-MCP server that lets an AI coding agent (Claude Code, Codex, Cursor, anything that speaks MCP stdio) **observe** and **drive** a running Synthi preview over WebRTC. Phase 1 ships **23 tools + 6 subscribable resources + a capability manifest**; phase 2+ extends with enriched-tier accessibility introspection, lease-based input arbitration, broker multiplexing, and snapshot/restore — see `AGENT_MCP_ULTRAPLAN.md` at the repo root.
+MCP server that lets an AI coding agent (Claude Code, Codex, Cursor, anything that speaks MCP stdio) **observe** and **drive** a running Synthi preview over WebRTC. Phase 1 ships 23 tools + 6 subscribable resources + a capability manifest; phase 2 extends with enriched-tier accessibility introspection, lease-based input arbitration, operator UI, and audio hooks; **phase 3 adds snapshot/restore, escape-hatch operator routing, and a local vision backend** — see `AGENT_MCP_ULTRAPLAN.md` at the repo root. Current advertised surface: **4 lifecycle + 8 phase-3 extensions + phase-2 enriched/audio + phase-1 operational ≈ 33 tools and 8 subscribable resources.**
 
 Expected loop:
 
@@ -79,6 +79,8 @@ Use this while actively developing the MCP. End-user consumers should prefer opt
 | `SYNTHI_QUOTA_VISION_COST_USD_PER_HR` | `5.00` | Rolling-3600s cap on vision-inference cost across `claude_api` / `gemini_api` backends. Gates `synthi_locate` + `synthi_describe`. |
 | `SYNTHI_QUOTA_TOOL_CALLS_PER_MIN` | `120` | Rolling-60s cap on total tool-call dispatches. Gates every tool. |
 | `SYNTHI_QUOTA_SCREENSHOTS_PER_MIN` | `30` | Rolling-60s cap on `synthi_screenshot` calls. Gates only screenshots. |
+| `SYNTHI_LOCAL_VISION_URL` | *(unset)* | **Phase 3.** HTTP endpoint for the `local` vision backend (body `{description, hints, frame:{png_base64, width, height}}` → `{bbox, confidence, trace?}`). When unset, `preferred_vision_backend:"local"` fails with `local_vision_backend_not_configured`. |
+| `SYNTHI_SNAPSHOT_DIR` | *(unset)* | **Phase 3.** When set, `synthi_snapshot` writes JSON records to this directory (one file per snapshot) so they survive MCP subprocess restarts. Default behaviour is in-memory. |
 
 CLI args override env; env overrides defaults.
 
@@ -183,6 +185,19 @@ Full per-client config snippets (Codex, Cursor, Gemini CLI, Windsurf) live in `d
 - `synthi_get_crash_info` — Latest crash metadata.
 - `synthi_reset_guest` — Record-only; worker-side restart in phase 2.
 
+### Snapshot / restore (phase 3)
+
+- `synthi_snapshot` — Capture the session's observable state (last `source_state`, current frame PNG, event-log seq, wire state). Returns `{snapshot_id, digest, event_log_seq_at_capture, …}`. Optional `label`, `frame_max_dim`, `omit_frame`. Guest process heap is NOT captured — that's CRIU territory; see ultraplan §Snapshot/restore.
+- `synthi_restore` — Replay a snapshot: re-emit the captured `source_state` event, optionally drive a compile when the caller re-supplies the files (`recompile_source:true, compile:{language, source, files?}`). `include_frame:true` returns the captured PNG alongside the metadata.
+- `synthi_list_snapshots` — Enumerate snapshots captured in this session. Frames omitted by default; `include_frame:true` inlines PNG blobs.
+
+### Escape hatches (phase 3)
+
+- `synthi_request_human` — Block until an operator answers via the queue. Timeouts, caller detail, `escape_hatch_canceled` on session close. Returns `{status:"answered", answer, operator_id?}`.
+- `synthi_annotate_and_ask` — Screenshot-annotated variant: caller passes the screenshot (base64 PNG) plus the question; operator replies with `{x, y}` or free-form.
+- `synthi_answer_escape_hatch` — Operator-side tool. `{pending_id, answer, operator_id?}` to resolve, `{pending_id, cancel:true, cancel_reason?}` to cancel. Paired with the `synthi://escape-hatch/queue` resource so operator UIs can poll + answer.
+- `synthi_recent_human_actions` — Worker-attributed human input since `sinceSeq`. Populated by the phase-2 worker attribution hook.
+
 ---
 
 ## Resources (subscribable URIs)
@@ -197,6 +212,8 @@ Full per-client config snippets (Codex, Cursor, Gemini CLI, Windsurf) live in `d
 | `synthi://preview/events` | `application/json` | Recent event-log entries (all kinds). |
 | `synthi://preview/state` | `application/json` | Session snapshot (state, unsafe_mode, attached counts). |
 | `synthi://preview/source` | `application/json` | Latest source-state summary. |
+| `synthi://snapshots/list` | `application/json` | **Phase 3.** Metadata for every captured snapshot; frames omitted (call `synthi_list_snapshots({include_frame:true})` for blobs). |
+| `synthi://escape-hatch/queue` | `application/json` | **Phase 3.** Pending `request_human` / `annotate_and_ask` entries awaiting operator answer. |
 
 ---
 
@@ -290,6 +307,10 @@ npx @modelcontextprotocol/inspector node dist/index.js --session fake-session-id
 ```
 
 Phase-0.5 spike harness (`npm run spike:all`): 5 experiments (frame-seq, locator-cache, region-pHash, p99 load, cost budget) runnable in `sim` or `live` mode. See `tests/spike/README.md`.
+
+Phase-3 live test (`npm run live:phase3`): self-contained harness that spawns the MCP, stands up a stub HTTP grounding server for `SYNTHI_LOCAL_VISION_URL`, round-trips an escape-hatch `request_human → answer` across two JSON-RPC clients on the same subprocess, and — when `SYNTHI_SESSION_ID` is set — drives the snapshot + restore round-trip against a real session. Runs in ~10–15 s.
+
+Phase-3 soak loop (`npm run soak`): long-running `screenshot → locate → wait → snapshot` loop that records per-iteration NDJSON + aggregate p50/p95/p99 per tool. Env: `SOAK_DURATION_MIN`, `SOAK_ITERATION_MS`, `SOAK_SNAPSHOT_EVERY`, `SOAK_LOCATE_BBOX_HINT`. See `tests/soak/README.md`.
 
 ---
 

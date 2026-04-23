@@ -12,6 +12,7 @@ import { dispatchAckRegistry } from "./util/dispatch_ack_registry.js";
 import { structuralChangeGate } from "./correctness/structural_change.js";
 import { inputQueueDepth } from "./correctness/input_queue_depth.js";
 import { humanActions } from "./escape_hatch/human_actions.js";
+import { escapeHatchQueue } from "./escape_hatch/queue.js";
 
 /**
  * MCP-local connection state. Distinct from the wire-level `SessionState`
@@ -733,6 +734,10 @@ class SessionManager {
     if (this.state === "closed") return;
     this.state = "closed";
     this.setWireState("terminated");
+    // Phase-3: fail any pending escape-hatch entries deterministically so
+    // blocked agents get `escape_hatch_canceled` instead of hanging on a
+    // queue with no consumer.
+    escapeHatchQueue.cancelAll("session_detach");
     for (const unsub of this.unsubscribers) {
       try {
         unsub();

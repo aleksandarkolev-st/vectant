@@ -56,6 +56,10 @@ import {
   queryTool,
 } from "./tools/enriched.js";
 import { getAudioLevelTool, waitAudioEventTool } from "./tools/audio.js";
+import { snapshotTool } from "./tools/snapshot.js";
+import { restoreTool } from "./tools/restore.js";
+import { listSnapshotsTool } from "./tools/list_snapshots.js";
+import { answerEscapeHatchTool } from "./tools/answer_escape_hatch.js";
 import type { ToolContext } from "./tools/shared.js";
 
 export interface SynthiServerOptions {
@@ -733,9 +737,92 @@ const TOOLS = [
     },
   },
   {
+    name: "synthi_snapshot",
+    description:
+      "Phase 3 — capture a session-observable snapshot: last source_state, current frame (optional), event-log seq, wire state. Returns {snapshot_id, captured_at, digest, ...} that can be replayed via synthi_restore. Does not snapshot guest process memory; documented limits in §Snapshot/restore.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        label: { type: "string", description: "Short human-readable label for the snapshot." },
+        detail: { description: "Optional free-form context passed through into the snapshot record." },
+        omit_frame: {
+          type: "boolean",
+          description: "When true, skip the PNG capture. Default false — frames are captured when available.",
+        },
+        frame_max_dim: {
+          type: "number",
+          description: "Downscale the captured frame's longest edge to this integer (≥16). Keeps snapshot payloads small.",
+        },
+      },
+      required: [],
+    },
+  },
+  {
+    name: "synthi_restore",
+    description:
+      "Phase 3 — replay a previously captured snapshot into the current session. Re-emits the captured source_state event (so waiters resolve on the replay). Pass `recompile_source:true` + `compile:{language, source, files?}` to trigger a compile using the re-supplied source. `include_frame:true` returns the captured PNG in the response.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        snapshot_id: { type: "string", description: "Snapshot id returned by synthi_snapshot." },
+        recompile_source: { type: "boolean" },
+        include_frame: { type: "boolean" },
+        compile: {
+          type: "object",
+          description: "Compile payload re-supplied by the caller when recompile_source:true.",
+          properties: {
+            language: { type: "string" },
+            source: { type: "string" },
+            files: {
+              type: "array",
+              items: {
+                type: "object",
+                properties: { name: { type: "string" }, content: { type: "string" } },
+                required: ["name", "content"],
+              },
+            },
+            is_gui: { type: "boolean" },
+            width: { type: "number" },
+            height: { type: "number" },
+          },
+        },
+      },
+      required: ["snapshot_id"],
+    },
+  },
+  {
+    name: "synthi_list_snapshots",
+    description:
+      "Phase 3 — list snapshots captured for the attached session. Frames are omitted by default; set include_frame:true to include the PNG blobs.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        limit: { type: "number", description: "Return up to N most-recent snapshots. Default 32, max 256." },
+        include_frame: { type: "boolean" },
+      },
+      required: [],
+    },
+  },
+  {
+    name: "synthi_answer_escape_hatch",
+    description:
+      "Phase 3 — operator-side tool. Drain one pending question from the escape-hatch queue by id. Pass {pending_id, answer} to resolve, or {pending_id, cancel:true, cancel_reason?} to cancel. The target agent's synthi_request_human / synthi_annotate_and_ask call unblocks on this response.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        pending_id: { type: "string" },
+        answer: { description: "The answer payload returned to the blocked agent. Accepts any JSON value." },
+        operator_id: { type: "string", description: "Short label identifying the answering operator." },
+        cancel: { type: "boolean" },
+        cancel_reason: { type: "string" },
+      },
+      required: ["pending_id"],
+    },
+  },
+  {
     name: "synthi_locate",
     description:
-      "Resolve a natural-language element description into a {bbox, handle_id, region_phash} handle. Default backend is `agent_side` — the server returns the current screenshot + `agent_side_vision_required` and expects you to ground the bbox using your own LLM then re-call with `hints.prefer_region` populated. `claude_api` grounds server-side via Anthropic (needs ANTHROPIC_API_KEY); `gemini_api` grounds server-side via Google (needs GEMINI_API_KEY / GOOGLE_API_KEY); `mock` uses `hints.prefer_region` verbatim (spike only). Passing `handle_id` + `reuse_handle:true` enables the region-pHash cache keyed on (frame_content, description).",
+      "Resolve a natural-language element description into a {bbox, handle_id, region_phash} handle. Default backend is `agent_side` — the server returns the current screenshot + `agent_side_vision_required` and expects you to ground the bbox using your own LLM then re-call with `hints.prefer_region` populated. `claude_api` grounds server-side via Anthropic (needs ANTHROPIC_API_KEY); `gemini_api` grounds server-side via Google (needs GEMINI_API_KEY / GOOGLE_API_KEY); `local` grounds via a self-hosted HTTP endpoint (needs SYNTHI_LOCAL_VISION_URL, phase 3); `mock` uses `hints.prefer_region` verbatim (spike only). Passing `handle_id` + `reuse_handle:true` enables the region-pHash cache keyed on (frame_content, description).",
     inputSchema: {
       type: "object",
       properties: {
@@ -773,8 +860,8 @@ const TOOLS = [
         },
         preferred_vision_backend: {
           type: "string",
-          enum: ["mock", "agent_side", "claude_api", "gemini_api"],
-          description: "Which backend to use for vision grounding. Defaults to env SYNTHI_VISION_BACKEND or 'agent_side' (no API key needed; the agent does the grounding and re-calls with hints.prefer_region). `claude_api` needs ANTHROPIC_API_KEY; `gemini_api` needs GEMINI_API_KEY (or GOOGLE_API_KEY).",
+          enum: ["mock", "agent_side", "claude_api", "gemini_api", "local"],
+          description: "Which backend to use for vision grounding. Defaults to env SYNTHI_VISION_BACKEND or 'agent_side' (no API key needed; the agent does the grounding and re-calls with hints.prefer_region). `claude_api` needs ANTHROPIC_API_KEY; `gemini_api` needs GEMINI_API_KEY (or GOOGLE_API_KEY); `local` needs SYNTHI_LOCAL_VISION_URL (phase 3).",
         },
         handle_id: {
           type: "string",
@@ -961,6 +1048,14 @@ export function createSynthiServer(options: SynthiServerOptions): Server {
         return (await getAudioLevelTool(args)) as CallToolResult;
       case "synthi_wait_audio_event":
         return (await waitAudioEventTool(args)) as CallToolResult;
+      case "synthi_snapshot":
+        return (await snapshotTool(args)) as CallToolResult;
+      case "synthi_restore":
+        return (await restoreTool(args)) as CallToolResult;
+      case "synthi_list_snapshots":
+        return (await listSnapshotsTool(args)) as CallToolResult;
+      case "synthi_answer_escape_hatch":
+        return (await answerEscapeHatchTool(args)) as CallToolResult;
       default:
         return {
           content: [
