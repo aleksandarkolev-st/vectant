@@ -38,7 +38,9 @@
     "spike:E2": "tsx tests/spike/E2_locator_cache.ts",
     "spike:E2b": "tsx tests/spike/E2b_region_phash.ts",
     "spike:E3": "tsx tests/spike/E3_p99_load.ts",
-    "spike:E4": "tsx tests/spike/E4_cost_budget.ts"
+    "spike:E4": "tsx tests/spike/E4_cost_budget.ts",
+    "soak": "node tests/soak/soak_loop.mjs",
+    "live:phase3": "node scripts/live-test-phase3.mjs"
   },
   "engines": {
     "node": ">=18.0.0"
