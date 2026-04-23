@@ -1,4 +1,0 @@
-﻿=== Requested extensions ===
-TOTAL (requested set): 
-TOTAL (all text-like files, excl. binaries+generated, <5MB/file): 204767
-
