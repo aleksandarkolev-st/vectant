@@ -24,6 +24,13 @@ pub struct SignalMessage {
     pub sdp_type: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub candidate: Option<RTCIceCandidateInit>,
+    /// Per-connection peer identifier assigned by the signaling-server on
+    /// register and stamped onto every forwarded SDP/ICE message. Present
+    /// on the wire today for forward-compat with G3 Phase B (per-peer PC
+    /// routing in the worker); ignored by the current singleton-PC hot
+    /// path. See `webrtc/G3_PHASE_B_INTEGRATION.md`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub peer_id: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

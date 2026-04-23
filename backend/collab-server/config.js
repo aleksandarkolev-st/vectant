@@ -43,6 +43,22 @@ const GCS_CREDENTIALS  = process.env.GCP_CREDENTIALS
     ? JSON.parse(process.env.GCP_CREDENTIALS)
     : { client_email: GCS_CLIENT_EMAIL, private_key: GCS_PRIVATE_KEY };
 
+// Validate PEM at startup. A silent-but-corrupt key surfaces as
+// "Cannot call write after a stream was destroyed" from @google-cloud/storage
+// mid-upload (JWT signing fails → auth lib destroys the request stream).
+// Parsing here turns that into a loud, actionable boot error.
+if (GCS_CREDENTIALS.private_key) {
+    try {
+        require('crypto').createPrivateKey(GCS_CREDENTIALS.private_key);
+    } catch (e) {
+        console.error(
+            '[config] GCP_PRIVATE_KEY is malformed (%s). Check .env — a corrupt key ' +
+            'makes every GCS upload fail with "stream destroyed" / "DECODER routines::unsupported".',
+            e.message,
+        );
+    }
+}
+
 /** Prefix inside the GCS bucket under which workspace files are stored. */
 const GCS_WORKSPACE_PREFIX = process.env.GCS_WORKSPACE_PREFIX || 'workspaces';
 

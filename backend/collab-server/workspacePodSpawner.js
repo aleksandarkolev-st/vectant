@@ -51,18 +51,24 @@ const WORKSPACE_NODE_TAINT_EFFECT = (process.env.WORKSPACE_NODE_TAINT_EFFECT || 
 
 // ── K8s client ─────────────────────────────────────────────────────────────
 
-const kc = new k8s.KubeConfig();
+let appsApi, coreApi, watcher;
 
-// In-cluster when running inside a pod; otherwise use local kubeconfig.
-if (process.env.KUBERNETES_SERVICE_HOST) {
-  kc.loadFromCluster();
+if (process.env.SPAWNER_MODE === 'local') {
+  console.log('[Spawner] SPAWNER_MODE=local — K8s client disabled');
 } else {
-  kc.loadFromDefault();
-}
+  const kc = new k8s.KubeConfig();
 
-const appsApi = kc.makeApiClient(k8s.AppsV1Api);
-const coreApi = kc.makeApiClient(k8s.CoreV1Api);
-const watcher = new k8s.Watch(kc);
+  // In-cluster when running inside a pod; otherwise use local kubeconfig.
+  if (process.env.KUBERNETES_SERVICE_HOST) {
+    kc.loadFromCluster();
+  } else {
+    kc.loadFromDefault();
+  }
+
+  appsApi = kc.makeApiClient(k8s.AppsV1Api);
+  coreApi = kc.makeApiClient(k8s.CoreV1Api);
+  watcher = new k8s.Watch(kc);
+}
 
 // ── Session tracking ──────────────────────────────────────────────────────
 
@@ -252,6 +258,14 @@ async function getActiveWorkspaceCount() {
  * @returns {Promise<{name: string, created: boolean, podIP: string|null, podName: string|null}>}
  */
 async function ensurePod(sessionId, userId) {
+  // Local-dev bypass: no K8s available — the single docker-compose worker
+  // registers as __legacy__ and the signaling server routes any session to it.
+  if (process.env.SPAWNER_MODE === 'local') {
+    console.log(`[Spawner] local mode — skipping K8s for session=${sessionId}`);
+    activeSessions.add(sessionId);
+    return { name: 'local-worker', created: false, podIP: null, podName: null };
+  }
+
   const name = deploymentName(sessionId);
   const workspaceScheduling = buildWorkspaceScheduling();
 
@@ -425,6 +439,7 @@ exec worker`,
  * Called on heartbeats to prevent the culler from killing active sessions.
  */
 async function touch(sessionId) {
+  if (process.env.SPAWNER_MODE === 'local') return;
   const name = deploymentName(sessionId);
   const patch = {
     metadata: {
@@ -450,6 +465,10 @@ async function touch(sessionId) {
  * Called when the signaling server reports both peers disconnected.
  */
 async function teardown(sessionId) {
+  if (process.env.SPAWNER_MODE === 'local') {
+    activeSessions.delete(sessionId);
+    return;
+  }
   const name = deploymentName(sessionId);
   activeSessions.delete(sessionId);
 
@@ -514,6 +533,7 @@ async function cullIdleWorkspaces() {
 let cullerInterval = null;
 
 function startCuller() {
+  if (process.env.SPAWNER_MODE === 'local') return;
   if (cullerInterval) return;
   cullerInterval = setInterval(cullIdleWorkspaces, CULL_INTERVAL_MS);
   // Unref so the timer doesn't keep the process alive on shutdown.

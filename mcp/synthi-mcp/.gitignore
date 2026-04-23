@@ -1,0 +1,13 @@
+dist/
+node_modules/
+*.log
+.vitest-cache/
+.live-test-logs/
+.live-test-artifacts/
+.live-test-phase3/
+.soak/
+
+# .npmrc may carry a real GITHUB_TOKEN — never commit it.
+# Use .npmrc.example as the template.
+.npmrc
+

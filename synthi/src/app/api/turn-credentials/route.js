@@ -76,6 +76,17 @@ export async function GET(req) {
 
   // Fail gracefully when Cloudflare is not configured yet.
   if (!CF_TOKEN_ID || !CF_API_TOKEN) {
+    const localUrl  = process.env.LOCAL_TURN_URL;
+    const localUser = process.env.LOCAL_TURN_USERNAME;
+    const localCred = process.env.LOCAL_TURN_CREDENTIAL;
+    if (localUrl && localUser && localCred) {
+      return NextResponse.json({
+        iceServers: [
+          { urls: ['stun:stun.l.google.com:19302'] },
+          { urls: [localUrl], username: localUser, credential: localCred },
+        ],
+      });
+    }
     return NextResponse.json({
       iceServers: [{ urls: ['stun:stun.l.google.com:19302'] }],
       _fallback: true,

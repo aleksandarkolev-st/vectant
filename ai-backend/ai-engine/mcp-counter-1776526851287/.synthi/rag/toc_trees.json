@@ -1,0 +1,62 @@
+{
+  "46eede2908558aba2b3b999e": {
+    "document_id": "46eede2908558aba2b3b999e",
+    "root": {
+      "id": "46eede2908558aba2b3b999e_root",
+      "title": "mcp-counter-1776526851287\\.code_intel",
+      "node_type": "root",
+      "depth": 0,
+      "start_line": 1,
+      "end_line": 1,
+      "start_offset": 0,
+      "end_offset": 0,
+      "parent_id": null,
+      "children": [],
+      "preview": "",
+      "token_estimate": 0,
+      "keywords": []
+    },
+    "total_nodes": 1,
+    "max_depth": 0
+  },
+  "21f0b7c77353ec5ed7edf669": {
+    "document_id": "21f0b7c77353ec5ed7edf669",
+    "root": {
+      "id": "21f0b7c77353ec5ed7edf669_root",
+      "title": "chunking_version",
+      "node_type": "root",
+      "depth": 0,
+      "start_line": 1,
+      "end_line": 1,
+      "start_offset": 0,
+      "end_offset": 0,
+      "parent_id": null,
+      "children": [],
+      "preview": "",
+      "token_estimate": 0,
+      "keywords": []
+    },
+    "total_nodes": 1,
+    "max_depth": 0
+  },
+  "f3001cf84d285b230cc9ca3b": {
+    "document_id": "f3001cf84d285b230cc9ca3b",
+    "root": {
+      "id": "f3001cf84d285b230cc9ca3b_root",
+      "title": "1776526886397",
+      "node_type": "root",
+      "depth": 0,
+      "start_line": 1,
+      "end_line": 1,
+      "start_offset": 0,
+      "end_offset": 0,
+      "parent_id": null,
+      "children": [],
+      "preview": "",
+      "token_estimate": 0,
+      "keywords": []
+    },
+    "total_nodes": 1,
+    "max_depth": 0
+  }
+}

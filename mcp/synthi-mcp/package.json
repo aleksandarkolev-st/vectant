@@ -1,0 +1,64 @@
+{
+  "name": "@synthi-inc/mcp-server",
+  "version": "0.1.0",
+  "private": false,
+  "description": "Synthi MCP — proprietary MCP server for agents to observe and drive a running Synthi preview session.",
+  "type": "module",
+  "bin": {
+    "synthi-mcp": "dist/index.js"
+  },
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com",
+    "access": "restricted"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/synthi-inc/synthi-ide.git",
+    "directory": "mcp/synthi-mcp"
+  },
+  "homepage": "https://github.com/synthi-inc/synthi-ide/tree/main/mcp/synthi-mcp#readme",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "tsx src/index.ts",
+    "test": "vitest run",
+    "test:unit": "vitest run --project unit",
+    "test:integration": "vitest run --project integration",
+    "typecheck": "tsc --noEmit",
+    "smoke": "node scripts/release-smoke.mjs --command dist/index.js",
+    "smoke:image": "node scripts/release-smoke.mjs",
+    "spike:all": "tsx tests/spike/run_all.ts",
+    "spike:E1": "tsx tests/spike/E1_frame_seq.ts",
+    "spike:E2": "tsx tests/spike/E2_locator_cache.ts",
+    "spike:E2b": "tsx tests/spike/E2b_region_phash.ts",
+    "spike:E3": "tsx tests/spike/E3_p99_load.ts",
+    "spike:E4": "tsx tests/spike/E4_cost_budget.ts",
+    "soak": "node tests/soak/soak_loop.mjs",
+    "live:phase3": "node scripts/live-test-phase3.mjs"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.33.0",
+    "@ffmpeg-installer/ffmpeg": "^1.1.0",
+    "@google/genai": "^1.50.1",
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "sharp": "^0.33.0",
+    "werift": "^0.22.9",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/ws": "^8.5.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.0"
+  }
+}

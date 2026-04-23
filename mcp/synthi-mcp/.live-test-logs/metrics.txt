@@ -1,0 +1,30 @@
+# HELP synthi_tool_calls_total MCP tool invocations, labelled by tool name + outcome.
+# TYPE synthi_tool_calls_total counter
+synthi_tool_calls_total{tool="synthi_attach",outcome="ok"} 1
+synthi_tool_calls_total{tool="synthi_screenshot",outcome="ok"} 2
+synthi_tool_calls_total{tool="synthi_locate",outcome="error"} 1
+synthi_tool_calls_total{tool="synthi_compile",outcome="ok"} 1
+synthi_tool_calls_total{tool="synthi_wait_hmr",outcome="ok"} 1
+
+# HELP synthi_inputs_total Input dispatches sent to the worker, labelled by action.
+# TYPE synthi_inputs_total counter
+synthi_inputs_total{action="compile:start"} 1
+
+# HELP synthi_screenshots_total Screenshots served to the agent.
+# TYPE synthi_screenshots_total counter
+synthi_screenshots_total 2
+
+# HELP synthi_vision_inferences_total Server-side vision grounding calls, labelled by backend + model.
+# TYPE synthi_vision_inferences_total counter
+
+# HELP synthi_vision_cost_usd_total Cumulative vision-inference cost estimate in USD (per backend + model).
+# TYPE synthi_vision_cost_usd_total counter
+
+# HELP synthi_locator_cache_dispatches_by_mode Locator dispatches by cache outcome. sum over mode = total dispatches.
+# TYPE synthi_locator_cache_dispatches_by_mode counter
+
+# HELP synthi_locator_reresolutions_by_reason Locator re-resolutions by reason. sum over reason = total re-resolutions (= dispatches minus cached).
+# TYPE synthi_locator_reresolutions_by_reason counter
+
+# HELP synthi_egress_bytes_total Bytes emitted back to the agent through tool responses, labelled by kind.
+# TYPE synthi_egress_bytes_total counter

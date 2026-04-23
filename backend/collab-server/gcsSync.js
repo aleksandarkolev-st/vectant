@@ -370,6 +370,13 @@ async function downloadGcsToRepo(slug, repoPath, options = {}) {
 /**
  * Sync a single file change to GCS (for real-time sync) with retry logic.
  * Retries up to 3 times with exponential backoff on transient failures.
+ *
+ * After a failure we reset the module-level Storage client so the next
+ * attempt gets a fresh auth/keepalive pool. Without this, a transient
+ * network hiccup during the first call leaves the cached Duplexify
+ * upload pipeline in a destroyed state, and every subsequent call
+ * surfaces as "Cannot call write after a stream was destroyed" — even
+ * though credentials and connectivity are fine.
  */
 async function syncFileToGcs(slug, relativePath, content, userId) {
     if (!isGcsConfigured()) {
@@ -386,8 +393,9 @@ async function syncFileToGcs(slug, relativePath, content, userId) {
         try {
             const { bucket } = getStorage();
             const file = bucket.file(gcsPath);
+            const body = Buffer.isBuffer(content) ? content : Buffer.from(String(content), 'utf8');
 
-            await file.save(content, {
+            await file.save(body, {
                 resumable: false,
                 contentType: 'application/octet-stream',
                 metadata: { cacheControl: 'no-cache' }
@@ -396,6 +404,8 @@ async function syncFileToGcs(slug, relativePath, content, userId) {
             return { success: true, path: gcsPath };
         } catch (e) {
             lastError = e;
+            storage = null;
+            bucket = null;
             if (attempt < MAX_RETRIES) {
                 const delay = Math.min(500 * Math.pow(2, attempt - 1), 4000);
                 console.warn(`[GCS] syncFileToGcs attempt ${attempt} failed for ${gcsPath}: ${e.message}. Retrying in ${delay}ms...`);
