@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__synthi__synthi_attach",
+      "mcp__synthi__synthi_screenshot",
+      "mcp__synthi__synthi_describe",
+      "Bash(docker run *)",
+      "PowerShell(docker run *)",
+      "PowerShell(docker volume ls *)",
+      "PowerShell(docker cp *)",
+      "mcp__synthi__synthi_compile",
+      "mcp__synthi__synthi_wait_hmr",
+      "mcp__synthi__synthi_get_event_log",
+      "mcp__synthi__synthi_wait"
+    ]
+  }
+}
