@@ -3568,6 +3568,28 @@ const EditorPanel = ({
                                                         )}
                                                     </div>
 
+                                                    {/* Persistent permission-denied indicator: shown whenever a save
+                                                        was rejected with 403 on this file.  Survives focus changes so
+                                                        a missed 5s toast doesn't leave the user retrying blindly.
+                                                        Cleared by any successful save. */}
+                                                    {file.permissionDenied && (
+                                                        <span
+                                                            aria-label="Read-only — permission denied"
+                                                            title={file.saveError || 'Read-only: your collab role cannot write this file. Ask the Host.'}
+                                                            className="flex-shrink-0 flex items-center justify-center"
+                                                            style={{
+                                                                width: 14,
+                                                                height: 14,
+                                                                color: 'var(--accent-warning, #e0a83c)',
+                                                            }}
+                                                        >
+                                                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                                                <rect x="5" y="11" width="14" height="10" rx="2" stroke="currentColor" strokeWidth="2" />
+                                                                <path d="M8 11V8a4 4 0 018 0v3" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                                                            </svg>
+                                                        </span>
+                                                    )}
+
                                                  {/* Presence avatars — small colored dots/avatars for remote users on this file */}
                                                 {(() => {
                                                     const fileUsers = presenceByFile[file.path];
@@ -3622,15 +3644,37 @@ const EditorPanel = ({
                                                     {/* Unsaved dot — using TAB_TOKENS for theme-adaptive coloring.
                                                         Logic: Only show if (Manual Save + Local Unsaved) OR (Remote Unsaved).
                                                     */}
-                                                    {((!autoSaveEnabled && (file.isUnsaved || (isActive && isUnsaved))) || (isActive && remoteUnsaved)) && (
-                                                        <span 
-                                                            aria-hidden="true" 
-                                                            className="w-2 h-2 rounded-full flex-shrink-0 transition-opacity group-hover:hidden" 
-                                                            style={{ 
-                                                                backgroundColor: TAB_TOKENS.unsaved, 
-                                                                boxShadow: `0 0 6px color-mix(in srgb, ${TAB_TOKENS.unsaved} 60%, transparent)` 
-                                                            }} 
+                                                    {((!autoSaveEnabled && (file.isUnsaved || (isActive && isUnsaved))) || (isActive && remoteUnsaved)) ? (
+                                                        <span
+                                                            aria-hidden="true"
+                                                            className="w-2 h-2 rounded-full flex-shrink-0 transition-opacity group-hover:hidden"
+                                                            style={{
+                                                                backgroundColor: TAB_TOKENS.unsaved,
+                                                                boxShadow: `0 0 6px color-mix(in srgb, ${TAB_TOKENS.unsaved} 60%, transparent)`
+                                                            }}
                                                         />
+                                                    ) : (
+                                                        // Transient "just saved" checkmark.  Remounted on each save
+                                                        // via the lastSavedAt key; the CSS keyframe fades it in and
+                                                        // back out so there's no timer to manage and the indicator
+                                                        // cleans up automatically.  Silent success makes failures
+                                                        // invisible by contrast — this closes that gap.
+                                                        file.lastSavedAt && (
+                                                            <span
+                                                                key={file.lastSavedAt}
+                                                                aria-hidden="true"
+                                                                className="flex-shrink-0 flex items-center justify-center group-hover:hidden synthi-save-pulse"
+                                                                style={{
+                                                                    width: 10,
+                                                                    height: 10,
+                                                                    color: 'var(--accent-success, #4caf87)',
+                                                                }}
+                                                            >
+                                                                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                                                    <path d="M5 12l5 5L20 7" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
+                                                                </svg>
+                                                            </span>
+                                                        )
                                                     )}
 
                                                     {/* Close button — uses theme variables for text and hover backgrounds */}

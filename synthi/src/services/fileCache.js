@@ -1,6 +1,13 @@
 const DEFAULT_LIMIT_MB = 32;
 const DEFAULT_MAX_FILE_MB = 4;
 
+// Per-file local snapshot history (most-recent-first).  Bounded so huge
+// files and long sessions don't blow up memory.  This is an in-memory
+// "oh no, I just saved garbage" safety net — it predates git commit
+// history and works even for never-committed files.
+const DEFAULT_SNAPSHOT_LIMIT = 10;
+const DEFAULT_SNAPSHOT_MAX_FILE_BYTES = 1 * 1024 * 1024; // 1 MB
+
 function estimateBytes(str) {
   if (typeof str !== 'string') return 0;
   // JS strings are roughly 2 bytes/char (UTF-16)
@@ -18,6 +25,41 @@ export class FileCache {
     this._map = new Map(); // path -> entry
     this._bytes = 0;
     this._activePath = null;
+
+    // path -> [{ content, savedAt }]  (most-recent first)
+    this._snapshots = new Map();
+    this._snapshotLimit = options.snapshotLimit || DEFAULT_SNAPSHOT_LIMIT;
+    this._snapshotMaxFileBytes = options.snapshotMaxFileBytes || DEFAULT_SNAPSHOT_MAX_FILE_BYTES;
+  }
+
+  /**
+   * Record a save-time snapshot of a file's content so the user can
+   * recover from accidentally-saved garbage before it makes it to a git
+   * commit.  Drops snapshots for very large files to keep memory bounded.
+   */
+  pushSnapshot(path, content) {
+    if (!path || typeof content !== 'string') return;
+    if (estimateBytes(content) > this._snapshotMaxFileBytes) return;
+    let history = this._snapshots.get(path);
+    if (!history) {
+      history = [];
+      this._snapshots.set(path, history);
+    }
+    // De-dup: if the newest snapshot is identical, don't add another
+    if (history.length > 0 && history[0].content === content) return;
+    history.unshift({ content, savedAt: Date.now() });
+    if (history.length > this._snapshotLimit) history.length = this._snapshotLimit;
+  }
+
+  /** Return an immutable copy of snapshots (newest first). */
+  getSnapshots(path) {
+    const history = this._snapshots.get(path);
+    return history ? history.slice() : [];
+  }
+
+  /** Clear all snapshots for a path — e.g. after user commits. */
+  clearSnapshots(path) {
+    this._snapshots.delete(path);
   }
 
   stats() {
@@ -96,12 +138,15 @@ export class FileCache {
     this._map.delete(path);
     this._bytes -= entry.sizeBytes || 0;
     if (this._activePath === path) this._activePath = null;
+    // Keep snapshots: the user may still want to recover content after a
+    // cache eviction.  They're bounded separately.
   }
 
   clear() {
     this._map.clear();
     this._bytes = 0;
     this._activePath = null;
+    this._snapshots.clear();
   }
 
   _evictIfNeeded() {

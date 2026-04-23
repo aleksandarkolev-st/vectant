@@ -120,4 +120,78 @@ async function docExists(docId) {
   }
 }
 
-module.exports = { getOrCreateToken, readDocContent, docExists, getManager };
+/**
+ * Reset the content of a Y-Sweet document's 'monaco' Y.Text to `newContent`.
+ *
+ * Used to heal split-brain after an out-of-band disk write (AI agent,
+ * terminal, etc.) where the CRDT snapshot diverged from disk.  We load the
+ * current Y.Doc, rewrite the text using deletions + insertions (so existing
+ * awareness / decorations remain valid), and push the resulting update back
+ * to Y-Sweet.
+ *
+ * If no update method is available on the SDK, the caller should fall back
+ * to a hard invalidation (clients destroy + reconnect to an empty doc).
+ *
+ * @param {string} docId
+ * @param {string} newContent
+ * @returns {Promise<boolean>} true on successful rewrite, false if unsupported
+ */
+async function resetDocContent(docId, newContent) {
+  if (typeof newContent !== 'string') return false;
+  const safeId = encodeDocId(docId);
+  const mgr = await getManager();
+
+  // Load current state (may be empty if doc is fresh)
+  let existingUpdate = null;
+  try {
+    existingUpdate = await mgr.getDocAsUpdate(safeId);
+  } catch (err) {
+    if (!(err?.status === 404 || err?.message?.includes('not found'))) {
+      console.warn(`[ySweetBridge] resetDocContent: getDocAsUpdate(${docId}) failed:`, err?.message || err);
+    }
+  }
+
+  const doc = new Y.Doc();
+  if (existingUpdate && existingUpdate.length > 0) {
+    try { Y.applyUpdate(doc, existingUpdate); } catch (_) { /* fresh doc */ }
+  }
+
+  // Rewrite the monaco text in a single transaction so only one update is
+  // generated.  We capture the update via doc.on('update') rather than
+  // encodeStateAsUpdate so we can push just the delta.
+  let updatePayload = null;
+  const captureUpdate = (update) => { updatePayload = update; };
+  doc.on('update', captureUpdate);
+  try {
+    const ytext = doc.getText('monaco');
+    doc.transact(() => {
+      if (ytext.length > 0) ytext.delete(0, ytext.length);
+      if (newContent.length > 0) ytext.insert(0, newContent);
+    });
+  } finally {
+    doc.off('update', captureUpdate);
+  }
+  doc.destroy();
+
+  if (!updatePayload || updatePayload.length === 0) return true; // already matched
+
+  // Try the write path.  @y-sweet/sdk exposes several method names across
+  // versions — probe them in order.
+  const methods = ['updateDoc', 'updateDocument', 'applyUpdate', 'writeUpdate'];
+  for (const name of methods) {
+    if (typeof mgr[name] === 'function') {
+      try {
+        await mgr[name](safeId, updatePayload);
+        return true;
+      } catch (err) {
+        console.warn(`[ySweetBridge] resetDocContent: ${name}(${docId}) failed:`, err?.message || err);
+        return false;
+      }
+    }
+  }
+
+  console.warn(`[ySweetBridge] resetDocContent: no write method available on DocumentManager`);
+  return false;
+}
+
+module.exports = { getOrCreateToken, readDocContent, docExists, getManager, resetDocContent };

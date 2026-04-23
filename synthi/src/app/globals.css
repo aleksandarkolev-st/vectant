@@ -1154,3 +1154,26 @@
   background: var(--border-strong) !important;
   border-radius: 10px !important;
 }
+
+/* Transient "just saved" indicator in editor tabs.  Keyframe fades the
+   checkmark in and back out over ~1.5s so the indicator cleans itself
+   up without any JS timer.  Remount via React key={lastSavedAt} to
+   restart the animation on each save. */
+@keyframes synthi-save-pulse {
+  0%   { opacity: 0; transform: scale(0.6); }
+  15%  { opacity: 0.95; transform: scale(1); }
+  70%  { opacity: 0.85; transform: scale(1); }
+  100% { opacity: 0; transform: scale(0.85); }
+}
+
+.synthi-save-pulse {
+  animation: synthi-save-pulse 1500ms ease-out forwards;
+  pointer-events: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .synthi-save-pulse {
+    animation-duration: 1ms;
+    animation-iteration-count: 1;
+  }
+}

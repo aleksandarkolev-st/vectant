@@ -52,6 +52,13 @@ const fileHashCache = new LRUCache({ max: 1000, ttl: 5 * 60 * 1000 }); // docNam
 const revertCooldowns = new Map();
 const REVERT_COOLDOWN_MS = 3000; // 3 seconds
 
+// Files whose last GCS backup failed after all retries.  When set, the disk
+// write succeeded but the durable off-site backup did not.  We track this so
+// the client UI can surface a "backup degraded" indicator and so successive
+// save attempts can emit status-change events (degraded → ok) as conditions
+// recover.  Key = "slug:filePath", value = { at, error }.
+const gcsBackupDegraded = new Map();
+
 // Periodically garbage-collect expired cooldowns so the map doesn't grow
 // unboundedly on long-running servers.
 setInterval(() => {
@@ -327,17 +334,29 @@ async function flushDocToDisk(docName, options = {}) {
   if (config.GCS_SYNC_ON_FLUSH && gcsSync && typeof gcsSync.isGcsConfigured === 'function' && gcsSync.isGcsConfigured()) {
     try {
       await gcsSync.syncFileToGcs(slug, filePath, content, effectiveUserId);
+      // Clear any previous degraded-backup marker on success
+      if (gcsBackupDegraded.delete(`${slug}:${filePath}`)) {
+        broadcastBackupStatus(slug, filePath, 'ok', { userId: effectiveUserId });
+      }
     } catch (e) {
-      console.warn(`[Collab Flush] GCS sync failed for ${filePath}:`, e?.message || e);
+      // All retries exhausted — user's local disk write succeeded but the
+      // durable GCS backup failed.  Surface this as a structured warning
+      // so the client can show a "backup degraded" indicator, and emit
+      // telemetry so operators can diagnose systemic outages.
+      console.error(`[Collab Flush] GCS sync exhausted retries for ${slug}/${filePath}:`, e?.message || e);
+      gcsBackupDegraded.set(`${slug}:${filePath}`, { at: Date.now(), error: e?.message || String(e) });
+      broadcastBackupStatus(slug, filePath, 'degraded', {
+        userId: effectiveUserId,
+        reason: e?.message || 'gcs_sync_failed',
+      });
     }
   }
 
-  // 2. Disk write to the scoped repo
+  // 2. Disk write to the scoped repo (atomic via temp+rename, with verification)
   const repoPath = gitService.getEffectiveRepoPath(slug, effectiveUserId);
   if (fs.existsSync(repoPath)) {
     const fullPath = path.join(repoPath, filePath);
-    await fsPromises.mkdir(path.dirname(fullPath), { recursive: true });
-    await fsPromises.writeFile(fullPath, content, 'utf-8');
+    await gitService.safeWriteFile(fullPath, content);
   }
 
   // Update hash cache
@@ -582,6 +601,35 @@ function broadcastFileSaved(slug, filePath, scope = {}) {
   sseService.emitFileSaved(slug, filePath);
 }
 
+/**
+ * Broadcast a backup-status event when the durable off-site backup (GCS) for
+ * a file transitions between healthy and degraded.  Lets the UI show a
+ * "backup degraded" warning so users aren't misled into thinking a save
+ * succeeded end-to-end when only the local disk write landed.
+ *
+ * @param {string} slug
+ * @param {string} filePath
+ * @param {'ok'|'degraded'} status
+ * @param {{ userId?: string, sessionId?: string, reason?: string }} [scope]
+ */
+function broadcastBackupStatus(slug, filePath, status, scope = {}) {
+  if (!slug || !notifyWss) return;
+  const { reason, ...notifyScope } = scope || {};
+  const message = JSON.stringify({
+    type: 'backup-status',
+    slug,
+    filePath,
+    status,
+    reason: reason || null,
+    scope: notifyScope,
+  });
+  notifyWss.clients.forEach((ws) => {
+    if (ws.readyState === WebSocket.OPEN && ws._slug === slug && _matchesNotifyScope(ws, notifyScope)) {
+      try { ws.send(message); } catch (_) {}
+    }
+  });
+}
+
 function broadcastGitStatusChanged(slug, filePath, scope = {}, { immediate = false, snapshot = null } = {}) {
   if (!slug || !notifyWss) return;
   const send = async () => {
@@ -632,6 +680,80 @@ registerChangeListener(({ slug, rootDir, events }) => {
   }).catch((err) => {
     console.warn('[Collab] Git cache refresh from fs watcher failed:', err?.message || err);
   });
+});
+
+// ── Out-of-band write detection ────────────────────────────────────────────
+// When an AI agent, terminal process, or any non-editor writer modifies a
+// file on disk, the Yjs CRDT snapshot held by Y-Sweet becomes stale.  If we
+// don't invalidate, the next client to open that file will see the stale
+// Yjs content in Monaco while Redux reports the fresh disk content — a
+// split-brain where the file appears "unsaved" with the pre-agent content.
+//
+// Fix: for each fs-watcher event, compare the current disk hash against the
+// hash we recorded after the last editor-initiated write.  If they differ,
+// invalidate the Yjs doc so connected clients refetch the new content.
+//
+// Self-initiated saves are skipped automatically: flushDocToDisk() updates
+// fileHashCache with the new hash before the fs-watcher event fires, so
+// the hashes already match.
+registerChangeListener(async ({ slug, rootDir, events }) => {
+  if (!slug || !Array.isArray(events) || events.length === 0) return;
+  // `bulk` is emitted when too many events fired at once (e.g. npm install).
+  // Invalidating every doc for the slug is overkill; skip.
+  if (events.length === 1 && events[0]?.path === '/' && events[0]?.kind === 'bulk') return;
+
+  const scope = gitService._inferScopeFromRepoPath
+    ? gitService._inferScopeFromRepoPath(rootDir, slug)
+    : { slug, userId: null };
+  const userId = scope?.userId || null;
+
+  const invalidated = [];
+  for (const ev of events) {
+    if (!ev || ev.kind === 'dir') continue;
+    const filePath = ev.path;
+    if (!filePath) continue;
+    // Our own atomic writes use a hidden temp file that's immediately
+    // renamed into place.  Skip it — the rename event on the real path
+    // will fire separately and we'll reconcile via hash-compare there.
+    if (/\.synthi-tmp\.[0-9a-f]+$/.test(filePath) || /\/\.[^/]*\.synthi-tmp\./.test('/' + filePath)) continue;
+    const docName = buildDocName(slug, filePath, { userId });
+    try {
+      if (ev.kind === 'deleted') {
+        if (fileHashCache.has(docName)) {
+          fileHashCache.delete(docName);
+          invalidated.push(filePath);
+        }
+        continue;
+      }
+      const fullPath = path.join(rootDir, filePath);
+      let content;
+      try {
+        content = await fsPromises.readFile(fullPath, 'utf8');
+      } catch (_) {
+        // File vanished between event and read — treat as deleted
+        fileHashCache.delete(docName);
+        invalidated.push(filePath);
+        continue;
+      }
+      const diskHash = computeHash(content);
+      const cached = fileHashCache.get(docName);
+      if (cached && cached.hash === diskHash) continue; // editor-initiated write — already in sync
+      // Update the cache so subsequent fs events don't re-trigger.
+      fileHashCache.set(docName, { hash: diskHash, timestamp: Date.now() });
+      invalidated.push(filePath);
+    } catch (err) {
+      console.warn(`[Collab] Out-of-band diff check failed for ${filePath}:`, err?.message || err);
+    }
+  }
+
+  if (invalidated.length === 0) return;
+  console.log(`[Collab] Out-of-band write detected for slug ${slug}:`, invalidated);
+  const notifyScope = userId ? { userId } : {};
+  try {
+    await invalidateDocsForSlug(slug, invalidated, notifyScope);
+  } catch (err) {
+    console.warn('[Collab] invalidateDocsForSlug failed after out-of-band write:', err?.message || err);
+  }
 });
 
 /**
@@ -1611,6 +1733,38 @@ const server = http.createServer(async (req, res) => {
           res.end(JSON.stringify({ error: 'docId is required' }));
           return;
         }
+
+        // Defensive: before issuing the token, reconcile the Y-Sweet doc
+        // with the authoritative disk content.  If an out-of-band write
+        // happened while no one was connected (AI agent on a workspace the
+        // user hasn't opened yet; fs-watcher never fired), the fs-watcher
+        // invalidation path above won't have run.  Compare hashes and reset
+        // the Y-Sweet doc if disk is newer.
+        try {
+          const parsed = parseDocName(docId);
+          if (parsed?.slug && parsed?.filePath) {
+            const effectiveUser = resolveEffectiveUserForDoc(parsed, null);
+            const diskContent = await getActualFileContent(parsed.slug, parsed.filePath, effectiveUser);
+            if (diskContent !== null) {
+              const diskHash = computeHash(diskContent);
+              const crdtContent = await ySweetBridge.readDocContent(docId);
+              const crdtHash = crdtContent == null ? null : computeHash(crdtContent);
+              if (crdtHash !== null && crdtHash !== diskHash) {
+                console.log(`[Collab Token] Disk/CRDT hash mismatch for ${parsed.filePath} — resetting Y-Sweet doc to disk content`);
+                const ok = await ySweetBridge.resetDocContent(docId, diskContent);
+                if (!ok) {
+                  // Reset unsupported — fall back to broadcast invalidation
+                  // so connected clients destroy their Y.Docs.
+                  await invalidateDocsForSlug(parsed.slug, [parsed.filePath], effectiveUser ? { userId: effectiveUser } : {});
+                }
+              }
+              fileHashCache.set(docId, { hash: diskHash, timestamp: Date.now() });
+            }
+          }
+        } catch (reconcileErr) {
+          console.warn('[Collab Token] Pre-issue reconcile failed:', reconcileErr?.message || reconcileErr);
+        }
+
         const tokenData = await ySweetBridge.getOrCreateToken(docId);
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(tokenData));

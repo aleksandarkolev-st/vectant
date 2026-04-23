@@ -91,12 +91,46 @@ export const initialWorkspaceState = {
     // Per-file savedContent cache — preserves the "last saved" baseline
     // across tab switches so the unsaved dot survives the auto-flush.
     _savedContentByPath: {},
+    // Stashed pre-conflict CRDT content: { [filePath]: { content, at } }.
+    // Written by selectFileThunk when a file becomes conflicted and its
+    // Yjs doc is about to be destroyed.  Read by conflict-recovery UI so
+    // users can reapply their unsynced edits after resolving conflicts.
+    _conflictRecovery: {},
 };
 
 // --- ASYNC THUNKS (Side Effects and Persistence) ---
 
 // Track queued re-fetch for fetchFilesThunk (mirrors fetchGitStatus dedup pattern)
 let _pendingFilesFetchSlug = null;
+
+/**
+ * In-flight save coalescing registry.  Keyed by "slug:filePath".  Each entry:
+ *   { promise, content, queued } where `queued` captures the latest content
+ *   submitted while `promise` is in flight, so we run one chained save after
+ *   the current one finishes (and coalesce everything else onto it).
+ *
+ * Prevents double-writes when the user spams Ctrl+S (two requests racing, the
+ * later one possibly landing with stale content) and when auto-save fires
+ * while a manual save is already on the wire.
+ */
+const _inflightSaves = new Map();
+
+/**
+ * Lazy toast dispatcher — avoids a hard import of sonner (keeps SSR / tests
+ * happy when the toaster isn't mounted).  Silently no-ops if unavailable.
+ */
+function _toastError(message, description) {
+    if (typeof window === 'undefined') return;
+    import('sonner').then(({ toast }) => {
+        try {
+            toast.error(message, description ? { description, duration: 6000 } : { duration: 6000 });
+        } catch (_) { /* ignore */ }
+    }).catch(() => { /* sonner unavailable */ });
+}
+
+function _sleep(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 // 1. Fetch Files (Read)
 export const fetchFilesThunk = createAsyncThunk(
@@ -159,12 +193,12 @@ export const saveFileContentThunk = createAsyncThunk(
         // Determine the authoritative content to save.
         // Use Redux editor content as the source of truth; CRDT snapshots can
         // momentarily lag during high-frequency edits and cause stale writes.
-        let contentToSave = currentContent;
+        const contentToSave = currentContent;
 
         // Skip ONLY when content truly hasn't changed (after normalization).
         // No git-status refresh here — there was no disk write, so nothing
         // changed from git's perspective.  Out-of-band changes (terminal edits,
-        // Yjs flush) are caught by the FS-watcher-based refresh instead.
+        // fs-watcher events) are caught by the FS-watcher-based refresh instead.
         //
         // IMPORTANT: use _preSaveSavedContent as the baseline, NOT savedContent.
         // The `pending` reducer optimistically sets savedContent = currentContent
@@ -178,42 +212,101 @@ export const saveFileContentThunk = createAsyncThunk(
             return contentToSave; // fulfilled reducer marks as saved
         }
 
-        try {
-            // Single write through collab-server (writes to disk, GCS sync handled by auto-flush)
-            await dispatch(syncFileToGit({ slug, filePath: activeFile.path, content: contentToSave })).unwrap();
-            // Refresh git status AFTER the disk write completes so Source
-            // Control reflects the newly saved content immediately.
-            dispatch(fetchGitStatus(slug));
+        // Large-file guard: multi-MB files can blow up the CRDT transport,
+        // OOM the frontend, and stall GCS/disk writes.  Reject early with a
+        // clear message instead of partially corrupting anything.
+        const MAX_SAVE_BYTES = 20 * 1024 * 1024; // 20 MiB
+        const payloadBytes = typeof contentToSave === 'string'
+            ? (typeof TextEncoder !== 'undefined' ? new TextEncoder().encode(contentToSave).length : contentToSave.length)
+            : 0;
+        if (payloadBytes > MAX_SAVE_BYTES) {
+            const err = new Error(`File too large to save (${(payloadBytes / 1024 / 1024).toFixed(1)} MB > 20 MB)`);
+            err.code = 'FILE_TOO_LARGE';
+            throw err;
+        }
 
-        } catch (e) {
-            // Retry once on transient failures (network hiccup, auth race).
-            // If the first attempt failed because auth wasn't ready, the
-            // auth-ready guard in gitClient.request() will have resolved
-            // the userId by now.
-            console.warn('[Save] First sync attempt failed, retrying once…', e.message || e);
-            try {
-                await dispatch(syncFileToGit({ slug, filePath: activeFile.path, content: contentToSave })).unwrap();
-                dispatch(fetchGitStatus(slug));
-            } catch (retryErr) {
-                console.error('[Save] Retry also failed', retryErr);
-                throw retryErr;
+        // Coalesce concurrent saves for the same file.  If one is already in
+        // flight, queue the latest content for a single follow-up save after
+        // it lands — prevents a "second request overwrites first with stale
+        // content" race when the user hits Ctrl+S twice.
+        const dedupKey = `${slug}:${activeFile.path}`;
+        const existing = _inflightSaves.get(dedupKey);
+        if (existing) {
+            if (normalizeTrailing(existing.content) === normalizeTrailing(contentToSave)) {
+                // Same content already on the wire — just reuse the promise.
+                return existing.promise;
             }
+            // Newer content to send.  Record it as the queued follow-up and
+            // chain onto the existing in-flight save.
+            existing.queued = contentToSave;
+            return existing.promise.then(() => {
+                // By the time the chain runs, a later dispatch may have
+                // queued yet newer content; use whatever is latest.
+                const latest = _inflightSaves.get(dedupKey)?.queued ?? contentToSave;
+                return _performSave(dispatch, slug, activeFile.path, latest, dedupKey);
+            });
         }
-        
-        // Notify CodeIntel/RAG to re-index this file (covers both auto-save and manual save)
-        if (typeof window !== 'undefined' && activeFile.path) {
-            window.dispatchEvent(new CustomEvent('synthi:codeintel-index-file', {
-                detail: { filePath: activeFile.path },
-            }));
-        }
-        
-        // Ensure tree is revalidated silently after save
-        dispatch(fetchFilesThunk(slug)); 
 
-        // Return the content that was saved to update savedContent state
-        return contentToSave; 
+        return _performSave(dispatch, slug, activeFile.path, contentToSave, dedupKey);
     }
 );
+
+async function _performSave(dispatch, slug, filePath, contentToSave, dedupKey) {
+    const entry = { content: contentToSave, queued: null, promise: null };
+    _inflightSaves.set(dedupKey, entry);
+
+    entry.promise = (async () => {
+        try {
+            try {
+                await dispatch(syncFileToGit({ slug, filePath, content: contentToSave })).unwrap();
+            } catch (e) {
+                // Tuned retry: exponential-ish backoff absorbs transient flaps
+                // (network blip, auth race) better than an immediate retry.
+                const isAuthRace = e?.statusCode === 401;
+                const firstDelay = isAuthRace ? 0 : 500;
+                console.warn(`[Save] First sync attempt failed, retrying in ${firstDelay}ms…`, e.message || e);
+                if (firstDelay) await _sleep(firstDelay);
+                try {
+                    await dispatch(syncFileToGit({ slug, filePath, content: contentToSave })).unwrap();
+                } catch (retryErr) {
+                    console.warn('[Save] Second sync attempt failed, retrying in 1000ms…', retryErr.message || retryErr);
+                    await _sleep(1000);
+                    try {
+                        await dispatch(syncFileToGit({ slug, filePath, content: contentToSave })).unwrap();
+                    } catch (finalErr) {
+                        console.error('[Save] All retries failed', finalErr);
+                        // 403s are already toasted by gitClient; don't duplicate.
+                        if (finalErr?.statusCode !== 403) {
+                            _toastError(
+                                `Couldn't save ${filePath.split('/').pop() || filePath}`,
+                                finalErr?.message || 'Network error. Changes stay in the editor — try again.',
+                            );
+                        }
+                        throw finalErr;
+                    }
+                }
+            }
+            dispatch(fetchGitStatus(slug));
+
+            if (typeof window !== 'undefined' && filePath) {
+                window.dispatchEvent(new CustomEvent('synthi:codeintel-index-file', {
+                    detail: { filePath },
+                }));
+            }
+
+            dispatch(fetchFilesThunk(slug));
+            // Record a local snapshot so the user can recover if they
+            // just saved something they didn't mean to — git commits
+            // happen much later; this is the intermediate safety net.
+            try { fileCache.pushSnapshot(filePath, contentToSave); } catch (_) { /* best-effort */ }
+            return contentToSave;
+        } finally {
+            _inflightSaves.delete(dedupKey);
+        }
+    })();
+
+    return entry.promise;
+}
 
 // 3. File Selection (Manages cache and fetches content)
 export const selectFileThunk = createAsyncThunk(
@@ -238,6 +331,20 @@ export const selectFileThunk = createAsyncThunk(
             console.log('[Workspace] File has merge conflict, forcing fresh read:', targetPath);
             // Invalidate cache for this file
             fileCache.delete(targetPath);
+            // Snapshot any unsynced CRDT content before destroying the doc.
+            // Without this, local edits that hadn't been flushed to disk yet
+            // silently vanish when the conflict markers replace them.  We
+            // stash the pre-conflict text under `_conflictRecovery` so the
+            // UI (or a recovery tool) can restore it post-resolution.
+            try {
+                const crdtText = getCrdtBaselineIfNewer(slug, targetPath, '');
+                if (typeof crdtText === 'string' && crdtText.length > 0) {
+                    dispatch(stashConflictRecovery({ path: targetPath, content: crdtText, at: Date.now() }));
+                    console.log(`[Workspace] Stashed ${crdtText.length} chars of pre-conflict CRDT content for ${targetPath}`);
+                }
+            } catch (e) {
+                console.warn('[Workspace] CRDT snapshot before conflict destroy failed:', e);
+            }
             // Destroy collab doc to prevent Yjs from overwriting
             try {
                 collabClient.destroyDocument(slug, targetPath);
@@ -713,6 +820,26 @@ const workspaceSlice = createSlice({
          * If the file is currently active, set savedContent = currentContent.
          * Also updates the per-file savedContent cache.
          */
+        /**
+         * Record pre-conflict CRDT content for a file so the user can
+         * recover unsynced edits after conflict resolution.  Older entries
+         * for the same path are overwritten (last-write-wins).
+         */
+        stashConflictRecovery: (state, action) => {
+            const { path: filePath, content, at } = action.payload || {};
+            if (!filePath || typeof content !== 'string') return;
+            if (!state._conflictRecovery) state._conflictRecovery = {};
+            state._conflictRecovery[filePath] = { content, at: at || Date.now() };
+        },
+        /**
+         * Clear the conflict-recovery stash for a file (e.g. after the user
+         * applies or discards it).
+         */
+        clearConflictRecovery: (state, action) => {
+            const filePath = action.payload;
+            if (!filePath || !state._conflictRecovery) return;
+            delete state._conflictRecovery[filePath];
+        },
         markFileSavedRemotely: (state, action) => {
             const filePath = action.payload;
             if (!filePath) return;
@@ -932,15 +1059,26 @@ const workspaceSlice = createSlice({
                         }
                     }
                     // Mark active tab as saved (also handled in pending, but confirm here)
+                    // and clear any stale permission-denied flag, since a save
+                    // that lands means the user now has write access.
                     try {
                         if (state.activeFile && state.activeFile.path) {
                             const idx = state.openFiles.findIndex(f => f.path === state.activeFile.path);
-                            if (idx !== -1) state.openFiles[idx] = { ...state.openFiles[idx], isUnsaved: false };
+                            if (idx !== -1) {
+                                const prev = state.openFiles[idx];
+                                state.openFiles[idx] = {
+                                    ...prev,
+                                    isUnsaved: false,
+                                    permissionDenied: false,
+                                    saveError: null,
+                                    lastSavedAt: Date.now(),
+                                };
+                            }
                         }
                     } catch (e) { /* ignore */ }
                 }
             })
-          .addCase(saveFileContentThunk.rejected, (state) => {
+          .addCase(saveFileContentThunk.rejected, (state, action) => {
                 // Rollback: restore the pre-save state so the unsaved dot reappears
                 try {
                     if (state._preSaveSavedContent !== undefined) {
@@ -949,7 +1087,21 @@ const workspaceSlice = createSlice({
                     }
                     if (state.activeFile && state.activeFile.path) {
                         const idx = state.openFiles.findIndex(f => f.path === state.activeFile.path);
-                        if (idx !== -1) state.openFiles[idx] = { ...state.openFiles[idx], isUnsaved: true };
+                        if (idx !== -1) {
+                            // Classify the error so the tab can surface a
+                            // durable indicator (lock for 403, warning for
+                            // others).  action.error carries the thrown
+                            // error's message / code via redux-toolkit.
+                            const code = action.error?.code || action.error?.name || '';
+                            const message = action.error?.message || 'Save failed';
+                            const isPermissionDenied = code === 'permission_denied' || code === 'host_only' || message.toLowerCase().includes('permission');
+                            state.openFiles[idx] = {
+                                ...state.openFiles[idx],
+                                isUnsaved: true,
+                                permissionDenied: isPermissionDenied || false,
+                                saveError: message,
+                            };
+                        }
                     }
                 } catch (e) { /* ignore */ }
             });
@@ -1039,7 +1191,7 @@ const workspaceSlice = createSlice({
     },
 });
 
-export const { updateContent, renameItemStateUpdate, setSlug, setExternalFileContent, openFile, closeFile, reorderOpenFiles, hydrateWorkspace, clearFileCache, clearSavedBaselines, setDiffMode, markFileSavedRemotely } = workspaceSlice.actions;
+export const { updateContent, renameItemStateUpdate, setSlug, setExternalFileContent, openFile, closeFile, reorderOpenFiles, hydrateWorkspace, clearFileCache, clearSavedBaselines, setDiffMode, markFileSavedRemotely, stashConflictRecovery, clearConflictRecovery } = workspaceSlice.actions;
 
 export const refreshWorkspaceThunk = createAsyncThunk(
     'workspace/refresh',
