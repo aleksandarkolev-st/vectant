@@ -295,12 +295,26 @@ Proprietary-aware distribution; public-npm publish explicitly deferred. Full ana
 
 ---
 
-## 6. What's left — Phase 3 (~2 weeks)
+## 6. Phase 3 — scaffolded, follow-ups pending
 
-- [ ] `synthi_snapshot` / `synthi_restore`.
-- [ ] Local vision backend (grounding-DINO, SAM+CLIP).
-- [ ] Long-haul soak (1h random workload, 24h autonomous agent).
-- [ ] Escape-hatch UI (`synthi_request_human`, `synthi_annotate_and_ask`).
+First-cut landed in PR #250 (merged 2026-04-23, branch `claude/phase-3-agent-mcp-A9Cfj`, 35 files, +3101/−40). Covers the MCP-owned slice of every phase-3 deliverable; the deeper pieces that need worker / cloud / UI work are follow-ups.
+
+### Landed
+
+- [x] **Snapshot / restore (MCP-level).** `synthi_snapshot` / `synthi_restore` / `synthi_list_snapshots`. Captures source-state, event-log seq, wire state, and optional downscaled frame (`frame_max_dim`). In-memory persistor by default; file-backed via `SYNTHI_SNAPSHOT_DIR`. `synthi_restore` re-emits the captured `source_state` event (waiters on `wait({condition:"source_state", since_seq:…})` resolve) and optionally drives a recompile when the caller re-supplies files. Cross-session restore rejected with `snapshot_session_mismatch`. `src/snapshot/`, `src/tools/{snapshot,restore,list_snapshots}.ts`.
+- [x] **Escape-hatch queue.** `src/escape_hatch/queue.ts` — capped 32-pending queue with per-entry timeout, cancelAll on session-close (`escape_hatch_canceled`). `synthi_request_human` + `synthi_annotate_and_ask` enqueue and block; operators drain via the new `synthi_answer_escape_hatch` tool (resolve with any JSON answer, or cancel with reason). New resource `synthi://escape-hatch/queue` exposes pending entries for UI consumers.
+- [x] **Local vision backend (wire-compatible).** `synthi_locate({preferred_vision_backend:"local"})` POSTs to `SYNTHI_LOCAL_VISION_URL` and expects `{bbox, confidence, trace?}`. `hints.prefer_region` short-circuits without a network call. Fails fast with `local_vision_backend_not_configured` when env is unset; capability manifest carries `local_vision.available:false` + `reason` so agents can branch. Ships compatible with an Ollama / vLLM / bespoke FastAPI front-end — the model itself is a deployment choice.
+- [x] **Soak harness (short-cycle).** `tests/soak/soak_loop.mjs` — `screenshot → locate → wait → snapshot` loop with per-iteration NDJSON + aggregate summary (p50/p95/p99 per tool, error count, snapshots captured). Defaults to `mock` vision to avoid vendor burn. Knobs: `SOAK_DURATION_MIN`, `SOAK_ITERATION_MS`, `SOAK_SNAPSHOT_EVERY`.
+- [x] **Phase-3 live-test harness.** `scripts/live-test-phase3.mjs` — spawns the MCP subprocess, stands up a stub HTTP grounding server pointed at `SYNTHI_LOCAL_VISION_URL`, runs manifest + `tools/list` + `resources/list` sanity checks, round-trips one escape-hatch `request_human → answer` across two JSON-RPC clients on the same subprocess, and (when `SYNTHI_SESSION_ID` is supplied) drives the snapshot + restore round-trip against a real session. Runs in ~10–15 s.
+- [x] **31 new unit tests.** `snapshot.test.ts`, `escape_hatch_queue.test.ts`, `local_vision_backend.test.ts` (384 passed / 3 skipped post-land).
+- [x] **Manifest additions.** `synthi_attach` now advertises `snapshot`, `escape_hatch`, `local_vision` blocks + adds `"local"` to `vision_backends`.
+
+### Still open (phase 3 follow-ups)
+
+- [ ] **CRIU-backed guest-memory snapshot.** Worker-side; needs a CRIU daemon + orchestration. MCP snapshots intentionally capture observable state only — the guest heap isn't in scope for the MCP layer. This ticket is the worker's job.
+- [ ] **24 h+ soak on the cloud stack.** Short-cycle harness is in; long-haul runs against a staging cluster need scheduling + on-call coverage.
+- [ ] **Operator-UI kit for `synthi://escape-hatch/queue`.** Dashboard widget that lists pending entries + click-to-answer overlay for `annotate_and_ask` (operator clicks a coordinate on the sent screenshot, the click is serialized as the answer). Resource + tool exist; the UI consumer is the gap.
+- [ ] **Production local-grounding model choice.** Benchmark Moondream / Qwen2-VL / Florence-2 against the counter_sdl2 fixture for accuracy vs. latency vs. VRAM; ship the winner plus the pod manifest (tracked in `PHASE_2_PLUS_BACKLOG.md:D6`).
 
 ---
 
