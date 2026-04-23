@@ -167,7 +167,7 @@ pub fn record_end_of_frame(session_id: &str) {
         .or_insert_with(|| Mutex::new(IntervalAccumulator::new()));
     if let Ok(mut acc) = entry.lock() {
         acc.record_end(now);
-    }
+    };
 }
 
 /// Snapshot a session's current interval distribution. Returns
