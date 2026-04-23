@@ -51,6 +51,74 @@ function isGeneratedPath(relPath) {
     return false;
 }
 
+/**
+ * Atomic file write with post-write verification and binary detection.
+ *
+ * Writes to `<file>.synthi-tmp.<rand>` then renames onto the target so a
+ * crash mid-write cannot leave the file truncated or partially overwritten.
+ * After the rename we re-read and hash the file to confirm the write
+ * actually hit disk (catches ENOSPC, silent permission failures, etc.).
+ *
+ * Binary detection: if `content` is a Buffer, or if the file extension is in
+ * the known binary set and the caller passed a base64 string, we write
+ * bytes directly without UTF-8 coercion.  Plain strings default to UTF-8.
+ *
+ * @param {string} fullPath   - absolute path to write
+ * @param {string|Buffer} content - content to persist
+ * @param {object} [opts]
+ * @param {string} [opts.encoding='utf-8'] - used only when content is a string
+ * @param {boolean} [opts.verify=true]     - re-read + hash after rename
+ * @returns {Promise<{ bytesWritten: number, hash: string }>}
+ */
+async function safeWriteFile(fullPath, content, opts = {}) {
+    const { encoding = 'utf-8', verify = true } = opts;
+    const dir = path.dirname(fullPath);
+    await fs.promises.mkdir(dir, { recursive: true });
+
+    const isBuffer = Buffer.isBuffer(content);
+    const payload = isBuffer
+        ? content
+        : Buffer.from(String(content), encoding);
+
+    const tmpName = `.${path.basename(fullPath)}.synthi-tmp.${crypto.randomBytes(6).toString('hex')}`;
+    const tmpPath = path.join(dir, tmpName);
+
+    let fileHandle = null;
+    try {
+        fileHandle = await fs.promises.open(tmpPath, 'w');
+        await fileHandle.writeFile(payload);
+        // fsync so the rename sees the full contents even if the machine loses power.
+        try { await fileHandle.sync(); } catch (_) { /* some FS don't support fsync */ }
+    } finally {
+        if (fileHandle) {
+            try { await fileHandle.close(); } catch (_) {}
+        }
+    }
+
+    try {
+        await fs.promises.rename(tmpPath, fullPath);
+    } catch (err) {
+        // Best-effort cleanup of the temp file on rename failure
+        try { await fs.promises.unlink(tmpPath); } catch (_) {}
+        throw err;
+    }
+
+    const expectedHash = crypto.createHash('sha256').update(payload).digest('hex');
+
+    if (!verify) {
+        return { bytesWritten: payload.length, hash: expectedHash };
+    }
+
+    const observedHash = await hashFile(fullPath);
+    if (observedHash !== expectedHash) {
+        const err = new Error(`Post-write verification failed for ${fullPath}: expected ${expectedHash.slice(0, 12)}… but disk has ${observedHash.slice(0, 12)}…`);
+        err.code = 'WRITE_VERIFY_FAILED';
+        throw err;
+    }
+
+    return { bytesWritten: payload.length, hash: expectedHash };
+}
+
 function hashStream(stream) {
     return new Promise((resolve, reject) => {
         const hash = crypto.createHash('sha256');
@@ -3189,9 +3257,7 @@ class GitService {
     async syncFile(slug, filePath, content, userId) {
         const repoPath = this.getEffectiveRepoPath(slug, userId);
         const fullPath = path.join(repoPath, filePath);
-        const dir = path.dirname(fullPath);
-        await fs.promises.mkdir(dir, { recursive: true });
-        await fs.promises.writeFile(fullPath, content);
+        await safeWriteFile(fullPath, content);
     }
 
     /**
@@ -3384,10 +3450,7 @@ class GitService {
         }
         const fullPath = path.join(repoPath, safeRel);
         try {
-            // Ensure directory exists
-            const dirPath = path.dirname(fullPath);
-            await fs.promises.mkdir(dirPath, { recursive: true });
-            await fs.promises.writeFile(fullPath, content, 'utf-8');
+            await safeWriteFile(fullPath, content);
         } catch (e) {
             throw new Error(`Failed to write file: ${e.message}`);
         }
@@ -3439,13 +3502,12 @@ class GitService {
                     }
 
                     const fullPath = path.join(repoPath, rel);
-                    await fs.promises.mkdir(path.dirname(fullPath), { recursive: true });
 
                     if (encoding === 'base64') {
                         const buf = Buffer.from(content, 'base64');
-                        await fs.promises.writeFile(fullPath, buf);
+                        await safeWriteFile(fullPath, buf);
                     } else {
-                        await fs.promises.writeFile(fullPath, content, 'utf-8');
+                        await safeWriteFile(fullPath, content);
                     }
 
                     written.push({ path: rel, bytes: (encoding === 'base64') ? Buffer.byteLength(content, 'base64') : Buffer.byteLength(content, 'utf-8') });
@@ -4406,5 +4468,10 @@ gitService.RepoNotInitializedError = RepoNotInitializedError;
 gitService.MergeConflictError = MergeConflictError;
 gitService.AuthenticationError = AuthenticationError;
 gitService.RemoteNotConfiguredError = RemoteNotConfiguredError;
+
+// Expose the atomic-write helper for modules that write outside the class
+// (e.g. server.js flushDocToDisk).
+gitService.safeWriteFile = safeWriteFile;
+gitService.isBinaryExtension = isBinaryExtension;
 
 module.exports = gitService;

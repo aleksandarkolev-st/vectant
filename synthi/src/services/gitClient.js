@@ -100,17 +100,21 @@ export const gitClient = {
             error.granted = body?.granted || null;
 
             // ── Permission boundary toast ──
-            // Surface 403 permission_denied as a toast so the user immediately
-            // knows their collab role prevents the action — without having to
-            // look at the error banner.
+            // Surface 403 permission_denied as a *sticky* toast so the user
+            // keeps seeing the constraint on every subsequent retry (silent
+            // drop-on-5s would let people retry forever without realising
+            // their role blocks the action).  Stable id coalesces repeated
+            // failures onto a single notification.
             if (response.status === 403 && (error.code === 'permission_denied' || error.code === 'host_only')) {
-                // Dynamic import to avoid circular dep; sonner is side-effect-safe
+                const toastId = `permission-denied:${action}:${data.filePath || data.path || ''}`;
                 import('sonner').then(({ toast }) => {
                     toast.error(error.message || 'Permission denied', {
+                        id: toastId,
                         description: error.required
                             ? `Requires "${error.required}" permission. Ask the session Host.`
                             : undefined,
-                        duration: 5000,
+                        duration: Infinity,
+                        closeButton: true,
                     });
                 }).catch(() => { /* sonner not available */ });
             }
