@@ -30,6 +30,10 @@ import {
   resolvePrometheusPort,
   startPrometheusServer,
 } from "./observability/prometheus_server.js";
+import {
+  resolveOperatorBridgePort,
+  startOperatorBridge,
+} from "./operator_bridge/server.js";
 import { performShutdown } from "./shutdown.js";
 import {
   FileSnapshotPersistor,
@@ -101,6 +105,27 @@ async function main(): Promise<void> {
     process.stderr.write(`synthi-mcp metrics: http://127.0.0.1:${promPort}/metrics\n`);
   }
 
+  // Optional: Operator HTTP bridge exposing the escape-hatch queue so a
+  // browser-based operator UI can list pending `request_human` /
+  // `annotate_and_ask` entries and drain them. Opt-in via
+  // SYNTHI_OPERATOR_BRIDGE_PORT; token-gated via SYNTHI_OPERATOR_BRIDGE_TOKEN
+  // when you want to guard a multi-user box.
+  let operatorBridge: ReturnType<typeof startOperatorBridge> | undefined;
+  const bridgePort = resolveOperatorBridgePort(process.env["SYNTHI_OPERATOR_BRIDGE_PORT"]);
+  if (bridgePort !== undefined) {
+    const bridgeHost = process.env["SYNTHI_OPERATOR_BRIDGE_HOST"];
+    const bridgeToken = process.env["SYNTHI_OPERATOR_BRIDGE_TOKEN"];
+    operatorBridge = startOperatorBridge({
+      port: bridgePort,
+      ...(bridgeHost ? { host: bridgeHost } : {}),
+      ...(bridgeToken ? { token: bridgeToken } : {}),
+    });
+    const auth = bridgeToken ? " (token-gated)" : " (no auth — local only)";
+    process.stderr.write(
+      `synthi-mcp operator bridge: http://${bridgeHost ?? "127.0.0.1"}:${bridgePort}/escape-hatch/queue${auth}\n`
+    );
+  }
+
   const shutdown = async (): Promise<void> => {
     await performShutdown({
       requestRegistry,
@@ -108,6 +133,7 @@ async function main(): Promise<void> {
       server,
       ...(unbindMetrics ? { unbindMetrics } : {}),
       ...(metricsServer ? { metricsServer } : {}),
+      ...(operatorBridge ? { operatorBridge: { close: operatorBridge.close } } : {}),
       logError: (step, err) => {
         process.stderr.write(
           `synthi-mcp shutdown[${step}]: ${err instanceof Error ? err.message : String(err)}\n`

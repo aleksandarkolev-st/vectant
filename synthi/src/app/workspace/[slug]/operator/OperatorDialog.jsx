@@ -13,19 +13,39 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
+import {
+  Tabs,
+  TabsContent,
+  TabsList,
+  TabsTrigger,
+} from '@/components/ui/tabs';
 import OperatorPanel from './OperatorPanel.jsx';
+import EscapeHatchPanel from './EscapeHatchPanel.jsx';
 
 export default function OperatorDialog({ sessionId, open, onOpenChange }) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-xl">
+      <DialogContent className="max-w-2xl">
         <DialogHeader>
           <DialogTitle>Operator console</DialogTitle>
           <DialogDescription>
-            Live view of attached peers with a kill switch for this session.
+            Presence + kill switch, plus the agent&rsquo;s escape-hatch queue.
           </DialogDescription>
         </DialogHeader>
-        {open && sessionId ? <OperatorPanel sessionId={sessionId} /> : null}
+        {open && sessionId ? (
+          <Tabs defaultValue="presence" className="gap-4">
+            <TabsList className="self-start">
+              <TabsTrigger value="presence">Presence</TabsTrigger>
+              <TabsTrigger value="escape-hatch">Escape hatch</TabsTrigger>
+            </TabsList>
+            <TabsContent value="presence">
+              <OperatorPanel sessionId={sessionId} />
+            </TabsContent>
+            <TabsContent value="escape-hatch">
+              <EscapeHatchPanel />
+            </TabsContent>
+          </Tabs>
+        ) : null}
       </DialogContent>
     </Dialog>
   );
