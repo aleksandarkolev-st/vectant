@@ -37,6 +37,9 @@ use tokio::{
 };
 use tokio_tungstenite::{accept_async, tungstenite::Message};
 
+mod agent_auth;
+use agent_auth::{mint_turn_credentials, verify_agent_token, AgentTokenOutcome};
+
 // HTTP client for spawner webhook.
 static HTTP_CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
 
@@ -101,6 +104,12 @@ struct SignalMessage {
     /// on the kicked peer's final `{type:"evicted"}` frame.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     reason: Option<String>,
+
+    /// Phase-4 scoped-agent token. Required on `register` with
+    /// `role:"mcp-agent"` when `SYNTHI_AGENT_TOKEN_SECRET` is set; ignored
+    /// on all other message types. HS256 JWT — see `agent_auth::verify_agent_token`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    agent_token: Option<String>,
 }
 
 /// Protocol versions this signaling-server implementation can speak.
@@ -162,10 +171,16 @@ const ROLE_OBSERVER: &str = "observer";
 /// participating in the session's input/video loop) and the signaling
 /// server never fans worker media to operators.
 const ROLE_OPERATOR: &str = "operator";
+/// Phase-4 dedicated agent role. Like `observer` in that it's multi-peer
+/// and agent-counted in presence, but distinct on the wire so deployments
+/// can require a scoped agent token (`SYNTHI_AGENT_TOKEN_SECRET`) and/or
+/// mint TURN credentials for agents without affecting `observer`
+/// (browser-side debuggers / MCP Path A) semantics.
+const ROLE_MCP_AGENT: &str = "mcp-agent";
 
 /// Roles that are allowed multiple peers per session.
 fn role_is_multi_peer(role: &str) -> bool {
-    role == ROLE_OBSERVER
+    role == ROLE_OBSERVER || role == ROLE_MCP_AGENT
 }
 
 /// Roles authorised to send privileged operator control messages
@@ -181,7 +196,7 @@ fn role_is_operator(role: &str) -> bool {
 /// back to `human` (conservative — a new role shows up in the
 /// human count until explicitly classified).
 fn role_is_agent(role: &str) -> bool {
-    role == ROLE_OBSERVER || role == "mcp-agent"
+    role == ROLE_OBSERVER || role == ROLE_MCP_AGENT
 }
 
 /// Compute `PresenceCounts` from a map of session peer lists (keyed by
@@ -316,6 +331,17 @@ struct AppState {
     node_id: String,
     /// Base URL of the collab server for spawner webhooks.
     collab_url: Option<String>,
+    /// Phase-4 config. HS256 secret verifying `mcp-agent` register tokens.
+    /// None disables scoped-agent auth (local-dev default).
+    agent_token_secret: Option<String>,
+    /// coturn `use-auth-secret` shared secret for minting short-lived TURN
+    /// credentials. None disables TURN issuance (deployments without TURN).
+    turn_shared_secret: Option<String>,
+    /// Comma-separated TURN URLs (e.g. `turn:host:3478,turns:host:5349`).
+    turn_urls: Option<String>,
+    /// TTL in seconds for issued TURN credentials. Defaults to 1h so the
+    /// MCP can outlive a typical session without a refresh.
+    turn_ttl_seconds: u64,
 }
 
 /// Pick the peer roles that should receive a message sent by `sender_role`.
@@ -323,7 +349,7 @@ struct AppState {
 /// the worker.
 fn target_roles_for(sender_role: &str) -> &'static [&'static str] {
     if sender_role == ROLE_WORKER {
-        &[ROLE_BROWSER, ROLE_OBSERVER]
+        &[ROLE_BROWSER, ROLE_OBSERVER, ROLE_MCP_AGENT]
     } else {
         &[ROLE_WORKER]
     }
@@ -359,6 +385,31 @@ async fn main() -> anyhow::Result<()> {
         println!("[Signaling] COLLAB_SERVER_URL not set — disconnect webhook disabled");
     }
 
+    // Phase-4 optional env. Both default off so existing deployments
+    // keep their current behavior.
+    let agent_token_secret = env::var("SYNTHI_AGENT_TOKEN_SECRET")
+        .ok()
+        .filter(|s| !s.is_empty());
+    let turn_shared_secret = env::var("SYNTHI_TURN_SECRET")
+        .ok()
+        .filter(|s| !s.is_empty());
+    let turn_urls = env::var("SYNTHI_TURN_URLS").ok().filter(|s| !s.is_empty());
+    let turn_ttl_seconds: u64 = env::var("SYNTHI_TURN_TTL_SECONDS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(3600);
+    if agent_token_secret.is_some() {
+        println!("[Signaling] agent auth = required for role:\"mcp-agent\"");
+    } else {
+        println!("[Signaling] agent auth = disabled (SYNTHI_AGENT_TOKEN_SECRET unset)");
+    }
+    match (turn_shared_secret.as_deref(), turn_urls.as_deref()) {
+        (Some(_), Some(urls)) => println!(
+            "[Signaling] turn      = {urls} (ttl={turn_ttl_seconds}s)"
+        ),
+        _ => println!("[Signaling] turn      = disabled (SYNTHI_TURN_URLS / SYNTHI_TURN_SECRET unset)"),
+    };
+
     // Quick connectivity check — fail fast if Redis is unreachable.
     {
         let mut conn = redis_client.get_multiplexed_async_connection().await?;
@@ -374,6 +425,10 @@ async fn main() -> anyhow::Result<()> {
         redis_client: redis_client.clone(),
         node_id: node_id.clone(),
         collab_url,
+        agent_token_secret,
+        turn_shared_secret,
+        turn_urls,
+        turn_ttl_seconds,
     });
 
     // ── Background: Redis subscriber ───────────────────────────────────
@@ -547,7 +602,7 @@ async fn handle_connection(
     let (out_tx, mut out_rx) = mpsc::unbounded_channel::<Message>();
 
     // Spawn a task that drains the outbound queue into the WebSocket.
-    let send_task = tokio::spawn(async move {
+    let mut send_task = tokio::spawn(async move {
         while let Some(msg) = out_rx.recv().await {
             if ws_tx.send(msg).await.is_err() {
                 break;
@@ -643,6 +698,32 @@ async fn handle_connection(
                 println!("[Signaling]   client_version={cv}");
             }
 
+            // Phase-4 scoped-agent auth. Enforced only when the deployment
+            // supplies `SYNTHI_AGENT_TOKEN_SECRET`; otherwise we return
+            // `Disabled` + pass through, so local-dev + existing
+            // deployments stay backwards-compatible.
+            let auth_outcome = verify_agent_token(
+                state.agent_token_secret.as_deref(),
+                &role,
+                &session_id,
+                parsed.agent_token.as_deref(),
+            );
+            let auth_subject: Option<String> = match &auth_outcome {
+                AgentTokenOutcome::Rejected { code } => {
+                    let err = serde_json::json!({
+                        "type": "register-error",
+                        "code": *code,
+                    });
+                    let _ = out_tx.send(Message::text(err.to_string()));
+                    println!(
+                        "[Signaling] Rejected register from {addr}: role={role} code={code}"
+                    );
+                    break;
+                }
+                AgentTokenOutcome::Authenticated { subject, .. } => Some(subject.clone()),
+                AgentTokenOutcome::Disabled | AgentTokenOutcome::Unauthenticated => None,
+            };
+
             // Remove previous registration if the connection re-registers.
             if let (Some(old_sid), Some(old_role)) = (&my_session, &my_role) {
                 let mut peers = state.peers.write().await;
@@ -701,11 +782,29 @@ async fn handle_connection(
                 "[Signaling] Registered {role}{count_msg} for session '{session_id}' (addr={addr}, protocol={negotiated_protocol})"
             );
 
+            // Phase-4 TURN credential minting. Skipped unless both env
+            // knobs are set; skipped for non-agent roles so we don't hand
+            // ICE relay creds to every browser tab. Subject line mixes
+            // `peer_id` so coturn audit logs can cross-reference.
+            let turn_subject = auth_subject
+                .clone()
+                .unwrap_or_else(|| format!("peer-{peer_id}"));
+            let turn_creds = if role == ROLE_MCP_AGENT {
+                mint_turn_credentials(
+                    state.turn_shared_secret.as_deref(),
+                    state.turn_urls.as_deref(),
+                    &turn_subject,
+                    state.turn_ttl_seconds,
+                )
+            } else {
+                None
+            };
+
             // Acknowledge the registration so the client knows which
             // protocol version to use. Emitted after peer-map insert so
             // a client that immediately replies with SDP sees a
             // server that's ready to route.
-            let ack = serde_json::json!({
+            let mut ack = serde_json::json!({
                 "type": "registered",
                 "accepted_protocol": negotiated_protocol,
                 "server_supports": SERVER_PROTOCOLS,
@@ -713,6 +812,13 @@ async fn handle_connection(
                 "role": role,
                 "peer_id": peer_id,
             });
+            if let Some(subject) = &auth_subject {
+                ack["agent_subject"] = serde_json::Value::String(subject.clone());
+            }
+            if let Some(creds) = turn_creds {
+                ack["turn_credentials"] = serde_json::to_value(&creds)
+                    .unwrap_or(serde_json::Value::Null);
+            }
             let _ = out_tx.send(Message::text(ack.to_string()));
 
             // Broadcast presence to everyone attached to this session
@@ -730,6 +836,7 @@ async fn handle_connection(
                     "kind": "peer_registered",
                     "role": role,
                     "peer_id": peer_id,
+                    "agent_subject": auth_subject,
                     "ts_ms": now_millis(),
                 }),
             )
@@ -1048,6 +1155,19 @@ async fn handle_connection(
         }
     }
 
+    // Drop our last `out_tx` handle so the writer task sees the channel
+    // close, drains any buffered frames (`register-error`, `evicted`,
+    // final `presence`) into the socket, and exits cleanly. Bounded
+    // timeout in case the underlying TCP write hangs; abort after so a
+    // lingering writer can't leak. Before this fix, rejection frames
+    // from the register path were consistently lost because
+    // `send_task.abort()` ran before the writer had a chance to flush.
+    drop(out_tx);
+    let _ = tokio::time::timeout(
+        std::time::Duration::from_millis(500),
+        &mut send_task,
+    )
+    .await;
     send_task.abort();
     Ok(())
 }
@@ -1126,19 +1246,24 @@ mod tests {
         assert!(!role_is_multi_peer(ROLE_BROWSER));
         assert!(!role_is_multi_peer(ROLE_WORKER));
         assert!(role_is_multi_peer(ROLE_OBSERVER));
+        // Phase-4: mcp-agent is multi-peer. Deployments can attach
+        // multiple agent MCPs against one session without evicting each
+        // other (input arbitration is a worker concern, not a signaling one).
+        assert!(role_is_multi_peer(ROLE_MCP_AGENT));
         assert!(!role_is_multi_peer("some_future_role"));
     }
 
     #[test]
     fn target_roles_for_worker_is_fanout() {
         let t = target_roles_for(ROLE_WORKER);
-        assert_eq!(t, &[ROLE_BROWSER, ROLE_OBSERVER]);
+        assert_eq!(t, &[ROLE_BROWSER, ROLE_OBSERVER, ROLE_MCP_AGENT]);
     }
 
     #[test]
     fn target_roles_for_browser_and_observer_route_to_worker() {
         assert_eq!(target_roles_for(ROLE_BROWSER), &[ROLE_WORKER]);
         assert_eq!(target_roles_for(ROLE_OBSERVER), &[ROLE_WORKER]);
+        assert_eq!(target_roles_for(ROLE_MCP_AGENT), &[ROLE_WORKER]);
     }
 
     #[test]

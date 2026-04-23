@@ -32,6 +32,11 @@ export interface ShutdownTarget {
   metricsServer?: Pick<HttpServer, "close">;
   /** Optional event-log unsubscribe fn (from bindEventLogToMetrics). */
   unbindMetrics?: () => void;
+  /**
+   * Optional operator HTTP bridge. Closing it tears down any active SSE
+   * streams so the process can exit without stranded sockets.
+   */
+  operatorBridge?: { close: () => Promise<void> | void };
   /** Optional logger for teardown errors. Defaults to silent. */
   logError?: (step: ShutdownStep, err: unknown) => void;
 }
@@ -41,7 +46,8 @@ export type ShutdownStep =
   | "close_session"
   | "close_server"
   | "unbind_metrics"
-  | "close_metrics_server";
+  | "close_metrics_server"
+  | "close_operator_bridge";
 
 /**
  * Drive the teardown sequence. Every step is isolated — a throw in one
@@ -83,6 +89,11 @@ export async function performShutdown(target: ShutdownTarget): Promise<ShutdownS
   if (target.metricsServer) {
     await safe("close_metrics_server", () => {
       target.metricsServer!.close();
+    });
+  }
+  if (target.operatorBridge) {
+    await safe("close_operator_bridge", async () => {
+      await target.operatorBridge!.close();
     });
   }
   return ran;

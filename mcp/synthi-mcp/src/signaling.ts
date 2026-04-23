@@ -1,10 +1,21 @@
 import WebSocket from "ws";
 
-export type SignalingRole = "browser" | "worker" | "observer";
+export type SignalingRole = "browser" | "worker" | "observer" | "mcp-agent";
 
 export interface SignalingMessage {
   type: string;
   [key: string]: unknown;
+}
+
+/** Short-lived TURN credentials minted by the signaling-server (Phase 4).
+ *  Emitted on the `registered` ack when the deployment has configured
+ *  `SYNTHI_TURN_URLS` + `SYNTHI_TURN_SECRET`. Undefined otherwise. */
+export interface TurnCredentials {
+  urls: string[];
+  username: string;
+  credential: string;
+  /** Unix seconds. MCP may refresh by re-registering before this passes. */
+  expires_at: number;
 }
 
 export interface SignalingClientOptions {
@@ -24,6 +35,14 @@ export interface SignalingClientOptions {
    * Omit to accept whatever the server defaults to (v1 today).
    */
   supportedProtocols?: number[];
+  /**
+   * Phase-4 scoped agent token (HS256 JWT). Required when the signaling
+   * server has `SYNTHI_AGENT_TOKEN_SECRET` set and the role is
+   * `mcp-agent`; ignored otherwise. The token binds {agent subject,
+   * session_id, role, expiry} together so a stolen token can't be
+   * reused against a different session.
+   */
+  agentToken?: string;
 }
 
 export type SignalingMessageHandler = (msg: SignalingMessage) => void;
@@ -55,6 +74,8 @@ export class SignalingClient {
    * routing today.
    */
   private assignedPeerId: string | null = null;
+  private turnCredentials: TurnCredentials | null = null;
+  private agentSubject: string | null = null;
 
   constructor(private readonly opts: SignalingClientOptions) {}
 
@@ -62,6 +83,20 @@ export class SignalingClient {
    *  ack hasn't arrived yet. */
   peerId(): string | null {
     return this.assignedPeerId;
+  }
+
+  /** Returns TURN credentials the signaling-server minted on the
+   *  `registered` ack, or `null` if the deployment did not configure
+   *  TURN. Callers should prefer these over static ICE config when
+   *  present. */
+  turn(): TurnCredentials | null {
+    return this.turnCredentials;
+  }
+
+  /** Returns the agent subject identifier the signaling-server extracted
+   *  from a verified agent token, or `null` if unauthenticated. */
+  agentSubjectId(): string | null {
+    return this.agentSubject;
   }
 
   /**
@@ -117,6 +152,9 @@ export class SignalingClient {
         if (this.opts.supportedProtocols && this.opts.supportedProtocols.length > 0) {
           registerMsg["supported_protocols"] = this.opts.supportedProtocols;
         }
+        if (this.opts.agentToken) {
+          registerMsg["agent_token"] = this.opts.agentToken;
+        }
         try {
           dbg(`signaling: ws open → register role=${registerMsg.role} sid=${registerMsg["session_id"]}`);
           ws.send(JSON.stringify(registerMsg));
@@ -151,7 +189,26 @@ export class SignalingClient {
         // response to that message sees the fresh value.
         if (parsed.type === "registered" && typeof parsed["peer_id"] === "string") {
           this.assignedPeerId = parsed["peer_id"] as string;
+          const turn = parsed["turn_credentials"];
+          if (
+            turn !== null &&
+            typeof turn === "object" &&
+            Array.isArray((turn as { urls?: unknown }).urls) &&
+            typeof (turn as { username?: unknown }).username === "string" &&
+            typeof (turn as { credential?: unknown }).credential === "string"
+          ) {
+            this.turnCredentials = turn as TurnCredentials;
+            dbg(
+              `signaling: turn credentials received (${this.turnCredentials.urls.length} url(s), expires_at=${this.turnCredentials.expires_at})`
+            );
+          }
+          if (typeof parsed["agent_subject"] === "string") {
+            this.agentSubject = parsed["agent_subject"] as string;
+          }
           dbg(`signaling: registered peer_id=${this.assignedPeerId}`);
+        } else if (parsed.type === "register-error") {
+          const code = parsed["code"];
+          dbg(`signaling: register-error code=${typeof code === "string" ? code : "?"}`);
         } else if (parsed.type === "answer") {
           const sdp = typeof parsed["sdp"] === "string" ? (parsed["sdp"] as string) : "";
           dbg(`signaling: recv answer peer_id=${parsed["peer_id"] ?? "?"} sdp_len=${sdp.length}`);
