@@ -1,8 +1,0 @@
-﻿node_modules/
-**/node_modules/
-.venv/
-.git/
-.next/
-**/.next/
-**/target/
-backend/collab-server/repos/

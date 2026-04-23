@@ -1,9 +1,0 @@
-{
-  "scripts": {
-    "start:collab": "node ./backend/collab-server/server.js"
-  },
-  "dependencies": {
-    "@google/genai": "^1.30.0",
-    "diff": "^8.0.2"
-  }
-}
