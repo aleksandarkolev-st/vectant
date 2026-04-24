@@ -15,8 +15,34 @@ import { WebsocketProvider } from 'y-websocket';
 const docs = new Map(); // key → Entry { doc, provider, ytext, applyingLocal }
 let serverUrl = 'ws://localhost:1234';
 
-function isRecoverableCloseCode(code) {
-  return code === 1001 || code === 1006 || code === 1011 || code === 1012 || code === 1013;
+// WebSocket close-code classification.
+//   Recoverable: transient issues; the provider will reconnect and resync.
+//   Fatal:      the server told us to stop; reseeding with the stale state
+//               would corrupt the shared document.
+//   Ambiguous:  treat as recoverable but mark the doc as un-seeded so the
+//               next connection re-fetches authoritative content.
+const RECOVERABLE_CLOSE_CODES = new Set([
+  1001, // going away (browser unload or server shutdown)
+  1006, // abnormal closure (network blip)
+  1011, // server error
+  1012, // service restart
+  1013, // try again later
+  1014, // bad gateway
+]);
+const FATAL_CLOSE_CODES = new Set([
+  4000, // doc invalidated — handled separately above
+  4001, // auth/permission revoked
+  4403, // forbidden
+]);
+
+function classifyCloseCode(code) {
+  if (RECOVERABLE_CLOSE_CODES.has(code)) return 'recoverable';
+  if (FATAL_CLOSE_CODES.has(code)) return 'fatal';
+  // 1008 (policy violation), 1009 (message too big), and similar indicate a
+  // client bug rather than a network blip — reconnecting with the same
+  // message would just loop.  Treat as ambiguous so the client gets a chance
+  // to recover with fresh state.
+  return 'ambiguous';
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -40,15 +66,33 @@ function makeInvalidationAwareWS(key) {
           // Destroy BEFORE the provider can schedule a reconnect so it sees
           // shouldConnect === false and aborts.
           destroyDocInternal(key);
-        } else if (ev.code !== 1000) {
-          // Non-clean close (network blip, ping timeout, etc.)
-          post({ type: 'seed-reset', key, code: ev.code, reason: ev.reason || '' });
-          if (isRecoverableCloseCode(ev.code)) {
-            resetDocInternal(key);
-            return;
-          }
-          if (entry) entry.seeded = false;
+          return;
         }
+        if (ev.code === 1000) return; // clean close — nothing to do
+
+        const kind = classifyCloseCode(ev.code);
+        post({
+          type: 'seed-reset',
+          key,
+          code: ev.code,
+          reason: ev.reason || '',
+          kind,
+        });
+        if (kind === 'recoverable') {
+          resetDocInternal(key);
+          return;
+        }
+        if (kind === 'fatal') {
+          // Server explicitly rejected us — stop reconnecting to avoid a
+          // connection storm.  The main thread will see the seed-reset and
+          // can surface an auth error to the user.
+          destroyDocInternal(key);
+          return;
+        }
+        // Ambiguous: leave the provider to retry with exponential backoff
+        // (y-websocket default) but mark the doc un-seeded so initial
+        // content is re-fetched on reconnect.
+        if (entry) entry.seeded = false;
       });
     }
   };
@@ -76,12 +120,31 @@ function ensureDocInternal(key, params) {
   };
 
   // ── Y.Text observer — only forward REMOTE deltas to the main thread ──
+  // Coalesce bursts of remote deltas (e.g. when an LLM streams many small
+  // inserts) onto a single microtask flush.  When only one delta arrives we
+  // forward it incrementally; when multiple arrive in the same task we send
+  // an empty delta and rely on the main thread's full-text fallback, since
+  // later deltas' offsets no longer reference the initial model state.
+  let pendingDeltas = null;
+  let flushScheduled = false;
+  const flushPending = () => {
+    flushScheduled = false;
+    if (!pendingDeltas || pendingDeltas.length === 0) return;
+    const fullText = ytext.toString();
+    const delta = pendingDeltas.length === 1 ? pendingDeltas[0] : [];
+    pendingDeltas = null;
+    post({ type: 'remote-delta', key, delta, fullText, length: fullText.length });
+  };
   ytext.observe((event) => {
     if (entry.applyingLocal) return; // local edits already came FROM main thread
     const delta = event.delta;
     if (!delta || delta.length === 0) return;
-    const fullText = ytext.toString();
-    post({ type: 'remote-delta', key, delta, fullText, length: fullText.length });
+    if (!pendingDeltas) pendingDeltas = [];
+    pendingDeltas.push(delta);
+    if (!flushScheduled) {
+      flushScheduled = true;
+      queueMicrotask(flushPending);
+    }
   });
 
   // ── Provider status ───────────────────────────────────────────────────

@@ -57,7 +57,9 @@ const REVERT_COOLDOWN_MS = 3000; // 3 seconds
 // the client UI can surface a "backup degraded" indicator and so successive
 // save attempts can emit status-change events (degraded → ok) as conditions
 // recover.  Key = "slug:filePath", value = { at, error }.
-const gcsBackupDegraded = new Map();
+// Bounded to prevent unbounded memory growth in long-running servers; stale
+// entries expire after 24h since disk is the source of truth once recovered.
+const gcsBackupDegraded = new LRUCache({ max: 10_000, ttl: 24 * 60 * 60 * 1000 });
 
 // Periodically garbage-collect expired cooldowns so the map doesn't grow
 // unboundedly on long-running servers.
@@ -68,6 +70,83 @@ setInterval(() => {
     if (now - ts > REVERT_COOLDOWN_MS * 2) revertCooldowns.delete(key);
   }
 }, 30_000); // every 30 seconds
+
+// ── Rate limiting + Origin allowlist ─────────────────────────────────────────
+// Lightweight fixed-window token bucket keyed by IP (or IP + user).  Intended
+// to stop accidental floods and casual abuse of public session endpoints;
+// a real gateway/WAF is expected in production.
+const RATE_WINDOW_MS = 60_000;
+const rateBuckets = new LRUCache({ max: 20_000, ttl: RATE_WINDOW_MS * 2 });
+
+function checkRateLimit(key, limit) {
+  const now = Date.now();
+  const slot = Math.floor(now / RATE_WINDOW_MS);
+  const bucketKey = `${slot}:${key}`;
+  const count = (rateBuckets.get(bucketKey) || 0) + 1;
+  rateBuckets.set(bucketKey, count);
+  return count <= limit;
+}
+
+function clientIp(req) {
+  const fwd = req.headers['x-forwarded-for'];
+  if (typeof fwd === 'string' && fwd.length) return fwd.split(',')[0].trim();
+  return (req.socket && req.socket.remoteAddress) || 'unknown';
+}
+
+// Parse comma-separated list once at startup.
+const ALLOWED_ORIGINS = String(process.env.COLLAB_ALLOWED_ORIGINS || '')
+  .split(',')
+  .map(s => s.trim())
+  .filter(Boolean);
+
+/**
+ * Enforce that non-GET/OPTIONS requests come from a trusted Origin, to block
+ * casual CSRF.  If COLLAB_ALLOWED_ORIGINS is unset the server accepts any
+ * origin (legacy behaviour) but still rejects cross-site requests that arrive
+ * with an Origin header pointing at a different scheme+host than the request.
+ *
+ * Returns true if the request should proceed; false if the caller should
+ * stop processing (the response is already written).
+ */
+function enforceOrigin(req, res) {
+  if (req.method === 'GET' || req.method === 'OPTIONS') return true;
+  const origin = req.headers.origin;
+  // Same-origin browser requests from fetch() always include an Origin header;
+  // server-to-server calls typically do not.  Require Origin for unsafe methods
+  // so browser clients can't forge them from another tab.
+  if (!origin) {
+    // Allow if an explicit cross-service bypass header is configured, to
+    // support service-to-service calls in trusted networks.
+    const internalToken = req.headers['x-collab-internal-token'];
+    if (internalToken && process.env.COLLAB_INTERNAL_TOKEN &&
+        internalToken === process.env.COLLAB_INTERNAL_TOKEN) {
+      return true;
+    }
+    // When no allowlist is configured we keep legacy permissive behaviour.
+    if (ALLOWED_ORIGINS.length === 0) return true;
+    res.writeHead(403, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'origin_required' }));
+    return false;
+  }
+  if (ALLOWED_ORIGINS.length > 0 && !ALLOWED_ORIGINS.includes(origin)) {
+    res.writeHead(403, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'origin_forbidden' }));
+    return false;
+  }
+  return true;
+}
+
+/**
+ * Rate-limit guard.  If over budget, writes a 429 and returns false.
+ * Scope keys help separate sensitive endpoints (knock, invite) from cheap ones.
+ */
+function rateLimitGuard(req, res, scope, limitPerMin) {
+  const key = `${scope}:${clientIp(req)}`;
+  if (checkRateLimit(key, limitPerMin)) return true;
+  res.writeHead(429, { 'Content-Type': 'application/json', 'Retry-After': '30' });
+  res.end(JSON.stringify({ error: 'rate_limited', scope }));
+  return false;
+}
 
 // Track which slugs have been hydrated from GCS this boot.
 // Solves the case where a repo directory exists (e.g. from a prior run or
@@ -227,25 +306,43 @@ function validateDocAccess(parsedDoc, { userId, sessionId }) {
       return { ok: true };
     }
     // Guest accessing the host's user-scoped room (direct-access model):
-    // If the connecting user is a guest in a session whose host owns this
-    // room, AND the guest has canEdit permission, allow access.
-    if (sessionId) {
-      const session = sessionManager.getSession(sessionId);
-      if (session && session.hostId === parsedDoc.userId && session.slug === parsedDoc.slug) {
-        if (sessionManager.checkPermission(sessionId, userId, 'canEdit')) {
-          return { ok: true };
-        }
+    // the connecting user must be an actual registered guest of a session
+    // owned by parsedDoc.userId, pointing at the same slug, AND hold the
+    // canEdit permission.  We explicitly re-verify guest membership rather
+    // than relying on checkPermission alone so that an attacker cannot
+    // access another host's room by smuggling a sessionId they aren't part
+    // of.
+    const verify = (session, verifiedSessionId) => {
+      if (!session) return null;
+      if (session.status && session.status !== 'active') return null;
+      if (session.hostId !== parsedDoc.userId) return null;
+      if (session.slug !== parsedDoc.slug) return null;
+      // Guests can be a Map (internal) or Array (serialized) — support both.
+      let isGuest = false;
+      if (session.guests instanceof Map) {
+        isGuest = session.guests.has(userId);
+      } else if (Array.isArray(session.guests)) {
+        isGuest = session.guests.some(g => g && g.guestId === userId);
+      }
+      if (!isGuest) return null;
+      if (!sessionManager.checkPermission(verifiedSessionId, userId, 'canEdit')) {
         return { ok: false, status: 403, reason: 'edit_permission_required' };
       }
+      return { ok: true };
+    };
+
+    if (sessionId) {
+      const session = sessionManager.getSession(sessionId);
+      const r = verify(session, sessionId);
+      if (r) return r;
     }
     // Also check if the user is a guest anywhere whose host matches the room
     const hostInfo = sessionManager.getHostForGuest(userId);
     if (hostInfo && hostInfo.hostId === parsedDoc.userId && hostInfo.slug === parsedDoc.slug) {
       const guestSessionId = hostInfo.sessionId;
-      if (sessionManager.checkPermission(guestSessionId, userId, 'canEdit')) {
-        return { ok: true };
-      }
-      return { ok: false, status: 403, reason: 'edit_permission_required' };
+      const session = sessionManager.getSession(guestSessionId);
+      const r = verify(session, guestSessionId);
+      if (r) return r;
     }
     return { ok: false, status: 403, reason: 'user_scope_mismatch' };
   }
@@ -870,6 +967,9 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // Origin check — blocks naive cross-site POSTs for all mutating routes.
+  if (!enforceOrigin(req, res)) return;
+
   // ========================================================================
   // TURN CREDENTIALS — /turn-credentials
   // Internal endpoint for workers (Option B) to fetch short-lived
@@ -1007,9 +1107,15 @@ const server = http.createServer(async (req, res) => {
     let parsed;
     try { parsed = JSON.parse(body); } catch { res.writeHead(400); res.end('Invalid JSON'); return; }
     if (!parsed.session_id) { res.writeHead(400); res.end('Missing session_id'); return; }
-    await spawner.touch(parsed.session_id);
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ ok: true }));
+    try {
+      await spawner.touch(parsed.session_id);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true }));
+    } catch (e) {
+      console.error('[Spawner] touch failed:', e.message);
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: e.message }));
+    }
     return;
   }
 
@@ -1851,6 +1957,7 @@ const server = http.createServer(async (req, res) => {
    * Target can accept by knocking on the auto-created session.
    */
   if (req.url.startsWith('/session/invite-user') && req.method === 'POST') {
+    if (!rateLimitGuard(req, res, 'invite-user', 30)) return;
     let body = '';
     req.on('data', chunk => body += chunk);
     req.on('end', () => {
@@ -1934,6 +2041,7 @@ const server = http.createServer(async (req, res) => {
    * session so the target user can accept/deny.
    */
   if (req.url.startsWith('/session/join-user') && req.method === 'POST') {
+    if (!rateLimitGuard(req, res, 'join-user', 30)) return;
     let body = '';
     req.on('data', chunk => body += chunk);
     req.on('end', () => {
@@ -2047,6 +2155,9 @@ const server = http.createServer(async (req, res) => {
    * (or auto-admit if the host previously invited this user).
    */
   if (req.url.startsWith('/session/join-by-code') && req.method === 'POST') {
+    // Stricter budget: room codes are a guessable secret so brute-force
+    // attempts need to be throttled aggressively.
+    if (!rateLimitGuard(req, res, 'join-by-code', 10)) return;
     let body = '';
     req.on('data', chunk => body += chunk);
     req.on('end', () => {
@@ -2100,6 +2211,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.url.startsWith('/session/request-join/') && req.method === 'POST') {
+    if (!rateLimitGuard(req, res, 'request-join', 30)) return;
     const urlObj = new URL(req.url, `http://${req.headers.host}`);
     const targetSessionId = urlObj.pathname.split('/')[3];
     if (!targetSessionId) {
@@ -2152,6 +2264,33 @@ const server = http.createServer(async (req, res) => {
     // /session/:action[/:sessionId]
     const action = parts[2];
     const sessionIdParam = parts[3] || null;
+
+    // Per-action rate budgets.  GETs (info, validate-token) get a generous
+    // ceiling; write-heavy ops get tighter ones.
+    const RATE_BUDGETS = {
+      create: 20,
+      'validate-token': 60,
+      knock: 30,
+      admit: 60,
+      deny: 60,
+      permissions: 60,
+      kick: 30,
+      leave: 60,
+      terminate: 20,
+      info: 120,
+      'regenerate-token': 10,
+    };
+    const budget = RATE_BUDGETS[action];
+    if (budget && !rateLimitGuard(req, res, `session:${action}`, budget)) return;
+
+    // sessionId parameter must look like the format emitted by SessionManager
+    // (hex, 2*SESSION_ID_LEN chars).  Reject malformed IDs before they reach
+    // any manager call — defence-in-depth against injection via URL paths.
+    if (sessionIdParam && !/^[a-f0-9]{8,64}$/i.test(sessionIdParam)) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'invalid_session_id_format' }));
+      return;
+    }
 
     let body = '';
     req.on('data', chunk => body += chunk);
@@ -3263,18 +3402,40 @@ server.on('upgrade', (request, socket, head) => {
            slug = parts[1];
            userId = decodeURIComponent(parts[3]);
            // Path starts at index 4, rejoin rest
-           const filePath = parts.slice(4).join(':');
+           const rawFilePath = parts.slice(4).join(':');
+
+           // Reject traversal / absolute paths / null bytes up-front.
+           // validateFilePath throws on anything dangerous.
+           const safeRelative = validateFilePath(rawFilePath);
 
            // Acquire repo to ensure file exists on disk
            const repoPath = await repoCache.acquire(slug, userId);
            try {
-             // Handle both slash styles
-             const cleanPath = filePath.split('/').join(path.sep).split('\\').join(path.sep);
-             const fullPath = path.join(repoPath, cleanPath);
-             
-             // Check if file is inside the repo (security check)
-             if (fullPath.startsWith(repoPath) && fs.existsSync(fullPath) && (await fsPromises.stat(fullPath)).isFile()) {
-                initialContent = await fsPromises.readFile(fullPath, 'utf8');
+             const fullPath = path.join(repoPath, safeRelative);
+             // fs.realpath resolves symlinks; we then verify the resolved path
+             // is strictly inside the repo root.  Uses realpath on the repo
+             // too so that mount-point symlinks are handled consistently.
+             let realFull, realRepo;
+             try {
+               [realFull, realRepo] = await Promise.all([
+                 fsPromises.realpath(fullPath),
+                 fsPromises.realpath(repoPath),
+               ]);
+             } catch (_) {
+               // File doesn't exist yet — that's fine; nothing to seed.
+               realFull = null;
+             }
+             if (realFull && realRepo) {
+               const rel = path.relative(realRepo, realFull);
+               const isInside = rel && !rel.startsWith('..') && !path.isAbsolute(rel);
+               if (isInside) {
+                 const stat = await fsPromises.stat(realFull);
+                 if (stat.isFile()) {
+                   initialContent = await fsPromises.readFile(realFull, 'utf8');
+                 }
+               } else {
+                 console.warn('[Collab] Rejecting Yjs seed: resolved path escapes repo', { slug, userId, rawFilePath });
+               }
              }
            } finally {
              repoCache.release(slug, userId);

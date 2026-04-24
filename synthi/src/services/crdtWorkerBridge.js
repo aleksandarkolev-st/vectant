@@ -25,10 +25,12 @@ class CRDTWorkerBridge {
     /** @type {Map<string, { states: Array, localClientId: number|null }>} */
     this._awarenessCache = new Map();
 
-    // Pending async request resolvers
-    /** @type {Map<number, Function>} */
+    // Pending async request resolvers — { resolve, timer } so we can
+    // auto-expire stale requests if the worker crashes or drops a reply.
+    /** @type {Map<number, { resolve: Function, timer: any }>} */
     this._pendingRequests = new Map();
     this._requestIdCounter = 0;
+    this._requestTimeoutMs = 10_000;
 
     // Global event handlers (fired for ALL keys)
     this._globalStatusHandlers = new Set();
@@ -206,10 +208,11 @@ class CRDTWorkerBridge {
       case 'content-response':
       case 'awareness-states-response':
       case 'has-doc-response': {
-        const resolve = this._pendingRequests.get(msg.requestId);
-        if (resolve) {
+        const pending = this._pendingRequests.get(msg.requestId);
+        if (pending) {
           this._pendingRequests.delete(msg.requestId);
-          resolve(msg);
+          if (pending.timer) clearTimeout(pending.timer);
+          pending.resolve(msg);
         }
         if (msg.type === 'content-response' && msg.key) {
           this._contentCache.set(msg.key, { content: msg.content, length: msg.length });
@@ -308,6 +311,12 @@ class CRDTWorkerBridge {
     this._contentCache.clear();
     this._awarenessCache.clear();
     this._handlers.clear();
+    // Reject-by-fallback any lingering requests so callers don't hang forever.
+    for (const [requestId, pending] of this._pendingRequests) {
+      try { if (pending.timer) clearTimeout(pending.timer); } catch (_) {}
+      try { pending.resolve(null); } catch (_) {}
+      this._pendingRequests.delete(requestId);
+    }
   }
 
   // ── Public: Synchronous cached reads ──────────────────────────────────────
@@ -335,28 +344,42 @@ class CRDTWorkerBridge {
 
   // ── Public: Async requests ────────────────────────────────────────────────
 
-  requestContent(key) {
+  /**
+   * Internal helper — registers a pending request with a timeout so the
+   * pending-requests map can't grow unboundedly if the worker drops a reply
+   * (crash, terminated, dead WebSocket, etc.).
+   */
+  _createRequest(fallback) {
     const requestId = ++this._requestIdCounter;
-    return new Promise((resolve) => {
-      this._pendingRequests.set(requestId, (msg) => resolve(msg.content));
-      this._post({ type: 'get-content', key, requestId });
+    const promise = new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        if (this._pendingRequests.delete(requestId)) {
+          console.warn('[CRDTBridge] request', requestId, 'timed out');
+          resolve(fallback);
+        }
+      }, this._requestTimeoutMs);
+      if (typeof timer === 'object' && typeof timer.unref === 'function') timer.unref();
+      this._pendingRequests.set(requestId, { resolve, timer });
     });
+    return { requestId, promise };
+  }
+
+  requestContent(key) {
+    const { requestId, promise } = this._createRequest({ content: '' });
+    this._post({ type: 'get-content', key, requestId });
+    return promise.then((msg) => (msg && typeof msg === 'object' ? msg.content : ''));
   }
 
   requestAwarenessStates(key) {
-    const requestId = ++this._requestIdCounter;
-    return new Promise((resolve) => {
-      this._pendingRequests.set(requestId, (msg) => resolve({ states: msg.states, localClientId: msg.localClientId }));
-      this._post({ type: 'get-awareness-states', key, requestId });
-    });
+    const { requestId, promise } = this._createRequest({ states: [], localClientId: null });
+    this._post({ type: 'get-awareness-states', key, requestId });
+    return promise.then((msg) => ({ states: msg?.states || [], localClientId: msg?.localClientId ?? null }));
   }
 
   requestHasDoc(key) {
-    const requestId = ++this._requestIdCounter;
-    return new Promise((resolve) => {
-      this._pendingRequests.set(requestId, resolve);
-      this._post({ type: 'has-doc', key, requestId });
-    });
+    const { requestId, promise } = this._createRequest({ exists: false });
+    this._post({ type: 'has-doc', key, requestId });
+    return promise;
   }
 
   // ── Public: Event subscriptions ───────────────────────────────────────────

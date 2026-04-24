@@ -16,12 +16,32 @@ const decoding = require('lib0/decoding');
 const messageSync = 0;
 const messageAwareness = 1;
 
-/** @type {Map<string, { doc: Y.Doc, awareness: awarenessProtocol.Awareness, conns: Set<WebSocket> }>} */
+// Limits to prevent unbounded resource use.  When over MAX_ROOMS, creating a
+// new room fails fast rather than allowing an attacker to OOM the server.
+// GC_GRACE_MS is the idle period before an empty room's Y.Doc is destroyed.
+const MAX_ROOMS = 5000;
+const GC_GRACE_MS = 30_000;
+// Close code used when rejecting connections because we're at capacity.
+const CLOSE_TRY_AGAIN_LATER = 1013;
+
+/** @type {Map<string, { doc: Y.Doc, awareness: awarenessProtocol.Awareness, conns: Set<WebSocket>, gcTimer: any }>} */
 const rooms = new Map();
 
 function getRoom(docName, initialContent) {
   let room = rooms.get(docName);
-  if (room) return room;
+  if (room) {
+    // Cancel any pending GC — the room is live again.
+    if (room.gcTimer) {
+      clearTimeout(room.gcTimer);
+      room.gcTimer = null;
+    }
+    return room;
+  }
+
+  if (rooms.size >= MAX_ROOMS) {
+    // Signal caller to reject — don't silently allow unbounded growth.
+    return null;
+  }
 
   const doc = new Y.Doc();
   if (initialContent) {
@@ -30,20 +50,30 @@ function getRoom(docName, initialContent) {
   const awareness = new awarenessProtocol.Awareness(doc);
 
   // Clean up when the last client disconnects
-  awareness.on('update', (/** @type {{ added: number[], updated: number[], removed: number[] }} */ changes, origin) => {
+  awareness.on('update', (/** @type {{ added: number[], updated: number[], removed: number[] }} */ changes, _origin) => {
     const changedClients = changes.added.concat(changes.updated).concat(changes.removed);
     const encoder = encoding.createEncoder();
     encoding.writeVarUint(encoder, messageAwareness);
     encoding.writeVarUint8Array(encoder, awarenessProtocol.encodeAwarenessUpdate(awareness, changedClients));
     const msg = encoding.toUint8Array(encoder);
     room.conns.forEach((ws) => {
-      if (ws.readyState === 1 /* OPEN */) ws.send(msg);
+      if (ws.readyState === 1 /* OPEN */) {
+        try { ws.send(msg); } catch (_) { /* client may be closing */ }
+      }
     });
   });
 
-  room = { doc, awareness, conns: new Set() };
+  room = { doc, awareness, conns: new Set(), gcTimer: null };
   rooms.set(docName, room);
   return room;
+}
+
+function destroyRoom(docName) {
+  const room = rooms.get(docName);
+  if (!room) return;
+  try { room.awareness.destroy(); } catch (_) { /* ignore */ }
+  try { room.doc.destroy(); } catch (_) { /* ignore */ }
+  rooms.delete(docName);
 }
 
 /**
@@ -54,25 +84,36 @@ function getRoom(docName, initialContent) {
  */
 function setupConnection(ws, docName, initialContent = null) {
   const room = getRoom(docName, initialContent);
+  if (!room) {
+    console.warn(`[YjsWS] Rejected connection for ${docName}: at MAX_ROOMS (${MAX_ROOMS})`);
+    try { ws.close(CLOSE_TRY_AGAIN_LATER, 'server_at_capacity'); } catch (_) {}
+    return;
+  }
   room.conns.add(ws);
 
   ws.binaryType = 'arraybuffer';
 
   // Send initial sync step 1
-  const encoder = encoding.createEncoder();
-  encoding.writeVarUint(encoder, messageSync);
-  syncProtocol.writeSyncStep1(encoder, room.doc);
-  ws.send(encoding.toUint8Array(encoder));
+  try {
+    const encoder = encoding.createEncoder();
+    encoding.writeVarUint(encoder, messageSync);
+    syncProtocol.writeSyncStep1(encoder, room.doc);
+    ws.send(encoding.toUint8Array(encoder));
 
-  // Send current awareness states
-  const awarenessStates = room.awareness.getStates();
-  if (awarenessStates.size > 0) {
-    const encoder2 = encoding.createEncoder();
-    encoding.writeVarUint(encoder2, messageAwareness);
-    encoding.writeVarUint8Array(encoder2,
-      awarenessProtocol.encodeAwarenessUpdate(room.awareness, Array.from(awarenessStates.keys()))
-    );
-    ws.send(encoding.toUint8Array(encoder2));
+    // Send current awareness states
+    const awarenessStates = room.awareness.getStates();
+    if (awarenessStates.size > 0) {
+      const encoder2 = encoding.createEncoder();
+      encoding.writeVarUint(encoder2, messageAwareness);
+      encoding.writeVarUint8Array(encoder2,
+        awarenessProtocol.encodeAwarenessUpdate(room.awareness, Array.from(awarenessStates.keys()))
+      );
+      ws.send(encoding.toUint8Array(encoder2));
+    }
+  } catch (err) {
+    console.error('[YjsWS] Initial sync send failed:', err.message);
+    try { ws.close(1011, 'initial_sync_failed'); } catch (_) {}
+    return;
   }
 
   ws.on('message', (data) => {
@@ -94,7 +135,7 @@ function setupConnection(ws, docName, initialContent = null) {
         if (buf.length > 0) {
           room.conns.forEach((client) => {
             if (client !== ws && client.readyState === 1) {
-              client.send(buf);
+              try { client.send(buf); } catch (_) { /* ignore */ }
             }
           });
         }
@@ -106,26 +147,45 @@ function setupConnection(ws, docName, initialContent = null) {
         );
       }
     } catch (err) {
+      // Protocol errors are likely from a buggy/hostile client — close the
+      // socket so the client is forced to reconnect cleanly rather than
+      // staying wedged in an inconsistent state.
       console.error('[YjsWS] Message handling error:', err.message);
+      try { ws.close(1002, 'protocol_error'); } catch (_) {}
     }
   });
 
   ws.on('close', () => {
     room.conns.delete(ws);
     // Remove awareness state for this connection
-    if (room.awareness.states.has(ws)) {
-      awarenessProtocol.removeAwarenessStates(room.awareness, [ws], null);
-    }
-    // GC empty rooms after a delay
-    if (room.conns.size === 0) {
-      setTimeout(() => {
-        if (room.conns.size === 0) {
-          room.doc.destroy();
-          rooms.delete(docName);
+    try {
+      if (room.awareness.states.has(ws)) {
+        awarenessProtocol.removeAwarenessStates(room.awareness, [ws], null);
+      }
+    } catch (_) { /* awareness may have been destroyed by a previous GC cycle */ }
+
+    // GC empty rooms after a grace period.  If a client reconnects before
+    // the timer fires, getRoom() cancels it.
+    if (room.conns.size === 0 && !room.gcTimer) {
+      room.gcTimer = setTimeout(() => {
+        const current = rooms.get(docName);
+        if (!current) return;
+        // Only destroy if still empty AND still the same room object (not
+        // replaced by a fresh getRoom() call during the grace window).
+        if (current === room && current.conns.size === 0) {
+          try { destroyRoom(docName); }
+          catch (err) { console.error('[YjsWS] room destroy failed:', err.message); }
+        } else {
+          room.gcTimer = null;
         }
-      }, 30000);
+      }, GC_GRACE_MS);
+      if (typeof room.gcTimer.unref === 'function') room.gcTimer.unref();
     }
+  });
+
+  ws.on('error', (err) => {
+    console.warn('[YjsWS] Socket error on', docName, ':', err.message);
   });
 }
 
-module.exports = { setupConnection };
+module.exports = { setupConnection, MAX_ROOMS };

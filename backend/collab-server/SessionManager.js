@@ -88,6 +88,13 @@ const TOKEN_TTL_MS   = 24 * 60 * 60 * 1000;   // 24 hours
 const TOKEN_BYTES    = 32;                     // 256-bit random token
 const SESSION_ID_LEN = 12;                     // short hex id for URLs
 
+// Caps to keep per-session collections from growing unbounded if a
+// misbehaving client floods knocks/invites.  These are generous for real
+// collaboration sessions.
+const MAX_PENDING_KNOCKS  = 200;
+const MAX_INVITED_USERS   = 500;
+const KNOCK_TTL_MS        = 30 * 60 * 1000; // drop forgotten knocks after 30m
+
 // ── SessionManager ───────────────────────────────────────────────────────────
 
 class SessionManager extends EventEmitter {
@@ -228,6 +235,26 @@ class SessionManager extends EventEmitter {
   }
 
   /**
+   * Sweep stale knocks older than KNOCK_TTL_MS across all sessions.
+   * Cheap to run — bounded by session count and MAX_PENDING_KNOCKS.
+   */
+  _sweepStaleKnocks() {
+    const now = Date.now();
+    for (const [sessionId, session] of this.sessions) {
+      if (!session.pendingKnocks.size) continue;
+      if (!session._knockTimes) continue;
+      for (const [guestId, ts] of session._knockTimes) {
+        if (now - ts > KNOCK_TTL_MS) {
+          if (session.pendingKnocks.delete(guestId)) {
+            this.emit('session:knockCancelled', { sessionId, guestId });
+          }
+          session._knockTimes.delete(guestId);
+        }
+      }
+    }
+  }
+
+  /**
    * Guest "knocks" on the session door.  The Host receives a notification
    * and can accept or deny.
    *
@@ -250,6 +277,17 @@ class SessionManager extends EventEmitter {
     if (session.pendingKnocks.has(guestId)) {
       console.log(`[SessionManager] knock: ${guestId} already in pendingKnocks for session ${sessionId}, ignoring`);
       return;
+    }
+
+    // Cap pending knocks to avoid unbounded growth under flood.
+    // When at capacity, evict the oldest entry to make room for the new one
+    // so legitimate users can still knock after abandoned clients pile up.
+    if (session.pendingKnocks.size >= MAX_PENDING_KNOCKS) {
+      const first = session.pendingKnocks.values().next().value;
+      if (first) {
+        session.pendingKnocks.delete(first);
+        this.emit('session:knockCancelled', { sessionId, guestId: first });
+      }
     }
 
     // ── Auto-admit if the host explicitly invited this user ─────────
@@ -280,6 +318,8 @@ class SessionManager extends EventEmitter {
     }
 
     session.pendingKnocks.add(guestId);
+    if (!session._knockTimes) session._knockTimes = new Map();
+    session._knockTimes.set(guestId, Date.now());
     console.log(`[SessionManager] knock: ${guestId} (${displayName}) added to pendingKnocks. Host=${session.hostId}, Session=${sessionId}`);
 
     this.emit('session:knock', {
@@ -318,6 +358,7 @@ class SessionManager extends EventEmitter {
 
     // Remove from pending if present
     session.pendingKnocks.delete(guestId);
+    session._knockTimes?.delete(guestId);
 
     // If guest is already in another session, remove them first
     if (this.guestIndex.has(guestId)) {
@@ -359,6 +400,7 @@ class SessionManager extends EventEmitter {
     const session = this._getActiveSession(sessionId);
     console.log(`[SessionManager] denyKnock: host=${session.hostId} denied guest=${guestId} in session ${sessionId}`);
     session.pendingKnocks.delete(guestId);
+    session._knockTimes?.delete(guestId);
     this.emit('session:knockDenied', { sessionId, guestId });
   }
 
@@ -396,6 +438,13 @@ class SessionManager extends EventEmitter {
    */
   addInvitedUser(sessionId, userId) {
     const session = this._getActiveSession(sessionId);
+    // Cap invited-user list so a runaway host UI can't grow memory forever.
+    if (session.invitedUsers.size >= MAX_INVITED_USERS) {
+      // Drop the oldest invite to make room for the new one.  Invites are
+      // consumed on knock anyway, so losing the oldest is low-impact.
+      const oldest = session.invitedUsers.values().next().value;
+      if (oldest) session.invitedUsers.delete(oldest);
+    }
     session.invitedUsers.add(userId);
     console.log(`[SessionManager] addInvitedUser: ${userId} added to invitedUsers for session ${sessionId}`);
   }
@@ -757,6 +806,13 @@ class SessionManager extends EventEmitter {
 
 // ── Singleton ────────────────────────────────────────────────────────────────
 const sessionManager = new SessionManager();
+
+// Periodically sweep stale knocks.  Interval is long so we don't waste CPU,
+// and cheap because it only scans sessions with non-empty pendingKnocks.
+const _knockSweeper = setInterval(() => {
+  try { sessionManager._sweepStaleKnocks(); } catch (_) {}
+}, 5 * 60 * 1000);
+if (typeof _knockSweeper.unref === 'function') _knockSweeper.unref();
 
 module.exports = sessionManager;
 module.exports.DEFAULT_GUEST_PERMISSIONS = DEFAULT_GUEST_PERMISSIONS;
