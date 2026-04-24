@@ -79,24 +79,38 @@ function Toggle({ checked, onChange, label, description }) {
 function RadioRow({ value, onChange, options }) {
   return (
     <div
-      className="flex rounded-md p-0.5 gap-0.5"
-      style={{ background: 'var(--bg-elevated)' }}
+      className="flex rounded-md p-0.5 gap-1"
+      style={{
+        background: 'var(--bg-base)',
+        border: '1px solid var(--border-subtle)',
+      }}
     >
-      {options.map((opt) => (
-        <button
-          key={opt.value}
-          onClick={() => onChange(opt.value)}
-          className="flex-1 px-2 py-1 text-xs rounded transition-colors"
-          style={{
-            background: value === opt.value ? 'var(--accent-primary)' : 'transparent',
-            color: value === opt.value ? 'var(--text-on-accent, white)' : 'var(--text-primary)',
-            fontWeight: value === opt.value ? 600 : 400,
-          }}
-          title={opt.description}
-        >
-          {opt.label}
-        </button>
-      ))}
+      {options.map((opt) => {
+        const selected = value === opt.value;
+        return (
+          <button
+            type="button"
+            key={opt.value}
+            onClick={() => onChange(opt.value)}
+            className="flex-1 px-2 py-1 text-xs rounded transition-colors focus:outline-none"
+            style={{
+              background: selected
+                ? 'var(--accent-primary)'
+                : 'transparent',
+              color: selected
+                ? 'var(--text-on-accent, white)'
+                : 'var(--text-muted)',
+              fontWeight: selected ? 600 : 500,
+              boxShadow: selected
+                ? '0 1px 2px rgba(0,0,0,0.25)'
+                : 'none',
+            }}
+            title={opt.description}
+          >
+            {opt.label}
+          </button>
+        );
+      })}
     </div>
   );
 }

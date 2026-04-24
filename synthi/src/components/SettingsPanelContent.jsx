@@ -20,9 +20,6 @@ import {
 } from '@/redux/uiSlice';
 import { useThemePicker } from '@/components/ThemePicker';
 import { toast } from 'sonner';
-import { selectHealingEnabled } from '@/redux/healingSelectors';
-import { toggleHealing } from '@/redux/healingSlice';
-import { HealingSettingsPanel } from '@/components/healing/HealingSettingsPanel';
 import { Key, Eye, EyeOff, Check, Trash2, AlertCircle } from 'lucide-react';
 
 // ── Global token helpers ────────────────────────────────────────────
@@ -57,7 +54,6 @@ export function SettingsPanelContent() {
   const dispatch = useAppDispatch();
   const autoSaveEnabled = useAppSelector(selectAutoSaveEnabled);
   const autoCompletionEnabled = useAppSelector(selectAutoCompletionEnabled);
-  const healingEnabled = useAppSelector(selectHealingEnabled);
   const byorEnabled = useAppSelector(selectBringYourOwnRunnerEnabled);
   const { open: openThemePicker } = useThemePicker();
 
@@ -142,19 +138,6 @@ export function SettingsPanelContent() {
             }`}
           />
         </button>
-      </div>
-
-      {/* Self-Healing — expanded into the rich settings panel so users
-          can access boldness, rules, triggers, stats, and history without
-          leaving the main settings drawer. */}
-      <div
-        className="rounded-md"
-        style={{
-          border: '1px solid var(--border-subtle)',
-          background: 'var(--bg-sidebar)',
-        }}
-      >
-        <HealingSettingsPanel />
       </div>
 
       {/* ULTRAPLAN Phase 8: Bring Your Own Runner toggle. When ON, the

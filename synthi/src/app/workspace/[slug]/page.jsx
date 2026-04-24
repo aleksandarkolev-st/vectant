@@ -99,7 +99,6 @@ import { DockableWorkspace } from '@/components/docking-wm/DockableWorkspace';
 // Feature flag: set to true to enable the new docking layout.
 // When false, the existing rigid ResizablePanelGroup layout is used.
 const USE_DOCKING_WM = true;
-const AUTO_FIX_ISSUES_ENABLED = false;
 
 export default function EditorPage({ params }) {
     const dispatch = useAppDispatch();
@@ -1533,9 +1532,10 @@ export default function EditorPage({ params }) {
                             const fixableDiags = normalizedDiags.filter(
                                 (d) => d.fixes?.length > 0 && d.fixes.some((f) => f.replacementText != null)
                             );
-                            if (AUTO_FIX_ISSUES_ENABLED && fixableDiags.length > 0) {
+                            if (fixableDiags.length > 0) {
                                 // Defer slightly so React can flush the new diagnostics to
                                 // the ProblemsPanel first (visual feedback + undo tracking).
+                                // healFromDiagnostics self-gates on the Redux `enabled` flag.
                                 setTimeout(() => healFromDiagnostics(fixableDiags), 60);
                             }
 
@@ -1744,7 +1744,8 @@ export default function EditorPage({ params }) {
                             const fixableAiDiags = normalizedDiags.filter(
                                 (d) => d.fixes?.length > 0 && d.fixes.some((f) => f.replacementText != null)
                             );
-                            if (AUTO_FIX_ISSUES_ENABLED && fixableAiDiags.length > 0) {
+                            if (fixableAiDiags.length > 0) {
+                                // healFromDiagnostics self-gates on the Redux `enabled` flag.
                                 setTimeout(() => healFromDiagnostics(fixableAiDiags), 60);
                             }
 
