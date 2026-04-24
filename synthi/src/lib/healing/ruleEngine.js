@@ -100,6 +100,67 @@ export const ActionVocabulary = Object.freeze({
   [RuleAction.IGNORE]:      { label: 'Never touch',    verb: 'ignore'     },
 });
 
+// ── Diagnostic → healing category inference ──────────────────────────────
+// Mirrors useSelfHealing.js so the rule engine can categorise live
+// diagnostics for the rule-editor preview counts without depending on the
+// Monaco-integrated fix normaliser.
+const DIAG_CATEGORY_TO_HEAL = {
+  syntax: 'missing_semicolon',
+  missing_semicolon: 'missing_semicolon',
+  missing_colon: 'missing_colon',
+  missing_bracket: 'missing_bracket',
+  missing_paren: 'missing_bracket',
+  preprocessor: 'missing_bracket',
+  import: 'missing_import',
+  unused_import: 'unused_import',
+  missing_import: 'missing_import',
+  duplicate_import: 'duplicate_import',
+  include: 'missing_import',
+  whitespace: 'trailing_whitespace',
+  trailing_whitespace: 'trailing_whitespace',
+  string: 'unclosed_string',
+  unclosed_string: 'unclosed_string',
+  mismatched_quotes: 'mismatched_quotes',
+  trailing_comma: 'trailing_comma',
+  logic_error: 'missing_semicolon',
+  type_error: 'type_mismatch',
+  null_reference: 'none_comparison',
+  unused_code: 'unused_import',
+};
+
+function inferCategoryFromMessage(msg) {
+  if (!msg) return null;
+  const m = String(msg).toLowerCase();
+  if (m.includes('semicolon'))                             return 'missing_semicolon';
+  if (m.includes('missing colon'))                         return 'missing_colon';
+  if (m.includes('bracket') || m.includes('brace') || m.includes('paren'))
+                                                            return 'missing_bracket';
+  if (m.includes('import') && m.includes('unused'))        return 'unused_import';
+  if (m.includes('import') || m.includes('include'))       return 'missing_import';
+  if (m.includes('whitespace') || m.includes('trailing space'))
+                                                            return 'trailing_whitespace';
+  if (m.includes('comma'))                                  return 'trailing_comma';
+  if (m.includes('quote') || m.includes('string'))         return 'unclosed_string';
+  if (m.includes('return'))                                 return 'missing_return';
+  return null;
+}
+
+/**
+ * Best-effort healing category for an arbitrary diagnostic.  Used by the
+ * rule-editor live preview to count how many current diagnostics a rule
+ * would match, without needing the Monaco fix normaliser.
+ */
+export function categorizeDiagnostic(diag) {
+  if (!diag) return null;
+  return (
+    DIAG_CATEGORY_TO_HEAL[String(diag.category || '').toLowerCase()] ||
+    DIAG_CATEGORY_TO_HEAL[String(diag.code     || '').toLowerCase()] ||
+    inferCategoryFromMessage(diag.message) ||
+    diag.category ||
+    null
+  );
+}
+
 // ── Glob matcher (simple, no regex) ──────────────────────────────────────
 // Supports: *  **  ?  — good enough for "tests/*" or "src/**/*.ts"
 function globToRegExp(glob) {
@@ -233,6 +294,25 @@ function fallbackAction({ confidence, severity }, thresholds, aiEnabled) {
     return RuleAction.AI_ESCALATE;
   }
   return RuleAction.IGNORE;
+}
+
+/**
+ * Does this rule's target + scope match a given (diagnostic-like) context?
+ * Used by the rule-editor live preview to count how many current diagnostics
+ * a rule would touch.  Confidence is treated as "any" here — a rule's
+ * preview count is about its *intent*, not what the confidence bands would
+ * filter later.
+ */
+export function ruleMatches(rule, ctx) {
+  if (!rule || rule.disabled) return false;
+  if (!targetMatches(rule.target, ctx)) return false;
+  if (!scopeMatches(rule.scope, ctx)) return false;
+  if (typeof rule.minConfidence === 'number' &&
+      typeof ctx.confidence === 'number' &&
+      ctx.confidence < rule.minConfidence) {
+    return false;
+  }
+  return true;
 }
 
 // ── Main entry point ─────────────────────────────────────────────────────

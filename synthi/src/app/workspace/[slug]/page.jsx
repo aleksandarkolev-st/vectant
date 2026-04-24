@@ -49,7 +49,7 @@ import { useSmartRuleSuggestions } from '@/hooks/useSmartRuleSuggestions';
 import { HealingToast } from '@/components/healing/HealingToast';
 import { PreCompileHealToast } from '@/components/healing/PreCompileHealToast';
 import { AIHealingPanel } from '@/components/healing/AIHealingPanel';
-import { clearAIFixes, clearPendingFixes, hydrateHealing } from '@/redux/healingSlice';
+import { clearAIFixes, clearPendingFixes, hydrateHealing, setLiveDiagnostics } from '@/redux/healingSlice';
 import { loadHealingPersistedState, saveHealingPersistedState } from '@/lib/healing/persistence';
 import { selectHealingEnabled, selectHealingConfig } from '@/redux/healingSelectors';
 import { useWorkspaceAnalysis } from '@/hooks/useWorkspaceAnalysis';
@@ -254,7 +254,19 @@ export default function EditorPage({ params }) {
             analyzeFn({ focusStartLine: focusStart, focusEndLine: focusEnd });
         }, [healingConfigForPersist?.maxAiCallsPerMinute]),
     });
-    const { undoLastFix } = useHealingUndo({ editorRef });
+    const { undoLastFix, undoToFix } = useHealingUndo({ editorRef });
+
+    // Wire the history panel's "Revert to here" button.  The panel
+    // dispatches a CustomEvent so it stays decoupled from the Monaco editor.
+    useEffect(() => {
+        if (typeof window === 'undefined') return;
+        const onRevert = (e) => {
+            const fixId = e?.detail?.fixId;
+            if (fixId) undoToFix(fixId);
+        };
+        window.addEventListener('synthi:heal-revert-to-fix', onRevert);
+        return () => window.removeEventListener('synthi:heal-revert-to-fix', onRevert);
+    }, [undoToFix]);
 
     // Expose suggest-bucket fixes as Monaco lightbulb quick-fixes
     usePendingFixCodeActions({
@@ -1813,6 +1825,12 @@ export default function EditorPage({ params }) {
 
         return merged;
     }, [diagnostics, workspaceDiagnostics]);
+
+    // Mirror merged diagnostics into Redux so the rule editor can show live
+    // preview counts and the file tree can render health dots.
+    useEffect(() => {
+        dispatch(setLiveDiagnostics(mergedDiagnostics));
+    }, [mergedDiagnostics, dispatch]);
 
     // Compute diagnostic summary from merged diagnostics
     const diagnosticSummaryRaw = useMemo(() => {

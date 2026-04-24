@@ -7,7 +7,7 @@
 // a simple text input that accepts a glob (e.g. `tests/*`).
 'use client';
 
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useMemo } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import {
   addRule,
@@ -16,16 +16,19 @@ import {
   reorderRules,
   RuleAction,
 } from '@/redux/healingSlice';
-import { selectHealingRules, selectTriggers } from '@/redux/healingSelectors';
+import { selectHealingRules, selectTriggers, selectLiveDiagnostics } from '@/redux/healingSelectors';
 import {
   TargetVocabulary,
   ScopeVocabulary,
   ActionVocabulary,
   createRule,
   ruleToSentence,
+  ruleMatches,
+  categorizeDiagnostic,
   makeRuleId,
 } from '@/lib/healing/ruleEngine';
 import { useAnalyzerGateway } from '@/hooks/useAnalyzerGateway';
+import { getFileLanguage } from '@/utils/fileUtils';
 
 // ── Order dropdown options in a sensible narrative ──────────────────────
 const ACTION_ORDER = [
@@ -91,7 +94,7 @@ function Pill({ value, onChange, options, getLabel, className = '' }) {
 }
 
 // ── Single rule row (view + inline edit) ─────────────────────────────────
-function RuleRow({ rule, index, total, onMove, onChange, onRemove, onToggle }) {
+function RuleRow({ rule, index, total, matchCount, onMove, onChange, onRemove, onToggle }) {
   const [isEditing, setIsEditing] = useState(false);
 
   const targetName =
@@ -138,6 +141,27 @@ function RuleRow({ rule, index, total, onMove, onChange, onRemove, onToggle }) {
             >
               {ruleToSentence(rule)}
             </span>
+            {/* Live preview badge — updates as you edit the rule or as new
+                diagnostics appear.  A zero count shows in muted grey so the
+                user can see the rule is inert in the current snapshot. */}
+            {typeof matchCount === 'number' && (
+              <span
+                className="text-[10px] px-1.5 py-0.5 rounded font-medium"
+                style={{
+                  background: matchCount > 0
+                    ? 'color-mix(in srgb, var(--accent-primary) 15%, transparent)'
+                    : 'var(--bg-elevated)',
+                  color: matchCount > 0
+                    ? 'var(--accent-primary)'
+                    : 'var(--text-dim)',
+                }}
+                title={matchCount === 0
+                  ? 'No current diagnostics match this rule'
+                  : `This rule would touch ${matchCount} current diagnostic${matchCount === 1 ? '' : 's'}`}
+              >
+                {matchCount > 0 ? `affects ${matchCount}` : 'no matches'}
+              </span>
+            )}
           </div>
         ) : (
           <div className="flex items-baseline gap-1 flex-wrap">
@@ -261,7 +285,35 @@ export function HealingRulesEditor() {
   const dispatch = useDispatch();
   const rules = useSelector(selectHealingRules);
   const triggers = useSelector(selectTriggers);
+  const liveDiagnostics = useSelector(selectLiveDiagnostics);
   const { gateway } = useAnalyzerGateway();
+
+  // Pre-compute a normalised context per diagnostic once so per-rule match
+  // checks in the preview don't re-infer categories on every render.
+  const diagnosticContexts = useMemo(() => {
+    return (liveDiagnostics || []).map((d) => ({
+      category: categorizeDiagnostic(d),
+      severity: (d?.severity || 'error').toLowerCase(),
+      confidence: typeof d?.confidence === 'number' ? d.confidence : undefined,
+      filePath: d?.filePath || d?.file || d?.primaryFile || '',
+      language: getFileLanguage(d?.filePath || d?.file || ''),
+    }));
+  }, [liveDiagnostics]);
+
+  // Per-rule "affects N diagnostics" count.  Memoised so changes in a rule
+  // you're NOT editing don't force the whole list to recompute.
+  const ruleCounts = useMemo(() => {
+    const out = {};
+    for (const rule of rules || []) {
+      if (!rule?.id) continue;
+      let n = 0;
+      for (const ctx of diagnosticContexts) {
+        if (ruleMatches(rule, ctx)) n += 1;
+      }
+      out[rule.id] = n;
+    }
+    return out;
+  }, [rules, diagnosticContexts]);
 
   // Natural-language rule translation state
   const [nlText, setNlText] = useState('');
@@ -378,6 +430,7 @@ export function HealingRulesEditor() {
               rule={rule}
               index={i}
               total={rules.length}
+              matchCount={ruleCounts[rule.id] ?? 0}
               onMove={handleMove}
               onChange={handleChange}
               onRemove={handleRemove}

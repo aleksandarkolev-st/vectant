@@ -22,6 +22,7 @@ import { useThemePicker } from '@/components/ThemePicker';
 import { toast } from 'sonner';
 import { selectHealingEnabled } from '@/redux/healingSelectors';
 import { toggleHealing } from '@/redux/healingSlice';
+import { HealingSettingsPanel } from '@/components/healing/HealingSettingsPanel';
 import { Key, Eye, EyeOff, Check, Trash2, AlertCircle } from 'lucide-react';
 
 // ── Global token helpers ────────────────────────────────────────────
@@ -143,24 +144,17 @@ export function SettingsPanelContent() {
         </button>
       </div>
 
-      {/* Self-Healing toggle */}
-      <div className="flex items-center justify-between">
-        <span className="text-sm">Self-Healing</span>
-        <button
-          onClick={() => {
-            dispatch(toggleHealing());
-            toast(healingEnabled ? 'Self-Healing disabled' : 'Self-Healing enabled', {
-              duration: 2000,
-            });
-          }}
-          className={`relative inline-flex h-5 w-9 items-center rounded-full transition-all ${healingEnabled ? 'th-toggle-on' : 'th-toggle-off'}`}
-        >
-          <span
-            className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform shadow-sm ${
-              healingEnabled ? 'translate-x-5' : 'translate-x-0.5'
-            }`}
-          />
-        </button>
+      {/* Self-Healing — expanded into the rich settings panel so users
+          can access boldness, rules, triggers, stats, and history without
+          leaving the main settings drawer. */}
+      <div
+        className="rounded-md"
+        style={{
+          border: '1px solid var(--border-subtle)',
+          background: 'var(--bg-sidebar)',
+        }}
+      >
+        <HealingSettingsPanel />
       </div>
 
       {/* ULTRAPLAN Phase 8: Bring Your Own Runner toggle. When ON, the

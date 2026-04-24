@@ -1,9 +1,14 @@
 // src/app/FileItem.jsx
 "use client";
-import { useState, useRef, useEffect, memo } from "react";
+import { useState, useRef, useEffect, useMemo, memo } from "react";
 import collabClient from '@/services/collabClient';
 import { useAppSelector } from "@/redux/hooks";
 import { selectExpandedFolders, toggleFolderExpansion } from "@/redux/uiSlice";
+import { makeSelectFileHealth } from "@/redux/healingSelectors";
+
+// Shared empty result for folders / path-less rows so useAppSelector
+// returns a stable reference and doesn't trigger re-renders.
+const _HEALTH_NONE = Object.freeze({ diag: null, pending: 0 });
 import { ChevronIcon } from "./Icons";
 import { getFileIcon, FolderIcon } from "@/utils/fileIcons";
 import { setUiActionName } from "@/redux/uiSlice";
@@ -145,6 +150,17 @@ const FileItem = memo(({
   const [presenceStates, setPresenceStates] = useState([]);
   const [hoverPresence, setHoverPresence] = useState(null);
   const hoverHideTimeoutRef = useRef(null);
+
+  // Self-healing health indicator — factory selector memoised per filePath
+  // so it doesn't resubscribe on every render.  Returns a tiny summary
+  // { diag: { errors, warnings, ... } | null, pending: number }.
+  const selectFileHealth = useMemo(
+    () => (item.isFolder || !item.path)
+      ? (() => _HEALTH_NONE)
+      : makeSelectFileHealth(item.path),
+    [item.isFolder, item.path]
+  );
+  const health = useAppSelector(selectFileHealth);
 
   useEffect(() => {
     // Only keep presence for real files (not folders)
@@ -434,6 +450,36 @@ useEffect(() => {
             >
               {item.name}
             </span>
+            {/* Self-healing health dot.  Priority: unresolved errors (red)
+                > warnings (yellow) > pending suggestions (blue).  Folders
+                and files with no diagnostics render nothing at all so the
+                explorer stays quiet. */}
+            {!item.isFolder && health && (health.diag || health.pending > 0) && (() => {
+              const errs     = health.diag?.errors || 0;
+              const warns    = health.diag?.warnings || 0;
+              const pending  = health.pending || 0;
+              let color, title;
+              if (errs > 0) {
+                color = 'var(--accent-danger)';
+                title = `${errs} error${errs === 1 ? '' : 's'}${pending ? ` · ${pending} pending fix${pending === 1 ? '' : 'es'}` : ''}`;
+              } else if (warns > 0) {
+                color = 'var(--accent-warning)';
+                title = `${warns} warning${warns === 1 ? '' : 's'}${pending ? ` · ${pending} pending fix${pending === 1 ? '' : 'es'}` : ''}`;
+              } else if (pending > 0) {
+                color = 'var(--accent-primary)';
+                title = `${pending} pending healing fix${pending === 1 ? '' : 'es'}`;
+              } else {
+                color = null;
+              }
+              if (!color) return null;
+              return (
+                <span
+                  title={title}
+                  className="inline-block w-1.5 h-1.5 rounded-full flex-shrink-0"
+                  style={{ background: color }}
+                />
+              );
+            })()}
             {/* Presence badges */}
                 {(!item.isFolder && presenceStates && presenceStates.length > 0) && (
                   <div className="flex items-center gap-1 ml-2">

@@ -38,6 +38,7 @@ import {
 } from '@/redux/healingSlice';
 import { selectHealingRules } from '@/redux/healingSelectors';
 import { HealingRulesEditor } from './HealingRulesEditor';
+import { HealingHistoryPanel } from './HealingHistoryPanel';
 
 // ── Small UI atoms ──────────────────────────────────────────────────────
 function Toggle({ checked, onChange, label, description }) {
@@ -381,6 +382,10 @@ export function HealingSettingsPanel() {
           </div>
         </>
       )}
+
+      {/* Recent fixes / time-travel */}
+      <SectionDivider />
+      <HealingHistoryPanel />
 
       {/* Advanced accordion */}
       <SectionDivider />

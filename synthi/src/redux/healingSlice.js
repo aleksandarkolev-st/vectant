@@ -118,6 +118,11 @@ export const initialHealingState = {
     requireConfirmation: false,    // rules now dictate this (SUGGEST action)
   },
 
+  // Mirror of the Problems panel's current diagnostics — consumed by the
+  // rule editor's live preview counts and the file-tree health dots.
+  // Kept in Redux (rather than prop-drilled) so any UI can read it.
+  liveDiagnostics: [],
+
   // Currently pending fixes (awaiting application or confirmation)
   pendingFixes: [],
 
@@ -230,6 +235,12 @@ const healingSlice = createSlice({
     },
     setRequireConfirmation(state, action) {
       state.config.requireConfirmation = !!action.payload;
+    },
+
+    // Diagnostics mirror — page.jsx pushes the merged diagnostics list here
+    // so Redux consumers (rule editor, file tree) can see it.
+    setLiveDiagnostics(state, action) {
+      state.liveDiagnostics = Array.isArray(action.payload) ? action.payload : [];
     },
 
     // ── Boldness / triggers / rules ─────────────────────────────────────
@@ -596,6 +607,7 @@ export const {
   removeAutoHealCategory,
   setMinConfidence,
   setRequireConfirmation,
+  setLiveDiagnostics,
   setBoldness,
   setTrigger,
   setTriggers,

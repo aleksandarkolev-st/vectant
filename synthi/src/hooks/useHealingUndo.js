@@ -116,12 +116,53 @@ export function useHealingUndo({ editorRef } = {}) {
     return count;
   }, [editorRef, canUndo, undoStack, dispatch]);
 
+  /**
+   * Undo every fix from the top of the stack down to and including the
+   * one with the given fixId.  Implemented as a sequence of Monaco native
+   * undos so the text state stays consistent even when fixes overlapped.
+   *
+   * @param {string} fixId
+   * @returns {number} Number of fixes successfully reverted
+   */
+  const undoToFix = useCallback((fixId) => {
+    const editor = editorRef?.current;
+    if (!editor || !fixId) return 0;
+
+    const targetIdx = undoStack.findIndex((u) => u.fixId === fixId);
+    if (targetIdx === -1) return 0;
+
+    let count = 0;
+    for (let i = 0; i <= targetIdx; i++) {
+      try {
+        editor.trigger('self-healing-undo', 'undo', null);
+        dispatch(popUndo());
+        dispatch(recordUndone());
+        count += 1;
+      } catch {
+        break;
+      }
+    }
+
+    if (count > 0) {
+      dispatch(addHealingEvent({ type: 'time_travel_undo', count, toFixId: fixId }));
+      dispatch(enqueueToast({
+        type: 'healing-undo',
+        message: count === 1
+          ? 'Reverted 1 healing fix'
+          : `Reverted ${count} healing fixes`,
+      }));
+    }
+
+    return count;
+  }, [editorRef, undoStack, dispatch]);
+
   return {
     canUndo,
     topUndo,
     undoStack,
     undoLastFix,
     undoAllFixes,
+    undoToFix,
   };
 }
 
