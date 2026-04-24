@@ -456,32 +456,37 @@ async function flushDocToDisk(docName, options = {}) {
   // version history always contains the point you can "go back to the
   // original" from.  Without this, the very first saved version IS already
   // the user's edited content, and there's nothing to revert to.
+  //
+  // ORDER MATTERS: we MUST read the prior disk content BEFORE calling
+  // safeWriteFile, otherwise the read sees the freshly-written new content
+  // and `prior === content` short-circuits the baseline seed.  An earlier
+  // version relied on gitService.syncFile() happening in the caller, which
+  // broke this ordering and meant the very first saved version was always
+  // the edited content with nothing to revert to.
   const repoPath = gitService.getEffectiveRepoPath(slug, effectiveUserId);
-  if (fs.existsSync(repoPath)) {
-    const fullPath = path.join(repoPath, filePath);
-    try {
-      const prior = await fsPromises.readFile(fullPath, 'utf8');
-      if (prior !== content) {
-        const priorHash = computeHash(prior);
-        const existingCount = await persistence.countFileVersions(slug, filePath);
-        if (existingCount === 0) {
-          await persistence.saveFileVersion(slug, filePath, {
-            userId: effectiveUserId,
-            sessionId: docSessionId || null,
-            hash: priorHash,
-            content: prior,
-            ts: Date.now() - 1,
-          });
-        }
-      }
-    } catch (err) {
-      // File didn't exist yet (brand new file) or unreadable — nothing to snapshot.
-      if (err && err.code !== 'ENOENT') {
-        logger.warn('version_baseline_read_failed', { slug, filePath }, err);
+  const fullPath = path.join(repoPath, filePath);
+  try {
+    const prior = await fsPromises.readFile(fullPath, 'utf8');
+    if (prior !== content) {
+      const priorHash = computeHash(prior);
+      const existingCount = await persistence.countFileVersions(slug, filePath);
+      if (existingCount === 0) {
+        await persistence.saveFileVersion(slug, filePath, {
+          userId: effectiveUserId,
+          sessionId: docSessionId || null,
+          hash: priorHash,
+          content: prior,
+          ts: Date.now() - 1,
+        });
       }
     }
-    await gitService.safeWriteFile(fullPath, content);
+  } catch (err) {
+    // File didn't exist yet (brand new file) or unreadable — nothing to snapshot.
+    if (err && err.code !== 'ENOENT') {
+      logger.warn('version_baseline_read_failed', { slug, filePath }, err);
+    }
   }
+  await gitService.safeWriteFile(fullPath, content);
 
   // Update hash cache
   fileHashCache.set(docName, { hash: computeHash(content), timestamp: Date.now() });
@@ -3431,11 +3436,15 @@ const server = http.createServer(async (req, res) => {
                       // Clean up expired cooldown
                       if (cooldownTs) revertCooldowns.delete(cooldownKey);
 
-                      // 1. Write the content provided by the client to the git working tree.
-                      await gitService.syncFile(slug, data.filePath, data.content, effectiveUserId);
-                      // 2. Also flush the Yjs CRDT content to disk + GCS.
-                      //    This ensures GCS stays up-to-date and all per-user
-                      //    repos get the latest content on explicit save.
+                      // Flush CRDT content to disk + GCS in a single pass.  An
+                      // earlier version called gitService.syncFile() first,
+                      // which wrote the new content to disk before
+                      // flushDocToDisk's baseline-snapshot read — that read
+                      // then saw the just-written content as the "prior" and
+                      // skipped seeding the pre-edit baseline on the first
+                      // save.  flushDocToDisk already performs the disk write,
+                      // so calling syncFile() here was redundant AND prevented
+                      // the very first version from being restorable.
                       const docKey = buildDocName(slug, data.filePath, notifyScope);
                       await flushDocToDisk(docKey, { contentOverride: data.content });
                     }
