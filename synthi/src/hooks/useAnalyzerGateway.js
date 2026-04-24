@@ -625,6 +625,14 @@ export function useAnalyzerGateway({
     }
   }, []);
 
+  const ruleTranslate = useCallback(async (payload) => {
+    if (!clientRef.current) {
+      throw new SynthiException('Gateway client is not ready yet');
+    }
+    const response = await clientRef.current.ruleTranslate(payload || {});
+    return response?.data ?? response;
+  }, []);
+
   const connectionMeta = useMemo(
     () => ({
       status: connectionStatus,
@@ -658,6 +666,8 @@ export function useAnalyzerGateway({
     aiFeedback,
     aiMemory,
     aiMemoryClear,
+    // Plain-English rule translator (healing rules panel)
+    ruleTranslate,
     resetResult,
     resetError,
     clientReady: Boolean(clientRef.current),

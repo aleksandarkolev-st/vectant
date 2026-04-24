@@ -286,7 +286,7 @@ export function HealingRulesEditor() {
   const rules = useSelector(selectHealingRules);
   const triggers = useSelector(selectTriggers);
   const liveDiagnostics = useSelector(selectLiveDiagnostics);
-  const { gateway } = useAnalyzerGateway();
+  const { ruleTranslate } = useAnalyzerGateway();
 
   // Pre-compute a normalised context per diagnostic once so per-rule match
   // checks in the preview don't re-infer categories on every render.
@@ -338,12 +338,12 @@ export function HealingRulesEditor() {
 
   const handleTranslate = useCallback(async () => {
     const text = nlText.trim();
-    if (!text || !gateway?.ruleTranslate) return;
+    if (!text || typeof ruleTranslate !== 'function') return;
 
     setNlTranslating(true);
     setNlError(null);
     try {
-      const resp = await gateway.ruleTranslate({ plainEnglish: text });
+      const resp = await ruleTranslate({ plainEnglish: text });
       const rule = responseToRule(resp);
       if (!rule) {
         setNlError("AI returned an unexpected response. Try rephrasing.");
@@ -365,7 +365,7 @@ export function HealingRulesEditor() {
     } finally {
       setNlTranslating(false);
     }
-  }, [dispatch, gateway, nlText]);
+  }, [dispatch, ruleTranslate, nlText]);
 
   const handleChange = useCallback(
     (id, patch) => {
