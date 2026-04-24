@@ -17,6 +17,16 @@ const COLLAB_URL = (
   'ws://localhost:1234'
 ).replace(/^ws/, 'http'); // HTTP version of the WS URL for REST calls
 
+// Wrap fetch() with an AbortController so network hangs never deadlock the
+// join flow.  Callers still need to handle AbortError + other rejections.
+const FETCH_TIMEOUT_MS = 8000;
+function fetchWithTimeout(url, init = {}, timeoutMs = FETCH_TIMEOUT_MS) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  return fetch(url, { ...init, signal: controller.signal })
+    .finally(() => clearTimeout(timer));
+}
+
 // ── Permission defaults ─────────────────────────────────────────────────────
 
 export const DEFAULT_GUEST_PERMISSIONS = Object.freeze({
@@ -176,9 +186,15 @@ class CollabSessionService extends EventTarget {
    * Validate an invite token before showing the knock UI.
    */
   async validateToken(token) {
-    const res = await fetch(`${COLLAB_URL}/session/validate-token?token=${encodeURIComponent(token)}`);
-    if (!res.ok) return null;
-    return res.json();
+    try {
+      const res = await fetchWithTimeout(
+        `${COLLAB_URL}/session/validate-token?token=${encodeURIComponent(token)}`
+      );
+      if (!res.ok) return null;
+      return res.json();
+    } catch (_) {
+      return null;
+    }
   }
 
   /**
@@ -189,11 +205,19 @@ class CollabSessionService extends EventTarget {
     this._sessionId = sessionId;
     this._userId = guestId;
 
-    await fetch(`${COLLAB_URL}/session/knock/${sessionId}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ guestId, displayName, avatarUrl }),
-    });
+    try {
+      await fetchWithTimeout(`${COLLAB_URL}/session/knock/${sessionId}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ guestId, displayName, avatarUrl }),
+      });
+    } catch (err) {
+      // Roll role back so the UI doesn't get stuck in "knocking" on network error.
+      this._role = 'idle';
+      this._sessionId = null;
+      this._emit('knock:error', { error: err?.message || 'network_error' });
+      throw err;
+    }
 
     // Connect to the session WS to receive admit/deny events
     this._connectWs();
@@ -229,24 +253,32 @@ class CollabSessionService extends EventTarget {
       hostName,  // restored from sessionStorage — may be null, refreshed below
       slug,
     };
-    this._connectWs();
-    this._emit('session:joined', { guestId, hostId, slug });
-    // Refresh session in background to get authoritative hostName + permissions
-    // from the server (in case sessionStorage data was stale or missing).
-    setTimeout(() => {
-      if (this._role === 'guest' && this._sessionId === sessionId) {
-        this.refreshSession().then((data) => {
-          if (data && this._role === 'guest') {
-            // Update permissions from server if a guest entry is present
-            const guest = data.guests?.find(g => g.guestId === guestId);
-            if (guest?.permissions) {
-              this._permissions = { ...guest.permissions };
-              this._emit('permissions:changed', this._permissions);
-            }
-          }
-        }).catch(() => {});
+
+    // Refresh authoritative session info BEFORE opening the WS so that
+    // permission-dependent event handlers see fresh state on the first
+    // message.  Fire-and-forget: a slow refresh (up to FETCH_TIMEOUT_MS)
+    // shouldn't block the WS connection forever, so we race it with a
+    // short ceiling and connect regardless when the ceiling hits.
+    const refreshPromise = this.refreshSession().then((data) => {
+      if (data && this._role === 'guest' && this._sessionId === sessionId) {
+        const guest = data.guests?.find(g => g.guestId === guestId);
+        if (guest?.permissions) {
+          this._permissions = { ...guest.permissions };
+          this._emit('permissions:changed', this._permissions);
+        }
       }
-    }, 500);
+    }).catch(() => {});
+
+    const connect = () => {
+      if (this._role !== 'guest' || this._sessionId !== sessionId) return;
+      if (this._ws) return; // already connected (e.g. via race)
+      this._connectWs();
+      this._emit('session:joined', { guestId, hostId, slug });
+    };
+
+    // Race: whichever completes first wins, but never delay more than 1.5s.
+    const ceiling = new Promise((r) => setTimeout(r, 1500));
+    Promise.race([refreshPromise, ceiling]).then(connect);
   }
 
   // ── Host: Manage guests ──────────────────────────────────────────────────
@@ -456,6 +488,38 @@ class CollabSessionService extends EventTarget {
   }
 
   // ── Workspace Presence ────────────────────────────────────────────────────
+
+  /**
+   * Check whether another user is currently online on the collab server.
+   * Returns { online: boolean, inboxPending: number } — callers can use
+   * this to decide between "send invite now" vs. "we'll notify them when
+   * they return" UI copy.
+   */
+  async getUserPresence(targetUserId) {
+    if (!targetUserId) return { online: false, inboxPending: 0 };
+    try {
+      const res = await fetchWithTimeout(
+        `${COLLAB_URL}/presence/user/${encodeURIComponent(targetUserId)}`
+      );
+      if (!res.ok) return { online: false, inboxPending: 0 };
+      const data = await res.json();
+      return { online: !!data.online, inboxPending: data.inboxPending || 0 };
+    } catch (_) {
+      return { online: false, inboxPending: 0 };
+    }
+  }
+
+  /**
+   * Subscribe to missed-while-offline events.  The callback receives the
+   * full event detail (including queued=true, queuedAt).  UI code can
+   * surface these as popup notifications or a "you missed X while away"
+   * tray.
+   */
+  onInboxEvent(callback) {
+    const handler = (e) => callback(e.detail);
+    this.addEventListener('inbox:event', handler);
+    return () => this.removeEventListener('inbox:event', handler);
+  }
 
   /**
    * Fetch all active users and sessions for a workspace.
@@ -990,6 +1054,22 @@ class CollabSessionService extends EventTarget {
     this.dispatchEvent(new CustomEvent(type, { detail }));
     // Also fire a generic 'change' event for React hooks
     this.dispatchEvent(new CustomEvent('change', { detail: { type, ...detail } }));
+    // Offline-queue delivery: events that were buffered on the server while
+    // this user was disconnected arrive with { queued: true, queuedAt }.
+    // We surface them through two channels so UI code can either react to
+    // the specific type OR listen for any missed-while-offline event:
+    //   1. Auto-open the share popup for actionable invites so the user
+    //      isn't left wondering who tried to reach them.
+    //   2. Dispatch a generic 'inbox:event' the app can render as a toast
+    //      or popup list.
+    if (detail && detail.queued) {
+      if (type === 'collab-invite') {
+        this.dispatchEvent(new CustomEvent('popup:requestOpen', { detail: { reason: 'offline_invite' } }));
+      }
+      this.dispatchEvent(new CustomEvent('inbox:event', {
+        detail: { type, ...detail },
+      }));
+    }
   }
 
   /**
@@ -1013,4 +1093,12 @@ class CollabSessionService extends EventTarget {
 
 // ── Singleton ────────────────────────────────────────────────────────────────
 const collabSessionService = new CollabSessionService();
+
+// Dev-only: expose on window so the service can be poked from devtools.
+// Use cases: firing synthetic `inbox:event`s to preview MissedEventsTray,
+// inspecting _pendingInvite, replaying requestOpenPopup, etc.
+if (typeof window !== 'undefined' && process.env.NODE_ENV !== 'production') {
+  window.collabSessionService = collabSessionService;
+}
+
 export default collabSessionService;

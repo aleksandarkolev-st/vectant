@@ -156,11 +156,33 @@ class MonacoTextBinding {
     try {
       if (this._destroyed) return;
       if (this.editor.getModel() !== this.model) return;
-      if (!delta || delta.length === 0) return;
 
       const normalize = (s) => (s ? s.replace(/\r\n/g, '\n').replace(/\s+$/, '') : '');
       const current = this.model.getValue();
       if (normalize(current) === normalize(fullText)) return;
+
+      // An empty delta with a changed fullText is a signal from the worker
+      // that it batched multiple ops and can't describe them incrementally.
+      // Fall back to a full-text replace immediately.
+      if (!delta || delta.length === 0) {
+        this._applyingRemote = true;
+        try {
+          this.model.applyEdits([{ range: this.model.getFullModelRange(), text: fullText }]);
+        } catch (e) {
+          console.warn('[Collab] batched full-replace failed', e?.message || e);
+        } finally {
+          this._applyingRemote = false;
+        }
+        return;
+      }
+
+      // Model length is the upper bound for any offset in the incoming delta.
+      // Malformed / malicious deltas from the CRDT layer could reference
+      // offsets past the end of the model; clamping prevents Monaco Range
+      // errors and accidental truncation.  On any inconsistency we fall
+      // back to a full-text replace below.
+      const modelLength = current.length;
+      let deltaValid = true;
 
       // Build incremental Monaco edits from the Yjs delta
       const edits = [];
@@ -168,14 +190,19 @@ class MonacoTextBinding {
 
       for (const op of delta) {
         if (op.retain != null) {
+          if (!Number.isFinite(op.retain) || op.retain < 0) { deltaValid = false; break; }
           oldIndex += op.retain;
+          if (oldIndex > modelLength) { deltaValid = false; break; }
         } else if (op.insert != null) {
+          if (oldIndex < 0 || oldIndex > modelLength) { deltaValid = false; break; }
           const pos = this.model.getPositionAt(oldIndex);
           edits.push({
             range: new this.monaco.Range(pos.lineNumber, pos.column, pos.lineNumber, pos.column),
             text: typeof op.insert === 'string' ? op.insert : '',
           });
         } else if (op.delete != null) {
+          if (!Number.isFinite(op.delete) || op.delete < 0) { deltaValid = false; break; }
+          if (oldIndex < 0 || oldIndex + op.delete > modelLength) { deltaValid = false; break; }
           const pos = this.model.getPositionAt(oldIndex);
           const endPos = this.model.getPositionAt(oldIndex + op.delete);
           edits.push({
@@ -186,10 +213,18 @@ class MonacoTextBinding {
         }
       }
 
-      if (edits.length === 0) return;
-
       this._applyingRemote = true;
       try {
+        if (!deltaValid) {
+          // Delta doesn't describe this model's state — full replace is the
+          // only safe recovery.
+          console.warn('[Collab] remote delta offsets out of bounds, falling back to full replace');
+          this.model.applyEdits([{ range: this.model.getFullModelRange(), text: fullText }]);
+          return;
+        }
+
+        if (edits.length === 0) return;
+
         this.model.applyEdits(edits);
 
         // Post-apply safeguard: verify model matches the worker's full text.

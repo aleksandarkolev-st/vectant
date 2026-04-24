@@ -2375,22 +2375,53 @@ const EditorPanel = ({
             //    doesn't flash stale text before the binding kicks in.
             //    Use model.setValue() for a complete replacement — this ensures
             //    no residual CRDT merge content survives the transition.
+            let freshContent = null;
             try {
                 const model = editorInstance?.getModel?.();
                 if (model) {
-                    const freshContent = store.getState()?.workspace?.currentContent;
-                    if (typeof freshContent === 'string') {
-                        model.setValue(freshContent);
-                        latestCodeRef.current = freshContent;
+                    const next = store.getState()?.workspace?.currentContent;
+                    if (typeof next === 'string') {
+                        freshContent = next;
+                        model.setValue(next);
+                        latestCodeRef.current = next;
                     } else {
                         latestCodeRef.current = model.getValue();
                     }
                 }
             } catch (_) {}
 
-            // 7. Release the revert lock after a longer settling period to
-            //    cover the Yjs provider reconnect + initial sync window.
-            setTimeout(() => { revertLockRef.current = false; }, 600);
+            // 7. Force-seed the CRDT with disk content once the new binding
+            //    is attached.  Without this, if Y-Sweet's server-side state
+            //    still holds the pre-restore content (resetDocContent on the
+            //    backend silently no-ops on older SDKs that lack updateDoc),
+            //    the worker reconnects, syncs that stale content, and overwrites
+            //    Monaco — causing the restored version to flicker back to the
+            //    pre-restore buffer with an "unsaved" dot.  resetDocument() does
+            //    a LOCAL transact (delete + insert) whose delta propagates to
+            //    Y-Sweet as a normal local change, making disk content the
+            //    canonical room state regardless of what Y-Sweet had before.
+            if (typeof freshContent === 'string' && activeFile?.path) {
+                const targetPath = activeFile.path;
+                let attempts = 0;
+                const trySeed = () => {
+                    attempts += 1;
+                    const key = collabClient.getRoomKey?.(slug, targetPath);
+                    const entry = key ? collabClient.docs.get(key) : null;
+                    if (entry) {
+                        try { collabClient.resetDocument(slug, targetPath, freshContent); } catch (_) {}
+                        return;
+                    }
+                    if (attempts < 30) setTimeout(trySeed, 100);
+                };
+                setTimeout(trySeed, 150);
+            }
+
+            // 8. Release the revert lock after a longer settling period to
+            //    cover the Yjs provider reconnect + initial sync + force-seed
+            //    round-trip.  600ms was too short — a remote delta arriving
+            //    after release would dispatch updateContent with stale text and
+            //    re-flag the file as unsaved.
+            setTimeout(() => { revertLockRef.current = false; }, 3000);
         };
 
         window.addEventListener('synthi:file-reverted', handler);
@@ -3568,6 +3599,28 @@ const EditorPanel = ({
                                                         )}
                                                     </div>
 
+                                                    {/* Persistent permission-denied indicator: shown whenever a save
+                                                        was rejected with 403 on this file.  Survives focus changes so
+                                                        a missed 5s toast doesn't leave the user retrying blindly.
+                                                        Cleared by any successful save. */}
+                                                    {file.permissionDenied && (
+                                                        <span
+                                                            aria-label="Read-only — permission denied"
+                                                            title={file.saveError || 'Read-only: your collab role cannot write this file. Ask the Host.'}
+                                                            className="flex-shrink-0 flex items-center justify-center"
+                                                            style={{
+                                                                width: 14,
+                                                                height: 14,
+                                                                color: 'var(--accent-warning, #e0a83c)',
+                                                            }}
+                                                        >
+                                                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                                                <rect x="5" y="11" width="14" height="10" rx="2" stroke="currentColor" strokeWidth="2" />
+                                                                <path d="M8 11V8a4 4 0 018 0v3" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                                                            </svg>
+                                                        </span>
+                                                    )}
+
                                                  {/* Presence avatars — small colored dots/avatars for remote users on this file */}
                                                 {(() => {
                                                     const fileUsers = presenceByFile[file.path];
@@ -3622,15 +3675,37 @@ const EditorPanel = ({
                                                     {/* Unsaved dot — using TAB_TOKENS for theme-adaptive coloring.
                                                         Logic: Only show if (Manual Save + Local Unsaved) OR (Remote Unsaved).
                                                     */}
-                                                    {((!autoSaveEnabled && (file.isUnsaved || (isActive && isUnsaved))) || (isActive && remoteUnsaved)) && (
-                                                        <span 
-                                                            aria-hidden="true" 
-                                                            className="w-2 h-2 rounded-full flex-shrink-0 transition-opacity group-hover:hidden" 
-                                                            style={{ 
-                                                                backgroundColor: TAB_TOKENS.unsaved, 
-                                                                boxShadow: `0 0 6px color-mix(in srgb, ${TAB_TOKENS.unsaved} 60%, transparent)` 
-                                                            }} 
+                                                    {((!autoSaveEnabled && (file.isUnsaved || (isActive && isUnsaved))) || (isActive && remoteUnsaved)) ? (
+                                                        <span
+                                                            aria-hidden="true"
+                                                            className="w-2 h-2 rounded-full flex-shrink-0 transition-opacity group-hover:hidden"
+                                                            style={{
+                                                                backgroundColor: TAB_TOKENS.unsaved,
+                                                                boxShadow: `0 0 6px color-mix(in srgb, ${TAB_TOKENS.unsaved} 60%, transparent)`
+                                                            }}
                                                         />
+                                                    ) : (
+                                                        // Transient "just saved" checkmark.  Remounted on each save
+                                                        // via the lastSavedAt key; the CSS keyframe fades it in and
+                                                        // back out so there's no timer to manage and the indicator
+                                                        // cleans up automatically.  Silent success makes failures
+                                                        // invisible by contrast — this closes that gap.
+                                                        file.lastSavedAt && (
+                                                            <span
+                                                                key={file.lastSavedAt}
+                                                                aria-hidden="true"
+                                                                className="flex-shrink-0 flex items-center justify-center group-hover:hidden synthi-save-pulse"
+                                                                style={{
+                                                                    width: 10,
+                                                                    height: 10,
+                                                                    color: 'var(--accent-success, #4caf87)',
+                                                                }}
+                                                            >
+                                                                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                                                    <path d="M5 12l5 5L20 7" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
+                                                                </svg>
+                                                            </span>
+                                                        )
                                                     )}
 
                                                     {/* Close button — uses theme variables for text and hover backgrounds */}

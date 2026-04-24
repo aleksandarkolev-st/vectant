@@ -105,6 +105,10 @@ services:
       CODE_INTEL_URL: "http://ai-engine:8000"
       YSWEET_URL: "http://y-sweet:8080"
       YSWEET_AUTH_KEY: dev-secret
+      # Redis — backs per-file version history + missed-event tray.
+      # Without this, persistence.saveFileVersion silently no-ops and
+      # the FileVersionsPanel shows "No history yet" after every save.
+      REDIS_URL: "redis://redis:6379"
       # Storage (Local dev uses filesystem instead of GCS)
       REPOS_DIR: /data/repos
       REPO_CACHE_DIR: /data/repos
@@ -115,8 +119,12 @@ services:
     volumes:
       - collab-data:/data
     depends_on:
-      - y-sweet
-      - ai-engine
+      redis:
+        condition: service_healthy
+      y-sweet:
+        condition: service_started
+      ai-engine:
+        condition: service_started
 
   signaling-server:
     build:
