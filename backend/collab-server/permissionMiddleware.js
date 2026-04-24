@@ -40,6 +40,19 @@
 
 const sessionManager = require('./SessionManager');
 
+// Accept hex session IDs of reasonable length (SessionManager emits 24 chars
+// = SESSION_ID_LEN * 2 hex, but future changes shouldn't break this regex).
+const SESSION_ID_RE = /^[a-f0-9]{8,64}$/i;
+// User IDs are caller-supplied but must be safely short + printable.
+const USER_ID_RE = /^[A-Za-z0-9._:@\-]{1,128}$/;
+
+function isValidSessionId(id) {
+  return typeof id === 'string' && SESSION_ID_RE.test(id);
+}
+function isValidUserId(id) {
+  return typeof id === 'string' && USER_ID_RE.test(id);
+}
+
 // ── HTTP Middleware ──────────────────────────────────────────────────────────
 
 /**
@@ -56,8 +69,12 @@ const sessionManager = require('./SessionManager');
 function extractSessionContext(req, _res, next) {
   const url = new URL(req.url, `http://${req.headers.host}`);
 
-  const sessionId = req.headers['x-session-id'] || url.searchParams.get('sessionId') || null;
-  const userId    = req.headers['x-user-id']    || url.searchParams.get('userId')    || null;
+  let sessionId = req.headers['x-session-id'] || url.searchParams.get('sessionId') || null;
+  let userId    = req.headers['x-user-id']    || url.searchParams.get('userId')    || null;
+
+  // Reject malformed values so downstream code never sees untrusted input.
+  if (sessionId && !isValidSessionId(sessionId)) sessionId = null;
+  if (userId && !isValidUserId(userId)) userId = null;
 
   req.collabSessionId = sessionId;
   req.collabUserId    = userId;
@@ -72,7 +89,12 @@ function extractSessionContext(req, _res, next) {
       if (req.collabRole === 'host') {
         req.collabPermissions = { canEdit: true, canTerminal: true, canGit: true, canFileOps: true };
       } else {
-        const guest = session.guests.find(g => g.guestId === userId);
+        // getSession() returns the serialized form where guests is an Array.
+        // Still validate defensively in case that ever changes.
+        const guestsArr = Array.isArray(session.guests)
+          ? session.guests
+          : (session.guests instanceof Map ? Array.from(session.guests.values()) : []);
+        const guest = guestsArr.find(g => g && g.guestId === userId);
         req.collabPermissions = guest ? { ...guest.permissions } : null;
       }
     }
@@ -191,8 +213,10 @@ function wsDenyAction(ws, action, perm) {
  * @param {string|null} userId
  */
 function wsAttachContext(ws, sessionId, userId) {
-  ws._sessionId = sessionId || null;
-  ws._userId    = userId    || null;
+  // Only trust values that pass format validation — otherwise ignore so that
+  // a malformed query param can't be used to forge session context.
+  ws._sessionId = sessionId && isValidSessionId(sessionId) ? sessionId : null;
+  ws._userId    = userId    && isValidUserId(userId)    ? userId    : null;
 }
 
 // ── Route-level permission mapping ──────────────────────────────────────────
@@ -267,5 +291,7 @@ module.exports = {
   wsRequirePermission,
   wsDenyAction,
   wsAttachContext,
+  isValidSessionId,
+  isValidUserId,
   GIT_ACTION_PERMISSIONS,
 };

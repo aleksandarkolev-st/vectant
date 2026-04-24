@@ -121,8 +121,8 @@ function TopNav({
       </div>
       <div className="flex-1" />
 
-        {/* Collaboration — avatars, session share, knocks */}
-        {slug && <CollabToolbar slug={slug} />}
+        {/* Collaboration — avatars, inbox, history, session share, knocks */}
+        {slug && <CollabToolbar slug={slug} filePath={activeFile?.path} />}
 
         <div className="flex items-center gap-2">
         {/* Terminal Toggle - Icon Only */}

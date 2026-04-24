@@ -20,6 +20,8 @@ const { LRUCache } = require('lru-cache');
 const ySweetBridge = require('./ySweetBridge');
 const { withTelemetry, getMetrics, resetMetrics, getEventLoopBlockCount } = require('./perfTelemetry');
 const sseService = require('./sseService');
+const persistence = require('./persistence');
+const logger = require('./logger').child({ component: 'collab' });
 
 // ── User block list (in-memory) ──────────────────────────────────────────────
 // blockedBy: userId → Set<blockedUserId>
@@ -57,7 +59,9 @@ const REVERT_COOLDOWN_MS = 3000; // 3 seconds
 // the client UI can surface a "backup degraded" indicator and so successive
 // save attempts can emit status-change events (degraded → ok) as conditions
 // recover.  Key = "slug:filePath", value = { at, error }.
-const gcsBackupDegraded = new Map();
+// Bounded to prevent unbounded memory growth in long-running servers; stale
+// entries expire after 24h since disk is the source of truth once recovered.
+const gcsBackupDegraded = new LRUCache({ max: 10_000, ttl: 24 * 60 * 60 * 1000 });
 
 // Periodically garbage-collect expired cooldowns so the map doesn't grow
 // unboundedly on long-running servers.
@@ -68,6 +72,83 @@ setInterval(() => {
     if (now - ts > REVERT_COOLDOWN_MS * 2) revertCooldowns.delete(key);
   }
 }, 30_000); // every 30 seconds
+
+// ── Rate limiting + Origin allowlist ─────────────────────────────────────────
+// Lightweight fixed-window token bucket keyed by IP (or IP + user).  Intended
+// to stop accidental floods and casual abuse of public session endpoints;
+// a real gateway/WAF is expected in production.
+const RATE_WINDOW_MS = 60_000;
+const rateBuckets = new LRUCache({ max: 20_000, ttl: RATE_WINDOW_MS * 2 });
+
+function checkRateLimit(key, limit) {
+  const now = Date.now();
+  const slot = Math.floor(now / RATE_WINDOW_MS);
+  const bucketKey = `${slot}:${key}`;
+  const count = (rateBuckets.get(bucketKey) || 0) + 1;
+  rateBuckets.set(bucketKey, count);
+  return count <= limit;
+}
+
+function clientIp(req) {
+  const fwd = req.headers['x-forwarded-for'];
+  if (typeof fwd === 'string' && fwd.length) return fwd.split(',')[0].trim();
+  return (req.socket && req.socket.remoteAddress) || 'unknown';
+}
+
+// Parse comma-separated list once at startup.
+const ALLOWED_ORIGINS = String(process.env.COLLAB_ALLOWED_ORIGINS || '')
+  .split(',')
+  .map(s => s.trim())
+  .filter(Boolean);
+
+/**
+ * Enforce that non-GET/OPTIONS requests come from a trusted Origin, to block
+ * casual CSRF.  If COLLAB_ALLOWED_ORIGINS is unset the server accepts any
+ * origin (legacy behaviour) but still rejects cross-site requests that arrive
+ * with an Origin header pointing at a different scheme+host than the request.
+ *
+ * Returns true if the request should proceed; false if the caller should
+ * stop processing (the response is already written).
+ */
+function enforceOrigin(req, res) {
+  if (req.method === 'GET' || req.method === 'OPTIONS') return true;
+  const origin = req.headers.origin;
+  // Same-origin browser requests from fetch() always include an Origin header;
+  // server-to-server calls typically do not.  Require Origin for unsafe methods
+  // so browser clients can't forge them from another tab.
+  if (!origin) {
+    // Allow if an explicit cross-service bypass header is configured, to
+    // support service-to-service calls in trusted networks.
+    const internalToken = req.headers['x-collab-internal-token'];
+    if (internalToken && process.env.COLLAB_INTERNAL_TOKEN &&
+        internalToken === process.env.COLLAB_INTERNAL_TOKEN) {
+      return true;
+    }
+    // When no allowlist is configured we keep legacy permissive behaviour.
+    if (ALLOWED_ORIGINS.length === 0) return true;
+    res.writeHead(403, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'origin_required' }));
+    return false;
+  }
+  if (ALLOWED_ORIGINS.length > 0 && !ALLOWED_ORIGINS.includes(origin)) {
+    res.writeHead(403, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'origin_forbidden' }));
+    return false;
+  }
+  return true;
+}
+
+/**
+ * Rate-limit guard.  If over budget, writes a 429 and returns false.
+ * Scope keys help separate sensitive endpoints (knock, invite) from cheap ones.
+ */
+function rateLimitGuard(req, res, scope, limitPerMin) {
+  const key = `${scope}:${clientIp(req)}`;
+  if (checkRateLimit(key, limitPerMin)) return true;
+  res.writeHead(429, { 'Content-Type': 'application/json', 'Retry-After': '30' });
+  res.end(JSON.stringify({ error: 'rate_limited', scope }));
+  return false;
+}
 
 // Track which slugs have been hydrated from GCS this boot.
 // Solves the case where a repo directory exists (e.g. from a prior run or
@@ -227,25 +308,43 @@ function validateDocAccess(parsedDoc, { userId, sessionId }) {
       return { ok: true };
     }
     // Guest accessing the host's user-scoped room (direct-access model):
-    // If the connecting user is a guest in a session whose host owns this
-    // room, AND the guest has canEdit permission, allow access.
-    if (sessionId) {
-      const session = sessionManager.getSession(sessionId);
-      if (session && session.hostId === parsedDoc.userId && session.slug === parsedDoc.slug) {
-        if (sessionManager.checkPermission(sessionId, userId, 'canEdit')) {
-          return { ok: true };
-        }
+    // the connecting user must be an actual registered guest of a session
+    // owned by parsedDoc.userId, pointing at the same slug, AND hold the
+    // canEdit permission.  We explicitly re-verify guest membership rather
+    // than relying on checkPermission alone so that an attacker cannot
+    // access another host's room by smuggling a sessionId they aren't part
+    // of.
+    const verify = (session, verifiedSessionId) => {
+      if (!session) return null;
+      if (session.status && session.status !== 'active') return null;
+      if (session.hostId !== parsedDoc.userId) return null;
+      if (session.slug !== parsedDoc.slug) return null;
+      // Guests can be a Map (internal) or Array (serialized) — support both.
+      let isGuest = false;
+      if (session.guests instanceof Map) {
+        isGuest = session.guests.has(userId);
+      } else if (Array.isArray(session.guests)) {
+        isGuest = session.guests.some(g => g && g.guestId === userId);
+      }
+      if (!isGuest) return null;
+      if (!sessionManager.checkPermission(verifiedSessionId, userId, 'canEdit')) {
         return { ok: false, status: 403, reason: 'edit_permission_required' };
       }
+      return { ok: true };
+    };
+
+    if (sessionId) {
+      const session = sessionManager.getSession(sessionId);
+      const r = verify(session, sessionId);
+      if (r) return r;
     }
     // Also check if the user is a guest anywhere whose host matches the room
     const hostInfo = sessionManager.getHostForGuest(userId);
     if (hostInfo && hostInfo.hostId === parsedDoc.userId && hostInfo.slug === parsedDoc.slug) {
       const guestSessionId = hostInfo.sessionId;
-      if (sessionManager.checkPermission(guestSessionId, userId, 'canEdit')) {
-        return { ok: true };
-      }
-      return { ok: false, status: 403, reason: 'edit_permission_required' };
+      const session = sessionManager.getSession(guestSessionId);
+      const r = verify(session, guestSessionId);
+      if (r) return r;
     }
     return { ok: false, status: 403, reason: 'user_scope_mismatch' };
   }
@@ -353,11 +452,41 @@ async function flushDocToDisk(docName, options = {}) {
   }
 
   // 2. Disk write to the scoped repo (atomic via temp+rename, with verification)
+  // Seed a pre-edit baseline snapshot the first time we save a file, so the
+  // version history always contains the point you can "go back to the
+  // original" from.  Without this, the very first saved version IS already
+  // the user's edited content, and there's nothing to revert to.
+  //
+  // ORDER MATTERS: we MUST read the prior disk content BEFORE calling
+  // safeWriteFile, otherwise the read sees the freshly-written new content
+  // and `prior === content` short-circuits the baseline seed.  An earlier
+  // version relied on gitService.syncFile() happening in the caller, which
+  // broke this ordering and meant the very first saved version was always
+  // the edited content with nothing to revert to.
   const repoPath = gitService.getEffectiveRepoPath(slug, effectiveUserId);
-  if (fs.existsSync(repoPath)) {
-    const fullPath = path.join(repoPath, filePath);
-    await gitService.safeWriteFile(fullPath, content);
+  const fullPath = path.join(repoPath, filePath);
+  try {
+    const prior = await fsPromises.readFile(fullPath, 'utf8');
+    if (prior !== content) {
+      const priorHash = computeHash(prior);
+      const existingCount = await persistence.countFileVersions(slug, filePath);
+      if (existingCount === 0) {
+        await persistence.saveFileVersion(slug, filePath, {
+          userId: effectiveUserId,
+          sessionId: docSessionId || null,
+          hash: priorHash,
+          content: prior,
+          ts: Date.now() - 1,
+        });
+      }
+    }
+  } catch (err) {
+    // File didn't exist yet (brand new file) or unreadable — nothing to snapshot.
+    if (err && err.code !== 'ENOENT') {
+      logger.warn('version_baseline_read_failed', { slug, filePath }, err);
+    }
   }
+  await gitService.safeWriteFile(fullPath, content);
 
   // Update hash cache
   fileHashCache.set(docName, { hash: computeHash(content), timestamp: Date.now() });
@@ -375,7 +504,33 @@ async function flushDocToDisk(docName, options = {}) {
 
   broadcastGitStatusChanged(slug, filePath, { userId: effectiveUserId, sessionId: docSessionId || null });
   broadcastFileSaved(slug, filePath, { userId: effectiveUserId, sessionId: docSessionId || null });
-  console.log(`[Collab Flush] Explicit save: ${filePath} -> disk + GCS (${content.length} chars)`);
+
+  // Record a durable save-point: an append-only activity entry plus a
+  // versioned snapshot of the content.  Both land in Redis when available
+  // (see persistence.js), so users can see who saved when and recover
+  // overwritten content even after Monaco's local undo is gone.
+  const contentHash = computeHash(content);
+  persistence.logFileEvent(slug, filePath, {
+    kind: 'saved',
+    userId: effectiveUserId,
+    sessionId: docSessionId || null,
+    hash: contentHash,
+    size: Buffer.byteLength(content, 'utf8'),
+  });
+  persistence.saveFileVersion(slug, filePath, {
+    userId: effectiveUserId,
+    sessionId: docSessionId || null,
+    hash: contentHash,
+    content,
+  });
+
+  logger.info('file_saved', {
+    slug,
+    filePath,
+    userId: effectiveUserId,
+    sessionId: docSessionId || null,
+    size: content.length,
+  });
 }
 
 const workspaceManager = require('./workspaceManager');
@@ -509,12 +664,20 @@ async function invalidateDocsForSlug(slug, filePaths = null, scope = {}) {
   const affectedPaths = filePaths && filePaths.length > 0 ? filePaths : [];
   for (const fp of affectedPaths) {
     revertCooldowns.set(`${slug}:${fp}`, now);
+    // Best-effort: log the revert to the file activity stream.  No version
+    // snapshot — the disk is the source of truth post-revert and is
+    // already captured in the previous 'saved' entry.
+    persistence.logFileEvent(slug, fp, {
+      kind: 'reverted',
+      userId: scope?.userId || null,
+      sessionId: scope?.sessionId || null,
+    });
   }
 
   if (filePaths) {
-    console.log(`[Collab] Invalidated ${filePaths.length} docs for slug ${slug}`);
+    logger.info('docs_invalidated', { slug, files: filePaths.length, paths: filePaths });
   } else {
-    console.log(`[Collab] Invalidated all docs for slug ${slug}`);
+    logger.info('docs_invalidated', { slug, files: 'all' });
   }
 }
 
@@ -859,8 +1022,11 @@ const server = http.createServer(async (req, res) => {
   req.url = req.url.replace(/^\/collab/, '');
   if (!req.url.startsWith('/')) req.url = '/' + req.url;
 
-  // CORS headers
-  res.setHeader('Access-Control-Allow-Origin', '*');
+  // CORS headers — must echo the exact Origin (not '*') when credentials are included
+  const requestOrigin = req.headers.origin;
+  res.setHeader('Access-Control-Allow-Origin', requestOrigin || '*');
+  if (requestOrigin) res.setHeader('Access-Control-Allow-Credentials', 'true');
+  res.setHeader('Vary', 'Origin');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS, DELETE');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-user-id, x-session-id');
 
@@ -869,6 +1035,9 @@ const server = http.createServer(async (req, res) => {
     res.end();
     return;
   }
+
+  // Origin check — blocks naive cross-site POSTs for all mutating routes.
+  if (!enforceOrigin(req, res)) return;
 
   // ========================================================================
   // TURN CREDENTIALS — /turn-credentials
@@ -1007,9 +1176,15 @@ const server = http.createServer(async (req, res) => {
     let parsed;
     try { parsed = JSON.parse(body); } catch { res.writeHead(400); res.end('Invalid JSON'); return; }
     if (!parsed.session_id) { res.writeHead(400); res.end('Missing session_id'); return; }
-    await spawner.touch(parsed.session_id);
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ ok: true }));
+    try {
+      await spawner.touch(parsed.session_id);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true }));
+    } catch (e) {
+      console.error('[Spawner] touch failed:', e.message);
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: e.message }));
+    }
     return;
   }
 
@@ -1661,7 +1836,9 @@ const server = http.createServer(async (req, res) => {
         }
         if (!blockedBy.has(userId)) blockedBy.set(userId, new Set());
         blockedBy.get(userId).add(blockedUserId);
-        console.log(`[Block] ${userId} blocked ${blockedUserId}`);
+        logger.info('user_blocked', { userId, blockedUserId });
+        // Persist asynchronously — never block the request on storage latency.
+        persistence.saveBlock(userId, blockedUserId);
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ success: true }));
       } catch (e) {
@@ -1690,7 +1867,8 @@ const server = http.createServer(async (req, res) => {
           blockedBy.get(userId).delete(blockedUserId);
           if (blockedBy.get(userId).size === 0) blockedBy.delete(userId);
         }
-        console.log(`[Block] ${userId} unblocked ${blockedUserId}`);
+        logger.info('user_unblocked', { userId, blockedUserId });
+        persistence.removeBlock(userId, blockedUserId);
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ success: true }));
       } catch (e) {
@@ -1716,6 +1894,325 @@ const server = http.createServer(async (req, res) => {
     const list = blockedBy.has(userId) ? Array.from(blockedBy.get(userId)) : [];
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ userId, blockedUsers: list }));
+    return;
+  }
+
+  // ========================================================================
+  // PRESENCE — is a given user currently online?
+  //
+  //   GET /presence/user/:userId
+  //   → { userId, online, inboxPending }
+  //
+  // Consumers use this to decide whether to show "User is offline, we'll
+  // notify them when they return" vs. "Sending invite now...".  inboxPending
+  // is how many queued events are waiting for their next connect.
+  // ========================================================================
+  if (req.url.startsWith('/presence/user/') && req.method === 'GET') {
+    try {
+      const urlObj = new URL(req.url, `http://${req.headers.host}`);
+      const userId = decodeURIComponent(urlObj.pathname.split('/')[3] || '');
+      if (!userId) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'userId is required' }));
+        return;
+      }
+      const online = isUserOnline(userId);
+      const inboxPending = online ? 0 : await persistence.peekUserInboxSize(userId);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ userId, online, inboxPending }));
+    } catch (e) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: e.message }));
+    }
+    return;
+  }
+
+  // ========================================================================
+  // FILE HISTORY + VERSIONS — audit log + server-side undo for saves.
+  // Backed by Redis (persistence.js).  Returns an empty list when
+  // persistence is disabled.
+  //
+  //   GET /file-history/:slug?filePath=...&limit=50
+  //   GET /file-versions/:slug?filePath=...
+  //   GET /file-version/:slug?filePath=...&index=N
+  // ========================================================================
+  if (req.url.startsWith('/file-history/') && req.method === 'GET') {
+    try {
+      const urlObj = new URL(req.url, `http://${req.headers.host}`);
+      const slug = decodeURIComponent(urlObj.pathname.split('/')[2] || '');
+      const filePath = urlObj.searchParams.get('filePath') || '';
+      const limit = parseInt(urlObj.searchParams.get('limit') || '50', 10);
+      if (!slug || !filePath) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'slug and filePath are required' }));
+        return;
+      }
+      try { validateFilePath(filePath); }
+      catch (e) { res.writeHead(400); res.end(JSON.stringify({ error: e.message })); return; }
+      const events = await persistence.getFileHistory(slug, filePath, limit);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ slug, filePath, events }));
+    } catch (e) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: e.message }));
+    }
+    return;
+  }
+
+  if (req.url.startsWith('/file-versions/') && req.method === 'GET') {
+    try {
+      const urlObj = new URL(req.url, `http://${req.headers.host}`);
+      const slug = decodeURIComponent(urlObj.pathname.split('/')[2] || '');
+      const filePath = urlObj.searchParams.get('filePath') || '';
+      if (!slug || !filePath) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'slug and filePath are required' }));
+        return;
+      }
+      try { validateFilePath(filePath); }
+      catch (e) { res.writeHead(400); res.end(JSON.stringify({ error: e.message })); return; }
+      // Metadata-only listing by default — content retrieval is a separate
+      // call so the default response is cheap.
+      const versions = await persistence.getFileVersions(slug, filePath, { withContent: false });
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ slug, filePath, versions }));
+    } catch (e) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: e.message }));
+    }
+    return;
+  }
+
+  if (req.url.startsWith('/file-version/') && req.method === 'GET') {
+    try {
+      const urlObj = new URL(req.url, `http://${req.headers.host}`);
+      const slug = decodeURIComponent(urlObj.pathname.split('/')[2] || '');
+      const filePath = urlObj.searchParams.get('filePath') || '';
+      const index = parseInt(urlObj.searchParams.get('index') || '0', 10);
+      if (!slug || !filePath) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'slug and filePath are required' }));
+        return;
+      }
+      try { validateFilePath(filePath); }
+      catch (e) { res.writeHead(400); res.end(JSON.stringify({ error: e.message })); return; }
+      const version = await persistence.getFileVersion(slug, filePath, index);
+      if (!version) {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'version_not_found' }));
+        return;
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ slug, filePath, index, version }));
+    } catch (e) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: e.message }));
+    }
+    return;
+  }
+
+  // ========================================================================
+  // POST /file-version/restore — rewrite a file back to a stored version.
+  //
+  // Body: { slug, filePath, index, userId, sessionId? }
+  //   - slug + filePath: target file (traversal-checked via realpath)
+  //   - index: position in the version list (0 = most recent save-point)
+  //   - userId: actor performing the restore
+  //   - sessionId: optional. When set, the host's repo is the restore target
+  //     and the caller must be the host or a guest with canEdit.
+  //
+  // Effects: disk rewrite, Y-Sweet CRDT content reset (falls back to doc
+  // invalidation if the SDK lacks a write path), new save-point logged,
+  // broadcasts file-saved + git-status-changed.
+  // ========================================================================
+  if (req.url === '/file-version/restore' && req.method === 'POST') {
+    if (!rateLimitGuard(req, res, 'file-version-restore', 20)) return;
+    let body = '';
+    req.on('data', (c) => { body += c; });
+    req.on('end', async () => {
+      try {
+        const payload = JSON.parse(body || '{}');
+        const { slug, filePath, userId } = payload;
+        const sessionId = payload.sessionId || null;
+        const index = Number.isFinite(payload.index) ? payload.index : parseInt(payload.index, 10);
+        if (!slug || !filePath || !Number.isFinite(index) || index < 0 || !userId) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'slug, filePath, index (>=0), userId are required' }));
+          return;
+        }
+        const { isValidUserId, isValidSessionId } = require('./permissionMiddleware');
+        if (!isValidUserId(userId)) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'invalid_userId' }));
+          return;
+        }
+        if (sessionId && !isValidSessionId(sessionId)) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'invalid_sessionId' }));
+          return;
+        }
+        let normalizedPath;
+        try { normalizedPath = validateFilePath(filePath); }
+        catch (e) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: e.message }));
+          return;
+        }
+
+        // Resolve which user's repo + CRDT room to rewrite.  Session flows
+        // always target the host; solo flows target the caller.
+        let targetUserId = userId;
+        if (sessionId) {
+          const session = sessionManager.getSession(sessionId);
+          if (!session) {
+            res.writeHead(404, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'session_not_found' }));
+            return;
+          }
+          if (session.slug !== slug) {
+            res.writeHead(403, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'session_slug_mismatch' }));
+            return;
+          }
+          if (session.hostId !== userId &&
+              !sessionManager.checkPermission(sessionId, userId, 'canEdit')) {
+            res.writeHead(403, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'edit_permission_required' }));
+            return;
+          }
+          targetUserId = session.hostId;
+        }
+
+        const version = await persistence.getFileVersion(slug, normalizedPath, index);
+        if (!version) {
+          res.writeHead(404, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'version_not_found' }));
+          return;
+        }
+        if (!version.hasContent || typeof version.content !== 'string') {
+          // Oversized versions are stored as metadata only.  Hand the
+          // caller the hash so they can show "snapshot exists but was too
+          // large to keep" rather than silently failing.
+          res.writeHead(410, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({
+            error: 'version_content_unavailable',
+            hash: version.hash || null,
+            size: version.size || null,
+          }));
+          return;
+        }
+
+        const content = version.content;
+        const docName = buildDocName(slug, normalizedPath, {
+          userId: targetUserId,
+          sessionId,
+        });
+
+        const repoPath = gitService.getEffectiveRepoPath(slug, targetUserId);
+        if (!fs.existsSync(repoPath)) {
+          res.writeHead(404, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'repo_not_found' }));
+          return;
+        }
+        // Belt-and-braces traversal guard: resolve symlinks inside the
+        // repo before writing.  validateFilePath already rejected `..`
+        // segments, but a symlink pointing out of the tree is still
+        // possible without this check.
+        let fullPath;
+        try {
+          const realRepo = await fsPromises.realpath(repoPath);
+          fullPath = path.resolve(realRepo, normalizedPath);
+          const rel = path.relative(realRepo, fullPath);
+          if (rel.startsWith('..') || path.isAbsolute(rel)) {
+            throw new Error('path escapes repo root');
+          }
+        } catch (e) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'invalid_repo_path', detail: e.message }));
+          return;
+        }
+
+        // 1) Disk is authoritative — rewrite it first.
+        await gitService.safeWriteFile(fullPath, content);
+
+        // 2) Pull the CRDT doc onto the restored content so live editors
+        // converge without data loss, then ALWAYS hard-invalidate the doc.
+        //
+        // A successful resetDocContent alone is not sufficient: a client with
+        // the file open may have newer local edits in its Y.Doc that would
+        // merge with (rather than replace) the restored state, so the editor
+        // keeps showing the unrestored text.  broadcastFileReverted triggers
+        // the Editor's synthi:file-reverted handler (Editor.jsx:~2395) which
+        // clears the Monaco model and re-fetches from disk; the preceding
+        // invalidateDocsForSlug destroys the Y.Doc binding so Monaco can't
+        // merge stale CRDT state back in on reconnect.
+        let crdtReset = false;
+        try {
+          crdtReset = await ySweetBridge.resetDocContent(docName, content);
+        } catch (err) {
+          logger.warn('file_version_restore_crdt_reset_failed', { docName }, err);
+          crdtReset = false;
+        }
+        await invalidateDocsForSlug(slug, [normalizedPath], {
+          userId: targetUserId,
+          sessionId,
+        });
+
+        // 3) Truncate any newer versions — after restore they no longer
+        // represent the live timeline.  The entry at `index` becomes the
+        // new head (index 0), so the list is: [restored-content, ...older].
+        // No duplicate saveFileVersion: the restored content is already
+        // the new index 0 by virtue of the trim.
+        const restoredHash = computeHash(content);
+        const size = Buffer.byteLength(content, 'utf8');
+        fileHashCache.set(docName, { hash: restoredHash, timestamp: Date.now() });
+        await persistence.truncateVersionsAbove(slug, normalizedPath, index);
+        persistence.logFileEvent(slug, normalizedPath, {
+          kind: 'restored',
+          userId,
+          sessionId,
+          hash: restoredHash,
+          size,
+          meta: { fromIndex: index, fromHash: version.hash || null, targetUserId },
+        });
+
+        broadcastFileSaved(slug, normalizedPath, { userId: targetUserId, sessionId });
+        broadcastGitStatusChanged(slug, normalizedPath, { userId: targetUserId, sessionId });
+        // Tell the Editor to hard-refresh its model from disk.  This is the
+        // event page.jsx's useSSEEvent(…'file-reverted'…) turns into the
+        // 'synthi:file-reverted' DOM event the Editor handler waits for.
+        broadcastFileReverted(slug, [normalizedPath], { userId: targetUserId, sessionId });
+
+        logger.info('file_version_restored', {
+          slug,
+          filePath: normalizedPath,
+          index,
+          actor: userId,
+          sessionId,
+          targetUserId,
+          hash: restoredHash,
+          size,
+          crdtReset,
+        });
+
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          ok: true,
+          slug,
+          filePath: normalizedPath,
+          index,
+          restoredHash,
+          size,
+          targetUserId,
+          docName,
+          crdtReset,
+        }));
+      } catch (e) {
+        logger.error('file_version_restore_failed', {}, e);
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: e.message }));
+      }
+    });
     return;
   }
 
@@ -1851,6 +2348,7 @@ const server = http.createServer(async (req, res) => {
    * Target can accept by knocking on the auto-created session.
    */
   if (req.url.startsWith('/session/invite-user') && req.method === 'POST') {
+    if (!rateLimitGuard(req, res, 'invite-user', 30)) return;
     let body = '';
     req.on('data', chunk => body += chunk);
     req.on('end', () => {
@@ -1888,9 +2386,11 @@ const server = http.createServer(async (req, res) => {
         // Track this user as invited so they are auto-admitted on knock
         sessionManager.addInvitedUser(session.id, targetUserId);
 
-        // Send invite notification to the target user via notification WS
-        const inviteMsg = JSON.stringify({
-          type: 'collab-invite',
+        // Deliver the collab-invite to the target user.  If they're online
+        // on this slug we send over the notify-WS immediately; if they're
+        // offline the event lands in their Redis inbox and pops as a
+        // "missed while offline" notification next time they connect.
+        const invitePayload = {
           slug,
           sessionId: session.id,
           hostId,
@@ -1898,14 +2398,10 @@ const server = http.createServer(async (req, res) => {
           hostAvatar: hostAvatar || '',
           inviteToken: session.inviteToken,
           roomCode: session.roomCode || null,
-        });
-        if (notifyWss) {
-          notifyWss.clients.forEach((ws) => {
-            if (ws.readyState === WebSocket.OPEN && ws._slug === slug && ws._userId === targetUserId) {
-              try { ws.send(inviteMsg); } catch (_) {}
-            }
-          });
-        }
+        };
+        deliverToUser(targetUserId, 'collab-invite', invitePayload, { slug })
+          .then((r) => logger.info('invite_delivery', { targetUserId, slug, delivered: r.delivered, queued: r.queued }))
+          .catch((err) => logger.warn('invite_delivery_failed', { targetUserId, slug }, err));
 
         const appUrl = process.env.SYNTHI_APP_URL || 'http://localhost:3000';
         const inviteLink = `${appUrl}/collab/${session.id}?token=${session.inviteToken}${session.roomCode ? `&code=${session.roomCode}` : ''}`;
@@ -1934,6 +2430,7 @@ const server = http.createServer(async (req, res) => {
    * session so the target user can accept/deny.
    */
   if (req.url.startsWith('/session/join-user') && req.method === 'POST') {
+    if (!rateLimitGuard(req, res, 'join-user', 30)) return;
     let body = '';
     req.on('data', chunk => body += chunk);
     req.on('end', () => {
@@ -2047,6 +2544,9 @@ const server = http.createServer(async (req, res) => {
    * (or auto-admit if the host previously invited this user).
    */
   if (req.url.startsWith('/session/join-by-code') && req.method === 'POST') {
+    // Stricter budget: room codes are a guessable secret so brute-force
+    // attempts need to be throttled aggressively.
+    if (!rateLimitGuard(req, res, 'join-by-code', 10)) return;
     let body = '';
     req.on('data', chunk => body += chunk);
     req.on('end', () => {
@@ -2100,6 +2600,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.url.startsWith('/session/request-join/') && req.method === 'POST') {
+    if (!rateLimitGuard(req, res, 'request-join', 30)) return;
     const urlObj = new URL(req.url, `http://${req.headers.host}`);
     const targetSessionId = urlObj.pathname.split('/')[3];
     if (!targetSessionId) {
@@ -2152,6 +2653,33 @@ const server = http.createServer(async (req, res) => {
     // /session/:action[/:sessionId]
     const action = parts[2];
     const sessionIdParam = parts[3] || null;
+
+    // Per-action rate budgets.  GETs (info, validate-token) get a generous
+    // ceiling; write-heavy ops get tighter ones.
+    const RATE_BUDGETS = {
+      create: 20,
+      'validate-token': 60,
+      knock: 30,
+      admit: 60,
+      deny: 60,
+      permissions: 60,
+      kick: 30,
+      leave: 60,
+      terminate: 20,
+      info: 120,
+      'regenerate-token': 10,
+    };
+    const budget = RATE_BUDGETS[action];
+    if (budget && !rateLimitGuard(req, res, `session:${action}`, budget)) return;
+
+    // sessionId parameter must look like the format emitted by SessionManager
+    // (hex, 2*SESSION_ID_LEN chars).  Reject malformed IDs before they reach
+    // any manager call — defence-in-depth against injection via URL paths.
+    if (sessionIdParam && !/^[a-f0-9]{8,64}$/i.test(sessionIdParam)) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'invalid_session_id_format' }));
+      return;
+    }
 
     let body = '';
     req.on('data', chunk => body += chunk);
@@ -2908,11 +3436,15 @@ const server = http.createServer(async (req, res) => {
                       // Clean up expired cooldown
                       if (cooldownTs) revertCooldowns.delete(cooldownKey);
 
-                      // 1. Write the content provided by the client to the git working tree.
-                      await gitService.syncFile(slug, data.filePath, data.content, effectiveUserId);
-                      // 2. Also flush the Yjs CRDT content to disk + GCS.
-                      //    This ensures GCS stays up-to-date and all per-user
-                      //    repos get the latest content on explicit save.
+                      // Flush CRDT content to disk + GCS in a single pass.  An
+                      // earlier version called gitService.syncFile() first,
+                      // which wrote the new content to disk before
+                      // flushDocToDisk's baseline-snapshot read — that read
+                      // then saw the just-written content as the "prior" and
+                      // skipped seeding the pre-edit baseline on the first
+                      // save.  flushDocToDisk already performs the disk write,
+                      // so calling syncFile() here was redundant AND prevented
+                      // the very first version from being restorable.
                       const docKey = buildDocName(slug, data.filePath, notifyScope);
                       await flushDocToDisk(docKey, { contentOverride: data.content });
                     }
@@ -3263,18 +3795,40 @@ server.on('upgrade', (request, socket, head) => {
            slug = parts[1];
            userId = decodeURIComponent(parts[3]);
            // Path starts at index 4, rejoin rest
-           const filePath = parts.slice(4).join(':');
+           const rawFilePath = parts.slice(4).join(':');
+
+           // Reject traversal / absolute paths / null bytes up-front.
+           // validateFilePath throws on anything dangerous.
+           const safeRelative = validateFilePath(rawFilePath);
 
            // Acquire repo to ensure file exists on disk
            const repoPath = await repoCache.acquire(slug, userId);
            try {
-             // Handle both slash styles
-             const cleanPath = filePath.split('/').join(path.sep).split('\\').join(path.sep);
-             const fullPath = path.join(repoPath, cleanPath);
-             
-             // Check if file is inside the repo (security check)
-             if (fullPath.startsWith(repoPath) && fs.existsSync(fullPath) && (await fsPromises.stat(fullPath)).isFile()) {
-                initialContent = await fsPromises.readFile(fullPath, 'utf8');
+             const fullPath = path.join(repoPath, safeRelative);
+             // fs.realpath resolves symlinks; we then verify the resolved path
+             // is strictly inside the repo root.  Uses realpath on the repo
+             // too so that mount-point symlinks are handled consistently.
+             let realFull, realRepo;
+             try {
+               [realFull, realRepo] = await Promise.all([
+                 fsPromises.realpath(fullPath),
+                 fsPromises.realpath(repoPath),
+               ]);
+             } catch (_) {
+               // File doesn't exist yet — that's fine; nothing to seed.
+               realFull = null;
+             }
+             if (realFull && realRepo) {
+               const rel = path.relative(realRepo, realFull);
+               const isInside = rel && !rel.startsWith('..') && !path.isAbsolute(rel);
+               if (isInside) {
+                 const stat = await fsPromises.stat(realFull);
+                 if (stat.isFile()) {
+                   initialContent = await fsPromises.readFile(realFull, 'utf8');
+                 }
+               } else {
+                 console.warn('[Collab] Rejecting Yjs seed: resolved path escapes repo', { slug, userId, rawFilePath });
+               }
              }
            } finally {
              repoCache.release(slug, userId);
@@ -3294,15 +3848,99 @@ server.on('upgrade', (request, socket, head) => {
   }
 });
 
+// ── Presence + offline delivery helpers ─────────────────────────────
+// Online = has at least one open notify-WS OR session-WS.  We prefer the
+// notify-WS because it's the long-lived channel every user keeps open on
+// the workspace page, but we also look at sessionWss so a user inside an
+// active collab session is considered online even if their notify-WS
+// hasn't reconnected yet.
+function isUserOnline(userId) {
+  if (!userId) return false;
+  const id = String(userId);
+  if (notifyWss) {
+    for (const ws of notifyWss.clients) {
+      if (ws.readyState === WebSocket.OPEN && ws._userId === id) return true;
+    }
+  }
+  if (sessionWss) {
+    for (const ws of sessionWss.clients) {
+      if (ws.readyState === WebSocket.OPEN && ws._userId === id) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Deliver an event to a user.  If they're online we send immediately via
+ * every open notify-WS for that user; otherwise we queue in Redis so their
+ * next connect picks it up.  When a slug is supplied only matching
+ * notify-WS connections receive the live delivery — the Redis fallback
+ * has no slug filter since inbox drains target the userId only.
+ *
+ * @param {string} userId
+ * @param {string} type  event type (e.g. 'collab-invite', 'knock:denied')
+ * @param {object} payload
+ * @param {{ slug?: string, forceQueue?: boolean }} [opts]
+ * @returns {Promise<{ delivered: boolean, queued: boolean }>}
+ */
+async function deliverToUser(userId, type, payload, opts = {}) {
+  if (!userId || !type) return { delivered: false, queued: false };
+  const msg = JSON.stringify({ type, ...payload });
+  let delivered = false;
+  if (!opts.forceQueue && notifyWss) {
+    notifyWss.clients.forEach((ws) => {
+      if (ws.readyState !== WebSocket.OPEN) return;
+      if (ws._userId !== userId) return;
+      if (opts.slug && ws._slug && ws._slug !== opts.slug) return;
+      try { ws.send(msg); delivered = true; } catch (_) {}
+    });
+  }
+  if (delivered) return { delivered: true, queued: false };
+  // Not online (or no matching slug connection) — queue for next connect.
+  await persistence.enqueueUserEvent(userId, { type, payload });
+  return { delivered: false, queued: true };
+}
+
+/**
+ * On WS connect, drain any events that were queued while the user was
+ * offline and send them immediately.  Each event carries `queued: true`
+ * and `queuedAt` so the client can render it as a popup "missed while
+ * offline" notification.  Safe to call even when persistence is off —
+ * drainUserInbox returns [] in that case.
+ */
+async function flushUserInboxToSocket(ws, userId) {
+  if (!userId) return;
+  const events = await persistence.drainUserInbox(userId);
+  if (!events.length) return;
+  for (const e of events) {
+    if (ws.readyState !== WebSocket.OPEN) break;
+    try {
+      ws.send(JSON.stringify({
+        type: e.type,
+        ...(e.payload || {}),
+        queued: true,
+        queuedAt: e.queuedAt,
+      }));
+    } catch (_) { /* socket went away mid-flush */ }
+  }
+  logger.info('inbox_drained', { userId, count: events.length });
+}
+
 // ── Notification WS connection handler ──────────────────────────────
 notifyWss.on('connection', (ws, req) => {
   const params = new URLSearchParams((req.url || '').split('?')[1] || '');
   ws._slug = params.get('slug') || null;
   ws._userId = params.get('userId') ? decodeURIComponent(params.get('userId')) : null;
   ws._sessionId = params.get('sessionId') || null;
-  console.log(`[Collab] Notification WS connected — slug=${ws._slug}, userId=${ws._userId}`);
+  logger.info('notify_ws_connected', { slug: ws._slug, userId: ws._userId });
+  // Flush any offline events for this user as a burst of queued:true
+  // messages so the UI can surface them as popups.
+  if (ws._userId) {
+    flushUserInboxToSocket(ws, ws._userId).catch((err) =>
+      logger.warn('inbox_flush_failed', { userId: ws._userId }, err));
+  }
   ws.on('close', () => {
-    console.log(`[Collab] Notification WS disconnected — slug=${ws._slug}, userId=${ws._userId}`);
+    logger.info('notify_ws_disconnected', { slug: ws._slug, userId: ws._userId });
   });
 });
 
@@ -3311,9 +3949,9 @@ sessionWss.on('connection', (ws, req) => {
   const params = new URLSearchParams((req.url || '').split('?')[1] || '');
   ws._sessionId = params.get('sessionId') || null;
   ws._userId = params.get('userId') ? decodeURIComponent(params.get('userId')) : null;
-  console.log(`[Collab] Session WS connected — session=${ws._sessionId}, userId=${ws._userId}`);
+  logger.info('session_ws_connected', { sessionId: ws._sessionId, userId: ws._userId });
   ws.on('close', () => {
-    console.log(`[Collab] Session WS disconnected — session=${ws._sessionId}, userId=${ws._userId}`);
+    logger.info('session_ws_disconnected', { sessionId: ws._sessionId, userId: ws._userId });
   });
 });
 
@@ -3355,13 +3993,117 @@ sessionManager.on('session:knockCancelled', ({ sessionId, guestId }) => {
   sendToSessionHost(sessionId, 'knock:cancelled', { guestId });
 });
 
-server.listen(PORT, '0.0.0.0', () => {
-  console.log(`Collaboration server listening on port ${PORT}`);
-  console.log(`[Collab] CRDT persistence: Y-Sweet @ ${config.YSWEET_URL}`);
-
-  // Start the idle-workspace culler (only inside K8s).
-  if (process.env.KUBERNETES_SERVICE_HOST) {
-    spawner.startCuller();
-  }
+// ── Persistence bridge ──────────────────────────────────────────────────
+// SessionManager emits persist:session / persist:delete for every mutation.
+// The bridge forwards to the persistence adapter which is a no-op unless
+// REDIS_URL is configured + the redis module is installed.
+sessionManager.on('persist:session', (session) => {
+  persistence.saveSession(session);
 });
+sessionManager.on('persist:delete', (sessionId) => {
+  persistence.deleteSession(sessionId);
+});
+
+// ── Graceful shutdown ───────────────────────────────────────────────────
+// Drain WebSockets, stop accepting new connections, flush persistence,
+// then let the process exit.  The deadline enforces bounded shutdown time
+// so orchestrators don't have to SIGKILL us.
+let shuttingDown = false;
+const SHUTDOWN_DEADLINE_MS = Number(process.env.COLLAB_SHUTDOWN_DEADLINE_MS) || 15_000;
+
+async function gracefulShutdown(signal) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  logger.info('shutdown_started', { signal });
+
+  // Force-exit watchdog in case a socket refuses to close.
+  const watchdog = setTimeout(() => {
+    logger.error('shutdown_timeout', { deadlineMs: SHUTDOWN_DEADLINE_MS });
+    process.exit(1);
+  }, SHUTDOWN_DEADLINE_MS);
+  if (typeof watchdog.unref === 'function') watchdog.unref();
+
+  // 1. Stop accepting new HTTP/WS connections.
+  try { server.close(); } catch (err) { logger.warn('server_close_failed', {}, err); }
+
+  // 2. Tell every connected WebSocket to go away cleanly.  1001 "going
+  //    away" is the canonical close code for graceful server shutdown.
+  const wsServers = [
+    { name: 'notify', s: notifyWss },
+    { name: 'session', s: sessionWss },
+    { name: 'terminal', s: terminalWss },
+    { name: 'yjs', s: yjsWss },
+  ];
+  for (const { name, s } of wsServers) {
+    if (!s || !s.clients) continue;
+    const count = s.clients.size;
+    logger.info('ws_drain', { channel: name, clients: count });
+    s.clients.forEach((ws) => {
+      try { ws.close(1001, 'server_shutting_down'); } catch (_) {}
+    });
+  }
+
+  // 3. Give in-flight work a brief moment to finish (Y-Sweet writes,
+  //    file I/O, pending persistence calls).
+  await new Promise((r) => setTimeout(r, 1500));
+
+  // 4. Close persistence.  Best-effort — if Redis is down we still exit.
+  try { await persistence.close(); }
+  catch (err) { logger.warn('persistence_close_failed', {}, err); }
+
+  logger.info('shutdown_complete', { signal });
+  clearTimeout(watchdog);
+  // Small delay to let last log flush.
+  setTimeout(() => process.exit(0), 50).unref?.();
+}
+
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+
+// Surface (but don't crash on) unhandled rejections — they're easy to
+// miss in production logs and usually indicate a .catch() we forgot.
+process.on('unhandledRejection', (reason) => {
+  logger.error('unhandled_rejection', { reason: reason?.message || String(reason) },
+    reason instanceof Error ? reason : null);
+});
+process.on('uncaughtException', (err) => {
+  logger.error('uncaught_exception', {}, err);
+});
+
+// ── Boot sequence ───────────────────────────────────────────────────────
+(async () => {
+  // Try to attach persistence up-front.  If REDIS_URL isn't set this is
+  // a fast no-op and we continue with pure in-memory behaviour.
+  try {
+    await persistence.connect();
+    if (persistence.isAvailable()) {
+      const sessions = await persistence.loadSessions();
+      const restored = sessionManager.restoreFromSnapshot(sessions);
+      logger.info('sessions_restored', { count: restored });
+
+      const blocks = await persistence.loadBlocks();
+      let blockCount = 0;
+      for (const { userId, blocked } of blocks) {
+        if (!blockedBy.has(userId)) blockedBy.set(userId, new Set());
+        for (const b of blocked) { blockedBy.get(userId).add(b); blockCount++; }
+      }
+      logger.info('blocks_restored', { owners: blocks.length, entries: blockCount });
+    }
+  } catch (err) {
+    logger.error('persistence_bootstrap_failed', {}, err);
+  }
+
+  server.listen(PORT, '0.0.0.0', () => {
+    logger.info('server_listening', {
+      port: PORT,
+      ySweetUrl: config.YSWEET_URL,
+      persistence: persistence.isAvailable() ? 'redis' : 'memory',
+    });
+
+    // Start the idle-workspace culler (only inside K8s).
+    if (process.env.KUBERNETES_SERVICE_HOST) {
+      spawner.startCuller();
+    }
+  });
+})();
 

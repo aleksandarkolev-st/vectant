@@ -67,7 +67,15 @@ const activeSessions = new Map();
 function shellExists(shellPath) {
   if (!shellPath) return false;
   try {
-    return fs.existsSync(shellPath);
+    // On Unix, a file can exist without being executable (e.g. mounted
+    // read-only or misconfigured).  Require X_OK so we never try to spawn
+    // a non-executable file.  On Windows, fs.accessSync with X_OK still
+    // succeeds for regular files, so falling back to existsSync is fine.
+    if (os.platform() === 'win32') {
+      return fs.existsSync(shellPath);
+    }
+    fs.accessSync(shellPath, fs.constants.X_OK);
+    return true;
   } catch (_) {
     return false;
   }

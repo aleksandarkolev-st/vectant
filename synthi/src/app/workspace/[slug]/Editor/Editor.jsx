@@ -2375,22 +2375,53 @@ const EditorPanel = ({
             //    doesn't flash stale text before the binding kicks in.
             //    Use model.setValue() for a complete replacement — this ensures
             //    no residual CRDT merge content survives the transition.
+            let freshContent = null;
             try {
                 const model = editorInstance?.getModel?.();
                 if (model) {
-                    const freshContent = store.getState()?.workspace?.currentContent;
-                    if (typeof freshContent === 'string') {
-                        model.setValue(freshContent);
-                        latestCodeRef.current = freshContent;
+                    const next = store.getState()?.workspace?.currentContent;
+                    if (typeof next === 'string') {
+                        freshContent = next;
+                        model.setValue(next);
+                        latestCodeRef.current = next;
                     } else {
                         latestCodeRef.current = model.getValue();
                     }
                 }
             } catch (_) {}
 
-            // 7. Release the revert lock after a longer settling period to
-            //    cover the Yjs provider reconnect + initial sync window.
-            setTimeout(() => { revertLockRef.current = false; }, 600);
+            // 7. Force-seed the CRDT with disk content once the new binding
+            //    is attached.  Without this, if Y-Sweet's server-side state
+            //    still holds the pre-restore content (resetDocContent on the
+            //    backend silently no-ops on older SDKs that lack updateDoc),
+            //    the worker reconnects, syncs that stale content, and overwrites
+            //    Monaco — causing the restored version to flicker back to the
+            //    pre-restore buffer with an "unsaved" dot.  resetDocument() does
+            //    a LOCAL transact (delete + insert) whose delta propagates to
+            //    Y-Sweet as a normal local change, making disk content the
+            //    canonical room state regardless of what Y-Sweet had before.
+            if (typeof freshContent === 'string' && activeFile?.path) {
+                const targetPath = activeFile.path;
+                let attempts = 0;
+                const trySeed = () => {
+                    attempts += 1;
+                    const key = collabClient.getRoomKey?.(slug, targetPath);
+                    const entry = key ? collabClient.docs.get(key) : null;
+                    if (entry) {
+                        try { collabClient.resetDocument(slug, targetPath, freshContent); } catch (_) {}
+                        return;
+                    }
+                    if (attempts < 30) setTimeout(trySeed, 100);
+                };
+                setTimeout(trySeed, 150);
+            }
+
+            // 8. Release the revert lock after a longer settling period to
+            //    cover the Yjs provider reconnect + initial sync + force-seed
+            //    round-trip.  600ms was too short — a remote delta arriving
+            //    after release would dispatch updateContent with stale text and
+            //    re-flag the file as unsaved.
+            setTimeout(() => { revertLockRef.current = false; }, 3000);
         };
 
         window.addEventListener('synthi:file-reverted', handler);

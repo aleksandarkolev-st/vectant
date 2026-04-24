@@ -88,6 +88,13 @@ const TOKEN_TTL_MS   = 24 * 60 * 60 * 1000;   // 24 hours
 const TOKEN_BYTES    = 32;                     // 256-bit random token
 const SESSION_ID_LEN = 12;                     // short hex id for URLs
 
+// Caps to keep per-session collections from growing unbounded if a
+// misbehaving client floods knocks/invites.  These are generous for real
+// collaboration sessions.
+const MAX_PENDING_KNOCKS  = 200;
+const MAX_INVITED_USERS   = 500;
+const KNOCK_TTL_MS        = 30 * 60 * 1000; // drop forgotten knocks after 30m
+
 // ── SessionManager ───────────────────────────────────────────────────────────
 
 class SessionManager extends EventEmitter {
@@ -111,6 +118,73 @@ class SessionManager extends EventEmitter {
 
     /** @type {Map<string, string>} socketId → guestId (for fast lookup on disconnect) */
     this.socketIndex = new Map();
+
+    // Whether the post-restore bootstrap has completed.  Until then we skip
+    // emitting persist:* events so a rehydrated session doesn't get written
+    // back to storage immediately.
+    this._restoring = false;
+  }
+
+  /**
+   * Rehydrate in-memory state from a persistence adapter.  Expected to be
+   * called exactly once, before the HTTP server starts accepting traffic.
+   *
+   * @param {Array<object>} records  — serialized session records from storage
+   */
+  restoreFromSnapshot(records) {
+    if (!Array.isArray(records) || !records.length) return 0;
+    this._restoring = true;
+    try {
+      let restored = 0;
+      const now = Date.now();
+      for (const r of records) {
+        if (!r || !r.id || !r.hostId) continue;
+        // Drop sessions whose token has already expired — no point rehydrating.
+        if (r.tokenExpiresAt && r.tokenExpiresAt < now) continue;
+        const session = {
+          id: r.id,
+          slug: r.slug,
+          hostId: r.hostId,
+          hostName: r.hostName || r.hostId,
+          hostAvatar: r.hostAvatar || '',
+          worktreePath: r.worktreePath || '',
+          inviteToken: r.inviteToken,
+          tokenExpiresAt: r.tokenExpiresAt || (now + TOKEN_TTL_MS),
+          defaultPerms: { ...DEFAULT_GUEST_PERMISSIONS, ...(r.defaultPerms || {}) },
+          guests: new Map((r.guests || []).map(g => [g.guestId, g])),
+          pendingKnocks: new Set(r.pendingKnocks || []),
+          invitedUsers: new Set(r.invitedUsers || []),
+          roomCode: r.roomCode || null,
+          createdAt: r.createdAt || new Date().toISOString(),
+          status: r.status || 'active',
+          hostConfirmed: r.hostConfirmed !== false,
+        };
+        this.sessions.set(session.id, session);
+        this.hostIndex.set(session.hostId, session.id);
+        if (session.inviteToken) this.tokenIndex.set(session.inviteToken, session.id);
+        if (session.roomCode) this.roomCodeIndex.set(session.roomCode, session.id);
+        for (const [gid, guest] of session.guests) {
+          this.guestIndex.set(gid, session.id);
+          if (guest?.socketId) this.socketIndex.set(guest.socketId, gid);
+        }
+        restored++;
+      }
+      return restored;
+    } finally {
+      this._restoring = false;
+    }
+  }
+
+  /** Emit a persist-session event unless we're mid-restore. */
+  _persistSession(session) {
+    if (this._restoring) return;
+    this.emit('persist:session', session);
+  }
+
+  /** Emit a persist-delete event unless we're mid-restore. */
+  _persistDelete(sessionId) {
+    if (this._restoring) return;
+    this.emit('persist:delete', sessionId);
   }
 
   // ── Session lifecycle ────────────────────────────────────────────────────
@@ -171,6 +245,7 @@ class SessionManager extends EventEmitter {
     this.roomCodeIndex.set(session.roomCode, id);
 
     this.emit('session:created', { sessionId: id, hostId, slug });
+    this._persistSession(session);
 
     return session;
   }
@@ -195,6 +270,7 @@ class SessionManager extends EventEmitter {
     this.roomCodeIndex.set(session.roomCode, sessionId);
 
     this.emit('session:tokenRegenerated', { sessionId, roomCode: session.roomCode });
+    this._persistSession(session);
     return { inviteToken: session.inviteToken, roomCode: session.roomCode };
   }
 
@@ -228,6 +304,26 @@ class SessionManager extends EventEmitter {
   }
 
   /**
+   * Sweep stale knocks older than KNOCK_TTL_MS across all sessions.
+   * Cheap to run — bounded by session count and MAX_PENDING_KNOCKS.
+   */
+  _sweepStaleKnocks() {
+    const now = Date.now();
+    for (const [sessionId, session] of this.sessions) {
+      if (!session.pendingKnocks.size) continue;
+      if (!session._knockTimes) continue;
+      for (const [guestId, ts] of session._knockTimes) {
+        if (now - ts > KNOCK_TTL_MS) {
+          if (session.pendingKnocks.delete(guestId)) {
+            this.emit('session:knockCancelled', { sessionId, guestId });
+          }
+          session._knockTimes.delete(guestId);
+        }
+      }
+    }
+  }
+
+  /**
    * Guest "knocks" on the session door.  The Host receives a notification
    * and can accept or deny.
    *
@@ -250,6 +346,17 @@ class SessionManager extends EventEmitter {
     if (session.pendingKnocks.has(guestId)) {
       console.log(`[SessionManager] knock: ${guestId} already in pendingKnocks for session ${sessionId}, ignoring`);
       return;
+    }
+
+    // Cap pending knocks to avoid unbounded growth under flood.
+    // When at capacity, evict the oldest entry to make room for the new one
+    // so legitimate users can still knock after abandoned clients pile up.
+    if (session.pendingKnocks.size >= MAX_PENDING_KNOCKS) {
+      const first = session.pendingKnocks.values().next().value;
+      if (first) {
+        session.pendingKnocks.delete(first);
+        this.emit('session:knockCancelled', { sessionId, guestId: first });
+      }
     }
 
     // ── Auto-admit if the host explicitly invited this user ─────────
@@ -280,6 +387,8 @@ class SessionManager extends EventEmitter {
     }
 
     session.pendingKnocks.add(guestId);
+    if (!session._knockTimes) session._knockTimes = new Map();
+    session._knockTimes.set(guestId, Date.now());
     console.log(`[SessionManager] knock: ${guestId} (${displayName}) added to pendingKnocks. Host=${session.hostId}, Session=${sessionId}`);
 
     this.emit('session:knock', {
@@ -318,6 +427,7 @@ class SessionManager extends EventEmitter {
 
     // Remove from pending if present
     session.pendingKnocks.delete(guestId);
+    session._knockTimes?.delete(guestId);
 
     // If guest is already in another session, remove them first
     if (this.guestIndex.has(guestId)) {
@@ -348,6 +458,7 @@ class SessionManager extends EventEmitter {
         autoAdmitted: false,
       });
     }
+    this._persistSession(session);
 
     return entry;
   }
@@ -359,7 +470,9 @@ class SessionManager extends EventEmitter {
     const session = this._getActiveSession(sessionId);
     console.log(`[SessionManager] denyKnock: host=${session.hostId} denied guest=${guestId} in session ${sessionId}`);
     session.pendingKnocks.delete(guestId);
+    session._knockTimes?.delete(guestId);
     this.emit('session:knockDenied', { sessionId, guestId });
+    this._persistSession(session);
   }
 
   /**
@@ -396,8 +509,16 @@ class SessionManager extends EventEmitter {
    */
   addInvitedUser(sessionId, userId) {
     const session = this._getActiveSession(sessionId);
+    // Cap invited-user list so a runaway host UI can't grow memory forever.
+    if (session.invitedUsers.size >= MAX_INVITED_USERS) {
+      // Drop the oldest invite to make room for the new one.  Invites are
+      // consumed on knock anyway, so losing the oldest is low-impact.
+      const oldest = session.invitedUsers.values().next().value;
+      if (oldest) session.invitedUsers.delete(oldest);
+    }
     session.invitedUsers.add(userId);
     console.log(`[SessionManager] addInvitedUser: ${userId} added to invitedUsers for session ${sessionId}`);
+    this._persistSession(session);
   }
 
   // ── Permission management ───────────────────────────────────────────────
@@ -422,6 +543,7 @@ class SessionManager extends EventEmitter {
       guestId,
       permissions: { ...guest.permissions },
     });
+    this._persistSession(session);
 
     return { ...guest.permissions };
   }
@@ -432,6 +554,7 @@ class SessionManager extends EventEmitter {
   updateDefaultPermissions(sessionId, perms) {
     const session = this._getActiveSession(sessionId);
     session.defaultPerms = { ...session.defaultPerms, ...perms };
+    this._persistSession(session);
     return { ...session.defaultPerms };
   }
 
@@ -457,6 +580,7 @@ class SessionManager extends EventEmitter {
     session.guests.delete(guestId);
 
     this.emit('session:guestRemoved', { sessionId, guestId, reason });
+    this._persistSession(session);
   }
 
   /**
@@ -480,6 +604,7 @@ class SessionManager extends EventEmitter {
     });
 
     this._destroySession(sessionId);
+    this._persistDelete(sessionId);
   }
 
   // ── Querying ─────────────────────────────────────────────────────────────
@@ -757,6 +882,13 @@ class SessionManager extends EventEmitter {
 
 // ── Singleton ────────────────────────────────────────────────────────────────
 const sessionManager = new SessionManager();
+
+// Periodically sweep stale knocks.  Interval is long so we don't waste CPU,
+// and cheap because it only scans sessions with non-empty pendingKnocks.
+const _knockSweeper = setInterval(() => {
+  try { sessionManager._sweepStaleKnocks(); } catch (_) {}
+}, 5 * 60 * 1000);
+if (typeof _knockSweeper.unref === 'function') _knockSweeper.unref();
 
 module.exports = sessionManager;
 module.exports.DEFAULT_GUEST_PERMISSIONS = DEFAULT_GUEST_PERMISSIONS;
