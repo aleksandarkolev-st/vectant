@@ -10,6 +10,7 @@ import { selectActiveFile, selectFilesTree, selectFileThunk } from '@/redux/work
 import { getFileIcon } from '@/utils/fileIcons';
 import { toast } from 'sonner';
 import CollabToolbar from '@/components/collaboration/CollabToolbar';
+import FileVersionsPanel from '@/components/collaboration/FileVersionsPanel';
 import { useTheme } from '@/components/ThemeProvider';
 
 function TopNav({ 
@@ -123,6 +124,9 @@ function TopNav({
 
         {/* Collaboration — avatars, session share, knocks */}
         {slug && <CollabToolbar slug={slug} />}
+
+        {/* Per-file version history + restore */}
+        {slug && <FileVersionsPanel slug={slug} filePath={activeFile?.path} />}
 
         <div className="flex items-center gap-2">
         {/* Terminal Toggle - Icon Only */}

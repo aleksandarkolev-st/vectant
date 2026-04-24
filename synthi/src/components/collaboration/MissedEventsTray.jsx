@@ -104,23 +104,26 @@ export default function MissedEventsTray() {
     hasEvents ? `${count} missed ${count === 1 ? 'event' : 'events'}` : 'No missed events'
   ), [count, hasEvents]);
 
-  // Don't render at all until there's something to show; keeps the
-  // toolbar quiet in the common case.
-  if (!hasEvents) return null;
-
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
         <button
-          className="relative flex items-center gap-1 px-2 py-1 rounded-lg
-                     bg-[#3b82f612] border border-[#3b82f630]
-                     hover:bg-[#3b82f620] transition-all"
+          className={
+            hasEvents
+              ? 'relative flex items-center gap-1 px-2 py-1 rounded-lg bg-[#3b82f612] border border-[#3b82f630] hover:bg-[#3b82f620] transition-all'
+              : 'relative flex items-center gap-1 px-2 py-1 rounded-lg border border-transparent hover:bg-white/5 transition-all'
+          }
           title={buttonLabel}
           aria-label={buttonLabel}
+          style={hasEvents ? undefined : { color: 'var(--text-muted)' }}
         >
-          <Inbox className="w-3.5 h-3.5 text-[#3b82f6]" />
-          <span className="text-[11px] font-bold text-[#3b82f6]">{count}</span>
-          <span className="absolute -top-1 -right-1 w-2.5 h-2.5 bg-[#3b82f6] rounded-full animate-pulse" />
+          <Inbox className={hasEvents ? 'w-3.5 h-3.5 text-[#3b82f6]' : 'w-3.5 h-3.5'} />
+          {hasEvents && (
+            <>
+              <span className="text-[11px] font-bold text-[#3b82f6]">{count}</span>
+              <span className="absolute -top-1 -right-1 w-2.5 h-2.5 bg-[#3b82f6] rounded-full animate-pulse" />
+            </>
+          )}
         </button>
       </PopoverTrigger>
       <PopoverContent
@@ -133,15 +136,30 @@ export default function MissedEventsTray() {
             <Mail className="w-3.5 h-3.5" />
             Missed while offline
           </div>
-          <button
-            onClick={clearAll}
-            className="text-[10px] px-1.5 py-0.5 rounded hover:bg-white/5 transition-colors"
-            style={{ color: 'var(--text-muted)' }}
-            title="Clear all"
-          >
-            Clear all
-          </button>
+          {hasEvents && (
+            <button
+              onClick={clearAll}
+              className="text-[10px] px-1.5 py-0.5 rounded hover:bg-white/5 transition-colors"
+              style={{ color: 'var(--text-muted)' }}
+              title="Clear all"
+            >
+              Clear all
+            </button>
+          )}
         </div>
+
+        {!hasEvents && (
+          <div
+            className="flex flex-col items-center justify-center py-6 text-center"
+            style={{ color: 'var(--text-muted)' }}
+          >
+            <Inbox className="w-6 h-6 mb-2 opacity-60" />
+            <div className="text-xs font-medium">No missed events</div>
+            <div className="text-[10px] mt-1 opacity-80">
+              Invites and updates that arrive while you&apos;re away will show up here.
+            </div>
+          </div>
+        )}
 
         <div className="space-y-2 max-h-[320px] overflow-y-auto">
           {events.map((evt) => {

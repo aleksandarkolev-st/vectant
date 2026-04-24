@@ -1093,4 +1093,12 @@ class CollabSessionService extends EventTarget {
 
 // ── Singleton ────────────────────────────────────────────────────────────────
 const collabSessionService = new CollabSessionService();
+
+// Dev-only: expose on window so the service can be poked from devtools.
+// Use cases: firing synthetic `inbox:event`s to preview MissedEventsTray,
+// inspecting _pendingInvite, replaying requestOpenPopup, etc.
+if (typeof window !== 'undefined' && process.env.NODE_ENV !== 'production') {
+  window.collabSessionService = collabSessionService;
+}
+
 export default collabSessionService;
