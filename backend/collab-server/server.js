@@ -992,8 +992,11 @@ const server = http.createServer(async (req, res) => {
   req.url = req.url.replace(/^\/collab/, '');
   if (!req.url.startsWith('/')) req.url = '/' + req.url;
 
-  // CORS headers
-  res.setHeader('Access-Control-Allow-Origin', '*');
+  // CORS headers — must echo the exact Origin (not '*') when credentials are included
+  const requestOrigin = req.headers.origin;
+  res.setHeader('Access-Control-Allow-Origin', requestOrigin || '*');
+  if (requestOrigin) res.setHeader('Access-Control-Allow-Credentials', 'true');
+  res.setHeader('Vary', 'Origin');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS, DELETE');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-user-id, x-session-id');
 

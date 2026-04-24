@@ -118,6 +118,7 @@ export default function FileVersionsPanel({ slug, filePath }) {
       // The server returns snapshots in newest-first order but doesn't
       // attach an index field — position in the list IS the index, and
       // /file-version/:slug?index=N looks them up by that position.
+      console.log("version lists", { payload });
       const list = Array.isArray(payload?.versions)
         ? payload.versions.map((v, i) => ({ ...v, index: i }))
         : [];
