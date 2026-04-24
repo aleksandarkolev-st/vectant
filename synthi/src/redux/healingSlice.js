@@ -32,6 +32,31 @@ export const HealingSeverity = Object.freeze({
   LOW: 'low',
 });
 
+// ── Boldness → confidence threshold mapping ───────────────────────────────
+// User-facing "How bold should healing be?" setting.  Maps to numeric
+// confidence bands at runtime.  Keep these tuned conservatively — users
+// only raise boldness after they trust the system.
+export const BoldnessThresholds = Object.freeze({
+  careful:    { autoApply: 0.95, suggest: 0.85, aiEscalate: null  },
+  balanced:   { autoApply: 0.90, suggest: 0.70, aiEscalate: 0.50  },
+  aggressive: { autoApply: 0.80, suggest: 0.55, aiEscalate: 0.40  },
+});
+
+// ── Rule action types (returned by the rule engine) ───────────────────────
+export const RuleAction = Object.freeze({
+  AUTO_APPLY:  'auto_apply',   // silently fix
+  SUGGEST:     'suggest',      // show lightbulb / pending fix
+  AI_ESCALATE: 'ai_escalate',  // send to /heal/ai/hybrid for a second opinion
+  IGNORE:      'ignore',       // drop entirely
+});
+
+// ── Trigger modes ──────────────────────────────────────────────────────────
+export const TriggerMode = Object.freeze({
+  ON_SAVE: 'onSave',
+  ON_DIAGNOSTICS_STABLE: 'onDiagnosticsStable',
+  ON_KEYSTROKE: 'onKeystroke',  // legacy / advanced — fires on every edit debounced
+});
+
 // ── Default categories that are safe to auto-heal ─────────────────────────
 // NOTE: TRAILING_WHITESPACE, MISSING_NEWLINE_EOF, and TRAILING_COMMA are
 // intentionally excluded — they produce cosmetic-only edits (add/remove
@@ -56,14 +81,41 @@ export const initialHealingState = {
 
   // Configuration
   config: {
-    autoHealCategories: DEFAULT_AUTO_HEAL_CATEGORIES,
-    minConfidence: 0.9,
+    // ── Plain-English knobs (primary UI) ─────────────────────────────
+    // "How bold should healing be?"  → determines default confidence bands
+    boldness: 'balanced',        // 'careful' | 'balanced' | 'aggressive'
+
+    // "When should it run?"
+    triggers: {
+      onSave: true,
+      onDiagnosticsStable: false,
+      onKeystroke: false,         // advanced / legacy
+      useAIForHard: false,        // escalate ambiguous fixes to /heal/ai/hybrid
+    },
+
+    // User-authored rules — evaluated top-to-bottom, first match wins.
+    // Shape: { id, action, target, scope, disabled? }  (see ruleEngine.js)
+    rules: [],
+
+    // ── Power-user knobs (advanced accordion) ────────────────────────
+    // When set, these OVERRIDE the boldness preset's thresholds.
+    customThresholds: null,       // null | { autoApply, suggest, aiEscalate }
     maxFixesPerPass: 5,
+    maxAiCallsPerMinute: 10,      // throttle for AI escalation
+    debugLogging: false,          // enables [SelfHealing] verbose logs
+    dryRun: false,                // log what would be applied without touching the buffer
+
+    // ── Notifications ────────────────────────────────────────────────
+    showNotifications: true,
+    soundEnabled: false,
+
+    // ── Legacy fields kept for backwards-compat / internal use ───────
+    // (no longer exposed in the UI, but referenced by existing code paths)
+    autoHealCategories: DEFAULT_AUTO_HEAL_CATEGORIES,
+    minConfidence: 0.9,            // superseded by boldness thresholds
     cooldownMs: 1000,
     debounceMs: 800,
-    showNotifications: true,
-    requireConfirmation: true, // Auto-fixes stay staged until explicitly approved
-    soundEnabled: false,
+    requireConfirmation: false,    // rules now dictate this (SUGGEST action)
   },
 
   // Currently pending fixes (awaiting application or confirmation)
@@ -158,6 +210,68 @@ const healingSlice = createSlice({
     },
     setRequireConfirmation(state, action) {
       state.config.requireConfirmation = !!action.payload;
+    },
+
+    // ── Boldness / triggers / rules ─────────────────────────────────────
+    setBoldness(state, action) {
+      const val = action.payload;
+      if (val === 'careful' || val === 'balanced' || val === 'aggressive') {
+        state.config.boldness = val;
+      }
+    },
+    setTrigger(state, action) {
+      // payload: { key: 'onSave'|'onDiagnosticsStable'|'onKeystroke'|'useAIForHard', value: boolean }
+      const { key, value } = action.payload || {};
+      if (state.config.triggers && typeof key === 'string') {
+        state.config.triggers[key] = !!value;
+      }
+    },
+    setTriggers(state, action) {
+      state.config.triggers = { ...state.config.triggers, ...(action.payload || {}) };
+    },
+    setCustomThresholds(state, action) {
+      state.config.customThresholds = action.payload || null;
+    },
+    setDebugLogging(state, action) {
+      state.config.debugLogging = !!action.payload;
+    },
+    setDryRun(state, action) {
+      state.config.dryRun = !!action.payload;
+    },
+    setMaxAiCallsPerMinute(state, action) {
+      const n = parseInt(action.payload, 10);
+      if (!Number.isNaN(n) && n >= 0) state.config.maxAiCallsPerMinute = n;
+    },
+
+    // Rule management
+    addRule(state, action) {
+      const rule = action.payload;
+      if (!rule || typeof rule !== 'object') return;
+      if (!rule.id) rule.id = `rule-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+      state.config.rules.push(rule);
+    },
+    updateRule(state, action) {
+      const { id, patch } = action.payload || {};
+      const idx = state.config.rules.findIndex((r) => r.id === id);
+      if (idx !== -1) {
+        state.config.rules[idx] = { ...state.config.rules[idx], ...(patch || {}) };
+      }
+    },
+    removeRule(state, action) {
+      state.config.rules = state.config.rules.filter((r) => r.id !== action.payload);
+    },
+    reorderRules(state, action) {
+      // payload: array of rule ids in the new order
+      const order = action.payload || [];
+      const byId = new Map(state.config.rules.map((r) => [r.id, r]));
+      const reordered = [];
+      for (const id of order) if (byId.has(id)) reordered.push(byId.get(id));
+      // append any rules not in the order list at the end
+      for (const r of state.config.rules) if (!order.includes(r.id)) reordered.push(r);
+      state.config.rules = reordered;
+    },
+    setRules(state, action) {
+      state.config.rules = Array.isArray(action.payload) ? action.payload : [];
     },
 
     // ── Status ──────────────────────────────────────────────────────────
@@ -382,6 +496,18 @@ export const {
   removeAutoHealCategory,
   setMinConfidence,
   setRequireConfirmation,
+  setBoldness,
+  setTrigger,
+  setTriggers,
+  setCustomThresholds,
+  setDebugLogging,
+  setDryRun,
+  setMaxAiCallsPerMinute,
+  addRule,
+  updateRule,
+  removeRule,
+  reorderRules,
+  setRules,
   setHealingStatus,
   setHealingError,
   clearHealingError,

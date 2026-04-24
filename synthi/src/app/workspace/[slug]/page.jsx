@@ -47,7 +47,9 @@ import { useHealingUndo } from '@/hooks/useHealingUndo';
 import { HealingToast } from '@/components/healing/HealingToast';
 import { PreCompileHealToast } from '@/components/healing/PreCompileHealToast';
 import { AIHealingPanel } from '@/components/healing/AIHealingPanel';
-import { clearAIFixes, clearPendingFixes, setAIEnabled, setHealingEnabled, setRequireConfirmation } from '@/redux/healingSlice';
+import { clearAIFixes, clearPendingFixes, hydrateHealing } from '@/redux/healingSlice';
+import { loadHealingPersistedState, saveHealingPersistedState } from '@/lib/healing/persistence';
+import { selectHealingEnabled, selectHealingConfig } from '@/redux/healingSelectors';
 import { useWorkspaceAnalysis } from '@/hooks/useWorkspaceAnalysis';
 import { useCompiler } from '@/hooks/useCompiler';
 import { useCompileManifestListener } from '@/hooks/useCompileManifestListener';
@@ -159,13 +161,30 @@ export default function EditorPage({ params }) {
     const healingState = useRuntimeHealing({ editorRef, gateway, autoHeal: false });
     const { canRetry, retryCount, isRetrying, retry } = useRetryCompile({ compilerClient: client, autoRetry: true });
 
+    // ── Self-healing state: hydrate from localStorage on mount ──────────
+    // The previous implementation hard-reset healing to disabled on every
+    // page load, overriding whatever the user toggled.  Now we load the
+    // persisted settings and let the user's choice stick.  Pending / AI
+    // fix buffers are still cleared because they're per-session.
     useEffect(() => {
-        dispatch(setHealingEnabled(false));
-        dispatch(setRequireConfirmation(true));
+        const saved = loadHealingPersistedState();
+        if (saved) {
+            dispatch(hydrateHealing(saved));
+        }
+        // Always start with empty transient buffers
         dispatch(clearPendingFixes());
-        dispatch(setAIEnabled(false));
         dispatch(clearAIFixes());
     }, [dispatch]);
+
+    // Persist healing enabled + config to localStorage on any change
+    const healingEnabledForPersist = useAppSelector(selectHealingEnabled);
+    const healingConfigForPersist = useAppSelector(selectHealingConfig);
+    useEffect(() => {
+        saveHealingPersistedState({
+            enabled: healingEnabledForPersist,
+            config: healingConfigForPersist,
+        });
+    }, [healingEnabledForPersist, healingConfigForPersist]);
 
     // Install preview-store bridge (routes window events → preview store)
     useEffect(() => {
@@ -178,6 +197,14 @@ export default function EditorPage({ params }) {
     // ─── Self-Healing system ───────────────────────────────
     const activeFilePath = activeFile?.path || '';
     const activeLanguage = activeFile?.name ? getFileLanguage(activeFile.name) : 'plaintext';
+
+    // Indirection ref for AI-escalation: useSelfHealing is declared before
+    // useAIHealing, but needs to call aiHealing.analyze() for fixes routed
+    // to AI_ESCALATE.  We attach the live analyze fn to this ref after
+    // both hooks mount so the callback always sees the latest closure.
+    const aiAnalyzeRef = useRef(null);
+    const aiCallsWindowRef = useRef([]);  // timestamps — for rate-limiting
+
     const { selfEditFlagRef, healFromDiagnostics } = useSelfHealing({
         editorRef,
         gateway,
@@ -203,38 +230,64 @@ export default function EditorPage({ params }) {
                 return !diagId || !healedIds.has(diagId);
             }));
         }, [activeFilePath]),
+        onAIEscalate: useCallback((escalated) => {
+            const analyzeFn = aiAnalyzeRef.current;
+            if (!analyzeFn || !escalated?.length) return;
+
+            // Rate-limit: drop bursts above maxAiCallsPerMinute
+            const max = healingConfigForPersist?.maxAiCallsPerMinute ?? 10;
+            const cutoff = Date.now() - 60_000;
+            aiCallsWindowRef.current = aiCallsWindowRef.current.filter(t => t > cutoff);
+            if (aiCallsWindowRef.current.length >= max) return;
+            aiCallsWindowRef.current.push(Date.now());
+
+            // Batch: request a focused analysis spanning all escalated fixes.
+            const lines = escalated
+                .map(e => e.fix)
+                .filter(f => typeof f.startLine === 'number');
+            if (!lines.length) return;
+            const focusStart = Math.max(0, Math.min(...lines.map(f => f.startLine)) - 2);
+            const focusEnd = Math.max(...lines.map(f => f.endLine ?? f.startLine)) + 2;
+
+            analyzeFn({ focusStartLine: focusStart, focusEndLine: focusEnd });
+        }, [healingConfigForPersist?.maxAiCallsPerMinute]),
     });
     const { undoLastFix } = useHealingUndo({ editorRef });
 
     // ─── AI Healing system (LLM-powered deep analysis) ─────
     // Complements useSelfHealing (regex): catches logic errors, type
     // mismatches, null safety, off-by-one, missing awaits, etc.
+    //
+    // Previously gated behind window.SYNTHI_ENABLE_PROACTIVE to avoid
+    // saturating Gemini.  Now driven by Redux config — user opts in via
+    // the healing settings panel ("Also try AI for tricky errors").
+    const aiTriggerEnabled = !!healingConfigForPersist?.triggers?.useAIForHard;
     const aiHealing = useAIHealing({
         editorRef,
         gateway,
         filePath: activeFilePath,
         language: activeLanguage,
         workspaceRoot: slug,
-        // DISABLED: was auto-firing /heal/ai/analyze on every Ctrl+S,
-        // piling up Gemini calls on the single Python worker.
-        // Re-enable with window.SYNTHI_ENABLE_PROACTIVE.
-        analyzeOnSave: typeof window !== 'undefined' && !!window.SYNTHI_ENABLE_PROACTIVE,
-        mode: 'ai',
+        analyzeOnSave: aiTriggerEnabled && healingEnabledForPersist,
+        mode: 'hybrid',   // regex + LLM merged (rule engine still routes)
         selfEditFlagRef,
     });
+
+    // Keep the ref in sync so useSelfHealing's onAIEscalate callback can
+    // drive focused AI analyses.
+    useEffect(() => {
+        aiAnalyzeRef.current = aiHealing?.analyze || null;
+    }, [aiHealing]);
 
     // Keyboard shortcuts: Ctrl+Shift+I (analyze), Y (apply safe), N (dismiss), M (toggle mode)
     useAIHealingKeyboard({ aiHealing });
 
     // Auto-analyze after 4s of inactivity (background, non-intrusive).
-    // TEMPORARILY DISABLED: every fire was calling /heal/ai/analyze → Gemini,
-    // saturating the Python backend and starving /refactor/split/verified.
-    // Gated behind window.SYNTHI_ENABLE_PROACTIVE (same flag as analyze/unified).
-    const proactiveEnabled = typeof window !== 'undefined' && !!window.SYNTHI_ENABLE_PROACTIVE;
+    // Gated behind the user's "Ask AI for tricky errors" setting.
     useAIAutoAnalysis({
         editorRef,
         analyzeCallback: aiHealing.analyze,
-        enabled: proactiveEnabled && !!editor && !!activeFile,
+        enabled: aiTriggerEnabled && healingEnabledForPersist && !!editor && !!activeFile,
         debounceMs: 4000,
     });
 
@@ -595,12 +648,15 @@ export default function EditorPage({ params }) {
                         setWorkspaceMissing(false);
                         setWorkspaceMissingMessage('');
 
-                        // Initial full workspace analysis — DISABLED by default.
-                        // Was firing /analyze/workspace with include_ai=true on every
-                        // project open, triggering the AI Predictor → Gemini mode=analyze
-                        // calls that saturated the Python backend.
-                        // Gated behind window.SYNTHI_ENABLE_PROACTIVE for opt-in.
-                        const proactiveEnabled = typeof window !== 'undefined' && !!window.SYNTHI_ENABLE_PROACTIVE;
+                        // Initial full workspace analysis — runs only when the user
+                        // has opted into continuous diagnostics via the healing
+                        // settings (otherwise we'd burn Gemini credits on every
+                        // workspace open).  Legacy opt-in: window.SYNTHI_ENABLE_PROACTIVE.
+                        const triggers = healingConfigForPersist?.triggers || {};
+                        const proactiveEnabled =
+                            (healingEnabledForPersist &&
+                             (triggers.onDiagnosticsStable || triggers.useAIForHard)) ||
+                            (typeof window !== 'undefined' && !!window.SYNTHI_ENABLE_PROACTIVE);
                         const { files } = result.payload;
                         if (proactiveEnabled && files && files.length > 0) {
                             (async () => {
@@ -1058,11 +1114,16 @@ export default function EditorPage({ params }) {
         triggerAnalysisRef.current = () => {
         if (!activeFile || !hasLoadedInitialFile || !slug) return;
 
-        // TEMPORARY: proactive analysis (analyze/unified) is disabled because
-        // it was called on every keystroke and saturated the Python AI backend,
-        // starving the split/compile endpoints. Re-enable by setting
-        // window.SYNTHI_ENABLE_PROACTIVE = true in DevTools.
-        if (typeof window !== 'undefined' && !window.SYNTHI_ENABLE_PROACTIVE) {
+        // Proactive analysis feeds the Problems panel which drives healing.
+        // Run only when the user has opted in to diagnostics-stable or
+        // AI-escalate triggers — both imply they want continuous diagnostics.
+        // Legacy escape hatch: window.SYNTHI_ENABLE_PROACTIVE still forces on.
+        const triggers = healingConfigForPersist?.triggers || {};
+        const wantsProactive =
+            healingEnabledForPersist &&
+            (triggers.onDiagnosticsStable || triggers.useAIForHard);
+        const legacyForce = typeof window !== 'undefined' && !!window.SYNTHI_ENABLE_PROACTIVE;
+        if (!wantsProactive && !legacyForce) {
             return;
         }
 

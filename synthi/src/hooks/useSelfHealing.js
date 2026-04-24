@@ -33,6 +33,10 @@ import {
   selectHealingConfig,
   selectHealingStatus,
   selectHealingReady,
+  selectEffectiveThresholds,
+  selectHealingRules,
+  selectDebugLogging,
+  selectDryRun,
 } from '@/redux/healingSelectors';
 
 import {
@@ -46,7 +50,10 @@ import {
   enqueueToast,
   setFileHealingState,
   setPendingFixes,
+  RuleAction,
 } from '@/redux/healingSlice';
+
+import { evaluateFix } from '@/lib/healing/ruleEngine';
 
 // ── Helpers ───────────────────────────────────────────────────────────────
 
@@ -143,61 +150,54 @@ function inferCategoryFromMessage(msg) {
  * @param {Object} diag  – a proactive diagnostic from analyzeUnified/analyzeProactive
  * @returns {Object[]}   – array of normalised fix objects
  */
-function diagnosticToHealingFixes(diag) {
+function diagnosticToHealingFixes(diag, logger) {
   if (!diag?.fixes?.length) return [];
 
-  const loc = diag.location || {};
   const healCategory =
     DIAG_CATEGORY_TO_HEAL[diag.category?.toLowerCase()] ||
     DIAG_CATEGORY_TO_HEAL[diag.code?.toLowerCase()] ||
     inferCategoryFromMessage(diag.message) ||              // ← message-based fallback
     inferCategoryFromMessage(diag.fixes?.[0]?.description) ||
     diag.category ||
-    'missing_semicolon';  // safe default that's in autoHealCategories
+    'missing_semicolon';  // safe default
+
+  const diagSeverity = (diag.severity || 'error').toLowerCase();
 
   return diag.fixes
     .filter((fix) => {
       // SAFETY: Only accept fixes that have their OWN location.
-      // Falling back to the diagnostic's location is dangerous because the
-      // diagnostic range often spans the entire erroneous region (many lines)
-      // while the fix replacement is a tiny string — replacing that range
-      // would delete most of the file.
+      // The diagnostic range often spans the entire erroneous region
+      // (many lines) while the fix replacement is a tiny string —
+      // replacing that range would delete most of the file.
       if (!fix.location) {
-        console.log(`[SelfHealing] Skipping fix without location: "${fix.description}"`);
+        logger?.(`skipping fix without location: "${fix.description}"`);
         return false;
       }
       // SAFETY: Reject fixes that affect more than 3 lines (micro-fix only)
       const fLoc = fix.location;
       const affectedLines = Math.abs((fLoc.endLine ?? fLoc.line ?? 0) - (fLoc.line ?? 0)) + 1;
       if (affectedLines > 3) {
-        console.log(`[SelfHealing] Skipping fix spanning ${affectedLines} lines: "${fix.description}"`);
+        logger?.(`skipping fix spanning ${affectedLines} lines: "${fix.description}"`);
         return false;
       }
       return true;
     })
     .map((fix) => {
-      const fixLoc = fix.location; // guaranteed non-null by filter above
-      // Strip trailing newlines from replacement text to prevent
-      // the auto-apply from inserting extra blank lines.
+      const fixLoc = fix.location;
       let rawText = fix.replacementText ?? fix.replacement_text ?? '';
-      // Only strip trailing newlines for single-line replacements;
-      // multi-line fixes may intentionally span multiple lines.
       const isSingleLine = (fixLoc.endLine ?? fixLoc.line ?? 0) === (fixLoc.line ?? 0);
       if (isSingleLine && rawText.endsWith('\n')) {
         rawText = rawText.replace(/\n+$/, '');
       }
       return {
-        // Fields expected by applyFixToEditor (0-indexed)
         startLine: fixLoc.line ?? 0,
         startCol: fixLoc.column ?? 0,
         endLine: fixLoc.endLine ?? fixLoc.line ?? 0,
         endCol: fixLoc.endColumn ?? fixLoc.column ?? 0,
         replacementText: rawText,
-        // Metadata for the filter/toast pipeline
         category: healCategory,
-        // isPreferred fixes from the AI are high-confidence validated fixes;
-        // boost confidence to pass the 0.9 auto-heal threshold even if the
-        // LLM returned a conservative number.
+        severity: diagSeverity,
+        // isPreferred fixes are validated — boost confidence.
         confidence: fix.isPreferred
           ? Math.max(diag.confidence ?? 0.95, 0.95)
           : (diag.confidence ?? 0.85),
@@ -206,6 +206,9 @@ function diagnosticToHealingFixes(diag) {
         description: fix.description || diag.message,
         id: diag.id || diag.__id || uid(),
         source: 'proactive',
+        // Propagate the source diagnostic so the rule engine can match on
+        // severity/code/source even if they weren't lifted into the fix.
+        _diagnostic: diag,
       };
     });
 }
@@ -227,6 +230,7 @@ export function useSelfHealing({
   language,
   active = true,
   onFixesApplied,
+  onAIEscalate,
 } = {}) {
   const dispatch = useDispatch();
 
@@ -235,6 +239,24 @@ export function useSelfHealing({
   const config = useSelector(selectHealingConfig);
   const status = useSelector(selectHealingStatus);
   const ready = useSelector(selectHealingReady);
+  const thresholds = useSelector(selectEffectiveThresholds);
+  const rules = useSelector(selectHealingRules);
+  const debugFromRedux = useSelector(selectDebugLogging);
+  const dryRun = useSelector(selectDryRun);
+
+  // ── Debug logger — gated behind config.debugLogging or window.SYNTHI_HEAL_DEBUG.
+  // All [SelfHealing] prefixed logs go through this.  When disabled it's a
+  // no-op so the hot path doesn't pay the cost of stringifying messages.
+  const debug = (
+    debugFromRedux ||
+    (typeof window !== 'undefined' && window.SYNTHI_HEAL_DEBUG === true)
+  );
+  const d = useCallback((msg, ...args) => {
+    if (debug) console.log(`[SelfHealing] ${msg}`, ...args);
+  }, [debug]);
+  const dWarn = useCallback((msg, ...args) => {
+    if (debug) console.warn(`[SelfHealing] ${msg}`, ...args);
+  }, [debug]);
 
   // ── Local refs for debounce/cooldown ────────────────────────────────
   const debounceTimer = useRef(null);
@@ -291,11 +313,11 @@ export function useSelfHealing({
         });
         return result;
       } catch (err) {
-        console.warn('[SelfHealing] analysis failed:', err?.message || err);
+        dWarn('analysis failed:', err?.message || err);
         return null;
       }
     },
-    [gateway, filePath, language]
+    [gateway, filePath, language, dWarn]
   );
 
   // ── Core: apply a single fix to the Monaco editor ───────────────────
@@ -362,12 +384,12 @@ export function useSelfHealing({
 
         return true;
       } catch (err) {
-        console.warn('[SelfHealing] applyFixToEditor failed:', err);
+        dWarn('applyFixToEditor failed:', err);
         selfEditFlagRef.current = false;
         return false;
       }
     },
-    [editorRef, filePath, dispatch]
+    [editorRef, filePath, dispatch, dWarn]
   );
 
   // ── Core: run a full heal pass ──────────────────────────────────────
@@ -489,18 +511,18 @@ export function useSelfHealing({
 
         // Guard: don't delete significantly more text than we're inserting
         if (originalText.length > 0 && text.length === 0 && originalText.length > 50) {
-          console.warn('[SelfHealing] Skipping destructive fix:', fix.description, `(would delete ${originalText.length} chars)`);
+          dWarn(`Skipping destructive fix: ${fix.description} (would delete ${originalText.length} chars)`);
           continue;
         }
         if (originalText.length > 100 && text.length < originalText.length / 4) {
-          console.warn('[SelfHealing] Skipping suspicious fix:', fix.description, `(${originalText.length} chars → ${text.length} chars)`);
+          dWarn(`Skipping suspicious fix: ${fix.description} (${originalText.length} → ${text.length} chars)`);
           continue;
         }
         // Guard: reject edits that span more than half the file
         const totalLines = model.getLineCount();
         const editSpan = eL - startLine + 1;
         if (totalLines > 3 && editSpan > totalLines * 0.5) {
-          console.warn('[SelfHealing] Skipping fix that spans', editSpan, 'of', totalLines, 'lines:', fix.description);
+          dWarn(`Skipping fix spanning ${editSpan}/${totalLines} lines: ${fix.description}`);
           continue;
         }
 
@@ -509,6 +531,16 @@ export function useSelfHealing({
       }
 
       if (!edits.length) {
+        dispatch(setHealingStatus('idle'));
+        dispatch(setFileHealingState({ filePath, isHealing: false }));
+        inflightRef.current = false;
+        return;
+      }
+
+      // Dry-run: log what we would have applied, then bail.
+      if (dryRun) {
+        d(`[dry-run] would apply ${edits.length} edit(s):`,
+          accepted.map(({ fix: f }) => f.description || f.category));
         dispatch(setHealingStatus('idle'));
         dispatch(setFileHealingState({ filePath, isHealing: false }));
         inflightRef.current = false;
@@ -533,7 +565,8 @@ export function useSelfHealing({
 
       setTimeout(() => { selfEditFlagRef.current = false; }, 500);
 
-      // Post-edit safety: undo if model is nearly empty after applying fixes
+      // Post-edit safety: undo if model is nearly empty after applying fixes.
+      // This is a genuine catastrophe — always log, ignore debug flag.
       const afterContent = model.getValue();
       if (afterContent.length < 5 && edits.length > 0) {
         console.error('[SelfHealing] ABORT: model nearly empty after regex heal, triggering undo');
@@ -644,6 +677,9 @@ export function useSelfHealing({
     requestHealing,
     applyFixToEditor,
     onFixesApplied,
+    d,
+    dWarn,
+    dryRun,
   ]);
 
   // ── Debounced trigger ───────────────────────────────────────────────
@@ -662,6 +698,11 @@ export function useSelfHealing({
   }, [enabled, active, ready, config.debounceMs, runHealPass]);
 
   // ── Monaco content change listener ──────────────────────────────────
+  // We ALWAYS need to track the "user just typed" timestamp so that the
+  // diagnostics-stable and save triggers can cooldown mid-typing.  But we
+  // only schedule a keystroke-driven heal pass when the user has explicitly
+  // opted in via config.triggers.onKeystroke.
+  const onKeystrokeTrigger = !!config.triggers?.onKeystroke;
   useEffect(() => {
     const editor = editorRef?.current;
     if (!editor || !enabled || !active) return;
@@ -672,13 +713,14 @@ export function useSelfHealing({
     const disposable = model.onDidChangeContent(() => {
       // Skip if this change was made by the healing system itself
       if (selfEditFlagRef.current) return;
-      // Track user typing timestamp so we don't apply fixes mid-typing
+      // Always track user typing timestamp
       lastUserEditRef.current = Date.now();
-      scheduleHealing();
+      // Only run the regex keystroke pass when explicitly enabled
+      if (onKeystrokeTrigger) scheduleHealing();
     });
 
     return () => disposable.dispose();
-  }, [editorRef, enabled, active, scheduleHealing]);
+  }, [editorRef, enabled, active, onKeystrokeTrigger, scheduleHealing]);
 
   // ── Heal from proactive diagnostics ──────────────────────────────────
   // Called by the page after a proactive/unified analysis returns
@@ -689,128 +731,138 @@ export function useSelfHealing({
   const healFromDiagnostics = useCallback(
     (diagnostics) => {
       if (!enabled || !active) {
-        console.log(`[SelfHealing] healFromDiagnostics skipped: enabled=${enabled} active=${active}`);
+        d(`healFromDiagnostics skipped: enabled=${enabled} active=${active}`);
         return;
       }
-      if (inflightRef.current) {
-        console.log('[SelfHealing] healFromDiagnostics skipped: inflight');
-        return;
-      }
-      if (selfEditFlagRef.current) {
-        console.log('[SelfHealing] healFromDiagnostics skipped: selfEditFlag');
-        return;
-      }
+      if (inflightRef.current) { d('skipped: inflight'); return; }
+      if (selfEditFlagRef.current) { d('skipped: selfEditFlag'); return; }
+
       // Don't apply fixes while user is actively typing
       const msSinceEdit = Date.now() - lastUserEditRef.current;
       if (msSinceEdit < USER_TYPING_COOLDOWN_MS) {
-        console.log(`[SelfHealing] healFromDiagnostics skipped: user typed ${msSinceEdit}ms ago`);
+        d(`skipped: user typed ${msSinceEdit}ms ago`);
         return;
       }
 
       const editor = editorRef?.current;
-      if (!editor) {
-        console.log('[SelfHealing] healFromDiagnostics skipped: no editor');
-        return;
-      }
+      if (!editor) return;
       const model = editor.getModel();
-      if (!model) {
-        console.log('[SelfHealing] healFromDiagnostics skipped: no model');
-        return;
-      }
-
-      console.log(`[SelfHealing] healFromDiagnostics called with ${diagnostics?.length || 0} diagnostics`);
+      if (!model) return;
 
       // Flatten all proactive diagnostics → healing-shaped fix objects
-      const allFixes = (diagnostics || [])
-        .flatMap(diagnosticToHealingFixes);
-
-      console.log(`[SelfHealing] diagnosticToHealingFixes produced ${allFixes.length} fixes from ${diagnostics?.length || 0} diagnostics`);
-
+      const allFixes = (diagnostics || []).flatMap((diag) =>
+        diagnosticToHealingFixes(diag, d)
+      );
       if (!allFixes.length) return;
 
-      // Apply the same safety filters the regular heal pass uses
-      const autoCategories = new Set(config.autoHealCategories || []);
-      const minConf = config.minConfidence ?? 0.9;
+      // ── Route each fix through the user-rule engine ─────────────────
+      // Produces three buckets:
+      //   autoApply   → batched executeEdits (this function)
+      //   suggest     → staged as pendingFixes (Monaco lightbulb picks up)
+      //   aiEscalate  → returned to caller via onAIEscalate for /heal/ai/hybrid
       const maxFixes = config.maxFixesPerPass ?? 5;
+      const autoApply = [];
+      const suggest = [];
+      const escalate = [];
+      let ignoredCount = 0;
 
-      const eligible = allFixes
-        .filter((f) => {
-          const safe = f.is_safe ?? f.isSafe ?? false;
-          const conf = f.confidence ?? 0;
-          const cat = f.category || '';
-          // For proactive/AI fixes: if the fix is marked isPreferred (validated by
-          // the analysis pipeline), treat it as eligible regardless of category,
-          // as long as it's safe and meets the confidence threshold.
-          const catPasses = autoCategories.has(cat) || f.source === 'proactive';
-          const passes = safe && conf >= minConf && catPasses;
-          if (!passes) {
-            console.log(`[SelfHealing] Filtered out fix: cat="${cat}" conf=${conf} safe=${safe} catPasses=${catPasses} desc="${f.description}"`);
-          }
-          return passes;
-        })
-        .slice(0, maxFixes);
+      const aiAllowed = !!config.triggers?.useAIForHard;
 
-      console.log(`[SelfHealing] ${eligible.length} fixes eligible for auto-apply`);
+      for (const fix of allFixes) {
+        const decision = evaluateFix({
+          fix,
+          diagnostic: fix._diagnostic,
+          rules,
+          thresholds,
+          filePath,
+          language,
+          aiEnabled: aiAllowed,
+        });
 
-      if (!eligible.length) return;
+        if (decision.action === RuleAction.AUTO_APPLY) {
+          if (autoApply.length < maxFixes) autoApply.push({ fix, decision });
+        } else if (decision.action === RuleAction.SUGGEST) {
+          suggest.push({ fix, decision });
+        } else if (decision.action === RuleAction.AI_ESCALATE) {
+          escalate.push({ fix, decision });
+        } else {
+          ignoredCount += 1;
+        }
+      }
 
-      // If requireConfirmation, stage as pending only
-      if (config.requireConfirmation) {
-        console.log('[SelfHealing] requireConfirmation=true, staging as pending');
-        dispatch(setPendingFixes(eligible.map((f) => ({ ...f, id: f.id || uid(), filePath }))));
+      d(`routed ${allFixes.length} fixes: ${autoApply.length} apply · ${suggest.length} suggest · ${escalate.length} ai · ${ignoredCount} ignore`);
+
+      // Stage suggestions for the user to accept (Problems panel / lightbulb)
+      if (suggest.length > 0) {
+        dispatch(setPendingFixes(
+          suggest.map(({ fix: f }) => ({ ...f, id: f.id || uid(), filePath }))
+        ));
+      } else {
+        dispatch(setPendingFixes([]));
+      }
+
+      // Hand escalated fixes to the AI layer (wired by page.jsx)
+      if (escalate.length > 0 && typeof onAIEscalate === 'function') {
+        onAIEscalate(escalate.map(({ fix: f, decision }) => ({ fix: f, reason: decision.reason })));
+      }
+
+      if (!autoApply.length) return;
+
+      // Dry-run: log what we would apply and bail.
+      if (dryRun) {
+        d(`[dry-run] would auto-apply:`,
+          autoApply.map(({ fix: f }) => f.description || f.category));
         return;
       }
 
       // ── Auto-apply as a SINGLE batched edit ─────────────────────────
-      // CRITICAL: We must apply ALL fixes in ONE executeEdits() call.
-      // Applying them one-by-one shifts line/column positions after each
-      // edit, causing subsequent fixes to operate on stale coordinates
-      // and potentially wipe large content ranges.
+      // CRITICAL: All fixes MUST be applied in ONE executeEdits() call —
+      // applying them one-by-one shifts line/col positions after each edit
+      // and causes later fixes to operate on stale coordinates.
       inflightRef.current = true;
       dispatch(setHealingStatus('applying'));
       dispatch(setFileHealingState({ filePath, isHealing: true }));
 
       const snapHash = computeContentHash(model.getValue());
-
-      // monaco-editor module imported at top of file
-
-      // Build Monaco edit operations & verify each fix against current content
       const edits = [];
       const accepted = [];
 
-      for (const fix of eligible) {
+      // Sort bottom-up so line coordinates remain valid within the batch
+      const sorted = [...autoApply].sort((a, b) => {
+        const aL = a.fix.startLine ?? 0;
+        const bL = b.fix.startLine ?? 0;
+        if (bL !== aL) return bL - aL;
+        return (b.fix.startCol ?? 0) - (a.fix.startCol ?? 0);
+      });
+
+      for (const { fix } of sorted) {
         const startLine = (fix.startLine ?? 0) + 1;
         const startCol  = (fix.startCol ?? 0) + 1;
         const endLine   = (fix.endLine ?? fix.startLine ?? 0) + 1;
         const endCol    = (fix.endColumn ?? fix.endCol ?? fix.startCol ?? 0) + 1;
         const text      = fix.replacementText ?? '';
 
-        console.log(`[SelfHealing] Building edit: L${startLine}:${startCol}-L${endLine}:${endCol} text="${text.substring(0, 80)}" desc="${fix.description}"`);
-
-        // Guard: range must be within the model
         if (startLine > model.getLineCount() + 1) {
-          console.log(`[SelfHealing] Skipping fix: startLine ${startLine} > model lines ${model.getLineCount()}`);
+          d(`skip: startLine ${startLine} > model lines ${model.getLineCount()}`);
           continue;
         }
 
         const range = new (getMonaco().Range)(startLine, startCol, endLine, endCol);
         const originalText = model.getValueInRange(range);
 
-        // Guard: don't delete significantly more text than we're inserting
-        // (e.g. replacing 500 chars with 1 char is almost certainly a bad range)
+        // Safety guards — keep these hard-coded, independent of user rules.
         if (originalText.length > 0 && text.length === 0 && originalText.length > 50) {
-          console.warn('[SelfHealing] Skipping destructive fix:', fix.description, `(would delete ${originalText.length} chars)`);
+          dWarn(`skip destructive: ${fix.description} (would delete ${originalText.length} chars)`);
           continue;
         }
         if (originalText.length > 100 && text.length < originalText.length / 4) {
-          console.warn('[SelfHealing] Skipping suspicious fix:', fix.description, `(${originalText.length} chars → ${text.length} chars)`);
+          dWarn(`skip suspicious: ${fix.description} (${originalText.length} → ${text.length} chars)`);
           continue;
         }
-        // Guard: reject edits that span more than half the file
         const totalFileLines = model.getLineCount();
         const editSpan = endLine - startLine + 1;
         if (totalFileLines > 3 && editSpan > totalFileLines * 0.5) {
-          console.warn('[SelfHealing] Skipping fix that spans', editSpan, 'of', totalFileLines, 'lines:', fix.description);
+          dWarn(`skip wide span: ${editSpan}/${totalFileLines} lines: ${fix.description}`);
           continue;
         }
 
@@ -819,7 +871,6 @@ export function useSelfHealing({
       }
 
       if (!edits.length) {
-        console.log('[SelfHealing] No edits survived validation, aborting');
         inflightRef.current = false;
         dispatch(setHealingStatus('idle'));
         dispatch(setFileHealingState({ filePath, isHealing: false }));
@@ -829,26 +880,22 @@ export function useSelfHealing({
       // Flag self-edit BEFORE the batched edit
       selfEditFlagRef.current = true;
 
-      // Save cursor position and scroll state so we can restore after edits
       const savedPosition = editor.getPosition();
       const savedScrollTop = editor.getScrollTop();
       const savedScrollLeft = editor.getScrollLeft();
 
-      console.log(`[SelfHealing] Applying ${edits.length} edits via executeEdits`);
       editor.executeEdits('self-healing-proactive', edits);
       editor.pushUndoStop();
 
-      // Restore cursor and scroll so the user doesn't see a jump
       if (savedPosition) editor.setPosition(savedPosition);
       editor.setScrollTop(savedScrollTop);
       editor.setScrollLeft(savedScrollLeft);
 
-      // Clear self-edit flag after Redux has had time to propagate the
-      // content change.  100ms was too short — the page.jsx analysis
-      // effect could re-trigger before the flag cleared.
+      // 500ms gives Redux / analysis effects time to observe the content
+      // change before we allow another heal cycle.
       setTimeout(() => { selfEditFlagRef.current = false; }, 500);
 
-      let appliedCount = accepted.length;
+      const appliedCount = accepted.length;
 
       for (const { fix, originalText, range } of accepted) {
         dispatch(recordAppliedFix({
@@ -898,7 +945,6 @@ export function useSelfHealing({
           lastDecoDisposable.current = showHealingDecorations(editorRef.current, healedRanges);
         }
 
-        // Remove healed diagnostics from the Problems panel
         if (typeof onFixesApplied === 'function') {
           const healedIds = new Set(accepted.map(({ fix: f }) => f.id).filter(Boolean));
           if (healedIds.size > 0) onFixesApplied(healedIds);
@@ -907,11 +953,10 @@ export function useSelfHealing({
 
       fixCountRef.current += appliedCount;
 
-      // Verify the model still has content — abort future healing if
-      // something went catastrophically wrong.
+      // Post-edit catastrophe check — always log, ignore debug flag.
       const afterContent = model.getValue();
       if (afterContent.length < 5) {
-        console.error('[SelfHealing] ABORT: Model content is nearly empty after applying fixes. Triggering undo.');
+        console.error('[SelfHealing] ABORT: model nearly empty after proactive heal, triggering undo');
         editor.trigger('self-healing', 'undo', null);
         inflightRef.current = false;
         dispatch(setHealingStatus('idle'));
@@ -922,8 +967,9 @@ export function useSelfHealing({
       dispatch(setHealingStatus('cooldown'));
       dispatch(setFileHealingState({ filePath, isHealing: false, lastContentHash: snapHash }));
 
-      // Use a LONGER cooldown (3s) to prevent the re-trigger loop:
-      // fix → content change → editorVersion bump → re-analysis → new diags → fix again
+      // Longer cooldown (3s) prevents the re-trigger loop:
+      // fix → content change → editor version bump → re-analysis → new
+      // diagnostics → would fix again.
       const cooldownMs = Math.max(config.cooldownMs || 1000, 3000);
       cooldownTimer.current = setTimeout(() => {
         if (mountedRef.current) dispatch(setHealingStatus('idle'));
@@ -931,9 +977,10 @@ export function useSelfHealing({
 
       inflightRef.current = false;
 
-      console.log(`[SelfHealing] Auto-applied ${appliedCount}/${eligible.length} proactive quick-fixes`);
+      d(`auto-applied ${appliedCount}/${autoApply.length}`);
     },
-    [enabled, active, editorRef, filePath, language, config, dispatch, onFixesApplied]
+    [enabled, active, editorRef, filePath, language, config, rules, thresholds,
+     dispatch, onFixesApplied, onAIEscalate, d, dWarn, dryRun]
   );
 
   // ── Manual trigger ──────────────────────────────────────────────────

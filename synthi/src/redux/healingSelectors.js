@@ -4,6 +4,7 @@
 // relevant slice of state actually changes.
 
 import { createSelector } from '@reduxjs/toolkit';
+import { BoldnessThresholds } from './healingSlice';
 
 // ── Root selector ─────────────────────────────────────────────────────────
 export const selectHealingState = (state) => state.healing;
@@ -132,6 +133,31 @@ export const selectHealingSummary = createSelector(
 export const selectHealingReady = createSelector(
   [selectHealingEnabled, selectHealingStatus],
   (enabled, status) => enabled && (status === 'idle' || status === 'cooldown')
+);
+
+// ── Boldness / rules / triggers ──────────────────────────────────────────
+export const selectBoldness = (state) => state.healing?.config?.boldness ?? 'balanced';
+export const selectTriggers = (state) => state.healing?.config?.triggers ?? {};
+export const selectHealingRules = (state) => state.healing?.config?.rules ?? [];
+export const selectDebugLogging = (state) => state.healing?.config?.debugLogging ?? false;
+export const selectDryRun = (state) => state.healing?.config?.dryRun ?? false;
+export const selectCustomThresholds = (state) => state.healing?.config?.customThresholds ?? null;
+
+/**
+ * Effective confidence thresholds — custom thresholds override the boldness
+ * preset. Consumers use this to route individual fixes.
+ */
+export const selectEffectiveThresholds = createSelector(
+  [selectBoldness, selectCustomThresholds],
+  (boldness, custom) => {
+    const preset = BoldnessThresholds[boldness] || BoldnessThresholds.balanced;
+    if (!custom || typeof custom !== 'object') return preset;
+    return {
+      autoApply:   typeof custom.autoApply   === 'number' ? custom.autoApply   : preset.autoApply,
+      suggest:     typeof custom.suggest     === 'number' ? custom.suggest     : preset.suggest,
+      aiEscalate:  typeof custom.aiEscalate  === 'number' ? custom.aiEscalate  : preset.aiEscalate,
+    };
+  }
 );
 
 // ── AI Agent selectors ────────────────────────────────────────────────────
