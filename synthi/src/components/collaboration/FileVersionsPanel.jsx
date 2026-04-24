@@ -115,7 +115,12 @@ export default function FileVersionsPanel({ slug, filePath }) {
       const res = await fetch(url, { signal: ctl.signal });
       if (!res.ok) throw new Error(`fetch failed: ${res.status}`);
       const payload = await res.json();
-      const list = Array.isArray(payload?.versions) ? payload.versions : [];
+      // The server returns snapshots in newest-first order but doesn't
+      // attach an index field — position in the list IS the index, and
+      // /file-version/:slug?index=N looks them up by that position.
+      const list = Array.isArray(payload?.versions)
+        ? payload.versions.map((v, i) => ({ ...v, index: i }))
+        : [];
       setVersions(list);
     } catch (e) {
       if (e.name !== 'AbortError') setError(e.message || String(e));
