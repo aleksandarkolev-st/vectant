@@ -20,6 +20,8 @@ const { LRUCache } = require('lru-cache');
 const ySweetBridge = require('./ySweetBridge');
 const { withTelemetry, getMetrics, resetMetrics, getEventLoopBlockCount } = require('./perfTelemetry');
 const sseService = require('./sseService');
+const persistence = require('./persistence');
+const logger = require('./logger').child({ component: 'collab' });
 
 // ── User block list (in-memory) ──────────────────────────────────────────────
 // blockedBy: userId → Set<blockedUserId>
@@ -1767,7 +1769,9 @@ const server = http.createServer(async (req, res) => {
         }
         if (!blockedBy.has(userId)) blockedBy.set(userId, new Set());
         blockedBy.get(userId).add(blockedUserId);
-        console.log(`[Block] ${userId} blocked ${blockedUserId}`);
+        logger.info('user_blocked', { userId, blockedUserId });
+        // Persist asynchronously — never block the request on storage latency.
+        persistence.saveBlock(userId, blockedUserId);
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ success: true }));
       } catch (e) {
@@ -1796,7 +1800,8 @@ const server = http.createServer(async (req, res) => {
           blockedBy.get(userId).delete(blockedUserId);
           if (blockedBy.get(userId).size === 0) blockedBy.delete(userId);
         }
-        console.log(`[Block] ${userId} unblocked ${blockedUserId}`);
+        logger.info('user_unblocked', { userId, blockedUserId });
+        persistence.removeBlock(userId, blockedUserId);
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ success: true }));
       } catch (e) {
@@ -3516,13 +3521,117 @@ sessionManager.on('session:knockCancelled', ({ sessionId, guestId }) => {
   sendToSessionHost(sessionId, 'knock:cancelled', { guestId });
 });
 
-server.listen(PORT, '0.0.0.0', () => {
-  console.log(`Collaboration server listening on port ${PORT}`);
-  console.log(`[Collab] CRDT persistence: Y-Sweet @ ${config.YSWEET_URL}`);
-
-  // Start the idle-workspace culler (only inside K8s).
-  if (process.env.KUBERNETES_SERVICE_HOST) {
-    spawner.startCuller();
-  }
+// ── Persistence bridge ──────────────────────────────────────────────────
+// SessionManager emits persist:session / persist:delete for every mutation.
+// The bridge forwards to the persistence adapter which is a no-op unless
+// REDIS_URL is configured + the redis module is installed.
+sessionManager.on('persist:session', (session) => {
+  persistence.saveSession(session);
 });
+sessionManager.on('persist:delete', (sessionId) => {
+  persistence.deleteSession(sessionId);
+});
+
+// ── Graceful shutdown ───────────────────────────────────────────────────
+// Drain WebSockets, stop accepting new connections, flush persistence,
+// then let the process exit.  The deadline enforces bounded shutdown time
+// so orchestrators don't have to SIGKILL us.
+let shuttingDown = false;
+const SHUTDOWN_DEADLINE_MS = Number(process.env.COLLAB_SHUTDOWN_DEADLINE_MS) || 15_000;
+
+async function gracefulShutdown(signal) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  logger.info('shutdown_started', { signal });
+
+  // Force-exit watchdog in case a socket refuses to close.
+  const watchdog = setTimeout(() => {
+    logger.error('shutdown_timeout', { deadlineMs: SHUTDOWN_DEADLINE_MS });
+    process.exit(1);
+  }, SHUTDOWN_DEADLINE_MS);
+  if (typeof watchdog.unref === 'function') watchdog.unref();
+
+  // 1. Stop accepting new HTTP/WS connections.
+  try { server.close(); } catch (err) { logger.warn('server_close_failed', {}, err); }
+
+  // 2. Tell every connected WebSocket to go away cleanly.  1001 "going
+  //    away" is the canonical close code for graceful server shutdown.
+  const wsServers = [
+    { name: 'notify', s: notifyWss },
+    { name: 'session', s: sessionWss },
+    { name: 'terminal', s: terminalWss },
+    { name: 'yjs', s: yjsWss },
+  ];
+  for (const { name, s } of wsServers) {
+    if (!s || !s.clients) continue;
+    const count = s.clients.size;
+    logger.info('ws_drain', { channel: name, clients: count });
+    s.clients.forEach((ws) => {
+      try { ws.close(1001, 'server_shutting_down'); } catch (_) {}
+    });
+  }
+
+  // 3. Give in-flight work a brief moment to finish (Y-Sweet writes,
+  //    file I/O, pending persistence calls).
+  await new Promise((r) => setTimeout(r, 1500));
+
+  // 4. Close persistence.  Best-effort — if Redis is down we still exit.
+  try { await persistence.close(); }
+  catch (err) { logger.warn('persistence_close_failed', {}, err); }
+
+  logger.info('shutdown_complete', { signal });
+  clearTimeout(watchdog);
+  // Small delay to let last log flush.
+  setTimeout(() => process.exit(0), 50).unref?.();
+}
+
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+
+// Surface (but don't crash on) unhandled rejections — they're easy to
+// miss in production logs and usually indicate a .catch() we forgot.
+process.on('unhandledRejection', (reason) => {
+  logger.error('unhandled_rejection', { reason: reason?.message || String(reason) },
+    reason instanceof Error ? reason : null);
+});
+process.on('uncaughtException', (err) => {
+  logger.error('uncaught_exception', {}, err);
+});
+
+// ── Boot sequence ───────────────────────────────────────────────────────
+(async () => {
+  // Try to attach persistence up-front.  If REDIS_URL isn't set this is
+  // a fast no-op and we continue with pure in-memory behaviour.
+  try {
+    await persistence.connect();
+    if (persistence.isAvailable()) {
+      const sessions = await persistence.loadSessions();
+      const restored = sessionManager.restoreFromSnapshot(sessions);
+      logger.info('sessions_restored', { count: restored });
+
+      const blocks = await persistence.loadBlocks();
+      let blockCount = 0;
+      for (const { userId, blocked } of blocks) {
+        if (!blockedBy.has(userId)) blockedBy.set(userId, new Set());
+        for (const b of blocked) { blockedBy.get(userId).add(b); blockCount++; }
+      }
+      logger.info('blocks_restored', { owners: blocks.length, entries: blockCount });
+    }
+  } catch (err) {
+    logger.error('persistence_bootstrap_failed', {}, err);
+  }
+
+  server.listen(PORT, '0.0.0.0', () => {
+    logger.info('server_listening', {
+      port: PORT,
+      ySweetUrl: config.YSWEET_URL,
+      persistence: persistence.isAvailable() ? 'redis' : 'memory',
+    });
+
+    // Start the idle-workspace culler (only inside K8s).
+    if (process.env.KUBERNETES_SERVICE_HOST) {
+      spawner.startCuller();
+    }
+  });
+})();
 

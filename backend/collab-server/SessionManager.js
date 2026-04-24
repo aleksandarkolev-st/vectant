@@ -118,6 +118,73 @@ class SessionManager extends EventEmitter {
 
     /** @type {Map<string, string>} socketId → guestId (for fast lookup on disconnect) */
     this.socketIndex = new Map();
+
+    // Whether the post-restore bootstrap has completed.  Until then we skip
+    // emitting persist:* events so a rehydrated session doesn't get written
+    // back to storage immediately.
+    this._restoring = false;
+  }
+
+  /**
+   * Rehydrate in-memory state from a persistence adapter.  Expected to be
+   * called exactly once, before the HTTP server starts accepting traffic.
+   *
+   * @param {Array<object>} records  — serialized session records from storage
+   */
+  restoreFromSnapshot(records) {
+    if (!Array.isArray(records) || !records.length) return 0;
+    this._restoring = true;
+    try {
+      let restored = 0;
+      const now = Date.now();
+      for (const r of records) {
+        if (!r || !r.id || !r.hostId) continue;
+        // Drop sessions whose token has already expired — no point rehydrating.
+        if (r.tokenExpiresAt && r.tokenExpiresAt < now) continue;
+        const session = {
+          id: r.id,
+          slug: r.slug,
+          hostId: r.hostId,
+          hostName: r.hostName || r.hostId,
+          hostAvatar: r.hostAvatar || '',
+          worktreePath: r.worktreePath || '',
+          inviteToken: r.inviteToken,
+          tokenExpiresAt: r.tokenExpiresAt || (now + TOKEN_TTL_MS),
+          defaultPerms: { ...DEFAULT_GUEST_PERMISSIONS, ...(r.defaultPerms || {}) },
+          guests: new Map((r.guests || []).map(g => [g.guestId, g])),
+          pendingKnocks: new Set(r.pendingKnocks || []),
+          invitedUsers: new Set(r.invitedUsers || []),
+          roomCode: r.roomCode || null,
+          createdAt: r.createdAt || new Date().toISOString(),
+          status: r.status || 'active',
+          hostConfirmed: r.hostConfirmed !== false,
+        };
+        this.sessions.set(session.id, session);
+        this.hostIndex.set(session.hostId, session.id);
+        if (session.inviteToken) this.tokenIndex.set(session.inviteToken, session.id);
+        if (session.roomCode) this.roomCodeIndex.set(session.roomCode, session.id);
+        for (const [gid, guest] of session.guests) {
+          this.guestIndex.set(gid, session.id);
+          if (guest?.socketId) this.socketIndex.set(guest.socketId, gid);
+        }
+        restored++;
+      }
+      return restored;
+    } finally {
+      this._restoring = false;
+    }
+  }
+
+  /** Emit a persist-session event unless we're mid-restore. */
+  _persistSession(session) {
+    if (this._restoring) return;
+    this.emit('persist:session', session);
+  }
+
+  /** Emit a persist-delete event unless we're mid-restore. */
+  _persistDelete(sessionId) {
+    if (this._restoring) return;
+    this.emit('persist:delete', sessionId);
   }
 
   // ── Session lifecycle ────────────────────────────────────────────────────
@@ -178,6 +245,7 @@ class SessionManager extends EventEmitter {
     this.roomCodeIndex.set(session.roomCode, id);
 
     this.emit('session:created', { sessionId: id, hostId, slug });
+    this._persistSession(session);
 
     return session;
   }
@@ -202,6 +270,7 @@ class SessionManager extends EventEmitter {
     this.roomCodeIndex.set(session.roomCode, sessionId);
 
     this.emit('session:tokenRegenerated', { sessionId, roomCode: session.roomCode });
+    this._persistSession(session);
     return { inviteToken: session.inviteToken, roomCode: session.roomCode };
   }
 
@@ -389,6 +458,7 @@ class SessionManager extends EventEmitter {
         autoAdmitted: false,
       });
     }
+    this._persistSession(session);
 
     return entry;
   }
@@ -402,6 +472,7 @@ class SessionManager extends EventEmitter {
     session.pendingKnocks.delete(guestId);
     session._knockTimes?.delete(guestId);
     this.emit('session:knockDenied', { sessionId, guestId });
+    this._persistSession(session);
   }
 
   /**
@@ -447,6 +518,7 @@ class SessionManager extends EventEmitter {
     }
     session.invitedUsers.add(userId);
     console.log(`[SessionManager] addInvitedUser: ${userId} added to invitedUsers for session ${sessionId}`);
+    this._persistSession(session);
   }
 
   // ── Permission management ───────────────────────────────────────────────
@@ -471,6 +543,7 @@ class SessionManager extends EventEmitter {
       guestId,
       permissions: { ...guest.permissions },
     });
+    this._persistSession(session);
 
     return { ...guest.permissions };
   }
@@ -481,6 +554,7 @@ class SessionManager extends EventEmitter {
   updateDefaultPermissions(sessionId, perms) {
     const session = this._getActiveSession(sessionId);
     session.defaultPerms = { ...session.defaultPerms, ...perms };
+    this._persistSession(session);
     return { ...session.defaultPerms };
   }
 
@@ -506,6 +580,7 @@ class SessionManager extends EventEmitter {
     session.guests.delete(guestId);
 
     this.emit('session:guestRemoved', { sessionId, guestId, reason });
+    this._persistSession(session);
   }
 
   /**
@@ -529,6 +604,7 @@ class SessionManager extends EventEmitter {
     });
 
     this._destroySession(sessionId);
+    this._persistDelete(sessionId);
   }
 
   // ── Querying ─────────────────────────────────────────────────────────────

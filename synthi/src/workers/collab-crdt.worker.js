@@ -15,6 +15,27 @@ import { WebsocketProvider } from 'y-websocket';
 const docs = new Map(); // key → Entry { doc, provider, ytext, applyingLocal }
 let serverUrl = 'ws://localhost:1234';
 
+// Tunables for the WebsocketProvider.
+//   MAX_BACKOFF_MS — cap for the provider's internal reconnect delay.  The
+//     default (2500ms) is aggressive enough to storm the server when many
+//     tabs reconnect after a deploy.  30s keeps the UI responsive while
+//     still letting a restarting server catch its breath.
+//   RESYNC_INTERVAL_MS — periodic full resync; guards against silent drops
+//     where the TCP socket stays open but sync messages were lost.
+//   JITTER_WINDOW_MS — randomized delay before the FIRST connect, to spread
+//     reconnect bursts across the fleet so we don't all hit the server in
+//     the same 50ms window.
+const MAX_BACKOFF_MS = 30_000;
+const RESYNC_INTERVAL_MS = 20_000;
+const JITTER_WINDOW_MS = 300;
+
+// Note on offline edits: Yjs treats the Y.Doc as the source of truth, not
+// the network.  Edits made while the provider is disconnected land in the
+// local Y.Doc immediately and are batched into a sync step 2 as soon as
+// the provider reconnects.  No additional queue is required — but we MUST
+// keep the Y.Doc alive across reconnects (we do; only fatal close codes
+// destroy it).
+
 // WebSocket close-code classification.
 //   Recoverable: transient issues; the provider will reconnect and resync.
 //   Fatal:      the server told us to stop; reseeding with the stale state
@@ -102,11 +123,24 @@ function ensureDocInternal(key, params) {
   if (docs.has(key)) return docs.get(key);
 
   const doc = new Y.Doc();
+  // Spread initial connection attempts over JITTER_WINDOW_MS so we don't
+  // all slam the server at the same instant after a deploy.  We create the
+  // provider with connect:false and flip connect() on after a jittered
+  // microtask delay.
+  const jitter = Math.floor(Math.random() * JITTER_WINDOW_MS);
   const provider = new WebsocketProvider(serverUrl, key, doc, {
-    connect: true,
+    connect: false,
     params: params || {},
     WebSocketPolyfill: makeInvalidationAwareWS(key),
+    maxBackoffTime: MAX_BACKOFF_MS,
+    resyncInterval: RESYNC_INTERVAL_MS,
   });
+  setTimeout(() => {
+    // Guard against late-destroy racing with jittered connect.
+    const current = docs.get(key);
+    if (!current || current.provider !== provider) return;
+    try { provider.connect(); } catch (_) { /* provider already destroyed */ }
+  }, jitter);
   const ytext = doc.getText('monaco');
   const entry = {
     doc,
