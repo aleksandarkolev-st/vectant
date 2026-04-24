@@ -28,15 +28,33 @@ function getSevStyle(severity) {
 
 
 /**
- * Create a unique widget ID for a fix.
+ * Severity rank — higher = more important.  Used to pick the "face"
+ * of a grouped hint when multiple fixes share a line.
  */
-function widgetId(fix, index) {
-  return `ai-inline-${fix.fix_id || fix.id || index}`;
+const SEVERITY_RANK = {
+  critical: 5,
+  high:     4,
+  moderate: 3,
+  low:      2,
+  trivial:  1,
+};
+
+function highestSeverity(groupFixes) {
+  let best = 'trivial';
+  for (const f of groupFixes) {
+    const s = f.severity || 'moderate';
+    if ((SEVERITY_RANK[s] || 0) > (SEVERITY_RANK[best] || 0)) best = s;
+  }
+  return best;
 }
 
 
 /**
  * Create inline content widgets in Monaco for each AI fix.
+ *
+ * Multiple fixes on the same line are merged into a single pill ("N issues")
+ * so hints never stack on top of each other.  Clicking a merged pill opens
+ * a popover listing each individual fix with per-row Apply/Dismiss.
  *
  * @param {import('monaco-editor').editor.IStandaloneCodeEditor} editor
  * @param {Array}    fixes   – array of AI fix objects
@@ -50,19 +68,29 @@ export function createAIInlineWidgets(editor, fixes, { onApply, onDismiss } = {}
     return { dispose: () => {} };
   }
 
+  // Group fixes by 1-based line number so only one widget renders per line.
+  const byLine = new Map();
+  for (const fix of fixes) {
+    const line = (fix.line ?? fix.start_line ?? fix.startLine ?? 0) + 1;
+    const bucket = byLine.get(line) || [];
+    bucket.push(fix);
+    byLine.set(line, bucket);
+  }
+
   const widgets = [];
   const disposables = [];
 
-  for (let i = 0; i < fixes.length; i++) {
-    const fix = fixes[i];
-    const line = (fix.line ?? fix.start_line ?? fix.startLine ?? 0) + 1;
-    const severity = fix.severity || 'moderate';
+  for (const [line, groupFixes] of byLine.entries()) {
+    const severity = highestSeverity(groupFixes);
     const sev = getSevStyle(severity);
-    const desc = fix.description || 'AI-detected issue';
-    const confidence = Math.round((fix.confidence ?? 0) * 100);
-    const id = widgetId(fix, i);
+    const count = groupFixes.length;
+    const primary = groupFixes[0];
+    const desc = count === 1
+      ? (primary.description || 'AI-detected issue')
+      : `${count} issues on this line`;
+    const confidence = Math.round((primary.confidence ?? 0) * 100);
+    const id = `ai-inline-L${line}`;
 
-    // Create the DOM node for the inline widget
     const node = document.createElement('div');
     node.className = 'ai-inline-hint';
     node.style.cssText = `
@@ -85,20 +113,26 @@ export function createAIInlineWidgets(editor, fixes, { onApply, onDismiss } = {}
       overflow: hidden;
       text-overflow: ellipsis;
     `;
-    node.title = `${desc}\nConfidence: ${confidence}%\nClick to expand`;
-    node.textContent = `${sev.icon} ${desc} (${confidence}%)`;
+    if (count === 1) {
+      node.title = `${desc}\nConfidence: ${confidence}%\nClick to expand`;
+      node.textContent = `${sev.icon} ${desc} (${confidence}%)`;
+    } else {
+      node.title = `${count} AI-detected issues on this line — click to review`;
+      node.textContent = `${sev.icon} ${count} issues — click to review`;
+    }
 
-    // Hover effect
     node.addEventListener('mouseenter', () => { node.style.opacity = '1'; });
     node.addEventListener('mouseleave', () => { node.style.opacity = '0.85'; });
 
-    // Click: show action popover
     node.addEventListener('click', (e) => {
       e.stopPropagation();
-      _showFixPopover(editor, fix, node, { onApply, onDismiss });
+      if (count === 1) {
+        _showFixPopover(editor, primary, node, { onApply, onDismiss });
+      } else {
+        _showGroupPopover(editor, groupFixes, node, { onApply, onDismiss });
+      }
     });
 
-    // Register as a content widget in Monaco
     const widget = {
       getId: () => id,
       getDomNode: () => node,
@@ -126,6 +160,106 @@ export function createAIInlineWidgets(editor, fixes, { onApply, onDismiss } = {}
       disposables.length = 0;
     },
   };
+}
+
+
+/**
+ * Show a popover listing every fix that shares a line.  Each row has its
+ * own Apply / Dismiss buttons; clicking a row expands the diff.
+ */
+function _showGroupPopover(editor, groupFixes, anchorNode, { onApply, onDismiss }) {
+  const existingPopover = document.querySelector('.ai-fix-popover');
+  if (existingPopover) existingPopover.remove();
+
+  const popover = document.createElement('div');
+  popover.className = 'ai-fix-popover';
+  popover.style.cssText = `
+    position: absolute;
+    z-index: 1000;
+    background: #1e1e2e;
+    border: 1px solid rgba(255,255,255,0.12);
+    border-radius: 6px;
+    padding: 8px;
+    min-width: 320px;
+    max-width: 560px;
+    max-height: 400px;
+    overflow-y: auto;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+    font-size: 12px;
+    color: #ccc;
+  `;
+
+  const rect = anchorNode.getBoundingClientRect();
+  popover.style.left = `${rect.left}px`;
+  popover.style.top = `${rect.bottom + 4}px`;
+
+  const header = document.createElement('div');
+  header.style.cssText = 'font-weight: 500; color: #eee; margin-bottom: 6px;';
+  header.textContent = `${groupFixes.length} AI-detected issues on this line`;
+  popover.appendChild(header);
+
+  for (const fix of groupFixes) {
+    const sev = getSevStyle(fix.severity || 'moderate');
+    const confidence = Math.round((fix.confidence ?? 0) * 100);
+
+    const row = document.createElement('div');
+    row.style.cssText = `
+      border: 1px solid ${sev.color}22;
+      background: ${sev.bg};
+      border-radius: 4px;
+      padding: 6px 8px;
+      margin-bottom: 4px;
+    `;
+
+    const top = document.createElement('div');
+    top.style.cssText = 'display: flex; justify-content: space-between; gap: 8px; align-items: center;';
+    const label = document.createElement('div');
+    label.style.cssText = `color: ${sev.color}; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;`;
+    label.textContent = `${sev.icon} ${fix.description || 'AI-detected issue'} (${confidence}%)`;
+    top.appendChild(label);
+
+    const btns = document.createElement('div');
+    btns.style.cssText = 'display: flex; gap: 4px; flex-shrink: 0;';
+    const apply = document.createElement('button');
+    apply.textContent = '✓';
+    apply.title = 'Apply';
+    apply.style.cssText = 'background: rgba(34,197,94,0.25); color: #86efac; border: none; padding: 2px 8px; border-radius: 3px; cursor: pointer; font-size: 11px;';
+    apply.addEventListener('click', (e) => {
+      e.stopPropagation();
+      onApply?.(fix);
+      row.remove();
+      if (popover.querySelectorAll('.ai-fix-row').length === 0) popover.remove();
+    });
+    const dismiss = document.createElement('button');
+    dismiss.textContent = '✕';
+    dismiss.title = 'Dismiss';
+    dismiss.style.cssText = 'background: rgba(255,255,255,0.05); color: #999; border: none; padding: 2px 8px; border-radius: 3px; cursor: pointer; font-size: 11px;';
+    dismiss.addEventListener('click', (e) => {
+      e.stopPropagation();
+      onDismiss?.(fix);
+      row.remove();
+      if (popover.querySelectorAll('.ai-fix-row').length === 0) popover.remove();
+    });
+    btns.appendChild(apply);
+    btns.appendChild(dismiss);
+    top.appendChild(btns);
+    row.appendChild(top);
+    row.classList.add('ai-fix-row');
+
+    popover.appendChild(row);
+  }
+
+  document.body.appendChild(popover);
+
+  const closeHandler = (e) => {
+    if (!popover.contains(e.target) && e.target !== anchorNode) {
+      popover.remove();
+      document.removeEventListener('mousedown', closeHandler);
+    }
+  };
+  setTimeout(() => {
+    document.addEventListener('mousedown', closeHandler);
+  }, 0);
 }
 
 

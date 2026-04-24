@@ -92,6 +92,11 @@ const AIHealingPanel = dynamic(
   { ssr: false, loading: Placeholder },
 );
 
+const HealingSettingsPanel = dynamic(
+  () => import('@/components/healing/HealingSettingsPanel').then(m => ({ default: m.HealingSettingsPanel })),
+  { ssr: false, loading: Placeholder },
+);
+
 // ────────────────────────────────────────────────────────
 //  Explorer Panel Wrapper
 // ────────────────────────────────────────────────────────
@@ -385,7 +390,7 @@ export const AIHealingPanelWrapper = memo(function AIHealingPanelWrapper({ data 
       className="h-full w-full overflow-hidden"
       style={{ background: 'var(--bg-sidebar)' }}
     >
-      <AIHealingPanel aiHealing={ctx?.aiHealing} />
+      <HealingSettingsPanel aiHealing={ctx?.aiHealing} />
     </div>
   );
 });

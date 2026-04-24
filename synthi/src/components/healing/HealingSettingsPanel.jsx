@@ -39,6 +39,11 @@ import {
 import { selectHealingRules } from '@/redux/healingSelectors';
 import { HealingRulesEditor } from './HealingRulesEditor';
 import { HealingHistoryPanel } from './HealingHistoryPanel';
+import { AIFixCard } from './AIFixCard';
+import { AIConfidenceGate } from './AIConfidenceGate';
+import { AISuppressedRulesPanel } from './AISuppressedRulesPanel';
+import { Sparkles, RefreshCcw, CheckCheck, Trash2, ChevronDown } from 'lucide-react';
+import { setAIEnabled } from '@/redux/healingSlice';
 
 // ── Small UI atoms ──────────────────────────────────────────────────────
 function Toggle({ checked, onChange, label, description }) {
@@ -124,7 +129,7 @@ function SectionLabel({ children, hint }) {
 }
 
 // ── Main panel ──────────────────────────────────────────────────────────
-export function HealingSettingsPanel() {
+export function HealingSettingsPanel({ aiHealing } = {}) {
   const dispatch = useDispatch();
   const enabled = useSelector(selectHealingEnabled);
   const config = useSelector(selectHealingConfig);
@@ -139,8 +144,36 @@ export function HealingSettingsPanel() {
   const rules = useSelector(selectHealingRules);
 
   const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [aiFixesOpen, setAiFixesOpen] = useState(true);
   const [importText, setImportText] = useState('');
   const [importError, setImportError] = useState(null);
+
+  // ── AI fixes (optional section at the top) ─────────────────────────
+  const aiFixes = aiHealing?.fixes ?? [];
+  const aiFixCount = aiFixes.length;
+  const aiSafeCount = aiFixes.filter((f) => f.is_safe || f.isSafe).length;
+  const aiError = aiHealing?.error;
+  const aiIsAnalyzing = aiHealing?.isAnalyzing ?? false;
+  const aiSuppressedCount = aiHealing?.suppressedCount ?? 0;
+  const aiHasSuppressedRules = !!aiHealing?.hasSuppressedRules;
+
+  const handleAIAnalyze = useCallback(() => {
+    aiHealing?.analyze?.({ minConfidence: 0.55, validateFixes: true });
+  }, [aiHealing]);
+  const handleAIApplySafe = useCallback(() => {
+    const count = aiHealing?.applyAllSafe?.() ?? 0;
+    if (count === 0) {
+      dispatch(enqueueToast({ message: 'No safe AI fixes to apply', type: 'info' }));
+    }
+  }, [aiHealing, dispatch]);
+  const handleAIDismissAll = useCallback(() => {
+    aiHealing?.dismissAll?.();
+  }, [aiHealing]);
+  const handleEnableAI = useCallback(() => {
+    dispatch(setAIEnabled(true));
+    dispatch(setTrigger({ key: 'useAIForHard', value: true }));
+    if (!enabled) dispatch(toggleHealing());
+  }, [dispatch, enabled]);
 
   const handleExportRules = useCallback(async () => {
     const text = JSON.stringify(rules, null, 2);
@@ -221,6 +254,159 @@ export function HealingSettingsPanel() {
         onChange={(v) => dispatch(updateConfig({ showNotifications: v }))}
         label="Notify me when fixes are applied"
       />
+
+      {/* Pending AI fixes (only rendered if aiHealing is passed) */}
+      {aiHealing && (
+        <>
+          <SectionDivider />
+          <div>
+            <button
+              onClick={() => setAiFixesOpen((v) => !v)}
+              className="flex items-center justify-between w-full"
+            >
+              <div className="flex items-center gap-2">
+                <Sparkles size={14} style={{ color: 'var(--accent-primary)' }} />
+                <SectionLabel>
+                  Pending AI fixes
+                </SectionLabel>
+                {aiFixCount > 0 && (
+                  <span
+                    className="text-[10px] px-1.5 py-0.5 rounded-full"
+                    style={{
+                      background: 'var(--accent-primary)',
+                      color: 'var(--text-on-accent, white)',
+                    }}
+                  >
+                    {aiFixCount}
+                  </span>
+                )}
+              </div>
+              <ChevronDown
+                size={14}
+                style={{
+                  color: 'var(--text-muted)',
+                  transform: aiFixesOpen ? 'none' : 'rotate(-90deg)',
+                  transition: 'transform 0.15s',
+                }}
+              />
+            </button>
+
+            {aiFixesOpen && (
+              <div className="mt-2">
+                {/* Action row */}
+                <div className="flex items-center gap-2 mb-2">
+                  <button
+                    onClick={handleAIAnalyze}
+                    disabled={aiIsAnalyzing || !triggers.useAIForHard}
+                    className="flex items-center gap-1.5 text-xs px-2.5 py-1 rounded disabled:opacity-40"
+                    style={{
+                      background: 'var(--bg-elevated)',
+                      color: 'var(--text-primary)',
+                    }}
+                    title={!triggers.useAIForHard ? 'Enable "Also try AI for tricky errors" below' : ''}
+                  >
+                    <RefreshCcw size={11} className={aiIsAnalyzing ? 'animate-spin' : ''} />
+                    {aiIsAnalyzing ? 'Analyzing…' : 'Analyze'}
+                  </button>
+                  {aiSafeCount > 0 && (
+                    <button
+                      onClick={handleAIApplySafe}
+                      className="flex items-center gap-1 text-xs px-2 py-1 rounded"
+                      style={{
+                        background: 'rgba(34,197,94,0.15)',
+                        color: '#86efac',
+                      }}
+                      title={`Apply ${aiSafeCount} safe fix${aiSafeCount === 1 ? '' : 'es'}`}
+                    >
+                      <CheckCheck size={11} />
+                      Apply safe ({aiSafeCount})
+                    </button>
+                  )}
+                  {aiFixCount > 0 && (
+                    <button
+                      onClick={handleAIDismissAll}
+                      className="flex items-center gap-1 text-xs px-1.5 py-1 rounded ml-auto"
+                      style={{ color: 'var(--text-muted)' }}
+                      title="Dismiss all"
+                    >
+                      <Trash2 size={11} />
+                    </button>
+                  )}
+                </div>
+
+                {/* Error */}
+                {aiError && (
+                  <div
+                    className="text-[11px] px-2 py-1 rounded mb-2"
+                    style={{
+                      color: 'var(--accent-danger)',
+                      background: 'rgba(239,68,68,0.08)',
+                    }}
+                  >
+                    {aiError}
+                  </div>
+                )}
+
+                {/* Fix list */}
+                {aiFixCount === 0 && !aiIsAnalyzing && !aiError && (
+                  <div
+                    className="text-[11px] py-2"
+                    style={{ color: 'var(--text-dim)' }}
+                  >
+                    {!triggers.useAIForHard ? (
+                      <>
+                        AI analysis is off.{' '}
+                        <button
+                          onClick={handleEnableAI}
+                          className="underline"
+                          style={{ color: 'var(--accent-primary)' }}
+                        >
+                          Enable AI for tricky errors
+                        </button>
+                        .
+                      </>
+                    ) : (
+                      'No AI issues detected. Click Analyze to scan this file.'
+                    )}
+                  </div>
+                )}
+
+                {aiFixCount > 0 && (
+                  <div className="flex flex-col gap-1 max-h-[340px] overflow-y-auto">
+                    {aiFixes.map((fix, i) => (
+                      <AIConfidenceGate
+                        key={fix.fix_id || fix.id || `ai-fix-${i}`}
+                        confidence={fix.confidence ?? 0}
+                      >
+                        <AIFixCard
+                          fix={fix}
+                          index={i}
+                          onApply={aiHealing.applyFix}
+                          onDismiss={aiHealing.dismissFix}
+                          onSuppressRule={aiHealing.suppressRule}
+                        />
+                      </AIConfidenceGate>
+                    ))}
+                  </div>
+                )}
+
+                {(aiSuppressedCount > 0 || aiHasSuppressedRules) && (
+                  <div className="mt-2">
+                    <AISuppressedRulesPanel
+                      getSuppressedRules={aiHealing.getSuppressedRules}
+                      onUnsuppress={aiHealing.unsuppressRule}
+                      onClearAll={aiHealing.clearAllSuppressed}
+                      suppressedCount={aiSuppressedCount}
+                      policySummary={aiHealing.policySummary}
+                      onRefresh={aiHealing.fetchPolicySummary}
+                    />
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        </>
+      )}
 
       {/* Boldness */}
       <SectionDivider />

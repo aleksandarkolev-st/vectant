@@ -49,6 +49,7 @@ import { useSmartRuleSuggestions } from '@/hooks/useSmartRuleSuggestions';
 import { HealingToast } from '@/components/healing/HealingToast';
 import { PreCompileHealToast } from '@/components/healing/PreCompileHealToast';
 import { AIHealingPanel } from '@/components/healing/AIHealingPanel';
+import { HealingSettingsPanel } from '@/components/healing/HealingSettingsPanel';
 import { clearAIFixes, clearPendingFixes, hydrateHealing, setLiveDiagnostics } from '@/redux/healingSlice';
 import { loadHealingPersistedState, saveHealingPersistedState } from '@/lib/healing/persistence';
 import { selectHealingEnabled, selectHealingConfig } from '@/redux/healingSelectors';
@@ -2505,7 +2506,7 @@ export default function EditorPage({ params }) {
                     })() : sidebarView === 'settings' ? (
                         <SettingsPanelContent />
                     ) : sidebarView === 'ai-healing' ? (
-                        <AIHealingPanel aiHealing={aiHealing} />
+                        <HealingSettingsPanel aiHealing={aiHealing} />
                     ) : sidebarView ? (
                         <div className="flex flex-col h-full min-h-0">
                             <div className="flex-1 min-h-0 overflow-y-auto">
