@@ -76,6 +76,7 @@ const backendAIPreviewUrl = new URL("/heal/ai/preview", backendUrl).toString();
 const backendAIPolicySuppressUrl = new URL("/heal/ai/policy/suppress", backendUrl).toString();
 const backendAIPolicyUnsuppressUrl = new URL("/heal/ai/policy/unsuppress", backendUrl).toString();
 const backendAIPolicyListUrl = new URL("/heal/ai/policy", backendUrl).toString();
+const backendHealRuleTranslateUrl = new URL("/heal/rule/translate", backendUrl).toString();
 
 // Agentic self-healing endpoints
 const backendAgenticDiagnoseUrl = new URL("/heal/agentic/diagnose", backendUrl).toString();
@@ -281,6 +282,9 @@ async function handleClientMessage(socket, raw) {
       break;
     case "heal/ai/hybrid":
       await forwardAIHybrid(socket, data, requestId);
+      break;
+    case "heal/rule/translate":
+      await forwardHealRuleTranslate(socket, data, requestId);
       break;
     case "heal/ai/stats":
       await forwardAIStats(socket, requestId);
@@ -1744,6 +1748,66 @@ async function forwardAIAnalyze(socket, data, requestId) {
   } catch (err) {
     console.error("[AI Agent] analyze forward error:", err);
     sendError(socket, "AI analysis request failed", { requestId, detail: err.message });
+  }
+}
+
+async function forwardHealRuleTranslate(socket, data, requestId) {
+  const plainEnglish = data?.plainEnglish || data?.plain_english;
+  if (typeof plainEnglish !== "string" || !plainEnglish.trim()) {
+    sendError(socket, "`plainEnglish` is required", { requestId });
+    return;
+  }
+  if (plainEnglish.length > 500) {
+    sendError(socket, "`plainEnglish` too long (max 500 chars)", { requestId });
+    return;
+  }
+
+  try {
+    const backendResponse = await fetch(backendHealRuleTranslateUrl, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        plain_english: plainEnglish,
+        target_vocabulary: data?.targetVocabulary || data?.target_vocabulary || null,
+        scope_vocabulary: data?.scopeVocabulary || data?.scope_vocabulary || null,
+        action_vocabulary: data?.actionVocabulary || data?.action_vocabulary || null,
+      }),
+    });
+
+    const responseText = await backendResponse.text();
+
+    if (!backendResponse.ok) {
+      sendError(socket, "Rule translation backend error", {
+        requestId,
+        detail: responseText,
+        status: backendResponse.status,
+      });
+      return;
+    }
+
+    let responseJson;
+    try {
+      responseJson = JSON.parse(responseText);
+    } catch (err) {
+      sendError(socket, "Rule translation response was not valid JSON", {
+        requestId,
+        detail: err.message,
+      });
+      return;
+    }
+
+    safeSend(socket, {
+      type: "response",
+      action: "heal/rule/translate",
+      requestId,
+      data: responseJson,
+    });
+  } catch (err) {
+    console.error("[RuleTranslate] forward error:", err);
+    sendError(socket, "Rule translation request failed", {
+      requestId,
+      detail: err.message,
+    });
   }
 }
 

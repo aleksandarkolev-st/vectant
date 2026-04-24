@@ -16,14 +16,16 @@ import {
   reorderRules,
   RuleAction,
 } from '@/redux/healingSlice';
-import { selectHealingRules } from '@/redux/healingSelectors';
+import { selectHealingRules, selectTriggers } from '@/redux/healingSelectors';
 import {
   TargetVocabulary,
   ScopeVocabulary,
   ActionVocabulary,
   createRule,
   ruleToSentence,
+  makeRuleId,
 } from '@/lib/healing/ruleEngine';
+import { useAnalyzerGateway } from '@/hooks/useAnalyzerGateway';
 
 // ── Order dropdown options in a sensible narrative ──────────────────────
 const ACTION_ORDER = [
@@ -236,10 +238,39 @@ function RuleRow({ rule, index, total, onMove, onChange, onRemove, onToggle }) {
   );
 }
 
+// ── Convert backend rule-translate response into a UI-shaped Rule object ──
+function responseToRule(resp) {
+  if (!resp || typeof resp !== 'object') return null;
+  const { action, target, scope, pattern } = resp;
+  if (!action || !target || !scope) return null;
+
+  return {
+    id: makeRuleId(),
+    action,
+    target: { kind: 'target', name: target },
+    scope:
+      scope === 'glob'
+        ? { kind: 'glob', pattern: pattern || '*' }
+        : { kind: 'scope', name: scope },
+    disabled: false,
+  };
+}
+
 // ── Main editor ──────────────────────────────────────────────────────────
 export function HealingRulesEditor() {
   const dispatch = useDispatch();
   const rules = useSelector(selectHealingRules);
+  const triggers = useSelector(selectTriggers);
+  const { gateway } = useAnalyzerGateway();
+
+  // Natural-language rule translation state
+  const [nlText, setNlText] = useState('');
+  const [nlTranslating, setNlTranslating] = useState(false);
+  const [nlError, setNlError] = useState(null);
+
+  // Only offer the NL input when AI is enabled — otherwise the endpoint
+  // call just fails with a 503, and exposing it would be misleading.
+  const aiAvailable = !!triggers?.useAIForHard;
 
   const handleAdd = useCallback(() => {
     dispatch(
@@ -252,6 +283,37 @@ export function HealingRulesEditor() {
       )
     );
   }, [dispatch]);
+
+  const handleTranslate = useCallback(async () => {
+    const text = nlText.trim();
+    if (!text || !gateway?.ruleTranslate) return;
+
+    setNlTranslating(true);
+    setNlError(null);
+    try {
+      const resp = await gateway.ruleTranslate({ plainEnglish: text });
+      const rule = responseToRule(resp);
+      if (!rule) {
+        setNlError("AI returned an unexpected response. Try rephrasing.");
+        return;
+      }
+      dispatch(addRule(rule));
+      setNlText('');
+    } catch (err) {
+      const msg = err?.message || String(err);
+      // Gateway surfaces a "Rule translation backend error" when the
+      // backend 503s (no GEMINI_API_KEY). Rewrite to something friendly.
+      if (/503|unavailable|GEMINI_API_KEY/i.test(msg)) {
+        setNlError("AI is not configured on the backend. Use the dropdown builder above.");
+      } else if (/valid JSON|non-object/i.test(msg)) {
+        setNlError("AI couldn't understand that. Try rephrasing or use the dropdown builder.");
+      } else {
+        setNlError(msg);
+      }
+    } finally {
+      setNlTranslating(false);
+    }
+  }, [dispatch, gateway, nlText]);
 
   const handleChange = useCallback(
     (id, patch) => {
@@ -336,6 +398,59 @@ export function HealingRulesEditor() {
       >
         + Add a rule
       </button>
+
+      {/* Natural-language rule translator — AI opt-in only */}
+      {aiAvailable && (
+        <div className="mt-2">
+          <div
+            className="text-[10px] mb-1"
+            style={{ color: 'var(--text-dim)' }}
+          >
+            Or describe a rule in your own words:
+          </div>
+          <div className="flex gap-1">
+            <input
+              type="text"
+              value={nlText}
+              onChange={(e) => {
+                setNlText(e.target.value);
+                if (nlError) setNlError(null);
+              }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !nlTranslating) handleTranslate();
+              }}
+              placeholder="e.g. don't touch files in the tests folder"
+              disabled={nlTranslating}
+              maxLength={500}
+              className="flex-1 px-2 py-1 text-sm rounded-md"
+              style={{
+                background: 'var(--bg-base)',
+                color: 'var(--text-primary)',
+                border: '1px solid var(--border-subtle)',
+              }}
+            />
+            <button
+              onClick={handleTranslate}
+              disabled={nlTranslating || !nlText.trim()}
+              className="px-2 py-1 text-xs rounded-md disabled:opacity-40"
+              style={{
+                background: 'var(--accent-primary)',
+                color: 'var(--text-on-accent, white)',
+              }}
+            >
+              {nlTranslating ? '…' : 'Turn into rule'}
+            </button>
+          </div>
+          {nlError && (
+            <div
+              className="text-[10px] mt-1"
+              style={{ color: 'var(--accent-danger)' }}
+            >
+              {nlError}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }

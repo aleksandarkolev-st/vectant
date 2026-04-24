@@ -12,10 +12,14 @@ import {
   selectAIEnabled,
   selectAIMode,
   selectAIAnalyzing,
+  selectHealingEnabled,
+  selectTriggers,
 } from '@/redux/healingSelectors';
 import {
   setAIEnabled,
   setAIMode,
+  setTrigger,
+  setHealingEnabled,
   enqueueToast,
 } from '@/redux/healingSlice';
 import {
@@ -37,7 +41,16 @@ import { AISuppressedRulesPanel } from './AISuppressedRulesPanel';
  */
 export function AIHealingPanel({ aiHealing }) {
   const dispatch = useDispatch();
-  const aiEnabled = useSelector(selectAIEnabled);
+
+  // AI panel is effectively "on" when both the master healing toggle AND
+  // the "Also try AI for tricky errors" trigger are enabled — OR when the
+  // legacy ai.enabled flag is set (kept for backwards-compat with users
+  // who toggled only inside this panel).
+  const healingEnabled = useSelector(selectHealingEnabled);
+  const triggers = useSelector(selectTriggers);
+  const legacyAiEnabled = useSelector(selectAIEnabled);
+  const aiEnabled = (healingEnabled && !!triggers?.useAIForHard) || legacyAiEnabled;
+
   const aiMode = useSelector(selectAIMode);
   const isAnalyzing = aiHealing?.isAnalyzing ?? false;
 
@@ -49,6 +62,8 @@ export function AIHealingPanel({ aiHealing }) {
   const fixCount = fixes.length;
   const safeCount = fixes.filter((f) => f.is_safe || f.isSafe).length;
   const error = aiHealing?.error;
+  const suppressedCount = aiHealing?.suppressedCount ?? 0;
+  const hasSuppressedRules = !!aiHealing?.hasSuppressedRules;
 
   // ── Trigger analysis ────────────────────────────────────────────────
   const handleAnalyze = useCallback(() => {
@@ -72,9 +87,18 @@ export function AIHealingPanel({ aiHealing }) {
   }, [aiHealing]);
 
   // ── Toggle enable/disable ───────────────────────────────────────────
+  // Flip the effective state: turn on → set both master healing and the
+  // "useAIForHard" trigger; turn off → clear the trigger (don't kill the
+  // whole healing system).  Also keep the legacy ai.enabled flag in sync
+  // so code that still reads it continues to work.
   const handleToggleEnabled = useCallback(() => {
-    dispatch(setAIEnabled(!aiEnabled));
-  }, [dispatch, aiEnabled]);
+    const next = !aiEnabled;
+    dispatch(setAIEnabled(next));
+    dispatch(setTrigger({ key: 'useAIForHard', value: next }));
+    if (next && !healingEnabled) {
+      dispatch(setHealingEnabled(true));
+    }
+  }, [dispatch, aiEnabled, healingEnabled]);
 
   // ── Mode switch ─────────────────────────────────────────────────────
   const handleModeChange = useCallback((e) => {
@@ -86,6 +110,9 @@ export function AIHealingPanel({ aiHealing }) {
       <div className="p-4 text-center text-white/40 text-sm">
         <Sparkles size={20} className="mx-auto mb-2 text-white/20" />
         <p>AI Healing is disabled</p>
+        <p className="mt-1 text-[10px] text-white/30">
+          Also available as &ldquo;Also try AI for tricky errors&rdquo; in self-healing settings.
+        </p>
         <button
           onClick={handleToggleEnabled}
           className="mt-2 text-xs text-blue-400 hover:text-blue-300 underline"
@@ -247,13 +274,13 @@ export function AIHealingPanel({ aiHealing }) {
       </div>
 
       {/* ── Suppressed rules panel (zero-cost when nothing suppressed) ── */}
-      {((aiHealing.suppressedCount ?? 0) > 0 || aiHealing.hasSuppressedRules) && (
+      {(suppressedCount > 0 || hasSuppressedRules) && aiHealing && (
         <div className="px-2 pb-1">
           <AISuppressedRulesPanel
             getSuppressedRules={aiHealing.getSuppressedRules}
             onUnsuppress={aiHealing.unsuppressRule}
             onClearAll={aiHealing.clearAllSuppressed}
-            suppressedCount={aiHealing.suppressedCount ?? 0}
+            suppressedCount={suppressedCount}
             policySummary={aiHealing.policySummary}
             onRefresh={aiHealing.fetchPolicySummary}
           />

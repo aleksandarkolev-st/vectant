@@ -44,6 +44,7 @@ import { useAIHealingKeyboard } from '@/hooks/useAIHealingKeyboard';
 import { useAIAutoAnalysis } from '@/hooks/useAIAutoAnalysis';
 import { useAISelectionAnalysis } from '@/hooks/useAISelectionAnalysis';
 import { useHealingUndo } from '@/hooks/useHealingUndo';
+import { usePendingFixCodeActions } from '@/hooks/usePendingFixCodeActions';
 import { HealingToast } from '@/components/healing/HealingToast';
 import { PreCompileHealToast } from '@/components/healing/PreCompileHealToast';
 import { AIHealingPanel } from '@/components/healing/AIHealingPanel';
@@ -253,6 +254,14 @@ export default function EditorPage({ params }) {
         }, [healingConfigForPersist?.maxAiCallsPerMinute]),
     });
     const { undoLastFix } = useHealingUndo({ editorRef });
+
+    // Expose suggest-bucket fixes as Monaco lightbulb quick-fixes
+    usePendingFixCodeActions({
+        editorRef,
+        filePath: activeFilePath,
+        language: activeLanguage,
+        active: !!editor && !!activeFile && healingEnabledForPersist,
+    });
 
     // ─── AI Healing system (LLM-powered deep analysis) ─────
     // Complements useSelfHealing (regex): catches logic errors, type
@@ -2572,11 +2581,14 @@ export default function EditorPage({ params }) {
         onToggleOrientation: toggleTreeOrientation,
         onOpenScm: onOpenScmCb,
         editorProps: memoEditorProps,
+        // AI healing surface so docked panels (AIHealingPanel) can consume it
+        aiHealing,
     }), [
         editor, activeFile, mergedDiagnostics, diagnosticSummary,
         isAnalyzingProactive, isWorkspaceAnalyzing, onSuggestCb, onBusyCb,
         getLatestCurrentContent, completionClearSignal, jumpstartPrompt, jumpstartAttachments,
         onCloseProblemsCb, toggleTreeOrientation, onOpenScmCb, memoEditorProps,
+        aiHealing,
     ]);
 
     if (workspaceMissing) {

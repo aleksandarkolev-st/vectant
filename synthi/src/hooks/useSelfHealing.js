@@ -73,6 +73,20 @@ function uid() {
   return `hf-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
+/**
+ * Per-file opt-out: a `@synthi-disable-heal` marker anywhere in the first
+ * 10 lines of the file stops healing for that file entirely.  Matches
+ * any common comment form (`//`, `#`, `--`, `/*`, `*`).  Case-insensitive.
+ */
+const HEAL_OPTOUT_RE = /@synthi-disable-heal\b/i;
+function isHealingOptedOut(content) {
+  if (!content) return false;
+  // Only scan the first ~1KB / 10 lines.  Cheap enough to run on every pass.
+  const head = content.slice(0, 1024);
+  const firstLines = head.split('\n', 10).join('\n');
+  return HEAL_OPTOUT_RE.test(firstLines);
+}
+
 // ── Proactive diagnostic → healing fix normalizer ─────────────────────────
 // Maps proactive diagnostic category strings to HealingCategory values
 // so the existing autoHealCategories filter works seamlessly.
@@ -409,6 +423,12 @@ export function useSelfHealing({
 
     const content = model.getValue();
     if (!content || content.length < 2) return;
+
+    // Per-file opt-out: `// @synthi-disable-heal` near the top of the file
+    if (isHealingOptedOut(content)) {
+      d('skipped: file has @synthi-disable-heal marker');
+      return;
+    }
 
     // Content-hash dedup – skip if nothing changed
     const hash = computeContentHash(content);
@@ -748,6 +768,12 @@ export function useSelfHealing({
       if (!editor) return;
       const model = editor.getModel();
       if (!model) return;
+
+      // Per-file opt-out: `// @synthi-disable-heal` near the top of the file
+      if (isHealingOptedOut(model.getValue())) {
+        d('skipped: file has @synthi-disable-heal marker');
+        return;
+      }
 
       // Flatten all proactive diagnostics → healing-shaped fix objects
       const allFixes = (diagnostics || []).flatMap((diag) =>
