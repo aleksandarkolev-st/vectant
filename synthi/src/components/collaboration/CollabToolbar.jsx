@@ -8,6 +8,7 @@ import getInitials from '@/utils/getInitials';
 import { getCurrentUser } from '@/services/userIdentity';
 import ShareModal from './ShareModal';
 import MissedEventsTray from './MissedEventsTray';
+import FileVersionsPanel from './FileVersionsPanel';
 import {
   Users, Check, X, Bell, Share2, LogOut, Eye, Edit3
 } from 'lucide-react';
@@ -31,7 +32,7 @@ import {
  * All session management (invite link, permissions, guests, etc.)
  * lives inside ShareModal.
  */
-export default function CollabToolbar({ slug }) {
+export default function CollabToolbar({ slug, filePath }) {
   const users = usePresence(slug);
   const {
     role, session, guests, pendingKnocks, permissions,
@@ -116,8 +117,11 @@ export default function CollabToolbar({ slug }) {
       {/* ── Presence Avatars ────────────────────────────────────────── */}
       <PresenceAvatars users={allUsers} />
 
-      {/* ── Missed-while-offline tray (renders only when non-empty) ── */}
+      {/* ── Missed-while-offline tray ────────────────────────────────── */}
       <MissedEventsTray />
+
+      {/* ── Per-file version history + restore ──────────────────────── */}
+      <FileVersionsPanel slug={slug} filePath={filePath} />
 
       {/* ── Role Badges ──────────────────────────────────────────────── */}
       {role === 'idle' && (
