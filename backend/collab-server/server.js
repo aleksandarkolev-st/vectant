@@ -2103,8 +2103,14 @@ const server = http.createServer(async (req, res) => {
         await gitService.safeWriteFile(fullPath, content);
 
         // 2) Pull the CRDT doc onto the restored content so live editors
-        // converge without data loss.  Fallback to a hard invalidation
-        // when the Y-Sweet SDK has no write path.
+        // converge without data loss, then ALWAYS hard-invalidate the doc.
+        //
+        // A successful resetDocContent alone is not sufficient: a client with
+        // the file open may have newer local edits in its Y.Doc that would
+        // merge with (rather than replace) the restored state, so the editor
+        // keeps showing the unrestored text. invalidateDocsForSlug broadcasts
+        // doc-invalidated, which makes connected clients destroy their local
+        // doc and reconnect to Y-Sweet with the freshly-written content.
         let crdtReset = false;
         try {
           crdtReset = await ySweetBridge.resetDocContent(docName, content);
@@ -2112,12 +2118,10 @@ const server = http.createServer(async (req, res) => {
           logger.warn('file_version_restore_crdt_reset_failed', { docName }, err);
           crdtReset = false;
         }
-        if (!crdtReset) {
-          await invalidateDocsForSlug(slug, [normalizedPath], {
-            userId: targetUserId,
-            sessionId,
-          });
-        }
+        await invalidateDocsForSlug(slug, [normalizedPath], {
+          userId: targetUserId,
+          sessionId,
+        });
 
         // 3) Housekeeping: hash cache + new save-point + audit entry.
         const restoredHash = computeHash(content);
