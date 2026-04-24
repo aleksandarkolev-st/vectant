@@ -471,6 +471,41 @@ async function getFileVersion(slug, filePath, index = 0) {
   }
 }
 
+/**
+ * Drop the `keepFromIndex` newest versions so that whatever was at
+ * `keepFromIndex` becomes the new head of the list.  Used when restoring
+ * an older version — the newer snapshots stop representing the live
+ * timeline the moment we roll back, so they shouldn't linger in history.
+ *
+ * No-op when Redis is disabled or `keepFromIndex <= 0`.
+ */
+async function truncateVersionsAbove(slug, filePath, keepFromIndex) {
+  if (!slug || !filePath) return;
+  if (!Number.isFinite(keepFromIndex) || keepFromIndex <= 0) return;
+  const key = FILE_VERSION_KEY(slug, filePath);
+  return safeWrite(async () => {
+    await client
+      .multi()
+      .lTrim(key, keepFromIndex, -1)
+      .expire(key, VERSION_TTL_SEC)
+      .exec();
+  }, 'redis_truncate_versions_failed', { slug, filePath, keepFromIndex });
+}
+
+/**
+ * Number of versions currently stored for a file.  Cheap O(1) LLEN.
+ * Returns 0 when Redis is unavailable.
+ */
+async function countFileVersions(slug, filePath) {
+  if (!isAvailable() || !slug || !filePath) return 0;
+  try {
+    return await runWithRetry(() => client.lLen(FILE_VERSION_KEY(slug, filePath)));
+  } catch (err) {
+    logger.warn('redis_count_file_versions_failed', { slug, filePath }, err);
+    return 0;
+  }
+}
+
 // ── Offline user event inbox ─────────────────────────────────────────────
 // Events that were fired while the user was offline queue here so their
 // next connect can drain and deliver them as missed notifications.  Always
@@ -562,6 +597,8 @@ module.exports = {
   saveFileVersion,
   getFileVersions,
   getFileVersion,
+  truncateVersionsAbove,
+  countFileVersions,
   enqueueUserEvent,
   drainUserInbox,
   peekUserInboxSize,

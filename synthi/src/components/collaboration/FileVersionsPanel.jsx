@@ -1,9 +1,10 @@
 "use client";
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { History, RotateCcw, AlertTriangle, Loader2, Eye, ArrowLeft, Check } from 'lucide-react';
+import { History, RotateCcw, AlertTriangle, Loader2, Eye, ArrowLeft } from 'lucide-react';
 import { toast } from 'sonner';
 import { diffLines } from 'diff';
+import { codeToTokens } from 'shiki';
 import {
   Popover,
   PopoverContent,
@@ -11,6 +12,31 @@ import {
 } from '@/components/ui/popover';
 import collabSessionService from '@/services/collabSessionService';
 import { getCurrentUser } from '@/services/userIdentity';
+
+// Map file extensions to Shiki language IDs.  Kept in sync with the richer
+// table in CodeBlock.jsx; if a file has an unknown extension we fall back to
+// 'text' which shiki still tokenizes (as a single whitespace-split stream).
+const EXT_TO_LANG = {
+  js: 'javascript', mjs: 'javascript', cjs: 'javascript', jsx: 'jsx',
+  ts: 'typescript', tsx: 'tsx', py: 'python', rb: 'ruby', rs: 'rust',
+  go: 'go', cpp: 'cpp', cc: 'cpp', cxx: 'cpp', 'c++': 'cpp',
+  c: 'c', h: 'c', hpp: 'cpp', hh: 'cpp', cs: 'csharp',
+  java: 'java', kt: 'kotlin', swift: 'swift', php: 'php',
+  html: 'html', htm: 'html', css: 'css', scss: 'scss',
+  sass: 'sass', less: 'less', json: 'json', yaml: 'yaml',
+  yml: 'yaml', toml: 'toml', xml: 'xml', md: 'markdown',
+  sql: 'sql', sh: 'bash', bash: 'bash', zsh: 'bash',
+  dockerfile: 'dockerfile', prisma: 'prisma', graphql: 'graphql',
+  gql: 'graphql', vue: 'vue', svelte: 'svelte',
+};
+
+function langFromPath(filePath) {
+  if (!filePath) return 'text';
+  const base = filePath.split('/').pop() || '';
+  if (/^dockerfile$/i.test(base)) return 'dockerfile';
+  const ext = (base.split('.').pop() || '').toLowerCase();
+  return EXT_TO_LANG[ext] || 'text';
+}
 
 const COLLAB_URL = (
   process.env.NEXT_PUBLIC_COLLAB_SERVER_URL ||
@@ -41,8 +67,36 @@ function shortHash(h) {
   return typeof h === 'string' ? h.slice(0, 7) : '';
 }
 
+// Annotate each part with the source line offset it occupies so the diff
+// renderer can look up pre-tokenized shiki tokens by position in either the
+// base or target content.  Removed parts index into base, added + unchanged
+// index into target (the content being previewed).
+function annotateDiffParts(parts) {
+  let baseStart = 0;
+  let targetStart = 0;
+  return parts.map((part) => {
+    const lines = part.value.split('\n');
+    if (lines[lines.length - 1] === '') lines.pop();
+    const next = { ...part, _lines: lines };
+    if (part.removed) {
+      next._sourceStart = baseStart;
+      baseStart += lines.length;
+    } else if (part.added) {
+      next._sourceStart = targetStart;
+      targetStart += lines.length;
+    } else {
+      next._sourceStart = targetStart;
+      baseStart += lines.length;
+      targetStart += lines.length;
+    }
+    return next;
+  });
+}
+
 // Collapse consecutive unchanged lines into "… N unchanged lines …" rows so
-// the preview doesn't scroll past untouched regions of large files.
+// the preview doesn't scroll past untouched regions of large files.  Keeps
+// `_sourceStart` correct on the head + tail fragments so token lookup stays
+// aligned.
 function collapseUnchanged(parts, context = 2) {
   const out = [];
   parts.forEach((part) => {
@@ -50,15 +104,21 @@ function collapseUnchanged(parts, context = 2) {
       out.push(part);
       return;
     }
-    const lines = part.value.split('\n');
-    if (lines[lines.length - 1] === '') lines.pop();
+    const lines = part._lines || [];
     if (lines.length <= context * 2 + 1) {
-      out.push({ ...part, _lines: lines });
+      out.push(part);
       return;
     }
-    out.push({ value: '', _lines: lines.slice(0, context) });
+    out.push({
+      ...part,
+      _lines: lines.slice(0, context),
+    });
     out.push({ _gap: lines.length - context * 2 });
-    out.push({ value: '', _lines: lines.slice(-context) });
+    out.push({
+      ...part,
+      _lines: lines.slice(-context),
+      _sourceStart: (part._sourceStart || 0) + lines.length - context,
+    });
   });
   return out;
 }
@@ -254,7 +314,7 @@ export default function FileVersionsPanel({ slug, filePath }) {
         </button>
       </PopoverTrigger>
       <PopoverContent
-        className="w-[420px] p-0 rounded-xl border overflow-hidden"
+        className={`${view === 'preview' ? 'w-[560px]' : 'w-[420px]'} p-0 rounded-xl border overflow-hidden`}
         style={{
           backgroundColor: 'var(--bg-elevated)',
           borderColor: 'var(--border-medium)',
@@ -481,7 +541,7 @@ function PreviewView({
     if (typeof baseContent !== 'string' || version.index === 0) return null;
     // Diff direction: base (current) → target (what we'd restore to).
     // So "removed" lines disappear on restore, "added" lines reappear.
-    return collapseUnchanged(diffLines(baseContent, content));
+    return collapseUnchanged(annotateDiffParts(diffLines(baseContent, content)));
   }, [content, baseContent, version.index]);
 
   const stats = useMemo(() => {
@@ -490,6 +550,50 @@ function PreviewView({
   }, [diffParts]);
 
   const isLatest = version.index === 0;
+
+  // Tokenize both the target snapshot and (when diffing) the current base
+  // via shiki, so each line in the preview can be rendered with real syntax
+  // colors on top of the red/green diff background.  Shiki is async and
+  // network-free once loaded; we treat tokenization failures as non-fatal
+  // and fall back to plain text rendering.
+  const [targetTokens, setTargetTokens] = useState(null);
+  const [baseTokens, setBaseTokens] = useState(null);
+  useEffect(() => {
+    if (typeof content !== 'string') {
+      setTargetTokens(null);
+      setBaseTokens(null);
+      return undefined;
+    }
+    let cancelled = false;
+    const lang = langFromPath(filePath);
+    const tokenize = async (text) => {
+      if (typeof text !== 'string') return null;
+      try {
+        const res = await codeToTokens(text, { lang, theme: 'github-dark-default' });
+        return res?.tokens || null;
+      } catch (_) {
+        try {
+          const res = await codeToTokens(text, { lang: 'text', theme: 'github-dark-default' });
+          return res?.tokens || null;
+        } catch (__) {
+          return null;
+        }
+      }
+    };
+    (async () => {
+      const [t, b] = await Promise.all([
+        tokenize(content),
+        typeof baseContent === 'string' && version.index !== 0
+          ? tokenize(baseContent)
+          : Promise.resolve(null),
+      ]);
+      if (!cancelled) {
+        setTargetTokens(t);
+        setBaseTokens(b);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [content, baseContent, filePath, version.index]);
 
   return (
     <div className="flex flex-col" style={{ maxHeight: 500 }}>
@@ -590,10 +694,14 @@ function PreviewView({
         )}
 
         {!loading && !error && diffParts && (
-          <DiffBody parts={diffParts} />
+          <DiffBody
+            parts={diffParts}
+            targetTokens={targetTokens}
+            baseTokens={baseTokens}
+          />
         )}
         {!loading && !error && !diffParts && typeof content === 'string' && (
-          <ContentBody content={content} />
+          <ContentBody content={content} tokens={targetTokens} />
         )}
       </div>
 
@@ -644,7 +752,74 @@ function PreviewView({
   );
 }
 
-function DiffBody({ parts }) {
+// Renders a single code line with shiki-tokenized spans inline.  Falls back
+// to plain text when tokens haven't loaded yet or tokenization failed —
+// the component never gates display on highlighting.
+function TokenLine({ tokens, raw }) {
+  if (Array.isArray(tokens) && tokens.length > 0) {
+    return (
+      <>
+        {tokens.map((tok, i) => (
+          <span
+            key={i}
+            style={{
+              color: tok.color || 'inherit',
+              fontStyle: tok.fontStyle === 2 ? 'italic' : undefined,
+              fontWeight: tok.fontStyle === 1 ? 'bold' : undefined,
+            }}
+          >
+            {tok.content}
+          </span>
+        ))}
+      </>
+    );
+  }
+  return <span>{raw || '​'}</span>;
+}
+
+const DIFF_KIND_STYLES = {
+  added: {
+    bg: 'color-mix(in srgb, var(--accent-success) 15%, transparent)',
+    marker: '+',
+    markerColor: 'var(--accent-success)',
+  },
+  removed: {
+    bg: 'color-mix(in srgb, var(--accent-danger) 15%, transparent)',
+    marker: '-',
+    markerColor: 'var(--accent-danger)',
+  },
+  unchanged: {
+    bg: 'transparent',
+    marker: ' ',
+    markerColor: 'var(--text-muted)',
+  },
+};
+
+function DiffLine({ kind, tokens, raw }) {
+  const style = DIFF_KIND_STYLES[kind];
+  return (
+    <div
+      className="flex px-3 py-0.5"
+      style={{ background: style.bg }}
+    >
+      <span
+        className="select-none w-4 shrink-0 text-center"
+        style={{ color: style.markerColor, opacity: 0.85 }}
+        aria-hidden
+      >
+        {style.marker}
+      </span>
+      <span
+        className="whitespace-pre-wrap break-all flex-1"
+        style={{ color: 'var(--text-primary)' }}
+      >
+        <TokenLine tokens={tokens} raw={raw} />
+      </span>
+    </div>
+  );
+}
+
+function DiffBody({ parts, targetTokens, baseTokens }) {
   return (
     <div>
       {parts.map((part, i) => {
@@ -664,54 +839,46 @@ function DiffBody({ parts }) {
             </div>
           );
         }
-        const lines = part._lines || part.value.split('\n');
-        return lines.map((line, j) => {
-          const marker = part.added ? '+' : part.removed ? '−' : ' ';
-          const bg = part.added
-            ? 'color-mix(in srgb, var(--accent-success) 14%, transparent)'
-            : part.removed
-              ? 'color-mix(in srgb, var(--accent-danger) 14%, transparent)'
-              : 'transparent';
-          const color = part.added
-            ? 'var(--accent-success)'
-            : part.removed
-              ? 'var(--accent-danger)'
-              : 'var(--text-secondary)';
-          return (
-            <div
-              key={`${i}-${j}`}
-              className="flex px-3 py-0.5"
-              style={{ background: bg, color }}
-            >
-              <span
-                className="select-none w-4 shrink-0 opacity-70"
-                aria-hidden
-              >
-                {marker}
-              </span>
-              <span className="whitespace-pre-wrap break-all">{line || '​'}</span>
-            </div>
-          );
-        });
+        const lines = part._lines || [];
+        const sourceTokens = part.removed ? baseTokens : targetTokens;
+        const start = part._sourceStart || 0;
+        const kind = part.added ? 'added' : part.removed ? 'removed' : 'unchanged';
+        return lines.map((line, j) => (
+          <DiffLine
+            key={`${i}-${j}`}
+            kind={kind}
+            tokens={sourceTokens ? sourceTokens[start + j] : null}
+            raw={line}
+          />
+        ));
       })}
     </div>
   );
 }
 
-function ContentBody({ content }) {
-  const lines = content.split('\n');
+function ContentBody({ content, tokens }) {
+  const lines = useMemo(() => content.split('\n'), [content]);
+  const gutterWidth = Math.max(2, String(lines.length).length);
   return (
-    <div style={{ color: 'var(--text-secondary)' }}>
+    <div>
       {lines.map((line, i) => (
         <div key={i} className="flex px-3 py-0.5">
           <span
-            className="select-none w-8 shrink-0 text-right pr-2 opacity-60"
-            style={{ color: 'var(--text-muted)' }}
+            className="select-none shrink-0 text-right pr-3 opacity-60 font-mono"
+            style={{
+              color: 'var(--text-muted)',
+              width: `${gutterWidth + 1}ch`,
+            }}
             aria-hidden
           >
             {i + 1}
           </span>
-          <span className="whitespace-pre-wrap break-all">{line || '​'}</span>
+          <span
+            className="whitespace-pre-wrap break-all flex-1"
+            style={{ color: 'var(--text-primary)' }}
+          >
+            <TokenLine tokens={tokens ? tokens[i] : null} raw={line} />
+          </span>
         </div>
       ))}
     </div>

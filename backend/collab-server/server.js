@@ -452,9 +452,34 @@ async function flushDocToDisk(docName, options = {}) {
   }
 
   // 2. Disk write to the scoped repo (atomic via temp+rename, with verification)
+  // Seed a pre-edit baseline snapshot the first time we save a file, so the
+  // version history always contains the point you can "go back to the
+  // original" from.  Without this, the very first saved version IS already
+  // the user's edited content, and there's nothing to revert to.
   const repoPath = gitService.getEffectiveRepoPath(slug, effectiveUserId);
   if (fs.existsSync(repoPath)) {
     const fullPath = path.join(repoPath, filePath);
+    try {
+      const prior = await fsPromises.readFile(fullPath, 'utf8');
+      if (prior !== content) {
+        const priorHash = computeHash(prior);
+        const existingCount = await persistence.countFileVersions(slug, filePath);
+        if (existingCount === 0) {
+          await persistence.saveFileVersion(slug, filePath, {
+            userId: effectiveUserId,
+            sessionId: docSessionId || null,
+            hash: priorHash,
+            content: prior,
+            ts: Date.now() - 1,
+          });
+        }
+      }
+    } catch (err) {
+      // File didn't exist yet (brand new file) or unreadable — nothing to snapshot.
+      if (err && err.code !== 'ENOENT') {
+        logger.warn('version_baseline_read_failed', { slug, filePath }, err);
+      }
+    }
     await gitService.safeWriteFile(fullPath, content);
   }
 
@@ -2111,9 +2136,11 @@ const server = http.createServer(async (req, res) => {
         // A successful resetDocContent alone is not sufficient: a client with
         // the file open may have newer local edits in its Y.Doc that would
         // merge with (rather than replace) the restored state, so the editor
-        // keeps showing the unrestored text. invalidateDocsForSlug broadcasts
-        // doc-invalidated, which makes connected clients destroy their local
-        // doc and reconnect to Y-Sweet with the freshly-written content.
+        // keeps showing the unrestored text.  broadcastFileReverted triggers
+        // the Editor's synthi:file-reverted handler (Editor.jsx:~2395) which
+        // clears the Monaco model and re-fetches from disk; the preceding
+        // invalidateDocsForSlug destroys the Y.Doc binding so Monaco can't
+        // merge stale CRDT state back in on reconnect.
         let crdtReset = false;
         try {
           crdtReset = await ySweetBridge.resetDocContent(docName, content);
@@ -2126,10 +2153,15 @@ const server = http.createServer(async (req, res) => {
           sessionId,
         });
 
-        // 3) Housekeeping: hash cache + new save-point + audit entry.
+        // 3) Truncate any newer versions — after restore they no longer
+        // represent the live timeline.  The entry at `index` becomes the
+        // new head (index 0), so the list is: [restored-content, ...older].
+        // No duplicate saveFileVersion: the restored content is already
+        // the new index 0 by virtue of the trim.
         const restoredHash = computeHash(content);
         const size = Buffer.byteLength(content, 'utf8');
         fileHashCache.set(docName, { hash: restoredHash, timestamp: Date.now() });
+        await persistence.truncateVersionsAbove(slug, normalizedPath, index);
         persistence.logFileEvent(slug, normalizedPath, {
           kind: 'restored',
           userId,
@@ -2138,15 +2170,13 @@ const server = http.createServer(async (req, res) => {
           size,
           meta: { fromIndex: index, fromHash: version.hash || null, targetUserId },
         });
-        persistence.saveFileVersion(slug, normalizedPath, {
-          userId,
-          sessionId,
-          hash: restoredHash,
-          content,
-        });
 
         broadcastFileSaved(slug, normalizedPath, { userId: targetUserId, sessionId });
         broadcastGitStatusChanged(slug, normalizedPath, { userId: targetUserId, sessionId });
+        // Tell the Editor to hard-refresh its model from disk.  This is the
+        // event page.jsx's useSSEEvent(…'file-reverted'…) turns into the
+        // 'synthi:file-reverted' DOM event the Editor handler waits for.
+        broadcastFileReverted(slug, [normalizedPath], { userId: targetUserId, sessionId });
 
         logger.info('file_version_restored', {
           slug,
