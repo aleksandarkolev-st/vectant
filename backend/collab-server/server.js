@@ -474,7 +474,33 @@ async function flushDocToDisk(docName, options = {}) {
 
   broadcastGitStatusChanged(slug, filePath, { userId: effectiveUserId, sessionId: docSessionId || null });
   broadcastFileSaved(slug, filePath, { userId: effectiveUserId, sessionId: docSessionId || null });
-  console.log(`[Collab Flush] Explicit save: ${filePath} -> disk + GCS (${content.length} chars)`);
+
+  // Record a durable save-point: an append-only activity entry plus a
+  // versioned snapshot of the content.  Both land in Redis when available
+  // (see persistence.js), so users can see who saved when and recover
+  // overwritten content even after Monaco's local undo is gone.
+  const contentHash = computeHash(content);
+  persistence.logFileEvent(slug, filePath, {
+    kind: 'saved',
+    userId: effectiveUserId,
+    sessionId: docSessionId || null,
+    hash: contentHash,
+    size: Buffer.byteLength(content, 'utf8'),
+  });
+  persistence.saveFileVersion(slug, filePath, {
+    userId: effectiveUserId,
+    sessionId: docSessionId || null,
+    hash: contentHash,
+    content,
+  });
+
+  logger.info('file_saved', {
+    slug,
+    filePath,
+    userId: effectiveUserId,
+    sessionId: docSessionId || null,
+    size: content.length,
+  });
 }
 
 const workspaceManager = require('./workspaceManager');
@@ -608,12 +634,20 @@ async function invalidateDocsForSlug(slug, filePaths = null, scope = {}) {
   const affectedPaths = filePaths && filePaths.length > 0 ? filePaths : [];
   for (const fp of affectedPaths) {
     revertCooldowns.set(`${slug}:${fp}`, now);
+    // Best-effort: log the revert to the file activity stream.  No version
+    // snapshot — the disk is the source of truth post-revert and is
+    // already captured in the previous 'saved' entry.
+    persistence.logFileEvent(slug, fp, {
+      kind: 'reverted',
+      userId: scope?.userId || null,
+      sessionId: scope?.sessionId || null,
+    });
   }
 
   if (filePaths) {
-    console.log(`[Collab] Invalidated ${filePaths.length} docs for slug ${slug}`);
+    logger.info('docs_invalidated', { slug, files: filePaths.length, paths: filePaths });
   } else {
-    console.log(`[Collab] Invalidated all docs for slug ${slug}`);
+    logger.info('docs_invalidated', { slug, files: 'all' });
   }
 }
 
@@ -1831,6 +1865,120 @@ const server = http.createServer(async (req, res) => {
   }
 
   // ========================================================================
+  // PRESENCE — is a given user currently online?
+  //
+  //   GET /presence/user/:userId
+  //   → { userId, online, inboxPending }
+  //
+  // Consumers use this to decide whether to show "User is offline, we'll
+  // notify them when they return" vs. "Sending invite now...".  inboxPending
+  // is how many queued events are waiting for their next connect.
+  // ========================================================================
+  if (req.url.startsWith('/presence/user/') && req.method === 'GET') {
+    try {
+      const urlObj = new URL(req.url, `http://${req.headers.host}`);
+      const userId = decodeURIComponent(urlObj.pathname.split('/')[3] || '');
+      if (!userId) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'userId is required' }));
+        return;
+      }
+      const online = isUserOnline(userId);
+      const inboxPending = online ? 0 : await persistence.peekUserInboxSize(userId);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ userId, online, inboxPending }));
+    } catch (e) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: e.message }));
+    }
+    return;
+  }
+
+  // ========================================================================
+  // FILE HISTORY + VERSIONS — audit log + server-side undo for saves.
+  // Backed by Redis (persistence.js).  Returns an empty list when
+  // persistence is disabled.
+  //
+  //   GET /file-history/:slug?filePath=...&limit=50
+  //   GET /file-versions/:slug?filePath=...
+  //   GET /file-version/:slug?filePath=...&index=N
+  // ========================================================================
+  if (req.url.startsWith('/file-history/') && req.method === 'GET') {
+    try {
+      const urlObj = new URL(req.url, `http://${req.headers.host}`);
+      const slug = decodeURIComponent(urlObj.pathname.split('/')[2] || '');
+      const filePath = urlObj.searchParams.get('filePath') || '';
+      const limit = parseInt(urlObj.searchParams.get('limit') || '50', 10);
+      if (!slug || !filePath) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'slug and filePath are required' }));
+        return;
+      }
+      try { validateFilePath(filePath); }
+      catch (e) { res.writeHead(400); res.end(JSON.stringify({ error: e.message })); return; }
+      const events = await persistence.getFileHistory(slug, filePath, limit);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ slug, filePath, events }));
+    } catch (e) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: e.message }));
+    }
+    return;
+  }
+
+  if (req.url.startsWith('/file-versions/') && req.method === 'GET') {
+    try {
+      const urlObj = new URL(req.url, `http://${req.headers.host}`);
+      const slug = decodeURIComponent(urlObj.pathname.split('/')[2] || '');
+      const filePath = urlObj.searchParams.get('filePath') || '';
+      if (!slug || !filePath) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'slug and filePath are required' }));
+        return;
+      }
+      try { validateFilePath(filePath); }
+      catch (e) { res.writeHead(400); res.end(JSON.stringify({ error: e.message })); return; }
+      // Metadata-only listing by default — content retrieval is a separate
+      // call so the default response is cheap.
+      const versions = await persistence.getFileVersions(slug, filePath, { withContent: false });
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ slug, filePath, versions }));
+    } catch (e) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: e.message }));
+    }
+    return;
+  }
+
+  if (req.url.startsWith('/file-version/') && req.method === 'GET') {
+    try {
+      const urlObj = new URL(req.url, `http://${req.headers.host}`);
+      const slug = decodeURIComponent(urlObj.pathname.split('/')[2] || '');
+      const filePath = urlObj.searchParams.get('filePath') || '';
+      const index = parseInt(urlObj.searchParams.get('index') || '0', 10);
+      if (!slug || !filePath) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'slug and filePath are required' }));
+        return;
+      }
+      try { validateFilePath(filePath); }
+      catch (e) { res.writeHead(400); res.end(JSON.stringify({ error: e.message })); return; }
+      const version = await persistence.getFileVersion(slug, filePath, index);
+      if (!version) {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'version_not_found' }));
+        return;
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ slug, filePath, index, version }));
+    } catch (e) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: e.message }));
+    }
+    return;
+  }
+
+  // ========================================================================
   // Y-SWEET TOKEN API — Issue connection tokens for CRDT document rooms
   // ========================================================================
   if (req.url.startsWith('/ysweet/token') && req.method === 'POST') {
@@ -2000,9 +2148,11 @@ const server = http.createServer(async (req, res) => {
         // Track this user as invited so they are auto-admitted on knock
         sessionManager.addInvitedUser(session.id, targetUserId);
 
-        // Send invite notification to the target user via notification WS
-        const inviteMsg = JSON.stringify({
-          type: 'collab-invite',
+        // Deliver the collab-invite to the target user.  If they're online
+        // on this slug we send over the notify-WS immediately; if they're
+        // offline the event lands in their Redis inbox and pops as a
+        // "missed while offline" notification next time they connect.
+        const invitePayload = {
           slug,
           sessionId: session.id,
           hostId,
@@ -2010,14 +2160,10 @@ const server = http.createServer(async (req, res) => {
           hostAvatar: hostAvatar || '',
           inviteToken: session.inviteToken,
           roomCode: session.roomCode || null,
-        });
-        if (notifyWss) {
-          notifyWss.clients.forEach((ws) => {
-            if (ws.readyState === WebSocket.OPEN && ws._slug === slug && ws._userId === targetUserId) {
-              try { ws.send(inviteMsg); } catch (_) {}
-            }
-          });
-        }
+        };
+        deliverToUser(targetUserId, 'collab-invite', invitePayload, { slug })
+          .then((r) => logger.info('invite_delivery', { targetUserId, slug, delivered: r.delivered, queued: r.queued }))
+          .catch((err) => logger.warn('invite_delivery_failed', { targetUserId, slug }, err));
 
         const appUrl = process.env.SYNTHI_APP_URL || 'http://localhost:3000';
         const inviteLink = `${appUrl}/collab/${session.id}?token=${session.inviteToken}${session.roomCode ? `&code=${session.roomCode}` : ''}`;
@@ -3460,15 +3606,99 @@ server.on('upgrade', (request, socket, head) => {
   }
 });
 
+// ── Presence + offline delivery helpers ─────────────────────────────
+// Online = has at least one open notify-WS OR session-WS.  We prefer the
+// notify-WS because it's the long-lived channel every user keeps open on
+// the workspace page, but we also look at sessionWss so a user inside an
+// active collab session is considered online even if their notify-WS
+// hasn't reconnected yet.
+function isUserOnline(userId) {
+  if (!userId) return false;
+  const id = String(userId);
+  if (notifyWss) {
+    for (const ws of notifyWss.clients) {
+      if (ws.readyState === WebSocket.OPEN && ws._userId === id) return true;
+    }
+  }
+  if (sessionWss) {
+    for (const ws of sessionWss.clients) {
+      if (ws.readyState === WebSocket.OPEN && ws._userId === id) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Deliver an event to a user.  If they're online we send immediately via
+ * every open notify-WS for that user; otherwise we queue in Redis so their
+ * next connect picks it up.  When a slug is supplied only matching
+ * notify-WS connections receive the live delivery — the Redis fallback
+ * has no slug filter since inbox drains target the userId only.
+ *
+ * @param {string} userId
+ * @param {string} type  event type (e.g. 'collab-invite', 'knock:denied')
+ * @param {object} payload
+ * @param {{ slug?: string, forceQueue?: boolean }} [opts]
+ * @returns {Promise<{ delivered: boolean, queued: boolean }>}
+ */
+async function deliverToUser(userId, type, payload, opts = {}) {
+  if (!userId || !type) return { delivered: false, queued: false };
+  const msg = JSON.stringify({ type, ...payload });
+  let delivered = false;
+  if (!opts.forceQueue && notifyWss) {
+    notifyWss.clients.forEach((ws) => {
+      if (ws.readyState !== WebSocket.OPEN) return;
+      if (ws._userId !== userId) return;
+      if (opts.slug && ws._slug && ws._slug !== opts.slug) return;
+      try { ws.send(msg); delivered = true; } catch (_) {}
+    });
+  }
+  if (delivered) return { delivered: true, queued: false };
+  // Not online (or no matching slug connection) — queue for next connect.
+  await persistence.enqueueUserEvent(userId, { type, payload });
+  return { delivered: false, queued: true };
+}
+
+/**
+ * On WS connect, drain any events that were queued while the user was
+ * offline and send them immediately.  Each event carries `queued: true`
+ * and `queuedAt` so the client can render it as a popup "missed while
+ * offline" notification.  Safe to call even when persistence is off —
+ * drainUserInbox returns [] in that case.
+ */
+async function flushUserInboxToSocket(ws, userId) {
+  if (!userId) return;
+  const events = await persistence.drainUserInbox(userId);
+  if (!events.length) return;
+  for (const e of events) {
+    if (ws.readyState !== WebSocket.OPEN) break;
+    try {
+      ws.send(JSON.stringify({
+        type: e.type,
+        ...(e.payload || {}),
+        queued: true,
+        queuedAt: e.queuedAt,
+      }));
+    } catch (_) { /* socket went away mid-flush */ }
+  }
+  logger.info('inbox_drained', { userId, count: events.length });
+}
+
 // ── Notification WS connection handler ──────────────────────────────
 notifyWss.on('connection', (ws, req) => {
   const params = new URLSearchParams((req.url || '').split('?')[1] || '');
   ws._slug = params.get('slug') || null;
   ws._userId = params.get('userId') ? decodeURIComponent(params.get('userId')) : null;
   ws._sessionId = params.get('sessionId') || null;
-  console.log(`[Collab] Notification WS connected — slug=${ws._slug}, userId=${ws._userId}`);
+  logger.info('notify_ws_connected', { slug: ws._slug, userId: ws._userId });
+  // Flush any offline events for this user as a burst of queued:true
+  // messages so the UI can surface them as popups.
+  if (ws._userId) {
+    flushUserInboxToSocket(ws, ws._userId).catch((err) =>
+      logger.warn('inbox_flush_failed', { userId: ws._userId }, err));
+  }
   ws.on('close', () => {
-    console.log(`[Collab] Notification WS disconnected — slug=${ws._slug}, userId=${ws._userId}`);
+    logger.info('notify_ws_disconnected', { slug: ws._slug, userId: ws._userId });
   });
 });
 
@@ -3477,9 +3707,9 @@ sessionWss.on('connection', (ws, req) => {
   const params = new URLSearchParams((req.url || '').split('?')[1] || '');
   ws._sessionId = params.get('sessionId') || null;
   ws._userId = params.get('userId') ? decodeURIComponent(params.get('userId')) : null;
-  console.log(`[Collab] Session WS connected — session=${ws._sessionId}, userId=${ws._userId}`);
+  logger.info('session_ws_connected', { sessionId: ws._sessionId, userId: ws._userId });
   ws.on('close', () => {
-    console.log(`[Collab] Session WS disconnected — session=${ws._sessionId}, userId=${ws._userId}`);
+    logger.info('session_ws_disconnected', { sessionId: ws._sessionId, userId: ws._userId });
   });
 });
 

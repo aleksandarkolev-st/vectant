@@ -490,6 +490,38 @@ class CollabSessionService extends EventTarget {
   // ── Workspace Presence ────────────────────────────────────────────────────
 
   /**
+   * Check whether another user is currently online on the collab server.
+   * Returns { online: boolean, inboxPending: number } — callers can use
+   * this to decide between "send invite now" vs. "we'll notify them when
+   * they return" UI copy.
+   */
+  async getUserPresence(targetUserId) {
+    if (!targetUserId) return { online: false, inboxPending: 0 };
+    try {
+      const res = await fetchWithTimeout(
+        `${COLLAB_URL}/presence/user/${encodeURIComponent(targetUserId)}`
+      );
+      if (!res.ok) return { online: false, inboxPending: 0 };
+      const data = await res.json();
+      return { online: !!data.online, inboxPending: data.inboxPending || 0 };
+    } catch (_) {
+      return { online: false, inboxPending: 0 };
+    }
+  }
+
+  /**
+   * Subscribe to missed-while-offline events.  The callback receives the
+   * full event detail (including queued=true, queuedAt).  UI code can
+   * surface these as popup notifications or a "you missed X while away"
+   * tray.
+   */
+  onInboxEvent(callback) {
+    const handler = (e) => callback(e.detail);
+    this.addEventListener('inbox:event', handler);
+    return () => this.removeEventListener('inbox:event', handler);
+  }
+
+  /**
    * Fetch all active users and sessions for a workspace.
    *
    * @param {string} slug — Workspace slug
@@ -1022,6 +1054,22 @@ class CollabSessionService extends EventTarget {
     this.dispatchEvent(new CustomEvent(type, { detail }));
     // Also fire a generic 'change' event for React hooks
     this.dispatchEvent(new CustomEvent('change', { detail: { type, ...detail } }));
+    // Offline-queue delivery: events that were buffered on the server while
+    // this user was disconnected arrive with { queued: true, queuedAt }.
+    // We surface them through two channels so UI code can either react to
+    // the specific type OR listen for any missed-while-offline event:
+    //   1. Auto-open the share popup for actionable invites so the user
+    //      isn't left wondering who tried to reach them.
+    //   2. Dispatch a generic 'inbox:event' the app can render as a toast
+    //      or popup list.
+    if (detail && detail.queued) {
+      if (type === 'collab-invite') {
+        this.dispatchEvent(new CustomEvent('popup:requestOpen', { detail: { reason: 'offline_invite' } }));
+      }
+      this.dispatchEvent(new CustomEvent('inbox:event', {
+        detail: { type, ...detail },
+      }));
+    }
   }
 
   /**
