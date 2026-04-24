@@ -11,7 +11,11 @@
 import { useEffect, useMemo } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import { makeSelectPendingFixesForFile } from '@/redux/healingSelectors';
-import { removePendingFix, recordAppliedFix } from '@/redux/healingSlice';
+import {
+  removePendingFix,
+  recordAppliedFix,
+  recordSuggestionAccepted,
+} from '@/redux/healingSlice';
 import {
   registerPendingFixCodeActions,
   disposePendingFixCodeActions,
@@ -58,9 +62,12 @@ export function usePendingFixCodeActions({
             replacementText: applied.replacementText,
             source: 'suggest_accepted',
           }));
+          // Feed the smart-rule-suggestion heuristic: after N accepts of
+          // the same category, propose auto-applying it by default.
+          if (applied.category) {
+            dispatch(recordSuggestionAccepted(applied.category));
+          }
         }
-        // recordAppliedFix already removes from pendingFixes, but dispatch
-        // removePendingFix too in case the fix wasn't in appliedFixes flow.
         dispatch(removePendingFix(fixId));
       },
     });

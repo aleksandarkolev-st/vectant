@@ -51,11 +51,16 @@ export function HealingToast({ onUndo, onUndoSuppress }) {
     if (nextToast.id === lastToastId.current) return;
     lastToastId.current = nextToast.id;
 
-    const { type, message, details, fixCount, undoable, undoAction } = nextToast;
+    const { type, message, details, fixCount, undoable, undoAction, filePath } = nextToast;
 
     // Determine toast variant based on type
     if (type === 'healing') {
+      // Stable Sonner id per file — Sonner replaces rather than stacks when
+      // the same id is reused.  Combined with the Redux-layer coalescing in
+      // enqueueToast, a rapid burst of fixes shows as ONE updating toast.
+      const sonnerId = `healing-${filePath || 'global'}`;
       toast.success(message, {
+        id: sonnerId,
         description: details ? formatCategory(details) : undefined,
         duration: 4000,
         action: undoable && onUndo

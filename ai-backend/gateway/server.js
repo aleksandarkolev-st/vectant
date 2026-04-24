@@ -1751,6 +1751,11 @@ async function forwardAIAnalyze(socket, data, requestId) {
   }
 }
 
+// Per-socket sliding window for rule-translate requests.  Protects the
+// Gemini backend from a malicious or buggy client slamming the endpoint.
+const RULE_TRANSLATE_WINDOW_MS = 60_000;
+const RULE_TRANSLATE_MAX_PER_WINDOW = 10;
+
 async function forwardHealRuleTranslate(socket, data, requestId) {
   const plainEnglish = data?.plainEnglish || data?.plain_english;
   if (typeof plainEnglish !== "string" || !plainEnglish.trim()) {
@@ -1761,6 +1766,21 @@ async function forwardHealRuleTranslate(socket, data, requestId) {
     sendError(socket, "`plainEnglish` too long (max 500 chars)", { requestId });
     return;
   }
+
+  // Rate limit
+  const now = Date.now();
+  if (!socket._ruleTranslateWindow) socket._ruleTranslateWindow = [];
+  socket._ruleTranslateWindow = socket._ruleTranslateWindow.filter(
+    (t) => now - t < RULE_TRANSLATE_WINDOW_MS
+  );
+  if (socket._ruleTranslateWindow.length >= RULE_TRANSLATE_MAX_PER_WINDOW) {
+    sendError(socket, "Too many rule translations — try again in a minute", {
+      requestId,
+      retryAfterMs: RULE_TRANSLATE_WINDOW_MS,
+    });
+    return;
+  }
+  socket._ruleTranslateWindow.push(now);
 
   try {
     const backendResponse = await fetch(backendHealRuleTranslateUrl, {

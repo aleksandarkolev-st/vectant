@@ -45,6 +45,7 @@ import { useAIAutoAnalysis } from '@/hooks/useAIAutoAnalysis';
 import { useAISelectionAnalysis } from '@/hooks/useAISelectionAnalysis';
 import { useHealingUndo } from '@/hooks/useHealingUndo';
 import { usePendingFixCodeActions } from '@/hooks/usePendingFixCodeActions';
+import { useSmartRuleSuggestions } from '@/hooks/useSmartRuleSuggestions';
 import { HealingToast } from '@/components/healing/HealingToast';
 import { PreCompileHealToast } from '@/components/healing/PreCompileHealToast';
 import { AIHealingPanel } from '@/components/healing/AIHealingPanel';
@@ -206,7 +207,7 @@ export default function EditorPage({ params }) {
     const aiAnalyzeRef = useRef(null);
     const aiCallsWindowRef = useRef([]);  // timestamps — for rate-limiting
 
-    const { selfEditFlagRef, healFromDiagnostics } = useSelfHealing({
+    const { selfEditFlagRef, healFromDiagnostics, triggerHealNow } = useSelfHealing({
         editorRef,
         gateway,
         filePath: activeFilePath,
@@ -262,6 +263,10 @@ export default function EditorPage({ params }) {
         language: activeLanguage,
         active: !!editor && !!activeFile && healingEnabledForPersist,
     });
+
+    // Smart rule suggestions: after N accepts/dismissals of the same
+    // category, propose a rule via toast.
+    useSmartRuleSuggestions();
 
     // ─── AI Healing system (LLM-powered deep analysis) ─────
     // Complements useSelfHealing (regex): catches logic errors, type
@@ -2211,6 +2216,17 @@ export default function EditorPage({ params }) {
         await handleRun({ skipCancel: true });
     }, [client, handleRun]);
 
+    // Keep the latest heal trigger + settings visible to handleSave without
+    // adding them to its dep array (which would churn on every config tweak).
+    const healSaveRef = useRef({ enabled: false, onSave: false, fn: null });
+    useEffect(() => {
+        healSaveRef.current = {
+            enabled: healingEnabledForPersist,
+            onSave: !!healingConfigForPersist?.triggers?.onSave,
+            fn: triggerHealNow,
+        };
+    }, [healingEnabledForPersist, healingConfigForPersist, triggerHealNow]);
+
     const handleSave = useCallback(async (latestCode) => {
         console.log('[HMR] handleSave called with activeFile:', activeFile?.name);
         if (!activeFile) return;
@@ -2326,6 +2342,16 @@ export default function EditorPage({ params }) {
             if (msg.includes('HMR restart') || msg.includes('Cancelled')) return;
             console.error('[HMR] HMR re-run failed', err);
         }
+
+        // Self-healing on save — non-blocking: heal attempts run AFTER the
+        // compile kicks off, so a save is never delayed by healing.
+        try {
+            const { enabled: hEnabled, onSave: hOnSave, fn: hFn } = healSaveRef.current;
+            if (hEnabled && hOnSave && typeof hFn === 'function') {
+                // Fire-and-forget; any failure surfaces as a healing toast.
+                setTimeout(() => { try { hFn(); } catch (_) { /* ignore */ } }, 0);
+            }
+        } catch (_) { /* never let healing break save */ }
     }, [activeFile, rawFiles, slug, compile, hmrEnabled, runInGuiMode, isGuiRunning, client, getLatestCurrentContent]);
 
     const handleEditorMount = useCallback((editorInstance) => {

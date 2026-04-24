@@ -31,9 +31,12 @@ import {
   setDebugLogging,
   setDryRun,
   setMaxAiCallsPerMinute,
+  setRules,
   resetStats,
+  enqueueToast,
   BoldnessThresholds,
 } from '@/redux/healingSlice';
+import { selectHealingRules } from '@/redux/healingSelectors';
 import { HealingRulesEditor } from './HealingRulesEditor';
 
 // ── Small UI atoms ──────────────────────────────────────────────────────
@@ -132,8 +135,65 @@ export function HealingSettingsPanel() {
   const debug = useSelector(selectDebugLogging);
   const dryRun = useSelector(selectDryRun);
   const custom = useSelector(selectCustomThresholds);
+  const rules = useSelector(selectHealingRules);
 
   const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [importText, setImportText] = useState('');
+  const [importError, setImportError] = useState(null);
+
+  const handleExportRules = useCallback(async () => {
+    const text = JSON.stringify(rules, null, 2);
+    try {
+      if (typeof navigator !== 'undefined' && navigator.clipboard) {
+        await navigator.clipboard.writeText(text);
+        dispatch(enqueueToast({
+          type: 'healing-undo',
+          message: `Copied ${rules.length} rule${rules.length === 1 ? '' : 's'} to clipboard`,
+        }));
+      }
+    } catch {
+      // Clipboard blocked — fall back to showing the text in the import box
+      setImportText(text);
+    }
+  }, [rules, dispatch]);
+
+  const handleImportRules = useCallback(() => {
+    const text = importText.trim();
+    if (!text) {
+      setImportError('Paste a JSON array of rules.');
+      return;
+    }
+    let parsed;
+    try {
+      parsed = JSON.parse(text);
+    } catch (e) {
+      setImportError(`Invalid JSON: ${e.message}`);
+      return;
+    }
+    if (!Array.isArray(parsed)) {
+      setImportError('Expected a JSON array of rules.');
+      return;
+    }
+    // Regenerate ids so import doesn't collide with existing rules
+    const normalised = parsed
+      .filter((r) => r && typeof r === 'object' && r.action)
+      .map((r) => ({
+        ...r,
+        id: `rule-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        disabled: !!r.disabled,
+      }));
+    if (normalised.length === 0) {
+      setImportError('No valid rules found in JSON.');
+      return;
+    }
+    dispatch(setRules(normalised));
+    dispatch(enqueueToast({
+      type: 'healing-undo',
+      message: `Imported ${normalised.length} rule${normalised.length === 1 ? '' : 's'}`,
+    }));
+    setImportText('');
+    setImportError(null);
+  }, [importText, dispatch]);
 
   const handleTrigger = useCallback(
     (key, value) => dispatch(setTrigger({ key, value })),
@@ -262,6 +322,35 @@ export function HealingSettingsPanel() {
                   {stats.totalFixesUndone || 0}
                 </span>
               </div>
+
+              {/* Routing breakdown */}
+              {stats.fixesByAction && (
+                <div className="mt-1">
+                  <div
+                    className="text-[10px] uppercase"
+                    style={{ color: 'var(--text-dim)' }}
+                  >
+                    By action:
+                  </div>
+                  {[
+                    { key: 'auto_apply',  label: 'Auto-applied' },
+                    { key: 'suggest',     label: 'Suggested' },
+                    { key: 'ai_escalate', label: 'Sent to AI' },
+                    { key: 'ignored',     label: 'Ignored by rule' },
+                  ].map(({ key, label }) => (
+                    <div key={key} className="flex justify-between text-xs mt-0.5">
+                      <span style={{ color: 'var(--text-muted)' }}>{label}</span>
+                      <span
+                        className="font-mono"
+                        style={{ color: 'var(--text-secondary)' }}
+                      >
+                        {stats.fixesByAction[key] || 0}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+
               {categorySorted.length > 0 && (
                 <div className="mt-1">
                   <div
@@ -421,6 +510,62 @@ export function HealingSettingsPanel() {
                 className="w-full h-1.5 rounded-full appearance-none cursor-pointer"
                 style={{ background: 'var(--bg-elevated)' }}
               />
+            </div>
+
+            {/* Export / Import rules */}
+            <div>
+              <div className="text-xs mb-1" style={{ color: 'var(--text-muted)' }}>
+                Share your rules
+              </div>
+              <div className="text-[10px] mb-2" style={{ color: 'var(--text-dim)' }}>
+                Copy rules as JSON to share with a teammate, or paste a JSON array
+                to replace your current rules.
+              </div>
+              <button
+                onClick={handleExportRules}
+                disabled={rules.length === 0}
+                className="text-xs px-2 py-1 rounded-md mr-2 disabled:opacity-40"
+                style={{ background: 'var(--bg-elevated)', color: 'var(--text-primary)' }}
+              >
+                Copy rules as JSON
+              </button>
+              <textarea
+                value={importText}
+                onChange={(e) => {
+                  setImportText(e.target.value);
+                  if (importError) setImportError(null);
+                }}
+                placeholder="Paste JSON here..."
+                className="w-full mt-2 px-2 py-1 text-xs font-mono rounded-md"
+                rows={4}
+                style={{
+                  background: 'var(--bg-base)',
+                  color: 'var(--text-primary)',
+                  border: '1px solid var(--border-subtle)',
+                  resize: 'vertical',
+                }}
+              />
+              <div className="flex items-center gap-2 mt-1">
+                <button
+                  onClick={handleImportRules}
+                  disabled={!importText.trim()}
+                  className="text-xs px-2 py-1 rounded-md disabled:opacity-40"
+                  style={{
+                    background: 'var(--accent-primary)',
+                    color: 'var(--text-on-accent, white)',
+                  }}
+                >
+                  Import (replaces current)
+                </button>
+                {importError && (
+                  <span
+                    className="text-[10px]"
+                    style={{ color: 'var(--accent-danger)' }}
+                  >
+                    {importError}
+                  </span>
+                )}
+              </div>
             </div>
           </div>
         )}

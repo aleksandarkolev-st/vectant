@@ -142,6 +142,10 @@ export const selectHealingRules = (state) => state.healing?.config?.rules ?? [];
 export const selectDebugLogging = (state) => state.healing?.config?.debugLogging ?? false;
 export const selectDryRun = (state) => state.healing?.config?.dryRun ?? false;
 export const selectCustomThresholds = (state) => state.healing?.config?.customThresholds ?? null;
+export const selectSuggestionCandidates = (state) =>
+  state.healing?.suggestionCandidates ?? { accepts: {}, dismissals: {} };
+export const selectSuggestionsSnoozed = (state) =>
+  state.healing?.suggestionsSnoozed ?? {};
 
 /**
  * Effective confidence thresholds — custom thresholds override the boldness

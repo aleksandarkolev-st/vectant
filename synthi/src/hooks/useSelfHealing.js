@@ -50,6 +50,8 @@ import {
   enqueueToast,
   setFileHealingState,
   setPendingFixes,
+  replacePendingFixesAndTrackDismissals,
+  incrementActionCount,
   RuleAction,
 } from '@/redux/healingSlice';
 
@@ -818,14 +820,20 @@ export function useSelfHealing({
 
       d(`routed ${allFixes.length} fixes: ${autoApply.length} apply · ${suggest.length} suggest · ${escalate.length} ai · ${ignoredCount} ignore`);
 
-      // Stage suggestions for the user to accept (Problems panel / lightbulb)
-      if (suggest.length > 0) {
-        dispatch(setPendingFixes(
-          suggest.map(({ fix: f }) => ({ ...f, id: f.id || uid(), filePath }))
-        ));
-      } else {
-        dispatch(setPendingFixes([]));
-      }
+      // Record routing breakdown for the stats panel
+      if (autoApply.length)  dispatch(incrementActionCount({ action: 'auto_apply',  count: autoApply.length }));
+      if (suggest.length)    dispatch(incrementActionCount({ action: 'suggest',     count: suggest.length }));
+      if (escalate.length)   dispatch(incrementActionCount({ action: 'ai_escalate', count: escalate.length }));
+      if (ignoredCount)      dispatch(incrementActionCount({ action: 'ignore',      count: ignoredCount }));
+
+      // Stage suggestions for the user to accept (Problems panel / lightbulb).
+      // Use the dismissal-tracking variant: any pending fix from the previous
+      // pass that doesn't carry over to this one gets credited as a dismissal,
+      // feeding the smart-rule-suggestion heuristic.
+      const newPending = suggest.length > 0
+        ? suggest.map(({ fix: f }) => ({ ...f, id: f.id || uid(), filePath }))
+        : [];
+      dispatch(replacePendingFixesAndTrackDismissals(newPending));
 
       // Hand escalated fixes to the AI layer (wired by page.jsx)
       if (escalate.length > 0 && typeof onAIEscalate === 'function') {

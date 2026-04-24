@@ -138,8 +138,28 @@ export const initialHealingState = {
     totalFixesUndone: 0,
     fixesByCategory: {},
     fixesByLanguage: {},
+    // Routing breakdown — lets users see whether their boldness preset
+    // is producing sensible splits (too many suggestions? too few?).
+    fixesByAction: {
+      auto_apply: 0,
+      suggest: 0,
+      ai_escalate: 0,
+      ignored: 0,
+    },
     sessionStartedAt: null,
   },
+
+  // Smart-rule-suggestion tracker.  Each time the user manually accepts a
+  // suggested fix of some category, the count bumps; when it crosses a
+  // threshold, useSmartRuleSuggestions proposes an auto-apply rule.
+  // Symmetric: dismissals bump a separate counter for "never heal this".
+  suggestionCandidates: {
+    accepts:    {},   // { [category]: number }
+    dismissals: {},   // { [category]: number }
+  },
+  // Per-category timestamp, set when the user declined a suggestion so we
+  // don't nag them again for a while.
+  suggestionsSnoozed: {},
 
   // Event log (keep last 100 events)
   events: [],
@@ -405,9 +425,35 @@ const healingSlice = createSlice({
 
     // ── Toast queue ─────────────────────────────────────────────────────
     enqueueToast(state, action) {
+      const next = action.payload || {};
+      // Coalesce stacking healing toasts for the same file.  Without this,
+      // each heal pass enqueues its own toast and Sonner stacks them into
+      // a wall of "Auto-fixed 1 issue" notifications.
+      if (next.type === 'healing') {
+        const existingIdx = state.toastQueue.findIndex(
+          (t) => t.type === 'healing' && (t.filePath || null) === (next.filePath || null)
+        );
+        if (existingIdx !== -1) {
+          const existing = state.toastQueue[existingIdx];
+          const combined = (existing.fixCount || 1) + (next.fixCount || 1);
+          state.toastQueue[existingIdx] = {
+            ...existing,
+            // Use the newest description but the combined count
+            fixCount: combined,
+            message: combined === 1
+              ? existing.message
+              : `Auto-fixed ${combined} issues`,
+            details: next.details || existing.details,
+            createdAt: Date.now(),
+            // Bump id so the toast component re-fires with the new count
+            id: `toast-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          };
+          return;
+        }
+      }
       state.toastQueue.push({
-        id: action.payload.id || `toast-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-        ...action.payload,
+        id: next.id || `toast-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        ...next,
         createdAt: Date.now(),
       });
     },
@@ -434,8 +480,62 @@ const healingSlice = createSlice({
         totalFixesUndone: 0,
         fixesByCategory: {},
         fixesByLanguage: {},
+        fixesByAction: { auto_apply: 0, suggest: 0, ai_escalate: 0, ignored: 0 },
         sessionStartedAt: Date.now(),
       };
+    },
+
+    // Record a routing decision — called by the rule engine pathway
+    // regardless of whether the fix was ultimately applied.  Payload:
+    // { action: 'auto_apply'|'suggest'|'ai_escalate'|'ignore', count: number }
+    incrementActionCount(state, action) {
+      const { action: act, count } = action.payload || {};
+      const n = typeof count === 'number' && count > 0 ? count : 1;
+      const key = act === 'ignore' ? 'ignored' : act;  // stats key differs from RuleAction
+      if (state.stats.fixesByAction && key in state.stats.fixesByAction) {
+        state.stats.fixesByAction[key] += n;
+      }
+    },
+
+    // Smart-rule-suggestion events
+    recordSuggestionAccepted(state, action) {
+      const cat = action.payload;
+      if (!cat) return;
+      state.suggestionCandidates.accepts[cat] =
+        (state.suggestionCandidates.accepts[cat] || 0) + 1;
+    },
+    // Atomic replace that credits any dropped pending fix as a dismissal
+    // (unless it's still in the new list).  Let the smart-rule hook watch
+    // the resulting counts and propose an ignore-rule if the user keeps
+    // letting the same category fall through without accepting.
+    replacePendingFixesAndTrackDismissals(state, action) {
+      const next = Array.isArray(action.payload) ? action.payload : [];
+      const nextIds = new Set(next.map((f) => f.id).filter(Boolean));
+      for (const prev of state.pendingFixes) {
+        if (!prev?.id || nextIds.has(prev.id)) continue;
+        const cat = prev.category;
+        if (!cat) continue;
+        state.suggestionCandidates.dismissals[cat] =
+          (state.suggestionCandidates.dismissals[cat] || 0) + 1;
+      }
+      state.pendingFixes = next;
+    },
+    recordSuggestionDismissed(state, action) {
+      const cat = action.payload;
+      if (!cat) return;
+      state.suggestionCandidates.dismissals[cat] =
+        (state.suggestionCandidates.dismissals[cat] || 0) + 1;
+    },
+    snoozeSuggestionFor(state, action) {
+      const cat = action.payload;
+      if (!cat) return;
+      state.suggestionsSnoozed[cat] = Date.now();
+    },
+    clearSuggestionCandidate(state, action) {
+      const cat = action.payload;
+      if (!cat) return;
+      delete state.suggestionCandidates.accepts[cat];
+      delete state.suggestionCandidates.dismissals[cat];
     },
 
     // ── Hydration (from localStorage) ───────────────────────────────────
@@ -531,6 +631,12 @@ export const {
   clearToasts,
   initSession,
   resetStats,
+  incrementActionCount,
+  recordSuggestionAccepted,
+  replacePendingFixesAndTrackDismissals,
+  recordSuggestionDismissed,
+  snoozeSuggestionFor,
+  clearSuggestionCandidate,
   hydrateHealing,
   resetHealing,
   // AI Agent
