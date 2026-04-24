@@ -7,6 +7,7 @@ import collabSessionService from '@/services/collabSessionService';
 import getInitials from '@/utils/getInitials';
 import { getCurrentUser } from '@/services/userIdentity';
 import ShareModal from './ShareModal';
+import MissedEventsTray from './MissedEventsTray';
 import {
   Users, Check, X, Bell, Share2, LogOut, Eye, Edit3
 } from 'lucide-react';
@@ -114,6 +115,9 @@ export default function CollabToolbar({ slug }) {
     <div className="flex items-center gap-2">
       {/* ── Presence Avatars ────────────────────────────────────────── */}
       <PresenceAvatars users={allUsers} />
+
+      {/* ── Missed-while-offline tray (renders only when non-empty) ── */}
+      <MissedEventsTray />
 
       {/* ── Role Badges ──────────────────────────────────────────────── */}
       {role === 'idle' && (

@@ -1979,6 +1979,202 @@ const server = http.createServer(async (req, res) => {
   }
 
   // ========================================================================
+  // POST /file-version/restore — rewrite a file back to a stored version.
+  //
+  // Body: { slug, filePath, index, userId, sessionId? }
+  //   - slug + filePath: target file (traversal-checked via realpath)
+  //   - index: position in the version list (0 = most recent save-point)
+  //   - userId: actor performing the restore
+  //   - sessionId: optional. When set, the host's repo is the restore target
+  //     and the caller must be the host or a guest with canEdit.
+  //
+  // Effects: disk rewrite, Y-Sweet CRDT content reset (falls back to doc
+  // invalidation if the SDK lacks a write path), new save-point logged,
+  // broadcasts file-saved + git-status-changed.
+  // ========================================================================
+  if (req.url === '/file-version/restore' && req.method === 'POST') {
+    if (!rateLimitGuard(req, res, 'file-version-restore', 20)) return;
+    let body = '';
+    req.on('data', (c) => { body += c; });
+    req.on('end', async () => {
+      try {
+        const payload = JSON.parse(body || '{}');
+        const { slug, filePath, userId } = payload;
+        const sessionId = payload.sessionId || null;
+        const index = Number.isFinite(payload.index) ? payload.index : parseInt(payload.index, 10);
+        if (!slug || !filePath || !Number.isFinite(index) || index < 0 || !userId) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'slug, filePath, index (>=0), userId are required' }));
+          return;
+        }
+        const { isValidUserId, isValidSessionId } = require('./permissionMiddleware');
+        if (!isValidUserId(userId)) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'invalid_userId' }));
+          return;
+        }
+        if (sessionId && !isValidSessionId(sessionId)) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'invalid_sessionId' }));
+          return;
+        }
+        let normalizedPath;
+        try { normalizedPath = validateFilePath(filePath); }
+        catch (e) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: e.message }));
+          return;
+        }
+
+        // Resolve which user's repo + CRDT room to rewrite.  Session flows
+        // always target the host; solo flows target the caller.
+        let targetUserId = userId;
+        if (sessionId) {
+          const session = sessionManager.getSession(sessionId);
+          if (!session) {
+            res.writeHead(404, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'session_not_found' }));
+            return;
+          }
+          if (session.slug !== slug) {
+            res.writeHead(403, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'session_slug_mismatch' }));
+            return;
+          }
+          if (session.hostId !== userId &&
+              !sessionManager.checkPermission(sessionId, userId, 'canEdit')) {
+            res.writeHead(403, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'edit_permission_required' }));
+            return;
+          }
+          targetUserId = session.hostId;
+        }
+
+        const version = await persistence.getFileVersion(slug, normalizedPath, index);
+        if (!version) {
+          res.writeHead(404, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'version_not_found' }));
+          return;
+        }
+        if (!version.hasContent || typeof version.content !== 'string') {
+          // Oversized versions are stored as metadata only.  Hand the
+          // caller the hash so they can show "snapshot exists but was too
+          // large to keep" rather than silently failing.
+          res.writeHead(410, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({
+            error: 'version_content_unavailable',
+            hash: version.hash || null,
+            size: version.size || null,
+          }));
+          return;
+        }
+
+        const content = version.content;
+        const docName = buildDocName(slug, normalizedPath, {
+          userId: targetUserId,
+          sessionId,
+        });
+
+        const repoPath = gitService.getEffectiveRepoPath(slug, targetUserId);
+        if (!fs.existsSync(repoPath)) {
+          res.writeHead(404, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'repo_not_found' }));
+          return;
+        }
+        // Belt-and-braces traversal guard: resolve symlinks inside the
+        // repo before writing.  validateFilePath already rejected `..`
+        // segments, but a symlink pointing out of the tree is still
+        // possible without this check.
+        let fullPath;
+        try {
+          const realRepo = await fsPromises.realpath(repoPath);
+          fullPath = path.resolve(realRepo, normalizedPath);
+          const rel = path.relative(realRepo, fullPath);
+          if (rel.startsWith('..') || path.isAbsolute(rel)) {
+            throw new Error('path escapes repo root');
+          }
+        } catch (e) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'invalid_repo_path', detail: e.message }));
+          return;
+        }
+
+        // 1) Disk is authoritative — rewrite it first.
+        await gitService.safeWriteFile(fullPath, content);
+
+        // 2) Pull the CRDT doc onto the restored content so live editors
+        // converge without data loss.  Fallback to a hard invalidation
+        // when the Y-Sweet SDK has no write path.
+        let crdtReset = false;
+        try {
+          crdtReset = await ySweetBridge.resetDocContent(docName, content);
+        } catch (err) {
+          logger.warn('file_version_restore_crdt_reset_failed', { docName }, err);
+          crdtReset = false;
+        }
+        if (!crdtReset) {
+          await invalidateDocsForSlug(slug, [normalizedPath], {
+            userId: targetUserId,
+            sessionId,
+          });
+        }
+
+        // 3) Housekeeping: hash cache + new save-point + audit entry.
+        const restoredHash = computeHash(content);
+        const size = Buffer.byteLength(content, 'utf8');
+        fileHashCache.set(docName, { hash: restoredHash, timestamp: Date.now() });
+        persistence.logFileEvent(slug, normalizedPath, {
+          kind: 'restored',
+          userId,
+          sessionId,
+          hash: restoredHash,
+          size,
+          meta: { fromIndex: index, fromHash: version.hash || null, targetUserId },
+        });
+        persistence.saveFileVersion(slug, normalizedPath, {
+          userId,
+          sessionId,
+          hash: restoredHash,
+          content,
+        });
+
+        broadcastFileSaved(slug, normalizedPath, { userId: targetUserId, sessionId });
+        broadcastGitStatusChanged(slug, normalizedPath, { userId: targetUserId, sessionId });
+
+        logger.info('file_version_restored', {
+          slug,
+          filePath: normalizedPath,
+          index,
+          actor: userId,
+          sessionId,
+          targetUserId,
+          hash: restoredHash,
+          size,
+          crdtReset,
+        });
+
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          ok: true,
+          slug,
+          filePath: normalizedPath,
+          index,
+          restoredHash,
+          size,
+          targetUserId,
+          docName,
+          crdtReset,
+        }));
+      } catch (e) {
+        logger.error('file_version_restore_failed', {}, e);
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: e.message }));
+      }
+    });
+    return;
+  }
+
+  // ========================================================================
   // Y-SWEET TOKEN API — Issue connection tokens for CRDT document rooms
   // ========================================================================
   if (req.url.startsWith('/ysweet/token') && req.method === 'POST') {
