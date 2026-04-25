@@ -87,11 +87,6 @@ const CommitHistoryPanel = dynamic(
   { ssr: false, loading: Placeholder },
 );
 
-const AIHealingPanel = dynamic(
-  () => import('@/components/healing/AIHealingPanel').then(m => ({ default: m.AIHealingPanel })),
-  { ssr: false, loading: Placeholder },
-);
-
 const HealingSettingsPanel = dynamic(
   () => import('@/components/healing/HealingSettingsPanel').then(m => ({ default: m.HealingSettingsPanel })),
   { ssr: false, loading: Placeholder },

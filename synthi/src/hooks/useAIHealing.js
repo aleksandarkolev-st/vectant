@@ -402,6 +402,10 @@ export function useAIHealing({
 
     // Accumulate fixes as they arrive
     const accumulated = [];
+    // Captured by onComplete; used by the finally block to render
+    // widgets/decorations only for SUGGEST-bucket fixes (the ones that
+    // weren't already auto-applied through the rule engine).
+    let visiblePostRoute = null;
 
     try {
       await gateway.aiStream(
@@ -428,16 +432,79 @@ export function useAIHealing({
           onComplete: (data) => {
             if (!mountedRef.current) return;
             const rawFinal = data?.fixes || accumulated;
-            const { visible: finalFixes, suppressedCount: suppressed } = aiSuppressedRules.filterFixes(rawFinal);
+            const { visible: filteredFixes, suppressedCount: suppressed } = aiSuppressedRules.filterFixes(rawFinal);
+
+            // ── Route streamed AI fixes through the rule engine ────────
+            // Mirrors the non-streaming analyze() path so boldness levels
+            // and user rules apply identically whether the response was
+            // streamed or batched.
+            const autoApplyList = [];
+            const remainingList = [];
+            for (const fix of filteredFixes) {
+              const decision = evaluateFix({
+                fix: {
+                  ...fix,
+                  category: fix.category || null,
+                  confidence: typeof fix.confidence === 'number' ? fix.confidence : 0,
+                },
+                diagnostic: {
+                  severity: fix.severity || 'error',
+                  confidence: fix.confidence,
+                  category: fix.category,
+                },
+                rules: healingRules,
+                thresholds,
+                filePath,
+                language: language || 'plaintext',
+                aiEnabled: true,
+              });
+
+              if (decision.action === RuleAction.AUTO_APPLY) {
+                autoApplyList.push(fix);
+              } else if (decision.action === RuleAction.IGNORE) {
+                // dropped — counted via ignoredCount below
+              } else {
+                remainingList.push(fix);
+              }
+            }
+
+            let appliedCount = 0;
+            for (const fix of autoApplyList) {
+              try {
+                if (applyFix(fix)) appliedCount += 1;
+              } catch (e) {
+                console.warn('[AIHealing] auto-apply failed for streamed fix', fix?.fix_id, e);
+              }
+            }
+
+            if (appliedCount) {
+              dispatch(incrementActionCount({ action: 'auto_apply', count: appliedCount }));
+            }
+            if (remainingList.length) {
+              dispatch(incrementActionCount({ action: 'suggest', count: remainingList.length }));
+            }
+            const ignoredCount = filteredFixes.length - autoApplyList.length - remainingList.length;
+            if (ignoredCount > 0) {
+              dispatch(incrementActionCount({ action: 'ignored', count: ignoredCount }));
+            }
+
+            const finalFixes = remainingList;
+            visiblePostRoute = finalFixes;
             setFixes(finalFixes);
             setSuppressedCount(suppressed);
             setLastAnalyzedAt(Date.now());
 
+            const parts = [];
+            if (appliedCount > 0) parts.push(`auto-fixed ${appliedCount}`);
+            if (finalFixes.length > 0) parts.push(`${finalFixes.length} pending`);
+            const message = parts.length
+              ? `AI ${parts.join(' · ')} (streamed)`
+              : 'AI analysis: no issues found ✓';
             dispatch(enqueueToast({
-              message: finalFixes.length
-                ? `AI found ${finalFixes.length} issue${finalFixes.length === 1 ? '' : 's'} (streamed)`
-                : 'AI analysis: no issues found ✓',
-              type: finalFixes.length ? 'info' : 'success',
+              message,
+              type: appliedCount > 0 ? 'healing' : (finalFixes.length ? 'info' : 'success'),
+              fixCount: appliedCount || undefined,
+              undoable: appliedCount > 0,
             }));
           },
           onError: (data) => {
@@ -454,36 +521,41 @@ export function useAIHealing({
       if (mountedRef.current) {
         setIsAnalyzing(false);
 
-        // Render whatever we accumulated
-        if (accumulated.length > 0) {
+        // Render only the SUGGEST-bucket fixes — anything in AUTO_APPLY
+        // has already been written to the model by onComplete, and IGNORE
+        // fixes were dropped intentionally.  Falling back to `accumulated`
+        // (the unrouted set) would re-surface fixes the rule engine just
+        // applied or hid.
+        const widgetFixes = visiblePostRoute ?? accumulated;
+        if (widgetFixes.length > 0) {
           const editor = editorRef?.current;
           if (editor) {
             disposeAIInlineWidgets(editor);
             disposeAICodeActions();
-            createAIInlineWidgets(editor, accumulated, {
+            createAIInlineWidgets(editor, widgetFixes, {
               onApply: (fix) => applyFix(fix),
               onDismiss: (fix) => dismissFixInternal(fix),
             });
-            codeActionsRef.current = registerAICodeActions(editor, accumulated, {
+            codeActionsRef.current = registerAICodeActions(editor, widgetFixes, {
               onApply: (fix) => applyFix(fix),
             });
             const m = editor.getModel();
-            if (m) setAIDiagnostics(m, accumulated);
+            if (m) setAIDiagnostics(m, widgetFixes);
 
             // Update hover provider with streamed fixes
             if (hoverProviderRef.current) {
-              hoverProviderRef.current.updateFixes(accumulated);
+              hoverProviderRef.current.updateFixes(widgetFixes);
             } else {
               try {
                 const monaco = (await import('monaco-editor')).default ?? await import('monaco-editor');
-                hoverProviderRef.current = registerAIHoverProvider(monaco, accumulated);
+                hoverProviderRef.current = registerAIHoverProvider(monaco, widgetFixes);
               } catch (_) { /* non-critical */ }
             }
           }
         }
       }
     }
-  }, [enabled, gateway, editorRef, filePath, language, workspaceRoot, dispatch]);
+  }, [enabled, gateway, editorRef, filePath, language, workspaceRoot, dispatch, healingRules, thresholds]);
 
   // ── Apply a single fix ──────────────────────────────────────────────
   const applyFix = useCallback((fix) => {

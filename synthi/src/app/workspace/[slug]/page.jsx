@@ -48,7 +48,6 @@ import { usePendingFixCodeActions } from '@/hooks/usePendingFixCodeActions';
 import { useSmartRuleSuggestions } from '@/hooks/useSmartRuleSuggestions';
 import { HealingToast } from '@/components/healing/HealingToast';
 import { PreCompileHealToast } from '@/components/healing/PreCompileHealToast';
-import { AIHealingPanel } from '@/components/healing/AIHealingPanel';
 import { HealingSettingsPanel } from '@/components/healing/HealingSettingsPanel';
 import { clearAIFixes, clearPendingFixes, enqueueToast, hydrateHealing, setLiveDiagnostics } from '@/redux/healingSlice';
 import { loadHealingPersistedState, saveHealingPersistedState } from '@/lib/healing/persistence';
@@ -2283,14 +2282,18 @@ export default function EditorPage({ params }) {
 
     // Keep the latest heal trigger + settings visible to handleSave without
     // adding them to its dep array (which would churn on every config tweak).
-    const healSaveRef = useRef({ enabled: false, onSave: false, fn: null });
+    // The save trigger runs through healFromDiagnostics so it routes through
+    // the user rule engine (boldness levels + custom rules) — runHealPass
+    // would bypass those and only honour autoHealCategories/minConfidence.
+    const healSaveRef = useRef({ enabled: false, onSave: false, fn: null, diags: [] });
     useEffect(() => {
         healSaveRef.current = {
             enabled: healingEnabledForPersist,
             onSave: !!healingConfigForPersist?.triggers?.onSave,
-            fn: triggerHealNow,
+            fn: healFromDiagnostics,
+            diags: mergedDiagnostics,
         };
-    }, [healingEnabledForPersist, healingConfigForPersist, triggerHealNow]);
+    }, [healingEnabledForPersist, healingConfigForPersist, healFromDiagnostics, mergedDiagnostics]);
 
     const handleSave = useCallback(async (latestCode) => {
         console.log('[HMR] handleSave called with activeFile:', activeFile?.name);
@@ -2411,10 +2414,14 @@ export default function EditorPage({ params }) {
         // Self-healing on save — non-blocking: heal attempts run AFTER the
         // compile kicks off, so a save is never delayed by healing.
         try {
-            const { enabled: hEnabled, onSave: hOnSave, fn: hFn } = healSaveRef.current;
+            const { enabled: hEnabled, onSave: hOnSave, fn: hFn, diags: hDiags } = healSaveRef.current;
             if (hEnabled && hOnSave && typeof hFn === 'function') {
-                // Fire-and-forget; any failure surfaces as a healing toast.
-                setTimeout(() => { try { hFn(); } catch (_) { /* ignore */ } }, 0);
+                const fixable = (hDiags || []).filter(
+                    (d) => d.fixes?.length > 0 && d.fixes.some((f) => f.replacementText != null)
+                );
+                if (fixable.length > 0) {
+                    setTimeout(() => { try { hFn(fixable); } catch (_) { /* ignore */ } }, 0);
+                }
             }
         } catch (_) { /* never let healing break save */ }
     }, [activeFile, rawFiles, slug, compile, hmrEnabled, runInGuiMode, isGuiRunning, client, getLatestCurrentContent]);
@@ -2672,7 +2679,7 @@ export default function EditorPage({ params }) {
         onToggleOrientation: toggleTreeOrientation,
         onOpenScm: onOpenScmCb,
         editorProps: memoEditorProps,
-        // AI healing surface so docked panels (AIHealingPanel) can consume it
+        // AI healing surface so docked panels (HealingSettingsPanel) can consume it
         aiHealing,
     }), [
         editor, activeFile, mergedDiagnostics, diagnosticSummary,

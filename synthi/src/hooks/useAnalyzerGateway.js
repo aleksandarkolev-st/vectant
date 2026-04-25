@@ -472,6 +472,38 @@ export function useAnalyzerGateway({
     }
   }, []);
 
+  /**
+   * Get healing cache statistics.
+   */
+  const healCacheStats = useCallback(async () => {
+    if (!clientRef.current) {
+      throw new SynthiException('Gateway client is not ready yet');
+    }
+    try {
+      const response = await clientRef.current.healCacheStats();
+      return response?.data ?? response;
+    } catch (error) {
+      console.error('[healCacheStats] Error:', error);
+      throw error;
+    }
+  }, []);
+
+  /**
+   * Batch-analyse multiple files for healing issues.
+   */
+  const healBatch = useCallback(async (payload = {}) => {
+    if (!clientRef.current) {
+      throw new SynthiException('Gateway client is not ready yet');
+    }
+    try {
+      const response = await clientRef.current.healBatch(payload);
+      return response?.data ?? response;
+    } catch (error) {
+      console.error('[healBatch] Error:', error);
+      throw error;
+    }
+  }, []);
+
   // ─── AI Agent Hooks ────────────────────────────────────────────────
 
   /**
@@ -658,6 +690,8 @@ export function useAnalyzerGateway({
     healContainer,
     healConfig,
     healStats,
+    healCacheStats,
+    healBatch,
     // AI Agent
     aiAnalyze,
     aiBatch,
