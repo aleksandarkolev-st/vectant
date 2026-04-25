@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<!-- Tokenizer fixture — exercises every HTML scope the Synthi grammar emits. -->
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Synthi Tokenizer Fixture</title>
+    <link rel="stylesheet" href="sample.css" />
+    <style>
+        body { background: #0c0d12; color: #f4f5f8; }
+    </style>
+</head>
+<body data-theme="synthi-dark" class="root">
+    <header id="banner" class="banner banner--dark">
+        <h1>Synthi&nbsp;<em>Tokenizer</em>&nbsp;Fixture</h1>
+        <p>Plain text with an &amp; entity, a &#x2192; arrow and an &copy; mark.</p>
+    </header>
+
+    <main role="main" aria-label="demo content">
+        <article class="card" data-id="42">
+            <h2>Buttons</h2>
+            <button type="button" class="btn btn--primary" disabled>Primary</button>
+            <button type="button" class="btn" onclick="emit(event)">Emit</button>
+            <input type="number" name="count" min="0" max="1024" value="16" />
+            <select name="mode">
+                <option value="idle" selected>Idle</option>
+                <option value="hovered">Hovered</option>
+                <option value="pressed">Pressed</option>
+            </select>
+        </article>
+
+        <!-- Inline SVG with self-closing tags. -->
+        <svg width="120" height="40" viewBox="0 0 120 40" xmlns="http://www.w3.org/2000/svg">
+            <rect x="0" y="0" width="120" height="40" fill="#327464" />
+            <text x="60" y="25" text-anchor="middle" fill="#f0f2f5">Synthi</text>
+        </svg>
+    </main>
+
+    <script type="module">
+        const labels = ['idle', 'hovered', 'pressed'];
+        function emit(ev) {
+            console.log('emit', ev.target, labels);
+        }
+        window.emit = emit;
+    </script>
+</body>
+</html>
