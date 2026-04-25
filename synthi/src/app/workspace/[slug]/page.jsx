@@ -50,7 +50,7 @@ import { HealingToast } from '@/components/healing/HealingToast';
 import { PreCompileHealToast } from '@/components/healing/PreCompileHealToast';
 import { AIHealingPanel } from '@/components/healing/AIHealingPanel';
 import { HealingSettingsPanel } from '@/components/healing/HealingSettingsPanel';
-import { clearAIFixes, clearPendingFixes, hydrateHealing, setLiveDiagnostics } from '@/redux/healingSlice';
+import { clearAIFixes, clearPendingFixes, enqueueToast, hydrateHealing, setLiveDiagnostics } from '@/redux/healingSlice';
 import { loadHealingPersistedState, saveHealingPersistedState } from '@/lib/healing/persistence';
 import { selectHealingEnabled, selectHealingConfig } from '@/redux/healingSelectors';
 import { useWorkspaceAnalysis } from '@/hooks/useWorkspaceAnalysis';
@@ -268,6 +268,33 @@ export default function EditorPage({ params }) {
         return () => window.removeEventListener('synthi:heal-revert-to-fix', onRevert);
     }, [undoToFix]);
 
+    // Manual "Heal current problems" button (HealingSettingsPanel) → run the
+    // rule engine against the live diagnostics in Redux right now.  Held in a
+    // ref so the listener doesn't re-attach on every diagnostic change.
+    const healNowRef = useRef({ fn: null, diags: [] });
+    useEffect(() => {
+        if (typeof window === 'undefined') return;
+        const onHealNow = () => {
+            const { fn, diags } = healNowRef.current;
+            if (typeof fn !== 'function') return;
+            const fixable = (diags || []).filter(
+                (d) => d.fixes?.length > 0 && d.fixes.some((f) => f.replacementText != null)
+            );
+            if (fixable.length === 0) {
+                dispatch(enqueueToast({
+                    type: 'info',
+                    message: (diags || []).length === 0
+                        ? 'No problems detected — nothing to heal.'
+                        : `${diags.length} issue${diags.length === 1 ? '' : 's'} found, but none have applicable auto-fixes. Try enabling "Also try AI for tricky errors".`,
+                }));
+                return;
+            }
+            fn(fixable);
+        };
+        window.addEventListener('synthi:heal-now', onHealNow);
+        return () => window.removeEventListener('synthi:heal-now', onHealNow);
+    }, [dispatch]);
+
     // Expose suggest-bucket fixes as Monaco lightbulb quick-fixes
     usePendingFixCodeActions({
         editorRef,
@@ -398,6 +425,18 @@ export default function EditorPage({ params }) {
     // Proactive analysis state - keyed by file path
     const [diagnostics, setDiagnostics] = useState([]);
     const [isAnalyzingProactive, setIsAnalyzingProactive] = useState(false);
+    // Spinner visibility lags the truth by 800ms so quick passes never flash
+    // the "Analyzing…" indicator at the user.  Only sustained analyses
+    // (e.g. AI tier round-trips) actually surface the spinner.
+    const [showAnalyzingSpinner, setShowAnalyzingSpinner] = useState(false);
+    useEffect(() => {
+        if (!isAnalyzingProactive) {
+            setShowAnalyzingSpinner(false);
+            return undefined;
+        }
+        const t = setTimeout(() => setShowAnalyzingSpinner(true), 800);
+        return () => clearTimeout(t);
+    }, [isAnalyzingProactive]);
     // FAST analysis: static + semantic
     const proactiveTimeoutRef = useRef(null);
     const lastFastSignatureRef = useRef('');
@@ -1834,6 +1873,12 @@ export default function EditorPage({ params }) {
         dispatch(setLiveDiagnostics(mergedDiagnostics));
     }, [mergedDiagnostics, dispatch]);
 
+    // Keep the manual "Heal Now" listener pointed at the latest
+    // healFromDiagnostics callback and the latest diagnostic snapshot.
+    useEffect(() => {
+        healNowRef.current = { fn: healFromDiagnostics, diags: mergedDiagnostics };
+    }, [healFromDiagnostics, mergedDiagnostics]);
+
     // Compute diagnostic summary from merged diagnostics
     const diagnosticSummaryRaw = useMemo(() => {
         const errors = mergedDiagnostics.filter(d => d.severity === 'error').length;
@@ -2616,7 +2661,7 @@ export default function EditorPage({ params }) {
         activeFile,
         diagnostics: mergedDiagnostics,
         diagnosticSummary,
-        isAnalyzing: isAnalyzingProactive || isWorkspaceAnalyzing,
+        isAnalyzing: showAnalyzingSpinner || isWorkspaceAnalyzing,
         onSuggest: onSuggestCb,
         onBusy: onBusyCb,
         getCurrentCode: getLatestCurrentContent,
@@ -2631,7 +2676,7 @@ export default function EditorPage({ params }) {
         aiHealing,
     }), [
         editor, activeFile, mergedDiagnostics, diagnosticSummary,
-        isAnalyzingProactive, isWorkspaceAnalyzing, onSuggestCb, onBusyCb,
+        showAnalyzingSpinner, isWorkspaceAnalyzing, onSuggestCb, onBusyCb,
         getLatestCurrentContent, completionClearSignal, jumpstartPrompt, jumpstartAttachments,
         onCloseProblemsCb, toggleTreeOrientation, onOpenScmCb, memoEditorProps,
         aiHealing,
@@ -2805,7 +2850,7 @@ export default function EditorPage({ params }) {
                         <ProblemsPanel
                             diagnostics={mergedDiagnostics}
                             summary={diagnosticSummary}
-                            isAnalyzing={isAnalyzingProactive || isWorkspaceAnalyzing}
+                            isAnalyzing={showAnalyzingSpinner || isWorkspaceAnalyzing}
                             filePath={activeFile?.path || activeFile?.name || 'Current File'}
                             onClose={() => setShowProblemsPanel(false)}
                             onNavigate={(location) => {
@@ -2864,7 +2909,7 @@ export default function EditorPage({ params }) {
                 <StatusBar
                     slug={slug}
                     diagnosticSummary={diagnosticSummary}
-                    isAnalyzing={isAnalyzingProactive || isWorkspaceAnalyzing}
+                    isAnalyzing={showAnalyzingSpinner || isWorkspaceAnalyzing}
                     onProblemsClick={onProblemsClickCb}
                     extensionStatusBarItems={extensionStatusBarItems}
                     vscodeServerState={vscodeServerState}

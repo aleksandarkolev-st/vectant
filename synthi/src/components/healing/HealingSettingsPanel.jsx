@@ -248,6 +248,22 @@ export function HealingSettingsPanel({ aiHealing } = {}) {
     [dispatch]
   );
 
+  // ── Manual heal trigger ─────────────────────────────────────────────
+  // Fires a window CustomEvent that page.jsx listens for.  Keeps the
+  // panel decoupled from the editor / useSelfHealing hook.
+  const handleHealNow = useCallback(() => {
+    if (!enabled) {
+      dispatch(enqueueToast({
+        type: 'info',
+        message: 'Self-Healing is off — turn it on to apply fixes.',
+      }));
+      return;
+    }
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('synthi:heal-now'));
+    }
+  }, [enabled, dispatch]);
+
   const thresholds = custom || BoldnessThresholds[boldness] || BoldnessThresholds.balanced;
 
   return (
@@ -268,6 +284,22 @@ export function HealingSettingsPanel({ aiHealing } = {}) {
         onChange={(v) => dispatch(updateConfig({ showNotifications: v }))}
         label="Notify me when fixes are applied"
       />
+
+      {/* Heal Now — runs the rule engine against the Problems panel right now. */}
+      <button
+        onClick={handleHealNow}
+        disabled={!enabled}
+        className="flex items-center justify-center gap-2 text-sm py-2 rounded-md transition-opacity disabled:opacity-40"
+        style={{
+          background: 'var(--accent-primary)',
+          color: 'var(--text-on-accent, white)',
+          fontWeight: 500,
+        }}
+        title="Apply your rules to current problems-panel diagnostics"
+      >
+        <RefreshCcw size={13} />
+        Heal current problems
+      </button>
 
       {/* Pending AI fixes (only rendered if aiHealing is passed) */}
       {aiHealing && (

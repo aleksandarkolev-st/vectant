@@ -7,7 +7,7 @@
 // a simple text input that accepts a glob (e.g. `tests/*`).
 'use client';
 
-import { useState, useCallback, useMemo } from 'react';
+import { useState, useCallback, useMemo, useEffect, useRef } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import {
   addRule,
@@ -288,6 +288,24 @@ export function HealingRulesEditor() {
   const liveDiagnostics = useSelector(selectLiveDiagnostics);
   const { ruleTranslate } = useAnalyzerGateway();
 
+  // Saving indicator: briefly flashes "Saved ✓" whenever rules change.
+  // Skips the very first render so the badge doesn't appear on mount.
+  const [savedFlash, setSavedFlash] = useState(false);
+  const firstRender = useRef(true);
+  const flashTimerRef = useRef(null);
+  useEffect(() => {
+    if (firstRender.current) {
+      firstRender.current = false;
+      return;
+    }
+    setSavedFlash(true);
+    if (flashTimerRef.current) clearTimeout(flashTimerRef.current);
+    flashTimerRef.current = setTimeout(() => setSavedFlash(false), 1400);
+    return () => {
+      if (flashTimerRef.current) clearTimeout(flashTimerRef.current);
+    };
+  }, [rules]);
+
   // Pre-compute a normalised context per diagnostic once so per-rule match
   // checks in the preview don't re-infer categories on every render.
   const diagnosticContexts = useMemo(() => {
@@ -404,11 +422,28 @@ export function HealingRulesEditor() {
   return (
     <div className="flex flex-col gap-2">
       <div className="flex items-center justify-between">
-        <div
-          className="text-xs font-semibold uppercase tracking-wider"
-          style={{ color: 'var(--text-muted)' }}
-        >
-          Rules
+        <div className="flex items-center gap-2">
+          <div
+            className="text-xs font-semibold uppercase tracking-wider"
+            style={{ color: 'var(--text-muted)' }}
+          >
+            Rules
+          </div>
+          {/* Saving indicator: brief green pill that fades after 1.4s */}
+          <span
+            className="text-[10px] px-1.5 py-0.5 rounded-full transition-all duration-300"
+            style={{
+              background: savedFlash
+                ? 'color-mix(in srgb, var(--accent-success, #4ade80) 18%, transparent)'
+                : 'transparent',
+              color: 'var(--accent-success, #4ade80)',
+              opacity: savedFlash ? 1 : 0,
+              transform: savedFlash ? 'translateY(0)' : 'translateY(-2px)',
+              pointerEvents: 'none',
+            }}
+          >
+            ✓ Saved
+          </span>
         </div>
         <div className="text-[10px]" style={{ color: 'var(--text-dim)' }}>
           applied top to bottom
