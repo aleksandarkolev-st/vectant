@@ -8,7 +8,7 @@
 // "Advanced" accordion.
 'use client';
 
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useSelector, useDispatch } from 'react-redux';
 import {
   selectHealingEnabled,
@@ -39,11 +39,7 @@ import {
 import { selectHealingRules } from '@/redux/healingSelectors';
 import { HealingRulesEditor } from './HealingRulesEditor';
 import { HealingHistoryPanel } from './HealingHistoryPanel';
-import { AIFixCard } from './AIFixCard';
-import { AIConfidenceGate } from './AIConfidenceGate';
-import { AISuppressedRulesPanel } from './AISuppressedRulesPanel';
-import { Sparkles, RefreshCcw, CheckCheck, Trash2, ChevronDown } from 'lucide-react';
-import { setAIEnabled } from '@/redux/healingSlice';
+import { RefreshCcw } from 'lucide-react';
 
 // ── Small UI atoms ──────────────────────────────────────────────────────
 function Toggle({ checked, onChange, label, description }) {
@@ -76,34 +72,102 @@ function Toggle({ checked, onChange, label, description }) {
   );
 }
 
+// Sliding-pill radio: a single absolutely-positioned indicator slides
+// between options when the value changes, mirroring the hover/active feel
+// of the dock-tab strip elsewhere in Synthi.  Inactive buttons get a
+// subtle hover background so the pointer always has visual feedback.
 function RadioRow({ value, onChange, options }) {
+  const containerRef = useRef(null);
+  const buttonRefs = useRef({});
+  const [pill, setPill] = useState({ left: 0, width: 0, ready: false });
+  const [hoveredOpt, setHoveredOpt] = useState(null);
+
+  // Recompute the active button's geometry whenever the selected value or
+  // the option list changes.  useLayoutEffect avoids a frame of misalignment.
+  useLayoutEffect(() => {
+    const container = containerRef.current;
+    const button = buttonRefs.current[value];
+    if (!container || !button) return;
+    const cRect = container.getBoundingClientRect();
+    const bRect = button.getBoundingClientRect();
+    setPill({
+      left: bRect.left - cRect.left,
+      width: bRect.width,
+      ready: true,
+    });
+  }, [value, options.length]);
+
+  // Reposition on container resize — handles panel-width changes from
+  // the docking system without needing a manual trigger.
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container || typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(() => {
+      const button = buttonRefs.current[value];
+      if (!button) return;
+      const cRect = container.getBoundingClientRect();
+      const bRect = button.getBoundingClientRect();
+      setPill((p) => ({ left: bRect.left - cRect.left, width: bRect.width, ready: p.ready }));
+    });
+    ro.observe(container);
+    return () => ro.disconnect();
+  }, [value]);
+
   return (
     <div
-      className="flex rounded-md p-0.5 gap-1"
+      ref={containerRef}
+      className="relative flex rounded-md p-0.5 gap-1"
       style={{
         background: 'var(--bg-base)',
         border: '1px solid var(--border-subtle)',
       }}
     >
+      {/* Animated indicator pill — sits behind the buttons */}
+      <div
+        aria-hidden
+        style={{
+          position: 'absolute',
+          top: 2,
+          bottom: 2,
+          left: pill.left,
+          width: pill.width,
+          background: 'var(--accent-primary)',
+          borderRadius: 4,
+          boxShadow: '0 1px 2px rgba(0,0,0,0.25)',
+          opacity: pill.ready ? 1 : 0,
+          transition:
+            'left 220ms cubic-bezier(0.4, 0, 0.2, 1), width 220ms cubic-bezier(0.4, 0, 0.2, 1), opacity 120ms',
+          pointerEvents: 'none',
+          zIndex: 0,
+        }}
+      />
       {options.map((opt) => {
         const selected = value === opt.value;
+        const isHover = hoveredOpt === opt.value && !selected;
         return (
           <button
+            ref={(el) => {
+              if (el) buttonRefs.current[opt.value] = el;
+              else delete buttonRefs.current[opt.value];
+            }}
             type="button"
             key={opt.value}
             onClick={() => onChange(opt.value)}
-            className="flex-1 px-2 py-1 text-xs rounded transition-colors focus:outline-none"
+            onMouseEnter={() => setHoveredOpt(opt.value)}
+            onMouseLeave={() => setHoveredOpt((h) => (h === opt.value ? null : h))}
+            onFocus={() => setHoveredOpt(opt.value)}
+            onBlur={() => setHoveredOpt((h) => (h === opt.value ? null : h))}
+            className="relative flex-1 px-2 py-1 text-xs rounded focus:outline-none"
             style={{
-              background: selected
-                ? 'var(--accent-primary)'
-                : 'transparent',
+              background: isHover ? 'rgba(255,255,255,0.04)' : 'transparent',
               color: selected
                 ? 'var(--text-on-accent, white)'
-                : 'var(--text-muted)',
+                : isHover
+                  ? 'var(--text-primary)'
+                  : 'var(--text-muted)',
               fontWeight: selected ? 600 : 500,
-              boxShadow: selected
-                ? '0 1px 2px rgba(0,0,0,0.25)'
-                : 'none',
+              transition: 'color 160ms, background-color 160ms',
+              zIndex: 1,
             }}
             title={opt.description}
           >
@@ -158,36 +222,8 @@ export function HealingSettingsPanel({ aiHealing } = {}) {
   const rules = useSelector(selectHealingRules);
 
   const [advancedOpen, setAdvancedOpen] = useState(false);
-  const [aiFixesOpen, setAiFixesOpen] = useState(true);
   const [importText, setImportText] = useState('');
   const [importError, setImportError] = useState(null);
-
-  // ── AI fixes (optional section at the top) ─────────────────────────
-  const aiFixes = aiHealing?.fixes ?? [];
-  const aiFixCount = aiFixes.length;
-  const aiSafeCount = aiFixes.filter((f) => f.is_safe || f.isSafe).length;
-  const aiError = aiHealing?.error;
-  const aiIsAnalyzing = aiHealing?.isAnalyzing ?? false;
-  const aiSuppressedCount = aiHealing?.suppressedCount ?? 0;
-  const aiHasSuppressedRules = !!aiHealing?.hasSuppressedRules;
-
-  const handleAIAnalyze = useCallback(() => {
-    aiHealing?.analyze?.({ minConfidence: 0.55, validateFixes: true });
-  }, [aiHealing]);
-  const handleAIApplySafe = useCallback(() => {
-    const count = aiHealing?.applyAllSafe?.() ?? 0;
-    if (count === 0) {
-      dispatch(enqueueToast({ message: 'No safe AI fixes to apply', type: 'info' }));
-    }
-  }, [aiHealing, dispatch]);
-  const handleAIDismissAll = useCallback(() => {
-    aiHealing?.dismissAll?.();
-  }, [aiHealing]);
-  const handleEnableAI = useCallback(() => {
-    dispatch(setAIEnabled(true));
-    dispatch(setTrigger({ key: 'useAIForHard', value: true }));
-    if (!enabled) dispatch(toggleHealing());
-  }, [dispatch, enabled]);
 
   const handleExportRules = useCallback(async () => {
     const text = JSON.stringify(rules, null, 2);
@@ -249,8 +285,10 @@ export function HealingSettingsPanel({ aiHealing } = {}) {
   );
 
   // ── Manual heal trigger ─────────────────────────────────────────────
-  // Fires a window CustomEvent that page.jsx listens for.  Keeps the
-  // panel decoupled from the editor / useSelfHealing hook.
+  // Fires a window CustomEvent that page.jsx listens for (rule-engine
+  // pass over the Problems panel).  Also drains the AI safe-fix bucket
+  // here directly because aiHealing exposes its callback to the panel
+  // and we want a single button to handle every applicable fix.
   const handleHealNow = useCallback(() => {
     if (!enabled) {
       dispatch(enqueueToast({
@@ -259,10 +297,14 @@ export function HealingSettingsPanel({ aiHealing } = {}) {
       }));
       return;
     }
-    if (typeof window !== 'undefined') {
-      window.dispatchEvent(new CustomEvent('synthi:heal-now'));
+    let aiApplied = 0;
+    if (typeof aiHealing?.applyAllSafe === 'function') {
+      try { aiApplied = aiHealing.applyAllSafe() || 0; } catch (_) { /* ignore */ }
     }
-  }, [enabled, dispatch]);
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('synthi:heal-now', { detail: { aiApplied } }));
+    }
+  }, [enabled, dispatch, aiHealing]);
 
   const thresholds = custom || BoldnessThresholds[boldness] || BoldnessThresholds.balanced;
 
@@ -300,159 +342,6 @@ export function HealingSettingsPanel({ aiHealing } = {}) {
         <RefreshCcw size={13} />
         Heal current problems
       </button>
-
-      {/* Pending AI fixes (only rendered if aiHealing is passed) */}
-      {aiHealing && (
-        <>
-          <SectionDivider />
-          <div>
-            <button
-              onClick={() => setAiFixesOpen((v) => !v)}
-              className="flex items-center justify-between w-full"
-            >
-              <div className="flex items-center gap-2">
-                <Sparkles size={14} style={{ color: 'var(--accent-primary)' }} />
-                <SectionLabel>
-                  Pending AI fixes
-                </SectionLabel>
-                {aiFixCount > 0 && (
-                  <span
-                    className="text-[10px] px-1.5 py-0.5 rounded-full"
-                    style={{
-                      background: 'var(--accent-primary)',
-                      color: 'var(--text-on-accent, white)',
-                    }}
-                  >
-                    {aiFixCount}
-                  </span>
-                )}
-              </div>
-              <ChevronDown
-                size={14}
-                style={{
-                  color: 'var(--text-muted)',
-                  transform: aiFixesOpen ? 'none' : 'rotate(-90deg)',
-                  transition: 'transform 0.15s',
-                }}
-              />
-            </button>
-
-            {aiFixesOpen && (
-              <div className="mt-2">
-                {/* Action row */}
-                <div className="flex items-center gap-2 mb-2">
-                  <button
-                    onClick={handleAIAnalyze}
-                    disabled={aiIsAnalyzing || !triggers.useAIForHard}
-                    className="flex items-center gap-1.5 text-xs px-2.5 py-1 rounded disabled:opacity-40"
-                    style={{
-                      background: 'var(--bg-elevated)',
-                      color: 'var(--text-primary)',
-                    }}
-                    title={!triggers.useAIForHard ? 'Enable "Also try AI for tricky errors" below' : ''}
-                  >
-                    <RefreshCcw size={11} className={aiIsAnalyzing ? 'animate-spin' : ''} />
-                    {aiIsAnalyzing ? 'Analyzing…' : 'Analyze'}
-                  </button>
-                  {aiSafeCount > 0 && (
-                    <button
-                      onClick={handleAIApplySafe}
-                      className="flex items-center gap-1 text-xs px-2 py-1 rounded"
-                      style={{
-                        background: 'rgba(34,197,94,0.15)',
-                        color: '#86efac',
-                      }}
-                      title={`Apply ${aiSafeCount} safe fix${aiSafeCount === 1 ? '' : 'es'}`}
-                    >
-                      <CheckCheck size={11} />
-                      Apply safe ({aiSafeCount})
-                    </button>
-                  )}
-                  {aiFixCount > 0 && (
-                    <button
-                      onClick={handleAIDismissAll}
-                      className="flex items-center gap-1 text-xs px-1.5 py-1 rounded ml-auto"
-                      style={{ color: 'var(--text-muted)' }}
-                      title="Dismiss all"
-                    >
-                      <Trash2 size={11} />
-                    </button>
-                  )}
-                </div>
-
-                {/* Error */}
-                {aiError && (
-                  <div
-                    className="text-[11px] px-2 py-1 rounded mb-2"
-                    style={{
-                      color: 'var(--accent-danger)',
-                      background: 'rgba(239,68,68,0.08)',
-                    }}
-                  >
-                    {aiError}
-                  </div>
-                )}
-
-                {/* Fix list */}
-                {aiFixCount === 0 && !aiIsAnalyzing && !aiError && (
-                  <div
-                    className="text-[11px] py-2"
-                    style={{ color: 'var(--text-dim)' }}
-                  >
-                    {!triggers.useAIForHard ? (
-                      <>
-                        AI analysis is off.{' '}
-                        <button
-                          onClick={handleEnableAI}
-                          className="underline"
-                          style={{ color: 'var(--accent-primary)' }}
-                        >
-                          Enable AI for tricky errors
-                        </button>
-                        .
-                      </>
-                    ) : (
-                      'No AI issues detected. Click Analyze to scan this file.'
-                    )}
-                  </div>
-                )}
-
-                {aiFixCount > 0 && (
-                  <div className="flex flex-col gap-1 max-h-[340px] overflow-y-auto">
-                    {aiFixes.map((fix, i) => (
-                      <AIConfidenceGate
-                        key={fix.fix_id || fix.id || `ai-fix-${i}`}
-                        confidence={fix.confidence ?? 0}
-                      >
-                        <AIFixCard
-                          fix={fix}
-                          index={i}
-                          onApply={aiHealing.applyFix}
-                          onDismiss={aiHealing.dismissFix}
-                          onSuppressRule={aiHealing.suppressRule}
-                        />
-                      </AIConfidenceGate>
-                    ))}
-                  </div>
-                )}
-
-                {(aiSuppressedCount > 0 || aiHasSuppressedRules) && (
-                  <div className="mt-2">
-                    <AISuppressedRulesPanel
-                      getSuppressedRules={aiHealing.getSuppressedRules}
-                      onUnsuppress={aiHealing.unsuppressRule}
-                      onClearAll={aiHealing.clearAllSuppressed}
-                      suppressedCount={aiSuppressedCount}
-                      policySummary={aiHealing.policySummary}
-                      onRefresh={aiHealing.fetchPolicySummary}
-                    />
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
-        </>
-      )}
 
       {/* Boldness */}
       <SectionDivider />

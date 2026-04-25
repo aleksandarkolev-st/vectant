@@ -49,9 +49,9 @@ import { useSmartRuleSuggestions } from '@/hooks/useSmartRuleSuggestions';
 import { HealingToast } from '@/components/healing/HealingToast';
 import { PreCompileHealToast } from '@/components/healing/PreCompileHealToast';
 import { HealingSettingsPanel } from '@/components/healing/HealingSettingsPanel';
-import { clearAIFixes, clearPendingFixes, enqueueToast, hydrateHealing, setLiveDiagnostics } from '@/redux/healingSlice';
+import { clearAIFixes, clearPendingFixes, enqueueToast, hydrateHealing, markDiagnosticsHealed, pruneHealedDiagnostics, setLiveDiagnostics } from '@/redux/healingSlice';
 import { loadHealingPersistedState, saveHealingPersistedState } from '@/lib/healing/persistence';
-import { selectHealingEnabled, selectHealingConfig } from '@/redux/healingSelectors';
+import { selectHealingEnabled, selectHealingConfig, selectRecentlyHealedIds } from '@/redux/healingSelectors';
 import { useWorkspaceAnalysis } from '@/hooks/useWorkspaceAnalysis';
 import { useCompiler } from '@/hooks/useCompiler';
 import { useCompileManifestListener } from '@/hooks/useCompileManifestListener';
@@ -230,7 +230,14 @@ export default function EditorPage({ params }) {
                 }
                 return !diagId || !healedIds.has(diagId);
             }));
-        }, [activeFilePath]),
+
+            // Also hide the same diagnostics in mergedDiagnostics — workspace
+            // analysis re-emits them with the same id until its next sweep,
+            // so we keep them suppressed via Redux for ~60s.
+            if (healedIds && healedIds.size > 0) {
+                dispatch(markDiagnosticsHealed(Array.from(healedIds).map(String)));
+            }
+        }, [activeFilePath, dispatch]),
         onAIEscalate: useCallback((escalated) => {
             const analyzeFn = aiAnalyzeRef.current;
             if (!analyzeFn || !escalated?.length) return;
@@ -270,16 +277,38 @@ export default function EditorPage({ params }) {
     // Manual "Heal current problems" button (HealingSettingsPanel) → run the
     // rule engine against the live diagnostics in Redux right now.  Held in a
     // ref so the listener doesn't re-attach on every diagnostic change.
+    // The panel may have already drained its AI safe-fix bucket before
+    // dispatching — we honour that count when summarising the toast.
     const healNowRef = useRef({ fn: null, diags: [] });
     useEffect(() => {
         if (typeof window === 'undefined') return;
-        const onHealNow = () => {
+        const onHealNow = (e) => {
             const { fn, diags } = healNowRef.current;
-            if (typeof fn !== 'function') return;
+            const aiAlreadyApplied = Number(e?.detail?.aiApplied) || 0;
+            if (typeof fn !== 'function') {
+                if (aiAlreadyApplied === 0) {
+                    dispatch(enqueueToast({
+                        type: 'info',
+                        message: 'Self-Healing not ready — open a file first.',
+                    }));
+                }
+                return;
+            }
             const fixable = (diags || []).filter(
                 (d) => d.fixes?.length > 0 && d.fixes.some((f) => f.replacementText != null)
             );
             if (fixable.length === 0) {
+                if (aiAlreadyApplied > 0) {
+                    // The AI bucket already cleared something — don't shout
+                    // "nothing to heal".
+                    dispatch(enqueueToast({
+                        type: 'healing',
+                        message: `Auto-fixed ${aiAlreadyApplied} AI fix${aiAlreadyApplied === 1 ? '' : 'es'}`,
+                        fixCount: aiAlreadyApplied,
+                        undoable: true,
+                    }));
+                    return;
+                }
                 dispatch(enqueueToast({
                     type: 'info',
                     message: (diags || []).length === 0
@@ -1844,27 +1873,47 @@ export default function EditorPage({ params }) {
     }, [currentContent, activeFile, hasLoadedInitialFile, workspaceClientReady, trackFileChange, triggerWorkspaceAnalysis]);
     */
 
+    // Recently-healed diagnostic ids — Redux-tracked so the filter below
+    // hides them between apply and re-analysis.  Without this, workspace
+    // analysis re-emits the same diagnostic before the next sweep proves
+    // it's actually gone.
+    const recentlyHealedIds = useAppSelector(selectRecentlyHealedIds);
+
     // Merge single-file diagnostics with workspace-level cross-file diagnostics
     const mergedDiagnostics = useMemo(() => {
-        // Start with single-file diagnostics (these are more immediate/responsive)
-        const merged = [...diagnostics];
+        const seen = new Set();
+        const out = [];
+        const cutoff = Date.now() - 30_000;
 
-        // Add cross-file diagnostics from workspace analysis
-        // Filter to avoid duplicates by comparing message + location
-        const existingKeys = new Set(
-            diagnostics.map(d => `${d.message}::${d.location?.line}::${d.location?.column}`)
-        );
-
-        for (const d of workspaceDiagnostics) {
-            const key = `${d.message}::${d.location?.line}::${d.location?.column}`;
-            if (!existingKeys.has(key)) {
-                merged.push(d);
-                existingKeys.add(key);
+        for (const d of [...diagnostics, ...workspaceDiagnostics]) {
+            // Skip diagnostics we've just healed locally — they hang around
+            // until the next analysis pass confirms they're gone.
+            const did = d?.__id || d?.id;
+            if (did && recentlyHealedIds[String(did)] && recentlyHealedIds[String(did)] > cutoff) {
+                continue;
             }
+
+            // Stronger dedup key includes file path + severity so the same
+            // message at the same location reported by two tiers (fast vs
+            // ai vs workspace) collapses to one entry.
+            const path = String(d?.filePath || d?.file || '').toLowerCase();
+            const key = `${path}::${d?.message || ''}::${d?.location?.line ?? ''}::${d?.location?.column ?? ''}::${d?.severity || ''}`;
+            if (seen.has(key)) continue;
+            seen.add(key);
+            out.push(d);
         }
 
-        return merged;
-    }, [diagnostics, workspaceDiagnostics]);
+        return out;
+    }, [diagnostics, workspaceDiagnostics, recentlyHealedIds]);
+
+    // Periodically prune the recently-healed map so it doesn't grow
+    // unbounded over a long session.  60s aligns with the cutoff above.
+    useEffect(() => {
+        const t = setInterval(() => {
+            dispatch(pruneHealedDiagnostics(Date.now() - 60_000));
+        }, 30_000);
+        return () => clearInterval(t);
+    }, [dispatch]);
 
     // Mirror merged diagnostics into Redux so the rule editor can show live
     // preview counts and the file tree can render health dots.

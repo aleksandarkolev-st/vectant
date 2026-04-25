@@ -129,6 +129,12 @@ export const initialHealingState = {
   // Recently applied fixes (for undo support, keep last 50)
   appliedFixes: [],
 
+  // Diagnostic ids that were just healed — used by the Problems panel to
+  // hide them between the apply and the next analysis sweep, since the
+  // backend may emit the same diagnostic again before re-analysing.
+  // Shape: { [diagnosticId]: timestampMs }
+  recentlyHealedIds: {},
+
   // Undo stack – stores reverted text for each applied fix
   undoStack: [],
 
@@ -336,6 +342,15 @@ const healingSlice = createSlice({
     // ── Applied fixes ───────────────────────────────────────────────────
     recordAppliedFix(state, action) {
       const fix = action.payload;
+
+      // Dedup by id — the heal pipeline can fire the same fix more than
+      // once if a stale diagnostic re-arrives before re-analysis runs.
+      // Without this guard the History panel and stats double-count.
+      const id = fix.id || fix.fix_id;
+      if (id && state.appliedFixes.some((f) => (f.id || f.fix_id) === id)) {
+        return;
+      }
+
       // Add to applied list (max 50)
       state.appliedFixes.unshift({
         ...fix,
@@ -343,6 +358,13 @@ const healingSlice = createSlice({
       });
       if (state.appliedFixes.length > 50) {
         state.appliedFixes = state.appliedFixes.slice(0, 50);
+      }
+
+      // Hide the underlying diagnostic from the Problems panel until the
+      // next analysis sweep confirms it's actually gone.
+      if (id) {
+        if (!state.recentlyHealedIds) state.recentlyHealedIds = {};
+        state.recentlyHealedIds[id] = Date.now();
       }
 
       // Remove from pending
@@ -373,6 +395,34 @@ const healingSlice = createSlice({
         state.fileStates[filePath].lastHealedAt = Date.now();
         state.fileStates[filePath].fixCount += 1;
       }
+    },
+
+    // ── Recently healed diagnostic ids ──────────────────────────────────
+    // Bulk-mark a set of diagnostic ids as healed (page-level call after
+    // a heal pass).  The Problems panel filter selectors honour these.
+    markDiagnosticsHealed(state, action) {
+      const ids = action.payload;
+      if (!ids) return;
+      if (!state.recentlyHealedIds) state.recentlyHealedIds = {};
+      const now = Date.now();
+      const list = ids instanceof Set ? Array.from(ids) : (Array.isArray(ids) ? ids : [ids]);
+      for (const id of list) {
+        if (id != null) state.recentlyHealedIds[String(id)] = now;
+      }
+    },
+    // Drop entries older than the supplied cutoff (ms epoch).  Called
+    // periodically by the page to keep the map from growing unbounded.
+    pruneHealedDiagnostics(state, action) {
+      const cutoff = typeof action.payload === 'number' ? action.payload : Date.now() - 60_000;
+      if (!state.recentlyHealedIds) return;
+      for (const k of Object.keys(state.recentlyHealedIds)) {
+        if (state.recentlyHealedIds[k] < cutoff) {
+          delete state.recentlyHealedIds[k];
+        }
+      }
+    },
+    clearHealedDiagnostics(state) {
+      state.recentlyHealedIds = {};
     },
 
     // ── Undo support ────────────────────────────────────────────────────
@@ -628,6 +678,9 @@ export const {
   removePendingFix,
   clearPendingFixes,
   recordAppliedFix,
+  markDiagnosticsHealed,
+  pruneHealedDiagnostics,
+  clearHealedDiagnostics,
   pushUndo,
   popUndo,
   recordUndone,

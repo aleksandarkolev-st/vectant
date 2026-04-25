@@ -11,15 +11,98 @@
 
 'use client';
 
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import { useSelector } from 'react-redux';
 import {
   selectAppliedFixes,
   selectUndoStack,
 } from '@/redux/healingSelectors';
 import { History, RotateCcw, ChevronDown, ChevronRight } from 'lucide-react';
+import { codeToTokens } from 'shiki';
 
 const HEAL_REVERT_EVENT = 'synthi:heal-revert-to-fix';
+
+// ── Shiki tokenization helpers ──────────────────────────────────────────
+// Mirrors the file-versions diff so applied-fix previews look identical to
+// the snapshot diff users already know.  Falls back to plain text on any
+// tokenization error — never gates rendering on highlighting.
+const EXT_TO_LANG = {
+  js: 'javascript', mjs: 'javascript', cjs: 'javascript', jsx: 'jsx',
+  ts: 'typescript', tsx: 'tsx', py: 'python', rb: 'ruby', rs: 'rust',
+  go: 'go', cpp: 'cpp', cc: 'cpp', cxx: 'cpp', 'c++': 'cpp',
+  c: 'c', h: 'c', hpp: 'cpp', hh: 'cpp', cs: 'csharp',
+  java: 'java', kt: 'kotlin', swift: 'swift', php: 'php',
+  html: 'html', htm: 'html', css: 'css', scss: 'scss',
+  sass: 'sass', less: 'less', json: 'json', yaml: 'yaml',
+  yml: 'yaml', toml: 'toml', xml: 'xml', md: 'markdown',
+  sql: 'sql', sh: 'bash', bash: 'bash', zsh: 'bash',
+  dockerfile: 'dockerfile', prisma: 'prisma', graphql: 'graphql',
+  gql: 'graphql', vue: 'vue', svelte: 'svelte',
+};
+
+function langFromPath(filePath) {
+  if (!filePath) return 'text';
+  const base = String(filePath).split('/').pop() || '';
+  if (/^dockerfile$/i.test(base)) return 'dockerfile';
+  const ext = (base.split('.').pop() || '').toLowerCase();
+  return EXT_TO_LANG[ext] || 'text';
+}
+
+const DIFF_KIND_STYLES = {
+  removed: {
+    bg: 'color-mix(in srgb, var(--accent-danger) 15%, transparent)',
+    marker: '-',
+    markerColor: 'var(--accent-danger)',
+  },
+  added: {
+    bg: 'color-mix(in srgb, var(--accent-success) 15%, transparent)',
+    marker: '+',
+    markerColor: 'var(--accent-success)',
+  },
+};
+
+function TokenLine({ tokens, raw }) {
+  if (Array.isArray(tokens) && tokens.length > 0) {
+    return (
+      <>
+        {tokens.map((tok, i) => (
+          <span
+            key={i}
+            style={{
+              color: tok.color || 'inherit',
+              fontStyle: tok.fontStyle === 2 ? 'italic' : undefined,
+              fontWeight: tok.fontStyle === 1 ? 'bold' : undefined,
+            }}
+          >
+            {tok.content}
+          </span>
+        ))}
+      </>
+    );
+  }
+  return <span>{raw || '​'}</span>;
+}
+
+function DiffLine({ kind, tokens, raw }) {
+  const style = DIFF_KIND_STYLES[kind];
+  return (
+    <div className="flex px-2 py-px" style={{ background: style.bg }}>
+      <span
+        aria-hidden
+        className="select-none w-3 shrink-0 text-center"
+        style={{ color: style.markerColor, opacity: 0.85 }}
+      >
+        {style.marker}
+      </span>
+      <span
+        className="whitespace-pre-wrap break-all flex-1"
+        style={{ color: 'var(--text-primary)' }}
+      >
+        <TokenLine tokens={tokens} raw={raw} />
+      </span>
+    </div>
+  );
+}
 
 function fmtTime(ts) {
   if (!ts) return '';
@@ -41,44 +124,69 @@ function humanCategory(cat) {
 }
 
 // ── Inline diff for a single fix ────────────────────────────────────────
-// Pure text rendering: no syntax highlighting (individual fixes are tiny
-// enough that raw text is readable).  Removed lines in muted red, added
-// in muted green, mirroring VS Code / GitHub conventions.
-function FixDiff({ originalText, replacementText }) {
+// Tokenizes both halves with shiki, matching the snapshot diff in
+// FileVersionsPanel so users get the same visual treatment everywhere.
+// Tokenization is async; we keep raw lines as the immediate fallback so
+// the diff always renders even before highlighting lands.
+function FixDiff({ originalText, replacementText, filePath }) {
+  const [oldTokens, setOldTokens] = useState(null);
+  const [newTokens, setNewTokens] = useState(null);
+
   const oldLines = (originalText ?? '').split('\n');
   const newLines = (replacementText ?? '').split('\n');
 
+  useEffect(() => {
+    let cancelled = false;
+    const lang = langFromPath(filePath);
+    const tokenize = async (text) => {
+      if (typeof text !== 'string' || text.length === 0) return null;
+      try {
+        const res = await codeToTokens(text, { lang, theme: 'github-dark-default' });
+        return res?.tokens || null;
+      } catch (_) {
+        try {
+          const res = await codeToTokens(text, { lang: 'text', theme: 'github-dark-default' });
+          return res?.tokens || null;
+        } catch (__) {
+          return null;
+        }
+      }
+    };
+    (async () => {
+      const [o, n] = await Promise.all([
+        tokenize(originalText),
+        tokenize(replacementText),
+      ]);
+      if (cancelled) return;
+      setOldTokens(o);
+      setNewTokens(n);
+    })();
+    return () => { cancelled = true; };
+  }, [originalText, replacementText, filePath]);
+
   return (
     <div
-      className="mt-1.5 p-2 rounded-md font-mono text-[11px] leading-relaxed overflow-x-auto"
+      className="mt-1.5 rounded-md font-mono text-[11px] leading-[1.45] overflow-x-auto"
       style={{
         background: 'var(--bg-base)',
         border: '1px solid var(--border-subtle)',
       }}
     >
       {oldLines.map((line, i) => (
-        <div
+        <DiffLine
           key={`o-${i}`}
-          style={{
-            color: 'color-mix(in srgb, var(--accent-danger) 85%, white 15%)',
-            background: 'color-mix(in srgb, var(--accent-danger) 8%, transparent)',
-          }}
-        >
-          <span className="select-none opacity-70">- </span>
-          {line || ' '}
-        </div>
+          kind="removed"
+          tokens={oldTokens?.[i]}
+          raw={line}
+        />
       ))}
       {newLines.map((line, i) => (
-        <div
+        <DiffLine
           key={`n-${i}`}
-          style={{
-            color: 'color-mix(in srgb, var(--accent-success) 85%, white 15%)',
-            background: 'color-mix(in srgb, var(--accent-success) 8%, transparent)',
-          }}
-        >
-          <span className="select-none opacity-70">+ </span>
-          {line || ' '}
-        </div>
+          kind="added"
+          tokens={newTokens?.[i]}
+          raw={line}
+        />
       ))}
     </div>
   );
@@ -169,6 +277,7 @@ function HistoryRow({ fix, undoEntry, isUndoable, onRevert }) {
           <FixDiff
             originalText={undoEntry.originalText}
             replacementText={fix.replacementText}
+            filePath={fix.filePath}
           />
         </div>
       )}

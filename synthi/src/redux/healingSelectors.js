@@ -147,6 +147,8 @@ export const selectSuggestionCandidates = (state) =>
 export const selectSuggestionsSnoozed = (state) =>
   state.healing?.suggestionsSnoozed ?? {};
 export const selectLiveDiagnostics = (state) => state.healing?.liveDiagnostics ?? [];
+const EMPTY_HEALED = Object.freeze({});
+export const selectRecentlyHealedIds = (state) => state.healing?.recentlyHealedIds ?? EMPTY_HEALED;
 
 /** Normalised forward-slash path for file-keyed lookups. */
 function normaliseFilePath(p) {

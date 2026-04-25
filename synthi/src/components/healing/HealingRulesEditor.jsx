@@ -93,9 +93,130 @@ function Pill({ value, onChange, options, getLabel, className = '' }) {
   );
 }
 
+// ── Hover popover that shows the diagnostics a rule would affect ──────
+// Pure-CSS positioning — lives next to the badge it describes, never
+// portalling.  Visible only while the pointer is over the badge or the
+// popover itself, with a short delay before close so users can move the
+// cursor onto the panel without it vanishing.
+function MatchPreview({ matched }) {
+  if (!matched || matched.length === 0) return null;
+  const display = matched.slice(0, 8);
+  const overflow = matched.length - display.length;
+  return (
+    <div
+      role="dialog"
+      className="absolute right-0 top-full mt-1 z-30 w-72 rounded-md p-2 shadow-lg text-left"
+      style={{
+        background: 'var(--bg-surface)',
+        border: '1px solid var(--border-subtle)',
+        color: 'var(--text-primary)',
+      }}
+      onMouseDown={(e) => e.stopPropagation()}
+    >
+      <div
+        className="text-[10px] uppercase tracking-wider mb-1.5"
+        style={{ color: 'var(--text-dim)' }}
+      >
+        Affects {matched.length} diagnostic{matched.length === 1 ? '' : 's'}
+      </div>
+      <div className="flex flex-col gap-1.5 max-h-64 overflow-y-auto">
+        {display.map((d, i) => {
+          const file = (d._raw?.filePath || d._raw?.file || '').split('/').pop() || 'file';
+          const line = (d._raw?.location?.line ?? d._raw?.range?.start ?? 0) + 1;
+          const fixCount = Array.isArray(d._raw?.fixes) ? d._raw.fixes.length : 0;
+          const fixPreview = d._raw?.fixes?.[0]?.replacementText;
+          const severity = (d.severity || 'error').toLowerCase();
+          const sevColor =
+            severity === 'error'
+              ? 'var(--accent-danger, #ff6b6b)'
+              : severity === 'warning'
+                ? 'var(--accent-warning, #fbbf24)'
+                : 'var(--accent-primary)';
+          return (
+            <div
+              key={i}
+              className="text-[11px] rounded p-1.5"
+              style={{ background: 'var(--bg-base)', border: '1px solid var(--border-subtle)' }}
+            >
+              <div className="flex items-center gap-1.5 min-w-0">
+                <span
+                  className="inline-block w-1.5 h-1.5 rounded-full flex-shrink-0"
+                  style={{ background: sevColor }}
+                />
+                <span
+                  className="font-mono text-[10px] truncate"
+                  style={{ color: 'var(--text-muted)' }}
+                  title={d._raw?.filePath || ''}
+                >
+                  {file}:{line}
+                </span>
+                {fixCount > 0 && (
+                  <span
+                    className="ml-auto text-[9px] px-1 rounded"
+                    style={{
+                      background: 'color-mix(in srgb, var(--accent-success) 15%, transparent)',
+                      color: 'var(--accent-success)',
+                    }}
+                  >
+                    {fixCount} fix{fixCount === 1 ? '' : 'es'}
+                  </span>
+                )}
+              </div>
+              {d._raw?.message && (
+                <div
+                  className="mt-1 text-[11px]"
+                  style={{ color: 'var(--text-secondary)' }}
+                >
+                  {String(d._raw.message).slice(0, 140)}
+                </div>
+              )}
+              {fixPreview && (
+                <div
+                  className="mt-1 px-1.5 py-0.5 rounded font-mono text-[10px] truncate"
+                  style={{
+                    background: 'color-mix(in srgb, var(--accent-success) 10%, transparent)',
+                    color: 'color-mix(in srgb, var(--accent-success) 90%, white 10%)',
+                  }}
+                  title={fixPreview}
+                >
+                  → {String(fixPreview).slice(0, 80)}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+      {overflow > 0 && (
+        <div
+          className="text-[10px] text-center mt-1"
+          style={{ color: 'var(--text-dim)' }}
+        >
+          + {overflow} more
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Single rule row (view + inline edit) ─────────────────────────────────
-function RuleRow({ rule, index, total, matchCount, onMove, onChange, onRemove, onToggle }) {
+function RuleRow({ rule, index, total, matched, onMove, onChange, onRemove, onToggle }) {
   const [isEditing, setIsEditing] = useState(false);
+  const [hoverOpen, setHoverOpen] = useState(false);
+  const closeTimerRef = useRef(null);
+  const matchCount = matched?.length ?? 0;
+
+  const openHover = useCallback(() => {
+    if (closeTimerRef.current) {
+      clearTimeout(closeTimerRef.current);
+      closeTimerRef.current = null;
+    }
+    setHoverOpen(true);
+  }, []);
+  const scheduleClose = useCallback(() => {
+    if (closeTimerRef.current) clearTimeout(closeTimerRef.current);
+    closeTimerRef.current = setTimeout(() => setHoverOpen(false), 120);
+  }, []);
+  useEffect(() => () => { if (closeTimerRef.current) clearTimeout(closeTimerRef.current); }, []);
 
   const targetName =
     rule.target?.kind === 'target' ? rule.target.name : 'any_issue';
@@ -143,23 +264,42 @@ function RuleRow({ rule, index, total, matchCount, onMove, onChange, onRemove, o
             </span>
             {/* Live preview badge — updates as you edit the rule or as new
                 diagnostics appear.  A zero count shows in muted grey so the
-                user can see the rule is inert in the current snapshot. */}
+                user can see the rule is inert in the current snapshot.
+                Hovering over a non-zero badge opens MatchPreview which
+                lists each affected diagnostic with its fix preview. */}
             {typeof matchCount === 'number' && (
               <span
-                className="text-[10px] px-1.5 py-0.5 rounded font-medium"
-                style={{
-                  background: matchCount > 0
-                    ? 'color-mix(in srgb, var(--accent-primary) 15%, transparent)'
-                    : 'var(--bg-elevated)',
-                  color: matchCount > 0
-                    ? 'var(--accent-primary)'
-                    : 'var(--text-dim)',
-                }}
-                title={matchCount === 0
-                  ? 'No current diagnostics match this rule'
-                  : `This rule would touch ${matchCount} current diagnostic${matchCount === 1 ? '' : 's'}`}
+                className="relative inline-block"
+                onMouseEnter={matchCount > 0 ? openHover : undefined}
+                onMouseLeave={matchCount > 0 ? scheduleClose : undefined}
+                onFocus={matchCount > 0 ? openHover : undefined}
+                onBlur={matchCount > 0 ? scheduleClose : undefined}
               >
-                {matchCount > 0 ? `affects ${matchCount}` : 'no matches'}
+                <span
+                  tabIndex={matchCount > 0 ? 0 : -1}
+                  className="text-[10px] px-1.5 py-0.5 rounded font-medium cursor-default"
+                  style={{
+                    background: matchCount > 0
+                      ? 'color-mix(in srgb, var(--accent-primary) 15%, transparent)'
+                      : 'var(--bg-elevated)',
+                    color: matchCount > 0
+                      ? 'var(--accent-primary)'
+                      : 'var(--text-dim)',
+                  }}
+                  title={matchCount === 0
+                    ? 'No current diagnostics match this rule'
+                    : `Hover for the ${matchCount} affected diagnostic${matchCount === 1 ? '' : 's'}`}
+                >
+                  {matchCount > 0 ? `affects ${matchCount}` : 'no matches'}
+                </span>
+                {hoverOpen && matchCount > 0 && (
+                  <span
+                    onMouseEnter={openHover}
+                    onMouseLeave={scheduleClose}
+                  >
+                    <MatchPreview matched={matched} />
+                  </span>
+                )}
               </span>
             )}
           </div>
@@ -307,7 +447,9 @@ export function HealingRulesEditor() {
   }, [rules]);
 
   // Pre-compute a normalised context per diagnostic once so per-rule match
-  // checks in the preview don't re-infer categories on every render.
+  // checks in the preview don't re-infer categories on every render.  We
+  // keep the raw diagnostic on `_raw` so the hover preview can show
+  // file:line + message + fix replacement without another lookup.
   const diagnosticContexts = useMemo(() => {
     return (liveDiagnostics || []).map((d) => ({
       category: categorizeDiagnostic(d),
@@ -315,20 +457,21 @@ export function HealingRulesEditor() {
       confidence: typeof d?.confidence === 'number' ? d.confidence : undefined,
       filePath: d?.filePath || d?.file || d?.primaryFile || '',
       language: getFileLanguage(d?.filePath || d?.file || ''),
+      _raw: d,
     }));
   }, [liveDiagnostics]);
 
-  // Per-rule "affects N diagnostics" count.  Memoised so changes in a rule
-  // you're NOT editing don't force the whole list to recompute.
-  const ruleCounts = useMemo(() => {
+  // Per-rule list of matched contexts.  The hover popover renders these
+  // verbatim, and the count badge derives from .length.
+  const ruleMatched = useMemo(() => {
     const out = {};
     for (const rule of rules || []) {
       if (!rule?.id) continue;
-      let n = 0;
+      const matched = [];
       for (const ctx of diagnosticContexts) {
-        if (ruleMatches(rule, ctx)) n += 1;
+        if (ruleMatches(rule, ctx)) matched.push(ctx);
       }
-      out[rule.id] = n;
+      out[rule.id] = matched;
     }
     return out;
   }, [rules, diagnosticContexts]);
@@ -465,7 +608,7 @@ export function HealingRulesEditor() {
               rule={rule}
               index={i}
               total={rules.length}
-              matchCount={ruleCounts[rule.id] ?? 0}
+              matched={ruleMatched[rule.id] || []}
               onMove={handleMove}
               onChange={handleChange}
               onRemove={handleRemove}
