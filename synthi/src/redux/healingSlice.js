@@ -32,6 +32,31 @@ export const HealingSeverity = Object.freeze({
   LOW: 'low',
 });
 
+// ── Boldness → confidence threshold mapping ───────────────────────────────
+// User-facing "How bold should healing be?" setting.  Maps to numeric
+// confidence bands at runtime.  Keep these tuned conservatively — users
+// only raise boldness after they trust the system.
+export const BoldnessThresholds = Object.freeze({
+  careful:    { autoApply: 0.95, suggest: 0.85, aiEscalate: null  },
+  balanced:   { autoApply: 0.90, suggest: 0.70, aiEscalate: 0.50  },
+  aggressive: { autoApply: 0.80, suggest: 0.55, aiEscalate: 0.40  },
+});
+
+// ── Rule action types (returned by the rule engine) ───────────────────────
+export const RuleAction = Object.freeze({
+  AUTO_APPLY:  'auto_apply',   // silently fix
+  SUGGEST:     'suggest',      // show lightbulb / pending fix
+  AI_ESCALATE: 'ai_escalate',  // send to /heal/ai/hybrid for a second opinion
+  IGNORE:      'ignore',       // drop entirely
+});
+
+// ── Trigger modes ──────────────────────────────────────────────────────────
+export const TriggerMode = Object.freeze({
+  ON_SAVE: 'onSave',
+  ON_DIAGNOSTICS_STABLE: 'onDiagnosticsStable',
+  ON_KEYSTROKE: 'onKeystroke',  // legacy / advanced — fires on every edit debounced
+});
+
 // ── Default categories that are safe to auto-heal ─────────────────────────
 // NOTE: TRAILING_WHITESPACE, MISSING_NEWLINE_EOF, and TRAILING_COMMA are
 // intentionally excluded — they produce cosmetic-only edits (add/remove
@@ -56,21 +81,59 @@ export const initialHealingState = {
 
   // Configuration
   config: {
-    autoHealCategories: DEFAULT_AUTO_HEAL_CATEGORIES,
-    minConfidence: 0.9,
+    // ── Plain-English knobs (primary UI) ─────────────────────────────
+    // "How bold should healing be?"  → determines default confidence bands
+    boldness: 'balanced',        // 'careful' | 'balanced' | 'aggressive'
+
+    // "When should it run?"
+    triggers: {
+      onSave: true,
+      onDiagnosticsStable: false,
+      onKeystroke: false,         // advanced / legacy
+      useAIForHard: false,        // escalate ambiguous fixes to /heal/ai/hybrid
+    },
+
+    // User-authored rules — evaluated top-to-bottom, first match wins.
+    // Shape: { id, action, target, scope, disabled? }  (see ruleEngine.js)
+    rules: [],
+
+    // ── Power-user knobs (advanced accordion) ────────────────────────
+    // When set, these OVERRIDE the boldness preset's thresholds.
+    customThresholds: null,       // null | { autoApply, suggest, aiEscalate }
     maxFixesPerPass: 5,
+    maxAiCallsPerMinute: 10,      // throttle for AI escalation
+    debugLogging: false,          // enables [SelfHealing] verbose logs
+    dryRun: false,                // log what would be applied without touching the buffer
+
+    // ── Notifications ────────────────────────────────────────────────
+    showNotifications: true,
+    soundEnabled: false,
+
+    // ── Legacy fields kept for backwards-compat / internal use ───────
+    // (no longer exposed in the UI, but referenced by existing code paths)
+    autoHealCategories: DEFAULT_AUTO_HEAL_CATEGORIES,
+    minConfidence: 0.9,            // superseded by boldness thresholds
     cooldownMs: 1000,
     debounceMs: 800,
-    showNotifications: true,
-    requireConfirmation: true, // Auto-fixes stay staged until explicitly approved
-    soundEnabled: false,
+    requireConfirmation: false,    // rules now dictate this (SUGGEST action)
   },
+
+  // Mirror of the Problems panel's current diagnostics — consumed by the
+  // rule editor's live preview counts and the file-tree health dots.
+  // Kept in Redux (rather than prop-drilled) so any UI can read it.
+  liveDiagnostics: [],
 
   // Currently pending fixes (awaiting application or confirmation)
   pendingFixes: [],
 
   // Recently applied fixes (for undo support, keep last 50)
   appliedFixes: [],
+
+  // Diagnostic ids that were just healed — used by the Problems panel to
+  // hide them between the apply and the next analysis sweep, since the
+  // backend may emit the same diagnostic again before re-analysing.
+  // Shape: { [diagnosticId]: timestampMs }
+  recentlyHealedIds: {},
 
   // Undo stack – stores reverted text for each applied fix
   undoStack: [],
@@ -86,8 +149,28 @@ export const initialHealingState = {
     totalFixesUndone: 0,
     fixesByCategory: {},
     fixesByLanguage: {},
+    // Routing breakdown — lets users see whether their boldness preset
+    // is producing sensible splits (too many suggestions? too few?).
+    fixesByAction: {
+      auto_apply: 0,
+      suggest: 0,
+      ai_escalate: 0,
+      ignored: 0,
+    },
     sessionStartedAt: null,
   },
+
+  // Smart-rule-suggestion tracker.  Each time the user manually accepts a
+  // suggested fix of some category, the count bumps; when it crosses a
+  // threshold, useSmartRuleSuggestions proposes an auto-apply rule.
+  // Symmetric: dismissals bump a separate counter for "never heal this".
+  suggestionCandidates: {
+    accepts:    {},   // { [category]: number }
+    dismissals: {},   // { [category]: number }
+  },
+  // Per-category timestamp, set when the user declined a suggestion so we
+  // don't nag them again for a while.
+  suggestionsSnoozed: {},
 
   // Event log (keep last 100 events)
   events: [],
@@ -160,6 +243,74 @@ const healingSlice = createSlice({
       state.config.requireConfirmation = !!action.payload;
     },
 
+    // Diagnostics mirror — page.jsx pushes the merged diagnostics list here
+    // so Redux consumers (rule editor, file tree) can see it.
+    setLiveDiagnostics(state, action) {
+      state.liveDiagnostics = Array.isArray(action.payload) ? action.payload : [];
+    },
+
+    // ── Boldness / triggers / rules ─────────────────────────────────────
+    setBoldness(state, action) {
+      const val = action.payload;
+      if (val === 'careful' || val === 'balanced' || val === 'aggressive') {
+        state.config.boldness = val;
+      }
+    },
+    setTrigger(state, action) {
+      // payload: { key: 'onSave'|'onDiagnosticsStable'|'onKeystroke'|'useAIForHard', value: boolean }
+      const { key, value } = action.payload || {};
+      if (state.config.triggers && typeof key === 'string') {
+        state.config.triggers[key] = !!value;
+      }
+    },
+    setTriggers(state, action) {
+      state.config.triggers = { ...state.config.triggers, ...(action.payload || {}) };
+    },
+    setCustomThresholds(state, action) {
+      state.config.customThresholds = action.payload || null;
+    },
+    setDebugLogging(state, action) {
+      state.config.debugLogging = !!action.payload;
+    },
+    setDryRun(state, action) {
+      state.config.dryRun = !!action.payload;
+    },
+    setMaxAiCallsPerMinute(state, action) {
+      const n = parseInt(action.payload, 10);
+      if (!Number.isNaN(n) && n >= 0) state.config.maxAiCallsPerMinute = n;
+    },
+
+    // Rule management
+    addRule(state, action) {
+      const rule = action.payload;
+      if (!rule || typeof rule !== 'object') return;
+      if (!rule.id) rule.id = `rule-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+      state.config.rules.push(rule);
+    },
+    updateRule(state, action) {
+      const { id, patch } = action.payload || {};
+      const idx = state.config.rules.findIndex((r) => r.id === id);
+      if (idx !== -1) {
+        state.config.rules[idx] = { ...state.config.rules[idx], ...(patch || {}) };
+      }
+    },
+    removeRule(state, action) {
+      state.config.rules = state.config.rules.filter((r) => r.id !== action.payload);
+    },
+    reorderRules(state, action) {
+      // payload: array of rule ids in the new order
+      const order = action.payload || [];
+      const byId = new Map(state.config.rules.map((r) => [r.id, r]));
+      const reordered = [];
+      for (const id of order) if (byId.has(id)) reordered.push(byId.get(id));
+      // append any rules not in the order list at the end
+      for (const r of state.config.rules) if (!order.includes(r.id)) reordered.push(r);
+      state.config.rules = reordered;
+    },
+    setRules(state, action) {
+      state.config.rules = Array.isArray(action.payload) ? action.payload : [];
+    },
+
     // ── Status ──────────────────────────────────────────────────────────
     setHealingStatus(state, action) {
       state.status = action.payload;
@@ -191,6 +342,15 @@ const healingSlice = createSlice({
     // ── Applied fixes ───────────────────────────────────────────────────
     recordAppliedFix(state, action) {
       const fix = action.payload;
+
+      // Dedup by id — the heal pipeline can fire the same fix more than
+      // once if a stale diagnostic re-arrives before re-analysis runs.
+      // Without this guard the History panel and stats double-count.
+      const id = fix.id || fix.fix_id;
+      if (id && state.appliedFixes.some((f) => (f.id || f.fix_id) === id)) {
+        return;
+      }
+
       // Add to applied list (max 50)
       state.appliedFixes.unshift({
         ...fix,
@@ -198,6 +358,13 @@ const healingSlice = createSlice({
       });
       if (state.appliedFixes.length > 50) {
         state.appliedFixes = state.appliedFixes.slice(0, 50);
+      }
+
+      // Hide the underlying diagnostic from the Problems panel until the
+      // next analysis sweep confirms it's actually gone.
+      if (id) {
+        if (!state.recentlyHealedIds) state.recentlyHealedIds = {};
+        state.recentlyHealedIds[id] = Date.now();
       }
 
       // Remove from pending
@@ -228,6 +395,34 @@ const healingSlice = createSlice({
         state.fileStates[filePath].lastHealedAt = Date.now();
         state.fileStates[filePath].fixCount += 1;
       }
+    },
+
+    // ── Recently healed diagnostic ids ──────────────────────────────────
+    // Bulk-mark a set of diagnostic ids as healed (page-level call after
+    // a heal pass).  The Problems panel filter selectors honour these.
+    markDiagnosticsHealed(state, action) {
+      const ids = action.payload;
+      if (!ids) return;
+      if (!state.recentlyHealedIds) state.recentlyHealedIds = {};
+      const now = Date.now();
+      const list = ids instanceof Set ? Array.from(ids) : (Array.isArray(ids) ? ids : [ids]);
+      for (const id of list) {
+        if (id != null) state.recentlyHealedIds[String(id)] = now;
+      }
+    },
+    // Drop entries older than the supplied cutoff (ms epoch).  Called
+    // periodically by the page to keep the map from growing unbounded.
+    pruneHealedDiagnostics(state, action) {
+      const cutoff = typeof action.payload === 'number' ? action.payload : Date.now() - 60_000;
+      if (!state.recentlyHealedIds) return;
+      for (const k of Object.keys(state.recentlyHealedIds)) {
+        if (state.recentlyHealedIds[k] < cutoff) {
+          delete state.recentlyHealedIds[k];
+        }
+      }
+    },
+    clearHealedDiagnostics(state) {
+      state.recentlyHealedIds = {};
     },
 
     // ── Undo support ────────────────────────────────────────────────────
@@ -291,9 +486,35 @@ const healingSlice = createSlice({
 
     // ── Toast queue ─────────────────────────────────────────────────────
     enqueueToast(state, action) {
+      const next = action.payload || {};
+      // Coalesce stacking healing toasts for the same file.  Without this,
+      // each heal pass enqueues its own toast and Sonner stacks them into
+      // a wall of "Auto-fixed 1 issue" notifications.
+      if (next.type === 'healing') {
+        const existingIdx = state.toastQueue.findIndex(
+          (t) => t.type === 'healing' && (t.filePath || null) === (next.filePath || null)
+        );
+        if (existingIdx !== -1) {
+          const existing = state.toastQueue[existingIdx];
+          const combined = (existing.fixCount || 1) + (next.fixCount || 1);
+          state.toastQueue[existingIdx] = {
+            ...existing,
+            // Use the newest description but the combined count
+            fixCount: combined,
+            message: combined === 1
+              ? existing.message
+              : `Auto-fixed ${combined} issues`,
+            details: next.details || existing.details,
+            createdAt: Date.now(),
+            // Bump id so the toast component re-fires with the new count
+            id: `toast-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          };
+          return;
+        }
+      }
       state.toastQueue.push({
-        id: action.payload.id || `toast-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-        ...action.payload,
+        id: next.id || `toast-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        ...next,
         createdAt: Date.now(),
       });
     },
@@ -320,8 +541,62 @@ const healingSlice = createSlice({
         totalFixesUndone: 0,
         fixesByCategory: {},
         fixesByLanguage: {},
+        fixesByAction: { auto_apply: 0, suggest: 0, ai_escalate: 0, ignored: 0 },
         sessionStartedAt: Date.now(),
       };
+    },
+
+    // Record a routing decision — called by the rule engine pathway
+    // regardless of whether the fix was ultimately applied.  Payload:
+    // { action: 'auto_apply'|'suggest'|'ai_escalate'|'ignore', count: number }
+    incrementActionCount(state, action) {
+      const { action: act, count } = action.payload || {};
+      const n = typeof count === 'number' && count > 0 ? count : 1;
+      const key = act === 'ignore' ? 'ignored' : act;  // stats key differs from RuleAction
+      if (state.stats.fixesByAction && key in state.stats.fixesByAction) {
+        state.stats.fixesByAction[key] += n;
+      }
+    },
+
+    // Smart-rule-suggestion events
+    recordSuggestionAccepted(state, action) {
+      const cat = action.payload;
+      if (!cat) return;
+      state.suggestionCandidates.accepts[cat] =
+        (state.suggestionCandidates.accepts[cat] || 0) + 1;
+    },
+    // Atomic replace that credits any dropped pending fix as a dismissal
+    // (unless it's still in the new list).  Let the smart-rule hook watch
+    // the resulting counts and propose an ignore-rule if the user keeps
+    // letting the same category fall through without accepting.
+    replacePendingFixesAndTrackDismissals(state, action) {
+      const next = Array.isArray(action.payload) ? action.payload : [];
+      const nextIds = new Set(next.map((f) => f.id).filter(Boolean));
+      for (const prev of state.pendingFixes) {
+        if (!prev?.id || nextIds.has(prev.id)) continue;
+        const cat = prev.category;
+        if (!cat) continue;
+        state.suggestionCandidates.dismissals[cat] =
+          (state.suggestionCandidates.dismissals[cat] || 0) + 1;
+      }
+      state.pendingFixes = next;
+    },
+    recordSuggestionDismissed(state, action) {
+      const cat = action.payload;
+      if (!cat) return;
+      state.suggestionCandidates.dismissals[cat] =
+        (state.suggestionCandidates.dismissals[cat] || 0) + 1;
+    },
+    snoozeSuggestionFor(state, action) {
+      const cat = action.payload;
+      if (!cat) return;
+      state.suggestionsSnoozed[cat] = Date.now();
+    },
+    clearSuggestionCandidate(state, action) {
+      const cat = action.payload;
+      if (!cat) return;
+      delete state.suggestionCandidates.accepts[cat];
+      delete state.suggestionCandidates.dismissals[cat];
     },
 
     // ── Hydration (from localStorage) ───────────────────────────────────
@@ -382,6 +657,19 @@ export const {
   removeAutoHealCategory,
   setMinConfidence,
   setRequireConfirmation,
+  setLiveDiagnostics,
+  setBoldness,
+  setTrigger,
+  setTriggers,
+  setCustomThresholds,
+  setDebugLogging,
+  setDryRun,
+  setMaxAiCallsPerMinute,
+  addRule,
+  updateRule,
+  removeRule,
+  reorderRules,
+  setRules,
   setHealingStatus,
   setHealingError,
   clearHealingError,
@@ -390,6 +678,9 @@ export const {
   removePendingFix,
   clearPendingFixes,
   recordAppliedFix,
+  markDiagnosticsHealed,
+  pruneHealedDiagnostics,
+  clearHealedDiagnostics,
   pushUndo,
   popUndo,
   recordUndone,
@@ -405,6 +696,12 @@ export const {
   clearToasts,
   initSession,
   resetStats,
+  incrementActionCount,
+  recordSuggestionAccepted,
+  replacePendingFixesAndTrackDismissals,
+  recordSuggestionDismissed,
+  snoozeSuggestionFor,
+  clearSuggestionCandidate,
   hydrateHealing,
   resetHealing,
   // AI Agent

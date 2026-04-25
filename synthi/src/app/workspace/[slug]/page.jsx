@@ -44,10 +44,14 @@ import { useAIHealingKeyboard } from '@/hooks/useAIHealingKeyboard';
 import { useAIAutoAnalysis } from '@/hooks/useAIAutoAnalysis';
 import { useAISelectionAnalysis } from '@/hooks/useAISelectionAnalysis';
 import { useHealingUndo } from '@/hooks/useHealingUndo';
+import { usePendingFixCodeActions } from '@/hooks/usePendingFixCodeActions';
+import { useSmartRuleSuggestions } from '@/hooks/useSmartRuleSuggestions';
 import { HealingToast } from '@/components/healing/HealingToast';
 import { PreCompileHealToast } from '@/components/healing/PreCompileHealToast';
-import { AIHealingPanel } from '@/components/healing/AIHealingPanel';
-import { clearAIFixes, clearPendingFixes, setAIEnabled, setHealingEnabled, setRequireConfirmation } from '@/redux/healingSlice';
+import { HealingSettingsPanel } from '@/components/healing/HealingSettingsPanel';
+import { clearAIFixes, clearPendingFixes, enqueueToast, hydrateHealing, markDiagnosticsHealed, pruneHealedDiagnostics, setLiveDiagnostics } from '@/redux/healingSlice';
+import { loadHealingPersistedState, saveHealingPersistedState } from '@/lib/healing/persistence';
+import { selectHealingEnabled, selectHealingConfig, selectRecentlyHealedIds } from '@/redux/healingSelectors';
 import { useWorkspaceAnalysis } from '@/hooks/useWorkspaceAnalysis';
 import { useCompiler } from '@/hooks/useCompiler';
 import { useCompileManifestListener } from '@/hooks/useCompileManifestListener';
@@ -94,7 +98,6 @@ import { DockableWorkspace } from '@/components/docking-wm/DockableWorkspace';
 // Feature flag: set to true to enable the new docking layout.
 // When false, the existing rigid ResizablePanelGroup layout is used.
 const USE_DOCKING_WM = true;
-const AUTO_FIX_ISSUES_ENABLED = false;
 
 export default function EditorPage({ params }) {
     const dispatch = useAppDispatch();
@@ -159,13 +162,30 @@ export default function EditorPage({ params }) {
     const healingState = useRuntimeHealing({ editorRef, gateway, autoHeal: false });
     const { canRetry, retryCount, isRetrying, retry } = useRetryCompile({ compilerClient: client, autoRetry: true });
 
+    // ── Self-healing state: hydrate from localStorage on mount ──────────
+    // The previous implementation hard-reset healing to disabled on every
+    // page load, overriding whatever the user toggled.  Now we load the
+    // persisted settings and let the user's choice stick.  Pending / AI
+    // fix buffers are still cleared because they're per-session.
     useEffect(() => {
-        dispatch(setHealingEnabled(false));
-        dispatch(setRequireConfirmation(true));
+        const saved = loadHealingPersistedState();
+        if (saved) {
+            dispatch(hydrateHealing(saved));
+        }
+        // Always start with empty transient buffers
         dispatch(clearPendingFixes());
-        dispatch(setAIEnabled(false));
         dispatch(clearAIFixes());
     }, [dispatch]);
+
+    // Persist healing enabled + config to localStorage on any change
+    const healingEnabledForPersist = useAppSelector(selectHealingEnabled);
+    const healingConfigForPersist = useAppSelector(selectHealingConfig);
+    useEffect(() => {
+        saveHealingPersistedState({
+            enabled: healingEnabledForPersist,
+            config: healingConfigForPersist,
+        });
+    }, [healingEnabledForPersist, healingConfigForPersist]);
 
     // Install preview-store bridge (routes window events → preview store)
     useEffect(() => {
@@ -178,7 +198,15 @@ export default function EditorPage({ params }) {
     // ─── Self-Healing system ───────────────────────────────
     const activeFilePath = activeFile?.path || '';
     const activeLanguage = activeFile?.name ? getFileLanguage(activeFile.name) : 'plaintext';
-    const { selfEditFlagRef, healFromDiagnostics } = useSelfHealing({
+
+    // Indirection ref for AI-escalation: useSelfHealing is declared before
+    // useAIHealing, but needs to call aiHealing.analyze() for fixes routed
+    // to AI_ESCALATE.  We attach the live analyze fn to this ref after
+    // both hooks mount so the callback always sees the latest closure.
+    const aiAnalyzeRef = useRef(null);
+    const aiCallsWindowRef = useRef([]);  // timestamps — for rate-limiting
+
+    const { selfEditFlagRef, healFromDiagnostics, triggerHealNow } = useSelfHealing({
         editorRef,
         gateway,
         filePath: activeFilePath,
@@ -202,39 +230,145 @@ export default function EditorPage({ params }) {
                 }
                 return !diagId || !healedIds.has(diagId);
             }));
-        }, [activeFilePath]),
+
+            // Also hide the same diagnostics in mergedDiagnostics — workspace
+            // analysis re-emits them with the same id until its next sweep,
+            // so we keep them suppressed via Redux for ~60s.
+            if (healedIds && healedIds.size > 0) {
+                dispatch(markDiagnosticsHealed(Array.from(healedIds).map(String)));
+            }
+        }, [activeFilePath, dispatch]),
+        onAIEscalate: useCallback((escalated) => {
+            const analyzeFn = aiAnalyzeRef.current;
+            if (!analyzeFn || !escalated?.length) return;
+
+            // Rate-limit: drop bursts above maxAiCallsPerMinute
+            const max = healingConfigForPersist?.maxAiCallsPerMinute ?? 10;
+            const cutoff = Date.now() - 60_000;
+            aiCallsWindowRef.current = aiCallsWindowRef.current.filter(t => t > cutoff);
+            if (aiCallsWindowRef.current.length >= max) return;
+            aiCallsWindowRef.current.push(Date.now());
+
+            // Batch: request a focused analysis spanning all escalated fixes.
+            const lines = escalated
+                .map(e => e.fix)
+                .filter(f => typeof f.startLine === 'number');
+            if (!lines.length) return;
+            const focusStart = Math.max(0, Math.min(...lines.map(f => f.startLine)) - 2);
+            const focusEnd = Math.max(...lines.map(f => f.endLine ?? f.startLine)) + 2;
+
+            analyzeFn({ focusStartLine: focusStart, focusEndLine: focusEnd });
+        }, [healingConfigForPersist?.maxAiCallsPerMinute]),
     });
-    const { undoLastFix } = useHealingUndo({ editorRef });
+    const { undoLastFix, undoToFix } = useHealingUndo({ editorRef });
+
+    // Wire the history panel's "Revert to here" button.  The panel
+    // dispatches a CustomEvent so it stays decoupled from the Monaco editor.
+    useEffect(() => {
+        if (typeof window === 'undefined') return;
+        const onRevert = (e) => {
+            const fixId = e?.detail?.fixId;
+            if (fixId) undoToFix(fixId);
+        };
+        window.addEventListener('synthi:heal-revert-to-fix', onRevert);
+        return () => window.removeEventListener('synthi:heal-revert-to-fix', onRevert);
+    }, [undoToFix]);
+
+    // Manual "Heal current problems" button (HealingSettingsPanel) → run the
+    // rule engine against the live diagnostics in Redux right now.  Held in a
+    // ref so the listener doesn't re-attach on every diagnostic change.
+    // The panel may have already drained its AI safe-fix bucket before
+    // dispatching — we honour that count when summarising the toast.
+    const healNowRef = useRef({ fn: null, diags: [] });
+    useEffect(() => {
+        if (typeof window === 'undefined') return;
+        const onHealNow = (e) => {
+            const { fn, diags } = healNowRef.current;
+            const aiAlreadyApplied = Number(e?.detail?.aiApplied) || 0;
+            if (typeof fn !== 'function') {
+                if (aiAlreadyApplied === 0) {
+                    dispatch(enqueueToast({
+                        type: 'info',
+                        message: 'Self-Healing not ready — open a file first.',
+                    }));
+                }
+                return;
+            }
+            const fixable = (diags || []).filter(
+                (d) => d.fixes?.length > 0 && d.fixes.some((f) => f.replacementText != null)
+            );
+            if (fixable.length === 0) {
+                if (aiAlreadyApplied > 0) {
+                    // The AI bucket already cleared something — don't shout
+                    // "nothing to heal".
+                    dispatch(enqueueToast({
+                        type: 'healing',
+                        message: `Auto-fixed ${aiAlreadyApplied} AI fix${aiAlreadyApplied === 1 ? '' : 'es'}`,
+                        fixCount: aiAlreadyApplied,
+                        undoable: true,
+                    }));
+                    return;
+                }
+                dispatch(enqueueToast({
+                    type: 'info',
+                    message: (diags || []).length === 0
+                        ? 'No problems detected — nothing to heal.'
+                        : `${diags.length} issue${diags.length === 1 ? '' : 's'} found, but none have applicable auto-fixes. Try enabling "Also try AI for tricky errors".`,
+                }));
+                return;
+            }
+            fn(fixable);
+        };
+        window.addEventListener('synthi:heal-now', onHealNow);
+        return () => window.removeEventListener('synthi:heal-now', onHealNow);
+    }, [dispatch]);
+
+    // Expose suggest-bucket fixes as Monaco lightbulb quick-fixes
+    usePendingFixCodeActions({
+        editorRef,
+        filePath: activeFilePath,
+        language: activeLanguage,
+        active: !!editor && !!activeFile && healingEnabledForPersist,
+    });
+
+    // Smart rule suggestions: after N accepts/dismissals of the same
+    // category, propose a rule via toast.
+    useSmartRuleSuggestions();
 
     // ─── AI Healing system (LLM-powered deep analysis) ─────
     // Complements useSelfHealing (regex): catches logic errors, type
     // mismatches, null safety, off-by-one, missing awaits, etc.
+    //
+    // Previously gated behind window.SYNTHI_ENABLE_PROACTIVE to avoid
+    // saturating Gemini.  Now driven by Redux config — user opts in via
+    // the healing settings panel ("Also try AI for tricky errors").
+    const aiTriggerEnabled = !!healingConfigForPersist?.triggers?.useAIForHard;
     const aiHealing = useAIHealing({
         editorRef,
         gateway,
         filePath: activeFilePath,
         language: activeLanguage,
         workspaceRoot: slug,
-        // DISABLED: was auto-firing /heal/ai/analyze on every Ctrl+S,
-        // piling up Gemini calls on the single Python worker.
-        // Re-enable with window.SYNTHI_ENABLE_PROACTIVE.
-        analyzeOnSave: typeof window !== 'undefined' && !!window.SYNTHI_ENABLE_PROACTIVE,
-        mode: 'ai',
+        analyzeOnSave: aiTriggerEnabled && healingEnabledForPersist,
+        mode: 'hybrid',   // regex + LLM merged (rule engine still routes)
         selfEditFlagRef,
     });
+
+    // Keep the ref in sync so useSelfHealing's onAIEscalate callback can
+    // drive focused AI analyses.
+    useEffect(() => {
+        aiAnalyzeRef.current = aiHealing?.analyze || null;
+    }, [aiHealing]);
 
     // Keyboard shortcuts: Ctrl+Shift+I (analyze), Y (apply safe), N (dismiss), M (toggle mode)
     useAIHealingKeyboard({ aiHealing });
 
     // Auto-analyze after 4s of inactivity (background, non-intrusive).
-    // TEMPORARILY DISABLED: every fire was calling /heal/ai/analyze → Gemini,
-    // saturating the Python backend and starving /refactor/split/verified.
-    // Gated behind window.SYNTHI_ENABLE_PROACTIVE (same flag as analyze/unified).
-    const proactiveEnabled = typeof window !== 'undefined' && !!window.SYNTHI_ENABLE_PROACTIVE;
+    // Gated behind the user's "Ask AI for tricky errors" setting.
     useAIAutoAnalysis({
         editorRef,
         analyzeCallback: aiHealing.analyze,
-        enabled: proactiveEnabled && !!editor && !!activeFile,
+        enabled: aiTriggerEnabled && healingEnabledForPersist && !!editor && !!activeFile,
         debounceMs: 4000,
     });
 
@@ -319,6 +453,18 @@ export default function EditorPage({ params }) {
     // Proactive analysis state - keyed by file path
     const [diagnostics, setDiagnostics] = useState([]);
     const [isAnalyzingProactive, setIsAnalyzingProactive] = useState(false);
+    // Spinner visibility lags the truth by 800ms so quick passes never flash
+    // the "Analyzing…" indicator at the user.  Only sustained analyses
+    // (e.g. AI tier round-trips) actually surface the spinner.
+    const [showAnalyzingSpinner, setShowAnalyzingSpinner] = useState(false);
+    useEffect(() => {
+        if (!isAnalyzingProactive) {
+            setShowAnalyzingSpinner(false);
+            return undefined;
+        }
+        const t = setTimeout(() => setShowAnalyzingSpinner(true), 800);
+        return () => clearTimeout(t);
+    }, [isAnalyzingProactive]);
     // FAST analysis: static + semantic
     const proactiveTimeoutRef = useRef(null);
     const lastFastSignatureRef = useRef('');
@@ -595,12 +741,15 @@ export default function EditorPage({ params }) {
                         setWorkspaceMissing(false);
                         setWorkspaceMissingMessage('');
 
-                        // Initial full workspace analysis — DISABLED by default.
-                        // Was firing /analyze/workspace with include_ai=true on every
-                        // project open, triggering the AI Predictor → Gemini mode=analyze
-                        // calls that saturated the Python backend.
-                        // Gated behind window.SYNTHI_ENABLE_PROACTIVE for opt-in.
-                        const proactiveEnabled = typeof window !== 'undefined' && !!window.SYNTHI_ENABLE_PROACTIVE;
+                        // Initial full workspace analysis — runs only when the user
+                        // has opted into continuous diagnostics via the healing
+                        // settings (otherwise we'd burn Gemini credits on every
+                        // workspace open).  Legacy opt-in: window.SYNTHI_ENABLE_PROACTIVE.
+                        const triggers = healingConfigForPersist?.triggers || {};
+                        const proactiveEnabled =
+                            (healingEnabledForPersist &&
+                             (triggers.onDiagnosticsStable || triggers.useAIForHard)) ||
+                            (typeof window !== 'undefined' && !!window.SYNTHI_ENABLE_PROACTIVE);
                         const { files } = result.payload;
                         if (proactiveEnabled && files && files.length > 0) {
                             (async () => {
@@ -1058,11 +1207,16 @@ export default function EditorPage({ params }) {
         triggerAnalysisRef.current = () => {
         if (!activeFile || !hasLoadedInitialFile || !slug) return;
 
-        // TEMPORARY: proactive analysis (analyze/unified) is disabled because
-        // it was called on every keystroke and saturated the Python AI backend,
-        // starving the split/compile endpoints. Re-enable by setting
-        // window.SYNTHI_ENABLE_PROACTIVE = true in DevTools.
-        if (typeof window !== 'undefined' && !window.SYNTHI_ENABLE_PROACTIVE) {
+        // Proactive analysis feeds the Problems panel which drives healing.
+        // Run only when the user has opted in to diagnostics-stable or
+        // AI-escalate triggers — both imply they want continuous diagnostics.
+        // Legacy escape hatch: window.SYNTHI_ENABLE_PROACTIVE still forces on.
+        const triggers = healingConfigForPersist?.triggers || {};
+        const wantsProactive =
+            healingEnabledForPersist &&
+            (triggers.onDiagnosticsStable || triggers.useAIForHard);
+        const legacyForce = typeof window !== 'undefined' && !!window.SYNTHI_ENABLE_PROACTIVE;
+        if (!wantsProactive && !legacyForce) {
             return;
         }
 
@@ -1445,9 +1599,10 @@ export default function EditorPage({ params }) {
                             const fixableDiags = normalizedDiags.filter(
                                 (d) => d.fixes?.length > 0 && d.fixes.some((f) => f.replacementText != null)
                             );
-                            if (AUTO_FIX_ISSUES_ENABLED && fixableDiags.length > 0) {
+                            if (fixableDiags.length > 0) {
                                 // Defer slightly so React can flush the new diagnostics to
                                 // the ProblemsPanel first (visual feedback + undo tracking).
+                                // healFromDiagnostics self-gates on the Redux `enabled` flag.
                                 setTimeout(() => healFromDiagnostics(fixableDiags), 60);
                             }
 
@@ -1656,7 +1811,8 @@ export default function EditorPage({ params }) {
                             const fixableAiDiags = normalizedDiags.filter(
                                 (d) => d.fixes?.length > 0 && d.fixes.some((f) => f.replacementText != null)
                             );
-                            if (AUTO_FIX_ISSUES_ENABLED && fixableAiDiags.length > 0) {
+                            if (fixableAiDiags.length > 0) {
+                                // healFromDiagnostics self-gates on the Redux `enabled` flag.
                                 setTimeout(() => healFromDiagnostics(fixableAiDiags), 60);
                             }
 
@@ -1717,27 +1873,59 @@ export default function EditorPage({ params }) {
     }, [currentContent, activeFile, hasLoadedInitialFile, workspaceClientReady, trackFileChange, triggerWorkspaceAnalysis]);
     */
 
+    // Recently-healed diagnostic ids — Redux-tracked so the filter below
+    // hides them between apply and re-analysis.  Without this, workspace
+    // analysis re-emits the same diagnostic before the next sweep proves
+    // it's actually gone.
+    const recentlyHealedIds = useAppSelector(selectRecentlyHealedIds);
+
     // Merge single-file diagnostics with workspace-level cross-file diagnostics
     const mergedDiagnostics = useMemo(() => {
-        // Start with single-file diagnostics (these are more immediate/responsive)
-        const merged = [...diagnostics];
+        const seen = new Set();
+        const out = [];
+        const cutoff = Date.now() - 30_000;
 
-        // Add cross-file diagnostics from workspace analysis
-        // Filter to avoid duplicates by comparing message + location
-        const existingKeys = new Set(
-            diagnostics.map(d => `${d.message}::${d.location?.line}::${d.location?.column}`)
-        );
-
-        for (const d of workspaceDiagnostics) {
-            const key = `${d.message}::${d.location?.line}::${d.location?.column}`;
-            if (!existingKeys.has(key)) {
-                merged.push(d);
-                existingKeys.add(key);
+        for (const d of [...diagnostics, ...workspaceDiagnostics]) {
+            // Skip diagnostics we've just healed locally — they hang around
+            // until the next analysis pass confirms they're gone.
+            const did = d?.__id || d?.id;
+            if (did && recentlyHealedIds[String(did)] && recentlyHealedIds[String(did)] > cutoff) {
+                continue;
             }
+
+            // Stronger dedup key includes file path + severity so the same
+            // message at the same location reported by two tiers (fast vs
+            // ai vs workspace) collapses to one entry.
+            const path = String(d?.filePath || d?.file || '').toLowerCase();
+            const key = `${path}::${d?.message || ''}::${d?.location?.line ?? ''}::${d?.location?.column ?? ''}::${d?.severity || ''}`;
+            if (seen.has(key)) continue;
+            seen.add(key);
+            out.push(d);
         }
 
-        return merged;
-    }, [diagnostics, workspaceDiagnostics]);
+        return out;
+    }, [diagnostics, workspaceDiagnostics, recentlyHealedIds]);
+
+    // Periodically prune the recently-healed map so it doesn't grow
+    // unbounded over a long session.  60s aligns with the cutoff above.
+    useEffect(() => {
+        const t = setInterval(() => {
+            dispatch(pruneHealedDiagnostics(Date.now() - 60_000));
+        }, 30_000);
+        return () => clearInterval(t);
+    }, [dispatch]);
+
+    // Mirror merged diagnostics into Redux so the rule editor can show live
+    // preview counts and the file tree can render health dots.
+    useEffect(() => {
+        dispatch(setLiveDiagnostics(mergedDiagnostics));
+    }, [mergedDiagnostics, dispatch]);
+
+    // Keep the manual "Heal Now" listener pointed at the latest
+    // healFromDiagnostics callback and the latest diagnostic snapshot.
+    useEffect(() => {
+        healNowRef.current = { fn: healFromDiagnostics, diags: mergedDiagnostics };
+    }, [healFromDiagnostics, mergedDiagnostics]);
 
     // Compute diagnostic summary from merged diagnostics
     const diagnosticSummaryRaw = useMemo(() => {
@@ -2141,6 +2329,21 @@ export default function EditorPage({ params }) {
         await handleRun({ skipCancel: true });
     }, [client, handleRun]);
 
+    // Keep the latest heal trigger + settings visible to handleSave without
+    // adding them to its dep array (which would churn on every config tweak).
+    // The save trigger runs through healFromDiagnostics so it routes through
+    // the user rule engine (boldness levels + custom rules) — runHealPass
+    // would bypass those and only honour autoHealCategories/minConfidence.
+    const healSaveRef = useRef({ enabled: false, onSave: false, fn: null, diags: [] });
+    useEffect(() => {
+        healSaveRef.current = {
+            enabled: healingEnabledForPersist,
+            onSave: !!healingConfigForPersist?.triggers?.onSave,
+            fn: healFromDiagnostics,
+            diags: mergedDiagnostics,
+        };
+    }, [healingEnabledForPersist, healingConfigForPersist, healFromDiagnostics, mergedDiagnostics]);
+
     const handleSave = useCallback(async (latestCode) => {
         console.log('[HMR] handleSave called with activeFile:', activeFile?.name);
         if (!activeFile) return;
@@ -2256,6 +2459,20 @@ export default function EditorPage({ params }) {
             if (msg.includes('HMR restart') || msg.includes('Cancelled')) return;
             console.error('[HMR] HMR re-run failed', err);
         }
+
+        // Self-healing on save — non-blocking: heal attempts run AFTER the
+        // compile kicks off, so a save is never delayed by healing.
+        try {
+            const { enabled: hEnabled, onSave: hOnSave, fn: hFn, diags: hDiags } = healSaveRef.current;
+            if (hEnabled && hOnSave && typeof hFn === 'function') {
+                const fixable = (hDiags || []).filter(
+                    (d) => d.fixes?.length > 0 && d.fixes.some((f) => f.replacementText != null)
+                );
+                if (fixable.length > 0) {
+                    setTimeout(() => { try { hFn(fixable); } catch (_) { /* ignore */ } }, 0);
+                }
+            }
+        } catch (_) { /* never let healing break save */ }
     }, [activeFile, rawFiles, slug, compile, hmrEnabled, runInGuiMode, isGuiRunning, client, getLatestCurrentContent]);
 
     const handleEditorMount = useCallback((editorInstance) => {
@@ -2391,7 +2608,7 @@ export default function EditorPage({ params }) {
                     })() : sidebarView === 'settings' ? (
                         <SettingsPanelContent />
                     ) : sidebarView === 'ai-healing' ? (
-                        <AIHealingPanel aiHealing={aiHealing} />
+                        <HealingSettingsPanel aiHealing={aiHealing} />
                     ) : sidebarView ? (
                         <div className="flex flex-col h-full min-h-0">
                             <div className="flex-1 min-h-0 overflow-y-auto">
@@ -2500,7 +2717,7 @@ export default function EditorPage({ params }) {
         activeFile,
         diagnostics: mergedDiagnostics,
         diagnosticSummary,
-        isAnalyzing: isAnalyzingProactive || isWorkspaceAnalyzing,
+        isAnalyzing: showAnalyzingSpinner || isWorkspaceAnalyzing,
         onSuggest: onSuggestCb,
         onBusy: onBusyCb,
         getCurrentCode: getLatestCurrentContent,
@@ -2511,11 +2728,14 @@ export default function EditorPage({ params }) {
         onToggleOrientation: toggleTreeOrientation,
         onOpenScm: onOpenScmCb,
         editorProps: memoEditorProps,
+        // AI healing surface so docked panels (HealingSettingsPanel) can consume it
+        aiHealing,
     }), [
         editor, activeFile, mergedDiagnostics, diagnosticSummary,
-        isAnalyzingProactive, isWorkspaceAnalyzing, onSuggestCb, onBusyCb,
+        showAnalyzingSpinner, isWorkspaceAnalyzing, onSuggestCb, onBusyCb,
         getLatestCurrentContent, completionClearSignal, jumpstartPrompt, jumpstartAttachments,
         onCloseProblemsCb, toggleTreeOrientation, onOpenScmCb, memoEditorProps,
+        aiHealing,
     ]);
 
     if (workspaceMissing) {
@@ -2686,7 +2906,7 @@ export default function EditorPage({ params }) {
                         <ProblemsPanel
                             diagnostics={mergedDiagnostics}
                             summary={diagnosticSummary}
-                            isAnalyzing={isAnalyzingProactive || isWorkspaceAnalyzing}
+                            isAnalyzing={showAnalyzingSpinner || isWorkspaceAnalyzing}
                             filePath={activeFile?.path || activeFile?.name || 'Current File'}
                             onClose={() => setShowProblemsPanel(false)}
                             onNavigate={(location) => {
@@ -2745,7 +2965,7 @@ export default function EditorPage({ params }) {
                 <StatusBar
                     slug={slug}
                     diagnosticSummary={diagnosticSummary}
-                    isAnalyzing={isAnalyzingProactive || isWorkspaceAnalyzing}
+                    isAnalyzing={showAnalyzingSpinner || isWorkspaceAnalyzing}
                     onProblemsClick={onProblemsClickCb}
                     extensionStatusBarItems={extensionStatusBarItems}
                     vscodeServerState={vscodeServerState}

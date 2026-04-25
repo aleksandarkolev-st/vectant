@@ -20,8 +20,6 @@ import {
 } from '@/redux/uiSlice';
 import { useThemePicker } from '@/components/ThemePicker';
 import { toast } from 'sonner';
-import { selectHealingEnabled } from '@/redux/healingSelectors';
-import { toggleHealing } from '@/redux/healingSlice';
 import { Key, Eye, EyeOff, Check, Trash2, AlertCircle } from 'lucide-react';
 
 // ── Global token helpers ────────────────────────────────────────────
@@ -56,7 +54,6 @@ export function SettingsPanelContent() {
   const dispatch = useAppDispatch();
   const autoSaveEnabled = useAppSelector(selectAutoSaveEnabled);
   const autoCompletionEnabled = useAppSelector(selectAutoCompletionEnabled);
-  const healingEnabled = useAppSelector(selectHealingEnabled);
   const byorEnabled = useAppSelector(selectBringYourOwnRunnerEnabled);
   const { open: openThemePicker } = useThemePicker();
 
@@ -138,26 +135,6 @@ export function SettingsPanelContent() {
           <span
             className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform shadow-sm ${
               autoCompletionEnabled ? 'translate-x-5' : 'translate-x-0.5'
-            }`}
-          />
-        </button>
-      </div>
-
-      {/* Self-Healing toggle */}
-      <div className="flex items-center justify-between">
-        <span className="text-sm">Self-Healing</span>
-        <button
-          onClick={() => {
-            dispatch(toggleHealing());
-            toast(healingEnabled ? 'Self-Healing disabled' : 'Self-Healing enabled', {
-              duration: 2000,
-            });
-          }}
-          className={`relative inline-flex h-5 w-9 items-center rounded-full transition-all ${healingEnabled ? 'th-toggle-on' : 'th-toggle-off'}`}
-        >
-          <span
-            className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform shadow-sm ${
-              healingEnabled ? 'translate-x-5' : 'translate-x-0.5'
             }`}
           />
         </button>

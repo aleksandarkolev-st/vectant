@@ -12,7 +12,7 @@ import { useAnalyzerGateway } from "@/hooks/useAnalyzerGateway";
  */
 export function useBatchHealing() {
   const dispatch = useDispatch();
-  const { gateway } = useAnalyzerGateway();
+  const { healBatch, clientReady } = useAnalyzerGateway();
   const [isRunning, setIsRunning] = useState(false);
   const [batchResult, setBatchResult] = useState(null);
   const [error, setError] = useState(null);
@@ -24,14 +24,14 @@ export function useBatchHealing() {
    */
   const runBatch = useCallback(
     async (files) => {
-      if (!gateway || isRunning || !files?.length) return null;
+      if (!clientReady || isRunning || !files?.length) return null;
 
       setIsRunning(true);
       setError(null);
       abortRef.current = false;
 
       try {
-        const result = await gateway.healBatch({ files });
+        const result = await healBatch({ files });
 
         if (abortRef.current) return null;
 
@@ -45,7 +45,7 @@ export function useBatchHealing() {
         setIsRunning(false);
       }
     },
-    [gateway, isRunning]
+    [healBatch, clientReady, isRunning]
   );
 
   /**

@@ -110,6 +110,12 @@ class GeminiProvider(AiProvider):
             # Do NOT wrap in build_prompt() — it adds analysis framing that makes
             # Gemini return prose instead of pure JSON.
             full_prompt = code + "\n\nRespond with ONLY the JSON object. No explanation."
+        elif mode_lower == 'rule_translate':
+            # Rule-translate mode: caller supplied a fully-formed prompt asking
+            # Gemini to convert plain English into a structured rule JSON.
+            # Send verbatim — any wrapper would add noise that confuses the
+            # structured-output parser.
+            full_prompt = prompt or ''
         else:
             # Backwards-compat: some clients include the instructive string in `prompt`.
             if prompt and 'Respond only with the updated full file contents' in prompt:

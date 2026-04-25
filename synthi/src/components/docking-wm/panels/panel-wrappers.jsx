@@ -87,8 +87,8 @@ const CommitHistoryPanel = dynamic(
   { ssr: false, loading: Placeholder },
 );
 
-const AIHealingPanel = dynamic(
-  () => import('@/components/healing/AIHealingPanel').then(m => ({ default: m.AIHealingPanel })),
+const HealingSettingsPanel = dynamic(
+  () => import('@/components/healing/HealingSettingsPanel').then(m => ({ default: m.HealingSettingsPanel })),
   { ssr: false, loading: Placeholder },
 );
 
@@ -385,7 +385,7 @@ export const AIHealingPanelWrapper = memo(function AIHealingPanelWrapper({ data 
       className="h-full w-full overflow-hidden"
       style={{ background: 'var(--bg-sidebar)' }}
     >
-      <AIHealingPanel aiHealing={ctx?.aiHealing} />
+      <HealingSettingsPanel aiHealing={ctx?.aiHealing} />
     </div>
   );
 });

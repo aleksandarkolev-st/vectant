@@ -2505,6 +2505,19 @@ class AIHybridRequest(BaseModel):
     auto_apply: Optional[bool] = False
 
 
+class RuleTranslateRequest(BaseModel):
+    """Convert a plain-English rule description into a structured healing rule.
+
+    The frontend sends the free-form text the user typed; the backend asks
+    Gemini to produce a rule JSON object matching the shape the frontend's
+    ruleEngine.js expects.
+    """
+    plain_english: str
+    target_vocabulary: Optional[List[str]] = None   # e.g. ['missing_imports', 'any_error', ...]
+    scope_vocabulary: Optional[List[str]] = None    # e.g. ['any_file', 'javascript_files', ...]
+    action_vocabulary: Optional[List[str]] = None   # e.g. ['auto_apply', 'suggest', ...]
+
+
 class RuntimeErrorDiagnostic(BaseModel):
     """A single compiler/runtime diagnostic."""
     severity: Optional[str] = "error"
@@ -2572,6 +2585,130 @@ async def heal_ai_analyze(req: AIAnalyzeRequest):
     except Exception as e:
         logger.error(f"[AI Healing] Analysis error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# Default vocabularies mirror src/lib/healing/ruleEngine.js.  The frontend
+# may override by passing its own lists in the request — useful if the
+# vocabulary is extended without a backend deploy.
+_DEFAULT_RULE_ACTIONS = ['auto_apply', 'suggest', 'ai_escalate', 'ignore']
+_DEFAULT_RULE_TARGETS = [
+    'any_error', 'any_warning', 'any_issue',
+    'missing_imports', 'unused_imports', 'unused_variables',
+    'missing_semicolons', 'missing_colons', 'missing_brackets',
+    'syntax_errors', 'type_errors', 'style_warnings',
+]
+_DEFAULT_RULE_SCOPES = [
+    'any_file',
+    'javascript_files', 'typescript_files', 'python_files',
+    'cpp_files', 'java_files', 'go_files', 'rust_files',
+    'glob',
+]
+
+
+@app.post("/heal/rule/translate")
+async def heal_rule_translate(req: RuleTranslateRequest):
+    """Translate a plain-English rule description into a structured rule JSON.
+
+    Example input:  "don't touch anything in the tests folder"
+    Example output: {"action":"ignore","target":"any_issue","scope":"glob","pattern":"tests/**"}
+    """
+    text = (req.plain_english or '').strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="plain_english is required")
+    if len(text) > 500:
+        raise HTTPException(status_code=400, detail="plain_english too long (max 500 chars)")
+
+    actions = req.action_vocabulary or _DEFAULT_RULE_ACTIONS
+    targets = req.target_vocabulary or _DEFAULT_RULE_TARGETS
+    scopes = req.scope_vocabulary or _DEFAULT_RULE_SCOPES
+
+    prompt = f"""You convert plain-English rules for a self-healing code system into a JSON rule object.
+
+Rule shape:
+{{
+  "action": <one of {actions}>,
+  "target": <one of {targets}>,
+  "scope":  <one of {scopes}>,
+  "pattern": <required only when scope == "glob", a glob like "tests/**">
+}}
+
+Action meanings:
+- "auto_apply": silently fix
+- "suggest": show a quick-fix the user has to approve
+- "ai_escalate": ask AI for a second opinion
+- "ignore": don't do anything
+
+Target meanings:
+- "any_error" / "any_warning" / "any_issue": severity filters
+- "missing_imports" / "unused_imports" / "unused_variables": identifier-level issues
+- "missing_semicolons" / "missing_colons" / "missing_brackets": syntax punctuation
+- "syntax_errors" / "type_errors" / "style_warnings": broader categories
+
+Scope meanings:
+- "any_file": no filter
+- "<lang>_files": only that language (e.g. "typescript_files")
+- "glob": specify a file-path pattern like "tests/**" or "src/legacy/*"
+
+User request: "{text}"
+
+Output ONLY the JSON object. No prose, no markdown fences, no comments.
+"""
+
+    provider = get_provider(provider_name='gemini', use_custom=False)
+    try:
+        raw = await provider.ask_llm(
+            code='',
+            lang='plaintext',
+            prompt=prompt,
+            mode='rule_translate',
+        )
+    except ValueError as e:
+        # No API key configured — return a helpful 503 instead of 500.
+        raise HTTPException(status_code=503, detail=f"AI provider unavailable: {e}")
+    except Exception as e:
+        logger.error(f"[RuleTranslate] LLM error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+    # Strip markdown fences if Gemini added them despite instruction
+    cleaned = (raw or '').strip()
+    if cleaned.startswith('```'):
+        cleaned = cleaned.split('```', 2)[-1]
+        if cleaned.lstrip().startswith('json'):
+            cleaned = cleaned.lstrip()[4:]
+        cleaned = cleaned.rsplit('```', 1)[0].strip()
+
+    try:
+        parsed = json.loads(cleaned)
+    except json.JSONDecodeError as e:
+        logger.warning(f"[RuleTranslate] JSON parse failed: {e} · raw={raw[:200]!r}")
+        raise HTTPException(
+            status_code=422,
+            detail=f"AI did not return valid JSON: {str(e)[:100]}",
+        )
+
+    if not isinstance(parsed, dict):
+        raise HTTPException(status_code=422, detail="AI returned non-object JSON")
+
+    action = parsed.get('action')
+    target = parsed.get('target')
+    scope = parsed.get('scope')
+    pattern = parsed.get('pattern')
+
+    if action not in actions:
+        raise HTTPException(status_code=422, detail=f"invalid action: {action!r}")
+    if target not in targets:
+        raise HTTPException(status_code=422, detail=f"invalid target: {target!r}")
+    if scope not in scopes:
+        raise HTTPException(status_code=422, detail=f"invalid scope: {scope!r}")
+    if scope == 'glob' and (not isinstance(pattern, str) or not pattern):
+        raise HTTPException(status_code=422, detail="glob scope requires a pattern")
+
+    return {
+        'action': action,
+        'target': target,
+        'scope': scope,
+        'pattern': pattern if scope == 'glob' else None,
+    }
 
 
 @app.post("/heal/ai/runtime")
