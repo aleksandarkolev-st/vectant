@@ -54,6 +54,19 @@ function flatten(nodes, expandedSet, level, ancestorHasNext, uiActionState) {
       uiActionState.target &&
       item.path === uiActionState.target.path;
 
+    // Synthetic input row immediately after the folder that's the create target.
+    // Rendered as a dedicated Virtuoso row so the input gets a real, measured
+    // box instead of being a second top-level node inside FileItem (which
+    // Virtuoso wraps as one row and clips).
+    if (isCreationTarget) {
+      result.push({
+        isCreateInput: true,
+        level: level + 1,
+        ancestorHasNext: [...ancestorHasNext, hasNextSibling],
+        key: `__create_input__${item.path}`,
+      });
+    }
+
     if (item.isFolder && (isExpanded || isCreationTarget) && (item.children?.length || isCreationTarget)) {
       const childRows = flatten(
         item.children,
@@ -78,7 +91,22 @@ export function useVirtualizedTree(files, uiActionState) {
   const expandedSet = useMemo(() => new Set(expandedFolders), [expandedFolders]);
 
   const flatNodes = useMemo(
-    () => flatten(files, expandedSet, 0, [], uiActionState),
+    () => {
+      const rows = [];
+      // Root-level creation: synthetic input row at the top of the tree.
+      const isRootCreation =
+        uiActionState.mode.startsWith('create') && !uiActionState.target;
+      if (isRootCreation) {
+        rows.push({
+          isCreateInput: true,
+          level: 0,
+          ancestorHasNext: [],
+          key: '__create_input_root__',
+        });
+      }
+      rows.push(...flatten(files, expandedSet, 0, [], uiActionState));
+      return rows;
+    },
     [files, expandedSet, uiActionState],
   );
 
