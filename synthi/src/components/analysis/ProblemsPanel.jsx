@@ -16,7 +16,10 @@
  */
 
 import React, { useCallback, useMemo, useState, useRef, useEffect } from 'react';
+import { useDispatch } from 'react-redux';
 import { Virtuoso } from 'react-virtuoso';
+import { addRule, enqueueToast, RuleAction } from '@/redux/healingSlice';
+import { createRule, TargetVocabulary, ruleToSentence } from '@/lib/healing/ruleEngine';
 import {
   AlertCircle,
   AlertTriangle,
@@ -151,12 +154,78 @@ const SORT_OPTIONS = {
 /**
  * Single diagnostic item with cross-file navigation support
  */
+// Best-effort map diagnostic.category → TargetVocabulary key so the new
+// rule shows up as a friendly sentence in the rules panel.
+const CATEGORY_TO_TARGET_NAME = {
+  missing_semicolon: 'missing_semicolons',
+  missing_colon:     'missing_colons',
+  missing_bracket:   'missing_brackets',
+  unused_import:     'unused_imports',
+  missing_import:    'missing_imports',
+  duplicate_import:  'missing_imports',
+  missing_include:   'missing_imports',
+  unused_variable:   'unused_variables',
+  type_mismatch:     'type_errors',
+  trailing_whitespace: 'style_warnings',
+  missing_newline_eof: 'style_warnings',
+  trailing_comma:    'style_warnings',
+  none_comparison:   'style_warnings',
+};
+
+function diagnosticToRuleTarget(diag) {
+  const cat = diag?.category;
+  if (cat && CATEGORY_TO_TARGET_NAME[cat]) {
+    return { kind: 'target', name: CATEGORY_TO_TARGET_NAME[cat] };
+  }
+  if (cat && TargetVocabulary[cat]) {
+    return { kind: 'target', name: cat };
+  }
+  const sev = (diag?.severity || 'error').toLowerCase();
+  if (sev === 'warning') return { kind: 'target', name: 'any_warning' };
+  if (sev === 'info' || sev === 'hint') return { kind: 'target', name: 'any_issue' };
+  return { kind: 'target', name: 'any_error' };
+}
+
 function DiagnosticItem({ diagnostic, onNavigate, isSelected, filePath }) {
+  const dispatch = useDispatch();
   const severityConfig = SEVERITY_CONFIG[diagnostic.severity] || SEVERITY_CONFIG.info;
   const tierConfig = TIER_CONFIG[diagnostic.tier] || TIER_CONFIG.static;
   const SeverityIcon = severityConfig.icon;
   const TierIcon = tierConfig.icon;
-  
+
+  // Context menu state — position is null when closed
+  const [ctxMenu, setCtxMenu] = useState(null);
+  const closeCtxMenu = useCallback(() => setCtxMenu(null), []);
+
+  useEffect(() => {
+    if (!ctxMenu) return;
+    const close = () => closeCtxMenu();
+    window.addEventListener('click', close);
+    window.addEventListener('scroll', close, true);
+    return () => {
+      window.removeEventListener('click', close);
+      window.removeEventListener('scroll', close, true);
+    };
+  }, [ctxMenu, closeCtxMenu]);
+
+  const handleCreateRule = useCallback((action) => {
+    const target = diagnosticToRuleTarget(diagnostic);
+    const rule = {
+      id: `rule-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      action,
+      target,
+      scope: { kind: 'scope', name: 'any_file' },
+      disabled: false,
+    };
+    dispatch(addRule(rule));
+    dispatch(enqueueToast({
+      type: 'healing-undo',
+      message: `Rule added: ${ruleToSentence(rule)}`,
+      duration: 4000,
+    }));
+    closeCtxMenu();
+  }, [diagnostic, dispatch, closeCtxMenu]);
+
   const handleClick = useCallback(() => {
     if (onNavigate) {
       // Include file path for cross-file navigation
@@ -169,10 +238,18 @@ function DiagnosticItem({ diagnostic, onNavigate, isSelected, filePath }) {
       });
     }
   }, [diagnostic, onNavigate, filePath]);
+
+  const handleContextMenu = useCallback((e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setCtxMenu({ x: e.clientX, y: e.clientY });
+  }, []);
   
   return (
+    <>
     <button
       onClick={handleClick}
+      onContextMenu={handleContextMenu}
       className={cn(
         'w-full text-left px-3 py-2 flex items-start gap-2 transition-colors',
         'border-l-2',
@@ -270,6 +347,46 @@ function DiagnosticItem({ diagnostic, onNavigate, isSelected, filePath }) {
         )}
       </div>
     </button>
+
+    {/* Right-click context menu: create an ignore/auto-apply rule for
+        this diagnostic's category in one click.  Sibling of the button
+        so the HTML stays spec-compliant (no nested interactives). */}
+    {ctxMenu && (
+      <div
+        onClick={(e) => { e.stopPropagation(); }}
+        className="fixed z-[100] min-w-[220px] py-1 bg-[#0d0e14] border border-[#2a2b38] rounded-md shadow-xl"
+        style={{ left: ctxMenu.x, top: ctxMenu.y }}
+      >
+        <div className="px-3 py-1.5 text-[10px] uppercase tracking-wider text-[#5a6178] border-b border-[#2a2b38]">
+          Rule for this kind of issue
+        </div>
+        <button
+          onClick={() => handleCreateRule(RuleAction.IGNORE)}
+          className="w-full px-3 py-1.5 text-left text-xs text-[#9ba2b8] hover:bg-[#101118] hover:text-[#f4f5f8]"
+        >
+          Never heal this
+        </button>
+        <button
+          onClick={() => handleCreateRule(RuleAction.AUTO_APPLY)}
+          className="w-full px-3 py-1.5 text-left text-xs text-[#9ba2b8] hover:bg-[#101118] hover:text-[#f4f5f8]"
+        >
+          Always fix this
+        </button>
+        <button
+          onClick={() => handleCreateRule(RuleAction.SUGGEST)}
+          className="w-full px-3 py-1.5 text-left text-xs text-[#9ba2b8] hover:bg-[#101118] hover:text-[#f4f5f8]"
+        >
+          Suggest a fix
+        </button>
+        <button
+          onClick={() => handleCreateRule(RuleAction.AI_ESCALATE)}
+          className="w-full px-3 py-1.5 text-left text-xs text-[#9ba2b8] hover:bg-[#101118] hover:text-[#f4f5f8]"
+        >
+          Ask AI for these
+        </button>
+      </div>
+    )}
+    </>
   );
 }
 

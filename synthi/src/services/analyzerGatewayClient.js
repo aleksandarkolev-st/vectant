@@ -503,6 +503,29 @@ export class AnalyzerGatewayClient {
   }
 
   /**
+   * Translate a plain-English healing rule into a structured rule object.
+   *
+   * The user types something like "don't touch anything in the tests
+   * folder" and the AI returns { action, target, scope, pattern? } ready
+   * to be inserted into the rule list.
+   *
+   * @param {Object} payload
+   * @param {string} payload.plainEnglish    – free-form rule text (max 500 chars)
+   * @param {string[]} [payload.targetVocabulary]  – override target enum
+   * @param {string[]} [payload.scopeVocabulary]   – override scope enum
+   * @param {string[]} [payload.actionVocabulary]  – override action enum
+   * @returns {Promise<{action: string, target: string, scope: string, pattern: string|null}>}
+   */
+  ruleTranslate(payload) {
+    return this._sendRequest('heal/rule/translate', {
+      plainEnglish: payload.plainEnglish,
+      targetVocabulary: payload.targetVocabulary || null,
+      scopeVocabulary: payload.scopeVocabulary || null,
+      actionVocabulary: payload.actionVocabulary || null,
+    });
+  }
+
+  /**
    * Fix compiler/runtime errors using the AI agent.
    * This is the HMR runtime healing endpoint — send compiler diagnostics
    * and source code, get back fixed code ready for HMR re-trigger.

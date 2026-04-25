@@ -4,6 +4,7 @@
 // relevant slice of state actually changes.
 
 import { createSelector } from '@reduxjs/toolkit';
+import { BoldnessThresholds } from './healingSlice';
 
 // ── Root selector ─────────────────────────────────────────────────────────
 export const selectHealingState = (state) => state.healing;
@@ -132,6 +133,100 @@ export const selectHealingSummary = createSelector(
 export const selectHealingReady = createSelector(
   [selectHealingEnabled, selectHealingStatus],
   (enabled, status) => enabled && (status === 'idle' || status === 'cooldown')
+);
+
+// ── Boldness / rules / triggers ──────────────────────────────────────────
+export const selectBoldness = (state) => state.healing?.config?.boldness ?? 'balanced';
+export const selectTriggers = (state) => state.healing?.config?.triggers ?? {};
+export const selectHealingRules = (state) => state.healing?.config?.rules ?? [];
+export const selectDebugLogging = (state) => state.healing?.config?.debugLogging ?? false;
+export const selectDryRun = (state) => state.healing?.config?.dryRun ?? false;
+export const selectCustomThresholds = (state) => state.healing?.config?.customThresholds ?? null;
+export const selectSuggestionCandidates = (state) =>
+  state.healing?.suggestionCandidates ?? { accepts: {}, dismissals: {} };
+export const selectSuggestionsSnoozed = (state) =>
+  state.healing?.suggestionsSnoozed ?? {};
+export const selectLiveDiagnostics = (state) => state.healing?.liveDiagnostics ?? [];
+const EMPTY_HEALED = Object.freeze({});
+export const selectRecentlyHealedIds = (state) => state.healing?.recentlyHealedIds ?? EMPTY_HEALED;
+
+/** Normalised forward-slash path for file-keyed lookups. */
+function normaliseFilePath(p) {
+  if (!p) return '';
+  return String(p).replace(/^[./\\]+/, '').replace(/\\/g, '/').toLowerCase();
+}
+
+/**
+ * Group live diagnostics by normalised file path.  Powers the file-tree
+ * health dots — looking up a path in this map is O(1).
+ *
+ * Returns shape: { [filePath]: { errors, warnings, infos, hints, total } }
+ */
+export const selectDiagnosticsByFile = createSelector(
+  [selectLiveDiagnostics],
+  (diagnostics) => {
+    const out = {};
+    for (const d of diagnostics) {
+      const raw = d?.filePath || d?.file || d?.primaryFile;
+      if (!raw) continue;
+      const key = normaliseFilePath(raw);
+      if (!out[key]) out[key] = { errors: 0, warnings: 0, infos: 0, hints: 0, total: 0 };
+      const sev = (d.severity || 'error').toLowerCase();
+      out[key].total += 1;
+      if (sev === 'error')        out[key].errors += 1;
+      else if (sev === 'warning') out[key].warnings += 1;
+      else if (sev === 'info')    out[key].infos += 1;
+      else                        out[key].hints += 1;
+    }
+    return out;
+  }
+);
+
+/**
+ * Group pending (suggest-bucket) fixes by normalised file path — the
+ * file-tree dot turns yellow when this count is > 0.
+ */
+export const selectPendingFixesByFile = createSelector(
+  [selectPendingFixes],
+  (fixes) => {
+    const out = {};
+    for (const f of fixes) {
+      const raw = f?.filePath || f?.file_path;
+      if (!raw) continue;
+      const key = normaliseFilePath(raw);
+      out[key] = (out[key] || 0) + 1;
+    }
+    return out;
+  }
+);
+
+/** Factory: health summary for a single file (for FileItem rendering). */
+export const makeSelectFileHealth = (filePath) =>
+  createSelector(
+    [selectDiagnosticsByFile, selectPendingFixesByFile],
+    (diagMap, pendingMap) => {
+      const key = normaliseFilePath(filePath);
+      const diag = diagMap[key] || null;
+      const pending = pendingMap[key] || 0;
+      return { diag, pending };
+    }
+  );
+
+/**
+ * Effective confidence thresholds — custom thresholds override the boldness
+ * preset. Consumers use this to route individual fixes.
+ */
+export const selectEffectiveThresholds = createSelector(
+  [selectBoldness, selectCustomThresholds],
+  (boldness, custom) => {
+    const preset = BoldnessThresholds[boldness] || BoldnessThresholds.balanced;
+    if (!custom || typeof custom !== 'object') return preset;
+    return {
+      autoApply:   typeof custom.autoApply   === 'number' ? custom.autoApply   : preset.autoApply,
+      suggest:     typeof custom.suggest     === 'number' ? custom.suggest     : preset.suggest,
+      aiEscalate:  typeof custom.aiEscalate  === 'number' ? custom.aiEscalate  : preset.aiEscalate,
+    };
+  }
 );
 
 // ── AI Agent selectors ────────────────────────────────────────────────────

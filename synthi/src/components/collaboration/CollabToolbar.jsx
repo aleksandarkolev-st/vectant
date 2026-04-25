@@ -114,8 +114,6 @@ export default function CollabToolbar({ slug, filePath }) {
 
   return (
     <div className="flex items-center gap-2">
-      {/* ── Presence Avatars ────────────────────────────────────────── */}
-      <PresenceAvatars users={allUsers} />
 
       {/* ── Missed-while-offline tray ────────────────────────────────── */}
       <MissedEventsTray />
@@ -123,6 +121,9 @@ export default function CollabToolbar({ slug, filePath }) {
       {/* ── Per-file version history + restore ──────────────────────── */}
       <FileVersionsPanel slug={slug} filePath={filePath} />
 
+      {/* ── Presence Avatars ────────────────────────────────────────── */}
+      <PresenceAvatars users={allUsers} />
+      
       {/* ── Role Badges ──────────────────────────────────────────────── */}
       {role === 'idle' && (
         <ShareButton onClick={openModal} />

@@ -16,7 +16,7 @@ import sseClient from "@/services/sseClient";
  * @param {number} [fallbackPollMs=120000] — Fallback poll (only active when SSE is down)
  */
 export function useHealingStats(slug, fallbackPollMs = 120000) {
-  const { gateway } = useAnalyzerGateway();
+  const { healStats, healCacheStats, clientReady } = useAnalyzerGateway();
   const [stats, setStats] = useState(null);
   const [cacheStats, setCacheStats] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -26,12 +26,12 @@ export function useHealingStats(slug, fallbackPollMs = 120000) {
    * Fetch latest stats from the backend.
    */
   const refresh = useCallback(async () => {
-    if (!gateway) return;
+    if (!clientReady) return;
     setLoading(true);
     try {
       const [statsResult, cacheResult] = await Promise.allSettled([
-        gateway.healStats(),
-        gateway.healCacheStats(),
+        healStats(),
+        healCacheStats(),
       ]);
 
       if (statsResult.status === "fulfilled") {
@@ -45,11 +45,11 @@ export function useHealingStats(slug, fallbackPollMs = 120000) {
     } finally {
       setLoading(false);
     }
-  }, [gateway]);
+  }, [healStats, healCacheStats, clientReady]);
 
   // Initial fetch + SSE subscription (replaces 30s polling)
   useEffect(() => {
-    if (!gateway) return;
+    if (!clientReady) return;
     mountedRef.current = true;
 
     refresh();
@@ -73,7 +73,7 @@ export function useHealingStats(slug, fallbackPollMs = 120000) {
       clearInterval(interval);
       if (unsubSSE) unsubSSE();
     };
-  }, [gateway, fallbackPollMs, refresh, slug]);
+  }, [clientReady, fallbackPollMs, refresh, slug]);
 
   return {
     stats,
