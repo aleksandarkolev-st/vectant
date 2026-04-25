@@ -8,6 +8,8 @@
 'use client';
 
 import { useState, useCallback, useMemo, useEffect, useRef } from 'react';
+import { createPortal } from 'react-dom';
+import { Check } from 'lucide-react';
 import { useDispatch, useSelector } from 'react-redux';
 import {
   addRule,
@@ -94,27 +96,48 @@ function Pill({ value, onChange, options, getLabel, className = '' }) {
 }
 
 // ── Hover popover that shows the diagnostics a rule would affect ──────
-// Pure-CSS positioning — lives next to the badge it describes, never
-// portalling.  Visible only while the pointer is over the badge or the
-// popover itself, with a short delay before close so users can move the
-// cursor onto the panel without it vanishing.
-function MatchPreview({ matched }) {
-  if (!matched || matched.length === 0) return null;
+// Portals to <body> so the rule-row's transform stacking context never
+// clips it, and positions itself relative to the badge's viewport rect.
+// Defaults to opening rightward; flips to the left side if that would
+// overflow the viewport.
+const POPOVER_WIDTH = 288; // w-72 = 18rem = 288px
+const POPOVER_GAP   = 8;
+
+function MatchPreview({ matched, anchorRect, onPointerEnter, onPointerLeave }) {
+  if (!matched || matched.length === 0 || !anchorRect) return null;
+  if (typeof document === 'undefined') return null;
+
   const display = matched.slice(0, 8);
   const overflow = matched.length - display.length;
-  return (
+
+  const viewportWidth = typeof window !== 'undefined' ? window.innerWidth : 1024;
+  const flipLeft =
+    anchorRect.right + POPOVER_GAP + POPOVER_WIDTH > viewportWidth - 16;
+  const left = flipLeft
+    ? Math.max(8, anchorRect.left - POPOVER_WIDTH - POPOVER_GAP)
+    : anchorRect.right + POPOVER_GAP;
+  const top = Math.max(8, anchorRect.top);
+
+  return createPortal(
     <div
       role="dialog"
-      className="heal-popover absolute right-0 top-full mt-1 z-30 w-72 rounded-md p-2 shadow-2xl text-left"
+      className="heal-popover w-72 rounded-md p-2 text-left"
       style={{
+        position: 'fixed',
+        top,
+        left,
+        zIndex: 9999,
         background:
-          'color-mix(in srgb, var(--bg-surface) 85%, transparent)',
+          'color-mix(in srgb, var(--bg-surface) 92%, transparent)',
         border: '1px solid var(--border-medium, var(--border-subtle))',
         color: 'var(--text-primary)',
         boxShadow:
-          '0 12px 32px rgba(0,0,0,0.35), 0 0 0 1px color-mix(in srgb, var(--accent-primary) 12%, transparent)',
+          '0 12px 32px rgba(0,0,0,0.45), 0 0 0 1px color-mix(in srgb, var(--accent-primary) 14%, transparent)',
+        transformOrigin: flipLeft ? 'top right' : 'top left',
       }}
       onMouseDown={(e) => e.stopPropagation()}
+      onMouseEnter={onPointerEnter}
+      onMouseLeave={onPointerLeave}
     >
       <div
         className="text-[10px] uppercase tracking-wider mb-1.5"
@@ -197,7 +220,8 @@ function MatchPreview({ matched }) {
           + {overflow} more
         </div>
       )}
-    </div>
+    </div>,
+    document.body
   );
 }
 
@@ -205,6 +229,8 @@ function MatchPreview({ matched }) {
 function RuleRow({ rule, index, total, matched, onMove, onChange, onRemove, onToggle }) {
   const [isEditing, setIsEditing] = useState(false);
   const [hoverOpen, setHoverOpen] = useState(false);
+  const [anchorRect, setAnchorRect] = useState(null);
+  const badgeWrapRef = useRef(null);
   const closeTimerRef = useRef(null);
   const matchCount = matched?.length ?? 0;
 
@@ -213,13 +239,34 @@ function RuleRow({ rule, index, total, matched, onMove, onChange, onRemove, onTo
       clearTimeout(closeTimerRef.current);
       closeTimerRef.current = null;
     }
+    if (badgeWrapRef.current) {
+      setAnchorRect(badgeWrapRef.current.getBoundingClientRect());
+    }
     setHoverOpen(true);
   }, []);
   const scheduleClose = useCallback(() => {
     if (closeTimerRef.current) clearTimeout(closeTimerRef.current);
-    closeTimerRef.current = setTimeout(() => setHoverOpen(false), 120);
+    closeTimerRef.current = setTimeout(() => setHoverOpen(false), 140);
   }, []);
   useEffect(() => () => { if (closeTimerRef.current) clearTimeout(closeTimerRef.current); }, []);
+
+  // Re-measure the badge while the popover is open so scroll/resize keeps
+  // it pinned.  Capture-phase scroll listener so nested scroll containers
+  // (the settings panel itself) also trigger updates.
+  useEffect(() => {
+    if (!hoverOpen) return;
+    const update = () => {
+      if (badgeWrapRef.current) {
+        setAnchorRect(badgeWrapRef.current.getBoundingClientRect());
+      }
+    };
+    window.addEventListener('scroll', update, true);
+    window.addEventListener('resize', update);
+    return () => {
+      window.removeEventListener('scroll', update, true);
+      window.removeEventListener('resize', update);
+    };
+  }, [hoverOpen]);
 
   const targetName =
     rule.target?.kind === 'target' ? rule.target.name : 'any_issue';
@@ -272,7 +319,8 @@ function RuleRow({ rule, index, total, matched, onMove, onChange, onRemove, onTo
                 lists each affected diagnostic with its fix preview. */}
             {typeof matchCount === 'number' && (
               <span
-                className="relative inline-block"
+                ref={badgeWrapRef}
+                className="inline-block"
                 onMouseEnter={matchCount > 0 ? openHover : undefined}
                 onMouseLeave={matchCount > 0 ? scheduleClose : undefined}
                 onFocus={matchCount > 0 ? openHover : undefined}
@@ -297,12 +345,12 @@ function RuleRow({ rule, index, total, matched, onMove, onChange, onRemove, onTo
                   {matchCount > 0 ? `affects ${matchCount}` : 'no matches'}
                 </span>
                 {hoverOpen && matchCount > 0 && (
-                  <span
-                    onMouseEnter={openHover}
-                    onMouseLeave={scheduleClose}
-                  >
-                    <MatchPreview matched={matched} />
-                  </span>
+                  <MatchPreview
+                    matched={matched}
+                    anchorRect={anchorRect}
+                    onPointerEnter={openHover}
+                    onPointerLeave={scheduleClose}
+                  />
                 )}
               </span>
             )}
@@ -432,22 +480,17 @@ export function HealingRulesEditor() {
   const liveDiagnostics = useSelector(selectLiveDiagnostics);
   const { ruleTranslate } = useAnalyzerGateway();
 
-  // Saving indicator: briefly flashes "Saved ✓" whenever rules change.
-  // Skips the very first render so the badge doesn't appear on mount.
-  const [savedFlash, setSavedFlash] = useState(false);
+  // Saving indicator: a small green checkmark scales in then fades when
+  // rules change.  We bump a counter on each save so React remounts the
+  // icon and the synthi-save-pulse keyframe replays from the start.
+  const [savedTick, setSavedTick] = useState(0);
   const firstRender = useRef(true);
-  const flashTimerRef = useRef(null);
   useEffect(() => {
     if (firstRender.current) {
       firstRender.current = false;
       return;
     }
-    setSavedFlash(true);
-    if (flashTimerRef.current) clearTimeout(flashTimerRef.current);
-    flashTimerRef.current = setTimeout(() => setSavedFlash(false), 1400);
-    return () => {
-      if (flashTimerRef.current) clearTimeout(flashTimerRef.current);
-    };
+    setSavedTick((t) => t + 1);
   }, [rules]);
 
   // Pre-compute a normalised context per diagnostic once so per-rule match
@@ -576,21 +619,19 @@ export function HealingRulesEditor() {
           >
             Rules
           </div>
-          {/* Saving indicator: brief green pill that fades after 1.4s */}
-          <span
-            className="text-[10px] px-1.5 py-0.5 rounded-full transition-all duration-300"
-            style={{
-              background: savedFlash
-                ? 'color-mix(in srgb, var(--accent-success, #4ade80) 18%, transparent)'
-                : 'transparent',
-              color: 'var(--accent-success, #4ade80)',
-              opacity: savedFlash ? 1 : 0,
-              transform: savedFlash ? 'translateY(0)' : 'translateY(-2px)',
-              pointerEvents: 'none',
-            }}
-          >
-            ✓ Saved
-          </span>
+          {/* Saving indicator: a small checkmark that scale-fades in/out
+              on every rule edit.  key={savedTick} remounts the node so
+              the synthi-save-pulse keyframe replays from 0%. */}
+          {savedTick > 0 && (
+            <Check
+              key={savedTick}
+              size={14}
+              strokeWidth={3}
+              className="synthi-save-pulse"
+              style={{ color: 'var(--accent-success, #4ade80)' }}
+              aria-label="Saved"
+            />
+          )}
         </div>
         <div className="text-[10px]" style={{ color: 'var(--text-dim)' }}>
           applied top to bottom

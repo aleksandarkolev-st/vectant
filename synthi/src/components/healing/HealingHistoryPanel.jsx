@@ -225,7 +225,7 @@ function HistoryRow({ fix, undoEntry, isUndoable, onRevert }) {
             {humanCategory(fix.category)}
             {fix.description && fix.description !== fix.category && (
               <span style={{ color: 'var(--text-muted)' }}>
-                {' — '}{fix.description}
+                {' - '}{fix.description}
               </span>
             )}
           </div>

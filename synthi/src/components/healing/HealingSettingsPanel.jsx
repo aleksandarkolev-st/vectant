@@ -39,7 +39,7 @@ import {
 import { selectHealingRules } from '@/redux/healingSelectors';
 import { HealingRulesEditor } from './HealingRulesEditor';
 import { HealingHistoryPanel } from './HealingHistoryPanel';
-import { RefreshCcw, ChevronRight } from 'lucide-react';
+import { ChevronRight } from 'lucide-react';
 
 // ── Small UI atoms ──────────────────────────────────────────────────────
 function Toggle({ checked, onChange, label, description }) {
@@ -209,7 +209,7 @@ function SectionLabel({ children, hint }) {
 }
 
 // ── Main panel ──────────────────────────────────────────────────────────
-export function HealingSettingsPanel({ aiHealing } = {}) {
+export function HealingSettingsPanel() {
   const dispatch = useDispatch();
   const enabled = useSelector(selectHealingEnabled);
   const config = useSelector(selectHealingConfig);
@@ -286,28 +286,6 @@ export function HealingSettingsPanel({ aiHealing } = {}) {
     [dispatch]
   );
 
-  // ── Manual heal trigger ─────────────────────────────────────────────
-  // Fires a window CustomEvent that page.jsx listens for (rule-engine
-  // pass over the Problems panel).  Also drains the AI safe-fix bucket
-  // here directly because aiHealing exposes its callback to the panel
-  // and we want a single button to handle every applicable fix.
-  const handleHealNow = useCallback(() => {
-    if (!enabled) {
-      dispatch(enqueueToast({
-        type: 'info',
-        message: 'Self-Healing is off — turn it on to apply fixes.',
-      }));
-      return;
-    }
-    let aiApplied = 0;
-    if (typeof aiHealing?.applyAllSafe === 'function') {
-      try { aiApplied = aiHealing.applyAllSafe() || 0; } catch (_) { /* ignore */ }
-    }
-    if (typeof window !== 'undefined') {
-      window.dispatchEvent(new CustomEvent('synthi:heal-now', { detail: { aiApplied } }));
-    }
-  }, [enabled, dispatch, aiHealing]);
-
   const thresholds = custom || BoldnessThresholds[boldness] || BoldnessThresholds.balanced;
 
   return (
@@ -328,21 +306,6 @@ export function HealingSettingsPanel({ aiHealing } = {}) {
         onChange={(v) => dispatch(updateConfig({ showNotifications: v }))}
         label="Notify me when fixes are applied"
       />
-
-      {/* Heal Now — runs the rule engine against the Problems panel right now. */}
-      <button
-        onClick={handleHealNow}
-        disabled={!enabled}
-        className="heal-button-primary flex items-center justify-center gap-2 text-sm py-2 rounded-md disabled:opacity-50 disabled:cursor-not-allowed"
-        style={{
-          color: 'var(--text-on-accent, white)',
-          fontWeight: 500,
-        }}
-        title="Apply your rules to current problems-panel diagnostics"
-      >
-        <RefreshCcw size={13} />
-        Heal current problems
-      </button>
 
       {/* Boldness */}
       <SectionDivider />
@@ -397,7 +360,7 @@ export function HealingSettingsPanel({ aiHealing } = {}) {
           checked={!!triggers.onDiagnosticsStable}
           onChange={(v) => handleTrigger('onDiagnosticsStable', v)}
           label="Continuously as I work"
-          description="Runs after you pause typing — can be noisier."
+          description="Runs after you pause typing - can be noisier."
         />
         <Toggle
           checked={!!triggers.useAIForHard}
