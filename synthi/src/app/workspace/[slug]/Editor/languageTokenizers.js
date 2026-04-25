@@ -7,25 +7,44 @@
  * explicitly loads and registers them for ALL languages (including
  * JavaScript and TypeScript), providing full syntax highlighting
  * without requiring TextMate grammars or bundled vscode extensions.
+ *
+ * For our seven "first-class" languages (cpp/c, java, rust, js, ts, html, css)
+ * we ship custom Monarch grammars under ./tokenizers/ that emit richer scopes
+ * (function.call, type.identifier, constant.macro, attribute.name, …) than the
+ * Monaco basic-languages defaults — the theme can then paint each one in a
+ * distinct colour.  Other languages still fall back to Monaco's grammars.
  */
 
 import * as monaco from 'monaco-editor';
 
+import { CPP_LANGUAGE,  CPP_CONF }  from './tokenizers/cpp.js';
+import { JAVA_LANGUAGE, JAVA_CONF } from './tokenizers/java.js';
+import { RUST_LANGUAGE, RUST_CONF } from './tokenizers/rust.js';
+import { JS_LANGUAGE,   JS_CONF }   from './tokenizers/javascript.js';
+import { TS_LANGUAGE,   TS_CONF }   from './tokenizers/typescript.js';
+import { HTML_LANGUAGE, HTML_CONF } from './tokenizers/html.js';
+import { CSS_LANGUAGE,  CSS_CONF }  from './tokenizers/css.js';
+
+/** Custom-grammar registrations — these win over Monaco's basic-languages. */
+const CUSTOM_GRAMMARS = [
+    { id: 'cpp',        language: CPP_LANGUAGE,  conf: CPP_CONF  },
+    { id: 'c',          language: CPP_LANGUAGE,  conf: CPP_CONF  },
+    { id: 'java',       language: JAVA_LANGUAGE, conf: JAVA_CONF },
+    { id: 'rust',       language: RUST_LANGUAGE, conf: RUST_CONF },
+    { id: 'javascript', language: JS_LANGUAGE,   conf: JS_CONF   },
+    { id: 'typescript', language: TS_LANGUAGE,   conf: TS_CONF   },
+    { id: 'html',       language: HTML_LANGUAGE, conf: HTML_CONF },
+    { id: 'css',        language: CSS_LANGUAGE,  conf: CSS_CONF  },
+];
+
 /**
- * Language → dynamic import for the Monarch definition module.
- * Each module exports `{ conf, language }`.
- *
- * NOTE: `c` reuses the C++ tokenizer (same grammar covers both).
+ * Language → dynamic import for the Monarch definition module.  Only languages
+ * we DON'T ship a custom grammar for live here — they fall back to Monaco's
+ * basic-languages tokenizers.
  */
 const MONARCH_LOADERS = [
-    { id: 'javascript', load: () => import('monaco-editor/esm/vs/basic-languages/javascript/javascript.js') },
-    { id: 'typescript', load: () => import('monaco-editor/esm/vs/basic-languages/typescript/typescript.js') },
-    { id: 'rust',    load: () => import('monaco-editor/esm/vs/basic-languages/rust/rust.js') },
-    { id: 'java',    load: () => import('monaco-editor/esm/vs/basic-languages/java/java.js') },
     { id: 'python',  load: () => import('monaco-editor/esm/vs/basic-languages/python/python.js') },
     { id: 'go',      load: () => import('monaco-editor/esm/vs/basic-languages/go/go.js') },
-    { id: 'cpp',     load: () => import('monaco-editor/esm/vs/basic-languages/cpp/cpp.js') },
-    { id: 'c',       load: () => import('monaco-editor/esm/vs/basic-languages/cpp/cpp.js') },
     { id: 'csharp',  load: () => import('monaco-editor/esm/vs/basic-languages/csharp/csharp.js') },
     { id: 'kotlin',  load: () => import('monaco-editor/esm/vs/basic-languages/kotlin/kotlin.js') },
     { id: 'dart',    load: () => import('monaco-editor/esm/vs/basic-languages/dart/dart.js') },
@@ -186,8 +205,19 @@ const HASKELL_CONF = {
 export async function registerMonarchTokenizers() {
     const registered = [];
 
-    // ── Monaco built-in languages ────────────────────────────────
-    const results = await Promise.allSettled(
+    // ── Custom rich grammars (cpp/c, java, rust, js, ts, html, css) ──
+    for (const { id, language, conf } of CUSTOM_GRAMMARS) {
+        try {
+            monaco.languages.setMonarchTokensProvider(id, language);
+            if (conf) monaco.languages.setLanguageConfiguration(id, conf);
+            registered.push(id);
+        } catch (e) {
+            console.warn(`[Tokenizer] Failed to register custom grammar for "${id}":`, e.message);
+        }
+    }
+
+    // ── Monaco built-in languages (everything else) ──────────────
+    await Promise.allSettled(
         MONARCH_LOADERS.map(async ({ id, load }) => {
             try {
                 const mod = await load();

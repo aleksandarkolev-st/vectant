@@ -1,0 +1,90 @@
+/* Tokenizer fixture — exercises every CSS scope the Synthi grammar emits. */
+
+@import url("./reset.css");
+@charset "UTF-8";
+
+:root {
+    --bg-app:        #0c0d12;
+    --bg-panel:      #14151d;
+    --accent:        #327464;
+    --accent-soft:   rgba(50, 116, 100, 0.25);
+    --text-primary:  #f4f5f8;
+    --text-muted:    #9ba2b8;
+    --radius:        8px;
+    --shadow-glow:   0 0 15px rgba(50, 116, 100, 0.2);
+}
+
+* {
+    box-sizing: border-box;
+}
+
+body {
+    margin: 0;
+    background: var(--bg-app);
+    color: var(--text-primary);
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    font-size: 14px;
+    line-height: 1.5;
+}
+
+#banner {
+    padding: 16px 24px;
+    border-bottom: 1px solid var(--accent);
+    background: linear-gradient(180deg, var(--bg-panel) 0%, var(--bg-app) 100%);
+}
+
+.banner--dark h1 {
+    margin: 0;
+    font-weight: 600;
+    color: var(--accent);
+}
+
+.btn {
+    display: inline-flex;
+    align-items: center;
+    padding: 6px 14px;
+    border-radius: var(--radius);
+    border: 1px solid var(--accent);
+    background: transparent;
+    color: var(--text-primary);
+    cursor: pointer;
+    transition: background 120ms ease-in-out, transform 120ms ease-in-out;
+}
+
+.btn:hover  { background: var(--accent-soft); }
+.btn:active { transform: scale(0.97); }
+.btn:disabled,
+.btn[aria-disabled="true"] {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.btn--primary {
+    background: var(--accent);
+    color: #ffffff;
+    box-shadow: var(--shadow-glow) !important;
+}
+
+.card > h2::before {
+    content: "▸ ";
+    color: var(--accent);
+}
+
+@media (prefers-color-scheme: light) {
+    :root {
+        --bg-app:       #f8f9fb;
+        --text-primary: #0c0d12;
+    }
+}
+
+@keyframes pulse {
+    0%   { transform: scale(1);    opacity: 1; }
+    50%  { transform: scale(1.04); opacity: 0.85; }
+    100% { transform: scale(1);    opacity: 1; }
+}
+
+.btn--primary:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+    animation: pulse 1.2s ease-in-out infinite;
+}
