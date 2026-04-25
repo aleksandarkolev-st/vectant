@@ -200,6 +200,39 @@ const FileTreeView = ({ onToggleOrientation }) => {
   const renderRow = useCallback((index) => {
     const row = flatNodes[index];
     if (!row) return null;
+
+    if (row.isCreateInput) {
+      return (
+        <div
+          className="file-item relative flex items-center py-1 px-2"
+          style={{ paddingLeft: `${row.level * 16 + 8}px` }}
+        >
+          <div className="flex items-center w-full">
+            <div className="w-4 h-4 mr-2 flex-shrink-0 flex items-center justify-center">
+              {isCreatingFolder ? (
+                <FolderIcon />
+              ) : (
+                getFileIcon(name || "newfile")
+              )}
+            </div>
+            <input
+              ref={inputRef}
+              type="text"
+              value={name}
+              onChange={(e) => dispatch(setUiActionName(e.target.value))}
+              onKeyDown={handleKeyDown}
+              onBlur={handleBlur}
+              placeholder={
+                isCreatingFolder ? "New folder name..." : "New file name..."
+              }
+              className="w-full bg-transparent border-none outline-none text-sm text-white placeholder-gray-500"
+              autoFocus
+            />
+          </div>
+        </div>
+      );
+    }
+
     return (
       <FileItem
         item={row.item}
@@ -224,7 +257,7 @@ const FileTreeView = ({ onToggleOrientation }) => {
         shallow
       />
     );
-  }, [flatNodes, isTreeHovered, activeFolderPath, onFileSelectHandler, activeFile, handleTreeAction, uiActionState, dispatch, handleKeyDown, handleBlur]);
+  }, [flatNodes, isTreeHovered, activeFolderPath, onFileSelectHandler, activeFile, handleTreeAction, uiActionState, dispatch, handleKeyDown, handleBlur, isCreatingFolder, name]);
 
   return (
     <ContextMenu
@@ -288,7 +321,9 @@ const FileTreeView = ({ onToggleOrientation }) => {
             </div>
           </div>
 
-          {/* Virtualised file list */}
+          {/* Virtualised file list. The create-input row (root or folder
+              target) is injected as a synthetic Virtuoso row by
+              useVirtualizedTree and rendered by renderRow above. */}
           <div className="flex-1 py-0.5" style={{ minHeight: 0 }}>
             <Virtuoso
               totalCount={flatNodes.length}
@@ -298,36 +333,6 @@ const FileTreeView = ({ onToggleOrientation }) => {
               style={{ height: '100%' }}
               increaseViewportBy={{ top: 200, bottom: 200 }}
             />
-
-            {/* Root creation input */}
-            {isCreating && !target && (
-              <div className="px-2 py-1">
-                <div className="flex items-center">
-                  <div className="w-4 h-4 mr-2 flex-shrink-0 flex items-center justify-center">
-                    {isCreatingFolder ? (
-                      <FolderIcon />
-                    ) : (
-                      getFileIcon(name || "newfile")
-                    )}
-                  </div>
-                  <input
-                    ref={inputRef}
-                    type="text"
-                    value={name}
-                    onChange={(e) => dispatch(setUiActionName(e.target.value))}
-                    onKeyDown={handleKeyDown}
-                    onBlur={handleBlur}
-                    placeholder={
-                      isCreatingFolder
-                        ? "New folder name..."
-                        : "New file name..."
-                    }
-                    className="w-full bg-transparent border-none outline-none text-sm text-white placeholder-gray-500"
-                    autoFocus
-                  />
-                </div>
-              </div>
-            )}
           </div>
         </div>
       </ContextMenuTrigger>
